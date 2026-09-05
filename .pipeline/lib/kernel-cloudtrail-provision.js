@@ -25,12 +25,34 @@ const CMK_EVENT_NAMES = Object.freeze(['Decrypt', 'GenerateDataKey']);
 // LastModified. El colchón evita descartar el objeto que trae la evidencia.
 const DELIVERY_SLACK_MS = 15 * 60 * 1000;
 
+// #5207 — El bucket del trail crece de forma MONÓTONA: un `list-objects-v2` sin
+// acotar sobre este destino ya devuelve >1 MiB, que es exactamente el `maxBuffer`
+// por defecto de `spawnSync`. Al desbordar, Node NO llena `stderr`: devuelve
+// `status: null` y pone el detalle en `result.error.code` (`ENOBUFS`).
+//
+// La versión anterior sólo miraba `status !== 0` e interpolaba un `stderr` vacío,
+// así que `--verify` moría con el texto `aws s3api list-objects-v2 falló:` y NADA
+// después. Es el peor modo de falla posible en una herramienta de auditoría: un
+// error mudo se lee como "AWS denegó" cuando en realidad el comando nunca llegó a
+// completarse, y manda a investigar permisos por un desborde local de buffer.
+const AWS_MAX_BUFFER = 64 * 1024 * 1024;
+
 function runAws(args, options = {}) {
     const result = spawnSync('aws', [...args, '--output', 'json'], {
-        encoding: 'utf8', env: options.env || process.env, shell: false,
+        encoding: 'utf8',
+        env: options.env || process.env,
+        shell: false,
+        maxBuffer: options.maxBuffer || AWS_MAX_BUFFER,
     });
+    // `error` cubre lo que `status`/`stderr` no ven: ENOBUFS (salida desbordada),
+    // ENOENT (aws CLI ausente del PATH), timeouts. Sin esta rama el diagnóstico
+    // sale vacío y el operador no tiene por dónde empezar.
+    if (result.error) {
+        throw new Error(`aws ${args.slice(0, 2).join(' ')} no pudo ejecutarse: ${result.error.code || result.error.message}`);
+    }
     if (result.status !== 0) {
-        throw new Error(`aws ${args.slice(0, 2).join(' ')} falló: ${(result.stderr || '').trim()}`);
+        const detalle = (result.stderr || '').trim() || `exit ${result.status} sin stderr`;
+        throw new Error(`aws ${args.slice(0, 2).join(' ')} falló: ${detalle}`);
     }
     return result.stdout.trim() ? JSON.parse(result.stdout) : {};
 }
@@ -162,11 +184,74 @@ function emitCmkUsage(plan, config, aws = runAws) {
     return { table, nonce, startedAtMs };
 }
 
+// #5207 — Los prefijos de día que hay que listar para cubrir [desde, hasta].
+// CloudTrail particiona por `YYYY/MM/DD` en UTC, así que acotar el prefijo mueve
+// el filtro al SERVIDOR: se listan los 1-2 días relevantes en vez del bucket
+// entero. Sin esto, el listado crece para siempre y el filtro por `LastModified`
+// llega tarde — ya se descargaron y bufferearon todas las claves históricas.
+function trailDayPrefixes(plan, desdeMs, hastaMs) {
+    const base = `AWSLogs/${plan.accountId}/CloudTrail/${plan.region}/`;
+    const prefijos = [];
+    const DIA_MS = 24 * 60 * 60 * 1000;
+    // Se recorre por día UTC inclusive en ambos extremos. El tope defensivo evita
+    // que un `sinceMs` corrupto (o muy viejo) genere miles de llamadas a S3.
+    const MAX_DIAS = 32;
+    let cursor = Date.UTC(
+        new Date(desdeMs).getUTCFullYear(),
+        new Date(desdeMs).getUTCMonth(),
+        new Date(desdeMs).getUTCDate(),
+    );
+    while (cursor <= hastaMs && prefijos.length < MAX_DIAS) {
+        const d = new Date(cursor);
+        const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
+        const dd = String(d.getUTCDate()).padStart(2, '0');
+        prefijos.push(`${base}${d.getUTCFullYear()}/${mm}/${dd}/`);
+        cursor += DIA_MS;
+    }
+    return prefijos;
+}
+
+// Lista un prefijo paginando. `list-objects-v2` corta en 1000 claves y devuelve
+// `NextToken`; ignorarlo daba un listado SILENCIOSAMENTE incompleto — el modo de
+// falla más peligroso acá, porque "no encontré el evento" se confunde con "el
+// control no se ejerció".
+function listPrefixPaginado(plan, prefix, aws) {
+    const claves = [];
+    let token = null;
+    let vueltas = 0;
+    do {
+        const args = ['s3api', 'list-objects-v2', '--bucket', plan.bucket,
+            '--prefix', prefix, '--region', plan.region];
+        if (token) args.push('--starting-token', token);
+        const listed = aws(args);
+        claves.push(...(listed.Contents || []));
+        token = listed.NextToken || null;
+        vueltas += 1;
+    } while (token && vueltas < 100);
+    return claves;
+}
+
 function listTrailObjects(plan, { sinceMs = 0 } = {}, aws = runAws) {
-    const prefix = `AWSLogs/${plan.accountId}/CloudTrail/${plan.region}/`;
-    const listed = aws(['s3api', 'list-objects-v2', '--bucket', plan.bucket,
-        '--prefix', prefix, '--region', plan.region]);
-    return (listed.Contents || [])
+    // Con ventana declarada se acota por prefijo de día (barato y estable en el
+    // tiempo). Sin ventana no hay forma de acotar, así que se pagina el prefijo
+    // completo: más caro, pero nunca trunca ni desborda.
+    const prefijos = sinceMs
+        ? trailDayPrefixes(plan, sinceMs - DELIVERY_SLACK_MS, Date.now())
+        : [`AWSLogs/${plan.accountId}/CloudTrail/${plan.region}/`];
+
+    // Dedupe por Key: los prefijos de día son disjuntos en S3, pero el listado
+    // alimenta a `verifyKmsEventsFromTrail`, que ACUMULA los eventos de cada
+    // objeto que lee. Procesar dos veces la misma clave inflaría el conteo de
+    // uso de la CMK — evidencia de auditoría duplicada, que es peor que faltante
+    // porque parece más sólida. El costo de garantizarlo acá es nulo.
+    const porKey = new Map();
+    for (const prefix of prefijos) {
+        for (const entry of listPrefixPaginado(plan, prefix, aws)) {
+            if (!porKey.has(entry.Key)) porKey.set(entry.Key, entry);
+        }
+    }
+
+    return [...porKey.values()]
         .filter((entry) => String(entry.Key).endsWith('.json.gz'))
         .filter((entry) => !sinceMs || Date.parse(entry.LastModified) >= sinceMs - DELIVERY_SLACK_MS)
         .sort((a, b) => Date.parse(a.LastModified) - Date.parse(b.LastModified))
@@ -322,6 +407,7 @@ module.exports = {
     DEFAULTS, CMK_EVENT_NAMES, RUNTIME_DENIED_BUCKET_ACTIONS,
     runAws, bucketName, bucketPolicy, buildPlan, ensureBucket, applyPlan,
     resolveKeyArn, emitCmkUsage, listTrailObjects, readTrailObject, extractCmkUsage,
+    trailDayPrefixes, listPrefixPaginado, AWS_MAX_BUFFER,
     verifyKmsEventsFromTrail, isCmkUsageComplete, successfulCmkUsage,
     verifyDestinationPosture, posturaCompleta, principalEsperado, EXPECTED_INVOKED_BY,
 };

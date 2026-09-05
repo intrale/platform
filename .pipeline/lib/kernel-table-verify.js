@@ -232,7 +232,17 @@ function readKernelTablesConfig(opts = {}) {
             + 'para liberar claims; compartirlas rompe esa separación.',
         );
     }
-    return { tableName, coordinationTableName, region, durable: kernel.durable === true };
+    // #5207 — `iamAdminProfile` habilita la SEGUNDA pasada (ver `verifyKernelTables`).
+    // Su ausencia NO es fail-closed: sin él todo queda como gap no verificado,
+    // que es el estado conservador. Lo mismo que ya hace `kernel-iam-verify` con
+    // el chequeo de drift.
+    return {
+        tableName,
+        coordinationTableName,
+        region,
+        durable: kernel.durable === true,
+        iamAdminProfile: str(kernel.iamAdminProfile) || null,
+    };
 }
 
 // -----------------------------------------------------------------------------
@@ -356,18 +366,22 @@ function summarizeTable(describeJson, expected = {}) {
 function buildGapProbes(cfg, keyArn) {
     const probes = [
         {
+            key: 'pitr-no-repudio',
             control: 'PITR (point-in-time recovery)',
             args: ['dynamodb', 'describe-continuous-backups', '--table-name', cfg.tableName, '--region', cfg.region],
         },
         {
+            key: 'pitr-coordinacion',
             control: 'PITR (point-in-time recovery)',
             args: ['dynamodb', 'describe-continuous-backups', '--table-name', cfg.coordinationTableName, '--region', cfg.region],
         },
         {
+            key: 'ttl-coordinacion',
             control: 'TTL de la tabla de coordinación',
             args: ['dynamodb', 'describe-time-to-live', '--table-name', cfg.coordinationTableName, '--region', cfg.region],
         },
         {
+            key: 'cloudtrail',
             control: 'Rastro de auditoría (CloudTrail)',
             args: ['cloudtrail', 'lookup-events', '--region', cfg.region, '--max-results', '1'],
         },
@@ -375,20 +389,101 @@ function buildGapProbes(cfg, keyArn) {
     if (keyArn) {
         probes.push(
             {
+                key: 'cmk-propiedad',
                 control: 'Propiedad de la CMK (gestionada propia vs aws/dynamodb)',
                 args: ['kms', 'describe-key', '--key-id', keyArn, '--region', cfg.region],
             },
             {
+                key: 'cmk-alias',
                 control: 'Propiedad de la CMK (alias)',
                 args: ['kms', 'list-aliases', '--key-id', keyArn, '--region', cfg.region],
             },
             {
+                key: 'cmk-rotacion',
                 control: 'Rotación de la CMK',
                 args: ['kms', 'get-key-rotation-status', '--key-id', keyArn, '--region', cfg.region],
             },
         );
     }
     return probes;
+}
+
+// -----------------------------------------------------------------------------
+// #5207 — Lectura de un control del gap con el perfil ADMIN de sólo lectura
+// -----------------------------------------------------------------------------
+//
+// POR QUÉ HACE FALTA UNA SEGUNDA PASADA
+//   El CA-2 del paraguas (#5207) exige outputs que PRUEBEN PITR, CMK y CloudTrail.
+//   El perfil `kernel-runtime` no puede leer ninguno de los tres — y está bien que
+//   no pueda: es mínimo privilegio, y ese `AccessDenied` es en sí mismo la
+//   evidencia del CA de IAM. Pero entonces el control queda sin demostrar por
+//   herramienta, y el CA-2 se cerraba a mano con comandos pegados en un issue.
+//
+//   La salida NO es aflojarle permisos al runtime: es leer esos controles con el
+//   mismo perfil admin de sólo lectura que `kernel-iam-verify` ya usa para el
+//   drift (`kernel.iamAdminProfile`). Dos pasadas, dos identidades, cada una
+//   probando lo suyo: el runtime prueba que NO puede, el admin prueba que el
+//   control ESTÁ.
+//
+// EL FAIL-CLOSED NO SE TOCA
+//   `verified: true` sigue exigiendo un campo OBSERVADO en el output real. Si el
+//   perfil admin no está configurado, si el comando falla, o si el campo no
+//   aparece, el control vuelve a `null` ("no sé"). Nunca se infiere.
+//
+// Devuelve `null` si el output no permite afirmar nada.
+function observeGapControl(key, json) {
+    if (!json || typeof json !== 'object') return null;
+
+    switch (key) {
+        case 'pitr-no-repudio':
+        case 'pitr-coordinacion': {
+            const d = json.ContinuousBackupsDescription || {};
+            const estado = (d.PointInTimeRecoveryDescription || {}).PointInTimeRecoveryStatus;
+            if (typeof estado !== 'string') return null;
+            return {
+                // La tabla de no-repudio DEBE tener PITR; la de coordinación es
+                // efímera y su postura documentada es no tenerlo. Por eso acá se
+                // REPORTA el estado observado y no se juzga: quien juzga es el
+                // criterio, con la postura de cada tabla a la vista.
+                pointInTimeRecovery: estado,
+                periodoRetencionDias: (d.PointInTimeRecoveryDescription || {}).RecoveryPeriodInDays || null,
+            };
+        }
+        case 'ttl-coordinacion': {
+            const estado = (json.TimeToLiveDescription || {}).TimeToLiveStatus;
+            if (typeof estado !== 'string') return null;
+            return { timeToLive: estado };
+        }
+        case 'cmk-propiedad': {
+            const k = json.KeyMetadata || {};
+            if (typeof k.KeyManager !== 'string') return null;
+            return {
+                // `CUSTOMER` es el dato que separa una CMK propia de la clave
+                // `aws/dynamodb` administrada por AWS — que es exactamente lo
+                // que el `describe-table` NO permite distinguir.
+                keyManager: k.KeyManager,
+                keyState: k.KeyState || null,
+                enabled: k.Enabled === true,
+            };
+        }
+        case 'cmk-alias': {
+            const aliases = Array.isArray(json.Aliases) ? json.Aliases : null;
+            if (!aliases || !aliases.length) return null;
+            return { aliases: aliases.map((a) => a.AliasName).filter(Boolean) };
+        }
+        case 'cmk-rotacion': {
+            const r = json.KeyRotationEnabled;
+            if (typeof r !== 'boolean') return null;
+            return { rotacionAutomatica: r };
+        }
+        // `cloudtrail` NO se resuelve acá a propósito: el rastro se verifica con
+        // `kernel-cloudtrail-provision --verify`, que valida los 11 controles de
+        // postura del destino (bucket privado, TLS-only, retención, separación de
+        // identidades). Un `lookup-events` que devuelve 200 probaría muchísimo
+        // menos y se leería como si probara lo mismo.
+        default:
+            return null;
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -448,8 +543,10 @@ async function verifyKernelTables(deps = {}) {
     // clave es propia o administrada por AWS — eso es justamente el gap.
     const mismaCmk = keyArnsPorTabla.length === 2 && keyArnsPorTabla[0] === keyArnsPorTabla[1];
 
+    const probes = buildGapProbes(cfg, keyArnCrudo);
+
     const gaps = [];
-    for (const probe of buildGapProbes(cfg, keyArnCrudo)) {
+    for (const probe of probes) {
         let deny;
         try {
             const res = await runner.run(probe.args);
@@ -460,13 +557,14 @@ async function verifyKernelTables(deps = {}) {
             deny = { type: 'error', action: null, policy: null, message: redactAwsEvidence(String(e && e.message)) };
         }
         gaps.push({
+            key: probe.key,
             control: probe.control,
             comando: redactAwsEvidence(`aws ${probe.args.join(' ')} --profile ${runner.profile || DEFAULT_PROFILE}`),
             deny: deny.type,
             action: deny.action,
             policy: deny.policy,
-            // `null` = NO VERIFICADO. Nunca `true`: el criterio prohíbe declarar
-            // cumplido lo que no se pudo observar.
+            // `null` = NO VERIFICADO. Nunca `true` desde esta pasada: el criterio
+            // prohíbe declarar cumplido lo que no se pudo observar.
             verified: deny.type === 'none' ? 'observado-revisar' : null,
             remediacion: deny.type === 'explicitDeny'
                 ? 'Deny explícito: agregar permisos NO alcanza; hay que editar esa policy con un principal con gestión IAM.'
@@ -474,8 +572,53 @@ async function verifyKernelTables(deps = {}) {
                     ? 'Falta un Allow: se destraba agregando el permiso read-only al perfil.'
                     : 'Sin clasificar: revisar el mensaje crudo antes de decidir remediación.'),
             detalle: deny.message,
+            // Se completan en la segunda pasada (#5207) si hay perfil admin.
+            observadoCon: null,
+            evidencia: null,
         });
     }
+
+    // -------------------------------------------------------------------------
+    // Segunda pasada (#5207 · CA-2): los mismos controles, leídos con el perfil
+    // ADMIN de sólo lectura. No afloja el mínimo privilegio del runtime — usa
+    // OTRA identidad, que es justamente la separación que el CA quiere probar.
+    // -------------------------------------------------------------------------
+    const adminProfile = deps.adminProfile !== undefined ? deps.adminProfile : cfg.iamAdminProfile;
+    let adminRunner = null;
+    if (deps.adminRunner) {
+        adminRunner = deps.adminRunner;
+    } else if (adminProfile) {
+        adminRunner = createReadOnlyAwsRunner({ profile: adminProfile, spawn: deps.spawn });
+    }
+
+    if (adminRunner) {
+        const porKey = new Map(probes.map((p) => [p.key, p]));
+        for (const gap of gaps) {
+            const probe = porKey.get(gap.key);
+            if (!probe) continue;
+            let json = null;
+            try {
+                const res = await adminRunner.run(probe.args);
+                json = res.code === 0 ? parseJsonSafe(res.stdout) : null;
+            } catch (_) {
+                json = null; // No poder observar sigue siendo "no sé", no un fallo.
+            }
+            const evidencia = observeGapControl(gap.key, json);
+            if (!evidencia) continue; // El control sigue sin verificar.
+            gap.verified = true;
+            gap.observadoCon = adminRunner.profile || adminProfile;
+            gap.evidencia = redactDeep(evidencia);
+            // El comando publicado tiene que ser el que REPRODUCE la evidencia.
+            // Dejarlo con `--profile kernel-runtime` mandaría a quien audite a
+            // correr algo que devuelve AccessDenied, y a concluir que la
+            // evidencia es falsa.
+            gap.comandoObservacion = redactAwsEvidence(
+                `aws ${probe.args.join(' ')} --profile ${gap.observadoCon}`,
+            );
+        }
+    }
+
+    const gapsPendientes = gaps.filter((g) => g.verified !== true);
 
     return {
         issue: 5210,
@@ -486,13 +629,18 @@ async function verifyKernelTables(deps = {}) {
             durable: cfg.durable,
         },
         perfil: runner.profile || DEFAULT_PROFILE,
+        perfilAdmin: adminRunner ? (adminRunner.profile || adminProfile) : null,
         tables,
         mismaCmkEnAmbasTablas: mismaCmk,
         gaps,
         verificable: tables.length === 2 && tables.every((t) => t.verified === true),
+        // #5207 — Cuántos controles del gap quedaron efectivamente sin observar.
+        // Es el número que decide si el CA-2 está cerrado o no.
+        gapsPendientes: gapsPendientes.length,
         // Recordatorio embebido en el propio artefacto: quien lea el JSON no
         // necesita leer el issue para saber que los gaps no son aprobaciones.
-        nota: 'Los ítems de `gaps` con `verified: null` NO están verificados. Prohibido declararlos cumplidos (#5210 CA-3).',
+        nota: 'Los ítems de `gaps` con `verified: null` NO están verificados. Prohibido declararlos cumplidos (#5210 CA-3). '
+            + 'Los que tienen `verified: true` traen el output observado en `evidencia` y la identidad que lo leyó en `observadoCon`.',
     };
 }
 
@@ -505,7 +653,12 @@ async function verifyKernelTables(deps = {}) {
 function assertNoUnverifiedClaims(report) {
     const gaps = (report && report.gaps) || [];
     for (const g of gaps) {
-        if (g.verified === true) {
+        // #5207 — El fusible ya no prohíbe `verified: true` de plano: prohíbe un
+        // `true` SIN el output que lo respalde. La regla de fondo no cambió —
+        // sigue sin poder declararse cumplido lo que no se observó— pero ahora
+        // un control leído de verdad por el perfil admin puede cerrarse, y lo
+        // que se exige es que traiga la evidencia y la identidad que la leyó.
+        if (g.verified === true && !(g.evidencia && g.observadoCon)) {
             throw new Error(
                 `kernel-table-verify: el control "${g.control}" está marcado como verificado sin evidencia observada. `
                 + 'Prohibido declarar PITR/CMK/CloudTrail cumplidos sin haberlos podido observar (#5210 CA-3).',
@@ -539,12 +692,37 @@ function renderMarkdown(report) {
             + `| ${t.deletionProtection === null ? 'no observado' : String(t.deletionProtection)} `
             + `| ${t.verified ? 'OK' : 'FALLA'} |`);
     }
+    // #5207 — Los controles que el perfil admin SÍ pudo observar salen de la
+    // tabla de gaps y pasan a una tabla propia, con el output que los respalda.
+    const cerrados = report.gaps.filter((g) => g.verified === true);
+    const pendientes = report.gaps.filter((g) => g.verified !== true);
+
+    if (cerrados.length) {
+        l.push('');
+        l.push('### Verificado con el perfil admin de sólo lectura (CA-2 · #5207)');
+        l.push('');
+        l.push(`> Leído con \`${report.perfilAdmin}\`, NO con el runtime. El runtime sigue sin poder verlo`);
+        l.push('> —ese `AccessDenied` es la evidencia del mínimo privilegio— y el control queda igual demostrado.');
+        l.push('');
+        l.push('| Control | Observado | Comando |');
+        l.push('|---|---|---|');
+        for (const g of cerrados) {
+            const ev = Object.entries(g.evidencia || {})
+                .map(([k, v]) => `${k}=\`${v}\``).join(' · ');
+            l.push(`| ${g.control} | ${ev || '—'} | \`${g.comandoObservacion || g.comando}\` |`);
+        }
+    }
+
     l.push('');
     l.push('### Gap de verificación — NO verificado (CA-3)');
     l.push('');
+    if (!pendientes.length) {
+        l.push('> Sin gaps: todos los controles fueron observados.');
+        return l.join('\n');
+    }
     l.push('| Control | Comando | Tipo de deny | Se destraba con permisos |');
     l.push('|---|---|---|---|');
-    for (const g of report.gaps) {
+    for (const g of pendientes) {
         const destrababa = g.deny === 'explicitDeny' ? 'NO (Deny explícito)' : (g.deny === 'implicitDeny' ? 'sí (falta Allow)' : '—');
         l.push(`| ${g.control} | \`${g.comando}\` | \`${g.deny}\` | ${destrababa} |`);
     }
@@ -564,6 +742,7 @@ module.exports = {
     createReadOnlyAwsRunner,
     summarizeTable,
     buildGapProbes,
+    observeGapControl,
     verifyKernelTables,
     assertNoUnverifiedClaims,
     renderMarkdown,
