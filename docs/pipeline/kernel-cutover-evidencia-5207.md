@@ -179,12 +179,35 @@ Corregido en tres capas, porque subir el buffer solo mueve la pared de sitio:
    diagnóstico, en vez de interpolar un `stderr` vacío.
 2. `maxBuffer` explícito de 64 MiB.
 3. **Fix de raíz:** el listado se acota por prefijo de día (`YYYY/MM/DD` en UTC,
-   como particiona CloudTrail), moviendo el filtro al servidor, y pagina
-   `NextToken` cuando no hay ventana declarada. Antes, ignorar `NextToken` podía
-   devolver un listado **incompleto en silencio** — y "no encontré el evento" es
-   indistinguible de "el control nunca se ejerció".
+   como particiona CloudTrail), moviendo el filtro al servidor.
 
 Post-fix: postura completa `true` y 83 objetos listados en la ventana de 24 h.
+
+**Precisión sobre `NextToken` (corregida tras el review del 2026-09-05).** El
+bucle de paginación de `listPrefixPaginado` **no** fue lo que arregló este fallo,
+y la redacción anterior de este párrafo afirmaba lo contrario. Sin
+`--max-items`/`--page-size`, el AWS CLI pagina internamente y devuelve todas las
+claves en una sola salida **sin emitir `NextToken`** — por eso el síntoma era una
+salida gigante que desbordaba el buffer, no un listado corto. El bucle queda como
+cinturón para que agregar mañana un `--max-items` (o migrar al SDK, que sí corta
+en 1000 y sí emite el token) no reintroduzca un listado incompleto en silencio,
+que es el modo de falla más peligroso acá: "no encontré el evento" indistinguible
+de "el control nunca se ejerció".
+
+### 6.1.b El tope de la ventana recortaba el presente
+
+Detectado por el mismo review, ejecutando el módulo. `trailDayPrefixes` recorría
+desde `desde` hacia adelante y cortaba al llegar a 32 días, o sea que descartaba
+el extremo **reciente**: con `--since` de 60 días devolvía los 32 días más
+viejos y **dejaba fuera el día de hoy**, justo donde está el evento recién
+emitido. `verifyKmsEventsFromTrail` no encontraba nada y `--verify` salía con
+exit 2 ("falta evidencia, reintentar") cuando reintentar no podía servir nunca.
+
+Corregido en `trailDayWindow`: el recorte se hace desde el extremo **viejo**
+(últimos `MAX_DIAS_VENTANA` hasta `hasta`, con el presente siempre incluido) y el
+truncamiento se **reporta** por `stderr`, para que acotar la ventana pedida no
+sea una decisión silenciosa. Cubierto por
+`kernel-cloudtrail-listado-5207.test.js` §2.b.
 
 ### 6.2 El CA-2 no era demostrable por herramienta
 
@@ -208,8 +231,63 @@ sin fusible.
 
 De 7 gaps quedan 2, ambos legítimos: CloudTrail (se prueba mejor con
 `--verify`, que valida 11 controles de postura en vez de un `lookup-events` que
-devuelve 200 y parece probar lo mismo) y rotación de la CMK, que ni el perfil
-admin puede leer y que ningún CA exige.
+devuelve 200 y parece probar lo mismo) y rotación de la CMK, que el perfil admin
+tampoco pudo leer en esa corrida.
+
+### 6.3 Observar un control no es demostrarlo (rebote rev-1)
+
+El review del 2026-09-05 encontró que la segunda pasada de §6.2 marcaba
+`verified: true` apenas lograba **observar** el control, sin mirar si el valor
+observado **cumplía**. Ejecutado sobre un ambiente adverso —PITR `DISABLED` en la
+tabla de no-repudio, la clave `aws/dynamodb` en lugar de una CMK propia, rotación
+apagada— el módulo producía `gapsPendientes: 1`, todos los controles en verde y
+una sección titulada *"el control queda igual demostrado"*.
+
+Es el modo de falla que #5210 cerró (*"no pude verlo" ≠ "está bien"*) corrido un
+casillero: *"lo vi" ≠ "cumple"*. Y pesa más, porque este artefacto es lo que
+firma un operador.
+
+**Ahora cada control declara su postura esperada** (`POSTURAS` en
+`kernel-table-verify.js`) y `verified: true` exige las dos cosas: evidencia
+observada **y** que satisfaga la postura.
+
+| Control | Postura esperada | Por qué |
+|---|---|---|
+| PITR — no-repudio | `ENABLED` | Append-only y su contenido es la evidencia: sin PITR no hay recuperación |
+| PITR — coordinación | `DISABLED` | Efímera: restaurarla reinstalaría claims ya liberados (§4) |
+| TTL — coordinación | `DISABLED` | El vencimiento es por lease de aplicación, no por TTL (§4) |
+| Propiedad de la CMK | `KeyManager = CUSTOMER`, habilitada | Es lo que separa una CMK propia de `aws/dynamodb` |
+| Alias de la CMK | al menos uno fuera de `alias/aws/*` | Contraparte observable de `KeyManager = CUSTOMER` |
+| Rotación de la CMK | `KeyRotationEnabled = true` | Sin rotación el material de la clave no cambia nunca |
+
+Consecuencias en el artefacto:
+
+- Un control leído que **no** cumple queda en `estado: 'observado-incumple'` con
+  `verified: false`, **cuenta en `gapsPendientes`** y sale en una sección propia
+  del markdown que dice que incumple — no en la de verificados.
+- El JSON suma `posturasIncumplidas` y `ca2Cerrado`, para que un ambiente en rojo
+  no quede disuelto en un `gapsPendientes` bajo.
+- El fusible también exige `postura.cumple === true`: un verde plantado a mano con
+  evidencia que incumple **aborta el render**.
+- **Fail-closed sobre el catálogo:** un control observado sin postura declarada
+  tampoco cierra (`observado-sin-postura`).
+- El CLI sale con exit `1` si hay posturas incumplidas: ese exit code termina en
+  un gate y no puede leerse como "el ambiente cumple".
+
+**El endurecimiento no invalida la evidencia previa.** Aplicando las posturas a
+los valores ya observados en §3, los cinco controles cumplen:
+
+```
+pitr-no-repudio      cumple= true | PointInTimeRecoveryStatus = ENABLED
+pitr-coordinacion    cumple= true | PointInTimeRecoveryStatus = DISABLED (postura documentada · §4)
+ttl-coordinacion     cumple= true | TimeToLiveStatus = DISABLED (postura documentada · §4)
+cmk-propiedad        cumple= true | KeyManager = CUSTOMER, con la clave habilitada
+cmk-alias            cumple= true | al menos un alias propio, fuera del espacio `alias/aws/*`
+```
+
+Si en una corrida futura la rotación se pudiera leer y estuviera apagada, la
+salida es **documentar esa decisión y actualizar la postura** —como se hizo con
+PITR/TTL de coordinación—, no dejar el control rotulado como demostrado.
 
 ## 7. Lo que esta entrega NO hace
 

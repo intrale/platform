@@ -71,30 +71,58 @@ function runnerRuntime() {
     };
 }
 
-// Runner admin configurable: devuelve el payload que se le indique por verbo.
+// Runner admin configurable. La clave puede ser el verbo (`kms describe-key`) o
+// el verbo calificado por tabla (`dynamodb describe-continuous-backups|tabla-x`):
+// las dos tablas NO tienen la misma postura esperada —no-repudio exige PITR,
+// coordinación exige que NO lo tenga— así que un fixture que devuelva lo mismo
+// para ambas no representa ningún ambiente real.
 function runnerAdmin(porVerbo, registro = []) {
     return {
         profile: 'perfil-admin',
         run(args) {
             registro.push(args.join(' '));
             const verbo = `${args[0]} ${args[1]}`;
-            const payload = porVerbo[verbo];
+            const idx = args.indexOf('--table-name');
+            const calificado = idx !== -1 ? `${verbo}|${args[idx + 1]}` : null;
+            const payload = calificado !== null && porVerbo[calificado] !== undefined
+                ? porVerbo[calificado]
+                : porVerbo[verbo];
             if (payload === undefined) return Promise.resolve(DENIED);
             return Promise.resolve({ code: 0, stdout: JSON.stringify(payload), stderr: '' });
         },
     };
 }
 
-const ADMIN_COMPLETO = {
-    'dynamodb describe-continuous-backups': {
-        ContinuousBackupsDescription: {
-            ContinuousBackupsStatus: 'ENABLED',
-            PointInTimeRecoveryDescription: { PointInTimeRecoveryStatus: 'ENABLED', RecoveryPeriodInDays: 35 },
-        },
+const pitr = (estado, dias = null) => ({
+    ContinuousBackupsDescription: {
+        ContinuousBackupsStatus: 'ENABLED',
+        PointInTimeRecoveryDescription: { PointInTimeRecoveryStatus: estado, RecoveryPeriodInDays: dias },
     },
+});
+
+// El ambiente que CUMPLE, con la postura documentada de cada tabla:
+// no-repudio con PITR `ENABLED` (35 días), coordinación con PITR y TTL
+// `DISABLED` a propósito (es efímera: restaurarla reinstalaría claims ya
+// liberados). Ver `docs/pipeline/kernel-cutover-evidencia-5207.md` §4.
+const ADMIN_COMPLETO = {
+    'dynamodb describe-continuous-backups|tabla-no-repudio': pitr('ENABLED', 35),
+    'dynamodb describe-continuous-backups|tabla-coordinacion': pitr('DISABLED'),
     'dynamodb describe-time-to-live': { TimeToLiveDescription: { TimeToLiveStatus: 'DISABLED' } },
     'kms describe-key': { KeyMetadata: { KeyManager: 'CUSTOMER', KeyState: 'Enabled', Enabled: true } },
     'kms list-aliases': { Aliases: [{ AliasName: 'alias/intrale-kernel-store' }] },
+    'kms get-key-rotation-status': { KeyRotationEnabled: true },
+};
+
+// El ambiente ADVERSO del rechazo rev-1: los tres controles del CA-2 en rojo.
+// PITR apagado JUSTO en la tabla de no-repudio, la clave administrada por AWS
+// (`aws/dynamodb`) en vez de una CMK propia, y la rotación deshabilitada.
+const ADMIN_ADVERSO = {
+    'dynamodb describe-continuous-backups|tabla-no-repudio': pitr('DISABLED'),
+    'dynamodb describe-continuous-backups|tabla-coordinacion': pitr('DISABLED'),
+    'dynamodb describe-time-to-live': { TimeToLiveDescription: { TimeToLiveStatus: 'DISABLED' } },
+    'kms describe-key': { KeyMetadata: { KeyManager: 'AWS', KeyState: 'Enabled', Enabled: true } },
+    'kms list-aliases': { Aliases: [{ AliasName: 'alias/aws/dynamodb' }] },
+    'kms get-key-rotation-status': { KeyRotationEnabled: false },
 };
 
 // -----------------------------------------------------------------------------
@@ -145,7 +173,7 @@ test('#5207 · el fusible sigue rechazando un verde plantado a mano', () => {
     );
 });
 
-test('#5207 · el fusible acepta un verde que SÍ trae evidencia e identidad', () => {
+test('#5207 · el fusible acepta un verde con evidencia, identidad Y postura cumplida', () => {
     assert.strictEqual(
         tv.assertNoUnverifiedClaims({
             gaps: [{
@@ -153,6 +181,7 @@ test('#5207 · el fusible acepta un verde que SÍ trae evidencia e identidad', (
                 verified: true,
                 evidencia: { pointInTimeRecovery: 'ENABLED' },
                 observadoCon: 'perfil-admin',
+                postura: { esperado: 'PointInTimeRecoveryStatus = ENABLED', cumple: true },
             }],
         }),
         true,
@@ -172,12 +201,13 @@ test('#5207 · con perfil admin se cierran PITR, TTL y propiedad de la CMK', asy
 
     const cerrados = report.gaps.filter((g) => g.verified === true).map((g) => g.key).sort();
     assert.deepStrictEqual(cerrados, [
-        'cmk-alias', 'cmk-propiedad', 'pitr-coordinacion', 'pitr-no-repudio', 'ttl-coordinacion',
+        'cmk-alias', 'cmk-propiedad', 'cmk-rotacion',
+        'pitr-coordinacion', 'pitr-no-repudio', 'ttl-coordinacion',
     ]);
 
-    const pitr = report.gaps.find((g) => g.key === 'pitr-no-repudio');
-    assert.deepStrictEqual(pitr.evidencia, { pointInTimeRecovery: 'ENABLED', periodoRetencionDias: 35 });
-    assert.strictEqual(pitr.observadoCon, 'perfil-admin');
+    const noRepudio = report.gaps.find((g) => g.key === 'pitr-no-repudio');
+    assert.deepStrictEqual(noRepudio.evidencia, { pointInTimeRecovery: 'ENABLED', periodoRetencionDias: 35 });
+    assert.strictEqual(noRepudio.observadoCon, 'perfil-admin');
 });
 
 test('#5207 · la CMK se prueba CUSTOMER: es lo que describe-table no puede distinguir', async () => {
@@ -252,9 +282,10 @@ test('#5207 · el reporte cuenta cuántos controles quedaron sin observar', asyn
         runner: runnerRuntime(),
         adminRunner: runnerAdmin(ADMIN_COMPLETO),
     });
-    // Quedan CloudTrail y rotación de la CMK.
-    assert.strictEqual(report.gapsPendientes, 2);
+    // Queda sólo CloudTrail: no se lee acá ni con el perfil admin.
+    assert.strictEqual(report.gapsPendientes, 1);
     assert.strictEqual(report.gapsPendientes, report.gaps.filter((g) => g.verified !== true).length);
+    assert.strictEqual(report.posturasIncumplidas, 0);
 });
 
 // -----------------------------------------------------------------------------
@@ -281,4 +312,107 @@ test('#5207 · observeGapControl reporta el estado observado sin juzgarlo', () =
 
 test('#5207 · una key desconocida nunca se da por observada', () => {
     assert.strictEqual(tv.observeGapControl('control-inventado', { lo: 'que sea' }), null);
+});
+
+// -----------------------------------------------------------------------------
+// 5. Rebote rev-1 — observar un control NO es demostrarlo
+//
+// El review reprodujo el escenario adverso EJECUTANDO el módulo: un ambiente con
+// PITR `DISABLED` en la tabla de NO-REPUDIO, la clave `aws/dynamodb` en vez de
+// una CMK propia y la rotación apagada —los tres controles del CA-2 en rojo—
+// salía con `gapsPendientes: 1`, todos los controles en `verified: true`, el
+// fusible sin tirar, y un markdown que rotulaba el ambiente como demostrado.
+//
+// Es el modo de falla que #5210 cerró ("no pude verlo" ≠ "está bien") corrido un
+// casillero. Pesa más porque este artefacto es lo que firma un operador.
+// -----------------------------------------------------------------------------
+
+async function reporteAdverso() {
+    return tv.verifyKernelTables({
+        config: CFG,
+        runner: runnerRuntime(),
+        adminRunner: runnerAdmin(ADMIN_ADVERSO),
+    });
+}
+
+test('#5207 rev-1 · PITR DISABLED en la tabla de NO-REPUDIO no cierra el control', async () => {
+    const report = await reporteAdverso();
+    const g = report.gaps.find((x) => x.key === 'pitr-no-repudio');
+    assert.strictEqual(g.verified, false, 'leerlo no alcanza: el valor leído tiene que cumplir');
+    assert.strictEqual(g.estado, 'observado-incumple');
+    assert.strictEqual(g.postura.cumple, false);
+    assert.match(g.postura.esperado, /ENABLED/);
+    // La evidencia se conserva: el veredicto cambia, el dato observado no.
+    assert.strictEqual(g.evidencia.pointInTimeRecovery, 'DISABLED');
+});
+
+test('#5207 rev-1 · la clave aws/dynamodb no pasa por CMK propia ni por sus alias', async () => {
+    const report = await reporteAdverso();
+    const propiedad = report.gaps.find((x) => x.key === 'cmk-propiedad');
+    const alias = report.gaps.find((x) => x.key === 'cmk-alias');
+    assert.strictEqual(propiedad.verified, false, 'KeyManager=AWS es exactamente lo que el CA-2 descarta');
+    assert.strictEqual(alias.verified, false, '`alias/aws/dynamodb` no es un alias propio del kernel');
+});
+
+test('#5207 rev-1 · la rotación deshabilitada no cierra el control de rotación', async () => {
+    const report = await reporteAdverso();
+    const g = report.gaps.find((x) => x.key === 'cmk-rotacion');
+    assert.strictEqual(g.verified, false);
+    assert.strictEqual(g.evidencia.rotacionAutomatica, false);
+});
+
+test('#5207 rev-1 · un ambiente que falla el CA-2 NO produce gapsPendientes casi en cero', async () => {
+    const report = await reporteAdverso();
+    // 4 incumplen (PITR no-repudio, CMK propiedad, CMK alias, rotación) + CloudTrail sin observar.
+    assert.strictEqual(report.posturasIncumplidas, 4);
+    assert.strictEqual(report.gapsPendientes, 5,
+        'el número que decide si el CA-2 está cerrado tiene que contar los incumplimientos');
+    assert.strictEqual(report.ca2Cerrado, false);
+});
+
+test('#5207 rev-1 · el markdown de un ambiente en rojo NO dice que el control está demostrado', async () => {
+    const md = tv.renderMarkdown(await reporteAdverso());
+    assert.match(md, /INCUMPLE la postura esperada/);
+    assert.match(md, /\*\*CA-2 NO cerrado:\*\*/);
+    // La sección de verificados no puede listar un control que incumple.
+    const seccionVerificados = md.split('### Observado e INCUMPLE')[0];
+    assert.ok(!/keyManager=`AWS`/.test(seccionVerificados),
+        'una CMK administrada por AWS no puede aparecer entre los controles verificados');
+    assert.ok(!/rotacionAutomatica=`false`/.test(seccionVerificados),
+        'la rotación apagada no puede aparecer entre los controles verificados');
+});
+
+test('#5207 rev-1 · el ambiente que cumple sigue cerrando el CA-2', async () => {
+    // El contrapeso del test anterior: endurecer el veredicto no puede volverlo
+    // imposible de satisfacer. Con la postura documentada de cada tabla, todo lo
+    // observable cierra y sólo queda CloudTrail (que se prueba en otro módulo).
+    const report = await tv.verifyKernelTables({
+        config: CFG, runner: runnerRuntime(), adminRunner: runnerAdmin(ADMIN_COMPLETO),
+    });
+    assert.strictEqual(report.posturasIncumplidas, 0);
+    assert.strictEqual(report.gaps.filter((g) => g.estado === 'observado-cumple').length, 6);
+    const md = tv.renderMarkdown(report);
+    assert.ok(!/INCUMPLE la postura esperada/.test(md));
+});
+
+test('#5207 rev-1 · un control observado SIN postura declarada tampoco se cierra', async () => {
+    // Fail-closed sobre el propio catálogo: si mañana se agrega un probe y se
+    // olvida su postura, el default es NO darlo por cumplido.
+    assert.strictEqual(tv.evaluarPostura('control-sin-postura', { algo: 1 }), null);
+    const gap = { key: 'control-sin-postura', control: 'X' };
+    assert.throws(
+        () => tv.assertNoUnverifiedClaims({ gaps: [{ ...gap, verified: true, evidencia: { a: 1 }, observadoCon: 'admin' }] }),
+        /NO DECLARADA/,
+    );
+});
+
+test('#5207 rev-1 · un alias propio que contiene "/aws/" más adentro NO se confunde con uno de AWS', () => {
+    // El anclado importa: `alias/aws/dynamodb` es de AWS, `alias/intrale/aws/x` no.
+    assert.strictEqual(tv.evaluarPostura('cmk-alias', { aliases: ['alias/aws/dynamodb'] }).cumple, false);
+    assert.strictEqual(tv.evaluarPostura('cmk-alias', { aliases: ['alias/intrale/aws/kernel'] }).cumple, true);
+    // También en forma de ARN, que es como puede venir de `list-aliases`.
+    assert.strictEqual(
+        tv.evaluarPostura('cmk-alias', { aliases: ['arn:aws:kms:us-east-2:<ACCT>:alias/aws/dynamodb'] }).cumple,
+        false,
+    );
 });

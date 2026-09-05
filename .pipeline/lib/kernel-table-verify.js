@@ -487,6 +487,160 @@ function observeGapControl(key, json) {
 }
 
 // -----------------------------------------------------------------------------
+// #5207 (rebote rev-1) — La POSTURA ESPERADA de cada control
+// -----------------------------------------------------------------------------
+//
+// EL DEFECTO QUE CIERRA ESTE BLOQUE
+//   La primera versión de la segunda pasada ponía `verified: true` apenas el
+//   perfil admin lograba OBSERVAR el control. Observar y cumplir no son lo mismo.
+//   Un ambiente con PITR `DISABLED` en la tabla de NO-REPUDIO, la clave
+//   `aws/dynamodb` en vez de una CMK propia y la rotación apagada —los tres
+//   controles del CA-2 en rojo— producía un artefacto con `gapsPendientes: 1` y
+//   una sección titulada "el control queda igual demostrado".
+//
+//   Es el mismo modo de falla que #5210 cerró ("no pude verlo" ≠ "está bien"),
+//   corrido un casillero: ahora era "lo vi" ≠ "cumple". Y pesa más, porque este
+//   artefacto es la evidencia que firma un operador.
+//
+// LA REGLA
+//   Cada control declara qué postura debe tener y POR QUÉ. `verified: true` exige
+//   las dos cosas: evidencia OBSERVADA **y** que esa evidencia SATISFAGA la
+//   postura. Si no la satisface, el control no se cierra: queda en
+//   `estado: 'observado-incumple'` con `verified: false`, cuenta en
+//   `gapsPendientes` y sale en una sección propia del markdown que dice que
+//   incumple. Un control sin postura declarada tampoco cierra
+//   (`observado-sin-postura`): el default es no dar nada por cumplido.
+//
+// POR QUÉ ALGUNAS POSTURAS ESPERAN UN `DISABLED`
+//   Para la tabla de coordinación, `DISABLED` no es un hallazgo: es la postura
+//   documentada en `docs/pipeline/kernel-tablas-cutover-5210.md` §4. Se codifica
+//   igual que las demás para que una desviación —un PITR o un TTL que aparezcan
+//   activados ahí— salga como algo a revisar en vez de pasar inadvertida.
+
+// Los alias `alias/aws/*` los administra AWS. Anclado a inicio de string o al
+// `:` de un ARN: un alias propio que contenga `/aws/` más adentro no es de AWS.
+const ALIAS_ADMINISTRADO_POR_AWS_RE = /(?:^|:)alias\/aws\//i;
+
+const POSTURAS = Object.freeze({
+    'pitr-no-repudio': Object.freeze({
+        esperado: 'PointInTimeRecoveryStatus = ENABLED',
+        porQue: 'La tabla de no-repudio es append-only y su contenido ES la evidencia. '
+            + 'Sin PITR no hay forma de recuperarla ante un borrado o una mutación no prevista.',
+        evalua: (ev) => ev.pointInTimeRecovery === 'ENABLED',
+    }),
+    'pitr-coordinacion': Object.freeze({
+        esperado: 'PointInTimeRecoveryStatus = DISABLED (postura documentada · §4)',
+        porQue: 'Coordinación es efímera y sólo guarda claims vivos: restaurarla a un punto '
+            + 'del pasado reinstalaría claims ya liberados, que es peor que perderla. Un '
+            + 'ENABLED acá no es una mejora — contradice la postura documentada y hay que revisarla.',
+        evalua: (ev) => ev.pointInTimeRecovery === 'DISABLED',
+    }),
+    'ttl-coordinacion': Object.freeze({
+        esperado: 'TimeToLiveStatus = DISABLED (postura documentada · §4)',
+        porQue: 'El espacio de claves es acotado y los claims se sobrescriben en vez de apilarse: '
+            + 'el vencimiento es por lease de aplicación, no por TTL. Un TTL sumaría una segunda '
+            + 'ruta de borrado, con su latencia de barrido, sobre un mecanismo que ya vence de '
+            + 'forma determinística en el `claim()`.',
+        evalua: (ev) => ev.timeToLive === 'DISABLED',
+    }),
+    'cmk-propiedad': Object.freeze({
+        esperado: 'KeyManager = CUSTOMER, con la clave habilitada',
+        porQue: '`CUSTOMER` es lo que separa una CMK propia de la clave `aws/dynamodb` '
+            + 'administrada por AWS — exactamente la distinción que el `describe-table` NO '
+            + 'permite hacer. Sobre la clave de AWS no hay key policy propia ni control de rotación.',
+        evalua: (ev) => ev.keyManager === 'CUSTOMER'
+            && ev.enabled === true
+            && (ev.keyState === null || ev.keyState === undefined || ev.keyState === 'Enabled'),
+    }),
+    'cmk-alias': Object.freeze({
+        esperado: 'al menos un alias propio, fuera del espacio `alias/aws/*`',
+        porQue: 'Es la contraparte observable de `KeyManager=CUSTOMER`: si el único alias de la '
+            + 'clave es `alias/aws/dynamodb`, la clave no es del kernel.',
+        evalua: (ev) => Array.isArray(ev.aliases)
+            && ev.aliases.some((a) => typeof a === 'string' && a && !ALIAS_ADMINISTRADO_POR_AWS_RE.test(a)),
+    }),
+    'cmk-rotacion': Object.freeze({
+        esperado: 'KeyRotationEnabled = true',
+        porQue: 'Sin rotación automática, el material de la clave que cifra el store de no-repudio '
+            + 'no cambia nunca. Si el ambiente decide deliberadamente NO rotar, la salida es '
+            + 'documentar esa postura y actualizarla acá —como se hizo con PITR/TTL de '
+            + 'coordinación—, no dejar el control rotulado como demostrado.',
+        evalua: (ev) => ev.rotacionAutomatica === true,
+    }),
+});
+
+/**
+ * Evalúa la evidencia observada contra la postura esperada del control.
+ * @param {string} key            key del probe.
+ * @param {object} evidenciaCruda salida de `observeGapControl` SIN redactar.
+ * @returns {{esperado:string, porQue:string, cumple:boolean}|null}
+ *   `null` si el control no declara postura ⇒ no puede cerrarse (fail-closed).
+ */
+function evaluarPostura(key, evidenciaCruda) {
+    const postura = POSTURAS[key];
+    if (!postura) return null;
+    if (!evidenciaCruda || typeof evidenciaCruda !== 'object') return null;
+    let cumple = false;
+    try {
+        cumple = postura.evalua(evidenciaCruda) === true;
+    } catch (_) {
+        // Una postura que revienta evaluando NO se da por cumplida.
+        cumple = false;
+    }
+    return { esperado: postura.esperado, porQue: postura.porQue, cumple };
+}
+
+/**
+ * Registra sobre el gap la observación de un control y su veredicto de postura.
+ * Muta `gap`. Devuelve `true` si se pudo observar (cumpla o no).
+ *
+ * @param {object} gap     ítem de `gaps[]`.
+ * @param {*} json         payload parseado del comando (o `null`).
+ * @param {string} perfil  identidad que ejecutó la lectura.
+ * @param {string[]} args  args del comando, para publicar el reproductor.
+ * @returns {boolean}
+ */
+function aplicarObservacion(gap, json, perfil, args) {
+    const evidenciaCruda = observeGapControl(gap.key, json);
+    if (!evidenciaCruda) return false; // El control sigue sin observarse.
+
+    // La postura se evalúa sobre la evidencia CRUDA: la redacción enmascara
+    // account id y UUID de clave, y comparar contra un valor enmascarado daría
+    // un veredicto sobre un dato que ya no es el observado.
+    const postura = evaluarPostura(gap.key, evidenciaCruda);
+
+    gap.observadoCon = perfil;
+    gap.evidencia = redactDeep(evidenciaCruda);
+    gap.postura = postura;
+    if (!postura) {
+        gap.estado = 'observado-sin-postura';
+    } else {
+        gap.estado = postura.cumple ? 'observado-cumple' : 'observado-incumple';
+    }
+    // `true` SÓLO cuando se observó Y la observación satisface la postura.
+    gap.verified = gap.estado === 'observado-cumple';
+    if (gap.estado === 'observado-incumple') {
+        // La remediación por defecto habla de permisos IAM, y acá el permiso
+        // sobró: el problema es el recurso en AWS. Mandar a revisar la policy
+        // sería mandar a arreglar lo que no está roto.
+        gap.remediacion = `Postura INCUMPLIDA: se esperaba ${postura.esperado} y se observó `
+            + `${JSON.stringify(gap.evidencia)}. No se destraba con permisos: hay que corregir `
+            + 'el recurso en AWS (o revisar y actualizar la postura documentada si cambió).';
+    } else if (gap.estado === 'observado-sin-postura') {
+        gap.remediacion = 'Control observado pero SIN postura esperada declarada: no puede darse '
+            + `por cumplido. Declarar la postura de "${gap.key}" en POSTURAS (kernel-table-verify.js).`;
+    }
+    if (Array.isArray(args)) {
+        // El comando publicado tiene que ser el que REPRODUCE la evidencia.
+        // Dejarlo con `--profile kernel-runtime` mandaría a quien audite a
+        // correr algo que devuelve AccessDenied, y a concluir que la
+        // evidencia es falsa.
+        gap.comandoObservacion = redactAwsEvidence(`aws ${args.join(' ')} --profile ${perfil}`);
+    }
+    return true;
+}
+
+// -----------------------------------------------------------------------------
 // Orquestación
 // -----------------------------------------------------------------------------
 
@@ -548,24 +702,35 @@ async function verifyKernelTables(deps = {}) {
     const gaps = [];
     for (const probe of probes) {
         let deny;
+        let json = null;
         try {
             const res = await runner.run(probe.args);
-            deny = res.code === 0
-                ? { type: 'none', action: null, policy: null, message: null }
-                : classifyDeny(res.stderr);
+            if (res.code === 0) {
+                deny = { type: 'none', action: null, policy: null, message: null };
+                json = parseJsonSafe(res.stdout);
+            } else {
+                deny = classifyDeny(res.stderr);
+            }
         } catch (e) {
             deny = { type: 'error', action: null, policy: null, message: redactAwsEvidence(String(e && e.message)) };
         }
-        gaps.push({
+        const gap = {
             key: probe.key,
             control: probe.control,
             comando: redactAwsEvidence(`aws ${probe.args.join(' ')} --profile ${runner.profile || DEFAULT_PROFILE}`),
             deny: deny.type,
             action: deny.action,
             policy: deny.policy,
-            // `null` = NO VERIFICADO. Nunca `true` desde esta pasada: el criterio
+            // `null` = NO OBSERVADO. Nunca `true` sin evidencia: el criterio
             // prohíbe declarar cumplido lo que no se pudo observar.
-            verified: deny.type === 'none' ? 'observado-revisar' : null,
+            verified: null,
+            // #5207 (rebote rev-1) — Tres estados posibles, no dos:
+            //   'no-observado'          → no se pudo leer (el gap clásico de #5210).
+            //   'observado-cumple'      → se leyó Y satisface la postura esperada.
+            //   'observado-incumple'    → se leyó y NO la satisface. Esto NO cierra nada.
+            //   'observado-sin-postura' → se leyó pero el control no declara postura.
+            estado: 'no-observado',
+            postura: null,
             remediacion: deny.type === 'explicitDeny'
                 ? 'Deny explícito: agregar permisos NO alcanza; hay que editar esa policy con un principal con gestión IAM.'
                 : (deny.type === 'implicitDeny'
@@ -575,7 +740,12 @@ async function verifyKernelTables(deps = {}) {
             // Se completan en la segunda pasada (#5207) si hay perfil admin.
             observadoCon: null,
             evidencia: null,
-        });
+        };
+        // Si el propio runtime pudo leer el control (no hubo deny), la evidencia
+        // se evalúa acá mismo: un comando que salió 200 no deja el control en un
+        // limbo "salió bien pero no sé qué dijo".
+        if (json) aplicarObservacion(gap, json, runner.profile || DEFAULT_PROFILE, probe.args);
+        gaps.push(gap);
     }
 
     // -------------------------------------------------------------------------
@@ -596,6 +766,10 @@ async function verifyKernelTables(deps = {}) {
         for (const gap of gaps) {
             const probe = porKey.get(gap.key);
             if (!probe) continue;
+            // Si el runtime ya observó el control, ese veredicto manda: leerlo de
+            // nuevo con otra identidad no cambiaría el valor y sí podría pisar un
+            // incumplimiento ya detectado.
+            if (gap.estado !== 'no-observado') continue;
             let json = null;
             try {
                 const res = await adminRunner.run(probe.args);
@@ -603,22 +777,12 @@ async function verifyKernelTables(deps = {}) {
             } catch (_) {
                 json = null; // No poder observar sigue siendo "no sé", no un fallo.
             }
-            const evidencia = observeGapControl(gap.key, json);
-            if (!evidencia) continue; // El control sigue sin verificar.
-            gap.verified = true;
-            gap.observadoCon = adminRunner.profile || adminProfile;
-            gap.evidencia = redactDeep(evidencia);
-            // El comando publicado tiene que ser el que REPRODUCE la evidencia.
-            // Dejarlo con `--profile kernel-runtime` mandaría a quien audite a
-            // correr algo que devuelve AccessDenied, y a concluir que la
-            // evidencia es falsa.
-            gap.comandoObservacion = redactAwsEvidence(
-                `aws ${probe.args.join(' ')} --profile ${gap.observadoCon}`,
-            );
+            aplicarObservacion(gap, json, adminRunner.profile || adminProfile, probe.args);
         }
     }
 
     const gapsPendientes = gaps.filter((g) => g.verified !== true);
+    const incumplidos = gaps.filter((g) => g.estado === 'observado-incumple');
 
     return {
         issue: 5210,
@@ -634,13 +798,26 @@ async function verifyKernelTables(deps = {}) {
         mismaCmkEnAmbasTablas: mismaCmk,
         gaps,
         verificable: tables.length === 2 && tables.every((t) => t.verified === true),
-        // #5207 — Cuántos controles del gap quedaron efectivamente sin observar.
-        // Es el número que decide si el CA-2 está cerrado o no.
+        // #5207 — Cuántos controles del gap NO quedaron cerrados: los que no se
+        // pudieron observar MÁS los que se observaron y no cumplen la postura.
         gapsPendientes: gapsPendientes.length,
+        // #5207 (rebote rev-1) — Contador propio para el caso que antes se
+        // escondía: controles LEÍDOS cuyo valor INCUMPLE la postura esperada.
+        // Un ambiente que falla el CA-2 tiene que gritarlo desde el JSON, no
+        // quedar disuelto en un `gapsPendientes` bajo.
+        posturasIncumplidas: incumplidos.length,
+        // El CA-2 sólo cierra si lo verificable da OK, no quedan controles sin
+        // observar y ninguno de los observados incumple su postura.
+        ca2Cerrado: tables.length === 2
+            && tables.every((t) => t.verified === true)
+            && gapsPendientes.length === 0,
         // Recordatorio embebido en el propio artefacto: quien lea el JSON no
         // necesita leer el issue para saber que los gaps no son aprobaciones.
-        nota: 'Los ítems de `gaps` con `verified: null` NO están verificados. Prohibido declararlos cumplidos (#5210 CA-3). '
-            + 'Los que tienen `verified: true` traen el output observado en `evidencia` y la identidad que lo leyó en `observadoCon`.',
+        nota: 'Los ítems de `gaps` con `verified: null` NO se pudieron observar y los que tienen '
+            + '`verified: false` se observaron pero INCUMPLEN la postura esperada (`postura.esperado`). '
+            + 'Ninguno de los dos puede declararse cumplido (#5210 CA-3, #5207 CA-2). Sólo los '
+            + '`verified: true` están cerrados: traen el output en `evidencia`, la identidad que lo '
+            + 'leyó en `observadoCon` y la postura que satisface en `postura`.',
     };
 }
 
@@ -662,6 +839,19 @@ function assertNoUnverifiedClaims(report) {
             throw new Error(
                 `kernel-table-verify: el control "${g.control}" está marcado como verificado sin evidencia observada. `
                 + 'Prohibido declarar PITR/CMK/CloudTrail cumplidos sin haberlos podido observar (#5210 CA-3).',
+            );
+        }
+        // #5207 (rebote rev-1) — Segunda mitad del fusible: tener la evidencia no
+        // alcanza, la evidencia tiene que CUMPLIR la postura esperada. Sin esto,
+        // un PITR `DISABLED` en la tabla de no-repudio salía como control
+        // demostrado sólo por haber sido leído. Fail-closed: un `true` sin
+        // postura declarada tampoco pasa.
+        if (g.verified === true && !(g.postura && g.postura.cumple === true)) {
+            const observado = g.evidencia ? JSON.stringify(g.evidencia) : 'sin evidencia';
+            throw new Error(
+                `kernel-table-verify: el control "${g.control}" está marcado como verificado pero su `
+                + `evidencia no satisface la postura esperada (esperado: ${(g.postura && g.postura.esperado) || 'NO DECLARADA'}; `
+                + `observado: ${observado}). Observar un control no es demostrarlo (#5207 CA-2).`,
             );
         }
     }
@@ -692,42 +882,82 @@ function renderMarkdown(report) {
             + `| ${t.deletionProtection === null ? 'no observado' : String(t.deletionProtection)} `
             + `| ${t.verified ? 'OK' : 'FALLA'} |`);
     }
-    // #5207 — Los controles que el perfil admin SÍ pudo observar salen de la
-    // tabla de gaps y pasan a una tabla propia, con el output que los respalda.
+    // #5207 — Los controles observados salen de la tabla de gaps y pasan a una
+    // tabla propia, con el output que los respalda. #5207 (rebote rev-1): sólo
+    // los que además CUMPLEN su postura; los que no, tienen sección propia.
+    const evidencia = (g) => Object.entries(g.evidencia || {})
+        .map(([k, v]) => `${k}=\`${v}\``).join(' · ') || '—';
     const cerrados = report.gaps.filter((g) => g.verified === true);
-    const pendientes = report.gaps.filter((g) => g.verified !== true);
+    const incumplen = report.gaps.filter((g) => g.estado === 'observado-incumple'
+        || g.estado === 'observado-sin-postura');
+    const noObservados = report.gaps.filter((g) => g.verified !== true && !incumplen.includes(g));
 
     if (cerrados.length) {
         l.push('');
         l.push('### Verificado con el perfil admin de sólo lectura (CA-2 · #5207)');
         l.push('');
         l.push(`> Leído con \`${report.perfilAdmin}\`, NO con el runtime. El runtime sigue sin poder verlo`);
-        l.push('> —ese `AccessDenied` es la evidencia del mínimo privilegio— y el control queda igual demostrado.');
+        l.push('> —ese `AccessDenied` es la evidencia del mínimo privilegio—. Cada fila trae la postura');
+        l.push('> esperada del control y el valor observado que la satisface: sin esas dos cosas juntas');
+        l.push('> el control NO figura acá.');
         l.push('');
-        l.push('| Control | Observado | Comando |');
-        l.push('|---|---|---|');
+        l.push('| Control | Postura esperada | Observado | Comando |');
+        l.push('|---|---|---|---|');
         for (const g of cerrados) {
-            const ev = Object.entries(g.evidencia || {})
-                .map(([k, v]) => `${k}=\`${v}\``).join(' · ');
-            l.push(`| ${g.control} | ${ev || '—'} | \`${g.comandoObservacion || g.comando}\` |`);
+            const esperado = (g.postura && g.postura.esperado) || '—';
+            l.push(`| ${g.control} | ${esperado} | ${evidencia(g)} | \`${g.comandoObservacion || g.comando}\` |`);
+        }
+    }
+
+    // #5207 (rebote rev-1) — Un control leído cuyo valor NO cumple la postura es
+    // un DEFECTO del ambiente, no un gap de permisos. Antes caía en la tabla de
+    // verificados y el artefacto lo rotulaba como demostrado.
+    if (incumplen.length) {
+        l.push('');
+        l.push('### Observado e INCUMPLE la postura esperada — el CA-2 NO cierra');
+        l.push('');
+        l.push('> Estos controles SÍ se pudieron leer, y lo que se leyó no cumple. No es un gap de');
+        l.push('> permisos: agregar `Allow` no cambia nada. Hay que corregir el recurso en AWS (o');
+        l.push('> revisar la postura documentada, si es ella la que cambió).');
+        l.push('');
+        l.push('| Control | Postura esperada | Observado | Por qué importa |');
+        l.push('|---|---|---|---|');
+        for (const g of incumplen) {
+            const p = g.postura || {};
+            l.push(`| ${g.control} | ${p.esperado || 'NO DECLARADA'} | ${evidencia(g)} `
+                + `| ${p.porQue || 'Control sin postura declarada: no puede darse por cumplido.'} |`);
         }
     }
 
     l.push('');
     l.push('### Gap de verificación — NO verificado (CA-3)');
     l.push('');
-    if (!pendientes.length) {
-        l.push('> Sin gaps: todos los controles fueron observados.');
-        return l.join('\n');
+    if (!noObservados.length) {
+        l.push('> Sin gaps de observación: todos los controles pudieron leerse.');
+    } else {
+        l.push('| Control | Comando | Tipo de deny | Se destraba con permisos |');
+        l.push('|---|---|---|---|');
+        for (const g of noObservados) {
+            const destrababa = g.deny === 'explicitDeny' ? 'NO (Deny explícito)' : (g.deny === 'implicitDeny' ? 'sí (falta Allow)' : '—');
+            l.push(`| ${g.control} | \`${g.comando}\` | \`${g.deny}\` | ${destrababa} |`);
+        }
+        l.push('');
+        l.push('> Ningún control de esta tabla está verificado. No pueden declararse cumplidos.');
     }
-    l.push('| Control | Comando | Tipo de deny | Se destraba con permisos |');
-    l.push('|---|---|---|---|');
-    for (const g of pendientes) {
-        const destrababa = g.deny === 'explicitDeny' ? 'NO (Deny explícito)' : (g.deny === 'implicitDeny' ? 'sí (falta Allow)' : '—');
-        l.push(`| ${g.control} | \`${g.comando}\` | \`${g.deny}\` | ${destrababa} |`);
-    }
+
+    // Cierre explícito: el lector no tiene que sumar filas para saber si el CA-2
+    // quedó cerrado. Es el número que el rechazo rev-1 encontró desalineado.
     l.push('');
-    l.push('> Ningún control de esta tabla está verificado. No pueden declararse cumplidos.');
+    if (report.ca2Cerrado) {
+        l.push('**CA-2 cerrado:** los dos `describe-table` dan OK y los controles del gap fueron');
+        l.push('observados cumpliendo su postura esperada.');
+    } else {
+        const partes = [];
+        if (report.posturasIncumplidas) partes.push(`${report.posturasIncumplidas} control(es) INCUMPLEN su postura`);
+        if (noObservados.length) partes.push(`${noObservados.length} sin observar`);
+        if (!report.verificable) partes.push('el `describe-table` de alguna tabla no da OK');
+        l.push(`**CA-2 NO cerrado:** ${partes.join(', ') || 'quedan controles pendientes'}.`);
+    }
     return l.join('\n');
 }
 
@@ -743,6 +973,8 @@ module.exports = {
     summarizeTable,
     buildGapProbes,
     observeGapControl,
+    POSTURAS,
+    evaluarPostura,
     verifyKernelTables,
     assertNoUnverifiedClaims,
     renderMarkdown,
@@ -762,9 +994,12 @@ if (require.main === module) {
             process.stdout.write(asJson
                 ? `${JSON.stringify(report, null, 2)}\n`
                 : `${renderMarkdown(report)}\n`);
-            // Exit 1 si lo verificable NO da OK. Los gaps no cambian el exit
-            // code: no poder observar un control no es una falla del control.
-            process.exitCode = report.verificable ? 0 : 1;
+            // Exit 1 si lo verificable NO da OK. Los gaps de OBSERVACIÓN no
+            // cambian el exit code: no poder observar un control no es una falla
+            // del control. Pero un control observado que INCUMPLE su postura sí
+            // lo es —#5207 rebote rev-1— y no puede salir 0: ese exit code
+            // termina en un gate y se lee como "el ambiente cumple".
+            process.exitCode = (report.verificable && !report.posturasIncumplidas) ? 0 : 1;
         })
         .catch((e) => {
             process.stderr.write(`kernel-table-verify: ${redactAwsEvidence(String(e && e.message))}\n`);

@@ -75,7 +75,94 @@ test('#5207 · el prefijo se arma en UTC (CloudTrail particiona en UTC, no en lo
 test('#5207 · una ventana absurda no genera miles de llamadas a S3', () => {
     // Un `sinceMs` corrupto (epoch 0) no puede traducirse en un barrido infinito.
     const prefijos = ct.trailDayPrefixes(PLAN, 0, Date.now());
-    assert.ok(prefijos.length <= 32, `tope defensivo excedido: ${prefijos.length} prefijos`);
+    assert.ok(prefijos.length <= ct.MAX_DIAS_VENTANA,
+        `tope defensivo excedido: ${prefijos.length} prefijos`);
+});
+
+// -----------------------------------------------------------------------------
+// 2.b Rebote rev-1 — el tope recortaba el PRESENTE, no el pasado
+//
+// El review ejecutó `trailDayPrefixes(PLAN, hace60dias, hoy)` y obtuvo los 32
+// días MÁS VIEJOS: el último prefijo era de un mes atrás y el día de HOY quedaba
+// afuera. Con `--since` de más de 32 días (flag público del CLI), el listado no
+// cubría el presente, `verifyKmsEventsFromTrail` no encontraba el evento recién
+// emitido y `--verify` salía con exit 2 ("falta evidencia, reintentar") — cuando
+// reintentar no podía servir nunca.
+//
+// Es el modo de falla que este archivo declara como el más peligroso ("no
+// encontré el evento" indistinguible de "el control nunca se ejerció"), vuelto a
+// meter por la puerta del tope. El test anterior sólo afirmaba `length <= 32`,
+// que un rango sin el presente satisface igual.
+// -----------------------------------------------------------------------------
+
+const diaPrefijo = (ms) => {
+    const d = new Date(ms);
+    return `AWSLogs/000000000000/CloudTrail/us-east-2/${d.getUTCFullYear()}/`
+        + `${String(d.getUTCMonth() + 1).padStart(2, '0')}/${String(d.getUTCDate()).padStart(2, '0')}/`;
+};
+
+test('#5207 rev-1 · una ventana que excede el tope conserva el día de HOY', () => {
+    const hoy = Date.UTC(2026, 8, 5, 12, 0, 0);
+    const hace60Dias = hoy - 60 * 24 * 60 * 60 * 1000;
+    const prefijos = ct.trailDayPrefixes(PLAN, hace60Dias, hoy);
+
+    assert.strictEqual(prefijos.length, ct.MAX_DIAS_VENTANA, 'el tope defensivo sigue vigente');
+    assert.strictEqual(prefijos[prefijos.length - 1], diaPrefijo(hoy),
+        'sin el día de hoy el evento recién emitido es inencontrable y --verify sale 2 para siempre');
+    assert.ok(prefijos.includes(diaPrefijo(hoy)));
+});
+
+test('#5207 rev-1 · el recorte se hace desde el extremo VIEJO, anclado al presente', () => {
+    const hoy = Date.UTC(2026, 8, 5, 12, 0, 0);
+    const prefijos = ct.trailDayPrefixes(PLAN, hoy - 60 * 24 * 60 * 60 * 1000, hoy);
+    const primerDiaEsperado = hoy - (ct.MAX_DIAS_VENTANA - 1) * 24 * 60 * 60 * 1000;
+    assert.strictEqual(prefijos[0], diaPrefijo(primerDiaEsperado));
+});
+
+test('#5207 rev-1 · el truncamiento se REPORTA, nunca es silencioso', () => {
+    const hoy = Date.UTC(2026, 8, 5, 12, 0, 0);
+    const ventana = ct.trailDayWindow(PLAN, hoy - 60 * 24 * 60 * 60 * 1000, hoy);
+    assert.strictEqual(ventana.truncado, true);
+    assert.strictEqual(ventana.diasPedidos, 61);
+    // `desdeEfectivoMs` es una medianoche UTC: la ventana se cuenta en días de
+    // partición de CloudTrail, no en instantes.
+    const medianocheHoy = Date.UTC(2026, 8, 5);
+    assert.strictEqual(ventana.desdeEfectivoMs,
+        medianocheHoy - (ct.MAX_DIAS_VENTANA - 1) * 24 * 60 * 60 * 1000);
+
+    // Y el aviso llega a quien lista: "no encontré eventos" en una ventana
+    // recortada NO es lo mismo que "el control no se ejerció".
+    const avisos = [];
+    ct.listTrailObjects(
+        PLAN,
+        { sinceMs: hoy - 60 * 24 * 60 * 60 * 1000, ahoraMs: hoy, avisar: (m) => avisos.push(m) },
+        () => ({ Contents: [] }),
+    );
+    assert.strictEqual(avisos.length, 1, 'recortar la ventana pedida no puede pasar inadvertido');
+    assert.match(avisos[0], /recortada a los 32 más recientes/);
+});
+
+test('#5207 rev-1 · una ventana dentro del tope no se recorta ni avisa', () => {
+    const hoy = Date.UTC(2026, 8, 5, 12, 0, 0);
+    const ventana = ct.trailDayWindow(PLAN, hoy - 3 * 24 * 60 * 60 * 1000, hoy);
+    assert.strictEqual(ventana.truncado, false);
+    assert.strictEqual(ventana.prefijos.length, 4);
+
+    const avisos = [];
+    ct.listTrailObjects(
+        PLAN,
+        { sinceMs: hoy - 3 * 24 * 60 * 60 * 1000, ahoraMs: hoy, avisar: (m) => avisos.push(m) },
+        () => ({ Contents: [] }),
+    );
+    assert.deepStrictEqual(avisos, []);
+});
+
+test('#5207 rev-1 · un `desde` posterior al `hasta` no genera una ventana vacía', () => {
+    // Reloj corrido o argumentos invertidos: el peor resultado sería cero
+    // prefijos, o sea "no hay eventos" sin haber mirado nada.
+    const hoy = Date.UTC(2026, 8, 5, 12, 0, 0);
+    const prefijos = ct.trailDayPrefixes(PLAN, hoy + 10 * 24 * 60 * 60 * 1000, hoy);
+    assert.deepStrictEqual(prefijos, [diaPrefijo(hoy)]);
 });
 
 test('#5207 · sin ventana el listado NO se acota por día (no se puede inventar un rango)', () => {

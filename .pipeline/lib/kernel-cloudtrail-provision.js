@@ -189,32 +189,82 @@ function emitCmkUsage(plan, config, aws = runAws) {
 // el filtro al SERVIDOR: se listan los 1-2 días relevantes en vez del bucket
 // entero. Sin esto, el listado crece para siempre y el filtro por `LastModified`
 // llega tarde — ya se descargaron y bufferearon todas las claves históricas.
-function trailDayPrefixes(plan, desdeMs, hastaMs) {
+const DIA_MS = 24 * 60 * 60 * 1000;
+// Tope defensivo: un `sinceMs` corrupto (o muy viejo) no puede traducirse en
+// miles de llamadas a S3.
+const MAX_DIAS_VENTANA = 32;
+
+// #5207 (rebote rev-1) — POR QUÉ EL RECORTE VA DESDE EL EXTREMO VIEJO
+//
+// La primera versión cortaba al llegar a `MAX_DIAS` recorriendo desde `desde`
+// hacia adelante, o sea que descartaba el extremo RECIENTE: con `--since` de 60
+// días devolvía los 32 días MÁS VIEJOS y dejaba fuera el día de HOY, que es
+// justamente donde está el evento recién emitido. `verifyKmsEventsFromTrail` no
+// encontraba nada, `--verify` salía con exit 2 ("falta evidencia, reintentar") y
+// reintentar no podía servir nunca: la ventana consultada jamás iba a alcanzar
+// el presente.
+//
+// Es el modo de falla que este archivo declara como el más peligroso —"no
+// encontré el evento" indistinguible de "el control nunca se ejerció"— vuelto a
+// meter por la puerta del tope. Se cierra por dos lados: el recorte se hace
+// desde el extremo VIEJO (se conservan los últimos `MAX_DIAS_VENTANA` hasta
+// `hasta`, con el presente SIEMPRE adentro) y el truncamiento se REPORTA, para
+// que acotar la ventana no sea nunca una decisión silenciosa.
+/**
+ * Ventana de prefijos de día que cubre `[desde, hasta]`, anclada al presente.
+ *
+ * @param {object} plan     `{accountId, region}`.
+ * @param {number} desdeMs  inicio pedido (epoch ms).
+ * @param {number} hastaMs  fin pedido (epoch ms) — SIEMPRE incluido.
+ * @returns {{prefijos:string[], truncado:boolean, diasPedidos:number,
+ *            desdeEfectivoMs:number}}
+ */
+function trailDayWindow(plan, desdeMs, hastaMs) {
     const base = `AWSLogs/${plan.accountId}/CloudTrail/${plan.region}/`;
+    const diaUTC = (ms) => {
+        const d = new Date(ms);
+        return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
+    };
+    const ultimoDia = diaUTC(hastaMs);
+    const primerDiaPedido = Math.min(diaUTC(desdeMs), ultimoDia);
+    const diasPedidos = Math.floor((ultimoDia - primerDiaPedido) / DIA_MS) + 1;
+    const truncado = diasPedidos > MAX_DIAS_VENTANA;
+    // El ancla es el extremo RECIENTE: se retrocede desde `hasta`, nunca al revés.
+    const primerDia = truncado
+        ? ultimoDia - (MAX_DIAS_VENTANA - 1) * DIA_MS
+        : primerDiaPedido;
+
     const prefijos = [];
-    const DIA_MS = 24 * 60 * 60 * 1000;
-    // Se recorre por día UTC inclusive en ambos extremos. El tope defensivo evita
-    // que un `sinceMs` corrupto (o muy viejo) genere miles de llamadas a S3.
-    const MAX_DIAS = 32;
-    let cursor = Date.UTC(
-        new Date(desdeMs).getUTCFullYear(),
-        new Date(desdeMs).getUTCMonth(),
-        new Date(desdeMs).getUTCDate(),
-    );
-    while (cursor <= hastaMs && prefijos.length < MAX_DIAS) {
+    for (let cursor = primerDia; cursor <= ultimoDia; cursor += DIA_MS) {
         const d = new Date(cursor);
         const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
         const dd = String(d.getUTCDate()).padStart(2, '0');
         prefijos.push(`${base}${d.getUTCFullYear()}/${mm}/${dd}/`);
-        cursor += DIA_MS;
     }
-    return prefijos;
+    return { prefijos, truncado, diasPedidos, desdeEfectivoMs: primerDia };
 }
 
-// Lista un prefijo paginando. `list-objects-v2` corta en 1000 claves y devuelve
-// `NextToken`; ignorarlo daba un listado SILENCIOSAMENTE incompleto — el modo de
-// falla más peligroso acá, porque "no encontré el evento" se confunde con "el
-// control no se ejerció".
+/**
+ * Los prefijos de día que cubren `[desde, hasta]`. El día de `hasta` SIEMPRE
+ * está incluido: si la ventana excede el tope, lo que se recorta es lo viejo.
+ * @returns {string[]}
+ */
+function trailDayPrefixes(plan, desdeMs, hastaMs) {
+    return trailDayWindow(plan, desdeMs, hastaMs).prefijos;
+}
+
+// Lista un prefijo siguiendo `NextToken` mientras venga.
+//
+// PRECISIÓN SOBRE QUÉ ARREGLA ESTE BUCLE (#5207 rebote rev-1)
+//   El defecto real que rompía `--verify` era el DESBORDE de `maxBuffer` (ver
+//   `AWS_MAX_BUFFER` arriba), no un truncamiento: sin `--max-items`/`--page-size`
+//   el AWS CLI pagina internamente y devuelve TODAS las claves en una sola salida,
+//   sin emitir `NextToken`. Por eso el síntoma era una salida gigante, no una corta.
+//   Este bucle no corrige aquel fallo — es un cinturón para que agregar mañana un
+//   `--max-items` (o migrar al SDK, que sí corta en 1000 y sí emite el token) no
+//   reintroduzca un listado silenciosamente incompleto, que sería el modo de falla
+//   más peligroso acá: "no encontré el evento" se confunde con "el control no se
+//   ejerció".
 function listPrefixPaginado(plan, prefix, aws) {
     const claves = [];
     let token = null;
@@ -231,13 +281,29 @@ function listPrefixPaginado(plan, prefix, aws) {
     return claves;
 }
 
-function listTrailObjects(plan, { sinceMs = 0 } = {}, aws = runAws) {
+function listTrailObjects(plan, { sinceMs = 0, ahoraMs = Date.now(), avisar } = {}, aws = runAws) {
     // Con ventana declarada se acota por prefijo de día (barato y estable en el
     // tiempo). Sin ventana no hay forma de acotar, así que se pagina el prefijo
     // completo: más caro, pero nunca trunca ni desborda.
-    const prefijos = sinceMs
-        ? trailDayPrefixes(plan, sinceMs - DELIVERY_SLACK_MS, Date.now())
-        : [`AWSLogs/${plan.accountId}/CloudTrail/${plan.region}/`];
+    let prefijos;
+    if (sinceMs) {
+        const ventana = trailDayWindow(plan, sinceMs - DELIVERY_SLACK_MS, ahoraMs);
+        prefijos = ventana.prefijos;
+        if (ventana.truncado) {
+            // RUIDOSO a propósito: la ventana pedida no se cubrió entera. El
+            // presente sí está incluido, pero quien lea el resultado tiene que
+            // saber que se miraron los últimos N días y no los que pidió — si no,
+            // un "no encontré eventos" se leería como "el control no se ejerció".
+            const aviso = `kernel-cloudtrail-provision: ventana de ${ventana.diasPedidos} días recortada a los `
+                + `${MAX_DIAS_VENTANA} más recientes (hasta ${new Date(ahoraMs).toISOString().slice(0, 10)} UTC, `
+                + `desde ${new Date(ventana.desdeEfectivoMs).toISOString().slice(0, 10)}). `
+                + 'La ausencia de eventos anteriores a esa fecha NO prueba nada.';
+            if (typeof avisar === 'function') avisar(aviso);
+            else process.stderr.write(`${aviso}\n`);
+        }
+    } else {
+        prefijos = [`AWSLogs/${plan.accountId}/CloudTrail/${plan.region}/`];
+    }
 
     // Dedupe por Key: los prefijos de día son disjuntos en S3, pero el listado
     // alimenta a `verifyKmsEventsFromTrail`, que ACUMULA los eventos de cada
@@ -407,7 +473,7 @@ module.exports = {
     DEFAULTS, CMK_EVENT_NAMES, RUNTIME_DENIED_BUCKET_ACTIONS,
     runAws, bucketName, bucketPolicy, buildPlan, ensureBucket, applyPlan,
     resolveKeyArn, emitCmkUsage, listTrailObjects, readTrailObject, extractCmkUsage,
-    trailDayPrefixes, listPrefixPaginado, AWS_MAX_BUFFER,
+    trailDayPrefixes, trailDayWindow, MAX_DIAS_VENTANA, listPrefixPaginado, AWS_MAX_BUFFER,
     verifyKmsEventsFromTrail, isCmkUsageComplete, successfulCmkUsage,
     verifyDestinationPosture, posturaCompleta, principalEsperado, EXPECTED_INVOKED_BY,
 };
