@@ -1182,6 +1182,40 @@ pr_mergeability_watcher:
   gh_timeout_ms: 5000
   # Poda de entradas huerfanas (PRs cerrados o fuera del barrido).
   state_entry_ttl_hours: 72
+  #
+  # --- Wiring del brazo en el Pulpo (#4968) ---------------------------------
+  # Estas claves las lee `lib/brazo-pr-mergeability-core.js`, NO #4966. Todas
+  # estan clampeadas EN CODIGO (`normalizeWatcherConfig`): un valor absurdo
+  # editado a mano deja el brazo APAGADO con un motivo tipado en el log, nunca
+  # tumba al Pulpo. Por eso la seccion NO vive en `config-schema.js` (H-A2).
+  #
+  # Corte en caliente: pisa a `enabled`. Para apagar el brazo sin discutir la
+  # config completa, poner esto en true (molde `wave_auto_transition`).
+  kill_switch: false
+  # Repos que el watcher puede observar. Un `expected_repo` fuera de esta lista
+  # deja el brazo apagado (`repo_not_allowed`) en vez de degradar al default:
+  # observar otro repo significa poder reencolar issues ajenos (OWASP A01).
+  allowed_repos:
+    - intrale/platform
+  # Llamadas a `gh` EN VUELO desde este brazo. Clampeado a [1,5]. Aplica a las
+  # LECTURAS: los rewinds son secuenciales por diseno (compiten por locks de
+  # issue). Con 0 o un valor no entero, el brazo queda apagado.
+  max_concurrency: 2
+  # Backoff exponencial con jitter sobre fallos CONSECUTIVOS de GitHub; un tick
+  # exitoso lo resetea. Clampeado a [1s, 1h]; si `base > max`, el techo sube al
+  # base (nunca reintenta mas seguido de lo declarado).
+  backoff_base_ms: 60000
+  backoff_max_ms: 900000
+  # Watchdog del guard anti-reentrada (#3059): si un tick queda colgado mas de
+  # esto, se libera el guard, se mata el `gh` activo y el brazo vuelve a correr
+  # en el TICK SIGUIENTE (no espera otro intervalo). Clampeado a [1min, 1h] y
+  # nunca por debajo de `gh_timeout_ms * max_concurrency`.
+  wedge_timeout_ms: 600000
+  #
+  # NOTA sobre `poll_interval_minutes`: el brazo le aplica un piso propio de
+  # 5 minutos, mas conservador que el clamp de #4966 ([1, 1440]). El watcher
+  # gasta la misma cuota `gh` que brazoDesbloqueo/brazoIntake (#4982) y el
+  # conflicto de un PR no es urgente al minuto.
 
 # #3085 / S7 multi-provider — aislamiento de credenciales por proceso.
 #
