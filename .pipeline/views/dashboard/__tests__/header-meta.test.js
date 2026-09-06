@@ -57,8 +57,8 @@ test('withMode:true agrega #hdr-mode además de las tres pills (satélites/roadm
 
 test('preserva title y aria-label literales de las pills (contrato de accesibilidad)', () => {
     const html = renderHeaderMetaSsr({ withMode: true });
-    assert.match(html, /title="CPU y RAM del sistema"/, 'title de recursos preservado');
-    assert.match(html, /aria-label="Recursos CPU y RAM"/, 'aria-label de recursos preservado');
+    assert.match(html, /title="CPU, RAM y disco del sistema"/, 'title de recursos preservado');
+    assert.match(html, /aria-label="Recursos CPU, RAM y disco"/, 'aria-label de recursos preservado');
     assert.match(html, /aria-label="Estado del pulpo"/, 'aria-label del pulpo preservado');
     assert.match(html, /aria-label="Fecha y hora local"/, 'aria-label del reloj preservado');
 });

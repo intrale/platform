@@ -37,6 +37,15 @@ const { _resetVaultCache } = require('../credentials');
 // Helpers
 // -----------------------------------------------------------------------------
 
+// #5214 — Desde que existe el guard fail-closed de config durable, un fixture
+// con `durable: true` y SIN `tableName` ya no es una config durable válida: el
+// boot aborta antes de llegar a lo que estos tests miden (cap, flag, best-effort
+// del store). Los fixtures de abajo cargan un nombre de tabla ficticio para
+// seguir ejerciendo lo suyo. El nombre nunca sale de acá: todos estos tests
+// inyectan `buildCatalogStore`/`createSupervisor` fake, así que no se construye
+// ningún driver real ni se toca AWS.
+const TABLE_FIXTURE = 'kernel-supervisor-test-table';
+
 // Store fake mínimo que sólo expone listProducts() (rol de catálogo/control-plane).
 function fakeCatalogStore(products) {
   return { listProducts: async () => products.slice() };
@@ -813,7 +822,7 @@ test('A02 · cada instancia resuelve SÓLO sus scopes contra el vault (nunca el 
   const rA = supervisor.resolveInstanceSecrets('acme', { scopes: ['githubToken'], ...vaultOpts() });
   assert.equal(rA.ok, true);
   const a = supervisor.getInstance('acme');
-  assert.deepEqual(a.secrets, { githubToken: { token: 'ghp_acme_SECRET' } }, 'A resuelve su propio scope');
+  assert.deepEqual({ ...a.secrets }, { githubToken: { token: 'ghp_acme_SECRET' } }, 'A resuelve su propio scope');
   // El scope no pedido no se materializa; el secreto de B jamás aparece en A.
   assert.equal(a.secrets.anthropicKey, undefined, 'sólo el scope declarado');
   assert.ok(!JSON.stringify(a.secrets).includes('globex'), 'ningún secreto de B en A');
@@ -888,8 +897,8 @@ test('#5899 CA-1 · resolveInstanceSecrets resuelve por el VAULT con el projectI
   assert.equal(rA.ok, true);
   assert.equal(rB.ok, true);
   // Cada uno trae SU material: la resolución salió del vault, no del archivo.
-  assert.deepEqual(supervisor.getInstance('acme').secrets, { githubToken: { token: 'ghp_acme_SECRET' } });
-  assert.deepEqual(supervisor.getInstance('globex').secrets, { githubToken: { token: 'ghp_globex_SECRET' } });
+  assert.deepEqual({ ...supervisor.getInstance('acme').secrets }, { githubToken: { token: 'ghp_acme_SECRET' } });
+  assert.deepEqual({ ...supervisor.getInstance('globex').secrets }, { githubToken: { token: 'ghp_globex_SECRET' } });
 
   // El `projectId` del path es la CLAVE DEL REGISTRY, nunca `vault.projectId`
   // ni un dato en banda: las raíces barridas lo demuestran.
@@ -899,7 +908,7 @@ test('#5899 CA-1 · resolveInstanceSecrets resuelve por el VAULT con el projectI
   assert.ok(!raices.some((r) => r.includes('/kernel/')), 'ningún path cae bajo la identidad del kernel');
 });
 
-test('#5899 CA-2/REQ-SEC-1 · un `secrets.path` hostil del descriptor no influye el path del vault', async () => {
+test('#5899 CA-2/REQ-SEC-1 · un `credentials[].ref` hostil no influye el path del vault', async () => {
   _resetVaultCache();
   const supervisor = createKernelSupervisor({
     catalogStore: fakeCatalogStore(CATALOG_MIXTO),
@@ -912,7 +921,7 @@ test('#5899 CA-2/REQ-SEC-1 · un `secrets.path` hostil del descriptor no influye
   const ctx = supervisor.getInstance('acme');
   ctx.descriptor = {
     projectId: 'acme',
-    secrets: { path: '../../globex/hosts/otro', scopes: ['githubToken'] },
+    credentials: [{ ref: '../../globex/hosts/otro', scopes: ['githubToken'] }],
   };
 
   const driver = driverDeVault();
@@ -920,7 +929,7 @@ test('#5899 CA-2/REQ-SEC-1 · un `secrets.path` hostil del descriptor no influye
     { vaultConfig: vaultCfg(), vaultDriver: driver, logger: () => {} });
 
   assert.equal(r.ok, true, 'los scopes declarados por el descriptor sí se usan');
-  assert.deepEqual(ctx.secrets, { githubToken: { token: 'ghp_acme_SECRET' } });
+  assert.deepEqual({ ...ctx.secrets }, { githubToken: { token: 'ghp_acme_SECRET' } });
   for (const c of driver.calls) {
     const objetivo = c.root || c.name || '';
     assert.ok(!objetivo.includes('..'), `el path del vault no contiene traversal: ${objetivo}`);
@@ -1172,7 +1181,7 @@ for (const [caso, cfg] of [
 test('#4822 · CA-1 · boot durable con flag ON instancia los active del store durable', async () => {
   const spawnedProducts = [];
   const res = await bootKernelDurable({
-    config: { kernel: { durable: true, max_concurrent_instances: 3 } },
+    config: { kernel: { durable: true, tableName: TABLE_FIXTURE, max_concurrent_instances: 3 } },
     buildCatalogStore: () => fakeCatalogStore(CATALOG_MIXTO),
     buildStoreFactory: () => recordingStoreFactory([]),
     spawn: (ctx) => { spawnedProducts.push(ctx.projectId); return { alive: true }; },
@@ -1187,7 +1196,7 @@ test('#4822 · CA-1 · boot durable con flag ON instancia los active del store d
 // CA-SEC-4 end-to-end vía bootKernelDurable: cap de config aplicado sobre N>cap.
 test('#4822 · CA-SEC-4 · boot durable aplica el cap de config sobre N>cap activos', async () => {
   const res = await bootKernelDurable({
-    config: { kernel: { durable: true, max_concurrent_instances: 1 } },
+    config: { kernel: { durable: true, tableName: TABLE_FIXTURE, max_concurrent_instances: 1 } },
     buildCatalogStore: () => fakeCatalogStore(CATALOG_N_ACTIVOS),
     buildStoreFactory: () => recordingStoreFactory([]),
     spawn: () => ({ alive: true }),
@@ -1201,7 +1210,7 @@ test('#4822 · CA-SEC-4 · boot durable aplica el cap de config sobre N>cap acti
 // Con flag ON pero sin cota válida en config, cae al default seguro (nunca sin techo).
 test('#4822 · CA-SEC-4 · sin cota válida en config el boot durable usa el default seguro', async () => {
   const res = await bootKernelDurable({
-    config: { kernel: { durable: true } },
+    config: { kernel: { durable: true, tableName: TABLE_FIXTURE } },
     buildCatalogStore: () => fakeCatalogStore(CATALOG_N_ACTIVOS),
     buildStoreFactory: () => recordingStoreFactory([]),
     spawn: () => ({ alive: true }),
@@ -1215,7 +1224,7 @@ test('#4822 · CA-SEC-4 · sin cota válida en config el boot durable usa el def
 test('#4822 · boot durable es best-effort: un fallo del store no lanza (no tumba el pulpo)', async () => {
   const alerts = [];
   const res = await bootKernelDurable({
-    config: { kernel: { durable: true, max_concurrent_instances: 2 } },
+    config: { kernel: { durable: true, tableName: TABLE_FIXTURE, max_concurrent_instances: 2 } },
     buildCatalogStore: () => { throw new Error('driver AWS no disponible'); },
     onAlert: (a) => alerts.push(a),
   });
@@ -1227,7 +1236,7 @@ test('#4822 · boot durable es best-effort: un fallo del store no lanza (no tumb
 
 // Falta buildCatalogStore con flag ON ⇒ best-effort error, no throw.
 test('#4822 · boot durable sin buildCatalogStore devuelve error sin lanzar', async () => {
-  const res = await bootKernelDurable({ config: { kernel: { durable: true } } });
+  const res = await bootKernelDurable({ config: { kernel: { durable: true, tableName: TABLE_FIXTURE } } });
   assert.equal(res.ran, false);
   assert.equal(res.reason, 'error');
   assert.match(res.error, /buildCatalogStore/, 'explica el requisito faltante');

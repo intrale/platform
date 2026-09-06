@@ -31,6 +31,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const { isNonProductionDirName } = require('../scratch-dirs');
 
 const PIPELINE_DIR = path.resolve(__dirname, '..', '..');
 
@@ -86,9 +87,12 @@ function walk(dir, acc = []) {
     for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
         const full = path.join(dir, entry.name);
         if (entry.isDirectory()) {
-            // `_tmp/` son worktrees de agentes (copias del repo), `__tests__/` y
-            // `node_modules/` no son producción.
-            if (entry.name === '_tmp' || entry.name === '__tests__' || entry.name === 'node_modules') continue;
+            // `_tmp/` y `tmp*/` son scratchpads de agentes (copias del repo y
+            // scripts ad-hoc), `__tests__/` y `node_modules/` no son producción.
+            // #6190 — antes la lista era literal y sólo cubría `_tmp`, así que
+            // un scratchpad `tmp5173/` ponía el guard en rojo por código ajeno
+            // al repo. El predicado compartido cubre las dos formas.
+            if (isNonProductionDirName(entry.name)) continue;
             walk(full, acc);
         } else if (entry.isFile() && entry.name.endsWith('.js') && !entry.name.endsWith('.test.js')) {
             acc.push(full);

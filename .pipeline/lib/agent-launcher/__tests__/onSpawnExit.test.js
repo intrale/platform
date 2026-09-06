@@ -827,3 +827,123 @@ test('#5795 hook — clases distintas de auth no traen proyeccion (campo null)',
     assert.equal(libre.errorClass, 'auth', 'la clase legacy por texto libre sigue viva');
     assert.equal(libre.authenticationRejection, null, 'auth legacy no produce proyeccion tipada');
 });
+
+// =============================================================================
+// #6238 — `appendSpawnExitDeathKind`: la línea de auditoría de la clasificación
+// de muerte prematura (CA-6). Se escribe en el MISMO JSONL de spawn-exit.
+// =============================================================================
+
+function readSpawnExitLines(tmp) {
+    const dir = path.join(tmp, 'logs');
+    const f = fs.readdirSync(dir).find((x) => x.startsWith('spawn-exit-'));
+    const full = path.join(dir, f);
+    return {
+        full,
+        raw: fs.readFileSync(full, 'utf8'),
+        entries: fs.readFileSync(full, 'utf8').trim().split('\n').map((l) => JSON.parse(l)),
+    };
+}
+
+test('#6238 CA-6: la linea death_kind se escribe con los campos del contrato', () => {
+    const tmp = makeTmpPipeline();
+    const ok = dispatcher.appendSpawnExitDeathKind({
+        pipelineDir: tmp, skill: 'pipeline-dev', issue: 6226, provider: 'anthropic',
+        deathKind: 'credential-death', token: 'authentication_failed', signature: 'A+B',
+        exitCode: 1, durationMs: 2030,
+    });
+    assert.equal(ok, true);
+    const { entries } = readSpawnExitLines(tmp);
+    assert.equal(entries.length, 1);
+    const e = entries[0];
+    assert.equal(e.death_kind, 'credential-death');
+    assert.equal(e.credential_token, 'authentication_failed');
+    assert.equal(e.signature, 'A+B');
+    assert.equal(e.skill, 'pipeline-dev');
+    assert.equal(e.issue, 6226);
+    assert.equal(e.provider, 'anthropic');
+    assert.equal(e.exit_code, 1);
+    assert.equal(e.duration_ms, 2030);
+    assert.equal(e.codepath, 'premature-death');
+    assert.ok(typeof e.ts === 'string');
+});
+
+test('#6238 CA-6/SEC-CA-5: raw_excerpt AUSENTE (no vacio) y sin texto del provider', () => {
+    const tmp = makeTmpPipeline();
+    dispatcher.appendSpawnExitDeathKind({
+        pipelineDir: tmp, skill: 'pipeline-dev', issue: 6226, provider: 'anthropic',
+        deathKind: 'credential-death', token: 'authentication_failed', signature: 'A',
+        exitCode: 1, durationMs: 2030,
+    });
+    const { raw, entries } = readSpawnExitLines(tmp);
+    assert.equal(Object.prototype.hasOwnProperty.call(entries[0], 'raw_excerpt'), false,
+        'raw_excerpt debe estar AUSENTE, no vacio');
+    assert.equal(Object.prototype.hasOwnProperty.call(entries[0], 'evidence'), false);
+    // El unico texto de "credencial" que puede aparecer es el token de la tabla
+    // cerrada. Ningun fragmento libre del log del provider llega al JSONL.
+    assert.ok(!raw.includes('OAuth session expired'));
+    assert.ok(!raw.includes('Failed to authenticate'));
+});
+
+test('#6238 CA-6: el JSONL se crea 0o600 y la hash-chain no se rompe', () => {
+    const tmp = makeTmpPipeline();
+    const quota = fakeQuotaModule();
+    // Primero la linea de onSpawnExit (la que ya existia), despues la nuestra:
+    // es exactamente la DOBLE LINEA aceptada por el CA-6.
+    dispatcher.onSpawnExit({
+        skill: 'pipeline-dev', issue: 6226, provider: 'anthropic', transport: 'cli',
+        rawOutput: '{"type":"result","is_error":true,"terminal_reason":"api_error"}',
+        exitCode: 1, durationMs: 2030, pipelineDir: tmp, quotaModule: quota,
+    });
+    dispatcher.appendSpawnExitDeathKind({
+        pipelineDir: tmp, skill: 'pipeline-dev', issue: 6226, provider: 'anthropic',
+        deathKind: 'credential-death', token: 'authentication_failed', signature: 'A+B',
+        exitCode: 1, durationMs: 2030,
+    });
+    const { full, entries } = readSpawnExitLines(tmp);
+    assert.equal(entries.length, 2, 'doble linea aceptada y documentada (CA-6)');
+    assert.equal(entries[0].death_kind, 'agent-death',
+        'onSpawnExit persiste la clasificacion autoritativa de la salida temprana');
+    assert.equal(entries[1].death_kind, 'credential-death', 'death_kind es el campo autoritativo');
+    // La cadena se mantiene: hash_prev de la 2da == hash_self de la 1ra.
+    assert.equal(entries[1].hash_prev, entries[0].hash_self);
+    const verified = auditLog.verifyChain(full);
+    assert.equal(verified.ok, true, JSON.stringify(verified));
+    assert.equal(verified.entriesChecked, 2, JSON.stringify(verified));
+    if (process.platform !== 'win32') {
+        assert.equal(fs.statSync(full).mode & 0o777, 0o600);
+    }
+});
+
+test('#6238 CA-6: token/signature ausentes quedan null, nunca undefined ni basura', () => {
+    const tmp = makeTmpPipeline();
+    dispatcher.appendSpawnExitDeathKind({
+        pipelineDir: tmp, skill: 'qa', issue: 6146, provider: 'anthropic',
+        deathKind: 'credential-death',
+    });
+    const { entries } = readSpawnExitLines(tmp);
+    assert.equal(entries[0].credential_token, null);
+    assert.equal(entries[0].signature, null);
+    assert.equal(entries[0].exit_code, null);
+    assert.equal(entries[0].duration_ms, null);
+});
+
+test('#6238 best-effort: sin pipelineDir o sin deathKind es no-op sin lanzar', () => {
+    assert.doesNotThrow(() => {
+        assert.equal(dispatcher.appendSpawnExitDeathKind({}), false);
+        assert.equal(dispatcher.appendSpawnExitDeathKind({ pipelineDir: makeTmpPipeline() }), false);
+        assert.equal(dispatcher.appendSpawnExitDeathKind({ deathKind: 'credential-death' }), false);
+    });
+});
+
+test('#6238 best-effort: un audit-log que tira NO propaga la excepcion', () => {
+    const tmp = makeTmpPipeline();
+    const brokenAudit = { appendChained() { throw new Error('disco lleno'); } };
+    let out;
+    assert.doesNotThrow(() => {
+        out = dispatcher.appendSpawnExitDeathKind({
+            pipelineDir: tmp, skill: 'qa', issue: 1, provider: 'anthropic',
+            deathKind: 'credential-death', auditLog: brokenAudit,
+        });
+    });
+    assert.equal(out, false);
+});

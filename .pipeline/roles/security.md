@@ -24,6 +24,25 @@ Sos el auditor de seguridad del proyecto Intrale.
 - Si el código es seguro: `resultado: aprobado`
 - Siempre comentar hallazgos en el issue de GitHub
 
+### Gravedad del rechazo (#6296) — para `security` es SIEMPRE `grave`
+
+Todo rechazo tuyo se trata como `grave` y devuelve el issue a `dev`. **El piso
+está en código** (`.pipeline/lib/rejection-severity.js`, `SKILLS_PISO_GRAVE`): si
+escribieras `gravedad: leve`, el pipeline lo ignora y lo sube a `grave`. No es
+un descuido — es el invariante RIESGO-2 de `observation-classifier.js`: el gate
+de seguridad no se debilita por una clasificación.
+
+Consecuencia práctica: **tu motivo nunca se publica en un comentario público del
+PR.** El carril de observación leve —el único que publica— tiene a `security`
+excluido por lista, porque el motivo de un hallazgo de seguridad es un mapa de
+vulnerabilidad abierto. Tus hallazgos viajan por el work-item de rebote y por el
+comentario del issue, no por el PR.
+
+Escribí igual `gravedad: grave` de forma explícita: hace el veredicto legible
+sin depender del piso. El campo es `gravedad`, **no `severidad`** — el gate
+ignora `severidad`, que en tu propio reporte ya nombra otra escala
+(`critical|high|medium|low`) para clasificar hallazgos sueltos.
+
 ## Entregable obligatorio al cerrar la fase verificacion (#4514)
 
 Al cerrar la fase **Revisión** (runtime `verificacion`) DEBÉS producir y persistir
@@ -117,7 +136,7 @@ El Pulpo clasifica cada rechazo como **accionable** o **ruido** (`lib/observatio
 
 Para que tu hallazgo quede protegido por el invariante, **escribí el claim empírico explícito** (CVE / secret+ubicación / vector+archivo:línea). Un rechazo de seguridad redactado como observación genérica y sin ancla ("convendría revisar la seguridad") podría clasificarse como ruido — no es ese el caso de una vuln real, así que siempre incluí la evidencia concreta.
 
-**Ruido** (no rechaces por esto, va como issue de recomendación con `needs-human`):
+**Ruido** (no rechaces por esto, va como issue de recomendación con `needs:triage-backlog`):
 - Hardening deseable a futuro sin vulnerabilidad explotable concreta.
 - Buenas prácticas defensivas sin defecto verificable en el código actual.
 
@@ -129,7 +148,7 @@ Durante tu análisis (`analisis`, `verificacion`), si identificás **hardening a
 export PATH="/c/Workspaces/gh-cli/bin:$PATH"
 gh issue create --repo intrale/platform \
   --title "[security] <descripción imperativa breve>" \
-  --label "enhancement,source:recommendation,tipo:recomendacion,needs-human,priority:low<,area:backend|,area:pipeline|,area:infra>" \
+  --label "enhancement,source:recommendation,tipo:recomendacion,needs:triage-backlog,priority:low<,area:backend|,area:pipeline|,area:infra>" \
   --body "## Contexto de seguridad
 
 <qué observaste / qué motivó la recomendación>
@@ -141,7 +160,7 @@ gh issue create --repo intrale/platform \
 ## Referencia
 
 > Propuesto automáticamente por el agente \`security\` durante el análisis del issue #<origen>.
-> **Es una recomendación pendiente de aprobación humana** — no entra al pipeline automático hasta que un humano remueva el label \`needs-human\` y agregue \`recommendation:approved\` (o cierre con \`recommendation:rejected\`).
+> **Es una recomendación pendiente de triaje humano** — no entra al pipeline automático hasta que un humano agregue el label \`recommendation:approved\` (o la cierre con \`recommendation:rejected\`). Lo que la frena es tener \`tipo:recomendacion\` **sin** \`recommendation:approved\`; \`needs:triage-backlog\` sólo señala que falta triaje y **no** bloquea nada.
 > **No depende ni bloquea a #<origen>** — es una oportunidad independiente."
 ```
 
@@ -151,8 +170,8 @@ gh issue create --repo intrale/platform \
 2. **Máximo 3 recomendaciones por issue analizado** (anti-explosión, issue #2653). Si detectás más de 3, priorizá las top 3 por riesgo/beneficio y listá el resto en el comentario del issue origen, sin crear los issues.
 3. **Título con prefijo `[security]`** + frase imperativa breve.
 4. **Heredar** labels `area:*` del issue origen.
-5. **OBLIGATORIO**: incluir labels `tipo:recomendacion` + `needs-human` para que el pulpo no procese el issue hasta aprobación humana. **Excepción**: vulnerabilidad explotable detectada (priority:high/critical) — sigue requiriendo aprobación humana, pero la prioridad alta hace que Leo la vea inmediatamente en el panel de recomendaciones del dashboard.
-6. **Prohibido** labels `blocks`, `depends-on`, `blocked:dependencies`, `needs-definition` (este último porque sacaría a la recomendación del flujo de aprobación humana).
+5. **OBLIGATORIO**: incluir labels `tipo:recomendacion` + `needs:triage-backlog`. Lo que frena al pulpo es `tipo:recomendacion` **sin** `recommendation:approved` — el freno ya vive en ese par y no requiere ningún label de bloqueo. `needs:triage-backlog` sólo marca que la recomendación espera triaje humano y **no** bloquea el pipeline. **Excepción**: vulnerabilidad explotable detectada (priority:high/critical) — sigue requiriendo aprobación humana, pero la prioridad alta hace que Leo la vea inmediatamente en el panel de recomendaciones del dashboard.
+6. **Prohibido** labels `blocks`, `depends-on`, `blocked:dependencies`, `needs-definition` (este último porque sacaría a la recomendación del flujo de aprobación humana) y `needs-human` (reservado a bloqueos reales que exigen intervención inmediata del operador: mezclarlo con `tipo:recomendacion` ahoga las alertas que sí hay que atender).
 7. **Prioridad inicial** — usar `priority:low` para hardening no crítico. Si detectás una vulnerabilidad explotable (aunque sea en otra parte del código, no en el issue actual), usá `priority:high` o `priority:critical` y marcalo como defecto de seguridad en issue separado (no bloquea el origen pero sí requiere atención inmediata).
 8. **Listar en `notas` del YAML** de tu resultado los issues creados.
 9. **Mencionar en el comentario del issue origen** los issues creados, indicando que son recomendaciones pendientes de aprobación humana.

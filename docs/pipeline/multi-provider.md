@@ -86,6 +86,16 @@ Estructura literal aceptada por el schema Ajv 2020-12 ([`.pipeline/agent-models.
 - `spawn_args_template` — argv que recibe el child. Las llaves `{user_prompt}`, `{system_file}`, `{script_path}`, `{issue}`, `{trabajando_path}`, `{model}` son los **únicos placeholders válidos** (`ALLOWED_PLACEHOLDERS`). Sustitución 1:1 a elemento del argv — **nunca concatenación shell**.
 - `output_parser` — normalizador del output. Valores: `anthropic-stream-json`, `openai-sse`, `gemini-stream`, `ollama-jsonl`, `none` (deterministic).
 - `quota_error_types` — strings que el detector de cuota (`lib/quota-exhausted.js`) marca como "cuota agotada" para este provider. Cada item cross-validado contra la **meta-allowlist** en `KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER` ([#3077](https://github.com/intrale/platform/issues/3077) SEC-2, defensa anti supply-chain).
+
+  > **Shapes que entiende el handler `openai-sse`** ([#5978](https://github.com/intrale/platform/issues/5978)). El discriminador se lee de campos de **control**, nunca de texto libre ni del canal de contenido del modelo, y sólo matchea si el provider **declaró** ese tipo:
+  >
+  > | Shape | Ejemplo | Campo leído |
+  > |---|---|---|
+  > | SSE canónico | `{"event":"error","data":{"error":{"type":"rate_limit_exceeded"}}}` | `data.error.type` |
+  > | `response.error` | `{"type":"response.error","error":{"type":"quota_exceeded"}}` | `error.type` |
+  > | **Desnudo** | `{"error":{"status":402,"message":"Payment required…","code":"insufficient_quota"}}` | `error.type` → `error.code` |
+  >
+  > El shape **desnudo** es el que devuelve Cerebras (y varios OpenAI-compat) al agotarse el crédito. Antes de #5978 era invisible para el detector: el 402 no seteaba flag de cuota, el resolver seguía eligiendo el provider muerto, y cada relanzamiento quemaba un reintento **del issue** hasta rebotarlo como *"Huérfano tras 3 reintentos"*. Al agregar un provider OpenAI-compat nuevo, verificá con qué shape reporta el agotamiento antes de confiar en el failover.
 - `resets_at_cap_max_days` — cap superior del `resets_at` cuando el provider reporta cuota agotada (cuotas semanales = 7, mensuales = 31). Aplicado en `capResetsAt()` para evitar "drenado natural" falso por un `reset_at` lejano malicioso ([#3077](https://github.com/intrale/platform/issues/3077) SEC-6).
 - `supports_tool_use` — `true` / `false` / `"limited"`. Define paridad funcional cross-provider.
 - `prompt_caching` — capacidades de cache (`supported`, `auto`, `ttl_seconds_default`, `ttl_seconds_extended`). Necesario para normalizar costos cross-provider.
@@ -421,6 +431,122 @@ classifyHttpError(statusCode, responseBody, provider) → {
 #### Tests
 
 `lib/__tests__/http-error-classifier.test.js` cubre 37 casos: happy path (2xx, 402, 429-quota, 429-rate), validación de inputs (null, NaN, "abc", string-numérico, fuera de rango), permisos (401/403 nunca como cuota), edge cases (5xx, 400-Gemini, body 100KB, Buffer, objeto malformado), info-leak (detail redactado y capeado), inmutabilidad del provider param, audit metadata (`classifierVersion` presente en todo retorno), y ReDoS-safety del regex de quota (1MB adversarial en <50ms).
+
+### 3.7 Propagación del modelo al proceso hijo (#6272)
+
+Declarar un modelo en `agent-models.json` no alcanzaba para que el agente lo usara.
+Hasta #6272 el pipeline **resolvía** el modelo (`effective.model` en
+`lib/agent-launcher.js`) y lo **logueaba**, pero nunca lo pasaba al hijo: Anthropic
+jamás recibía `--model`, y `CODEX_MODEL` / `GEMINI_MODEL` / `CEREBRAS_MODEL` /
+`NVIDIA_NIM_MODEL` nunca se seteaban para agentes (sólo las completaban
+`lib/sherlock-verifier.js` y `lib/commander/glitch-retry.js`). Resultado: los cinco
+proveedores corrían con el **default de su CLI**, no con lo declarado.
+
+#### Canales por proveedor
+
+La política vive en [`.pipeline/lib/model-propagation.js`](../../.pipeline/lib/model-propagation.js)
+(módulo puro: no lee env, no lee disco, no loguea). El launcher aplica la decisión.
+
+| Proveedor | Launcher | Canal | Cómo llega |
+|---|---|---|---|
+| `anthropic` | `claude` | argv | `['--model', id]` — dos elementos separados del array |
+| `kimi-moonshot` | `claude` | argv | idem (reusa el `buildSpawn` de Anthropic) |
+| `openai-codex` | `codex` | env | `CODEX_MODEL` → el handler la traduce a `-m <id>` |
+| `gemini-google` | `gemini-google` | env | `GEMINI_MODEL` → `--model <id>` |
+| `cerebras` | `cerebras` | env | `CEREBRAS_MODEL` → `--model <id>` |
+| `nvidia-nim` | `nvidia-nim` | env | `NVIDIA_NIM_MODEL` → `--model <id>` |
+| `deterministic` | `node` | — | no aplica (Node puro, sin LLM) |
+
+Los nombres de las variables viven en `PROVIDER_MODEL_ENV`
+([`lib/build-child-env.js`](../../.pipeline/lib/build-child-env.js)), constante de
+código con el mismo criterio que `PROVIDER_STATIC_ENV` (#4880): scopeada al
+proveedor activo, **jamás** derivada de `processEnv` ni de input del operador.
+
+La inyección ocurre en `agent-launcher.js`, no dentro de `buildChildEnv`, a
+propósito: `pipeline.env_isolation_enabled` sigue en `false`, así que hoy ningún
+agente pasa por esa rama y la propagación habría quedado como código muerto.
+El launcher recibe el env ya construido por cualquiera de los dos caminos del
+pulpo y le agrega la variable ahí.
+
+**Caída a un proveedor de respaldo:** se propaga el modelo del proveedor
+**efectivo**, nunca el del primario. El launcher usa `effective.provider` /
+`effective.model`, que en un fallback vienen del `resolveImpl` que inyecta el
+pulpo con `dispatchResolution.{provider,model}`.
+
+#### Flag de rollout — apagado por default
+
+```yaml
+pipeline:
+  model_propagation:
+    enabled: false          # kill-switch duro; false ⇒ 'off' sin mirar el resto
+    default_mode: 'off'     # off | dry-run | on
+    by_provider: {}         # granularidad por PROVEEDOR   → { anthropic: 'dry-run' }
+    by_skill: {}            # granularidad por ACTOR/skill → { guru: 'on' }
+```
+
+Precedencia: `by_skill` > `by_provider` > `default_mode` > `off`. El más específico
+gana, así se puede prender un actor sin prender a su proveedor entero. Un valor de
+modo con typo se **ignora** y cae al siguiente nivel: un error de tipeo nunca
+enciende la propagación.
+
+| Modo | Qué hace |
+|---|---|
+| `off` | No se toca nada. El objeto que recibe `child_process.spawn` es byte-idéntico al previo al cambio. Sin traza (cero ruido). |
+| `dry-run` | Calcula todo (whitelist + catálogo) y loguea con prefijo `[dry-run]` el modelo que **se habría** pasado y por qué canal, sin alterar el comando. |
+| `on` | Propaga. |
+
+> **No encender antes de que #6271 esté entregado.** Sin la resolución corregida,
+> prender esto sólo repartiría el literal legacy a los cinco proveedores. El
+> encendido escalonado y el rollback son scope de **#6274**.
+
+#### Defensa del valor
+
+Dos whitelists, por canal:
+
+- **argv** (`MODEL_ARG_WHITELIST`, la misma de `commander/glitch-retry.js` — SR-A.1):
+  `^[A-Za-z0-9._\-\[\]]{1,64}$`. Estricta porque `detectLauncher` de Anthropic
+  puede devolver `shell:true` (tiers cmd-shim / path-fallback) y ahí un
+  metacaracter escala a `cmd.exe`.
+- **env** (`MODEL_ENV_WHITELIST`): agrega **sólo** la barra `/`, porque los ids
+  reales de NVIDIA NIM son namespaced (`deepseek-ai/deepseek-v4-flash-0731`).
+  Sin eso, la propagación sería inalcanzable para NVIDIA. La `/` no es
+  metacaracter de `cmd.exe`, y los providers de este canal corren `shell:false`.
+
+Orden de validación: `typeof` → cap de longitud → whitelist. Si algo no valida, el
+flag/env **se omite** con una `reason` tipada (`not_a_string`,
+`length_out_of_range`, `failed_whitelist`), el agente arranca heredando el default
+del CLI y queda traza. **El spawn nunca se aborta.** `buildSpawn` de Anthropic
+revalida por su cuenta: es la última frontera antes de argv y no confía en su caller.
+
+El id rechazado **no se imprime crudo** en el log (vector: alguien pone una API key
+en `model` y termina en Telegram o en un PDF); se muestra saneado y recortado.
+
+#### Validación contra catálogo
+
+Antes del spawn, el id declarado se cruza contra `ALLOWED_MODELS_BY_LAUNCHER`
+(`lib/agent-models-validate.js`) — la **misma** tabla que ya valida el boot, no un
+catálogo nuevo. Un id fuera de la lista se reporta como **error de configuración**
+(mensaje que enumera los válidos, igual formato que el validador) y **no** propaga,
+pero el agente arranca igual: es un error de config, no una muerte de agente.
+
+> **Ojo con la asimetría:** `ALLOWED_MODELS_BY_LAUNCHER` indexa por **launcher**,
+> mientras que `multi-provider/model-catalog.js` indexa por **provider**. No son
+> intercambiables — `kimi-moonshot` es un provider que reusa el launcher `claude`.
+> El cruce mapea provider → launcher leyendo `providers.<p>.launcher`.
+
+#### Guardrail anti-regresión
+
+`tests/model-propagation.test.js` enumera la tabla **real** de handlers
+(`PROVIDER_HANDLERS`) y falla si un provider nuevo o modificado:
+
+- no declara canal de modelo (ni `ARG_MODEL_PROVIDERS` ni `PROVIDER_MODEL_ENV`), o
+- declara canal pero no lo propaga de verdad al objeto que recibe `spawn`, o
+- declara en `PROVIDER_MODEL_ENV` una variable que su `buildSpawn` no lee, o
+- declara los dos canales a la vez.
+
+```bash
+node --test .pipeline/tests/model-propagation.test.js
+```
 
 ---
 
@@ -1107,7 +1233,7 @@ function readSecretFromPath(rawPath) {
 
 #### 8.8.3 Lista de archivos NO commiteables (CA-5 — defensa final)
 
-El pre-commit hook (`.husky/pre-commit` + `.pipeline/lib/precommit-secret-scan.js`) bloquea automáticamente commits que toquen estos paths con contenido que matchee un patrón de credencial:
+El pre-commit hook (`.husky/pre-commit` + `.pipeline/lib/precommit-secret-scan.js`) escanea el **contenido agregado de todo archivo staged** — no una lista de paths — y bloquea el commit si el sanitizer encuentra un patrón de credencial (#5244 CA-8a). El mismo escáner corre bloqueante en CI sobre el diff del PR, así que `--no-verify` no lo evita. Estos paths son, además, los que nunca deberían llegar al índice:
 
 - `.pipeline/commander-session.json`
 - `.pipeline/commander-history.jsonl`
@@ -2375,6 +2501,255 @@ providers todavía reportan `adapterStatus: not_implemented` en el slice de cuot
 (distinto del adapter de *dispatch*, que sí es real) — el health cae a la señal
 OAuth/creds en esos casos. El seguimiento vive en los issues abiertos del épico
 multi-provider; esta doc se actualiza cuando esos adapters de cuota cierren.
+
+---
+
+## 15. Criterio de permanencia de proveedores (#6145)
+
+Responde, de forma recurrente y sin análisis manual, la pregunta *"¿qué proveedores de la
+cadena me están costando más de lo que aportan?"* — incluida la respuesta legítima
+**"ninguno"**.
+
+El criterio **marca candidatos**; **nunca da de baja a nadie**. La baja efectiva es
+siempre un PR de configuración trazable.
+
+### 15.1 Cómo se corre
+
+```bash
+# Reporte completo para el operador (tabla + conclusión + motivo por proveedor)
+node .pipeline/scripts/provider-contribution-report.js --dias=30 --hasta=2026-08-21
+
+# Tabla de 4 columnas, para terminales angostas
+node .pipeline/scripts/provider-contribution-report.js --dias=30 --compacto
+
+# JSON canónico, para pipear a jq
+node .pipeline/scripts/provider-contribution-report.js --dias=30 --json
+
+# Además, deja la evaluación en el audit append-only (hash-chain)
+node .pipeline/scripts/provider-contribution-report.js --dias=30 --registrar
+```
+
+> **Fijá `--hasta` si vas a citar los números.** Sin él, `--dias=30` toma la ventana que
+> termina *ahora*: mañana da otra ventana y otros números, y el "comando reproducible" deja
+> de reproducir. La salida del CLI trae la línea `Regenerar:` con todos los flags que
+> afectan el resultado (`--dias`, `--hasta`, `--compacto` y los overrides de umbral) ya
+> armada para copiar.
+
+Con la misma ventana, el comando produce **siempre el mismo veredicto** (test:
+`el mismo comando sobre la misma ventana produce el mismo veredicto`).
+
+Exit codes: `0` reporte emitido · `1` error explícito — configuración irresoluble o
+argumento inválido, **sin defaults silenciosos** · `2` ventana sin archivos verificables
+(todo queda `no evaluable`, no se decide nada).
+
+**De dónde salen los umbrales, siempre declarado.** El CLI lee `config.yaml` por el lector
+canónico del repo (`lib/config-resolver.js`) e imprime la línea
+`Procedencia de los umbrales: …`. Si la configuración no resuelve, **falla con exit 1**: un
+umbral que decide quién sale de la cadena no puede salir de un `catch`. Si la sección
+`multi_provider.permanence` está ausente (rollout gradual), usa los defaults del módulo
+**y lo dice**.
+
+### 15.2 Fuente de datos
+
+`.pipeline/logs/cross-provider-dispatch-*.jsonl` — append-only con hash-chain
+(`hash_prev` / `hash_self`), rotación diaria, escrito por
+`lib/agent-launcher/dispatch-with-fallback.js` vía `audit-log.appendChained`. La
+integridad de **cada** archivo diario se verifica con `audit-log.verifyChain` antes de
+alimentar el criterio; un archivo con la cadena rota se descarta y se reporta.
+
+> **Prohibido usar `.claude/activity-log.jsonl`.** Esa fuente sólo registra `provider` en
+> `session:start` / `session:end`: mide sesiones de agente ya arrancado, no intentos de
+> proveedor. Daría **cero** para `gemini-google`, `cerebras` y `nvidia-nim` — los tres que
+> más despachan — y el criterio los daría de baja justo por aportar. Hay un test de
+> policy que falla si el módulo llega a importarla.
+
+### 15.3 Taxonomía: qué cuenta y qué no
+
+| Evento | Cuenta como |
+|---|---|
+| `fallback_selected` | **aporte real** — única señal de que el proveedor resolvió el pedido |
+| `fallback_health_gated` con causa de proveedor (`cupo` / `credencial`) | bloqueo, entra al denominador |
+| `fallback_health_gated` con causa `observabilidad local` | **excluido del denominador** — el rojo es nuestro |
+| `fallback_no_credentials` | bloqueo por `credencial` |
+| `primary_inactive_by_schedule` · `fallback_provider_inactive_by_schedule` | **excluidos del denominador** — política horaria |
+| `provider_disabled` · `fallback_provider_disabled` · `fallback_pacing_budget_red` | **excluidos del denominador** — kill-switch / freno de ritmo del operador (#3811, #4289) |
+| `fallback_also_gated` | **excluido del denominador** — flag de cuota agotada del proveedor, con la cuenta amplificada |
+| `chain_exhausted` · `gated_no_fallbacks` · `forced_provider_override*` | eventos de cadena, no imputables a ningún proveedor |
+
+```
+evaluables = intentos
+             − gateos por ventana horaria
+             − saltos por kill-switch / freno de ritmo del operador
+             − gateos de salud por causa nuestra (observabilidad local)
+             − gateos por el flag de cuota agotada (cuenta amplificada)
+
+tasa de aporte = aportes / evaluables
+```
+
+**Los primeros tres descuentos comparten una razón:** miden una política o un bug
+**nuestro**, no al proveedor.
+
+- *Ventana horaria* — es el **~24 %** de los eventos. Incluirla mediría el horario que
+  nosotros configuramos.
+- *Kill-switch y freno de ritmo* — son decisiones operativas explícitas nuestras.
+  `provider_disabled` y `fallback_provider_disabled` son **el mismo** kill-switch #3811
+  resuelto por la misma `_isProviderDisabled()`; lo único que cambia es si el proveedor
+  cayó como primario (`dispatch-with-fallback.js:1460`) o como fallback (`:1829`).
+  **Tienen que clasificarse igual**: excluir sólo el primero deja un descuento vacío, dado
+  que en datos reales `provider_disabled` no ocurre casi nunca y `fallback_provider_disabled`
+  concentra los miles de saltos. Con el segundo dentro del denominador, apagar un proveedor
+  a mano lo empuja a `candidato_baja` — la violación de REQ-SEC-3 que rebotó `security` en
+  #6145: `cerebras` medía 22,7 % con el kill-switch adentro y **100 %** sin él.
+- *Observabilidad local* — el rojo lo produce un flag de entorno propio, sin round-trip al
+  proveedor. Es el caso `gemini-google`: con sus gateos dentro del denominador su tasa daba
+  7,6 %; con el denominador limpio da **100 %**. Un umbral ingenuo lo habría sacado de la
+  cadena por un bug de instrumentación nuestro.
+
+**El cuarto descuento tiene otra razón: amplificación, no política.** `fallback_also_gated`
+sale de `quotaModule.shouldGateSpawn` (`dispatch-with-fallback.js:1805` → `quota-exhausted.js:1802`),
+o sea el flag de **cuota agotada del propio proveedor** — no tiene nada que ver con la
+ventana horaria, pese a que hasta #6145 rev-2 se lo contaba ahí. Se excluye porque el flag
+queda activo durante todo el corte y **cada** intento de dispatch mientras dura emite un
+evento: la cuenta mide *duración del corte × tráfico del pipeline*, no cuántas veces el
+proveedor se negó. Excluirlo no deja pasar por sano a un gratuito seco: ése tiene 0 aportes
+y sin muestra evaluable cae en `no evaluable`, que es lo que corresponde.
+
+**La taxonomía es cerrada y reconcilia.** El reporte cuenta *todas* las entradas leídas, y
+cualquier evento que el dispatcher agregue en el futuro y todavía no esté clasificado cae
+en un bucket `fuera de taxonomía` visible, con su nombre. La propiedad
+`failoverCost.reconciles` verifica que los buckets sumen exactamente el total: los
+porcentajes nunca se calculan sobre un denominador que el reporte no declara.
+
+### 15.4 Familias de bloqueo (no se mezclan)
+
+| Familia | `health_reason` | Lectura |
+|---|---|---|
+| `cupo` | `quota_exhausted`, `quota_exhausted_real` | Recuperable por diseño |
+| `credencial` | `invalid_credentials`, `no_key_configured`, `forbidden` | Imputable al proveedor / a la cuenta |
+| `observabilidad local` | `cli_license_unavailable`, `cli_unavailable`, `cli_binary_undeclared`, `unknown_provider` | **Bug nuestro.** Jamás imputable al proveedor |
+
+El bloqueo por `observabilidad local` tiene **doble protección**:
+
+1. **No entra al denominador** (§15.3), así que no le baja la tasa de aporte.
+2. Si aun así el proveedor rinde poco, un bloqueo dominante `observabilidad local` le pone
+   **techo `rol acotado`**: no puede ser marcado como candidato a baja sin corregir antes
+   el chequeo.
+
+### 15.5 Umbrales (`config.yaml` → `multi_provider.permanence`)
+
+| Umbral | Default | Qué decide |
+|---|---:|---|
+| `enabled` | `false` | Rollout gradual |
+| `window_days` | 30 | Ventana de medición (CA-1 exige ≥30) |
+| `min_sample` | 200 | Intentos evaluables mínimos; por debajo ⇒ `no evaluable` |
+| `min_contribution_rate` | 0.05 | Tasa bajo la cual se marca candidato |
+| `max_days_without_win` | 14 | Días sin aporte real que marcan candidato |
+| `min_survivors` | 1 | Proveedores **no pagos** sanos que deben sobrevivir siempre |
+
+### 15.6 Invariantes — no configurables, cada uno con test
+
+1. **Marca candidatos; nunca ejecuta la baja.** El audit registra `executed_action: none`.
+2. **Nunca vacía la cadena que el criterio puede tocar.** Si marcar dejaría menos de
+   `min_survivors` proveedores **no pagos** sanos, **no marca a ninguno** (tests: *nunca
+   marca candidato al ultimo proveedor sano de la cadena* y *el invariante de cadena minima
+   no lo satisfacen los pagos de forma vacua*). Hereda el invariante ya vigente para el
+   soft-gate de cuota (§13.6).
+
+   > **Los proveedores pagos NO cuentan como sobrevivientes.** Un pago es `mantener` por
+   > construcción — se excluye del criterio antes que cualquier otro chequeo (invariante 3)
+   > —, así que contarlo satisfaría el invariante de forma **vacua**: el contador nunca
+   > bajaría de `min_survivors` y el guard no se dispararía jamás para los gratuitos. Con
+   > la cadena real (2 pagos + 3 gratuitos) eso permitía proponer la baja de **los tres
+   > gratuitos de una sola vez**: el incidente del 19/08 — Anthropic apagado por horario +
+   > OpenAI sin cupo — pero auto-infligido y permanente. Los sobrevivientes se cuentan sólo
+   > entre los proveedores que el criterio **puede marcar**.
+3. **Nunca marca a un proveedor `billing: paid`.**
+4. **"Sin dato" ⇒ `no evaluable`, jamás "no aporta".** Muestra chica, silencio del log,
+   ventana vacía o hash-chain rota ⇒ no se decide sobre nadie. La derivación de "está
+   declarado en config" falla **cerrada**: sin evidencia de declaración, el proveedor es
+   `sin declarar` y por lo tanto **no puede** ser candidato a baja — nunca al revés.
+5. **Bloqueo de origen local ⇒ fuera del denominador, y techo `rol acotado`.**
+6. **Sólo metadatos.** Cada entrada del log se proyecta contra una whitelist cerrada;
+   `raw_excerpt` y demás texto libre nunca llegan al reporte ni al audit.
+7. **Read-only.** El módulo no invoca ninguna API de escritura de `fs`; la única escritura
+   es opt-in (`--registrar`) y va al audit append-only.
+
+### 15.7 Vocabulario del veredicto
+
+Exactamente cinco literales, en español y sin abreviar. Los identificadores internos
+(`rol_acotado`, `candidato_baja`, `no_evaluable`, `sin_declarar`) viven en el JSON y en el
+audit, **nunca** en el texto que lee el operador.
+
+`mantener` · `rol acotado` · `candidato a baja` · `no evaluable` · `sin declarar`
+
+Las ausencias de medición **nunca** se escriben como `0` ni como `—`: declaran su causa
+con vocabulario cerrado — `sin instrumentar (#6152)`, `sin muestra`,
+`sin declarar (#6153)`, `cadena de hash rota`, `sin datos en la ventana`.
+
+**"Sin datos" y "cadena rota" no son lo mismo** y no comparten mensaje: una ventana sin un
+solo archivo que verificar dice *"no hay ni un archivo de dispatch en la ventana pedida"*,
+no *"la cadena de hash no verificó (0 archivos con integridad rota)"*. Las dos frenan la
+decisión, pero por razones distintas y con acciones distintas.
+
+### 15.7.1 La columna de latencia **no** es una mediana
+
+`multi-provider-health.json` guarda el resultado de **un** live-ping puntual, no un
+agregado de la ventana: el log de dispatch **no registra latencia por invocación**. El
+dato es volátil — tres observaciones del mismo proveedor (`nvidia-nim`) el mismo día
+dieron **15,9 s → 2,3 s → 1,26 s** —, por eso la columna se llama *"Último live-ping (no
+es mediana)"* y el reporte imprime el disclaimer completo al pie.
+
+**Ningún veredicto ni recomendación se apoya en ese número.** La mediana real por ventana
+requiere instrumentar latencia por invocación: **#6152**.
+
+### 15.8 Equivalencia con el panel de salud
+
+El operador cruza dos tableros en la misma decisión. Esta tabla es la traducción entre
+ambos, y el antídoto contra el síntoma *"el panel no coincide con lo que el dispatcher
+hace"*:
+
+| Panel de salud (`/multi-provider-health`) | Reporte de permanencia | ¿Contradicción? | Lectura correcta |
+|---|---|---|---|
+| `green` / activo | mantener | no | Aporta y está sano |
+| `green` / activo | candidato a baja | **no** | Está sano pero **no lo eligen**: sobra en la cadena |
+| `red` por causa **local** (`cli_license_unavailable`) | mantener | **no** | El rojo es nuestro, no del proveedor. Corregir el chequeo |
+| `red` por causa **del proveedor** (credencial, 4xx sostenido) | candidato a baja | no | Coinciden: evaluar la baja |
+| `sin datos 24h` | no evaluable | no | Falta muestra. **Nunca** se degrada a "no aporta" |
+| ausente del panel | sin declarar | no | Despacha pero no está en config (#6153) |
+
+**Ejemplo canónico — `gemini-google`.** Figura `red` en el panel y `mantener` en el
+reporte, **simultáneamente, y eso es correcto**: el rojo lo produce
+`cli-oauth-probe.js:82` cuando `AGY_LICENSE_READY !== '1'`, un flag de entorno **sin
+round-trip al proveedor**. Mientras tanto el dispatcher lo eligió 277 veces en la misma
+ventana, porque el health-gate sólo aplica con rojo fresco (<20 min) y con snapshot viejo
+cae en `red_stale` → fail-open. Seguimiento de la corrección: **#6225**.
+
+### 15.9 Registro de la decisión
+
+Cada corrida con `--registrar` deja una entrada `provider_permanence_evaluated` en
+`.pipeline/audit/provider-permanence.jsonl` (append-only, hash-chain) con la ventana, el
+estado de integridad, los umbrales aplicados, el veredicto y la evidencia por proveedor, y
+`executed_action: none`. Un PR posterior que ejecute una baja **referencia esa entrada**,
+de modo que el flip de configuración nunca sea una edición suelta.
+
+### 15.10 Evaluación vigente
+
+La primera evaluación completa (ventana 2026-07-20 → 2026-08-19, 97.616 eventos, 31
+archivos, hash-chain OK) está en
+[`docs/pipeline/evaluacion-free-providers-6145.md`](evaluacion-free-providers-6145.md).
+
+**Resultado: no se da de baja a ningún proveedor.** El hallazgo central es que los
+gratuitos no descargan al proveedor pago — recogen trabajo que la cadena paga **ya
+rechazó** (1.483 de 1.483 selecciones de gratuitos ocurrieron después de descartar
+`anthropic` **y** `openai-codex`). Darlos de baja no alivia al pago: convierte esos
+dispatches en `chain_exhausted`.
+
+### 15.11 Tests
+
+```bash
+node --test .pipeline/lib/multi-provider/__tests__/provider-contribution.test.js   # 26 tests
+node --test .pipeline/tests/provider-permanence-6145.test.js                       # 12 tests
+```
 
 ---
 

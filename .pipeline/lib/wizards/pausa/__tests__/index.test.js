@@ -357,8 +357,12 @@ test('confirm lanza (sin éxito silencioso) cuando el gate rechaza el apply', as
     flow._setForTests({
         partialPause: Object.assign(stubMode('partial_pause', [5]), {
             readPreviousAllowlist: () => [5],
-            setPartialPause: () => ({ ok: false, rejected: true, msg: 'gate rechazó' }),
         }),
+        // #5179 grupo 3 — la mutación va por el envoltorio; el seam de inyección
+        // sigue vivo, sólo cambió de nombre de superficie.
+        operationalState: {
+            setAllowlist: () => ({ ok: false, rejected: true, msg: 'gate rechazó' }),
+        },
         deps: { resolveOpenDeps: () => ({ openDeps: [] }) },
     });
     try {

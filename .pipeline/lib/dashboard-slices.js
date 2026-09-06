@@ -34,6 +34,13 @@ function _redact(s) {
 // #2976 — Estado del flag de cuota Anthropic agotada (lectura defensiva).
 // Tolerante a la ausencia del módulo: si #2974 todavía no aterrizó, el slice
 // degrada a `{ active: false }` y nada del dashboard se rompe.
+// #6498 — Resolver puro del estado del sello de evidencia de QA (los 4 estados
+// que el operador tiene que poder distinguir). Require defensivo: si el modulo
+// no esta, `pipelineSlice` emite `selloEvidencia: null` y la vista V3 queda
+// exactamente como hoy — cero badge, cero regresion.
+let _selloEvidenciaState = null;
+try { _selloEvidenciaState = require('./sello-evidencia-state'); } catch { /* opcional */ }
+
 let quotaExhaustedState = null;
 try { quotaExhaustedState = require('./quota-exhausted-state'); } catch { /* opcional */ }
 
@@ -102,6 +109,12 @@ const DETERMINISTIC_SKILLS = new Set(['build', 'tester', 'delivery', 'linter']);
 // pre-#2490), `nextInQueue` degrada a comportamiento running (sin filtro).
 let partialPause = null;
 try { partialPause = require('./partial-pause'); } catch { /* opcional */ }
+
+// #5176 — Envoltorio único de acceso al estado operativo. Mismo criterio de
+// require defensivo que el resto del módulo: si no carga, `headerSlice` degrada
+// a `running` sin romper el header del dashboard.
+let operationalState = null;
+try { operationalState = require('./operational-state'); } catch { /* opcional */ }
 
 // Detector de artifacts auxiliares (.guidance.txt, .reason.json, .comment.md,
 // y cualquier filename con > 2 segmentos). Compartido con human-block para
@@ -546,19 +559,47 @@ function nextInQueue(state, ctx, limit = 3, opts = {}) {
 
 function headerSlice(state, ctx) {
     const PIPELINE = ctx.PIPELINE;
-    const partialFile = path.join(PIPELINE, '.partial-pause.json');
-    const pauseFile = path.join(PIPELINE, '.paused');
+    // #5176 — El modo de dispatch del header sale del envoltorio único, no de
+    // dos `fs.existsSync` sobre paths construidos acá. Dos consecuencias
+    // DELIBERADAS y declaradas (no efectos colaterales):
+    //
+    //   R7 · el halt total sigue ganando. `getDispatchState()` aplica la
+    //   precedencia `paused > partial_pause > running` del contrato §4: con
+    //   `.paused` presente devuelve `mode: 'paused'` sin siquiera leer el
+    //   marker de allowlist. El header NO puede confundir halt total con
+    //   "allowlist vacía" porque son ramas distintas del mismo retorno, no dos
+    //   lecturas independientes que alguien pueda reordenar.
+    //
+    //   SEC-4 · ventana por skill. El header activaba `partial_pause` SÓLO con
+    //   `allowed_issues.length > 0`; `getPipelineMode()` lo activa con issues
+    //   O skills (#3680 CA-A15). Con una ventana por skill (sin issues), el
+    //   header mostraba `running` mientras el Pulpo estaba en `partial_pause`
+    //   — el operador leía "sin pausa" con el dispatch acotado. La semántica
+    //   del envoltorio es la correcta y se adopta: es un cambio observable
+    //   DECLARADO, no una regresión.
+    //
+    // El envoltorio resuelve la ruta física por su cuenta (contrato §2:
+    // `PIPELINE_DIR_OVERRIDE` o `.pipeline/`), así que este slice deja de
+    // derivar el estado operativo de `ctx.PIPELINE`. En producción son el
+    // mismo directorio; el resto del slice sigue usando `PIPELINE` para lo
+    // suyo (build status, rest-mode, métricas).
+    //
+    // CA-UX-3 / CA-UX-4 · el slice publica también `allowedSkills`. Sin ese
+    // campo el cliente no puede distinguir una ventana por skill de una pausa
+    // parcial vacía: rotulaba `⏸ Parcial · 0 issues` y escondía el toggle de
+    // inspección de la allowlist justo cuando había una restricción vigente.
+    // `views/dashboard/multi-provider-coverage.js` ya lo leía del header y
+    // recibía `undefined` — este es el productor que faltaba.
     let mode = 'running';
     let allowedIssues = [];
-    if (fs.existsSync(pauseFile)) {
-        mode = 'paused';
-    } else if (fs.existsSync(partialFile)) {
-        const data = safeReadJson(partialFile, {});
-        const arr = Array.isArray(data.allowed_issues) ? data.allowed_issues : [];
-        if (arr.length > 0) {
-            mode = 'partial_pause';
-            allowedIssues = arr;
-        }
+    let allowedSkills = [];
+    if (operationalState && typeof operationalState.getDispatchState === 'function') {
+        try {
+            const dispatch = operationalState.getDispatchState();
+            mode = dispatch.mode;
+            allowedIssues = Array.isArray(dispatch.allowedIssues) ? dispatch.allowedIssues : [];
+            allowedSkills = Array.isArray(dispatch.allowedSkills) ? dispatch.allowedSkills : [];
+        } catch { /* envoltorio degradado → header en running, nunca rompe */ }
     }
     const procesos = state.procesos || {};
     const pulpoAlive = !!(procesos.pulpo && procesos.pulpo.alive);
@@ -638,6 +679,13 @@ function headerSlice(state, ctx) {
         cpuCores: r.cpuCores ?? null,
         maxCpu: r.maxCpu ?? 70,
         maxMem: r.maxMem ?? 70,
+        // #6708 — Espacio libre en disco con el color de su umbral. Va dentro
+        // de `resources` y no como slice aparte: para el operador es una
+        // tercera dimensión de la misma pregunta ("¿el sistema da abasto?"),
+        // y separarla obligaría al cliente a un fetch más para pintar la fila.
+        // `null` cuando el guardián todavía no midió (Pulpo recién arrancado) —
+        // el cliente omite la celda en vez de mostrar ceros.
+        disk: state.disk || null,
     };
 
     // #2890 PR-A — Modo descanso: pill indigo en header (CA-3.1) cuando la
@@ -685,6 +733,7 @@ function headerSlice(state, ctx) {
     return {
         mode,
         allowedIssues,
+        allowedSkills,
         pulpoAlive,
         pulpoUptimeMs: procesos.pulpo?.uptime || 0,
         counts: {
@@ -1582,6 +1631,15 @@ function buildAgentsForActiveFase(issueId, data, state) {
     return { agents, expectedSkills };
 }
 
+// #6498 — Envoltorio defensivo del resolver del sello. El badge es opcional; el
+// board NO. Cualquier fallo del modulo o dato deforme degrada a `null` (= cero
+// badge) en vez de tumbar el slice que alimenta todo el backlog del operador.
+function _selloEvidenciaSlice(fasesByKey, selloState) {
+    if (!_selloEvidenciaState || typeof _selloEvidenciaState.resolveSelloEvidenciaState !== 'function') return null;
+    try { return _selloEvidenciaState.resolveSelloEvidenciaState(fasesByKey, selloState) || null; }
+    catch { return null; }
+}
+
 function pipelineSlice(state, ctx) {
     const matrix = {};
     // matrixCounts[faseKey][skill] = N — cuántos issues activos hay en cada
@@ -1688,6 +1746,18 @@ function pipelineSlice(state, ctx) {
             // MISMO map que consume el handler `wave`). El frontend pinta el
             // badge 🛑 exclusivamente desde acá, sin re-derivar de labels.
             blockedBy: (state.blockedIssues && state.blockedIssues.blockedBy && state.blockedIssues.blockedBy[String(issueId)]) || null,
+            // #6498 — Estado del sello de evidencia de QA, RESUELTO server-side.
+            // Mismo criterio que `blockedBy`: el servidor decide, el cliente pinta.
+            //
+            // Sin esto el badge vivia SOLO en generateHTML() de dashboard.js, que
+            // se sirve unicamente en /legacy: la pantalla que abre el operador (V3)
+            // quedaba muda. Es el mismo defecto que #6459 ya habia corregido para el
+            // badge del Commander, y la misma solucion: una fuente, dos superficies.
+            //
+            // Lo que sale de aca es 100% derivado de constantes congeladas del
+            // resolver (estado/cssKey/icono/copy/copyCorto/detalle/variante). No
+            // viaja el hash, ni la ruta, ni el bloque `sello:` crudo (CA-10 / SEC-3).
+            selloEvidencia: _selloEvidenciaSlice(data.fases, (state.selloEvidencia || {})[String(issueId)]),
         };
         for (const [faseKey, entries] of Object.entries(data.fases || {})) {
             for (const e of entries) {
@@ -3500,6 +3570,14 @@ function _desyncPresentacion(payload) {
     try { return desyncCopy.buildDesyncPresentation(payload); } catch { return null; }
 }
 
+// #6117 CA-UX-5 — presentación de la línea de última auto-reparación (P1–P6),
+// resuelta con el mismo módulo de copy. Degrada a `null` si el módulo no cargó:
+// la vista tiene su propio empty-state y no se rompe por esto.
+function _autoRepairPresentacion(ultima, repeticion) {
+    if (!desyncCopy || typeof desyncCopy.autoRepairLineaDashboard !== 'function') return null;
+    try { return desyncCopy.autoRepairLineaDashboard(ultima, { repeticion }); } catch { return null; }
+}
+
 function desyncStatusSlice(state, ctx) {
     const detector = _desyncDetectorOverride || desyncDetector;
     // Base defensiva del contrato JSON (CA-6): siempre devolvemos el shape
@@ -3517,6 +3595,11 @@ function desyncStatusSlice(state, ctx) {
         // hace 10 horas se ve idéntico a uno de 10 minutos, y la duración es
         // justamente lo que convierte una divergencia en incidente.
         detected_at: null,
+        // #6117 CA-7 — parte del contrato: presente (en `null`) también en los
+        // caminos degradados, para que la UI no tenga que distinguir "no hubo
+        // reparación" de "el slice falló".
+        ultima_auto_reparacion: null,
+        auto_reparacion_repeticion: null,
     };
     if (!detector || typeof detector.detectDesync !== 'function') {
         return { ...base, presentacion: _desyncPresentacion(base), error: 'desync_detector_unavailable' };
@@ -3560,6 +3643,44 @@ function desyncStatusSlice(state, ctx) {
             estado = 'desconocido';
         }
 
+        // #6117 CA-7 — última auto-reparación del despacho. Desde que las
+        // reparaciones exitosas dejaron de avisarse por Telegram, ésta es la
+        // superficie donde el operador las consulta cuando quiere, en vez de
+        // recibirlas empujadas al chat.
+        // SEC-6: shape acotado a `{tipo, issues, timestamp}` y SÓLO lectura. El
+        // dashboard (3200) no tiene autenticación, así que acá no se expone
+        // nada más ni se ofrece ninguna acción que dispare una reparación.
+        // `readLastAutoRepair` nunca lanza: degrada a `null`.
+        let ultimaAutoReparacion = null;
+        // CA-UX-5 · P6 — el único caso que sube de jerarquía visual es el umbral
+        // superado. Viaja en un campo HERMANO y no dentro de
+        // `ultima_auto_reparacion`, para que ese shape siga siendo exactamente
+        // `{tipo, issues, timestamp}` (SEC-6). Derivado del mismo JSONL, sólo
+        // lectura: no expone nada que no estuviera ya.
+        let repeticion = null;
+        try {
+            const autoRepair = require('./metrics/auto-repair');
+            ultimaAutoReparacion = autoRepair.readLastAutoRepair();
+            if (ultimaAutoReparacion) {
+                let cfg = {};
+                // Si la config no resuelve, el módulo de métrica clampea a sus
+                // defaults (3 / 1 h): el umbral nunca queda indefinido.
+                try { cfg = (configResolver.resolve({}).config || {}).desync || {}; } catch { cfg = {}; }
+                const rep = autoRepair.shouldAlertRepetition({
+                    tipo: ultimaAutoReparacion.tipo,
+                    threshold: cfg.repair_alert_threshold,
+                    windowMs: cfg.repair_alert_window_ms,
+                });
+                // `estado_ilegible` no es "se repitió": es "no pude contar". No
+                // se pinta warning por no saber — para eso está el Telegram.
+                repeticion = {
+                    count: rep.count,
+                    ventana_ms: rep.windowMs,
+                    superado: rep.alert === true && rep.motivo === 'umbral',
+                };
+            }
+        } catch { /* degradar a null — el slice nunca falla por esto */ }
+
         const payload = {
             estado,
             classification,
@@ -3570,6 +3691,14 @@ function desyncStatusSlice(state, ctx) {
             bloqueado,
             count,
             detected_at: detectedAt,
+            ultima_auto_reparacion: ultimaAutoReparacion,
+            auto_reparacion_repeticion: repeticion,
+            // CA-UX-5 — el copy de la línea se resuelve SERVER-SIDE con
+            // `desync-copy`, igual que `presentacion`. El cliente sólo hace
+            // `setText`: si armara el texto en el browser sería una segunda
+            // redacción del mismo dato, que es el problema que ese módulo
+            // existe para evitar.
+            auto_reparacion_presentacion: _autoRepairPresentacion(ultimaAutoReparacion, repeticion),
         };
         // Presentación resuelta server-side (label/detalle/antigüedad/chips) para
         // que toda superficie diga lo mismo sin reimplementar el copy.
@@ -3945,6 +4074,64 @@ function architectBadgeHTML(info, deps) {
     return `<span class="lc-state-badge lc-state-architect-${info.state}" title="${esc(a11y)}" aria-label="${esc(a11y)}">${svg} ${esc(text)}</span>`;
 }
 
+// #6498 CA-2/CA-3/CA-5/CA-9 — Renderer del badge del sello de evidencia de QA.
+//
+// Mismo contrato que `architectBadgeHTML`: recibe `info` (resultado de
+// `lib/sello-evidencia-state.resolveSelloEvidenciaState`) y `{ esc, ic }`
+// inyectados, para que el test pueda espiar el nombre de icono sin levantar
+// dashboard.js (que tiene side effects HTTP).
+//
+// ALLOWLIST POR CONSTRUCCION (SEC-2 / CA-9 / R-3): el nombre del simbolo sale
+// de un `switch` con literales y `default: return ''`. `ic()` interpola su
+// argumento CRUDO en `href="#ic-${name}"` (dashboard.js), asi que un
+// `ic('estado-' + estadoLeidoDelYaml)` seria un sink de inyeccion directo. La
+// clase CSS tambien sale del switch, no de `info`, por la misma razon.
+//
+// UX-G3: el pill pinta el registro CORTO (la fila esta normalizada en <= 11
+// chars visibles); el copy COMPLETO del PO va entero a `aria-label` y a
+// `title`, que es lo que oye un lector de pantalla y lo que lee el operador al
+// pasar el mouse. Un test de CA-2 busca el copy completo ahi, no en el nodo de
+// texto del pill.
+//
+// UX-G2: ninguna de las 4 clases lleva `animation` — dos pulsos desfasados en
+// la misma fila (con `.lc-state-needshuman`) anulan la jerarquia visual.
+function selloEvidenciaBadgeHTML(info, deps) {
+    if (!info || !info.estado) return '';
+    if (!deps || typeof deps.esc !== 'function' || typeof deps.ic !== 'function') return '';
+    const { esc, ic } = deps;
+    const label = typeof info.copy === 'string' ? info.copy : '';
+    const corto = typeof info.copyCorto === 'string' && info.copyCorto.trim() ? info.copyCorto : label;
+    // CA-5: sin texto no hay badge. Un pill que solo tiene glifo es
+    // indistinguible para quien no percibe el matiz ambar/rojo (1.44:1 en
+    // deuteranopia): la etiqueta no es refuerzo, es la unica senal.
+    if (!label || !corto) return '';
+    // El glifo va DECORATIVO (`aria-hidden`), no etiquetado, por dos razones:
+    //  1) a11y: el <span> ya lleva `aria-label` con el copy completo y eso
+    //     reemplaza a todo su subarbol para el lector de pantalla; un
+    //     aria-label en el <svg> de adentro es ruido que nadie llega a oir.
+    //  2) SEC-2: `ic()` solo escapa comillas en su `ariaLabel` (deja pasar
+    //     `<` crudo dentro del atributo). Pasandole el copy le estariamos
+    //     metiendo texto por un camino que NO pasa por esc(). No hace falta:
+    //     el unico dato que `ic()` recibe de aca es el nombre literal del
+    //     simbolo, que ademas es lo unico que SEC-2/CA-9 admiten.
+    let svg = '';
+    let cssKey = '';
+    switch (info.estado) {
+        case 'sellado':     svg = ic('info');               cssKey = 'sellado';    break;
+        case 'caduco':      svg = ic('estado-stale');       cssKey = 'caduco';     break;
+        case 're-sellando': svg = ic('estado-retrying');    cssKey = 'resellando'; break;
+        case 'escalado':    svg = ic('estado-needs-human'); cssKey = 'escalado';   break;
+        default: return '';
+    }
+    // SEC-1 — la variante anti-falsificacion se expone tambien en el DOM para
+    // que la verificacion no dependa de parsear texto. Valor literal, jamas
+    // interpolado desde `info`.
+    const variante = info.variante === 'descarte' ? ' data-variant="descarte"' : '';
+    const detalle = typeof info.detalle === 'string' && info.detalle.trim() ? info.detalle : '';
+    const title = detalle ? `${label} · ${detalle}` : label;
+    return `<span class="lc-state-badge lc-state-sello-${cssKey}"${variante} title="${esc(title)}" aria-label="${esc(label)}">${svg} ${esc(corto)}</span>`;
+}
+
 // #3962 EP8-H9 — Slice de la pantalla Costos rediseñada. Arma el payload desde
 // el snapshot del aggregator + presupuesto persistido + estado de la anomalía:
 //   - dailyByProvider : serie diaria por proveedor (área apilada, CA-1)
@@ -4236,6 +4423,8 @@ module.exports = {
     // #3642 — widget architect 4 estados
     architectStateSlice,
     architectBadgeHTML,
+    // #6498 — badge del sello de evidencia de QA (4 estados)
+    selloEvidenciaBadgeHTML,
     // #2894 — exports internos para testing
     _resolveDevSkillFromLabels: resolveDevSkillFromLabels,
     _buildAgentsForActiveFase: buildAgentsForActiveFase,

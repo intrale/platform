@@ -384,3 +384,99 @@ test('las bandas no lanzan con state vacío', () => {
         assert.equal(typeof fn({ semaforo: { reasons: [] } }), 'string');
     }
 });
+
+// =============================================================================
+// #6708 (rebote QA) — Indicador de disco en la SUPERFICIE SERVIDA.
+//
+// El intento anterior construyó el gauge dentro de `resourcesHTML` de
+// dashboard.js: una constante que se asigna y nunca se interpola en el HTML de
+// salida. El código existía, los tests del módulo pasaban, y el operador seguía
+// viendo "—". Por eso el test que importa NO es "renderSystemCard devuelve
+// algo", sino "el markup del home — lo que sirve `/` — contiene el dato".
+// =============================================================================
+
+const DISK_ORANGE = {
+    level: 'orange',
+    color: '#db6d28',
+    freeGB: 18.88,
+    totalGB: 235.5,
+    frozen: false,
+    budget: { green_gb: 40, yellow_gb: 25, orange_gb: 12 },
+    measuredAt: '2026-08-29T02:09:34.789Z',
+};
+
+test('#6708 CA: el home SERVIDO muestra el espacio libre con el color del umbral', () => {
+    const out = renderHomeHTML({ system: { cpuPct: null, memPct: null, disk: DISK_ORANGE, uptimeS: 60 } });
+    assert.match(out, /id="sys-disk-value"/, 'la celda de disco debe existir en el markup del home');
+    assert.match(out, /18\.9 GB/, 'debe mostrar los GB LIBRES, no el % usado');
+    assert.match(out, /id="sys-disk-value" style="color:#db6d28"/,
+        'el valor debe llevar el color del umbral vigente (orange)');
+    // Regresión dura del rebote: el dato no puede quedar en '—' con medición viva.
+    assert.doesNotMatch(out, /id="sys-disk-value"[^>]*>—</, 'con medición no puede quedar en guión');
+});
+
+test('#6708 la celda de disco lleva señal no-cromática (emoji de nivel) y tooltip con la escala', () => {
+    const out = renderSystemCard({ system: { disk: DISK_ORANGE } });
+    assert.ok(out.includes('\u{1F7E0} 18.9 GB'), 'el nivel se comunica también por forma, no sólo por color');
+    assert.match(out, /Disco libre/);
+    assert.match(out, /Nivel orange/);
+    assert.match(out, /verde &gt;40 · amarillo &gt;25 · naranja &gt;12 GB libres/,
+        'el tooltip explica el presupuesto vigente de disk_budget');
+});
+
+test('#6708 cada nivel del presupuesto pinta su propio color', () => {
+    const casos = [
+        { level: 'green',  color: '#3fb950', emoji: '\u{1F7E2}' },
+        { level: 'yellow', color: '#d29922', emoji: '\u{1F7E1}' },
+        { level: 'orange', color: '#db6d28', emoji: '\u{1F7E0}' },
+        { level: 'red',    color: '#f85149', emoji: '\u{1F534}' },
+    ];
+    for (const c of casos) {
+        const out = renderSystemCard({ system: { disk: Object.assign({}, DISK_ORANGE, c) } });
+        assert.ok(out.includes('style="color:' + c.color + '"'), 'nivel ' + c.level + ' → ' + c.color);
+        assert.ok(out.includes(c.emoji), 'nivel ' + c.level + ' → emoji propio');
+    }
+});
+
+test('#6708 sin medición el disco muestra guión y NO inventa un color', () => {
+    const out = renderSystemCard({ system: { cpuPct: 10, memPct: 20, uptimeS: 5 } });
+    assert.match(out, /id="sys-disk-value">—</, 'sin dato va guión, no ceros ni verde');
+    assert.doesNotMatch(out, /id="sys-disk-value" style/, 'sin medición no se pinta color alguno');
+    assert.match(out, /Sin medición todavía/);
+});
+
+test('#6708 el freno de fases pesadas por disco se explica en el tooltip', () => {
+    const out = renderSystemCard({ system: { disk: Object.assign({}, DISK_ORANGE, { level: 'red', color: '#f85149', freeGB: 8.2, frozen: true }) } });
+    assert.match(out, /8\.2 GB/);
+    assert.match(out, /FRENADO por falta de disco/);
+});
+
+test('#6708 SEC: un `color` no-hex del estado en disco NO se interpola como CSS', () => {
+    const evil = Object.assign({}, DISK_ORANGE, { color: 'red;background:url(javascript:alert(1))' });
+    const out = renderSystemCard({ system: { disk: evil } });
+    assert.doesNotMatch(out, /id="sys-disk-value" style/, 'color no-hex genera markup sin atributo style');
+    assert.ok(!out.includes('javascript:alert(1)'), 'el payload no llega crudo al markup');
+    // El dato sigue viéndose aunque el color sea inválido (degradación, no página rota).
+    assert.match(out, /18\.9 GB/);
+});
+
+test('#6708 el freeGB no numérico degrada a guión sin lanzar', () => {
+    for (const bad of [null, undefined, NaN, 'mucho', Infinity]) {
+        const out = renderSystemCard({ system: { disk: Object.assign({}, DISK_ORANGE, { freeGB: bad }) } });
+        assert.match(out, /id="sys-disk-value">—</, 'freeGB=' + String(bad));
+    }
+});
+
+test('#6708 el script cliente hidrata sys-disk-value desde resources.disk del header', () => {
+    const script = home.renderClientScript();
+    assert.ok(script.includes("getElementById('sys-disk-value')"),
+        'la hidratación debe tocar la celda por su id');
+    assert.ok(/res\.disk|resources\.disk/.test(script),
+        'el dato sale del MISMO slice de resources (/api/dash/header), sin endpoint extra');
+});
+
+test('#6708 regresión: dashboard.js no cuelga el disco del bloque muerto resourcesHTML', () => {
+    const dash = fs.readFileSync(path.join(__dirname, '..', '..', '..', 'dashboard.js'), 'utf8');
+    assert.ok(!dash.includes('diskHTML'),
+        'el gauge de disco no debe vivir en `resourcesHTML`, que se asigna y nunca se interpola');
+});

@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// #6812 — Windows: suprimir la ventana de consola de cada hijo (gh, git,
+// tasklist, powershell). Debe ir ANTES de cualquier require que spawnee.
+require('./lib/force-windows-hide').apply();
 // =============================================================================
 // Servicio Telegram — Fire-and-forget message sender
 // Procesa cola de servicios/telegram/pendiente/
@@ -405,10 +408,25 @@ async function telegramSendMultipart(method, fieldName, filePath, extra = {}, co
   }
 }
 
+// #6226 — El orden de esta lista ES el orden en que el operador lee los
+// mensajes. `readdirSync` no garantiza ningún orden (lo decide la enumeración
+// del filesystem), y `groupByBurst` ordena por `mtimeMs`, que EMPATA para dos
+// dropfiles escritos en el mismo milisegundo — justo el caso del paginado. Con
+// el empate, el orden final quedaba librado a NTFS.
+//
+// Ordenar por nombre lo vuelve determinístico: los dropfiles se nombran
+// `<ts>-<seq>-<sufijo>` (ver `lib/dropfile-writer.js`), con timestamp al frente
+// y seq zero-padded, así que el orden lexicográfico es el orden de emisión.
+// Importa para la lectura, no sólo para la corrección: en el paginado sólo el
+// primer mensaje lleva header y los 2..N arrancan con `_(continúa)_`.
+//
+// Comparación con `<`/`>` en vez de `localeCompare`: acá se quiere el orden de
+// código de unidad, estable e independiente del locale de la máquina.
 function listWorkFiles(dir) {
   try {
     return fs.readdirSync(dir)
       .filter(f => !f.startsWith('.') && f.endsWith('.json'))
+      .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))
       .map(f => ({ name: f, path: path.join(dir, f) }));
   } catch { return []; }
 }
@@ -920,6 +938,29 @@ function resolveOutboundParseMode(data) {
   return data.parse_mode || 'Markdown';
 }
 
+/**
+ * #6190 / SEC-D — ¿este saliente va SIN vista previa de enlaces?
+ *
+ * Complemento defensivo, NO el filtro. Quien neutraliza los enlaces del texto
+ * externo es el saneador de `decision-card.js` (`URL_RE`); esto sólo impide que
+ * el cliente de Telegram dibuje la vista previa de una página ajena DENTRO de
+ * un aviso que el operador lee como escrito por el pipeline.
+ *
+ * Se resuelve en una función exportada, y no inline en el armado de `params`,
+ * por la misma razón que `resolveOutboundParseMode`: es una decisión del
+ * contrato entre dos procesos y tiene que poder testearse sin red ni token.
+ *
+ * Default cerrado sobre el tipo: sólo el booleano `true` cuenta. Un `'true'` de
+ * un dropfile mal serializado no debe cambiar el comportamiento por accidente.
+ *
+ * @param {object} data — payload del dropfile.
+ * @returns {boolean} `true` si el saliente debe ir con `disable_web_page_preview`.
+ */
+function resolveOutboundPreview(data) {
+  if (!data || typeof data !== 'object') return false;
+  return data.disable_web_page_preview === true;
+}
+
 // #3668 — Procesa un grupo de burst (N>=2 archivos del mismo skill+issue+pid+type
 // dentro de la ventana). Mueve cada archivo a trabajando/, manda 1 solo mensaje
 // consolidado, y archiva todos los demás a listo/ con suffix
@@ -1223,6 +1264,7 @@ async function processQueue() {
           // el campo NO viaja, así que no hay nada que Telegram pueda rechazar.
           const params = { text: chunks[i] };
           if (parseMode) params.parse_mode = parseMode;
+          if (resolveOutboundPreview(data)) params.disable_web_page_preview = true;
           if (privateDestination.chatId != null) params.chat_id = privateDestination.chatId;
           if (textThreadId != null) params.message_thread_id = textThreadId;
           if (hasReplyMarkup && i === chunks.length - 1) {
@@ -1321,6 +1363,7 @@ module.exports = {
   // #5421 — resolutor del dialecto del saliente (puro). Expuesto para el test
   // que fija que `plain:true` produce envío SIN `parse_mode`.
   resolveOutboundParseMode,
+  resolveOutboundPreview,
   resolvePrivateDestination,
   // #4796 — helpers de normalización/allowlist de rutas de adjunto + guarda
   // fail-closed del solo-audio. Puros (o I/O acotado sobre disco); no arrancan el
@@ -1328,6 +1371,10 @@ module.exports = {
   resolveAttachmentPath,
   declaredAttachmentTypes,
   shouldFailClosed,
+  // #6226 — listado de la cola. Expuesto para el test que fija que el orden de
+  // drenaje es el orden de emisión (por nombre) y no el que devuelva el
+  // filesystem. Puro salvo el `readdirSync` sobre el dir que le pasan.
+  listWorkFiles,
   isUnderBase,
   mediaBaseDir,
   // #5924 — diagnosticabilidad + no-reciclado. Puros (o I/O acotado): el

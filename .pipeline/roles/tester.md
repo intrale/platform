@@ -39,7 +39,28 @@ Sos el tester del proyecto Intrale. Verificás calidad de código y cobertura.
 
 ### Resultado
 - `resultado: aprobado` si todo pasa
-- `resultado: rechazado` con detalle de qué falla o falta
+- `resultado: rechazado` con detalle de qué falla o falta, **más el campo `gravedad`**
+
+### Gravedad del rechazo (#6296) — campo obligatorio
+
+Cuando rechazás, el pipeline **no espera a un humano**: usa tu campo `gravedad`
+para decidir el destino. `grave` devuelve el issue a `dev`; `leve` no frena y
+queda como observación en el PR. **Ausente o ilegible ⇒ `grave`** (fail-closed).
+Ver `_base.md` → "Campo `gravedad` en los rechazos".
+
+El campo es `gravedad`, **no `severidad`**: el gate ignora `severidad`, así que
+un rechazo que la use sale `grave` por fail-closed.
+
+Escala para `tester`:
+
+| Gravedad | Cuándo |
+|---|---|
+| `grave` | Un test falla, la cobertura del módulo cae bajo el umbral, falta un test de un criterio de aceptación, o hay `@Ignore` sin justificación. |
+| `leve` | Sugerencia sobre la *forma* del test (naming, organización de fixtures) sin que nada falle ni falte cobertura. |
+
+Si dudás, es `grave`: un test en rojo nunca es leve, y un hueco de cobertura de
+un CA tampoco. `leve` es sólo para observaciones de estilo sobre tests que ya
+pasan y ya cubren.
 
 ### Observación accionable vs ruido (#4160)
 

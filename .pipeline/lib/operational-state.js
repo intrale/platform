@@ -431,18 +431,50 @@ function unscopedDispatchEnabled() {
 // Allowlist efectiva · mutación — `authorizedBy` + `justification` OBLIGATORIOS
 // -----------------------------------------------------------------------------
 
+/**
+ * Proyecto en contexto para el estado operativo (#5110). Sólo LECTURA: la
+ * fachada no deja elegir proyecto. Cambiar de namespace es una decisión del
+ * punto de entrada (el pulpo en el spawn, o una CLI que pasa `projectId`
+ * explícito a `project-context`), no de un caller de la allowlist.
+ *
+ * @returns {Readonly<{ projectId: string, source: string }>}
+ */
+function getProjectContext() {
+    return require('./project-context').resolveProjectContext();
+}
+
 function requireAuthorization(fnName, opts) {
     const o = opts && typeof opts === 'object' ? opts : {};
+
+    // #5110 · SEC-4 — la autorización se valida PARA EL PROYECTO EN CONTEXTO.
+    // Resolverlo acá (y no en el call site) hace que ninguna mutación de
+    // allowlist pueda ejecutarse con el contexto ambiguo: si `resolveProjectContext()`
+    // no puede decidir, tira fail-closed y la mutación no ocurre, en vez de
+    // escribir en el namespace de otro proyecto.
+    //
+    // Sin regresión para `HOST_PROJECT_ID`: el conjunto de `authorizedBy`
+    // habilitado sigue siendo el enum cerrado actual de `partial-pause-audit.js`,
+    // que valida `appendMutation()` aguas abajo.
+    // Con el namespaceo APAGADO (default del rollout) el layout es plano y no
+    // hay partición que proteger: se resuelve de forma informativa para el
+    // mensaje de error, sin agregar un modo de fallo que antes no existía.
+    // Con el namespaceo ENCENDIDO la resolución es obligatoria y falla cerrado.
+    const projectContext = require('./project-context');
+    const ctx = projectContext.namespaceEnabled()
+        ? projectContext.resolveProjectContext()
+        : { projectId: projectContext.currentProjectIdOrNull() || '(layout plano)' };
+
     if (!o.authorizedBy || typeof o.authorizedBy !== 'string' || !o.authorizedBy.trim()) {
         throw new OperationalStateError(
             `${fnName} requiere authorizedBy (#3625): identificá quién autoriza la mutación ` +
-            'con un valor del enum cerrado de partial-pause-audit.',
+            `con un valor del enum cerrado de partial-pause-audit (proyecto en contexto: ${ctx.projectId}).`,
             { code: 'EOPSTATE_UNAUTHORIZED', stage: `mutate:${fnName}` },
         );
     }
     if (!o.justification || typeof o.justification !== 'string' || !o.justification.trim()) {
         throw new OperationalStateError(
-            `${fnName} requiere justification (#3625): explicá por qué se muta la allowlist.`,
+            `${fnName} requiere justification (#3625): explicá por qué se muta la allowlist ` +
+            `(proyecto en contexto: ${ctx.projectId}).`,
             { code: 'EOPSTATE_UNAUTHORIZED', stage: `mutate:${fnName}` },
         );
     }
@@ -709,6 +741,56 @@ function readFullPauseOrigin() {
     return partialPause.readFullPauseOrigin();
 }
 
+/**
+ * Contenido del marker de allowlist, INDEPENDIENTE del modo de dispatch (#5176).
+ *
+ * Por qué existe y por qué NO alcanza `getDispatchState()`
+ * -------------------------------------------------------
+ * `getDispatchState()` responde "¿qué gatea el dispatch AHORA?", y para eso
+ * COLAPSA deliberadamente dos ejes que algunos lectores necesitan separados:
+ *
+ *   1. Halt total gana sobre la allowlist. Con `.paused` presente,
+ *      `getPipelineMode()` retorna temprano con `allowedIssues: []` SIN leer el
+ *      marker de allowlist, aunque el marker tenga 17 issues autorizados. Un
+ *      lector que quiera saber "qué dice el marker" (un detector de desync, un
+ *      diff de transición de ola, el render de `/allowlist`) leería `[]` y
+ *      concluiría que el estado se perdió — que es exactamente el evento que
+ *      termina en re-autorización manual masiva (#5060).
+ *
+ *   2. Marker AUSENTE y marker PRESENTE-PERO-VACÍO caen los dos en `running`
+ *      con `allowedIssues: []`. Para el gate de dispatch da igual (los dos
+ *      deniegan), pero para un detector de desync NO: ausencia de canónica no
+ *      es divergencia, y colapsarlas produce un desync falso permanente.
+ *
+ * Esta función devuelve los TRES estados sin colapsar:
+ *
+ *   - `null`            → marker ausente o ilegible (no hay nada que afirmar).
+ *   - `{ issues: [] }`  → marker presente y vacío (afirmación explícita).
+ *   - `{ issues: [n] }` → marker presente con contenido, haya o no halt total.
+ *
+ * NO es el gate de dispatch: para decidir si un issue puede correr está
+ * `isIssueAllowed()` / `getDispatchState()`, que SÍ aplican la precedencia
+ * `paused > partial_pause > running`. Quien use esto para gatear dispatch
+ * reintroduce el fail-open de #5060.
+ *
+ * @returns {{ issues: number[], skills: string[], createdAt: string|null,
+ *   source: string|null, authorizationTtls: Object|null }|null}
+ */
+function readDispatchAllowlist() {
+    const marker = readDispatchMarkerRaw();
+    if (!marker) return null;
+    return {
+        issues: markerIssues(marker),
+        skills: normalizeSkills(marker.allowed_skills),
+        createdAt: typeof marker.created_at === 'string' ? marker.created_at : null,
+        source: typeof marker.source === 'string' ? marker.source : null,
+        authorizationTtls: (marker.authorization_ttls && typeof marker.authorization_ttls === 'object'
+            && !Array.isArray(marker.authorization_ttls))
+            ? marker.authorization_ttls
+            : null,
+    };
+}
+
 // -----------------------------------------------------------------------------
 
 module.exports = {
@@ -741,6 +823,9 @@ module.exports = {
     isSkillAllowedInState,
     unscopedDispatchEnabled,
     readFullPauseOrigin,
+    readDispatchAllowlist,
+    // ── Aislamiento por proyecto (#5110) · SÓLO lectura ──────────────────────
+    getProjectContext,
     // ── Allowlist efectiva · mutación (authorizedBy OBLIGATORIO) ─────────────
     setAllowlist,
     setAllowlistAtomic,

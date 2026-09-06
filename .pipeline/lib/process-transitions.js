@@ -30,6 +30,20 @@ const DEFAULT_WINDOW_MS = 7 * 24 * 3600 * 1000; // 7 días
 const MAX_LINES = 20000;       // techo de parseo por lectura (append-only)
 const LAST_ERROR_MAX = 400;    // cap del último error persistido
 const LOG_TAIL_BYTES = 64 * 1024; // ventana de cola del log de servicio
+// #6441 (REQ-SEC-6441-5) — Cota de ESCRITURA. `MAX_LINES` es techo de parseo por
+// lectura y no frena el crecimiento del archivo: un servicio en crash-loop
+// escribe 2 lineas por ciclo indefinidamente. Al pasar este umbral el store se
+// reescribe conservando solo la ventana de 7 dias.
+const ROTATE_AT_LINES = 5000;
+
+// #6441 (REQ-SEC-6441-3) — `service` se interpola en el path del log del
+// servicio (`readLastError`). Viene del registro de componentes, pero el modulo
+// es reusable y no puede confiar en su caller: se valida ANTES del path.join.
+const SERVICE_NAME_RE = /^[a-z0-9][a-z0-9-]{0,31}$/;
+
+function isValidServiceName(service) {
+    return typeof service === 'string' && SERVICE_NAME_RE.test(service);
+}
 
 // Estado en memoria del último alive/dead observado por servicio. Se siembra en
 // la primera observación (no genera transición espuria al arrancar el dashboard).
@@ -72,6 +86,13 @@ function classifyReason(lastError) {
 // Lee la cola del log del servicio y devuelve la última línea relevante
 // (ERROR/Exception/stack), sanitizada y capada. '' si no hay log o no hay match.
 function readLastError(service, opts) {
+    // #6441 — nombre fuera del alfabeto permitido => no se toca el filesystem.
+    // Se descarta con log para que el rechazo no sea mudo.
+    if (!isValidServiceName(service)) {
+        try { console.warn(`[process-transitions] nombre de servicio invalido, no se lee su log: ${String(service).slice(0, 40)}`); }
+        catch { /* el log no puede romper el flow */ }
+        return '';
+    }
     const file = path.join(logDir(opts), `${service}.log`);
     let raw;
     try {
@@ -107,6 +128,57 @@ function _appendLine(record, opts) {
 }
 
 /**
+ * #6441 (REQ-SEC-6441-5) — Poda el store si supero `ROTATE_AT_LINES`,
+ * conservando la ventana de `windowMs` (7 d por default).
+ *
+ * Escritura ATOMICA (tmp + rename), nunca truncado in-place: el dashboard
+ * appendea a este mismo archivo desde otro proceso y un truncado in-place le
+ * dejaria el offset en el aire. Con rename, el que estaba appendeando termina
+ * su escritura contra el inode viejo y a lo sumo se pierde esa linea — nunca se
+ * corrompe el archivo que lee el operador.
+ *
+ * La invoca SOLO el barrido de liveness (un unico escritor periodico). El
+ * dashboard NO rota: dos rotadores concurrentes es justamente lo que se evita.
+ *
+ * @returns {{ rotated: boolean, kept?: number, dropped?: number }}
+ */
+function rotateIfNeeded(opts) {
+    const o = opts || {};
+    const file = storePath(o);
+    let raw;
+    try { raw = fs.readFileSync(file, 'utf8'); }
+    catch { return { rotated: false }; }
+
+    const lines = raw.split(/\r?\n/).filter(Boolean);
+    if (lines.length <= ROTATE_AT_LINES) return { rotated: false };
+
+    const now = typeof o.now === 'number' ? o.now : Date.now();
+    const windowMs = typeof o.windowMs === 'number' ? o.windowMs : DEFAULT_WINDOW_MS;
+    const cutoff = now - windowMs;
+    const enVentana = lines.filter(line => {
+        let ev;
+        try { ev = JSON.parse(line); } catch { return false; } // corrupta: se descarta
+        const t = ev && ev.ts ? Date.parse(ev.ts) : NaN;
+        return Number.isFinite(t) && t >= cutoff;
+    });
+
+    // Si TODO entra en la ventana, el crecimiento no es antiguedad sino
+    // frecuencia (crash-loop). Igual cortamos por la cola: se conservan las mas
+    // recientes, que son las que sirven para diagnosticar.
+    const final = enVentana.length > ROTATE_AT_LINES ? enVentana.slice(-ROTATE_AT_LINES) : enVentana;
+
+    const tmp = file + '.tmp';
+    try {
+        fs.writeFileSync(tmp, final.length ? final.join('\n') + '\n' : '', 'utf8');
+        fs.renameSync(tmp, file);
+    } catch {
+        try { fs.unlinkSync(tmp); } catch { /* best-effort */ }
+        return { rotated: false };
+    }
+    return { rotated: true, kept: final.length, dropped: lines.length - final.length };
+}
+
+/**
  * Registra el flanco alive↔dead detectado en `procesos` contra el snapshot
  * previo en memoria. Persiste sólo los servicios que cambiaron de estado.
  *
@@ -139,9 +211,20 @@ function recordSnapshot(procesos, opts) {
         } else {
             reason = 'recovered';
         }
+        // #6441 — Desde este issue hay DOS escritores (el dashboard, acá, y el
+        // barrido del watchdog). El dashboard detecta el flanco contra su
+        // memoria y el barrido contra el disco, así que ante una misma muerte
+        // los dos podrían escribirla y "caídas 7 d" contaría el doble.
+        // Se consulta el disco SÓLO cuando ya hay flanco (caso raro): en el
+        // camino normal, sin flanco, no se lee nada y el costo es cero.
+        let yaAsentado = false;
+        try { yaAsentado = readPrevStates(o)[service] === to; }
+        catch { yaAsentado = false; } // ante la duda, se escribe: mejor duplicar que perder
+        _lastState.set(service, alive);
+        if (yaAsentado) continue;
+
         const record = { ts, service, from, to, reason, lastError };
         _appendLine(record, o);
-        _lastState.set(service, alive);
         recorded.push(record);
     }
     return recorded;
@@ -184,6 +267,11 @@ function readTransitions(service, opts) {
     let downCount = 0;
     let lastError = '';
     for (const ev of all) {
+        // #6441 — una SIEMBRA no es una caída: es la primera vez que se observa
+        // el servicio. Contarla inflaría "caídas 7 d" de `outbox-drain` y
+        // `svc-emulador`, que arrancan muertos por diseño, y le enseñaría al
+        // operador que el número miente.
+        if (ev.reason === 'seed') continue;
         if (ev.to === 'dead') {
             downCount++;
             const r = String(ev.reason || 'unknown');
@@ -212,15 +300,115 @@ function readTransitions(service, opts) {
     };
 }
 
+// =============================================================================
+// #6441 — BARRIDO DE LIVENESS: el flanco deja de depender del dashboard.
+// -----------------------------------------------------------------------------
+// `recordSnapshot` deriva el estado previo de `_lastState`, un Map de MODULO.
+// Eso funciona para el dashboard (proceso largo) y es inservible para el
+// watchdog, que es efimero: arranca cada 2 min, sembraria en cada corrida y no
+// detectaria un solo flanco jamas. Es literalmente el agujero del incidente —
+// el store tenia resurrecciones ('recovered') y ninguna muerte.
+//
+// `recordSweep` deriva el estado previo del PROPIO .jsonl. Sobrevive a que el
+// proceso que barre reinicie entre observacion y observacion, que es la unica
+// forma de que esto funcione desde el watchdog.
+//
+// La siembra PERSISTE (linea con `from: 'unknown'`, `reason: 'seed'`). Si
+// sembrara solo en memoria, un servicio sin historial volveria a sembrarse en
+// cada corrida y su muerte no se registraria nunca: el mismo bug, un nivel mas
+// abajo.
+// =============================================================================
+
+/**
+ * Ultimo estado conocido por servicio, derivado del store (no de memoria).
+ *
+ * @param {object} [opts] — { pipelineDir }.
+ * @returns {Object<string, 'alive'|'dead'>} — servicios sin historial no aparecen.
+ */
+function readPrevStates(opts) {
+    const out = {};
+    for (const ev of _readAll(opts || {})) {
+        if (!ev || !isValidServiceName(ev.service)) continue;
+        if (ev.to !== 'alive' && ev.to !== 'dead') continue;
+        out[ev.service] = ev.to; // append-only: la ultima linea gana
+    }
+    return out;
+}
+
+/**
+ * Registra los flancos de un barrido contra el estado previo LEIDO DEL STORE.
+ *
+ * @param {object} observed — { service: { alive: bool } | bool }.
+ * @param {object} [opts] — { pipelineDir, now, prevStates, lastErrorFor, rotate }.
+ * @returns {Array<object>} transiciones persistidas (incluye las siembras).
+ */
+function recordSweep(observed, opts) {
+    const o = opts || {};
+    const now = typeof o.now === 'number' ? o.now : Date.now();
+    const ts = new Date(now).toISOString();
+    const recorded = [];
+    if (!observed || typeof observed !== 'object') return recorded;
+
+    // Se lee UNA vez y se compara contra todos: el store es append-only, asi que
+    // releerlo por servicio daria el mismo resultado a costa de N lecturas.
+    const prev = (o.prevStates && typeof o.prevStates === 'object')
+        ? o.prevStates
+        : readPrevStates(o);
+
+    for (const [service, v] of Object.entries(observed)) {
+        if (!isValidServiceName(service)) continue;
+        const alive = !!(v && typeof v === 'object' ? v.alive : v);
+        const to = alive ? 'alive' : 'dead';
+        const from = prev[service];
+
+        if (from === to) continue;              // sin flanco
+        if (from !== 'alive' && from !== 'dead' && from !== undefined) continue;
+
+        let lastError = '';
+        let reason;
+        if (from === undefined) {
+            // Siembra persistida: fija la linea base en disco para que el
+            // proximo barrido tenga contra que comparar aunque el proceso muera.
+            reason = 'seed';
+            if (to === 'dead') lastError = _lastErrorFor(service, o);
+        } else if (to === 'dead') {
+            lastError = _lastErrorFor(service, o);
+            reason = classifyReason(lastError);
+        } else {
+            reason = 'recovered';
+        }
+
+        const record = { ts, service, from: from === undefined ? 'unknown' : from, to, reason, lastError };
+        if (_appendLine(record, o)) recorded.push(record);
+    }
+
+    // La rotacion la pide SOLO este camino (un unico escritor periodico).
+    if (o.rotate !== false) {
+        try { rotateIfNeeded(o); } catch { /* podar nunca puede romper el barrido */ }
+    }
+    return recorded;
+}
+
+function _lastErrorFor(service, o) {
+    return typeof o.lastErrorFor === 'function'
+        ? _sanitize(String(o.lastErrorFor(service) || '')).slice(0, LAST_ERROR_MAX)
+        : readLastError(service, o);
+}
+
 // Reset del estado en memoria — sólo para tests (aislamiento entre casos).
 function _resetState() { _lastState.clear(); }
 
 module.exports = {
     recordSnapshot,
+    recordSweep,
+    readPrevStates,
+    rotateIfNeeded,
+    isValidServiceName,
     readTransitions,
     readLastError,
     classifyReason,
     storePath,
     DEFAULT_WINDOW_MS,
+    ROTATE_AT_LINES,
     __forTestsOnly__: { _resetState, _lastState },
 };

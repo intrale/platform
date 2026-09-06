@@ -205,6 +205,10 @@ timeouts:
     linter: 5                     # Determinístico — sólo lee diff/git log, debería durar segundos
     delivery: 90                  # Espera CI completo (OWASP ~28min, check-app ~15min) + gate de review + merge + reporte
 
+# Merge automático: espera acotada para checks requeridos explícitamente en curso.
+delivery:
+  merge_checks_timeout_ms: 360000  # 6 min; cubre la CI observada de 3-4 min sin bloquear el slot por 10 min
+
 # Procedencia de ramas para auto-recovery. Agregar una identidad confiable es
 # una decisión de seguridad y requiere review humana; nunca usar comodines.
 worktree_provenance:
@@ -230,6 +234,21 @@ desync:
   # Vacía o ausente → manda sólo la asociación con el repo (fail-closed).
   # Ejemplo: ["intrale-bot"]
   split_orphan_trusted_logins: []
+  # #6117 — Detector de auto-reparaciones REPETIDAS de la lista de trabajo.
+  # Una auto-reparación exitosa es sana y ya no se avisa por Telegram (queda en
+  # log, audit, métrica y dashboard). Pero que la MISMA reparación se repita
+  # varias veces en poco tiempo no es sanidad: es el síntoma de una causa raíz
+  # que sigue desarmando la lista. A partir de `repair_alert_threshold`
+  # reparaciones del mismo tipo dentro de `repair_alert_window_ms`, el operador
+  # recibe un aviso de anomalía recurrente.
+  # La firma es SÓLO el tipo de reparación; el set de issues no agrupa (si
+  # agrupara, la misma causa raíz rompiendo issues distintos nunca alcanzaría el
+  # umbral, que es justo lo que queremos detectar).
+  # Valores fuera de rango se clampean en lib/metrics/auto-repair.js
+  # (threshold 2..50, ventana 1 min..24 h): una config rota nunca desactiva la
+  # alerta ni frena el pipeline.
+  repair_alert_threshold: 3
+  repair_alert_window_ms: 3600000
 
 # build: movida al lado PRODUCTO (#5174) → pipeline.config.json · productConfig.build (la prosa viajó a productConfigNotes)
 
@@ -264,6 +283,12 @@ circuit_breaker:
   # auto-promueven por convergencia — siguen el circuit breaker hacia humano.
   # `security` queda además excluido por código (defensa-en-profundidad).
   convergence_excludes_skills: [security]
+  # #6746 — breaker de no-progreso. Cuando un rebote infra se repite en la misma
+  # fase con el MISMO diff (nada cambió), el issue escala a needs-human en vez de
+  # seguir reintentando. Distinto de `infra_escalate_threshold` (causa distinta:
+  # allá "infra persistente", acá "el reintento no mueve nada"). Entero en [2,10];
+  # 0, negativo, no numérico, Infinity o ausente ⇒ default 2 con clamp.
+  noprogreso_max: 2
 
 # GitHub
 # DEPRECADO (#4693 · CA-0): la fuente de verdad del repo destino se consolidó en
@@ -319,6 +344,44 @@ human_block_reminder:
   tick_ms: 1800000           # 30 min. Es la resolución del recordatorio, no su frecuencia:
                              # el escalado real lo fija REMINDER_STEPS_HOURS del módulo.
 
+# (#6611) Re-chequeo automático de bloqueos needs-human VERIFICABLES.
+#
+# Qué destraba: sólo los freezes que registraron un predicado re-evaluable por
+# máquina — hoy, un `pr_merge_blocked` de `delivery` (HTTP 405 con todos los
+# requeridos en verde). Cuando el PR pasa a MERGEABLE + CLEAN sin checks en rojo,
+# el issue vuelve a la cola solo.
+#
+# Qué NO destraba: cualquier bloqueo sin predicado registrado — o sea, todo
+# juicio humano genuino. Sin predicado no hay re-evaluación (fail-closed).
+#
+# El auto-destrabe SÓLO re-encola la fase: `delivery` vuelve a correr todos sus
+# gates, incluido el de QA. No presume ni ejecuta ningún merge.
+human_block_auto_recheck:
+  enabled: true              # false → el reaper no corre
+  kill_switch: false         # true  → idem, para cortar en caliente sin editar enabled
+  max_auto_releases: 3       # techo por causa (<issue>::<kind>::<pr>). Al 3er
+                             # ciclo destrabe → re-bloqueo, escala como duro.
+  max_prs_per_tick: 10       # tope de PRs consultados en `gh` por tick. El resto
+                             # se difiere al ciclo siguiente, no se descarta.
+
+# (#2893 / #6118) Aviso de dependencias faltantes: un issue habilitado que no
+# puede avanzar porque depende de otro que quedó fuera de la selección de la ola.
+#
+# El aviso tiene DOS frenos distintos, que no hay que confundir:
+#   - alert_cooldown_ms: automático. Evita repetir el mismo aviso mientras la
+#     situación no cambia. Vive en memoria del Pulpo y se pierde al reiniciar.
+#   - mute_ttl_ms: lo pide el operador apretando "No avisarme por …". Vive en
+#     .pipeline/partial-pause-deps-mute.json y sobrevive al reinicio.
+#
+# mute_ttl_ms es lo que el botón y su confirmación DECLARAN en el texto: bajarlo
+# a 6h hace que el botón diga "por 6 h" sin tocar código. Nunca es infinito —un
+# aviso silenciado para siempre convierte un issue trabado en un punto ciego—:
+# el módulo lo acota a [1 min, 7 días].
+partial_pause_deps:
+  check_every_n_ticks: 5     # cada cuántos ciclos del Pulpo se rastrean las deps
+  alert_cooldown_ms: 1800000 # 30 min — freno automático entre avisos iguales
+  mute_ttl_ms: 86400000      # 24 h  — ventana del silencio pedido por el operador
+
 # (#2892 PR-C) Alertas de consumo anómalo: canales y snooze.
 # El pulpo enchufa el detector con dos canales: Telegram (mensaje sanitizado
 # via lib/redact.js + lib/sanitize-payload.js) y banner persistente en el
@@ -354,8 +417,63 @@ ghostbusters_cron:
   enabled: true
   intervalMin: 60            # Cadencia del cron interno (clamp 5-1440)
   cap: 5                     # Máximo de worktrees borrados por corrida (RS-4)
-  dry_run: true              # Default seguro: reportar sin borrar
+  # #6708 — Salida AUDITADA del dry-run. Estuvo en `true` desde que se creó el
+  # cron (#3943): el default seguro exigía que un humano revisara el output
+  # antes de habilitar el borrado real. Esa revisión se hizo — todas las
+  # corridas de `logs/ghostbusters-cron.log` cerraban con "Liberación potencial:
+  # 0.00 GB", porque el guard de "archivos sin commitear" protegía por un
+  # heartbeat a decenas de worktrees de issues ya cerrados. Con ese guard
+  # refinado (`lib/infra-noise.js`) el sweep vuelve a tener algo que borrar, y
+  # dejarlo en dry-run lo mantendría decorativo.
+  #
+  # REVERSIBILIDAD: poner `true` acá y reiniciar el Pulpo vuelve al modo
+  # reporte, sin tocar código. Cada borrado queda en
+  # `.pipeline/audit/ghostbusters-worktrees.jsonl` con path, peso y motivo.
+  # Ver `docs/pipeline/gestion-de-disco.md` § "Cómo revertir".
+  dry_run: false             # Borrado real, con audit JSONL por cada borrado
   age_threshold_days: 30     # Umbral de antigüedad para criterio de abandono
+
+# =============================================================================
+# #6708 — Guardián automático de espacio en disco.
+#
+# El disco se llenaba cada 2-3 semanas y nadie lo medía de forma continua: el
+# único control era `/ops` avisando por debajo de 5 GB, y sólo si un humano lo
+# corría. Peor, cuando el disco reventaba el pipeline no decía "me quedé sin
+# disco": decía "el test falló", "el build rompió", "el agente murió", y
+# rebotaba issues sanos.
+#
+# Ahora el Pulpo mide el espacio libre en cada tick y aplica una escalera
+# ACUMULATIVA de acciones. Cada escalón agrega al anterior, no lo reemplaza:
+#
+#   verde   (> green_gb)               nada
+#   amarillo(yellow_gb .. green_gb)    rotar cachés (rotate-caches.js)
+#   naranja (orange_gb .. yellow_gb)   + reclamar worktrees SIN cap + Telegram
+#   rojo    (< orange_gb)              + frenar despacho de build/verificacion
+#
+# Los umbrales son GB LIBRES, no porcentaje: lo que importa es cuánto margen
+# queda para un build de Gradle o un video de QA, no qué fracción del disco se
+# usó. Se clampean en `lib/disk-guard.js` (CLAMPS) y se exige que sean
+# estrictamente descendientes; una terna inválida cae entera a los defaults en
+# vez de quedar a medio aplicar.
+#
+# Fail-safes que NO son configurables desde acá, a propósito:
+#   - Un worktree con trabajo en vuelo (fase `trabajando`) nunca se borra.
+#   - `~/.android/avd` (snapshot `qa-ready`) nunca se toca.
+#   - Logs y audios de operación no se podan sin OK del operador.
+#   - Si la medición falla, el nivel es `unknown` y no corre ninguna acción
+#     destructiva. Un guardián ciego no borra.
+# =============================================================================
+disk_budget:
+  enabled: true
+  green_gb: 40               # Por encima de esto no se hace nada
+  yellow_gb: 25              # Piso del amarillo: debajo se rotan cachés
+  orange_gb: 12              # Piso del naranja: debajo es rojo (freno de fases)
+  hysteresis_gb: 2           # Margen extra para SALIR del freno (anti-flapping)
+  rotate_throttle_min: 60    # Mínimo entre rotaciones de caché
+  reclaim_throttle_min: 60   # Mínimo entre reclamaciones de worktrees
+  alert_cooldown_min: 120    # Re-aviso de Telegram mientras el umbral persiste
+  freeze_heavy_phases: true  # Kill-switch del freno de build/verificacion en rojo
+  alert_freed_gb: 5          # Avisar si una corrida libera más que esto
 
 # Modo descanso (#2890 PR-A, parte del épico #2882) — gating horario.
 # Durante la ventana configurada, sólo corren los skills determinísticos
@@ -401,6 +519,15 @@ staleness:
 # Override por env: WATCHDOG_STALE_MINUTES (entero positivo; inválido → default,
 # NUNCA "nunca stale" — SEC-2).
 watchdog:
+  # #6441 - Barrido de liveness de servicios (service-liveness-run.js).
+  # Un servicio supervisado caido avisa UNA vez de inmediato y despues recuerda
+  # cada N horas mientras siga caido. No degrada a silencio permanente: un
+  # servicio caido hace tres dias tiene que seguir doliendo.
+  service_liveness_reminder_hours: 6
+  # "Vivo pero mudo": proceso presente pero log sin crecer en esta ventana.
+  # Solo se REGISTRA en logs/service-liveness.log, no escala a alerta: hay
+  # servicios que loguean 200 bytes por semana sin estar rotos (svc-emulador).
+  service_liveness_quiet_hours: 24
   stale_minutes: 6                 # heartbeat más viejo que esto = watchdog stale (3 ciclos de 2 min)
   supervisor_max_restarts: 3       # SEC-4: cap duro de relanzamientos por ventana antes de escalar a needs-human
   supervisor_cooldown_seconds: 90  # mín. entre relanzamientos (reusa semántica del cooldown de last-restart.json)
@@ -604,6 +731,12 @@ quota_detector:
 # numérico; ante valor inválido se cae a `defaults` y se loggea, sin romper el
 # ticker. `preventive_switch.enabled` solo activa el switch con `true` literal.
 multi_provider:
+  effective_model_audit:
+    enabled: true
+    alert_enabled: false
+    min_runs: 20
+    max_divergence_pct: 10
+    dedup_window_hours: 24
   # Cron de health por provider (#4402 CA-3).
   health:
     # Cadencia del cron de health. Default 5 min.
@@ -611,6 +744,48 @@ multi_provider:
     # (Gemini RPM 15, Cerebras RPM 30). Jitter ±60s se conserva en código.
     # Un typo/valor inválido cae al default 5 min sin romper el arranque.
     interval_minutes: 5
+  # ---------------------------------------------------------------------------
+  # Criterio de permanencia de proveedores (#6145, CA-6)
+  # ---------------------------------------------------------------------------
+  # Umbrales numéricos con los que `lib/multi-provider/provider-contribution.js`
+  # decide si un proveedor de la cadena aporta lo suficiente para seguir en ella.
+  # Se recalcula con un comando, sin análisis manual:
+  #
+  #   node .pipeline/scripts/provider-contribution-report.js --dias=30
+  #
+  # INVARIANTES (no configurables — viven en código y tienen test dedicado):
+  #   1. El criterio MARCA candidatos; NUNCA da de baja a nadie. La baja efectiva
+  #      es un PR de configuración trazable.
+  #   2. NUNCA vacía la cadena: si marcar dejaría menos de `min_survivors`
+  #      proveedores sanos, no marca a ninguno.
+  #   3. NUNCA marca a un proveedor `billing: paid` (agent-models.json).
+  #   4. "Sin dato" ⇒ `no_evaluable`, JAMÁS "no aporta". Muestra chica, silencio
+  #      del log o hash-chain rota ⇒ no se decide.
+  #   5. Un bloqueo cuya causa es un problema NUESTRO de observabilidad
+  #      (`cli_license_unavailable` y familia) tiene techo `rol_acotado`: no
+  #      habilita la baja sin corregir antes el chequeo.
+  #
+  # `enabled: false` por default (rollout gradual). Con `false` el reporte se
+  # sigue pudiendo correr a mano; lo que no se habilita es su uso automático.
+  permanence:
+    enabled: false
+    # Ventana de medición en días. CA-1 exige un mínimo de 30.
+    window_days: 30
+    # Intentos evaluables mínimos para que un proveedor sea evaluable.
+    # Por debajo ⇒ `no_evaluable` (nunca "no aporta").
+    min_sample: 200
+    # Tasa de aporte (aportes / intentos evaluables) por debajo de la cual el
+    # proveedor queda marcado como candidato. 0.05 = 5%.
+    min_contribution_rate: 0.05
+    # Días sin un solo aporte real tras los cuales queda marcado como candidato.
+    max_days_without_win: 14
+    # Proveedores NO PAGOS sanos que deben sobrevivir SIEMPRE. Si marcar
+    # candidatos dejaría menos que esto, no se marca a ninguno (invariante 2).
+    # Los pagos NO cuentan: son `mantener` por construcción (invariante 3) y
+    # satisfarían este umbral de forma vacua, dejando que el criterio vacíe la
+    # cadena de gratuitos entera de un saque.
+    min_survivors: 1
+
   quota_alert:
     # Umbrales por defecto si un proveedor no declara los suyos.
     defaults:
@@ -718,6 +893,38 @@ handoff:
     - verificacion
     - aprobacion
     - entrega
+
+# Rollout fail-closed de propagación explícita de modelos (#6274).
+model_propagation_rollout:
+  baseline_min_runs: 30
+  evaluation_min_runs: 20
+  thresholds:
+    rebound_absolute: 0.10
+    early_death_absolute: 0.10
+  # Escalones del encendido, del menor al mayor riesgo. REGLA DURA: un escalón
+  # sólo puede nombrar skills que el pulpo despacha como agente
+  # (productConfig.pipelines.*.skills_por_fase). Un actor que no se despacha
+  # nunca escribe `spawn-exit-*.jsonl`: su baseline queda en n=0 para siempre y
+  # traba el escalón —y todos los siguientes— de forma permanente.
+  # `model-rollout.js` valida esta regla contra la config real antes de encender.
+  #
+  # Mapeo respecto del issue #6274, que nombraba actores no despachables:
+  #   - `sherlock`/`telegram-sherlock` es una chain de proveedores del bot de
+  #     Telegram, corre fuera del dispatch y no tiene telemetría de corridas. Su
+  #     lugar (alto volumen, corridas cortas, no producen código ni bloquean
+  #     merge) lo ocupan `guru` y `security` en la fase `analisis`.
+  #   - `doc` y `refinar` son skills interactivos del Commander, tampoco
+  #     despachados. Los actores livianos reales son `po`, `ux`, `architect` y
+  #     `planner`.
+  waves:
+    # 1 — lectura y análisis: alto volumen, corridas cortas, no tocan código.
+    - actors: [guru, security]
+    # 2 — definición: livianos, escriben criterios pero no código.
+    - actors: [po, ux, architect, planner]
+    # 3 — evaluadores: su veredicto gatea el merge.
+    - actors: [review, tester, qa]
+    # 4 — devs pesados: objetivo final del épico.
+    - actors: [backend-dev, pipeline-dev, android-dev, web-dev, dev]
 
 # #4870 — Modo reducido: aviso advisory cuando no hay proveedor PAGO disponible.
 #
@@ -922,6 +1129,93 @@ rewind:
   # TTL de markers in-flight (CA-9 recovery). Si el pulpo crasha durante un
   # rewind, los markers > ttl se limpian al boot y el operador puede reintentar.
   in_flight_stale_minutes: 5
+  #
+  # #4967 — SEGUNDO FRENTE: rewind automático por conflicto de merge.
+  #
+  # Cuando el watcher de mergeabilidad (#4966) confirma que un PR quedó
+  # CONFLICTING contra `main`, `pipeline-rewind.js#rewindFromMergeConflict`
+  # reencola el issue a su propietario en vez de dejarlo congelado.
+  #
+  # NO tiene claves acá a propósito. Sus dos parámetros —timeout de la
+  # revalidación del PR y TTL del store de idempotencia— viajan inyectados en
+  # `deps.options` desde el llamador, con defaults en el módulo
+  # (`DEFAULT_REVALIDATE_TIMEOUT_MS`, `DEFAULT_CLAIM_TTL_MS`). Duplicarlos acá
+  # sin cablear la lectura sería configuración muerta.
+  #
+  # Lo importante para operar: ese frente NO es alcanzable desde Telegram, CLI
+  # ni desde el bus `.pipeline/rejections/`. El gate de `source` de arriba sigue
+  # siendo exactamente ['telegram-commander', 'cli-local'] y la capacidad
+  # interna viaja como Symbol módulo-privado, nunca como string del payload.
+  # Tampoco cierra, mergea ni modifica el PR.
+  #
+  # Ver: docs/pipeline/rewind-operador.md → "Segundo frente".
+
+# #4966 — Watcher de mergeabilidad de PRs (observacion, NO transicion).
+#
+# Detecta PRs abiertos de la ola activa que quedaron CONFLICTING contra main y
+# emite un evento candidato. NO rebota, NO cierra, NO mergea: quien actua es
+# pipeline-rewind.rewindFromMergeConflict (#4967) y quien lo engancha al
+# barrido periodico es #4968.
+#
+# Nace APAGADO: se enciende explicitamente, nunca por default. Todos los
+# limites de abajo estan ademas clampeados EN CODIGO (normalizeConfig), asi que
+# un valor absurdo editado a mano degrada al default en vez de disparar miles
+# de llamadas a la API de GitHub.
+#
+# Ver: docs/pipeline/pr-mergeability-watcher.md
+pr_mergeability_watcher:
+  enabled: false
+  # Allowlist: el repo y la base que se consideran propios. Un PR con otra base
+  # o de un fork queda fuera del universo observado.
+  expected_repo: intrale/platform
+  expected_owner: intrale
+  expected_base: main
+  # Cadencia del barrido. Conservadora: se suma un brazo periodico a la presion
+  # de rate limit y el conflicto de un PR no es urgente al minuto.
+  poll_interval_minutes: 10
+  # Separacion minima real entre las dos observaciones que confirman un
+  # conflicto. Junto con el contador monotono pollSeq es la defensa contra
+  # reloj no monotono (NTP / suspension de la maquina).
+  min_poll_interval_ms: 60000
+  # PRs abiertos que se traen por poll. Clampeado a [1,100] en codigo.
+  candidate_limit: 20
+  gh_timeout_ms: 5000
+  # Poda de entradas huerfanas (PRs cerrados o fuera del barrido).
+  state_entry_ttl_hours: 72
+  #
+  # --- Wiring del brazo en el Pulpo (#4968) ---------------------------------
+  # Estas claves las lee `lib/brazo-pr-mergeability-core.js`, NO #4966. Todas
+  # estan clampeadas EN CODIGO (`normalizeWatcherConfig`): un valor absurdo
+  # editado a mano deja el brazo APAGADO con un motivo tipado en el log, nunca
+  # tumba al Pulpo. Por eso la seccion NO vive en `config-schema.js` (H-A2).
+  #
+  # Corte en caliente: pisa a `enabled`. Para apagar el brazo sin discutir la
+  # config completa, poner esto en true (molde `wave_auto_transition`).
+  kill_switch: false
+  # Repos que el watcher puede observar. Un `expected_repo` fuera de esta lista
+  # deja el brazo apagado (`repo_not_allowed`) en vez de degradar al default:
+  # observar otro repo significa poder reencolar issues ajenos (OWASP A01).
+  allowed_repos:
+    - intrale/platform
+  # Llamadas a `gh` EN VUELO desde este brazo. Clampeado a [1,5]. Aplica a las
+  # LECTURAS: los rewinds son secuenciales por diseno (compiten por locks de
+  # issue). Con 0 o un valor no entero, el brazo queda apagado.
+  max_concurrency: 2
+  # Backoff exponencial con jitter sobre fallos CONSECUTIVOS de GitHub; un tick
+  # exitoso lo resetea. Clampeado a [1s, 1h]; si `base > max`, el techo sube al
+  # base (nunca reintenta mas seguido de lo declarado).
+  backoff_base_ms: 60000
+  backoff_max_ms: 900000
+  # Watchdog del guard anti-reentrada (#3059): si un tick queda colgado mas de
+  # esto, se libera el guard, se mata el `gh` activo y el brazo vuelve a correr
+  # en el TICK SIGUIENTE (no espera otro intervalo). Clampeado a [1min, 1h] y
+  # nunca por debajo de `gh_timeout_ms * max_concurrency`.
+  wedge_timeout_ms: 600000
+  #
+  # NOTA sobre `poll_interval_minutes`: el brazo le aplica un piso propio de
+  # 5 minutos, mas conservador que el clamp de #4966 ([1, 1440]). El watcher
+  # gasta la misma cuota `gh` que brazoDesbloqueo/brazoIntake (#4982) y el
+  # conflicto de un PR no es urgente al minuto.
 
 # #3085 / S7 multi-provider — aislamiento de credenciales por proceso.
 #
@@ -947,6 +1241,56 @@ rewind:
 pipeline:
   env_isolation_enabled: false
 
+  # #5799 — Snapshot de credenciales POR INTENTO de lanzamiento.
+  #
+  # Con el gate ABIERTO, cada intento (Pulpo, Commander, reintento del glitch 1M
+  # y cada eslabón de la cascada de fallback) pide su propio snapshot aislado a
+  # `createCredentialSnapshot()` (#5798) para el provider EFECTIVO ya resuelto, y
+  # ese objeto —nuevo, no cacheado, no compartido— es la ÚNICA fuente del
+  # material de credenciales que entra a `buildChildEnv({ processEnv })`. Efectos:
+  #   - una credencial rotada llega al lanzamiento siguiente SIN reiniciar el
+  #     Pulpo (hoy el padre conserva lo que hidrató en el boot);
+  #   - el hijo de un fallback no puede heredar la key del primario, porque el
+  #     env base se compone purgado de TODAS las credenciales de providers;
+  #   - un snapshot inválido aborta el intento ANTES del spawn (fail-closed).
+  #
+  # Fail-closed: sólo el booleano `true` exacto lo abre.
+  #
+  # DEPENDENCIA DURA: requiere `vault.enabled: true`. Con el vault cerrado,
+  # `createCredentialSnapshot()` falla con `SNAPSHOT_VAULT_DISABLED`, y como acá
+  # el fallo aborta el lanzamiento, abrir este gate antes que el del vault deja
+  # al pipeline sin lanzar un solo agente. Encender en ese orden.
+  #
+  # Con el gate CERRADO (default) el camino es el legacy bit a bit: el env base
+  # sigue siendo `process.env` por referencia y no se emite ninguna llamada al
+  # vault.
+  credential_snapshot_enabled: false
+
+  # (#5796) RETRY DE CREDENCIAL — rollout gradual.
+  #
+  # Abre el coordinador de #5794 en los caminos reales del Pulpo: agente
+  # normal, Commander, intento primario y cada eslabón de fallback. Cuando un
+  # provider RECHAZA la credencial (señal tipada de #5795 — nunca una heurística
+  # sobre el texto del log), la operación raíz invalida el scope acotado,
+  # re-resuelve el snapshot y reintenta EXACTAMENTE UNA vez. Un segundo rechazo
+  # falla cerrado: no hay tercer intento y no hay bucle de invalidación.
+  #
+  # GATE PROPIO, A PROPÓSITO — no reusa `credential_snapshot_enabled`. Si
+  # colgaran del mismo booleano, abrir el snapshot encendería también el
+  # re-spawn del agente: dos features de credenciales entrando juntas a
+  # producción es exactamente el cambio que nadie puede diagnosticar cuando algo
+  # sale mal.
+  #
+  # DEPENDENCIA PRÁCTICA: sin `credential_snapshot_enabled: true` la
+  # re-resolución no tiene material nuevo que traer (el snapshot degrada al env
+  # del padre), así que este gate sólo aporta con el de snapshot ya abierto.
+  #
+  # Fail-closed: sólo el booleano `true` exacto lo abre.
+  #
+  # Con el gate CERRADO (default) el camino es no-op bit a bit: mismo número de
+  # spawns, mismo env, mismo audit y ni un evento de retry emitido.
+  credential_retry_enabled: false
+
   # (#3083 / CA-7 / SEC-6) Retención forense del audit trail (activity-log.jsonl).
   #
   # Define cuántos días de logs append-only conservamos antes de rotar /
@@ -956,6 +1300,43 @@ pipeline:
   #
   # Default: 90 días. Recomendado mínimo: 30 días (piso hardcoded).
   audit_retention_days: 90
+
+  # ---------------------------------------------------------------------------
+  # (#6272, split de #6270) Propagación del modelo resuelto al proceso hijo.
+  #
+  # Hasta este issue el modelo declarado en `agent-models.json` se resolvía y se
+  # logueaba, pero NUNCA llegaba al hijo: Anthropic nunca recibía `--model`, y
+  # CODEX_MODEL / GEMINI_MODEL / CEREBRAS_MODEL / NVIDIA_NIM_MODEL nunca se
+  # seteaban para agentes. Los cinco proveedores corrían con el default de su CLI.
+  #
+  # APAGADO POR DEFAULT. Con `enabled: false` (o sin esta sección) el objeto que
+  # recibe `child_process.spawn` es byte-idéntico al de antes del cambio.
+  #
+  # NO ENCENDER antes de que #6271 (resolución correcta del modelo) esté
+  # entregado: con la resolución vieja, prender esto sólo repartiría el literal
+  # legacy a los cinco proveedores. El encendido escalonado y el rollback son
+  # scope de #6274.
+  #
+  # Modos:
+  #   off      → no se toca nada (default).
+  #   dry-run  → se loguea el modelo que SE HABRÍA pasado, con prefijo
+  #              `[dry-run]`, sin alterar el comando. Sirve para verificar qué
+  #              resolvería cada actor antes de prender de verdad.
+  #   on       → se propaga (flag `--model` en anthropic/kimi-moonshot; variable
+  #              de entorno en el resto, según PROVIDER_MODEL_ENV).
+  #
+  # Precedencia: by_skill (actor) > by_provider > default_mode > off. El más
+  # específico gana, así se puede prender un actor sin prender a su proveedor
+  # entero. Un valor de modo inválido se IGNORA y cae al siguiente nivel: un typo
+  # nunca enciende la propagación.
+  #
+  # `enabled: false` es kill-switch duro: apaga todo sin tener que desarmar las
+  # granularidades (rollback de un renglón).
+  model_propagation:
+    enabled: false
+    default_mode: 'off'
+    by_provider: {}
+    by_skill: {}
 
 # =============================================================================
 # #4821 (Split de #4804) — Cutover a persistencia durable del alta de producto.
@@ -1375,6 +1756,21 @@ cua:
 # La tabla + policy IAM (least-privilege, append-only sobre signature#*/audit#*)
 # se aprovisiona con un PASO ADMIN separado (lib/kernel-provision.js +
 # docs/pipeline/kernel-iam-policy.json), NUNCA en el boot normal del pulpo.
+# #5126 CA-B3 (2026-07-29) — Tablas y región CARGADAS, con `durable` todavía en
+# `false`. Este estado intermedio es deliberado y es el que pide el criterio: la
+# config queda completa y verificada ANTES de encender el flag, así el encendido
+# es un cambio de una línea y no un cambio de configuración a ciegas.
+#
+# Con `durable: false` estos tres valores no se leen: no se instancia el driver
+# real ni se hace una sola llamada AWS. El pipeline sigue operando 100% desde
+# filesystem.
+#
+# Qué SÍ va en este archivo público: nombre de tabla y región. No son secretos —
+# no otorgan acceso sin credenciales, y `us-east-2` ya figura en este mismo
+# archivo (sección de connectivity-precheck) y en `docs/qa/`.
+# Qué NUNCA va: account-id, ARNs completos y credenciales. Las credenciales
+# llegan exclusivamente por el scope `aws` del ambiente hijo (build-child-env.js),
+# alimentado desde `~/.claude/secrets/credentials.json` (fuera del repo).
 kernel:
   # #5210 CA-1 — Tabla de NO-REPUDIO ya aprovisionada en AWS (ACTIVE, SSE KMS,
   # deletion protection ON). Poblarla NO enciende nada: todo el camino durable
@@ -1402,6 +1798,20 @@ kernel:
   # estas claves, `kernel-iam-verify.js` no arma la matriz.
   cmkAlias: "intrale-kernel-store"          # alias de la CMK que cifra ambas tablas
   runtimePrincipal: "intrale-kernel-runtime" # usuario IAM del runtime durable
+  # #5208 — PERFIL de la AWS CLI del principal de arriba. Es una clave DISTINTA
+  # de `runtimePrincipal`: aquel es el nombre IAM (contra el que la sonda compara
+  # la identidad efectiva), este es el perfil local desde donde se resuelven las
+  # claves estaticas que exige `createAwsCliRunner`.
+  #
+  # Sin esta clave el boot durable NO puede construir el driver: el entorno del
+  # pipeline solo define `AWS_PROFILE` (y apunta al perfil administrativo), y
+  # `loadIntoEnv` no hidrata ninguna variable `AWS_*`. El resultado seria que con
+  # `durable: true` el catalogo degrada a filesystem con alerta fuerte en cada
+  # arranque: el switch diciendo DynamoDB y el sistema corriendo sobre FS.
+  #
+  # NO apuntarlo a un perfil administrativo: el kernel dejaria de operar con
+  # least-privilege y los Deny de la policy nunca se probarian.
+  runtimeProfile: "kernel-runtime"           # perfil AWS CLI del principal runtime
   # #5211 (rebote de verificación) — Habilitan el chequeo de DRIFT: comparar el
   # artefacto versionado contra la policy que AWS tiene REALMENTE adjunta. Sin
   # esa comparación, el repo puede afirmar una postura que AWS no aplica y nadie
@@ -1415,7 +1825,29 @@ kernel:
   # probes siguen siendo válidos y el drift se reporta como "no verificado".
   iamPolicyName: "IntraleKernelStore"        # policy adjunta al principal runtime
   iamAdminProfile: "intrale"                 # perfil con iam:GetPolicy (solo lectura)
-  durable: false     # default OFF -- todo sigue en FS, cero llamadas AWS
+  # #5208 — ENCENDIDO durante la ventana de cutover. El store durable del kernel
+  # paso a ser la fuente de verdad: el boot leia el catalogo del control-plane
+  # desde DynamoDB y el alta escribia ahi. Se encendio despues de: dependencias
+  # #5204 y #5207 integradas, backups verificados fuera del repo, identidad
+  # runtime efectiva comprobada y sonda positiva NO VACIA verde contra
+  # `get-item --consistent-read`. Evidencia redactada: runbook §8.
+  #
+  # #5209 — APAGADO. Estado final del ENSAYO DE ROLLBACK, no una regresion: el
+  # ensayo consiste justamente en demostrar que se puede volver a filesystem sin
+  # perder firmas ni auditoria, y su estado terminal es `false`. Antes de apagar
+  # se corrio la reconciliacion DynamoDB → filesystem contra AWS real con
+  # conjunto NO VACIO (1 firma + 2 audit): paridad exacta de ids, conteos y
+  # SHA-256, verificada ademas con una lectura independiente por AWS CLI cruda.
+  # Runbook §2.7. Un conjunto vacio NO habilita este apagado y el comando aborta
+  # con `conjunto_vacio` — el codigo no deja bajar ese minimo.
+  #
+  # El apagado NO borra nada: la tabla de no-repudio es append-only por policy
+  # IAM (no concede `DeleteItem`), asi que lo escrito sigue en DynamoDB y ademas
+  # quedo reintegrado en filesystem. Simplemente deja de leerse de alli.
+  #
+  # Para volver a encender: `true` + `node .pipeline/restart.js` (runbook §1),
+  # con la ventana de cutover abierta y las sondas de §8 en verde.
+  durable: false
   # #5135 CA-1 -- Ventana de cutover SUPERVISADA. Default OFF (fail-closed: solo
   # el booleano `true` exacto la abre).
   #
@@ -1434,6 +1866,10 @@ kernel:
   # Quien la abre/cierra: EL OPERADOR, a mano, inmediatamente antes y despues del
   # cutover (operacion supervisada de minutos, con rollback manual). NUNCA se deja
   # en `true` en regimen. Runbook: docs/pipeline/runbook-cutover-durable.md.
+  # #5208 — Ventana CERRADA. El cutover se ejecuto y termino con todas las sondas
+  # verdes (runbook §8): backups verificados, migrated_count diagnosticado, sonda
+  # positiva no vacia coincidente con get-item --consistent-read, reboot sobre la
+  # particion canonica y cero eventos onDegraded. Cerrarla es parte del cutover.
   cutover_window: false
   # #4822 (split 3/3 de #4804) — Cota de instancias del boot durable del supervisor
   # multi-producto (CA-SEC-4 / REQ-SEC-BOOT-5, A04/DoS). Sibling de `durable` (que
@@ -1464,6 +1900,18 @@ vault:
   # SEC-5 — validado contra ^(/[A-Za-z0-9_-]+)+$: empieza con "/" y NO termina
   # en "/" (`/intrale/` se rechaza, y en el YAML eso no tiene nada de obvio).
   prefix: "/intrale"
+  # #6032 (SEC-10) — DEFAULT DEL KERNEL, no la identidad única del proceso: es el
+  # projectId que se usa cuando no hay un producto resuelto en contexto. Cada
+  # producto namespacea su vault con SU `identity.projectId`, así que este valor
+  # no es "el" tenant.
+  #
+  # Un descriptor NO puede redefinir la raíz del prefijo del vault (`prefix`) ni
+  # esta clave: son dato del HOST, fuera de banda. El descriptor es config no
+  # confiable — si pudiera moverse la raíz desde adentro, un producto apuntaría
+  # su prefijo al namespace de otro y leería credenciales ajenas. Por eso el
+  # projectId del descriptor sólo aporta un SEGMENTO por debajo de esta raíz, y
+  # `RESERVED_PROJECT_IDS` (project-descriptor.js) le prohíbe además tomar el
+  # nombre de un scope del vocabulario.
   projectId: "intrale"
   # CA-29 — se commitea VACÍO, nunca como placeholder tipo "<host>": un
   # placeholder no pasa la validación de segmento y, como con el gate cerrado
@@ -1473,6 +1921,94 @@ vault:
   # Al ENCENDER el gate, un hostId vacío o inválido falla con un mensaje que
   # nombra esta clave (`vault.hostId`), no el regex.
   hostId: ""
+  # #5426 · CA-12(b) — habilita resolver el `hostId` en RUNTIME desde
+  # `os.hostname()`. Lo que se commitea es el MECANISMO, nunca el VALOR: este
+  # archivo está trackeado en un repo PÚBLICO y publicar el hostname entrega
+  # gratis la estructura de namespaces `hosts/<hostId>/` que sostiene el
+  # aislamiento entre hosts (T2-5). Con esto, el alta de un host nuevo NO
+  # requiere editar este archivo: `git status --porcelain .pipeline/config.yaml`
+  # queda sin salida después del alta.
+  #
+  # Es una señal POSITIVA y explícita, no el default silencioso: si resolver por
+  # hostname fuera implícito, un `hostId` vacío dejaría de distinguirse de «sin
+  # configurar» y se perdería el fail-closed que hoy nombra la clave. Si el
+  # hostname no resuelve a un segmento válido (por ejemplo un FQDN con puntos —
+  # que NO se trunca, porque `a.uno.local` y `a.dos.local` colapsarían al mismo
+  # namespace), el gate falla nombrando `vault.hostId`.
+  hostIdFromHostname: true
+  # ---------------------------------------------------------------------------
+  # #6034 · Herencia de credenciales del KERNEL hacia productos hijos
+  # ---------------------------------------------------------------------------
+  # La autoridad es de quien ENTREGA la credencial, nunca de quien la recibe.
+  # `credentials[].inherit` del descriptor hijo es a lo sumo una SOLICITUD: la
+  # herencia efectiva es la INTERSECCIÓN de esa solicitud con un grant de acá.
+  #
+  # Por qué el grant vive en config.yaml y no en el descriptor: el descriptor de
+  # un alta se persiste VERBATIM desde un pedido autoemitido por el propio
+  # producto (`product-control-drainer.js`), así que un grant declarado ahí sería
+  # autoconcedible — el beneficiario firmándose su propio permiso. Este archivo
+  # no es escribible por esa vía.
+  #
+  # Reglas fail-closed (`.pipeline/lib/kernel-inheritance.js`):
+  #   - Sin grant ⇒ no hereda, aunque el hijo lo declare en `inherit`.
+  #   - `enabled` sólo enciende con el booleano `true` EXACTO ("true", 1 o "si"
+  #     no lo encienden).
+  #   - `until` (ISO-8601) es OBLIGATORIO: sin fecha el grant no aplica, y caduca
+  #     solo aunque el flag siga en `true`. Un permiso "temporal" sin vencimiento
+  #     se vuelve permanente por olvido.
+  #   - `aws` y `github` NUNCA son heredables: quedan fuera de
+  #     `INHERITABLE_SCOPES` (allowlist), así que ningún grant puede concederlos.
+  #   - Los scopes se escriben en forma de CONTRATO (`providers:anthropic`, con
+  #     `:`), nunca en el segmento interno del vault (`providers__anthropic`).
+  #
+  # Se commitea VACÍO a propósito: ningún grant activo en el repo. El ejemplo
+  # queda comentado para que dar de alta uno sea una decisión explícita.
+  inheritance:
+    grants: []
+    # - projectId: "acme"
+    #   scopes: ["providers:anthropic"]
+    #   enabled: true
+    #   until: "2026-12-31T00:00:00Z"
+  # ---------------------------------------------------------------------------
+  # #5426 · CA-11 — mecanismo de identidad del host (raíz de confianza)
+  # ---------------------------------------------------------------------------
+  # Cómo prueba este host quién es ANTES de poder leer el vault. Es la señal
+  # POSITIVA del guard de `createAwsCliVaultRunner`: el ambiente puede
+  # TRANSPORTAR material de credencial, pero nunca ELIGE con qué principal corre
+  # la AWS CLI (T2-1). Un valor vacío o fuera del enum falla nombrando esta
+  # clave — nunca «faltan variables», que es una remediación que el operador no
+  # puede accionar.
+  #
+  # Enum CERRADO (`VAULT_AUTH_MODES`, secret-vault.js):
+  #
+  #   assume-role-chain  perfil de la AWS CLI con `role_arn` + `source_profile`.
+  #                      Entrega credencial con `Expiration` (vida corta) y NO
+  #                      requiere habilitación administrativa en AWS. Es la
+  #                      opción firmada por el operador para este host (D7), con
+  #                      su riesgo residual escrito en la tabla de
+  #                      `docs/pipeline/vault-secretos-aws.md` § Raíz de
+  #                      confianza: la cadena TERMINA en una key estática del
+  #                      perfil source.
+  #   session-token      par + `AWS_SESSION_TOKEN` ya emitidos, en el ambiente.
+  #   static-key         par estático. Sólo con las condiciones de § Estado
+  #                      transitorio; degrada el vault a «un archivo en vez de
+  #                      varios», con peor blast radius.
+  #   instance-profile   el host corre sobre cómputo de AWS. No deja señal en el
+  #                      ambiente: la señal es JUSTAMENTE esta clave, y por eso
+  #                      el enum existe en vez de mirar qué variables hay.
+  authMode: "assume-role-chain"
+  # Perfil de la AWS CLI que usa SÓLO el vault, con `authMode:
+  # assume-role-chain`. Se commitea VACÍO por el mismo criterio que `hostId`: es
+  # un nombre local del host y este repo es público. Con el gate abierto, vacío
+  # falla nombrando `vault.awsProfile`.
+  #
+  # NO es un alias del perfil de trabajo del operador ni de `intrale` /
+  # `kernel-runtime` (D8: esos quedan fuera de alcance, no se migran ni se
+  # cuentan). El perfil del vault existe para asumir el rol de LECTURA del host.
+  # Con cualquier otro `authMode` esta clave debe quedar vacía: perfil + material
+  # de credencial en el mismo ambiente es ambiguo — la CLI resuelve por el
+  # material y el perfil queda de adorno.
+  awsProfile: ""
   # SEC-6 — TTL de la caché en memoria. Tope DURO de 300 s: un valor mayor se
   # RECHAZA (no se recorta en silencio), porque una credencial rotada seguiría
   # sirviéndose de la caché hasta que expire.
@@ -1492,12 +2028,50 @@ vault:
   # que hidrate de una las 13 vars de `ENV_MAPPING`.
   # Vocabulario (G-1): las claves top-level del namespace de credenciales
   # (`resolveScopedRefs`, credentials.js:209) — telegram · providers ·
-  # multimedia · aws · google_drive. Vacío hasta el rollout de #5353.
-  required_scopes: []
+  # multimedia · aws · google_drive.
+  #
+  # #5453 · CA-25 — DECISIÓN EXPLÍCITA, no una lista libre. Los tres scopes de
+  # acá abajo son exactamente los que `vaultScopePlan(ENV_DESCRIPTORS)` deriva
+  # hoy del código, y el preflight de `lib/vault-migration.js` compara los DOS
+  # conjuntos en las dos direcciones antes de dejar arrancar una ventana:
+  #
+  #   - falta un scope  ⇒ `inventario_incompleto`: el vault no lo resolvería y
+  #     ese secreto caería al archivo sin que nadie lo note.
+  #   - sobra un scope  ⇒ `inventario_divergente`: la allowlist autorizaría más
+  #     de lo que el código pide.
+  #
+  # Y la LISTA VACÍA ya no es un estado neutro: mientras estuvo en `[]` la
+  # comparación "todo lo declarado existe" se cumplía VACUAMENTE, así que un
+  # preflight derivado la habría dado por completa. Es `inventario_incompleto`
+  # explícito. Por eso también hay que actualizar esta lista en el MISMO commit
+  # en que se agrega un descriptor nuevo a `ENV_DESCRIPTORS`.
+  #
+  # `multimedia` y `aws` pertenecen al vocabulario pero NO tienen descriptor:
+  # declararlos acá sería divergencia, no previsión.
+  required_scopes:
+    - telegram
+    - providers
+    - google_drive
   # Membresía ENUMERADA de los scopes que viven en `<prefix>/<projectId>/shared/`.
   # `shared/` NO es el default: lo que no esté acá se busca en el namespace del
   # host (`hosts/<hostId>/`), que es lo que mantiene el aislamiento entre hosts.
-  shared_secrets: []
+  #
+  # #5453 · CA-25 — los tres scopes son compartidos porque los 13 descriptores
+  # declaran `shared: true` (credentials.js): son credenciales del PIPELINE
+  # (bot de Telegram, API keys de providers, OAuth de Drive), no de un host.
+  # Duplicarlas por host multiplicaría el trabajo de rotación por la cantidad de
+  # máquinas sin agregar aislamiento real — el blast radius de una key de
+  # provider filtrada es el mismo esté donde esté.
+  #
+  # El aislamiento por host (`hosts/<hostId>/`) queda reservado para material
+  # que SÍ es del host: hoy, la raíz de confianza de #5426, que no pasa por acá.
+  # Un scope declarado compartido sin descriptor `shared: true` que lo respalde
+  # es `inventario_divergente` en el preflight: saca material del namespace del
+  # host sin que el código lo haya pedido.
+  shared_secrets:
+    - telegram
+    - providers
+    - google_drive
   # #5899 — Cuántos namespaces del vault (`<prefix>/<projectId>#<hostId>`) puede
   # tener cacheados el proceso a la vez.
   #
@@ -1542,6 +2116,39 @@ vault:
   # `true`. Sin esto, "bootstrap temporal" se vuelve permanente por olvido, que
   # es exactamente el modo de falla que la ventana existe para evitar.
   bootstrap_fallback_until: ""
+  # Corte operacional del fallback (#5459). Los defaults son deliberadamente
+  # acotados y fail-closed; el ejecutor vuelve a validar estas cotas al usarlo.
+  cut_fallback:
+    authorization_ttl_seconds: 300
+    operation_timeout_ms: 10000
+    runbook: "docs/pipeline/vault-secretos-aws.md"
+    # -------------------------------------------------------------------------
+    # #5460 — PRODUCTOR de la propuesta, ausencia del operador y break-glass
+    # -------------------------------------------------------------------------
+    # Gate de rollout del productor. Con el gate CERRADO el pulpo no evalúa el
+    # criterio de salida, no publica ningún botón y no escribe un solo archivo
+    # bajo `.pipeline/state/`: el boot queda idéntico al de antes de #5460.
+    # Fail-closed: sólo el booleano `true` exacto lo abre.
+    #
+    # Se enciende recién cuando `vault.enabled: true` y la ventana sombra está
+    # corriendo de verdad. Encenderlo antes no rompe nada (sin cobertura el
+    # productor no propone), pero convierte `no_verificado` —que con el vault
+    # apagado es el estado normal— en un escalado a `needs-human` por
+    # `estado_indeterminado`, que es ruido puro.
+    proposal_enabled: false
+    # Cuánto se espera al operador antes de declarar ausencia y escalar a
+    # `needs-human`. NO es el TTL de la capability: ese vive en
+    # `action-token.js` (`OPERATIONAL_TTL_MS`, 10 min) y acota la ventana de
+    # replay de una autorización ya emitida. Este acota la paciencia con un
+    # humano. Igualarlos rompe una de las dos cosas: o el token vive 6 h, o se
+    # escala cada 10 minutos y el operador aprende a ignorar la alerta.
+    # Cotas duras: 60000 (1 min) .. 259200000 (72 h). Default del módulo: 6 h.
+    proposal_timeout_ms: 21600000
+    # Issue del cutover al que se le aplica `needs-human` cuando el operador
+    # está ausente, y al que se bindea el token de la capability. Se commitea
+    # en 0 (ausente): con el gate cerrado nunca se lee, y un placeholder que
+    # apunte a un issue equivocado etiquetaría trabajo ajeno el día del corte.
+    proposal_issue: 0
   # ---------------------------------------------------------------------------
   # #5427 · #5448 — ventana SOMBRA: criterio de salida del fallback
   # ---------------------------------------------------------------------------
@@ -1568,6 +2175,55 @@ vault:
     # Purga de filas viejas del JSONL. El límite efectivo nunca supera t0: la
     # retención no puede borrar evidencia de la ventana vigente ni moverlo.
     retention_days: 30
+  # ---------------------------------------------------------------------------
+  # #5453 — coordinador de la migración por host (lib/vault-migration.js)
+  # ---------------------------------------------------------------------------
+  # Lleva cada host por `preflight → rotated → provisioned → respawned →
+  # coexisting → cutover-ready → verified` y, recién al final, le PROPONE el
+  # corte al ejecutor de #5452. Nunca escribe `bootstrap_fallback` ni mueve
+  # work-files.
+  #
+  # Gate de rollout propio, además de `vault.enabled`: con cualquiera de los dos
+  # cerrado el Pulpo no evalúa nada, no consulta cobertura y no crea un solo
+  # archivo bajo `.pipeline/state/vault-migration/`. Fail-closed: sólo el
+  # booleano `true` exacto lo abre.
+  #
+  # Se reevalúa EN CALIENTE, en cada tick (#5453 rev-4): poner cualquiera de los
+  # dos en `false` acá detiene la observación en el tick siguiente, sin reiniciar
+  # el Pulpo. Hasta rev-3 ambos se leían una sola vez al arranque y el apagado no
+  # surtía efecto hasta el próximo respawn — un gate que sólo se cierra
+  # reiniciando el proceso no es un gate, y éste apaga un flujo que toca material
+  # irreversible. `auto_stages` se relee con el mismo criterio: es política, no
+  # configuración de arranque.
+  migration:
+    enabled: false
+    # Cada cuánto el Pulpo reanuda la máquina de estados. La ventana de
+    # convivencia se mide en horas, así que un tick corto sólo agregaría ruido.
+    tick_minutes: 15
+    # Etapas que el Pulpo puede ejecutar SOLO, sin operador.
+    #
+    # `observe` (leer la evidencia y avanzar `respawned → coexisting →
+    # cutover-ready`) es idempotente y no toca material: se puede automatizar.
+    #
+    # `rotate`, `provision` y `respawn` NO están acá y no es un olvido: rotar
+    # emite material nuevo (irreversible) y respawnear implica bajar el propio
+    # Pulpo. Un proceso que se reinicia dentro de su propio tick es el bucle de
+    # muerte que tumbó al Commander 12 h en 2026-07. Esas etapas las dispara el
+    # operador con el runbook (`docs/runbooks/credential-rotation.md`) y el
+    # coordinador las ACREDITA, no las ejecuta.
+    #
+    # El comando con el que se acreditan es
+    # `node .pipeline/vault-migration-run.js <etapa> --host <host>` (#5453
+    # rev-1). Sin ese punto de entrada la secuencia de arriba no se podía
+    # ejecutar: el cableado devolvía `rotacion_fallida` incondicionalmente y
+    # ningún host llegaba a `respawned`, que es el único estado que este tick
+    # procesa.
+    auto_stages:
+      - observe
+    # El corte final NUNCA se automatiza: necesita una capability firmada por el
+    # operador (#5452). Este flag existe para que quede escrito que la decisión
+    # es explícita y no un default olvidado.
+    auto_cutover: false
 
 # =============================================================================
 # #5067 — Entrega cross-repo: el entregable puede vivir en un repo hermano
@@ -1697,9 +2353,25 @@ architect:
 # se resuelve server-side desde credentials.json (`TELEGRAM_LEO_OPERATOR_CHAT_ID`)
 # y se inyecta al gate en runtime.
 operator_signoff:
+  # APAGADO (2026-08-19, decisión del operador; reafirmada 2026-08-20).
+  #
+  # El piloto se encendió el 2026-08-18 en `enforce` y quedó en DEADLOCK: la
+  # mitad que RETIENE está cableada, pero la mitad que FIRMA no existe todavía
+  # (`recordDefinitionSignature` no tiene ningún caller: ni Telegram, ni el
+  # dashboard, ni un comando). Resultado: issues retenidos sin ningún canal
+  # para desbloquearlos + notificaciones repetidas al operador.
+  #
+  # NO REENCENDER hasta que exista el canal único de firma (#6199 — Telegram
+  # con botones + dashboard web + API). Ese issue es la precondición dura.
+  # Cualquier cambio de estos valores requiere firma explícita del operador.
+  #
+  # NOTA OPERATIVA (2026-08-20): el apagado se aplicó primero sólo en el working
+  # tree del repo principal y un `reset --hard` a origin/main lo revirtió,
+  # reencendiendo el gate sin que nadie lo pidiera. Por eso este apagado va
+  # COMMITEADO a main: es el único estado que sobrevive al respawn.
   enabled: false
   gate_mode: dry-run
-  go_live_date: '2026-07-10T00:00:00Z'
+  go_live_date: '2026-08-18T00:00:00Z'
   preauthorized_classes: []
 
 # =============================================================================
@@ -1880,6 +2552,52 @@ waves:
   max_horizon: 12
 
 # =============================================================================
+# Estado operativo — aislamiento por proyecto (#5110, Ola 9.4 · E2)
+# =============================================================================
+# Namespacea el estado operativo (registro de olas, allowlist de ejecución,
+# archived/, audit y markers de transacción) por `projectId`:
+#
+#   enabled: false  →  .pipeline/waves.json                          (PLANO)
+#   enabled: true   →  .pipeline/projects/<projectId>/waves.json     (NAMESPACEADO)
+#
+# `.pipeline/.paused` NO se namespacea en ningún caso: es el halt TOTAL y es un
+# control de seguridad. Degradarlo a per-proyecto lo haría fallar ABIERTO.
+#
+# DEFAULT OFF a propósito. Prender esto ANTES de correr el migrador deja al
+# pipeline mirando un namespace vacío — cero olas, dispatch detenido. Secuencia:
+#
+#   1. Pausar (`.pipeline/.paused`).
+#   2. node .pipeline/scripts/migrate-operational-state-namespace.js --dry-run
+#   3. node .pipeline/scripts/migrate-operational-state-namespace.js
+#   4. enabled: true
+#   5. node .pipeline/restart.js
+#
+# Rollback (R8, minutos): pausar + enabled: false + `--rollback` + restart.
+# El migrador EXIGE `.paused` en disco (migrar y rollback por igual): es la única
+# guarda que frena al pulpo. No hay flag de bypass — ver §12.6 del contrato.
+#
+# La identidad del host NO se declara acá. Vive en `pipeline.config.json`
+# (`projectId: intrale-platform`), que es la MISMA fuente que usa el kernel-store
+# y que ya coincide con `.pipeline/descriptors/intrale-platform.json`. Un
+# `host_project_id` en este archivo sería una segunda fuente de verdad que el
+# código no lee: editarlo daría un no-op silencioso, justo lo contrario de la
+# tesis de #5110 ("el contexto debe ser explícito, no inferido"). Se eliminó.
+operational_state:
+  namespaced:
+    enabled: false
+    # true → el contexto de proyecto debe venir DECLARADO (projectId explícito
+    # in-process, o binding de spawn escrito por el pulpo). Con esto en true se
+    # apagan los dos caminos de compat que resuelven por convención —
+    # `single-project` (un único descriptor) y `host-fallback` (cero
+    # descriptores) — y ambos pasan a tirar EOPSTATE_NO_PROJECT_CONTEXT.
+    #
+    # DEFAULT false: hoy sólo el pulpo emite binding; el dashboard, los hooks y
+    # los skills caen a `single-project`. Prenderlo antes de #5164 (contexto
+    # explícito en cada punto de entrada) deja al tablero sin estado operativo.
+    # Se prende recién con 2 proyectos reales, después de #5164.
+    strict_context: false
+
+# =============================================================================
 # Transición automática de ola (#4368, Ola 8.3)
 # =============================================================================
 # El brazo `brazoTransicionOla` (pulpo.js) detecta si TODOS los issues de la ola
@@ -1898,6 +2616,13 @@ waves:
 # ambigüedad de `gh` (exit≠0, timeout, issue ausente) NO promueve.
 #
 # Corte en caliente: `kill_switch: true` desactiva sin reiniciar el pulpo.
+brazo:
+  reclaim_merge_race:
+    enabled: false
+    kill_switch: false
+    max_attempts: 3
+    child_timeout_ms: 300000
+
 wave_auto_transition:
   enabled: false        # kill switch maestro: false ⇒ el brazo no hace nada
   kill_switch: false    # override de emergencia adicional

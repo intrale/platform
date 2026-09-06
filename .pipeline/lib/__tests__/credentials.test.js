@@ -263,3 +263,25 @@ test('ENV_MAPPING cubre los providers IA vivos + telegram + multimedia', () => {
   // #3353 — GROQ_API_KEY removida tras la descontinuación del provider.
   assert.ok(!values.has('GROQ_API_KEY'), 'GROQ_API_KEY debería estar removida tras #3353');
 });
+
+// ─── scope aws (#5126) — RETIRADO EN EL MERGE CON main ──────────────────────
+//
+// Esta rama traía cuatro tests que exigían que ENV_MAPPING hidratara
+// AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_REGION. Mientras la rama
+// esperaba, main resolvió ese mismo hueco en sentido CONTRARIO y de forma
+// deliberada: `.pipeline/secrets-manifest.json` ya inventaría las seis claves
+// `aws.*` como `hydration: "deferred"`, y dos de ellas como
+// `consumer_status: "broken"` + `blocked_by: "#5040"`.
+//
+// El motivo está escrito en el propio manifiesto: con
+// `pipeline.env_isolation_enabled: false`, hidratarlas las copiaría al entorno
+// de TODOS los agentes hijos por el passthrough crudo del spawn — incluidos los
+// que corren sobre providers de terceros. Se difiere por EXPOSICIÓN, no por
+// falta de consumidor.
+//
+// Esa decisión está fijada por una invariante viva
+// (`secrets-manifest.test.js`, "la invariante bidireccional relaciona store
+// eager con ENV_MAPPING"), que exige `ENV_MAPPING[<clave deferred>] === undefined`.
+// Los cuatro tests de esta rama eran su negativo exacto: no pueden estar verdes
+// a la vez. Se retiran acá; la intención original se realiza en #5040, que
+// activa el aislamiento y deja que sólo los skills con scope `aws` la reciban.

@@ -478,15 +478,19 @@ function supervisorConAlertas(catalogo, alertas) {
 
 test('CA-6.b · onAlert de `secrets` emite el error del resolver verbatim (gate del vault cerrado)', async () => {
   const alertas = [];
+  // #6032 · CA-15 — el id del fixture era `providers`, que desde este corte es
+  // un projectId RESERVADO (colisiona con el scope homónimo en el path del
+  // vault) y el supervisor lo rechaza en el boot. Se renombra a un id sintético:
+  // lo que este caso pinnea es el `detail` verbatim del resolver, no el id.
   const supervisor = supervisorConAlertas(
-    [{ productId: 'providers', projectId: 'providers', name: 'Providers', status: 'active' }],
+    [{ productId: 'fake-providers', projectId: 'fake-providers', name: 'FAKE Providers', status: 'active' }],
     alertas,
   );
   await supervisor.bootProducts();
 
   // Sin `vaultConfig` inyectada se lee la real: `vault.enabled: false` ⇒
   // fail-closed, JAMÁS fallback al archivo de credenciales (CA-17 de #5899).
-  const r = supervisor.resolveInstanceSecrets('providers', {
+  const r = supervisor.resolveInstanceSecrets('fake-providers', {
     scopes: ['openai'],
     logger: () => {},
   });
