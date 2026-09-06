@@ -1,1 +1,0 @@
-QA visual issue 4806. Se ve la pestana Productos con accion Editar para productos active y onboarding. Se ve Desactivar como accion destructiva restringida y el estado Archivado. El wizard de edicion aparece prellenado y guarda via descriptor durable. La confirmacion advierte que una ola en curso termina sola y no recibe nuevos slots.
