@@ -344,6 +344,11 @@ const workfileName = require('./lib/workfile-name');
 const brazoBarridoCore = require('./lib/brazo-barrido-core');
 const brazoLanzamientoCore = require('./lib/brazo-lanzamiento-core');
 const brazoDesbloqueoCore = require('./lib/brazo-desbloqueo-core');
+// #4968 — núcleo del brazo del watcher de mergeabilidad de PRs. TODA la
+// decisión (config, guard, watchdog, scheduling, orquestación) vive ahí, con
+// reloj inyectable; acá abajo queda sólo el wrapper que aporta los efectos del
+// proceso (`ghDesbloqueoCall`, `taskkill`, `log`). Ver H-A1 de la receta.
+const brazoPrMergeabilityCore = require('./lib/brazo-pr-mergeability-core');
 const mergeRaceLedger = require('./lib/merge-race-reclaim-ledger');
 // #6432 CA-23/CA-24 — copy de los DOS desenlaces del rescate (merge confirmado
 // / degradación). Fuente única: el barrido no redacta texto para el operador.
@@ -23083,7 +23088,12 @@ function _ghExecSyncGuarded(command, opts = {}) {
   }
 }
 
-function _ghCallWithTimeout(bin, args, timeoutMs) {
+// #4968 — `onSpawn` es un 4º parámetro OPCIONAL y aditivo: notifica el pid del
+// `gh` recién lanzado al caller que quiera registrarlo para su propio watchdog
+// (el brazo de mergeabilidad lo usa en `guard.setActivePid`). Ningún caller
+// previo lo pasa, así que el comportamiento en caliente no cambia; un `onSpawn`
+// que explote no puede afectar la llamada (va en try/catch).
+function _ghCallWithTimeout(bin, args, timeoutMs, onSpawn) {
   return new Promise((resolve, reject) => {
     // #4612 — cortocircuito: si el breaker está abierto, fallar rápido SIN
     // spawnear gh (no bloquear el loop del Pulpo durante un outage de red).
@@ -23116,6 +23126,11 @@ function _ghCallWithTimeout(bin, args, timeoutMs) {
 
     pid = proc && Number.isInteger(proc.pid) ? proc.pid : null;
     if (pid && pid > 0) _unblockActivePid = pid;
+    // #4968 — notificación best-effort del pid al caller (ver comentario del
+    // parámetro). Nunca puede tumbar la llamada a `gh`.
+    if (typeof onSpawn === 'function') {
+      try { onSpawn(pid); } catch { /* best-effort */ }
+    }
 
     timer = setTimeout(() => {
       if (settled) return;
@@ -23293,6 +23308,106 @@ async function brazoTransicionOla(config) {
     }
   } finally {
     _transicionOlaRunning = false;
+  }
+}
+
+// =============================================================================
+// #4968 — Brazo del watcher de mergeabilidad de PRs.
+// =============================================================================
+//
+// Wrapper DELGADO, fire-and-forget, no bloqueante. Acá no se decide nada: la
+// config, el guard, el watchdog, el scheduling y la orquestación
+// observación→revalidación→rewind viven en `lib/brazo-pr-mergeability-core`,
+// que se testea sin cargar `pulpo.js` (H-A1). Lo único propio de este archivo
+// son los efectos del proceso: el `gh` endurecido, el `taskkill` y el `log`.
+//
+// Nace APAGADO (`pr_mergeability_watcher.enabled: false` en `config.yaml`): con
+// el flag en false el brazo cuesta un `return` inmediato y CERO llamadas a
+// GitHub (CA-1).
+// -----------------------------------------------------------------------------
+
+// Config normalizada del último tick, sólo para que el guard sepa su TTL sin
+// tener que re-normalizar (el guard se construye una vez, la config se lee cada
+// tick). `null` ⇒ el guard cae a su default de 10 min, fail-closed.
+let _mergeabilityCfg = null;
+
+const _mergeabilityScheduler = brazoPrMergeabilityCore.createScheduler();
+
+// R-1 — buffer de eventos que exceden la cota de rewinds por tick. Vive acá
+// (una sola instancia por proceso, igual que el guard y el scheduler) para que
+// la cota DIFIERA trabajo al tick siguiente en vez de descartarlo: el poll de
+// #4966 ya marcó el evento como `emitted` y no lo vuelve a emitir.
+const _mergeabilityDeferred = brazoPrMergeabilityCore.createDeferredBuffer();
+
+const _mergeabilityGuard = brazoPrMergeabilityCore.createReentryGuard({
+  wedgeTimeoutMs: () => (_mergeabilityCfg ? _mergeabilityCfg.wedgeTimeoutMs : null),
+  onWedge: ({ wedgeMs, pid }) => {
+    // Mismo efecto que `_checkAndResetUnblockWedge` (#3059): matar el `gh`
+    // colgado. `_ghCallWithTimeout` ya lo mata por su propio timeout, así que
+    // esto es el cinturón de seguridad para el caso en que ni el timer corrió.
+    if (Number.isInteger(pid) && pid > 0) {
+      try {
+        execSync(`taskkill /F /T /PID ${pid}`, { timeout: 5000, windowsHide: true, stdio: 'ignore' });
+      } catch { /* pid ya muerto: benigno */ }
+    }
+    log('mergeability', `[WARN] brazo wedged > ${Math.round(wedgeMs / 60000)}min — reset forzado del guard`);
+    // Sin este reset el brazo esperaría OTRO intervalo completo después del
+    // wedge (observación explícita de #3059): arranca en el próximo tick.
+    _mergeabilityScheduler.reset();
+  },
+});
+
+async function brazoPrMergeability(config) {
+  const norm = brazoPrMergeabilityCore.normalizeWatcherConfig((config || {}).pr_mergeability_watcher);
+  if (!norm.ok) {
+    // `disabled` / `missing_section` / `kill_switch` son estado de rollout
+    // esperado: no ensucian el log. Cualquier otro motivo es config ROTA y se
+    // avisa con el CÓDIGO tipado, nunca con el valor crudo (SEC-2).
+    if (!brazoPrMergeabilityCore.SILENT_REASONS.includes(norm.reason)) {
+      log('mergeability', `[WARN] config inválida (${norm.reason}) — brazo deshabilitado (no bloqueante)`);
+    }
+    return; // CERO llamadas a GitHub (CA-1).
+  }
+  _mergeabilityCfg = norm.cfg;
+
+  // El watchdog corre ANTES del guard, igual que `brazoDesbloqueo` (:23250).
+  _mergeabilityGuard.checkWedge();
+  if (!_mergeabilityGuard.tryEnter()) return;
+  try {
+    const gate = _mergeabilityScheduler.shouldRun(norm.cfg);
+    if (!gate.run) return;
+
+    const res = await brazoPrMergeabilityCore.runTick(norm.cfg, {
+      // H-A3 — el runner endurecido del Pulpo: timeout + taskkill + pid +
+      // args sanitizados + circuit breaker `_ghBreaker` (#4612), gratis.
+      ghCall: (args, timeoutMs, onSpawn) => _ghCallWithTimeout(GH_BIN, args, timeoutMs, onSpawn),
+      onChildSpawn: (pid) => _mergeabilityGuard.setActivePid(pid),
+      getActiveWave: () => require('./lib/waves').getActiveWave(),
+      deferred: _mergeabilityDeferred,
+      // Resuelto EN CADA TICK, no capturado al cargar el módulo: los tests que
+      // requieren `pulpo.js` setean `PIPELINE_DIR_OVERRIDE` DESPUÉS del require
+      // (mismo motivo que `telegramPendienteDir`, #5924).
+      pipelineRoot: process.env.PIPELINE_DIR_OVERRIDE
+        ? path.resolve(process.env.PIPELINE_DIR_OVERRIDE)
+        : PIPELINE,
+      config,
+      yaml,
+      now: () => Date.now(),
+      log: (msg) => log('mergeability', msg),
+    });
+
+    if (res && res.ok) _mergeabilityScheduler.recordSuccess();
+    else _mergeabilityScheduler.recordFailure(norm.cfg);
+
+    if (res && Array.isArray(res.rewound) && res.rewound.length > 0) {
+      log('mergeability', `♻️ rewind por conflicto de merge: ${res.rewound.map(r => `#${r.issue}(PR ${r.pr})`).join(', ')}`);
+    }
+  } catch (e) {
+    // Aislamiento interno (CA-2): el rechazo del await muere acá.
+    log('mergeability', `[WARN] tick falló (no bloqueante): ${e.message}`);
+  } finally {
+    // SIEMPRE, también con excepción (CA-3).
+    _mergeabilityGuard.release();
   }
 }
 
@@ -26395,6 +26510,13 @@ async function mainLoop() {
         // label `provider-exhaustion-pause` y los destraba si algún provider
         // de su chain se liberó. Fire-and-forget — no bloquea el loop.
         brazoProviderExhaustionRetry(config);
+        // #4968 — watcher de mergeabilidad de PRs (fire-and-forget). Detecta
+        // PRs de la ola que quedaron CONFLICTING contra main y reencola el
+        // issue por el mecanismo canónico de rewind. No-op salvo que
+        // `config.pr_mergeability_watcher.enabled` sea true (default OFF).
+        // Doble aislamiento deliberado: el `try/catch` interno cubre el rechazo
+        // del await; este `.catch` cubre un fallo al construir las deps.
+        brazoPrMergeability(config).catch(e => log('mergeability', `error en brazo async: ${e.message}`));
       } else if (paused) {
         log('pulpo', 'PAUSADO — esperando reanudación (borrar .pipeline/.paused)');
         // #4709 — `.paused` global = halt humano. Publicar la causa para que el
@@ -26664,6 +26786,14 @@ if (process.env.PULPO_NO_AUTOSTART === '1') {
     brazoBarridoCore,
     brazoLanzamientoCore,
     brazoDesbloqueoCore,
+    // #4968 — brazo del watcher de mergeabilidad: el wrapper real (para el test
+    // de cableado: flag apagado ⇒ cero llamadas a `gh`; core que rechaza ⇒ el
+    // tick completa igual) y su núcleo (para aseverar que quedó cableado).
+    brazoPrMergeability,
+    brazoPrMergeabilityCore,
+    _getMergeabilityGuard: () => _mergeabilityGuard,
+    _getMergeabilityScheduler: () => _mergeabilityScheduler,
+    _getMergeabilityDeferred: () => _mergeabilityDeferred,
     // #3934 (EP4-H1) — conversación persistida por chat: helpers puros/IO
     // expuestos para los tests de aislamiento, sanitización, rehidratación y
     // retención.
