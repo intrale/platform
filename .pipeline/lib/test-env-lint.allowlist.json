@@ -270,13 +270,13 @@
         },
         {
             "file": "lib/__tests__/brazo-desbloqueo-core.test.js",
-            "line": 132,
+            "line": 141,
             "kind": "deuda",
             "reason": "escritura de CLAUDE_PROJECT_DIR fuera del helper"
         },
         {
             "file": "lib/__tests__/brazo-desbloqueo-core.test.js",
-            "line": 133,
+            "line": 142,
             "kind": "deuda",
             "reason": "escritura de PIPELINE_REPO_ROOT fuera del helper"
         },
