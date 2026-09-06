@@ -985,11 +985,40 @@ function construirVaultDeResolucion({ cfg, projectId, prep, opts }, logger) {
       shared_secrets: [...prep.compartidos],
     },
     driver,
+    // #5803 — el sink viaja TAL CUAL, por identidad referencial: sin wrapper,
+    // sin contador, sin filtro. Esta capa no observa, no cuenta y no reclasifica
+    // lo que el vault emite; las dos escriben en el MISMO sink y el agregador es
+    // #5805. Envolverlo acá sería el primer paso hacia un segundo sistema de
+    // métricas, que es exactamente lo que CA-17 prohíbe.
+    sink: opts.vaultSink || null,
     // CA-23 — al logger del vault sólo llegan NOMBRES de scope.
     logger: {
       info: (msg, meta) => logger(`[credentials] ${msg} ${JSON.stringify(meta || {})}`),
       warn: (msg, meta) => logger(`[credentials] WARN: ${msg} ${JSON.stringify(meta || {})}`),
     },
+  });
+}
+
+/**
+ * #5803 · Paso 2c · emisor de telemetría de ESTE pedido.
+ *
+ * Regla de dueño único: `credentials.js` emite SÓLO las dos decisiones que toma
+ * esta capa y el vault no puede ver —hit de `_vaultMemo` y join de un vuelo en
+ * curso—, y sólo cuando la resolución NO llega al vault. Si llega, emite el
+ * vault. Las ramas son mutuamente excluyentes por construcción (`mirarMemo`
+ * corta antes que el vuelo, y el vuelo antes que `construirVaultDeResolucion`),
+ * así que no hay doble conteo posible.
+ *
+ * El emisor es el de `secret-vault.js`: acá NO se reimplementa la emisión, no se
+ * escribe ningún literal de categoría y no se arma el evento a mano. El latch
+ * vive en el contexto de este pedido y muere con él: nada persiste entre pedidos.
+ */
+function telemetriaDePedido(prep, opts, logger) {
+  return prep.sv.createVaultTelemetryEmitter({
+    sink: opts.vaultSink || null,
+    now: typeof opts.now === 'function' ? opts.now : undefined,
+    // Redactado: el nombre del error y nada más. Nunca el evento.
+    onError: (err) => logger(`[credentials] WARN: el sink de telemetría del vault falló (${err && err.name})`),
   });
 }
 
@@ -1092,8 +1121,19 @@ function resolverVaultConPlan(args, logger) {
   const { cfg, projectId, opts } = args;
   const prep = prepararResolucion(args, logger);
 
+  // #5803 — el camino sync NO consulta el registro de vuelos (no puede: no hay
+  // await donde intercalar), así que este emisor no puede clasificar un join ni
+  // por error. La única decisión alcanzable desde acá es el hit de memo.
+  const telemetria = telemetriaDePedido(prep, opts, logger);
+  const ctxTelemetria = telemetria.crearContexto();
+
   const hit = mirarMemo(prep.clave, prep.ahora);
   if (hit) {
+    // D2 — se sirve de la memo de ESTA capa: el vault ni se construye, así que
+    // esta decisión no tiene otro dueño posible. En el camino productivo es el
+    // único hit de caché que existe (cada resolución que llega al vault crea una
+    // instancia nueva, y dentro de una instancia el núcleo corre a lo sumo una vez).
+    telemetria.emitir(ctxTelemetria, prep.sv.VAULT_TELEMETRY.CACHE_HIT);
     return { enabled: true, namespace: prep.namespace, payload: hit.payload, error: null, cfg };
   }
 
@@ -1142,13 +1182,29 @@ async function resolverVaultConPlanAsync(args, logger) {
   // envenenarlo.
   const prep = prepararResolucion(args, logger);
 
+  // #5803 — un emisor por PEDIDO, con latch propio. Los joiners de un mismo
+  // vuelo son pedidos distintos, así que cada uno emite el suyo: de N llamadas
+  // concurrentes, la dueña del vuelo la clasifica el VAULT como lectura física
+  // y las N-1 restantes las clasifica esta capa como join.
+  const telemetria = telemetriaDePedido(prep, opts, logger);
+  const ctxTelemetria = telemetria.crearContexto();
+
   const hit = mirarMemo(prep.clave, prep.ahora);
   if (hit) {
+    // D2 — idéntico al gemelo sync: la memo corta antes de tocar el vault.
+    telemetria.emitir(ctxTelemetria, prep.sv.VAULT_TELEMETRY.CACHE_HIT);
     return { enabled: true, namespace: prep.namespace, payload: hit.payload, error: null, cfg };
   }
 
   const enVuelo = _vuelos.get(prep.clave);
-  if (enVuelo) return enVuelo;
+  if (enVuelo) {
+    // D1 — se reutiliza la promesa de un vuelo en curso. Esta decisión la toma
+    // ESTA capa y el vault no puede verla: el vault no coalesce nada, y de hecho
+    // este pedido no va a construir ninguna instancia de vault. Es la única
+    // categoría que no tiene otro dueño posible.
+    telemetria.emitir(ctxTelemetria, prep.sv.VAULT_TELEMETRY.SINGLE_FLIGHT_JOIN);
+    return enVuelo;
+  }
 
   const vuelo = (async () => {
     for (let intento = 0; intento < MAX_INTENTOS_POR_GENERACION; intento += 1) {
