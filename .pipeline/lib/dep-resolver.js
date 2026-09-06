@@ -74,7 +74,7 @@
 const {
     parseDependencyComment,
     extractDependencyBlock,
-    extractIssueNumbers,
+    extractDeclaredIssueNumbers,
 } = require('./dep-comment-parser');
 
 // Cap consistente con `parseDependenciesFromComment` (#3167). Aplicado por
@@ -193,7 +193,10 @@ function parseCanonicalBlock(body, selfIssue) {
     const fencedFreeBody = fencedFreeLines.join('\n');
     const block = extractDependencyBlock(fencedFreeBody);
     if (block === null) return [];
-    const nums = extractIssueNumbers(block, selfIssue);
+    // #6902 — sólo las referencias DECLARADAS como item de lista. Antes se
+    // tomaban todos los `#N` del bloque y la prosa explicativa del marker se
+    // convertía en dependencia dura (ciclos madre-hija irrompibles).
+    const nums = extractDeclaredIssueNumbers(block, selfIssue);
     return nums.filter(isValidIssueNum);
 }
 

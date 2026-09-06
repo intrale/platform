@@ -559,6 +559,206 @@ function classifySpuriousUmbrellaClose(issue) {
   return { ...out, reopen: true, reason: 'hija-cerrada-por-el-brazo-sin-pr' };
 }
 
+// =============================================================================
+// #6902 — Detección de CICLOS de dependencias
+// =============================================================================
+//
+// Un ciclo en el grafo `blockedBy` es un deadlock permanente: ninguno de sus
+// miembros puede liberarse porque cada uno espera a otro que a su vez lo espera.
+// Y es INVISIBLE para el resto del sistema: cada issue del ciclo,
+// individualmente, está en un estado perfectamente sano ("esperando una
+// dependencia abierta"), así que ningún watchdog lo levanta. Los seis issues de
+// la ola 9.4 que motivaron este módulo estuvieron congelados días sin que nadie
+// lo notara.
+//
+// Este módulo NO rompe ciclos: cuál de las dependencias es la espuria es juicio
+// humano (borrar la equivocada destruiría una dependencia real). Sólo detecta y
+// arma el aviso. Romper automáticamente está explícitamente fuera de alcance.
+//
+// LÍMITE CONOCIDO: el grafo se construye con lo que el brazo ve en el ciclo, es
+// decir los issues con `blocked:dependencies` vivo. Un ciclo cuyo eslabón no
+// tenga el label no se cierra en este grafo y no se detecta. Es conservador por
+// diseño: preferimos no reportar antes que inventar un ciclo con datos parciales.
+// =============================================================================
+
+/**
+ * Detecta los ciclos elementales del grafo de bloqueos.
+ *
+ * @param {Record<string, Array<string|number>>} blockedBy — issue → deps.
+ * @returns {Array<{cycle: string[], key: string}>}
+ *          `cycle` es el camino cerrado (`['6173','6191','6173']`); `key` es su
+ *          firma canónica — invariante ante rotaciones — para deduplicar avisos.
+ */
+function detectDependencyCycles(blockedBy) {
+  if (!blockedBy || typeof blockedBy !== 'object') return [];
+
+  // Normalizar a string y quedarse SÓLO con las aristas cuyo destino también es
+  // nodo del grafo: una dep que no está bloqueada no puede cerrar un ciclo.
+  const nodes = Object.keys(blockedBy).map(depKey);
+  const nodeSet = new Set(nodes);
+  const edges = new Map();
+  for (const n of nodes) {
+    const deps = Array.isArray(blockedBy[n]) ? blockedBy[n] : [];
+    const out = [];
+    for (const d of deps) {
+      const k = depKey(d);
+      if (k === n) continue;            // auto-referencia: ya la excluye el parser
+      if (!nodeSet.has(k)) continue;    // hoja del grafo → no cierra ciclo
+      if (!out.includes(k)) out.push(k);
+    }
+    edges.set(n, out);
+  }
+
+  const found = new Map();   // firma canónica → ciclo
+  const state = new Map();   // nodo → 0 sin visitar | 1 en la pila | 2 cerrado
+  const path = [];
+
+  // DFS iterativo (sin recursión: el grafo lo arma GitHub y no queremos que su
+  // tamaño pueda voltear el Pulpo por stack overflow).
+  for (const root of nodes) {
+    if (state.get(root)) continue;
+    const stack = [{ node: root, i: 0 }];
+    state.set(root, 1);
+    path.push(root);
+
+    while (stack.length > 0) {
+      const frame = stack[stack.length - 1];
+      const out = edges.get(frame.node) || [];
+      if (frame.i >= out.length) {
+        state.set(frame.node, 2);
+        stack.pop();
+        path.pop();
+        continue;
+      }
+      const next = out[frame.i++];
+      const st = state.get(next) || 0;
+      if (st === 1) {
+        // Back-edge: `next` sigue en la pila → hay ciclo desde ahí hasta acá.
+        const start = path.indexOf(next);
+        if (start !== -1) {
+          const cycle = path.slice(start).concat([next]);
+          const key = canonicalCycleKey(cycle);
+          if (!found.has(key)) found.set(key, cycle);
+        }
+        continue;
+      }
+      if (st === 2) continue;
+      state.set(next, 1);
+      path.push(next);
+      stack.push({ node: next, i: 0 });
+    }
+  }
+
+  return Array.from(found.entries()).map(([key, cycle]) => ({ cycle, key }));
+}
+
+/**
+ * Firma estable de un ciclo, invariante ante el nodo por el que se lo recorrió.
+ * `6173→6191→6173` y `6191→6173→6191` comparten firma: son el mismo deadlock y
+ * merecen UN aviso, no dos.
+ *
+ * @param {string[]} cycle — camino cerrado (primer y último nodo iguales).
+ * @returns {string}
+ */
+function canonicalCycleKey(cycle) {
+  const list = Array.isArray(cycle) ? cycle : [];
+  const nodes = list.slice(0, -1).map(depKey);   // sin repetir el nodo de cierre
+  if (nodes.length === 0) return '';
+  let best = 0;
+  for (let i = 1; i < nodes.length; i++) {
+    if (compareIssueIds(nodes[i], nodes[best]) < 0) best = i;
+  }
+  return nodes.slice(best).concat(nodes.slice(0, best)).join('>');
+}
+
+/** Orden numérico cuando ambos son números; lexicográfico si no. */
+function compareIssueIds(a, b) {
+  const na = Number(a);
+  const nb = Number(b);
+  if (Number.isFinite(na) && Number.isFinite(nb) && na !== nb) return na - nb;
+  return String(a).localeCompare(String(b));
+}
+
+/** `#6173 → #6191 → #6173` — el ciclo completo, no "hay un ciclo". */
+function formatCycle(cycle) {
+  return (Array.isArray(cycle) ? cycle : []).map((n) => '#' + depKey(n)).join(' → ');
+}
+
+/**
+ * Arma el aviso al operador de un ciclo detectado.
+ *
+ * Severidad de anomalía a propósito: si el aviso sonara igual que un "esperando
+ * dependencia" normal, el problema de visibilidad que motivó #6902 seguiría
+ * intacto. Y cierra diciendo CÓMO se corrige — saber que hay un deadlock sin
+ * saber qué hacer no destraba nada.
+ *
+ * @param {{cycle: string[], key: string}} c
+ * @returns {{key: string, log: string, telegram: string}}
+ */
+function buildCycleAlert(c) {
+  const ruta = formatCycle(c && c.cycle);
+  const involucrados = Array.isArray(c && c.cycle)
+    ? Array.from(new Set(c.cycle.map(depKey)))
+    : [];
+  return {
+    key: (c && c.key) ? c.key : ruta,
+    log: `🔴 ciclo de dependencias detectado: ${ruta} — ninguno de estos issues puede liberarse solo`,
+    telegram: [
+      `🔴 Ciclo de dependencias — ${involucrados.length} issues congelados`,
+      '',
+      ruta,
+      '',
+      'Cada uno espera al siguiente, así que ninguno se destraba nunca. El pipeline NO lo rompe solo: cuál de las dependencias sobra es una decisión tuya.',
+      '',
+      'Para corregirlo, reposteá el marker del issue que tenga la dependencia espuria dejando sólo los bullets reales, con la prosa detrás de una línea `---`. Gana el comentario más reciente.',
+    ].join('\n'),
+  };
+}
+
+/**
+ * #6902 — Guardrail madre-hija.
+ *
+ * Una hija de split (`[Split de #N] ...`) que declare a `#N` como dependencia
+ * cierra un ciclo POR CONSTRUCCIÓN: la madre de un split depende legítimamente
+ * de sus hijas. No hace falta ver el grafo entero para saberlo — alcanza con el
+ * título y la lista de deps, y por eso se puede detectar en el momento mismo en
+ * que se escribe el marker, en vez de días después.
+ *
+ * NO filtra la dependencia: avisa. Romper el ciclo sigue siendo humano.
+ *
+ * @param {{title?: string, issue?: string|number, deps?: Array<string|number>}} p
+ * @returns {{isCycle: boolean, parent: number|null, reason: string, log: string|null, telegram: string|null}}
+ */
+function detectMotherChildCycle({ title, issue, deps } = {}) {
+  const none = { isCycle: false, parent: null, reason: '', log: null, telegram: null };
+  if (typeof title !== 'string' || title.length === 0) return { ...none, reason: 'sin-titulo' };
+
+  const parent = parseSplitParent(title);
+  if (parent === null) return { ...none, reason: 'no-es-hija-de-split' };
+
+  const list = Array.isArray(deps) ? deps.map(depKey) : [];
+  if (!list.includes(depKey(parent))) {
+    return { ...none, parent, reason: 'no-declara-a-la-madre' };
+  }
+
+  const hija = issue == null ? '?' : depKey(issue);
+  return {
+    isCycle: true,
+    parent,
+    reason: 'hija-declara-a-su-madre',
+    log: `🔴 ciclo madre-hija: #${hija} es hija del split de #${parent} y declara a #${parent} como dependencia — la madre depende de sus hijas, así que ninguna de las dos puede liberarse`,
+    telegram: [
+      `🔴 Dependencia imposible en el marker de #${hija}`,
+      '',
+      `#${parent} → #${hija} → #${parent}`,
+      '',
+      `#${hija} es una hija del split de #${parent} y declara a su madre como dependencia. La madre ya depende de sus hijas: el ciclo queda cerrado y ninguna de las dos se libera nunca.`,
+      '',
+      `El marker se escribió igual — el pipeline no borra dependencias por su cuenta. Si la mención a #${parent} era narrativa, reposteá el marker de #${hija} sin ese bullet.`,
+    ].join('\n'),
+  };
+}
+
 module.exports = {
   selectMarkersToRelease,
   selectHumanBlocksToRelease,
@@ -569,6 +769,12 @@ module.exports = {
   decideSplitUmbrellaClose,
   // #6801 CA-7 — auditoría del radio de impacto del auto-cierre espurio
   classifySpuriousUmbrellaClose,
+  // #6902 — ciclos de dependencias: detectar y reportar, nunca romper
+  detectDependencyCycles,
+  detectMotherChildCycle,
+  buildCycleAlert,
+  formatCycle,
+  canonicalCycleKey,
   depKey,
   CLOSED,
   DEFAULT_MAX_AUTO_RELEASES,
