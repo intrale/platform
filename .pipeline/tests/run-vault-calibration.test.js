@@ -32,6 +32,9 @@ const {
     ARTIFACT_FILENAME,
 } = require('../lib/vault-load-calibration');
 
+// #5800 — los códigos del núcleo de escenario también llegan a este borde.
+const { CALIBRATION_ERROR_CODES: N } = require('../lib/vault-calibration-scenario');
+
 const { VAULT_TELEMETRY } = require('../lib/secret-vault');
 
 const HEAD = 'c'.repeat(40);
@@ -294,4 +297,76 @@ test('cada codigo de error del modulo tiene traduccion para el operador', () => 
     // Un código desconocido sí cae a interno, con texto genérico y sin filtrar nada.
     const desconocido = traducir({ code: 'OTRO', detail: { field: 'x' } });
     assert.equal(desconocido.exit, EXIT.INTERNAL);
+});
+
+// -----------------------------------------------------------------------------
+// #5800 — cierre del hueco entre el núcleo de escenario (#5804) y este borde.
+//
+// `runCalibration` propaga los `CalibrationError` del núcleo TAL CUAL, así que
+// sus códigos llegan hasta acá. Antes no tenían fila y salían por el FALLBACK
+// como "condicion no prevista / reportar el incidente" con salida interna, que
+// manda al operador a abrir un incidente cuando lo que había era un parámetro
+// mal declarado en su propio sobre.
+// -----------------------------------------------------------------------------
+
+/** Códigos del núcleo que SÍ son defecto nuestro y por eso pueden ser internos. */
+const CODIGOS_INTERNOS_LEGITIMOS = new Set([
+    N.SUMMARY_INVALID,
+    N.PORT_MISSING,
+    N.CLOCK_INVALID,
+    N.RESOLVE_HEAD_FAILED,
+    N.DRIVER_RESULT_INVALID,
+    N.SINK_FAILED,
+]);
+
+test('cada codigo del nucleo de escenario tambien tiene traduccion en este borde', () => {
+    for (const code of Object.values(N)) {
+        assert.ok(Object.prototype.hasOwnProperty.call(TRADUCCION, code),
+            `el código ${code} del núcleo no tiene fila en la tabla de traducción del CLI`);
+        const t = traducir({ code });
+        assert.ok(t.impacto.length > 0, `${code} sin impacto`);
+        assert.ok(t.siguiente.length > 0, `${code} sin próximo paso`);
+        assert.ok(Object.values(EXIT).includes(t.exit), `${code} con salida fuera del enum`);
+    }
+});
+
+test('un parametro mal declarado no se reporta como error interno del pipeline', () => {
+    // Todo lo que el operador puede corregir en su sobre tiene que salir por un
+    // código distinto de INTERNAL: ése es el que dispara "reportar el incidente".
+    for (const code of Object.values(N)) {
+        if (CODIGOS_INTERNOS_LEGITIMOS.has(code)) continue;
+        assert.notEqual(traducir({ code }).exit, EXIT.INTERNAL,
+            `${code} se le presenta al operador como defecto del pipeline`);
+    }
+});
+
+test('la tabla de traduccion no tiene filas huerfanas', () => {
+    const conocidos = new Set([...Object.values(E), ...Object.values(N)]);
+    for (const code of Object.keys(TRADUCCION)) {
+        assert.ok(conocidos.has(code), `la tabla traduce ${code}, que ya no emite ningún módulo`);
+    }
+});
+
+test('un escenario mal parametrizado corta con salida de corrida y paso accionable', async () => {
+    const sobre = sobreValido();
+    sobre.scenario.bucket_ms = 7000; // no divide exacto a los 60000 ms de ventana
+    const { codigo, salida } = await correr(['--stdin'],
+        depsCli({ stdinTexto: JSON.stringify(sobre) }));
+
+    assert.equal(codigo, EXIT.RUN);
+    assert.match(salida, /CALIBRATION_WINDOW_NOT_DIVISIBLE/);
+    assert.match(salida, /bucket_ms/);
+    assert.doesNotMatch(salida, /condicion no prevista/);
+    assert.doesNotMatch(salida, /reportar el incidente con el codigo/);
+});
+
+test('una resolucion fallida del vault se reporta como corrida, no como bug interno', async () => {
+    const { codigo, salida } = await correr(['--stdin'],
+        depsCli({ credentials: credentialsFake({ falla: true }) }));
+
+    assert.equal(codigo, EXIT.RUN);
+    assert.match(salida, /CALIBRATION_DRIVER_FAILED/);
+    assert.match(salida, /SOLO LECTURA/);
+    // El detalle del error del vault sigue descartado: nada del backend se filtra.
+    assert.doesNotMatch(salida, /detalle sensible/);
 });
