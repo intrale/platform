@@ -20,7 +20,16 @@
 //
 // Los criterios vigentes son `CA-6258-1..22` y las decisiones `D-6258-1..10`:
 //   https://github.com/intrale/platform/issues/6258#issuecomment-5371827269
+//
+// #6260 — este archivo YA NO MANTIENE LISTA PROPIA. La resolucion de "que es
+// una variable de control" y "cual es su sentido inseguro" sale del registro
+// unico `lib/test-env-lint.protected.json`, via `lib/test-env-lint.js`. Dos
+// listas divergentes (el patron de aca vs. el registro del guardrail) fueron la
+// causa raiz del hallazgo `alta` de `security`: separar el registro de su unico
+// otro consumidor GARANTIZA que vuelvan a divergir (R-A12).
 // =============================================================================
+
+const { getRegistry, esSentidoInseguro } = require('../test-env-lint');
 
 /**
  * SEC-6 / H-5 — CONTRATO EXPORTADO: array de `RegExp` (NO de strings).
@@ -30,31 +39,40 @@
  * silencio**. Hay un test de contrato en `lib/__tests__/with-env.test.js` que
  * rompe si la forma cambia: no lo "arregles" relajandolo.
  *
- * SEC-6 / R-8 — la resolucion es POR PATRON, no por enumeracion: el proximo
- * `PULPO_SKIP_*` que alguien agregue nace ya cubierto por el control.
+ * SEC-6 / R-8 + #6260 — la resolucion es POR PATRON **Y** POR ENUMERACION
+ * NOMINAL, ambos DERIVADOS DE UN REGISTRO UNICO. La cobertura es la UNION de
+ * las dos formas: una nunca resta cobertura a la otra. Las familias siguen
+ * abiertas — el proximo `PULPO_SKIP_*` que alguien agregue nace ya cubierto por
+ * el control, sin tocar ninguna lista.
  *
  * Los patrones son case-insensitive porque `process.env` en Windows tambien lo
  * es: una clave en minusculas no puede evadir el control y habilitar su alias.
+ * Eso vale TAMBIEN para las entradas nominales, que se derivan a
+ * `new RegExp('^' + escapeRegExp(nombre) + '$', 'i')`.
  *
  * @type {ReadonlyArray<RegExp>}
  */
-const SECURITY_CONTROL_VARS = Object.freeze([
-    /^PULPO_SKIP_[A-Z0-9_]+$/i,              // PULPO_SKIP_DATA_RESIDENCY_VALIDATE, PULPO_SKIP_SECRETS_HALT, ...
-    /^PULPO_NO_[A-Z0-9_]+$/i,                // PULPO_NO_AUTOSTART y los que vengan
-    /^[A-Z0-9_]*GATE[0-9A-Z_]*_ENABLED$/i,   // PIPELINE_GATE0_ENABLED, QUOTA_SNAPSHOT_GATE_ENABLED, ...
-]);
+const SECURITY_CONTROL_VARS = getRegistry().regexes;
 
 /**
  * Es el nombre de una variable de control de seguridad?
  * `PIPELINE_DIR_OVERRIDE` deliberadamente NO lo es (CA-6258-9): sin eso las
  * suites `waves-*` no podrian usar este helper para lo que motiva la historia.
+ * Desde #6260 eso esta blindado ESTRUCTURALMENTE por la lista negra de
+ * no-captura del validador del registro (CA-27.4), no por convencion.
  *
  * @param {string} name
  * @returns {boolean}
  */
 function isSecurityControlVar(name) {
     if (typeof name !== 'string' || !name) return false;
-    return SECURITY_CONTROL_VARS.some((re) => re.test(name));
+    return getRegistry().direction(name) !== null;
+}
+
+/** Direccion insegura declarada para `name`, o `null` si no es de control. */
+function direccionDe(name) {
+    if (typeof name !== 'string' || !name) return null;
+    return getRegistry().direction(name);
 }
 
 /**
@@ -69,29 +87,40 @@ function effectiveValue(v) {
     return (v === undefined || v === null) ? undefined : String(v);
 }
 
-/**
- * SEC-7 — este valor deja la variable HABILITADA?
- * Se evalua sobre el EFECTO (que queda en el entorno), no sobre la sintaxis:
- * `undefined`, `null`, `'0'`, el numero `0` y `''` son todos deshabilitantes.
- *
- * @param {*} v
- * @returns {boolean}
- */
-function isEnablingValue(v) {
-    const eff = effectiveValue(v);
-    return !(eff === undefined || eff === '0' || eff === '');
+// UX / CA-6258-13 (D-6258-6) + #6260 seccion 10 — copy afirmativo, ASCII puro,
+// sin depender de una tilde para leerse bien. Nombra la variable bloqueada;
+// NUNCA su valor (CA-6258-10).
+//
+// La salida por valor se DERIVA DE LA DIRECCION de cada variable. El texto fijo
+// anterior era falso para 9 de las 16 entradas del registro: ofrecia como salida
+// exactamente lo que el guardrail bloquea. Un mensaje de guardrail que instruye
+// mal consume el intento del dev y empuja al `--no-verify` que el hook existe
+// para evitar.
+//
+// (c): si el mismo `throw` agrupa variables de direcciones distintas, la salida
+// por valor se enumera POR VARIABLE — nunca una sugerencia unica que sea falsa
+// para alguna de ellas.
+function salidaPorValor(sentido) {
+    if (sentido === 'apagar') {
+        return 'la unica salida por valor es "1"; lo bloqueado es el sentido que la apaga';
+    }
+    if (sentido === 'cualquiera') {
+        return 'no hay salida por valor porque toda escritura es insegura; lo bloqueado es cualquier escritura';
+    }
+    return 'forzar la ausencia de la variable con undefined o null, o desactivarla con "0"; '
+        + 'lo bloqueado es el sentido que la habilita';
 }
 
-// UX / CA-6258-13 (D-6258-6) — copy afirmativo, ASCII puro, sin depender de una
-// tilde para leerse bien. Enumera las TRES salidas permitidas y nombra la
-// variable bloqueada; NUNCA su valor (CA-6258-10).
 function buildSecurityControlMessage(bloqueadas) {
-    return 'withEnv: prohibido habilitar variables de control de seguridad ('
-        + bloqueadas.join(', ')
-        + '). Hay tres alternativas permitidas: (1) pasar el env como parametro '
-        + 'explicito a la funcion bajo prueba; (2) forzar la ausencia de la variable '
-        + 'con undefined o null; (3) desactivarla con "0". Lo unico bloqueado es el '
-        + 'sentido que la habilita.';
+    const detalle = bloqueadas
+        .map((b) => `${b.nombre}: ${salidaPorValor(b.sentido)}`)
+        .join('. ');
+    return 'withEnv: prohibido escribir variables de control de seguridad en su sentido inseguro ('
+        + bloqueadas.map((b) => b.nombre).join(', ')
+        + '). Hay dos alternativas permitidas siempre, en cualquier direccion: (1) pasar el env como '
+        + 'parametro explicito a la funcion bajo prueba; (2) el opt-in nominal de withEnv, '
+        + '{ permitirApagarControl: [...], motivo: "..." }, cuando el test necesita esa posicion a '
+        + 'proposito. Salida por valor, enumerada por variable: ' + detalle + '.';
 }
 
 /**
@@ -146,17 +175,38 @@ function restoreEnv(snap) {
  *   envolver (misma instancia).
  * - `fn` async -> se devuelve la promesa y la restauracion ocurre DESPUES del
  *   settle (durante el `await` las variables siguen vigentes).
- * - SEC-7: habilitar una variable de control de seguridad tira ANTES de mutar
- *   nada, asi que ante ese error el entorno nunca se toco.
+ * - SEC-7: escribir una variable de control en su SENTIDO INSEGURO tira ANTES
+ *   de mutar nada, asi que ante ese error el entorno nunca se toco.
  * - D-6258-4: `vars` vacio tira. Un no-op silencioso que aparenta aislar es el
  *   peor modo de fallo posible en una herramienta de hermeticidad.
+ *
+ * #6260 seccion 9 — OPT-IN NOMINAL. "Estricta" significa *no perdonable por
+ * allowlist*, NO *prohibido*. Un test que prueba el comportamiento con un gate
+ * apagado es legitimo; sin salida, el remedio del equipo es `--no-verify`.
+ *
+ *     withEnv({ PIPELINE_GATE0_ENABLED: undefined }, fn, {
+ *         permitirApagarControl: ['PIPELINE_GATE0_ENABLED'],
+ *         motivo: 'ejercita la rama default-arg de isGate0Enabled() con el flag ausente',
+ *     });
+ *
+ * Es UN SOLO punto de entrada (no se duplica la API ni el contrato exportado) y
+ * obliga a nombrar la variable y a escribir el motivo. `motivo` ausente o vacio
+ * tira: deliberado y auditable con `grep -rn "permitirApagarControl" .pipeline`.
+ *
+ * "Reconocida" = que el REGISTRO la resuelva por CUALQUIERA de sus dos formas,
+ * entrada `nombre` o entrada `patron` — operativamente `isSecurityControlVar(v)`.
+ * El adjetivo "nominal" califica a la FORMA del opt-in (hay que escribir el
+ * nombre literal de la variable, nunca un patron), NO al modo en que esa
+ * variable entro al registro: `PIPELINE_GATE0_ENABLED` no figura en la tabla
+ * nominal y resuelve por familia, y aun asi el opt-in la acepta (CA-40.5).
  *
  * @template T
  * @param {Object<string, string|number|null|undefined>} vars
  * @param {() => T} fn
+ * @param {{permitirApagarControl?: string[], motivo?: string}} [opts]
  * @returns {T}
  */
-function withEnv(vars, fn) {
+function withEnv(vars, fn, opts = {}) {
     if (!vars || typeof vars !== 'object' || Array.isArray(vars)) {
         throw new TypeError('withEnv(vars, fn): `vars` debe ser un objeto plano de nombre -> valor.');
     }
@@ -170,9 +220,47 @@ function withEnv(vars, fn) {
     if (typeof fn !== 'function') {
         throw new TypeError('withEnv(vars, fn): `fn` debe ser una funcion.');
     }
+    if (!opts || typeof opts !== 'object' || Array.isArray(opts)) {
+        throw new TypeError('withEnv(vars, fn, opts): `opts` debe ser un objeto plano.');
+    }
+
+    const optIn = opts.permitirApagarControl;
+    if (optIn !== undefined && (!Array.isArray(optIn) || optIn.some((n) => typeof n !== 'string' || !n))) {
+        throw new TypeError(
+            'withEnv(..., { permitirApagarControl }): se espera un array de NOMBRES literales de variable. '
+            + 'La forma del opt-in es nominal: nunca un patron.',
+        );
+    }
+    // `process.env` en Windows es case-insensitive: el opt-in tambien, para que
+    // una diferencia de casing no se lea como "esta variable no estaba listada".
+    const permitidas = new Set((optIn || []).map((n) => n.toUpperCase()));
+    if (permitidas.size > 0) {
+        if (!String(opts.motivo === undefined || opts.motivo === null ? '' : opts.motivo).trim()) {
+            throw new Error(
+                'withEnv: el opt-in `permitirApagarControl` exige `motivo` no vacio. Apagar un control de '
+                + 'seguridad en un test es legitimo, pero tiene que quedar escrito POR QUE: es lo que hace '
+                + 'la excepcion auditable en vez de invisible.',
+            );
+        }
+        for (const n of optIn) {
+            if (!isSecurityControlVar(n)) {
+                throw new Error(
+                    'withEnv: `' + n + '` no es una variable de control de seguridad, asi que listarla en '
+                    + '`permitirApagarControl` no habilita nada. El opt-in no es un comodin: para una '
+                    + 'variable corriente usa `withEnv` normal.',
+                );
+            }
+        }
+    }
 
     // SEC-7 + D-3: validar ANTES de mutar. Si tira, el entorno quedo intacto.
-    const bloqueadas = names.filter((n) => isSecurityControlVar(n) && isEnablingValue(vars[n]));
+    const bloqueadas = [];
+    for (const n of names) {
+        if (permitidas.has(n.toUpperCase())) continue;
+        const sentido = direccionDe(n);
+        if (sentido === null) continue;
+        if (esSentidoInseguro(vars[n], sentido)) bloqueadas.push({ nombre: n, sentido });
+    }
     if (bloqueadas.length) {
         // CA-6258-10: se nombra la clave, NUNCA el valor. Prohibido serializar `vars`.
         throw new Error(buildSecurityControlMessage(bloqueadas));
