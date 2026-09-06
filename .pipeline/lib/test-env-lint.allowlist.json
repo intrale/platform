@@ -2868,61 +2868,61 @@
         },
         {
             "file": "lib/__tests__/vault-access-audit.test.js",
-            "line": 75,
+            "line": 96,
             "kind": "deuda",
             "reason": "escritura de AWS_REGION fuera del helper"
-        },
-        {
-            "file": "lib/__tests__/vault-access-audit.test.js",
-            "line": 76,
-            "kind": "deuda",
-            "reason": "escritura de AWS_DEFAULT_REGION fuera del helper"
-        },
-        {
-            "file": "lib/__tests__/vault-access-audit.test.js",
-            "line": 85,
-            "kind": "deuda",
-            "reason": "escritura de AWS_REGION fuera del helper"
-        },
-        {
-            "file": "lib/__tests__/vault-access-audit.test.js",
-            "line": 86,
-            "kind": "deuda",
-            "reason": "escritura de AWS_DEFAULT_REGION fuera del helper"
         },
         {
             "file": "lib/__tests__/vault-access-audit.test.js",
             "line": 97,
             "kind": "deuda",
+            "reason": "escritura de AWS_DEFAULT_REGION fuera del helper"
+        },
+        {
+            "file": "lib/__tests__/vault-access-audit.test.js",
+            "line": 106,
+            "kind": "deuda",
             "reason": "escritura de AWS_REGION fuera del helper"
         },
         {
             "file": "lib/__tests__/vault-access-audit.test.js",
-            "line": 98,
+            "line": 107,
             "kind": "deuda",
             "reason": "escritura de AWS_DEFAULT_REGION fuera del helper"
         },
         {
             "file": "lib/__tests__/vault-access-audit.test.js",
-            "line": 108,
+            "line": 118,
             "kind": "deuda",
             "reason": "escritura de AWS_REGION fuera del helper"
         },
         {
             "file": "lib/__tests__/vault-access-audit.test.js",
-            "line": 109,
-            "kind": "deuda",
-            "reason": "escritura de AWS_REGION fuera del helper"
-        },
-        {
-            "file": "lib/__tests__/vault-access-audit.test.js",
-            "line": 110,
+            "line": 119,
             "kind": "deuda",
             "reason": "escritura de AWS_DEFAULT_REGION fuera del helper"
         },
         {
             "file": "lib/__tests__/vault-access-audit.test.js",
-            "line": 111,
+            "line": 129,
+            "kind": "deuda",
+            "reason": "escritura de AWS_REGION fuera del helper"
+        },
+        {
+            "file": "lib/__tests__/vault-access-audit.test.js",
+            "line": 130,
+            "kind": "deuda",
+            "reason": "escritura de AWS_REGION fuera del helper"
+        },
+        {
+            "file": "lib/__tests__/vault-access-audit.test.js",
+            "line": 131,
+            "kind": "deuda",
+            "reason": "escritura de AWS_DEFAULT_REGION fuera del helper"
+        },
+        {
+            "file": "lib/__tests__/vault-access-audit.test.js",
+            "line": 132,
             "kind": "deuda",
             "reason": "escritura de AWS_DEFAULT_REGION fuera del helper"
         },

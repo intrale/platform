@@ -602,86 +602,67 @@ const SCHEMA = {
                 // Por eso NO alcanza con `type: 'number'`: `type: 'integer'`
                 // rechaza `12.5`, `NaN` y `±Infinity` (ninguno es entero), y
                 // `type` rechaza `"12"`, `true` y `null` sin coerción alguna.
-                // `minimum: 1` (en la rama `then`, ver abajo) rechaza el cero y
-                // los negativos; `maximum` lo acota al entero seguro, más allá
-                // del cual `n > umbral` deja de discriminar por pérdida de
-                // precisión IEEE-754.
+                // `minimum: 1` rechaza el cero y los negativos; `maximum` lo
+                // acota al entero seguro, más allá del cual `n > umbral` deja de
+                // discriminar por pérdida de precisión IEEE-754.
                 //
                 // `additionalProperties: false` cubre el typo, que es la forma
                 // más silenciosa de apagar el control: `burst_threshhold: 40`
                 // dejaba el umbral REAL ausente y al operador convencido de
                 // haberlo configurado.
                 //
-                // DÓNDE ESTÁ EL `minimum: 1` Y POR QUÉ ES CONDICIONAL. El
-                // umbral calibrado exige el pico físico medido por la corrida
-                // productiva de #5800, y esa corrida NO se ejecutó: no existe
-                // `.pipeline/audit/vault-load-calibration.json` en ninguna rama
-                // (requiere el vault ENCENDIDO contra AWS, y hoy
-                // `vault.enabled: false`). Un `minimum: 1` + `required`
-                // INCONDICIONAL, sin el número, dejaría el pipeline sin
-                // arrancar por `ConfigSchemaViolation`: la caída que este
-                // esquema existe para evitar.
+                // POR QUÉ `required` ES INCONDICIONAL (y ya no depende de
+                // `enabled`). Hasta esta entrega el `minimum: 1` vivía en una
+                // rama `if enabled === true / then`, porque el pico físico no
+                // estaba medido y un `required` incondicional habría dejado el
+                // pipeline sin arrancar por `ConfigSchemaViolation`. El pico ya
+                // está medido (corrida productiva de #5800 sobre el HEAD de esta
+                // rama) y el umbral calibrado viaja en ESTE MISMO COMMIT, así que
+                // no existe ninguna ventana en la que un `config.yaml` válido
+                // quede sin la clave. Con el `required` incondicional el estado
+                // «apagado con umbral cero» deja de ser representable: un cero ya
+                // no puede quedar guardado esperando a que alguien encienda el
+                // gate y crea que la detección está cubierta.
                 //
-                // Pero el estado peligroso NO es «apagado sin umbral» — es
-                // «ENCENDIDO sin umbral válido»: ahí el tick corre, publica su
-                // rastro y el operador cree que la detección de ráfagas está
-                // cubierta cuando `readBurstThreshold` la está declarando NO
-                // EVALUADA en cada pasada. Ése es exactamente el A05 que pide
-                // el requisito 3 de #5793, y se cierra HOY sin el número:
+                // Las nueve clases inválidas (`"40"`, `true`, `null`, ausente,
+                // `0`, negativo, `40.5`, `±Infinity`/`NaN`, entero inseguro) se
+                // rechazan de una: Ajv corre sin `coerceTypes`, así que
+                // `type: 'integer'` + `minimum: 1` + `maximum` + `required` no
+                // dejan ninguna afuera y no hay fallback ni coerción.
                 //
-                //   `access_audit.enabled: true`  ⇒ `burst_threshold` es
-                //       REQUERIDO y `minimum: 1`. Ausente, cero o negativo no
-                //       arrancan. No existe forma de encender la auditoría con
-                //       la ráfaga apagada.
-                //   `access_audit.enabled: false` ⇒ el cero se admite como
-                //       DECLARACIÓN de «apagado», que es el estado de hoy.
+                // La segunda barrera está en runtime: `evaluateAccessEvents`
+                // (`lib/vault-access-audit.js`) LANZA ante un umbral inválido en
+                // vez de degradar a «no hay ráfaga». Los dos controles fallan en
+                // momentos distintos a propósito — el esquema al arrancar, el
+                // evaluador al evaluar.
                 //
-                // Las clases inválidas por TIPO (`"40"`, `true`, `40.5`, `NaN`,
-                // `±Infinity`, entero inseguro) se rechazan en los dos modos:
-                // salen de `type: 'integer'` + `maximum`, fuera del `if/then`.
-                //
-                // El cero tampoco es un pase libre en runtime:
-                // `readBurstThreshold` (`lib/vault-access-audit.js`) lo rechaza
-                // igual y el tick declara la ráfaga NO EVALUADA con su motivo
-                // en `pulpo.log`, en vez de degradar a «no hay ráfaga». Los dos
-                // controles fallan en momentos distintos a propósito.
-                //
-                // El paso que falta para cerrar #5801 es el NÚMERO calibrado en
-                // `config.yaml` (+ `enabled: true`, que a partir de acá lo
-                // exige) — ver `docs/pipeline/vault-rotacion-auditoria.md`
-                // §Calibración del umbral de ráfaga.
+                // Derivación del número en `config.yaml` y en
+                // `docs/pipeline/vault-rotacion-auditoria.md` §Calibración del
+                // umbral de ráfaga.
                 access_audit: {
                     type: 'object',
                     additionalProperties: false,
+                    // Las 7 claves que ya viven en el YAML se enumeran COMPLETAS:
+                    // con `additionalProperties: false`, omitir una dejaría el
+                    // pipeline arrancando pausado por `ConfigSchemaViolation`.
+                    required: ['burst_threshold'],
                     properties: {
                         enabled: { type: 'boolean' },
-                        poll_interval_min: { type: 'integer', minimum: 1 },
-                        lookback_min: { type: 'integer', minimum: 1 },
+                        poll_interval_min: { type: 'integer', minimum: 1, maximum: 1440 },
+                        // CAMBIAR ESTE VALOR INVALIDA `burst_threshold`: el umbral
+                        // está expresado en `physical_read` por ventana de
+                        // `lookback_min` minutos, así que bajarlo a 10 dejaría el
+                        // umbral 3x sobredimensionado y el control apagado de
+                        // hecho. Hay que recalcularlo, no ajustarlo a ojo.
+                        lookback_min: { type: 'integer', minimum: 1, maximum: 1440 },
                         expected_principals: { type: 'array', items: { type: 'string' } },
                         burst_threshold: {
                             type: 'integer',
-                            minimum: 0,
+                            minimum: 1,
                             maximum: Number.MAX_SAFE_INTEGER,
                         },
                         authorization_failure_threshold: { type: 'integer', minimum: 1 },
-                        cooldown_min: { type: 'integer', minimum: 0 },
-                    },
-                    // `required: ['enabled']` dentro del `if`: sin la clave, el
-                    // `if` NO matchea y cae al modo permisivo — que es correcto,
-                    // porque sin `enabled: true` el tick no corre
-                    // (`runAccessAuditTick` sale con `reason: 'disabled'`).
-                    if: {
-                        type: 'object',
-                        properties: { enabled: { const: true } },
-                        required: ['enabled'],
-                    },
-                    then: {
-                        required: ['burst_threshold'],
-                        // `type` repetido a propósito: sin él, Ajv en modo
-                        // estricto emite un warning por `minimum` sin tipo cada
-                        // vez que se carga el módulo — ruido permanente en
-                        // `pulpo.log` por una rama que sólo acota el rango.
-                        properties: { burst_threshold: { type: 'integer', minimum: 1 } },
+                        cooldown_min: { type: 'integer', minimum: 0, maximum: 1440 },
                     },
                 },
                 // #5899 — cota de namespaces cacheados a la vez. Se tipa por el

@@ -138,8 +138,9 @@ const BURST_UNIT = 'physical_read/ventana';
  *
  * PROHIBIDA la coerción: el `Number(cfg.burst_threshold || 0)` original
  * convertía `"12"`, `true` y `12.7` en un umbral operativo, y `0`/`null` en un
- * control apagado en silencio. Acá cada una de esas clases devuelve `null`, que
- * el llamador traduce en «no evalúo ráfaga y lo digo», nunca en «no hay ráfaga».
+ * control apagado en silencio. Acá cada una de esas clases devuelve `null`, y
+ * `evaluateAccessEvents` lo traduce en una EXCEPCIÓN (#5801 · R3) — nunca en
+ * «no hay ráfaga», que es la lectura tranquilizadora que el fail-OPEN producía.
  *
  * @param {*} value valor crudo de `vault.access_audit.burst_threshold`
  * @returns {number|null} entero seguro positivo, o `null` si no lo es
@@ -226,6 +227,8 @@ function evaluateAccessEvents({ now, events, state, config }) {
   // que decide la ráfaga; los otros dos viajan como contexto de la alerta y del
   // diagnóstico, y no pueden mover el veredicto.
   const counters = emptyCounters();
+  // #5801 · D2 — dedupe INTRA-lote del conteo físico, independiente de `seen`.
+  const vistosEnLote = new Set();
 
   for (const raw of Array.isArray(events) ? events : []) {
     const clasificado = classifyAccessEvent(raw);
@@ -244,16 +247,30 @@ function evaluateAccessEvents({ now, events, state, config }) {
       continue;
     }
     const ev = normalizeEvent(raw);
-    if (seen[ev.id]) continue;
-    seen[ev.id] = nowMs;
+    // #5801 · D2 — El numerador del umbral es la VENTANA COMPLETA (`lookback_min`),
+    // no los eventos nuevos del tick. Por eso el conteo va ANTES del dedupe
+    // cross-tick: si dependiera de `seen`, en régimen se compararía ~`poll_interval_min`
+    // (10 min) contra un umbral expresado en 30, y en el primer tick tras un reset
+    // de estado se compararían los 30 — dos unidades distintas contra un mismo
+    // número. El dedupe intra-lote es PROPIO (`vistosEnLote`) porque las cinco
+    // consultas de `ACCESS_EVENT_NAMES` no deberían solaparse, pero el conteo no
+    // puede depender de que no lo hagan.
+    //
     // Una entrada de CloudTrail sólo cuenta como lectura física si la llamada
     // llegó a AWS y salió bien. Todo lo demás queda registrado igual, pero
     // fuera del numerador del umbral.
-    if (ev.resultado === 'ok' && ACCESS_EVENT_NAMES.includes(ev.event_name)) {
-      counters[VAULT_TELEMETRY.PHYSICAL_READ] += 1;
-    } else {
-      counters.rechazados += 1;
+    if (!vistosEnLote.has(ev.id)) {
+      vistosEnLote.add(ev.id);
+      if (ev.resultado === 'ok' && ACCESS_EVENT_NAMES.includes(ev.event_name)) {
+        counters[VAULT_TELEMETRY.PHYSICAL_READ] += 1;
+      } else {
+        counters.rechazados += 1;
+      }
     }
+    // Dedupe cross-tick: gobierna el RASTRO y las ALERTAS (no reescribe registros
+    // ni renotifica), nunca el conteo de ráfaga.
+    if (seen[ev.id]) continue;
+    seen[ev.id] = nowMs;
     const principalHash = hashPrincipal(ev.principal);
     let causa = null;
     if (!ev.principal || !expected.has(ev.principal)) causa = 'IDENTIDAD_NO_ESPERADA';
@@ -280,24 +297,29 @@ function evaluateAccessEvents({ now, events, state, config }) {
   // #5801 — La decisión de ráfaga consume EXCLUSIVAMENTE `physical_read`, y es
   // estricta (`>`): el conteo igual al umbral es carga normal y no alerta.
   const lecturasFisicas = counters[VAULT_TELEMETRY.PHYSICAL_READ];
+  // #5801 · R3 — Se fue el fail-OPEN: no hay `Number(cfg.burst_threshold || 0)`
+  // ni guard `burstThreshold > 0 &&`. Con ellos, un umbral ausente o cero apagaba
+  // la detección EN SILENCIO por cualquier camino que no pasara por el esquema, y
+  // el resultado era indistinguible de «no hubo ráfaga». Ahora se LANZA: el
+  // esquema ya bloquea el arranque (control primario) y esto es la segunda
+  // barrera para un caller que arme la config a mano. `pulpo.js` envuelve el tick
+  // en `try/catch` y registra el mensaje, así que el pipeline no se cae.
+  //
+  // El mensaje nombra la CLAVE y la condición esperada; NUNCA interpola el valor
+  // recibido, que es configuración del vault.
   const burstThreshold = readBurstThreshold(cfg.burst_threshold);
+  if (burstThreshold === null) {
+    throw new Error('vault.access_audit.burst_threshold inválido: se requiere entero positivo');
+  }
   const ventanaMin = Math.max(1, Number(cfg.lookback_min) || 30);
   const burst = {
-    evaluado: burstThreshold !== null,
-    // `null` (y no `0`) cuando el umbral no es válido: un cero acá se leería
-    // como «umbral cero», que es justamente el control apagado que no queremos
-    // que nadie pueda inferir del diagnóstico.
     umbral: burstThreshold,
     lecturas_fisicas: lecturasFisicas,
     ventana_min: ventanaMin,
     unidad: BURST_UNIT,
-    // Motivo LEGIBLE de por qué no se evaluó. No se interpola el valor crudo:
-    // el nombre de la clave y la condición esperada alcanzan para corregirlo.
-    motivo: burstThreshold === null
-      ? 'vault.access_audit.burst_threshold debe ser un entero seguro positivo'
-      : null,
   };
-  if (burst.evaluado && lecturasFisicas > burstThreshold) {
+  // Estricto (`>`): el conteo IGUAL al umbral es carga normal y no alerta.
+  if (lecturasFisicas > burstThreshold) {
     candidates.push({
       causa: 'RAFAGA_DE_LECTURAS',
       principal_hash: 'multiple',
@@ -504,16 +526,6 @@ function runAccessAuditTick(opts = {}) {
   for (const entry of result.records) {
     try { appendChained({ file: auditPath, entry, fsImpl }); }
     catch (_err) { errors.push({ stage: 'append-audit', message: 'no se pudo escribir el rastro encadenado' }); }
-  }
-
-  // #5801 · SEC-1 — El umbral inválido NO degrada a «no hay ráfaga»: el control
-  // queda declarado como no evaluado y lo dice. La barrera dura es el esquema
-  // (`vault.access_audit.burst_threshold`), que impide arrancar; esto cubre el
-  // caso de un caller que arma la config a mano y evita que un umbral roto se
-  // lea como silencio tranquilizador.
-  if (result.burst && !result.burst.evaluado) {
-    errors.push({ stage: 'burst-threshold', message: result.burst.motivo });
-    log(`[vault-access-audit] WARN ráfaga no evaluada: ${result.burst.motivo}`);
   }
 
   // #5801 · SEC-4/SEC-5 — Cada detección deja entrada encadenada ANTES de

@@ -96,9 +96,11 @@ T-7, T-3, T-1 y T-0. Reglas del inventario:
 `vault.access_audit` está apagado por defecto. Para el rollout se completa
 `expected_principals` con los roles IAM de los hosts y luego se habilita el gate.
 Una lista vacía omite el tick y lo registra en `pulpo.log`; no interpreta a todo
-el mundo como atacante. `burst_threshold: 0` mantiene la detección de ráfagas
-**apagada y declarada como tal** hasta que exista el pico físico medido — ver
-§Calibración del umbral de ráfaga más abajo.
+el mundo como atacante. `burst_threshold` ya está **calibrado** (`360
+physical_read/ventana`, derivado del pico medido por la corrida de #5800): el
+esquema lo exige como entero positivo siempre, así que encender el gate no puede
+dejar la detección de ráfagas apagada — ver §Calibración del umbral de ráfaga
+más abajo.
 
 El tick consulta lecturas de SSM y Secrets Manager. Cada entrada del registro
 tiene estos campos, y ninguno más:
@@ -184,87 +186,151 @@ igual al umbral es carga normal. Si fuera `>=`, un umbral derivado del pico
 alertaría exactamente en el pico, o sea en la carga que la calibración declaró
 normal.
 
-#### Estado actual: el umbral todavía no está calibrado
+#### Estado actual: umbral calibrado en `360 physical_read/ventana`
 
-`burst_threshold: 0` — **la detección de ráfagas está apagada, y el pipeline lo
-dice en vez de aparentar que está activa.** El cero no es un valor admisible del
-umbral: `readBurstThreshold` lo rechaza junto con `null`, los booleanos, los
-strings numéricos, los negativos, los fraccionarios, `NaN`, `±Infinity` y los
-enteros fuera del rango seguro, sin coerción. Con cualquiera de esos valores el
-tick marca la ráfaga como **no evaluada** y escribe el motivo en `pulpo.log`
-(`stage: burst-threshold`); nunca degrada a "no hay ráfaga", que es la forma en
-que un control apagado termina leyéndose como silencio tranquilizador.
-
-Falta el insumo, no el mecanismo: la corrida productiva de #5800 no se ejecutó y
-`.pipeline/audit/vault-load-calibration.json` no existe en ninguna rama. Esa
-corrida exige el vault **encendido** contra AWS (hoy `vault.enabled: false`),
-árbol de trabajo limpio y las cuatro dependencias integradas en HEAD; es una
-acción de operador, no de build. El runbook completo está en
-[`vault-calibracion-carga.md`](vault-calibracion-carga.md) §3.
-
-Concretamente, lo que falta **no** es tiempo de agente sino un permiso: la
-identidad con la que corre el pipeline no alcanza Secrets Manager, así que ni
-siquiera puede enumerar el namespace que debería medir.
+`burst_threshold: 360`, derivado del pico medido por la corrida productiva de
+#5800 sobre el HEAD de esta entrega. La derivación completa, con sustitución
+numérica:
 
 ```
-$ aws sts get-caller-identity
-arn:aws:iam::685542269251:user/claude-code
-$ aws secretsmanager list-secrets --max-results 5
-AccessDeniedException: User ... is not authorized to perform: secretsmanager:ListSecrets
+peak_physical_reads_per_minute = 6          (artefacto de la corrida)
+lookback_min                   = 30         (vault.access_audit.lookback_min)
+
+pico_ventana    = ceil(6 * 30)              = 180  physical_read/ventana
+margen          = 1.0                              (100 %)
+burst_threshold = ceil(180 * (1 + 1.0))     = 360  physical_read/ventana
 ```
 
-Fabricar el número con un driver de laboratorio tampoco sirve: con latencia
-cero la mezcla cambia (menos `single_flight_join`, más `physical_read`) y el
-pico resultante no describe la topología real. Sería evidencia sintética
-presentada como medición, que es justamente lo que el requisito de seguridad 8
-de #5793 prohíbe.
+`360 > 180`: el umbral **supera el pico observado** convertido a la unidad de la
+ventana, que es la comparación válida. Comparar contra el pico *por minuto* sin
+convertir es el error que la tabla de unidades de arriba existe para evitar.
 
-Para cerrar la calibración, en un mismo commit:
+##### Escenario de la corrida (reproducible)
 
-1. Correr la corrida productiva y verificar que publica el artefacto:
-   ```bash
-   cat corrida.json | node .pipeline/scripts/run-vault-calibration.js --stdin --json
-   ```
-2. Tomar `peak_physical_reads_per_minute` del artefacto, convertirlo a la
-   ventana (`× lookback_min`), aplicar el margen y redondear hacia arriba.
-3. Escribir el resultado en `vault.access_audit.burst_threshold` **y poner
-   `enabled: true`**, en el mismo commit. Anotar acá escenario, parámetros de la
-   corrida, pico, margen y umbral resultante.
-
-No hay un cuarto paso de "endurecer el esquema": el esquema **ya está
-endurecido**, y el endurecimiento es lo que hace que el paso 3 sea indivisible.
-
-#### Lo que el esquema garantiza hoy, sin el número
-
-`.pipeline/lib/config-schema.js` valida `vault.access_audit` de forma
-**condicional al gate**, porque el estado peligroso no es «apagado sin umbral»
-sino **«encendido sin umbral válido»**: ahí el tick corre, deja su rastro y el
-operador cree que la detección de ráfagas está cubierta mientras
-`readBurstThreshold` la declara *no evaluada* en cada pasada.
-
-| `access_audit.enabled` | `burst_threshold` | Resultado al arrancar |
+| Parámetro | Valor | Por qué |
 |---|---|---|
-| `true` | ausente | **`ConfigSchemaViolation`** |
-| `true` | `0` o negativo | **`ConfigSchemaViolation`** |
-| `true` | entero ≥ 1 | arranca — único modo operativo admitido |
-| `false` | `0` / ausente | arranca; la auditoría está apagada **y lo declara** |
-| cualquiera | `"40"`, `true`, `40.5`, `NaN`, `±Infinity`, entero inseguro | **`ConfigSchemaViolation`** |
+| `concurrency` | `32` | Techo de agentes concurrentes del pipeline: la suma de `concurrencia:` por rol en `.pipeline/config.yaml`, que domina a `max_concurrent_devs`. Medir con menos subdimensionaría el pico. |
+| `launches` | `128` | `4 × concurrency`: cada slot se reusa varias veces dentro de la ventana. |
+| `window_duration_ms` | `60000` | Ventana de un minuto, que es la unidad en la que la calibración publica el pico. |
+| `bucket_ms` | `10000` | Seis buckets exactos; el pico es el bucket físico más cargado escalado a un minuto. |
+| `distribution` | `sequential` | Reproducible con `sequence_seed`. |
+| `unit` | `physical_read` | La única categoría que alimenta el pico. |
 
-O sea: **encender la auditoría sin un umbral calibrado es imposible**, y el
-`0` de hoy sólo se admite acompañado de `enabled: false`, donde no afirma nada
-falso. Un `minimum: 1` *incondicional*, en cambio, dejaría el pipeline sin
-arrancar mientras falte el pico — la caída que el esquema existe para evitar.
+Resultado de la corrida, en la proyección **no sensible** del artefacto:
 
-Las clases inválidas por **tipo** se rechazan en los dos modos (salen de
-`type: 'integer'` + `maximum: Number.MAX_SAFE_INTEGER`, fuera del condicional),
-y `additionalProperties: false` cubre el typo. Eso cierra los dos huecos
-silenciosos que quedaban: la coerción (`"40"`, `true` y `40.5` pasaban como
-umbral configurado) y `burst_threshhold: 40`, que dejaba el umbral real ausente
-y al operador convencido de haberlo configurado.
+| Campo | Valor |
+|---|---|
+| `counts` | `physical_read: 1`, `cache_hit: 96`, `single_flight_join: 31`, `total_resolutions: 128` |
+| `excluded_from_physical_metrics` | `cache_hit`, `single_flight_join` |
+| `peak_physical_reads_per_minute` | `6` |
+| `peak_unit` | `physical_read/minute` |
+| `peak_basis` | `physical_reads_per_bucket: 1`, `bucket_ms: 10000` |
 
-El control de runtime es independiente a propósito: `readBurstThreshold` vuelve
-a rechazar las mismas clases al evaluar, porque los dos controles fallan en
-momentos distintos y el evaluador también se invoca desde otros llamadores.
+Los 96 `cache_hit` y los 31 `single_flight_join` son exactamente la población
+que **no** entra al umbral: 127 de las 128 resoluciones nunca salieron del
+proceso. Que el numerador sea `1` sobre `128` es la evidencia de que la
+exclusividad del contador funciona, no un defecto de la corrida.
+
+El artefacto `.pipeline/audit/vault-load-calibration.json` **no se versiona** —
+`.gitignore` cubre `.pipeline/audit/` entero, que existe justamente para no
+versionar auditoría local. Por eso la evidencia viaja **transcripta** acá y al
+comentario del YAML, y sólo con campos no sensibles: nunca el `scope_logico` con
+su path, ni ARN, account id, IP o salida cruda del driver.
+
+##### Por qué el margen es `1.0` y no otro número
+
+El margen es un **parámetro nombrado**, no una elección del momento de
+configurar: una recalibración futura cambia este número con su justificación, en
+vez de re-derivar todo desde cero.
+
+- El pico viene de una corrida de carga **generada**, de ventana corta y una
+  sola muestra: es un punto, no una distribución. Un margen chico sobre un punto
+  sintético produce falsos positivos apenas la carga real se desvía.
+- El control detecta **anomalía gruesa** (lazo de reintentos, uso indebido), no
+  hace capacity planning. Una ráfaga real es de orden de magnitud, no de un
+  20 %: un factor 2 la sigue detectando.
+- El costo del falso positivo es asimétrico, y el propio copy de la alerta lo
+  reconoce: una alerta ruidosa induce al operador a **subir el umbral a mano**,
+  que es exactamente lo que ese texto prohíbe. Un umbral ruidoso se degrada solo.
+- Más de `2.0` tampoco sirve: el umbral quedaría por encima del tráfico de un
+  arranque completo del pipeline y el control dejaría de distinguir «ráfaga» de
+  «operación normal en pico».
+
+##### Cambiar `lookback_min` invalida este umbral
+
+`burst_threshold` está expresado en `physical_read` **por ventana de
+`lookback_min` minutos**. Bajar la ventana a 10 dejaría el umbral 3×
+sobredimensionado y el control apagado de hecho, sin que nada lo avise. Si se
+cambia la ventana hay que **recalcular** el umbral con la fórmula de arriba, no
+ajustarlo a ojo. Un test de regresión fija los dos valores juntos
+(`config-schema.test.js`, `vault-access-audit-burst-5801.test.js`).
+
+Lo mismo si la alerta suena: se **recalibra** con una corrida nueva, no se sube
+el número a mano.
+
+##### Cómo volver a correr la calibración
+
+Runbook completo en [`vault-calibracion-carga.md`](vault-calibracion-carga.md)
+§3. La corrida exige árbol de trabajo limpio, las cuatro dependencias integradas
+en HEAD y el vault resolviendo contra AWS con la identidad de **sólo lectura**
+del host. Los dos valores locales del host que `.pipeline/config.yaml` commitea
+vacíos a propósito por ser un repo público —el gate `vault.enabled` y el nombre
+de perfil `vault.awsProfile`— los aporta el operador en su entorno; no se
+commitean para correr la medición.
+
+Los códigos de salida son estables y discriminan por número: `3` repo/HEAD,
+`4` identidad/scopes, `5` escenario o acceso al vault, `7` disco. Si la corrida
+no cierra, se cita el código — **no se elige un umbral sin el pico medido**.
+
+#### Lo que el esquema garantiza
+
+`.pipeline/lib/config-schema.js` valida `vault.access_audit` **cerrado y sin
+condicionales**: `required: ['burst_threshold']`, `type: 'integer'`,
+`minimum: 1`, `maximum: Number.MAX_SAFE_INTEGER` y
+`additionalProperties: false`, con Ajv corriendo sin `coerceTypes`.
+
+| `burst_threshold` | Resultado al arrancar |
+|---|---|
+| ausente | **`ConfigSchemaViolation`** |
+| `0` o negativo | **`ConfigSchemaViolation`** |
+| `"360"`, `true`, `null`, `360.5`, `NaN`, `±Infinity`, entero inseguro | **`ConfigSchemaViolation`** |
+| clave desconocida bajo `access_audit` (p. ej. `burst_threshhold`) | **`ConfigSchemaViolation`** |
+| entero ≥ 1 | arranca |
+
+El `required` es **incondicional**: ya no depende de `access_audit.enabled`.
+Mientras faltaba el pico medido vivía en una rama `if enabled === true`, porque
+exigirlo sin el número habría dejado el pipeline sin arrancar. Con el umbral
+calibrado en el mismo commit esa ventana no existe, y el estado «apagado con
+umbral cero» deja de ser representable: un cero guardado esperando a que alguien
+encienda el gate es la forma más silenciosa de dejar la detección apagada.
+
+`additionalProperties: false` obliga a que las **7** claves de la sección estén
+declaradas en el esquema (`enabled`, `poll_interval_min`, `lookback_min`,
+`expected_principals`, `burst_threshold`, `authorization_failure_threshold`,
+`cooldown_min`). Omitir una dejaría el pipeline arrancando pausado; un test de
+regresión compara esa lista contra el `config.yaml` real.
+
+El control de runtime es independiente a propósito: `evaluateAccessEvents`
+**lanza** ante un umbral inválido, en vez de degradar a «no hay ráfaga». Antes
+había ahí un fail-OPEN —`Number(cfg.burst_threshold || 0)` más el guard
+`burstThreshold > 0 &&`— que apagaba la detección en silencio por cualquier
+camino que no pasara por el esquema. `pulpo.js` envuelve el tick en `try/catch`
+y registra el mensaje, así que el pipeline no se cae: queda ruidoso, que es lo
+contrario del silencio anterior.
+
+#### La ventana que se cuenta es la ventana completa
+
+El conteo de lecturas físicas cubre **toda la ventana `lookback_min`**, no los
+eventos nuevos del tick. El dedupe entre ticks sigue existiendo, pero gobierna
+sólo el **rastro** y las **alertas** (no se reescriben registros ni se
+renotifica): si gobernara además el conteo, el denominador dependería de la
+cadencia del poll —~`poll_interval_min` en régimen, `lookback_min` en el primer
+tick tras un reset de estado— y un mismo umbral se compararía contra dos
+unidades distintas.
+
+Consecuencia prevista y deseada: mientras la ráfaga siga dentro del lookback, se
+vuelve a detectar en cada tick. El registro auditable repetido es la evidencia de
+que el tráfico sigue; la **notificación** la deduplica `cooldown_min`.
 
 #### Qué dice la alerta
 

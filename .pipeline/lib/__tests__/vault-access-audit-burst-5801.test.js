@@ -183,7 +183,7 @@ test('#5801 eventos desconocidos o malformados se rechazan y nunca se reclasific
 
 // --- 4 · el umbral no admite coerción ---------------------------------------
 
-test('#5801 cada clase inválida del umbral deja el control NO evaluado', () => {
+test('#5801 R3 · cada clase inválida del umbral hace LANZAR al evaluador', () => {
     const invalidos = [
         undefined, null, 0, -1, 1.5, '12', '', true, false,
         NaN, Infinity, -Infinity, Number.MAX_SAFE_INTEGER + 2, {}, [], [12],
@@ -191,42 +191,45 @@ test('#5801 cada clase inválida del umbral deja el control NO evaluado', () => 
     for (const valor of invalidos) {
         assert.equal(audit.readBurstThreshold(valor), null,
             `readBurstThreshold debe rechazar ${String(valor)}`);
-        const result = audit.evaluateAccessEvents({
-            now: NOW,
-            events: Array.from({ length: 20 }, (_, i) => physicalRead(i)),
-            state: {},
-            config: config({ burst_threshold: valor }),
-        });
-        // Ni alerta (sería un umbral inventado) ni silencio (se leería como
-        // «no hay ráfaga»): el control queda DECLARADO como no evaluado, con
-        // el motivo que nombra la clave y la condición esperada.
-        assert.equal(result.burst.evaluado, false);
-        assert.equal(result.burst.umbral, null);
-        assert.match(result.burst.motivo, /burst_threshold/);
-        assert.ok(!result.notifications.some(esRafaga));
-        // El conteo físico se sigue midiendo: lo que falta es contra qué
-        // compararlo, no el dato.
-        assert.equal(result.counters.physical_read, 20);
+        // Regresión EXPLÍCITA del fail-OPEN (R3): antes, `Number(cfg.burst_threshold
+        // || 0)` más el guard `> 0` hacían que estas clases evaluaran SIN alertar,
+        // o sea un control apagado indistinguible de «no hubo ráfaga». Ahora no
+        // pasa ninguna de las dos cosas: se lanza.
+        assert.throws(
+            () => audit.evaluateAccessEvents({
+                now: NOW,
+                events: Array.from({ length: 20 }, (_, i) => physicalRead(i)),
+                state: {},
+                config: config({ burst_threshold: valor }),
+            }),
+            (err) => {
+                assert.match(err.message, /burst_threshold/);
+                assert.match(err.message, /entero positivo/);
+                // El mensaje nombra la CLAVE y la condición, nunca el valor
+                // recibido (que es configuración del vault).
+                assert.doesNotMatch(err.message, /12|1\.5|Infinity/);
+                return true;
+            },
+            `burst_threshold ${String(valor)} debe hacer lanzar al evaluador`,
+        );
     }
     assert.equal(audit.readBurstThreshold(1), 1);
     assert.equal(audit.readBurstThreshold(Number.MAX_SAFE_INTEGER), Number.MAX_SAFE_INTEGER);
 });
 
-test('#5801 el tick reporta el umbral inválido en vez de degradar a «no hay ráfaga»', () => {
+test('#5801 R3 · el tick propaga el umbral inválido en vez de degradar a «no hay ráfaga»', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vault-audit-umbral-'));
-    const result = audit.runAccessAuditTick({
+    // El pulpo envuelve el tick en `try/catch` y registra el mensaje
+    // (`pulpo.js` · "Tick excepción no capturada"), así que propagar NO tumba el
+    // pipeline: lo deja ruidoso, que es lo contrario del silencio del fail-OPEN.
+    assert.throws(() => audit.runAccessAuditTick({
         pipelineDir: dir,
         statePath: path.join(dir, 'state.json'),
         auditPath: path.join(dir, 'audit.jsonl'),
         now: NOW,
         config: { enabled: true, ...config({ burst_threshold: 0 }) },
         lookupEvents: () => JSON.stringify({ Events: [] }),
-    });
-    const fallo = (result.errors || []).find((e) => e.stage === 'burst-threshold');
-    assert.ok(fallo, 'el tick debe declarar que la ráfaga no se evaluó');
-    assert.match(fallo.message, /entero seguro positivo/);
-    // El motivo nombra la clave y la condición, no el valor configurado.
-    assert.doesNotMatch(fallo.message, /\b0\b/);
+    }), /burst_threshold/);
 });
 
 // --- 5 · detección auditable, cooldown y sink caído -------------------------
@@ -338,4 +341,109 @@ test('#5801 el vocabulario sale del enum del vault, no de literales propios', ()
     // El módulo NO reescribe los literales del vocabulario: los importa.
     const fuente = fs.readFileSync(path.join(__dirname, '..', 'vault-access-audit.js'), 'utf8');
     assert.match(fuente, /require\('\.\/secret-vault'\)/);
+});
+
+// --- 8 · D2 · la unidad del umbral es la VENTANA, no el tick -----------------
+
+test('#5801 D2 · el veredicto de ráfaga no depende del dedupe cross-tick', () => {
+    const umbral = 5;
+    const events = Array.from({ length: umbral + 1 }, (_, i) => physicalRead(i));
+
+    // Primer tick: estado limpio. Los 6 eventos son nuevos.
+    const primero = audit.evaluateAccessEvents({
+        now: NOW, events, state: {}, config: config({ burst_threshold: umbral }),
+    });
+    assert.equal(primero.counters.physical_read, umbral + 1);
+    assert.ok(primero.notifications.some(esRafaga));
+    assert.equal(primero.records.length, umbral + 1);
+
+    // Segundo tick: el MISMO lote con un `state` que ya vio TODOS los eventos.
+    // El umbral está expresado en `physical_read` por ventana de `lookback_min`,
+    // así que el conteo tiene que seguir siendo el de la ventana. Antes de D2 el
+    // incremento vivía después del `continue` del dedupe: acá habría dado 0 y la
+    // ráfaga habría desaparecido sola mientras el tráfico seguía adentro de la
+    // ventana — el mismo umbral comparado contra dos denominadores distintos
+    // (~`poll_interval_min` en régimen, `lookback_min` tras un reset de estado).
+    const segundo = audit.evaluateAccessEvents({
+        now: NOW,
+        events,
+        state: primero.nextState,
+        config: config({ burst_threshold: umbral }),
+    });
+    assert.equal(segundo.counters.physical_read, umbral + 1,
+        'el conteo es de la ventana completa, no de los eventos nuevos del tick');
+    assert.equal(segundo.burst.lecturas_fisicas, umbral + 1);
+    // El dedupe cross-tick sigue gobernando el RASTRO: no se reescriben registros.
+    assert.equal(segundo.records.length, 0);
+    // …y la detección se vuelve a registrar, que es lo deseado: una ráfaga
+    // sostenida no puede desaparecer del rastro por haber sido vista antes.
+    assert.ok(segundo.detections.some(esRafaga));
+});
+
+test('#5801 D2 · el conteo físico deduplica DENTRO del lote', () => {
+    // Las cinco consultas de `ACCESS_EVENT_NAMES` no deberían solaparse, pero el
+    // numerador del umbral no puede depender de que no lo hagan: un mismo
+    // `EventId` repetido en el lote cuenta UNA vez.
+    const uno = physicalRead(1);
+    const result = audit.evaluateAccessEvents({
+        now: NOW,
+        events: [uno, uno, uno, physicalRead(2)],
+        state: {},
+        config: config({ burst_threshold: 12 }),
+    });
+    assert.equal(result.counters.physical_read, 2);
+});
+
+test('#5801 D2 · dos ticks con la misma ráfaga: 2 detecciones, 1 notificación', () => {
+    const umbral = 3;
+    const events = Array.from({ length: umbral + 2 }, (_, i) => physicalRead(i));
+    const cfg = config({ burst_threshold: umbral, cooldown_min: 10 });
+
+    const primero = audit.evaluateAccessEvents({ now: NOW, events, state: {}, config: cfg });
+    const segundo = audit.evaluateAccessEvents({
+        now: new Date(NOW.getTime() + 60 * 1000),
+        events,
+        state: primero.nextState,
+        config: cfg,
+    });
+
+    // Registro auditable repetido: DESEADO. Notificación deduplicada por el
+    // `cooldown_min`, que es quien decide si se vuelve a molestar al operador.
+    assert.ok(primero.detections.some(esRafaga));
+    assert.ok(segundo.detections.some(esRafaga));
+    assert.equal(primero.notifications.filter(esRafaga).length, 1);
+    assert.equal(segundo.notifications.filter(esRafaga).length, 0);
+    assert.equal(segundo.detections.find(esRafaga).notificada, false);
+});
+
+// --- 9 · regresión del umbral calibrado y su acople con `lookback_min` -------
+
+test('#5801 el config.yaml del repo trae el umbral calibrado y su ventana', () => {
+    const yaml = require('js-yaml');
+    const cfgRepo = yaml.load(fs.readFileSync(
+        path.join(__dirname, '..', '..', 'config.yaml'), 'utf8'));
+    const aa = cfgRepo.vault.access_audit;
+
+    // El umbral está expresado en `physical_read` por ventana de `lookback_min`
+    // minutos. Si alguien cambia la ventana sin recalcular el umbral, el control
+    // se sobredimensiona (y se apaga de hecho) sin que nada lo avise: por eso los
+    // dos se fijan JUNTOS, con la derivación completa.
+    //
+    //   peak_physical_reads_per_minute = 6      (corrida productiva de #5800)
+    //   pico_ventana    = ceil(6 * 30)          = 180
+    //   margen          = 1.0
+    //   burst_threshold = ceil(180 * (1 + 1.0)) = 360
+    const PICO_POR_MINUTO = 6;
+    const MARGEN = 1.0;
+    assert.equal(aa.lookback_min, 30);
+    const picoVentana = Math.ceil(PICO_POR_MINUTO * aa.lookback_min);
+    assert.equal(picoVentana, 180);
+    assert.equal(aa.burst_threshold, Math.ceil(picoVentana * (1 + MARGEN)));
+    assert.equal(aa.burst_threshold, 360);
+    // CA-1 — el umbral SUPERA el pico observado convertido a la ventana.
+    assert.ok(aa.burst_threshold > picoVentana);
+    assert.ok(Number.isSafeInteger(aa.burst_threshold) && aa.burst_threshold > 0);
+
+    // El TTL de la caché no se toca en esta entrega (regresión explícita).
+    assert.equal(cfgRepo.vault.cache_ttl_seconds, 300);
 });

@@ -825,8 +825,9 @@ test('#5801 el error del umbral no vuelca el valor crudo configurado', () => {
 test('#5801 no se puede ENCENDER la auditoría de acceso con la ráfaga apagada', () => {
     // El estado peligroso no es «apagado sin umbral» — es «encendido sin umbral
     // válido»: el tick corre, deja rastro, y el operador cree que la detección
-    // de ráfagas está cubierta mientras `readBurstThreshold` la declara NO
-    // EVALUADA en cada pasada. El esquema lo vuelve imposible al arrancar.
+    // de ráfagas está cubierta mientras el evaluador ni siquiera puede comparar
+    // contra nada. El esquema lo vuelve imposible al arrancar, y en runtime
+    // `evaluateAccessEvents` lanza en vez de degradar a «no hay ráfaga».
     const encendido = (extra) => ({
         vault: {
             access_audit: Object.assign({
@@ -849,38 +850,77 @@ test('#5801 no se puede ENCENDER la auditoría de acceso con la ráfaga apagada'
     assert.ok(validateConfig(encendido({ burst_threshold: 1 })).valid,
         'encendido con un entero positivo es el único modo operativo admitido');
 
-    // Las clases inválidas por TIPO se rechazan también con la auditoría
-    // encendida: el `if/then` acota el rango, no reemplaza al tipado.
+    // Las clases inválidas por TIPO se rechazan en cualquier modo: `type:
+    // 'integer'` sin `coerceTypes` no deja pasar ninguna.
     for (const invalido of ['40', true, 40.5, NaN, Infinity, null, {}, [40]]) {
         assert.ok(!validateConfig(encendido({ burst_threshold: invalido })).valid,
             'encendido con umbral no entero debe fallar cerrado');
     }
 });
 
-test('#5801 con la auditoría apagada el cero se admite como declaración de apagado', () => {
-    // Y el pipeline arranca: un `minimum: 1` incondicional, sin el pico
-    // calibrado, lo dejaría caído por ConfigSchemaViolation.
+test('#5801 el cero deja de ser representable, aun con la auditoría apagada', () => {
+    // Antes de tener el pico medido, el `minimum: 1` vivía en una rama
+    // condicional y el cero se admitía como DECLARACIÓN de «todavía no está
+    // calibrado». Con el umbral ya derivado ese estado desaparece: un cero
+    // guardado esperando a que alguien encienda el gate es exactamente la forma
+    // silenciosa de dejar la detección apagada, y el `required` incondicional lo
+    // vuelve irrepresentable.
     const apagado = (extra) => ({
         vault: { access_audit: Object.assign({ enabled: false }, extra) },
     });
-    assert.ok(validateConfig(apagado({ burst_threshold: 0 })).valid);
-    assert.ok(validateConfig(apagado({})).valid);
-    // Sin la clave `enabled` el tick tampoco corre (`reason: 'disabled'`), así
-    // que el modo permisivo es el correcto — pero el tipo se sigue exigiendo.
-    assert.ok(validateConfig({ vault: { access_audit: { burst_threshold: 0 } } }).valid);
-    assert.ok(!validateConfig({ vault: { access_audit: { burst_threshold: '0' } } }).valid);
+    assert.ok(!validateConfig(apagado({ burst_threshold: 0 })).valid,
+        'el cero ya no es un umbral admisible, ni siquiera con el gate cerrado');
+    assert.ok(!validateConfig(apagado({})).valid,
+        'la clave es REQUERIDA: su ausencia no puede leerse como apagado');
+    assert.ok(validateConfig(apagado({ burst_threshold: 360 })).valid,
+        'apagado CON umbral calibrado es el estado válido de hoy');
+    // Sin la clave `enabled` el requisito es el mismo: el `required` ya no
+    // depende del gate.
+    assert.ok(!validateConfig({ vault: { access_audit: { burst_threshold: 0 } } }).valid);
+    assert.ok(!validateConfig({ vault: { access_audit: { burst_threshold: '360' } } }).valid);
+    assert.ok(validateConfig({ vault: { access_audit: { burst_threshold: 360 } } }).valid);
 });
 
-test('#5801 el config.yaml de HEAD declara la auditoría de ráfaga apagada, no a medias', () => {
-    // Regresión del estado documentado: mientras no exista el pico calibrado,
-    // `enabled` DEBE ser false. Si alguien lo enciende sin el número, este test
-    // y el esquema fallan juntos, antes de que el pipeline arranque.
+test('#5801 el config.yaml de HEAD trae el umbral calibrado y su ventana', () => {
+    // Regresión del número entregado. El umbral está expresado en
+    // `physical_read` por ventana de `lookback_min` minutos, así que los dos se
+    // fijan JUNTOS: cambiar la ventana sin recalcular el umbral lo
+    // sobredimensiona y apaga el control de hecho, sin que nada lo avise.
+    //
+    //   peak_physical_reads_per_minute = 6      (corrida productiva de #5800)
+    //   pico_ventana    = ceil(6 * 30)          = 180
+    //   margen          = 1.0
+    //   burst_threshold = ceil(180 * (1 + 1.0)) = 360
     const audit = realConfig().vault.access_audit;
-    assert.strictEqual(audit.enabled, false,
-        'encender access_audit exige fijar burst_threshold calibrado en el mismo commit');
-    assert.strictEqual(audit.burst_threshold, 0,
-        'el cero declara explícitamente que el umbral todavía no está calibrado');
+    assert.strictEqual(audit.lookback_min, 30,
+        'cambiar la ventana INVALIDA el umbral: hay que recalcularlo');
+    const picoVentana = Math.ceil(6 * audit.lookback_min);
+    assert.strictEqual(audit.burst_threshold, Math.ceil(picoVentana * 2));
+    assert.strictEqual(audit.burst_threshold, 360);
+    // CA-1 — supera el pico observado convertido a la unidad de la ventana.
+    assert.ok(audit.burst_threshold > picoVentana);
+    // El gate de rollout NO se toca en esta entrega: sigue siendo decisión del
+    // operador, y ahora encenderlo ya no puede dejar la ráfaga sin umbral.
+    assert.strictEqual(audit.enabled, false);
     assert.ok(validateConfig(realConfig()).valid);
+});
+
+test('#5801 las 7 claves de access_audit están declaradas en el esquema', () => {
+    // Trampa conocida de `additionalProperties: false`: omitir UNA de las claves
+    // que ya viven en el YAML deja el pipeline arrancando pausado por
+    // ConfigSchemaViolation. El config real es la guarda.
+    const CLAVES = [
+        'enabled', 'poll_interval_min', 'lookback_min', 'expected_principals',
+        'burst_threshold', 'authorization_failure_threshold', 'cooldown_min',
+    ];
+    const audit = realConfig().vault.access_audit;
+    assert.deepEqual(Object.keys(audit).sort(), [...CLAVES].sort(),
+        'el YAML real trae exactamente estas 7 claves');
+    for (const clave of CLAVES) {
+        const cfg = { vault: { access_audit: { burst_threshold: 360 } } };
+        cfg.vault.access_audit[clave] = audit[clave];
+        assert.ok(validateConfig(cfg).valid, `la clave ${clave} debe estar declarada`);
+    }
 });
 
 test('#5801 el TTL de la caché del vault sigue topado en 300 y el config real lo respeta', () => {

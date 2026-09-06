@@ -2025,13 +2025,26 @@ vault:
     poll_interval_min: 10
     lookback_min: 30
     expected_principals: []
-    # `0` NO es un umbral: es la DECLARACIÓN de que todavía no está calibrado.
-    # El pico físico lo publica la corrida productiva de #5800 en
-    # `.pipeline/audit/vault-load-calibration.json`, que hoy no existe (requiere
-    # el vault encendido contra AWS y una identidad de sólo lectura: acción de
-    # operador). Fórmula, unidades y los pasos para cerrarlo están en
-    # `docs/pipeline/vault-rotacion-auditoria.md` §Calibración del umbral.
-    burst_threshold: 0
+    # #5801 — Umbral de ráfaga CALIBRADO.
+    #
+    # UNIDAD: `physical_read` por ventana de `lookback_min` minutos (NO por
+    # minuto). El pico que publica la corrida de #5800 viene en
+    # `physical_read/minuto`, así que la conversión es explícita y obligatoria:
+    #
+    #   peak_physical_reads_per_minute = 6      (corrida productiva de #5800)
+    #   lookback_min                   = 30
+    #   pico_ventana    = ceil(6 * 30)          = 180  physical_read/ventana
+    #   margen          = 1.0                          (100 %, ver la doc)
+    #   burst_threshold = ceil(180 * (1 + 1.0)) = 360  physical_read/ventana
+    #
+    # CAMBIAR `lookback_min` INVALIDA este número: hay que recalcularlo con la
+    # fórmula, no ajustarlo a ojo. Si la alerta suena, se RECALIBRA — no se sube
+    # a mano (el propio copy de la alerta lo dice).
+    #
+    # Escenario, procedencia del pico y justificación del margen en
+    # `docs/pipeline/vault-rotacion-auditoria.md` §Calibración del umbral de
+    # ráfaga.
+    burst_threshold: 360
     authorization_failure_threshold: 3
     cooldown_min: 10
   # D5 — El vault resuelve SÓLO los scopes declarados acá. No existe un camino

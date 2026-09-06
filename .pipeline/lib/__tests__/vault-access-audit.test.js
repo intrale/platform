@@ -338,7 +338,6 @@ test('lecturas físicas por encima del umbral sí producen la ráfaga', () => {
   const causes = result.notifications.map((n) => n.causa);
   assert.ok(causes.includes('RAFAGA_DE_LECTURAS'));
   assert.equal(result.counters.physical_read, 3);
-  assert.equal(result.burst.evaluado, true);
   assert.equal(result.burst.umbral, 2);
   assert.equal(result.burst.lecturas_fisicas, 3);
 });
