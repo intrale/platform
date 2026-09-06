@@ -20,7 +20,16 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const { selectMarkersToRelease, selectHumanBlocksToRelease, allDepsClosed } = require('../brazo-desbloqueo-core');
+const {
+  selectMarkersToRelease,
+  selectHumanBlocksToRelease,
+  allDepsClosed,
+  // #6901 - criterio unico de dependencia cumplida + redaccion para el operador
+  isDependencySatisfied,
+  SATISFIED_DEP_STATES,
+  describeSatisfiedDeps,
+  describePendingDeps,
+} = require('../brazo-desbloqueo-core');
 
 // -----------------------------------------------------------------------------
 // allDepsClosed
@@ -747,4 +756,171 @@ test('#6801 el archivo de dedupe nunca esta trackeado en el indice de git', () =
     { cwd: REPO_ROOT, encoding: 'utf8' }
   ).trim();
   assert.equal(tracked, '', `.gitignore no desindexa lo ya trackeado; encontrado: ${tracked}`);
+});
+
+// =============================================================================
+// #6901 — MERGED cuenta como dependencia cumplida
+// -----------------------------------------------------------------------------
+// GitHub reporta `MERGED` para un PR mergeado. Comparar contra el literal
+// `CLOSED` lo contaba como dep abierta y, con la semántica fail-closed, el
+// issue que lo declaraba quedaba congelado PARA SIEMPRE (el estado del PR ya no
+// va a cambiar nunca más). La matriz de abajo es el CA-6 completo: cerrada,
+// mergeada, mezcla de ambas, abierta, ausente y no reconocida.
+// =============================================================================
+
+test('#6901 isDependencySatisfied: CLOSED cuenta como cumplida', () => {
+  assert.equal(isDependencySatisfied('CLOSED'), true);
+});
+
+test('#6901 isDependencySatisfied: MERGED cuenta como cumplida (PR mergeado)', () => {
+  assert.equal(isDependencySatisfied('MERGED'), true);
+});
+
+test('#6901 isDependencySatisfied: OPEN NO cuenta como cumplida', () => {
+  assert.equal(isDependencySatisfied('OPEN'), false);
+});
+
+test('#6901 isDependencySatisfied: fail-closed ante estado ausente, vacio o no-string', () => {
+  for (const v of [undefined, null, '', '   ', 0, 1, {}, [], true, NaN]) {
+    assert.equal(isDependencySatisfied(v), false, `${JSON.stringify(v)} NO debe contar como cumplida`);
+  }
+});
+
+test('#6901 isDependencySatisfied: fail-closed ante estado desconocido (allowlist, no denylist)', () => {
+  // Si el criterio fuera `!== "OPEN"` (denylist), cualquiera de estos pasaria
+  // y el fail-closed quedaria roto. La allowlist los rechaza a todos.
+  for (const v of ['UNKNOWN', 'DRAFT', 'LOCKED', 'CLOSED_MAYBE', 'MERGED_PENDING', 'cerrado']) {
+    assert.equal(isDependencySatisfied(v), false, `${v} NO debe contar como cumplida`);
+  }
+});
+
+test('#6901 isDependencySatisfied: tolera espacios y minusculas del proveedor', () => {
+  assert.equal(isDependencySatisfied('  MERGED  '), true);
+  assert.equal(isDependencySatisfied('merged'), true);
+  assert.equal(isDependencySatisfied('closed'), true);
+});
+
+test('#6901 SATISFIED_DEP_STATES es la allowlist cerrada y exacta', () => {
+  assert.deepEqual([...SATISFIED_DEP_STATES].sort(), ['CLOSED', 'MERGED']);
+});
+
+test('#6901 allDepsClosed: unica dep es un PR mergeado → true (el bug original)', () => {
+  assert.equal(allDepsClosed([5203], { 5203: 'MERGED' }), true);
+});
+
+test('#6901 allDepsClosed: mezcla de cerrada y mergeada → true', () => {
+  assert.equal(allDepsClosed([5203, 5204], { 5203: 'MERGED', 5204: 'CLOSED' }), true);
+});
+
+test('#6901 allDepsClosed: cerrada + mergeada + abierta → false', () => {
+  assert.equal(allDepsClosed([5203, 5204, 5205], { 5203: 'MERGED', 5204: 'CLOSED', 5205: 'OPEN' }), false);
+});
+
+test('#6901 allDepsClosed: mergeada + estado ausente → false (fail-closed intacto)', () => {
+  assert.equal(allDepsClosed([5203, 9999], { 5203: 'MERGED' }), false);
+});
+
+test('#6901 allDepsClosed: mergeada + estado no reconocido → false (fail-closed intacto)', () => {
+  assert.equal(allDepsClosed([5203, 9999], { 5203: 'MERGED', 9999: 'UNKNOWN' }), false);
+});
+
+test('#6901 selectMarkersToRelease: libera el marker cuya unica dep es un PR mergeado', () => {
+  const { toRelease, blocked } = selectMarkersToRelease({
+    markers: [{ issue: 5214, deps: [5203] }],
+    issueStates: { 5203: 'MERGED' },
+  });
+  assert.equal(toRelease.length, 1, 'el issue congelado por un PR mergeado debe liberarse');
+  assert.equal(toRelease[0].issue, 5214);
+  assert.equal(blocked.length, 0);
+});
+
+test('#6901 selectMarkersToRelease: con mezcla, openDeps lista SOLO la que sigue abierta', () => {
+  const { toRelease, blocked } = selectMarkersToRelease({
+    markers: [{ issue: 5214, deps: [5203, 5204, 5205] }],
+    issueStates: { 5203: 'MERGED', 5204: 'CLOSED', 5205: 'OPEN' },
+  });
+  assert.equal(toRelease.length, 0, 'con una dep abierta NO se libera');
+  assert.deepEqual(blocked[0].openDeps, ['5205'], 'ni la mergeada ni la cerrada figuran como pendientes');
+});
+
+test('#6901 selectMarkersToRelease: dep de estado ilegible NO se libera aunque el resto este mergeada', () => {
+  const { toRelease, blocked } = selectMarkersToRelease({
+    markers: [{ issue: 5214, deps: [5203, 9999] }],
+    issueStates: { 5203: 'MERGED' },
+  });
+  assert.equal(toRelease.length, 0, 'fail-closed: estado ausente cuenta como abierta');
+  assert.deepEqual(blocked[0].openDeps, ['9999']);
+});
+
+test('#6901 selectHumanBlocksToRelease: precondicion cumplida por un PR mergeado', () => {
+  const { toRelease } = selectHumanBlocksToRelease({
+    markers: [{ issue: 5209, precondition: { type: 'dependency', depends_on: [5203] } }],
+    issueStates: { 5203: 'MERGED' },
+  });
+  assert.equal(toRelease.length, 1, 'el bloqueo humano por precondicion tambien reconoce MERGED');
+});
+
+test('#6901 selectHumanBlocksToRelease: mergeada + otra abierta → sigue bloqueado', () => {
+  const { toRelease, blocked } = selectHumanBlocksToRelease({
+    markers: [{ issue: 5209, precondition: { type: 'dependency', depends_on: [5203, 5208] } }],
+    issueStates: { 5203: 'MERGED', 5208: 'OPEN' },
+  });
+  assert.equal(toRelease.length, 0);
+  assert.deepEqual(blocked[0].openDeps, ['5208']);
+});
+
+// -----------------------------------------------------------------------------
+// #6901 CA-5 — la mensajeria usa el verbo REAL de cada dependencia
+// -----------------------------------------------------------------------------
+
+test('#6901 describeSatisfiedDeps: verbo por dependencia, no verbo global', () => {
+  assert.equal(
+    describeSatisfiedDeps([5203, 5204], { 5203: 'MERGED', 5204: 'CLOSED' }),
+    '#5203 fue mergeada y #5204 fue cerrada'
+  );
+});
+
+test('#6901 describeSatisfiedDeps: singular natural con una sola dependencia', () => {
+  assert.equal(describeSatisfiedDeps([5203], { 5203: 'MERGED' }), '#5203 fue mergeada');
+  assert.equal(describeSatisfiedDeps([5204], { 5204: 'CLOSED' }), '#5204 fue cerrada');
+});
+
+test('#6901 describeSatisfiedDeps: tres o mas se enumeran con comas y una "y" final', () => {
+  assert.equal(
+    describeSatisfiedDeps([1, 2, 3], { 1: 'MERGED', 2: 'CLOSED', 3: 'MERGED' }),
+    '#1 fue mergeada, #2 fue cerrada y #3 fue mergeada'
+  );
+});
+
+test('#6901 describeSatisfiedDeps: sin estado informado no inventa verbo', () => {
+  assert.equal(describeSatisfiedDeps([5203], {}), '#5203 quedó resuelta');
+  assert.equal(describeSatisfiedDeps([], {}), '(ninguna)');
+});
+
+test('#6901 describePendingDeps: distingue "sigue abierta" de "no se pudo leer"', () => {
+  assert.equal(describePendingDeps([5205], { 5205: 'OPEN' }), '#5205 sigue abierta');
+  assert.match(describePendingDeps([9999], {}), /no se pudo leer el estado de #9999/);
+  assert.match(describePendingDeps([9999], {}), /se asume abierta por precaución/);
+});
+
+test('#6901 describePendingDeps: estado no reconocido se nombra y se asume abierto', () => {
+  const txt = describePendingDeps([9999], { 9999: 'DRAFT' });
+  assert.match(txt, /#9999 está en estado no reconocido \(DRAFT\)/);
+  assert.match(txt, /se asume abierta por precaución/);
+});
+
+test('#6901 describeSatisfiedDeps/describePendingDeps: entradas basura no rompen', () => {
+  assert.equal(describeSatisfiedDeps(null, null), '(ninguna)');
+  assert.equal(describePendingDeps(undefined, undefined), '(ninguna)');
+});
+
+test('#6901 decideSplitUmbrellaClose: el destrabe normal nombra el PR como mergeado', () => {
+  const res = decideSplitUmbrellaClose({
+    issue: { number: 5214, title: 'Historia normal', labels: [] },
+    deps: [5203, 5204],
+    depStates: { 5203: 'MERGED', 5204: 'CLOSED' },
+  });
+  assert.equal(res.action, 'unblock');
+  assert.match(res.log, /#5203 fue mergeada y #5204 fue cerrada/);
+  assert.doesNotMatch(res.log, /dependencias cerradas/, 'el verbo global mentiroso ya no aparece');
 });

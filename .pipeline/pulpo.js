@@ -4921,7 +4921,8 @@ function brazoBarrido(config) {
               const motivoSanitized = sanitizePipelineText(m.motivo).slice(0, 1500);
 
               // #3079 — Pre-validar deps en GitHub: si todas las dependencias
-              // numéricas que el clasificador identificó ya están CLOSED, NO
+              // numéricas que el clasificador identificó ya están cumplidas
+              // (CLOSED o MERGED, #6901), NO
               // pegar `blocked:dependencies` y NO archivar. El agente trabajó
               // sobre estado stale (worktree viejo o cache de contexto) y el
               // bloqueo nacería zombi — el brazoDesbloqueo después lo destrabaría
@@ -4940,13 +4941,14 @@ function brazoBarrido(config) {
                   issueLabelsCache.delete(issueCacheKey(depNum));
                   const info = getIssueInfo(depNum);
                   stateLog.push(`#${depNum}=${info.state}`);
-                  if (info.state !== 'CLOSED') {
+                  // #6901 - MERGED (PR mergeado) tambien es dep cumplida.
+                  if (!brazoDesbloqueoCore.isDependencySatisfied(info.state)) {
                     todasCerradas = false;
                     break;
                   }
                 }
                 if (todasCerradas) {
-                  log('barrido', `🪢⏭ #${issue} dependency_block IGNORADO — todas las deps ya CLOSED (${stateLog.join(',')}). No se pega label, no se archiva. El motivo era stale.`);
+                  log('barrido', `🪢⏭ #${issue} dependency_block IGNORADO — todas las deps ya cumplidas (${stateLog.join(',')}). No se pega label, no se archiva. El motivo era stale.`);
                   // No archivar, no pegar label. El issue cae al flujo normal
                   // de rebote (humanBlock → rev++) que lo destraba o lo escala.
                   continue;
@@ -11842,6 +11844,27 @@ ${g}
     }
   })();
 
+  // #5901 · CA-1 — `projectId` AUTORITATIVO para el least-privilege del hijo.
+  //
+  // Se resuelve con `project-context.resolveProjectContext()`, NUNCA desde el
+  // env: `PIPELINE_PROJECT_ID` viaja en banda como TRANSPORTE y el env no es
+  // autoridad (#5110 · SEC-1). Se prefiere el `projectBinding` recien escrito
+  // porque es el mismo valor ya resuelto; si el binding no se pudo escribir
+  // (best-effort, camino single-project vigente) se reintenta la resolución, y
+  // si tampoco hay contexto se cae al slug del kernel. En ninguna rama se
+  // rompe un spawn que hoy funciona: el fail-closed de `buildChildEnv` es
+  // sobre un projectId PRESENTE E INVALIDO, no sobre la ausencia.
+  const projectIdDelSpawn = (() => {
+    if (projectBinding && projectBinding.projectId) return projectBinding.projectId;
+    try {
+      return require('./lib/project-context').resolveProjectContext().projectId;
+    } catch (e) {
+      log('lanzamiento', `⚠️  contexto de proyecto no resuelto para ${skill}:#${issue} `
+        + `(${e.message}) — se usa el namespace del kernel para el techo de scopes`);
+      return buildChildEnvLib.KERNEL_PROJECT_ID;
+    }
+  })();
+
   const pipelineExtras = {
     PIPELINE_ISSUE: issue,
     PIPELINE_SKILL: skill,
@@ -11984,6 +12007,12 @@ ${g}
         : undefined;
       childEnv = buildChildEnvLib.buildChildEnv({
         skill,
+        // #5901 · CA-3 — el eje llega al MÓDULO por parámetro. Sin esto el
+        // techo por fase queda en fail-closed (vacío) para todo despacho y el
+        // least-privilege existiría en el código sin existir en producción.
+        fase,
+        projectId: projectIdDelSpawn,
+        warn: (m) => log('lanzamiento', m),
         pipelineDir: PIPELINE,
         // #5799 — el env del INTENTO (snapshot del provider efectivo compuesto
         // sobre el env base) es la única fuente; `buildChildEnv` no cae a
@@ -15975,6 +16004,13 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
         // comportamiento es idéntico al previo.
         e = buildChildEnvLib.buildChildEnv({
           skill: commanderMP.COMMANDER_SKILL,
+          // #5901 · GURU-3 — el commander no corre dentro de ningún pipeline:
+          // no tiene fase real. Se le pasa la fase sintética del kernel y el
+          // slug reservado de la plataforma. Sin esto cae al fail-closed y
+          // pierde scopes el día que #5040 active el aislamiento.
+          fase: buildChildEnvLib.KERNEL_FASE,
+          projectId: buildChildEnvLib.KERNEL_PROJECT_ID,
+          warn: (m) => log('commander', m),
           pipelineDir: PIPELINE,
           processEnv: attemptProcessEnv,
           pipelineExtras: { CLAUDE_PROJECT_DIR: ROOT },
@@ -23335,7 +23371,7 @@ async function reapStaleHumanBlocks({ allowlistSet } = {}) {
         10000
       );
       const st = String(depState || '').trim();
-      if (st) issueStates[String(dep)] = st; // 'OPEN' | 'CLOSED'
+      if (st) issueStates[String(dep)] = st; // 'OPEN' | 'CLOSED' | 'MERGED' (#6901)
     } catch (e) {
       log('desbloqueo', `[human-block] no se pudo leer estado de #${dep}: ${e.message} — fail-closed`);
     }
@@ -23346,7 +23382,9 @@ async function reapStaleHumanBlocks({ allowlistSet } = {}) {
   for (const m of toRelease) {
     const deps = m.precondition.depends_on;
     const depStates = deps.map(n => `#${n}=${issueStates[String(n)] || 'desconocido'}`).join(', ');
-    const guidance = `Auto-destrabe (#4748): precondición resuelta. Dependencia(s) ${deps.map(n => '#' + n).join(', ')} cerrada(s). El pipeline re-encola este issue para continuar su ciclo.`;
+    // #6901 CA-5 - verbo POR dependencia: una dep que es un PR se mergeo, no
+    // se cerro. Decir 'cerrada(s)' en bloque falsea el rastro del destrabe.
+    const guidance = `Auto-destrabe (#4748): precondición resuelta. ${brazoDesbloqueoCore.describeSatisfiedDeps(deps, issueStates)}. El pipeline re-encola este issue para continuar su ciclo.`;
 
     let res;
     try {
@@ -24168,9 +24206,14 @@ async function brazoDesbloqueoImpl(config) {
           }
         }
 
-        // 3. Verificar si todas las dependencias están cerradas
+        // 3. Verificar si todas las dependencias están CUMPLIDAS. #6901: el
+        //    criterio unico vive en brazoDesbloqueoCore.isDependencySatisfied
+        //    (CLOSED + MERGED). Se guarda el estado observado de cada dep para
+        //    nombrarla despues con su verbo real y para poder distinguir
+        //    'sigue abierta' de 'no se pudo leer' en el log del freno.
         let allClosed = true;
         const openDeps = [];
+        const depStates = {};
         for (const depNum of depIssueNumbers) {
           ghThrottle();
           try {
@@ -24178,12 +24221,16 @@ async function brazoDesbloqueoImpl(config) {
               ['issue', 'view', String(depNum), '--json', 'state', '--jq', '.state', '--repo', repoTarget.getRepoForIssue(issue)],
               10000
             );
-            if (depState.trim() !== 'CLOSED') {
+            const st = String(depState || '').trim();
+            if (st) depStates[String(depNum)] = st;
+            if (!brazoDesbloqueoCore.isDependencySatisfied(st)) {
               allClosed = false;
               openDeps.push(depNum);
             }
           } catch (e) {
-            // Si no se puede leer el estado, asumir que está abierto
+            // Estado ilegible: se asume abierta (fail-closed intacto). Queda
+            // FUERA de depStates a proposito - esa ausencia es lo que le
+            // permite al log decir 'no se pudo leer' en vez de 'sigue abierta'.
             allClosed = false;
             openDeps.push(depNum);
           }
@@ -24222,6 +24269,7 @@ async function brazoDesbloqueoImpl(config) {
           const decision = brazoDesbloqueoCore.decideSplitUmbrellaClose({
             issue,
             deps: depIssueNumbers,
+            depStates,
             children: splitChildren,
             childrenSource: splitChildrenSource,
             childStates: splitChildStates,
@@ -24297,7 +24345,10 @@ async function brazoDesbloqueoImpl(config) {
             }
 
             // Agregar comentario de desbloqueo
-            const unblockComment = `## Dependencias resueltas 🟢\n\nLas siguientes dependencias cerraron: ${depIssueNumbers.map(n => '#' + n).join(', ')}.\n\nEl pipeline reentra a este issue automáticamente.`;
+            // #6901 CA-5 - 'Se destrabo porque #5203 fue mergeada y #5204 fue
+            // cerrada': el verbo lo pone cada dependencia, no el conjunto.
+            const depDetalle = brazoDesbloqueoCore.describeSatisfiedDeps(depIssueNumbers, depStates);
+            const unblockComment = `## Dependencias resueltas 🟢\n\nSe destrabó porque ${depDetalle}.\n\nEl pipeline reentra a este issue automáticamente.`;
             ghThrottle();
             await ghDesbloqueoCall(
               ['issue', 'comment', String(issue.number), '--body', unblockComment, '--repo', repoTarget.getRepoForIssue(issue)],
@@ -24309,12 +24360,14 @@ async function brazoDesbloqueoImpl(config) {
             // lo reemplaza: mandar los dos era ruido duplicado en el canal.
             sendTelegram(
               decision.telegram
-              || `🪢→🟢 #${issue.number} destrabado automáticamente (deps cerradas: ${depIssueNumbers.map(n => '#' + n).join(',')})`
+              || `🪢→🟢 #${issue.number} destrabado automáticamente: ${depDetalle}.`
             );
             log('desbloqueo', `#${issue.number} desbloqueado exitosamente`);
           }
         } else {
-          log('desbloqueo', `🪢⏳ #${issue.number} sigue esperando ${openDeps.map(n => '#' + n).join(',')}`);
+          // #6901 / UX - el freno se explica: 'sigue abierta' y 'no se pudo
+          // leer el estado' son cosas distintas para el operador.
+          log('desbloqueo', `🪢⏳ #${issue.number} sigue esperando: ${brazoDesbloqueoCore.describePendingDeps(openDeps, depStates)}`);
         }
       } catch (e) {
         log('desbloqueo', `Error procesando #${issue.number}: ${e.message}`);
@@ -24483,7 +24536,8 @@ async function _selfHealPhantomBlocks({
           ['issue', 'view', depNum, '--json', 'state', '--jq', '.state', '--repo', repoTarget.getPrimaryRepo()],
           10000
         );
-        if (String(depState).trim() !== 'CLOSED') { anyOpen = true; break; }
+        // #6901 - mismo criterio unico que el brazo principal (CLOSED+MERGED).
+        if (!brazoDesbloqueoCore.isDependencySatisfied(depState)) { anyOpen = true; break; }
       } catch {
         anyOpen = true; break;                                  // estado ilegible → fail-closed
       }
@@ -24902,10 +24956,22 @@ async function mainLoop() {
       // modo que con `durable:false` NO se construye ningún driver ni se toca AWS.
       const buildDurableStore = (contextProjectId, allowedNamespaces, onAlert) => {
         const { createAwsCliRunner, createAwsCliDynamoDriver } = require('./lib/provisioner-infra');
-        const { buildAwsScopedEnv } = require('./lib/kernel-provision');
         const { createKernelStore } = kernelStoreLib;
-        const env = buildAwsScopedEnv(process.env, cfg.kernel.region);
-        const { run } = createAwsCliRunner(env);
+        // #5208 — El env AWS del runtime viene YA RESUELTO del closure
+        // (`runtimeAws`, más abajo), no de `process.env`.
+        //
+        // `buildAwsScopedEnv(process.env, …)` era un callejón sin salida: el
+        // entorno del pipeline sólo define `AWS_PROFILE` (y apunta al perfil
+        // administrativo), `loadIntoEnv` no hidrata ninguna `AWS_*`, y
+        // `createAwsCliRunner` exige claves ESTÁTICAS y rechaza el perfil pelado.
+        // Con `durable: true` eso reventaba acá y el boot degradaba a filesystem
+        // con el flag diciendo DynamoDB.
+        //
+        // La resolución NO se hace en esta función a propósito: fallar acá sería
+        // una excepción dentro del bloque, y R1 lo prohíbe (el `catch` de abajo
+        // se la tragaría). Se resuelve UNA vez antes del boot y su fallo se
+        // reporta por el sink, que es quien sabe decidir según la ventana.
+        const { run } = createAwsCliRunner(runtimeAws.env);
         const driver = createAwsCliDynamoDriver({ run });
         return createKernelStore({
           driver,
@@ -24961,7 +25027,30 @@ async function mainLoop() {
         redact: redactSecretValue,
       });
 
-      const result = await kernelSupervisor.bootKernelDurable({
+      // #5208 — Credenciales del principal runtime, resueltas UNA sola vez.
+      //
+      // Va DESPUÉS del sink y ANTES del boot por una razón dura: si faltan, el
+      // desenlace tiene que ser el MISMO que el de cualquier otra degradación
+      // del catálogo (alerta + decisión según `cutover_window`), no un throw que
+      // el `catch` del bloque convierta en un `WARN` genérico sin causa.
+      //
+      // `resolveRuntimeAwsEnv` nunca lanza: devuelve el error como dato.
+      const runtimeAws = require('./lib/kernel-runtime-credentials')
+        .resolveRuntimeAwsEnv({ kernel: cfg.kernel });
+      // Sin credenciales no hay driver posible: se reporta como CUALQUIER otra
+      // degradación del catálogo (el sink decide según la ventana) y se arma el
+      // mismo shape que devuelve `bootKernelDurable` cuando no corre, para que el
+      // manejo de abajo siga siendo uno solo.
+      //
+      // NO se usa `return` acá: estamos dentro de `mainLoop()` y salir del bloque
+      // saltearía todo el arranque posterior (integridad de estado,
+      // wave-recovery). Tampoco `throw`: R1 lo prohíbe en este bloque.
+      let result = { ran: false, reason: 'error', error: runtimeAws.code };
+      if (!runtimeAws.ok) {
+        log('pulpo', `WARN [kernel-durable] sin credenciales del runtime: ${redactSecretValue(runtimeAws.error)}`);
+        degradationSink.onDegraded(runtimeAws.error, { stage: 'boot-durable' });
+      } else {
+        result = await kernelSupervisor.bootKernelDurable({
         config: cfg,
         onAlert: (a) => {
           const pid = a && a.projectId ? String(a.projectId) : '—';
@@ -24998,7 +25087,8 @@ async function mainLoop() {
           log('pulpo', `[kernel-durable] instancia registrada para producto ${ctx && ctx.projectId}`);
           return null;
         },
-      });
+        });
+      }
 
       if (result.ran) {
         log('pulpo', `[kernel-durable] boot: ${(result.spawned || []).length} activos instanciados, ${(result.skipped || []).length} salteados (cap ${result.cap}).`);

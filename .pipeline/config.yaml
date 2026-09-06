@@ -1150,6 +1150,39 @@ rewind:
   #
   # Ver: docs/pipeline/rewind-operador.md → "Segundo frente".
 
+# #4966 — Watcher de mergeabilidad de PRs (observacion, NO transicion).
+#
+# Detecta PRs abiertos de la ola activa que quedaron CONFLICTING contra main y
+# emite un evento candidato. NO rebota, NO cierra, NO mergea: quien actua es
+# pipeline-rewind.rewindFromMergeConflict (#4967) y quien lo engancha al
+# barrido periodico es #4968.
+#
+# Nace APAGADO: se enciende explicitamente, nunca por default. Todos los
+# limites de abajo estan ademas clampeados EN CODIGO (normalizeConfig), asi que
+# un valor absurdo editado a mano degrada al default en vez de disparar miles
+# de llamadas a la API de GitHub.
+#
+# Ver: docs/pipeline/pr-mergeability-watcher.md
+pr_mergeability_watcher:
+  enabled: false
+  # Allowlist: el repo y la base que se consideran propios. Un PR con otra base
+  # o de un fork queda fuera del universo observado.
+  expected_repo: intrale/platform
+  expected_owner: intrale
+  expected_base: main
+  # Cadencia del barrido. Conservadora: se suma un brazo periodico a la presion
+  # de rate limit y el conflicto de un PR no es urgente al minuto.
+  poll_interval_minutes: 10
+  # Separacion minima real entre las dos observaciones que confirman un
+  # conflicto. Junto con el contador monotono pollSeq es la defensa contra
+  # reloj no monotono (NTP / suspension de la maquina).
+  min_poll_interval_ms: 60000
+  # PRs abiertos que se traen por poll. Clampeado a [1,100] en codigo.
+  candidate_limit: 20
+  gh_timeout_ms: 5000
+  # Poda de entradas huerfanas (PRs cerrados o fuera del barrido).
+  state_entry_ttl_hours: 72
+
 # #3085 / S7 multi-provider — aislamiento de credenciales por proceso.
 #
 # Cuando `env_isolation_enabled: true`, el pulpo filtra `process.env` antes de
@@ -1731,6 +1764,20 @@ kernel:
   # estas claves, `kernel-iam-verify.js` no arma la matriz.
   cmkAlias: "intrale-kernel-store"          # alias de la CMK que cifra ambas tablas
   runtimePrincipal: "intrale-kernel-runtime" # usuario IAM del runtime durable
+  # #5208 — PERFIL de la AWS CLI del principal de arriba. Es una clave DISTINTA
+  # de `runtimePrincipal`: aquel es el nombre IAM (contra el que la sonda compara
+  # la identidad efectiva), este es el perfil local desde donde se resuelven las
+  # claves estaticas que exige `createAwsCliRunner`.
+  #
+  # Sin esta clave el boot durable NO puede construir el driver: el entorno del
+  # pipeline solo define `AWS_PROFILE` (y apunta al perfil administrativo), y
+  # `loadIntoEnv` no hidrata ninguna variable `AWS_*`. El resultado seria que con
+  # `durable: true` el catalogo degrada a filesystem con alerta fuerte en cada
+  # arranque: el switch diciendo DynamoDB y el sistema corriendo sobre FS.
+  #
+  # NO apuntarlo a un perfil administrativo: el kernel dejaria de operar con
+  # least-privilege y los Deny de la policy nunca se probarian.
+  runtimeProfile: "kernel-runtime"           # perfil AWS CLI del principal runtime
   # #5211 (rebote de verificación) — Habilitan el chequeo de DRIFT: comparar el
   # artefacto versionado contra la policy que AWS tiene REALMENTE adjunta. Sin
   # esa comparación, el repo puede afirmar una postura que AWS no aplica y nadie
@@ -1744,7 +1791,29 @@ kernel:
   # probes siguen siendo válidos y el drift se reporta como "no verificado".
   iamPolicyName: "IntraleKernelStore"        # policy adjunta al principal runtime
   iamAdminProfile: "intrale"                 # perfil con iam:GetPolicy (solo lectura)
-  durable: false     # default OFF -- todo sigue en FS, cero llamadas AWS
+  # #5208 — ENCENDIDO durante la ventana de cutover. El store durable del kernel
+  # paso a ser la fuente de verdad: el boot leia el catalogo del control-plane
+  # desde DynamoDB y el alta escribia ahi. Se encendio despues de: dependencias
+  # #5204 y #5207 integradas, backups verificados fuera del repo, identidad
+  # runtime efectiva comprobada y sonda positiva NO VACIA verde contra
+  # `get-item --consistent-read`. Evidencia redactada: runbook §8.
+  #
+  # #5209 — APAGADO. Estado final del ENSAYO DE ROLLBACK, no una regresion: el
+  # ensayo consiste justamente en demostrar que se puede volver a filesystem sin
+  # perder firmas ni auditoria, y su estado terminal es `false`. Antes de apagar
+  # se corrio la reconciliacion DynamoDB → filesystem contra AWS real con
+  # conjunto NO VACIO (1 firma + 2 audit): paridad exacta de ids, conteos y
+  # SHA-256, verificada ademas con una lectura independiente por AWS CLI cruda.
+  # Runbook §2.7. Un conjunto vacio NO habilita este apagado y el comando aborta
+  # con `conjunto_vacio` — el codigo no deja bajar ese minimo.
+  #
+  # El apagado NO borra nada: la tabla de no-repudio es append-only por policy
+  # IAM (no concede `DeleteItem`), asi que lo escrito sigue en DynamoDB y ademas
+  # quedo reintegrado en filesystem. Simplemente deja de leerse de alli.
+  #
+  # Para volver a encender: `true` + `node .pipeline/restart.js` (runbook §1),
+  # con la ventana de cutover abierta y las sondas de §8 en verde.
+  durable: false
   # #5135 CA-1 -- Ventana de cutover SUPERVISADA. Default OFF (fail-closed: solo
   # el booleano `true` exacto la abre).
   #
@@ -1763,6 +1832,10 @@ kernel:
   # Quien la abre/cierra: EL OPERADOR, a mano, inmediatamente antes y despues del
   # cutover (operacion supervisada de minutos, con rollback manual). NUNCA se deja
   # en `true` en regimen. Runbook: docs/pipeline/runbook-cutover-durable.md.
+  # #5208 — Ventana CERRADA. El cutover se ejecuto y termino con todas las sondas
+  # verdes (runbook §8): backups verificados, migrated_count diagnosticado, sonda
+  # positiva no vacia coincidente con get-item --consistent-read, reboot sobre la
+  # particion canonica y cero eventos onDegraded. Cerrarla es parte del cutover.
   cutover_window: false
   # #4822 (split 3/3 de #4804) — Cota de instancias del boot durable del supervisor
   # multi-producto (CA-SEC-4 / REQ-SEC-BOOT-5, A04/DoS). Sibling de `durable` (que

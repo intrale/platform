@@ -21,10 +21,12 @@
 // SEMÁNTICA FAIL-CLOSED
 // ---------------------
 // Espejo de la lógica del brazo (pulpo.js:~13290 `allClosed`): un marker se
-// libera SOLO si todas sus deps están explícitamente CLOSED. Si el estado de
-// alguna dep es desconocido/ilegible (no figura en `issueStates` o no es
-// 'CLOSED'), se asume abierta → NO se libera (conservador, evita destrabes
-// prematuros). Un marker sin deps numéricas no se libera por este camino
+// libera SOLO si todas sus deps están explícitamente cumplidas — `CLOSED` o
+// `MERGED` (#6901: GitHub reporta `MERGED` para un PR mergeado, y tratarlo como
+// abierto congelaba el issue para siempre). Si el estado de alguna dep es
+// desconocido/ilegible (no figura en `issueStates` o no está en la allowlist de
+// `isDependencySatisfied`), se asume abierta → NO se libera (conservador, evita
+// destrabes prematuros). Un marker sin deps numéricas no se libera por este camino
 // (espera asset/recurso, no issue concreto).
 // =============================================================================
 
@@ -33,6 +35,110 @@
 const { PR_PROVENANCE_FIELDS, checkPrProvenance } = require('./pr-provenance');
 
 const CLOSED = 'CLOSED';
+const MERGED = 'MERGED';
+
+// =============================================================================
+// #6901 — ESTADO DE DEPENDENCIA CUMPLIDA (fuente única de verdad)
+// -----------------------------------------------------------------------------
+// GitHub reporta `MERGED` (no `CLOSED`) para un pull request mergeado. Comparar
+// contra el literal `CLOSED` contaba esa dependencia como abierta y, por la
+// semántica fail-closed, el issue que la declaraba quedaba congelado PARA
+// SIEMPRE: el PR ya está mergeado y su estado no va a cambiar nunca más.
+//
+// El criterio vive acá, una sola vez, y todos los caminos de decisión del brazo
+// lo consumen (`allDepsClosed`, los reportes de deps pendientes,
+// `decideSplitUmbrellaClose` y los call-sites de `pulpo.js`).
+//
+// ALLOWLIST EXPLÍCITA, NUNCA DENYLIST: un `!== 'OPEN'` convertiría cualquier
+// estado ilegible o desconocido en "cumplido" y rompería el fail-closed. Este
+// cambio AMPLÍA el conjunto de estados cumplidos; no lo relaja.
+// =============================================================================
+
+/** Estados que cuentan como dependencia cumplida. Allowlist cerrada. */
+const SATISFIED_DEP_STATES = Object.freeze([CLOSED, MERGED]);
+const SATISFIED_DEP_STATE_SET = new Set(SATISFIED_DEP_STATES);
+
+/** Verbo con el que se le nombra al operador cada estado cumplido (UX #6901). */
+const SATISFIED_DEP_VERB = Object.freeze({
+  [CLOSED]: 'fue cerrada',
+  [MERGED]: 'fue mergeada',
+});
+
+/**
+ * Normaliza un estado de dependencia para comparar. No inventa valores: si no
+ * es un string, devuelve cadena vacía (que jamás está en la allowlist).
+ * @param {*} state
+ * @returns {string}
+ */
+function normalizeDepState(state) {
+  return typeof state === 'string' ? state.trim().toUpperCase() : '';
+}
+
+/**
+ * #6901 — Único criterio de "dependencia cumplida" del brazo de desbloqueo.
+ *
+ * @param {*} state estado observado en GitHub (`gh issue view --json state`)
+ * @returns {boolean} true SOLO para `CLOSED` y `MERGED`. Ausente, nulo, string
+ *   vacío, no-string o estado desconocido → false (fail-closed intacto).
+ */
+function isDependencySatisfied(state) {
+  return SATISFIED_DEP_STATE_SET.has(normalizeDepState(state));
+}
+
+/**
+ * Une referencias en castellano natural: "#1", "#1 y #2", "#1, #2 y #3".
+ * @param {string[]} parts
+ * @returns {string}
+ */
+function joinNatural(parts) {
+  const arr = (Array.isArray(parts) ? parts : []).filter(Boolean);
+  if (arr.length === 0) return '';
+  if (arr.length === 1) return arr[0];
+  return `${arr.slice(0, -1).join(', ')} y ${arr[arr.length - 1]}`;
+}
+
+/**
+ * #6901 CA-5 — Redacción fiel de las dependencias que SÍ se cumplieron: verbo
+ * POR dependencia, no verbo global. Con una dep cerrada y una mergeada, decir
+ * "las siguientes dependencias cerraron" le miente al operador sobre el PR.
+ *
+ * @param {Array<string|number>} deps
+ * @param {Record<string,string>} [states] dep → estado observado
+ * @returns {string} p.ej. "#5203 fue mergeada y #5204 fue cerrada"
+ */
+function describeSatisfiedDeps(deps, states) {
+  const map = states && typeof states === 'object' ? states : {};
+  const parts = (Array.isArray(deps) ? deps : []).map(depKey).filter(Boolean).map((d) => {
+    const ref = d.replace(/^#/, '');
+    const st = normalizeDepState(map[ref] ?? map[d]);
+    // Estado no informado: no se inventa verbo, se dice lo único que se sabe.
+    const verbo = SATISFIED_DEP_VERB[st] || 'quedó resuelta';
+    return `#${ref} ${verbo}`;
+  });
+  return parts.length ? joinNatural(parts) : '(ninguna)';
+}
+
+/**
+ * #6901 CA-4 / UX punto 4 — Redacción del freno. El operador tiene que poder
+ * distinguir "sigue abierta" de "no pude leerla y por las dudas la cuento como
+ * abierta": la diferencia es entre entender el freno y abrir un incidente al
+ * pedo.
+ *
+ * @param {Array<string|number>} deps dependencias NO cumplidas
+ * @param {Record<string,string>} [states] dep → estado observado (ausente = ilegible)
+ * @returns {string}
+ */
+function describePendingDeps(deps, states) {
+  const map = states && typeof states === 'object' ? states : {};
+  const parts = (Array.isArray(deps) ? deps : []).map(depKey).filter(Boolean).map((d) => {
+    const ref = d.replace(/^#/, '');
+    const st = normalizeDepState(map[ref] ?? map[d]);
+    if (st === 'OPEN') return `#${ref} sigue abierta`;
+    if (!st) return `no se pudo leer el estado de #${ref} — se asume abierta por precaución`;
+    return `#${ref} está en estado no reconocido (${st}) — se asume abierta por precaución`;
+  });
+  return parts.length ? joinNatural(parts) : '(ninguna)';
+}
 
 /**
  * Normaliza un número de issue/dep a string (clave estable para lookup).
@@ -44,8 +150,9 @@ function depKey(n) {
 }
 
 /**
- * ¿Están todas las dependencias de un marker CLOSED según `issueStates`?
- * Fail-closed: dep ausente o con estado != 'CLOSED' → false.
+ * ¿Están todas las dependencias de un marker CUMPLIDAS según `issueStates`?
+ * El criterio es `isDependencySatisfied` (#6901): `CLOSED` o `MERGED`.
+ * Fail-closed: dep ausente, ilegible o con estado fuera de esa allowlist → false.
  *
  * @param {Array<string|number>} deps
  * @param {Record<string,string>} issueStates - issueNumber → estado
@@ -56,7 +163,7 @@ function allDepsClosed(deps, issueStates) {
   const states = issueStates && typeof issueStates === 'object' ? issueStates : {};
   for (const dep of deps) {
     const st = states[depKey(dep)];
-    if (st !== CLOSED) return false; // desconocido o abierto → fail-closed
+    if (!isDependencySatisfied(st)) return false; // desconocido o abierto → fail-closed (#6901: CLOSED y MERGED cuentan)
   }
   return true;
 }
@@ -88,7 +195,7 @@ function selectMarkersToRelease({ markers, issueStates } = {}) {
     } else {
       const openDeps = deps
         .map(depKey)
-        .filter((d) => states[d] !== CLOSED);
+        .filter((d) => !isDependencySatisfied(states[d]));
       blocked.push({ ...m, openDeps });
     }
   }
@@ -129,7 +236,7 @@ function selectHumanBlocksToRelease({ markers, issueStates } = {}) {
     if (allDepsClosed(deps, states)) {
       toRelease.push(m);
     } else {
-      const openDeps = deps.map(depKey).filter((d) => states[d] !== CLOSED);
+      const openDeps = deps.map(depKey).filter((d) => !isDependencySatisfied(states[d]));
       blocked.push({ ...m, openDeps });
     }
   }
@@ -377,7 +484,9 @@ function fmtRefs(list) {
 /**
  * @param {object} p
  * @param {{number: number|string, title: string, labels?: Array}} p.issue
- * @param {Array<string|number>} [p.deps] dependencias declaradas ya verificadas CLOSED
+ * @param {Array<string|number>} [p.deps] dependencias declaradas ya verificadas como cumplidas
+ * @param {Record<string,string>} [p.depStates] dep → estado observado ('CLOSED'|'MERGED'|...),
+ *        para nombrar en los mensajes con el verbo real de cada una (#6901 CA-5)
  * @param {Array<number|string>|null} [p.children] hijas descubiertas (null = indeterminable)
  * @param {'registro'|'titulos'|null} [p.childrenSource] de dónde salió `children`
  * @param {Record<string,string>} [p.childStates] hija → 'OPEN'|'CLOSED'|...
@@ -389,12 +498,16 @@ function fmtRefs(list) {
 function decideSplitUmbrellaClose({
   issue,
   deps = [],
+  depStates = null,
   children = null,
   childrenSource = null,
   childStates = null,
   hasLinkedPr = null,
 } = {}) {
   const depRefs = (Array.isArray(deps) ? deps : []).map(depKey).filter(Boolean);
+  // #6901 CA-5 — verbo POR dependencia: "#5203 fue mergeada y #5204 fue cerrada".
+  // Un verbo global ("cerraron") le miente al operador cuando la dep es un PR.
+  const depDetalle = describeSatisfiedDeps(depRefs, depStates);
   const base = {
     parent: null,
     deps: depRefs,
@@ -428,7 +541,7 @@ function decideSplitUmbrellaClose({
       action: 'unblock',
       reason: 'hija-de-split',
       parent,
-      log: `#${number}: es hija del split de #${parent} — se destraba, NUNCA se auto-cierra (CA-3 #6801). Dependencias cerradas: ${fmtRefs(depRefs)}`,
+      log: `#${number}: es hija del split de #${parent} — se destraba, NUNCA se auto-cierra (CA-3 #6801). Dependencias resueltas: ${depDetalle}`,
       telegram: `⚠️ #${number} no se auto-cerró: es hija de split (\`[Split de #${parent}]\`) y el trabajo sigue pendiente. Se le quitó \`blocked:dependencies\` y reingresa al pipeline.`,
     };
   }
@@ -439,7 +552,7 @@ function decideSplitUmbrellaClose({
       ...base,
       action: 'unblock',
       reason: 'sin-label-split',
-      log: `#${number}: destrabado (dependencias cerradas: ${fmtRefs(depRefs)})`,
+      log: `#${number}: destrabado — ${depDetalle}`,
     };
   }
 
@@ -450,15 +563,15 @@ function decideSplitUmbrellaClose({
       ...base,
       action: 'skip',
       reason: 'hijas-indeterminables',
-      log: `#${number}: lleva label \`split\` pero no se pudo determinar su lista de sub-historias — NO se cierra (fail-closed CA-2 #6801). Dependencias cerradas: ${fmtRefs(depRefs)}`,
-      telegram: `⚠️ #${number} no se auto-cerró: lleva el label \`split\` pero no se pudo determinar qué sub-historias lo componen, así que el pipeline prefiere no cerrarlo. Sus dependencias declaradas (${fmtRefs(depRefs)}) sí están cerradas. Revisalo a mano: si es un paraguas real, agregale al body la línea **Sub-historias** con los números de las hijas.`,
+      log: `#${number}: lleva label \`split\` pero no se pudo determinar su lista de sub-historias — NO se cierra (fail-closed CA-2 #6801). Dependencias resueltas: ${depDetalle}`,
+      telegram: `⚠️ #${number} no se auto-cerró: lleva el label \`split\` pero no se pudo determinar qué sub-historias lo componen, así que el pipeline prefiere no cerrarlo. Sus dependencias declaradas sí se resolvieron (${depDetalle}). Revisalo a mano: si es un paraguas real, agregale al body la línea **Sub-historias** con los números de las hijas.`,
     };
   }
 
   // 4. Todas las sub-historias tienen que estar CLOSED. Fail-closed: estado
   //    ausente o ilegible cuenta como abierta.
   const states = childStates && typeof childStates === 'object' ? childStates : {};
-  const openChildren = childIds.filter(n => states[depKey(n)] !== CLOSED);
+  const openChildren = childIds.filter(n => !isDependencySatisfied(states[depKey(n)]));
   if (openChildren.length) {
     return {
       ...base,
@@ -466,8 +579,8 @@ function decideSplitUmbrellaClose({
       reason: 'hijas-abiertas',
       children: childIds,
       childrenSource,
-      log: `#${number}: paraguas con sub-historias todavía abiertas (${fmtRefs(openChildren)}) — NO se cierra. Sus dependencias declaradas sí cerraron: ${fmtRefs(depRefs)}`,
-      telegram: `⚠️ #${number} no se auto-cerró: sus dependencias cerraron, pero todavía tiene sub-historias abiertas (${fmtRefs(openChildren)}). Sigue esperando a que se completen.`,
+      log: `#${number}: paraguas con sub-historias todavía abiertas (${fmtRefs(openChildren)}) — NO se cierra. Sus dependencias declaradas sí se resolvieron: ${depDetalle}`,
+      telegram: `⚠️ #${number} no se auto-cerró: sus dependencias se resolvieron (${depDetalle}), pero todavía tiene sub-historias abiertas (${fmtRefs(openChildren)}). Sigue esperando a que se completen.`,
     };
   }
 
@@ -501,7 +614,7 @@ function decideSplitUmbrellaClose({
     children: childIds,
     childrenSource,
     warnNoPr,
-    log: `#${number}: paraguas real con sub-historias cerradas (${fmtRefs(childIds)}, fuente=${childrenSource || 'desconocida'}) → auto-cerrando. Dependencias declaradas: ${fmtRefs(depRefs)}`,
+    log: `#${number}: paraguas real con sub-historias cerradas (${fmtRefs(childIds)}, fuente=${childrenSource || 'desconocida'}) → auto-cerrando. Dependencias declaradas: ${depDetalle}`,
     comment,
     telegram,
   };
@@ -777,6 +890,14 @@ module.exports = {
   canonicalCycleKey,
   depKey,
   CLOSED,
+  // #6901 — criterio único de dependencia cumplida (CLOSED + MERGED)
+  MERGED,
+  SATISFIED_DEP_STATES,
+  isDependencySatisfied,
+  normalizeDepState,
+  // #6901 CA-5 — redacción fiel para el operador (verbo por dependencia)
+  describeSatisfiedDeps,
+  describePendingDeps,
   DEFAULT_MAX_AUTO_RELEASES,
   // internos para tests
   _internal: { verifiablePredicateOf, releaseBlocker },

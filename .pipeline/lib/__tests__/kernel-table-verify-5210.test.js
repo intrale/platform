@@ -20,6 +20,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
+const fs = require('node:fs');
 
 const v = require('../kernel-table-verify');
 
@@ -345,28 +346,66 @@ test('CA-1: config.yaml real tiene las tres claves pobladas y tablas distintas',
     assert.notEqual(cfg.tableName, cfg.coordinationTableName);
 });
 
-test('CA-5: config.yaml real mantiene kernel.durable en false', () => {
+// El valor esperado de `kernel.durable` en el config REAL se movió dos veces, y
+// cada movimiento fue el entregable de una historia distinta:
+//
+//   #5210/#5207 → `false`. Sólo preparaban infraestructura: poblar nombres de
+//                 tabla no podía encender nada.
+//   #5208       → `true`.  Ejecutó el cutover y encendió el switch con evidencia
+//                 positiva (runbook §8).
+//   #5209       → `false`. ENSAYO DE ROLLBACK. Su entregable es demostrar que se
+//                 puede volver a filesystem sin perder firmas ni auditoría, y el
+//                 estado terminal de ese ensayo es el flag apagado.
+//
+// Por eso el test no se limita a comparar un booleano: un `false` puede ser el
+// cierre de #5209 o el descuido de alguien que apagó el camino durable sin
+// reconciliar. Lo que distingue a uno del otro es que el apagado esté ATADO a su
+// justificación en el mismo archivo. Eso es lo que se verifica acá.
+test('#5209: config.yaml real volvió a kernel.durable:false y el apagado está justificado', () => {
     const cfg = v.readKernelTablesConfig({ configPath: CONFIG_PATH });
-    assert.equal(cfg.durable, false, 'poblar los nombres NO debe encender el camino durable');
+    assert.equal(cfg.durable, false, 'el ensayo de rollback de #5209 termina con el camino durable apagado');
+
+    const raw = fs.readFileSync(CONFIG_PATH, 'utf8');
+
+    // El apagado tiene que venir con su razón al lado. Un `durable: false` mudo
+    // es indistinguible de una regresión silenciosa: el pipeline seguiría
+    // andando (filesystem es el fail-safe) y nadie se enteraría de que el camino
+    // durable se apagó por accidente.
+    const idx = raw.search(/^\s*durable:\s*false\s*$/m);
+    assert.ok(idx > 0, 'la clave `durable: false` debe existir en config.yaml');
+    const preambulo = raw.slice(Math.max(0, idx - 2000), idx);
+    assert.match(preambulo, /#5209/, 'el apagado debe citar la historia que lo decidió');
+    assert.match(preambulo, /reconciliaci|paridad/i, 'y la condición que lo habilitó: la reconciliación con paridad');
+
+    // La ventana abierta es un falso verde permanente (runbook §5): dentro de
+    // ella una degradación aborta el arranque, y fuera vuelve a ser best-effort.
+    // Dejarla `true` en régimen deja el pipeline en mantenimiento para siempre.
+    const m = raw.match(/^\s*cutover_window:\s*(\S+)/m);
+    assert.ok(m, 'la clave `cutover_window` debe existir en config.yaml (la creó #5135)');
+    assert.equal(m[1], 'false', 'la ventana de cutover tiene que quedar CERRADA al terminar');
 });
 
 test('CA-5: con durable:false el bootstrap resuelve por filesystem y no instancia el store', async () => {
-    // Contra-prueba del riesgo real de esta historia: ahora que `tableName` y
-    // `region` tienen valor, ¿alcanza eso para que algo hable con DynamoDB?
-    // No: el único switch es `durable`.
+    // Contra-prueba del riesgo real de #5210: teniendo `tableName` y `region`
+    // poblados, ¿alcanza eso para que algo hable con DynamoDB? No: el único
+    // switch es `durable`.
+    //
+    // #5208 — El `kernelConfig` se INYECTA en vez de leerse del config real.
+    // Antes el test leía `readKernelConfig({})`, así que la propiedad que
+    // verificaba ("con durable:false no se instancia el store") quedaba atada al
+    // valor global del flag: al encenderlo, el test dejaba de probar su propio
+    // invariante. Inyectándolo, la contra-prueba de #5210 sigue viva con el
+    // cutover ya hecho.
     const bootstrap = require('../project-bootstrap');
-    const cfg = bootstrap.readKernelConfig({});
-    assert.equal(cfg.durable, false);
-    assert.ok(cfg.tableName, 'la tabla está configurada…');
-    assert.equal(cfg.durable, false, '…y aun así el camino durable sigue apagado');
+    const real = v.readKernelTablesConfig({ configPath: CONFIG_PATH });
+    assert.ok(real.tableName, 'la tabla está configurada…');
 
-    // Y el store durable ni siquiera se construye.
     let storeInstanciado = false;
     await bootstrap.durableRegisterProduct(
         { projectId: 'demo' },
         {},
         {
-            kernelConfig: { durable: false, tableName: cfg.tableName, region: cfg.region },
+            kernelConfig: { durable: false, tableName: real.tableName, region: real.region },
             createKernelStore: () => { storeInstanciado = true; return {}; },
         },
     ).catch(() => {});

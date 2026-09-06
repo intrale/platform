@@ -505,3 +505,122 @@ test('createUlidFactory genera ids monótonos y únicos', () => {
   assert.ok(b < c, 'monótono al avanzar el reloj');
   assert.match(a, /^[a-z0-9]+$/);
 });
+
+// =============================================================================
+// #5209 — Lectura paginada y validada de las entidades append-only.
+//
+// Sin este listado, la reconciliación DynamoDB → filesystem no puede probar que
+// leyó TODO: un conjunto parcial que pasa la paridad es un rollback que pierde
+// firmas en silencio.
+// =============================================================================
+
+test('#5209: listSignatures pagina hasta agotar el conjunto (no se pierde ninguna firma)', async () => {
+  const { store } = makeStore();
+  for (let i = 0; i < 23; i += 1) {
+    await store.putSignature(validSignature({ target: `pr-${i}` }));
+  }
+
+  const enUnaPagina = await store.listSignatures();
+  const enPaginasChicas = await store.listSignatures({ pageSize: 3 });
+
+  assert.equal(enUnaPagina.length, 23);
+  assert.equal(enPaginasChicas.length, 23);
+  assert.deepEqual(enPaginasChicas.map((i) => i.SK), enUnaPagina.map((i) => i.SK));
+});
+
+test('#5209: el listado viene ordenado por SK (ULID ⇒ orden temporal determinístico)', async () => {
+  const { store } = makeStore();
+  for (let i = 0; i < 8; i += 1) await store.appendAuditEntry({ action: 'x', actor: 'leitolarreta', detail: `n${i}` });
+
+  const sks = (await store.listAuditEntries({ pageSize: 2 })).map((i) => i.SK);
+
+  assert.deepEqual(sks, sks.slice().sort());
+});
+
+test('#5209: los listados no se mezclan entre sí (signature# no trae audit# ni al revés)', async () => {
+  const { store } = makeStore();
+  await store.putSignature(validSignature());
+  await store.putSignature(validSignature({ target: 'pr-2' }));
+  await store.appendAuditEntry({ action: 'gate2.sign', actor: 'leitolarreta' });
+
+  const sigs = await store.listSignatures();
+  const auds = await store.listAuditEntries();
+
+  assert.equal(sigs.length, 2);
+  assert.equal(auds.length, 1);
+  assert.ok(sigs.every((i) => i.SK.startsWith('signature#') && i.entityType === 'signature'));
+  assert.ok(auds.every((i) => i.SK.startsWith('audit#') && i.entityType === 'audit'));
+});
+
+test('#5209: el listado aísla por contextProjectId (A01) — no lee la partición de otro producto', async () => {
+  const driver = createInMemoryDynamoDriver();
+  const a = makeStore({ driver, contextProjectId: 'proyecto-a', allowedNamespaces: ['proyecto-a'] });
+  const b = makeStore({ driver, contextProjectId: 'proyecto-b', allowedNamespaces: ['proyecto-b'] });
+
+  await a.store.putSignature(validSignature({ target: 'de-a' }));
+  await a.store.putSignature(validSignature({ target: 'de-a-2' }));
+  await b.store.putSignature(validSignature({ target: 'de-b' }));
+
+  const deA = await a.store.listSignatures();
+  const deB = await b.store.listSignatures();
+
+  assert.equal(deA.length, 2);
+  assert.equal(deB.length, 1);
+  assert.ok(deA.every((i) => i.projectId === 'proyecto-a'));
+  assert.equal(deB[0].body.target, 'de-b');
+});
+
+test('#5209: un ítem corrupto en la partición hace fallar el listado entero (fail-closed)', async () => {
+  const { store, driver, alerts } = makeStore();
+  await store.putSignature(validSignature());
+  // Ítem con campo desconocido: el schema del envelope lo rechaza (A06).
+  await driver.putItem(specFor(), Object.assign(
+    rawItem('signature', 'signature#corrupta', { signer: 'x', target: 'y', checksum: 'z' }),
+    { campoDesconocido: true },
+  ));
+
+  await assert.rejects(() => store.listSignatures(), KernelStoreValidationError);
+  assert.ok(alerts.length > 0, 'un rechazo fail-closed tiene que alertar');
+});
+
+test('#5209: un ítem de otra partición inyectado bajo esta PK es rechazado al listar', async () => {
+  const { store, driver } = makeStore();
+  await store.appendAuditEntry({ action: 'ok', actor: 'leitolarreta' });
+  // PK de esta instancia pero projectId ajeno: anti-IDOR (A01/A07).
+  await driver.putItem(specFor(), {
+    PK: CTX, SK: 'audit#intrusa', entityType: 'audit', projectId: 'otro-proyecto',
+    schemaVersion: '1.0', body: { action: 'x', actor: 'y', at: '1' },
+  });
+
+  await assert.rejects(() => store.listSignatures().then(() => store.listAuditEntries()),
+    (e) => e instanceof KernelStoreValidationError && /isolation/.test(e.stage));
+});
+
+test('#5209: un driver sin `query` no devuelve conjunto vacío — falla con remedio', async () => {
+  const driverSinQuery = createInMemoryDynamoDriver();
+  delete driverSinQuery.query;
+  const { store } = makeStore({ driver: driverSinQuery });
+
+  await assert.rejects(() => store.listSignatures(), /no expone `query`/);
+});
+
+test('#5209: una paginación que no avanza aborta en vez de girar para siempre', async () => {
+  const driver = createInMemoryDynamoDriver();
+  const { store } = makeStore({ driver });
+  await store.putSignature(validSignature());
+  // Driver patológico: siempre devuelve la misma página y un lastEvaluatedKey.
+  const original = driver.query.bind(driver);
+  driver.query = async (spec, params) => {
+    const res = await original(spec, Object.assign({}, params, { exclusiveStartKey: null }));
+    return { items: res.items, lastEvaluatedKey: { PK: CTX, SK: 'signature#loop' } };
+  };
+
+  await assert.rejects(() => store.listSignatures(), /SK repetido entre páginas/);
+});
+
+test('#5209: el listado es sólo lectura — no reintroduce ninguna ruta destructiva', () => {
+  const src = fs.readFileSync(path.resolve(__dirname, '..', 'kernel-store.js'), 'utf8');
+  const listado = src.slice(src.indexOf('async function listAppendOnly'), src.indexOf('async function listSignatures'));
+  assert.equal(/deleteItem|putItem/.test(listado), false,
+    'listAppendOnly no puede escribir ni borrar sobre la tabla de no-repudio');
+});

@@ -304,7 +304,7 @@ scripts/planner-plan.json
 # de estado runtime del CI. El audit JSONL ya está cubierto por `.pipeline/audit/`.
 .pipeline/disk-guard-state.json
 .pipeline/disk-guard-state.json.tmp
-# #5723 — contador de rollbacks consecutivos. Va fuera del arbol versionado a
+# #5723 — contador de rollbacks consecutivos. Va fuera del árbol versionado a
 # proposito: el rollback hace `git checkout <target> -- .pipeline/` y se
 # llevaria puesto el estado si estuviera trackeado.
 .pipeline/rollback-state.json
@@ -320,7 +320,7 @@ scripts/planner-plan.json
 .dur
 # #5216 (R-1, hallazgo bloqueante de `security`) — el flag `sensible: true` de
 # `writeDeliverable` SOLO excluye el entregable del canal Drive; NO lo excluye de
-# git. Los .md de `.pipeline/assets/docs/` estan trackeados y este repo es PUBLICO,
+# git. Los .md de `.pipeline/assets/docs/` estan trackeados y este repo es PÚBLICO,
 # asi que un entregable sensible se publicaria igual. Esta regla es la unica
 # contencion real. El inventario detallado de credenciales de #5216 mapea
 # `archivo:linea` de cada consumidor y su cadena de resolucion: es un mapa de
@@ -507,3 +507,21 @@ security-report-*.md
 # `.pipeline/_tmp/po5220/dst-ca2b/`, justo la clase de replica que este issue
 # existe para erradicar. Un `git add -A` alcanzaba para colarla al PR.
 .pipeline/_tmp/
+
+# Estado del cron de rotación de credenciales (#5901 / REQ-SEC-1).
+# El repo es PÚBLICO: el archivo publica el inventario de nombres de
+# variables de secretos con su calendario de vencimiento y, desde #5901,
+# también qué productos existen y qué secretos tiene cada uno. Vive en
+# ~/.claude/pipeline-state/ (fuera del árbol, sobrevive al reset --hard).
+.pipeline/credential-reminder-state.json
+
+# Scratch de agentes en la RAIZ del repo (#5126 / CA-B2).
+# `.pipeline/_tmp/` (arriba) cubre el scratchpad de adentro del pipeline, pero
+# los skills tambien escriben scratchpads al lado del repo: `.tmp<issue>/`,
+# `.tmp-<rol>/` y `.tmp-issue-<n>.txt`. Cuatro de esos quedaron versionados
+# (40 archivos, 17.5 MB de dumps de la API de issues) y uno publicaba el
+# account-id AWS real dentro de un ARN completo, en un repo PUBLICO — justo lo
+# que CA-0 y CA-B2 de #5126 prohiben ("el account-id nunca se commitea").
+# Un `git add -A` durante una corrida alcanzaba para colarlos.
+/.tmp*/
+/.tmp-*.txt

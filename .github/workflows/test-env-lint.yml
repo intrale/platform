@@ -1,0 +1,47 @@
+name: Test Env Lint
+
+# Issue #6260 — defensa en profundidad del guardrail de contaminacion de
+# `process.env` en tests. El hook pre-commit local es bypassable con
+# `--no-verify`; este job duplica el lint en CI.
+#
+# R-A7 / SEC-10 — hoy el UNICO required check de `main` es `pr-status`, y los
+# otros lints del repo tampoco estan en su `needs:`. Hasta que cierre #6265
+# (cablear el job como required check del merge) este guardrail es ADVISORY en
+# CI y bloqueante solo en el hook local. Cablearlo esta fuera del alcance de
+# #6260 a proposito.
+
+on:
+  pull_request:
+    branches: [ main, develop ]
+    paths:
+      - '.pipeline/**'
+      - '.github/workflows/test-env-lint.yml'
+  push:
+    branches: [ main ]
+    paths:
+      - '.pipeline/**'
+
+jobs:
+  test-env-lint:
+    runs-on: ubuntu-latest
+    name: Test env lint (process.env fuera del helper)
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # `DEFAULT_PIPELINE_ROOT` se resuelve contra `__dirname`, nunca contra
+      # `process.cwd()`: el hook lo invoca desde la raiz del repo y este job
+      # desde `.pipeline`, y con un root dependiente del cwd `min_scanned`
+      # daria distinto en CI que en local.
+      - name: Run test-env lint
+        working-directory: .pipeline
+        run: node lib/test-env-lint.js --check
+
+      - name: Run test-env unit tests
+        working-directory: .pipeline
+        run: node --test lib/__tests__/test-env-lint.test.js lib/__tests__/with-env.test.js

@@ -97,6 +97,37 @@ function escribirVeredicto(estado, issue, data, { mtimeMs } = {}) {
   return file;
 }
 
+// #6496 rev-5 (rebote de #5207) — BOMBA DE TIEMPO en los fixtures de CA-4.
+//
+// El corte duro de la ventana de migración (`MIGRACION_CORTE_MS`, SEC A08) se
+// evalúa contra el **mtime real** del dropfile. Un fixture escrito con
+// `fs.writeFileSync` queda fechado con el reloj de pared, así que los tres
+// guardianes de CA-4 sólo pasaban mientras la corrida fuera anterior al
+// `2026-09-05T00:00:00Z`: al cruzar esa fecha el "backlog pre-sellado" simulado
+// dejó de ser pre-corte, `migratePreSealBacklog` no eximió a nadie y los tests
+// se cayeron sin que cambiara una línea de producción (el corte funciona como
+// se diseñó; lo que estaba mal era el fixture).
+//
+// Fechar explícitamente contra la constante los vuelve deterministas para
+// siempre y hace explícito de qué lado del corte está cada dropfile — mismo
+// patrón que `escribirAprobadoSinSello` en
+// `qa-evidence-seal-rebote-security-6496.test.js`.
+//
+// La mecánica del fechado es UNA sola —  el `mtimeMs` de `escribirVeredicto`
+// contra `PRE_CORTE_MS`/`POST_CORTE_MS` (#6034) — y estos dos wrappers sólo le
+// ponen nombre al lado del corte, para que cada fixture declare en su propia
+// llamada de qué lado está parado en vez de obligar a deducirlo de la constante.
+
+/** Dropfile del backlog ANTERIOR al corte: es lo que la migración rescata. */
+function escribirVeredictoPreCorte(estado, issue, data) {
+  return escribirVeredicto(estado, issue, data, { mtimeMs: PRE_CORTE_MS });
+}
+
+/** Dropfile POSTERIOR al corte: nunca puede recibir exención (CA-3). */
+function escribirVeredictoPostCorte(estado, issue, data) {
+  return escribirVeredicto(estado, issue, data, { mtimeMs: POST_CORTE_MS });
+}
+
 function leerVeredicto(estado, issue, subdir = 'procesado') {
   return yaml.load(fs.readFileSync(
     path.join(estado, 'desarrollo', 'verificacion', subdir, `${issue}.qa`), 'utf8'));
@@ -342,11 +373,11 @@ test('stripDeclaredSeal borra la exencion que declare el agente', () => {
 test('la migracion es idempotente', () => {
   const estado = crearEstado();
   // Backlog PRE-sellado: por definición son dropfiles anteriores al corte.
-  escribirVeredicto(estado, 6258, { resultado: 'aprobado', evidencia: 'prosa' }, { mtimeMs: PRE_CORTE_MS });
-  escribirVeredicto(estado, 6362, { resultado: 'aprobado', evidencia: 'prosa' }, { mtimeMs: PRE_CORTE_MS });
+  escribirVeredictoPreCorte(estado, 6258, { resultado: 'aprobado', evidencia: 'prosa' });
+  escribirVeredictoPreCorte(estado, 6362, { resultado: 'aprobado', evidencia: 'prosa' });
   // El rechazado también va pre-corte: así el motivo por el que no se exime es
   // el que este test quiere probar (no es `aprobado`) y no un descarte por fecha.
-  escribirVeredicto(estado, 6259, { resultado: 'rechazado' }, { mtimeMs: PRE_CORTE_MS });
+  escribirVeredictoPreCorte(estado, 6259, { resultado: 'rechazado' });
 
   const uno = seal.migratePreSealBacklog({ pipelineDir: estado, ahora: '2026-08-26T00:00:00Z' });
   assert.deepStrictEqual(uno.exentos.sort(), [6258, 6362]);
@@ -383,7 +414,7 @@ test('un aprobado sin sello posterior al corte NO recibe exencion en un boot pos
   // estado aislado. El defecto sólo aparece con la migración en el medio.
   const repo = crearRepo();
   const estado = crearEstado();
-  escribirVeredicto(estado, 6258, { resultado: 'aprobado', evidencia: 'prosa' }, { mtimeMs: PRE_CORTE_MS });
+  escribirVeredictoPreCorte(estado, 6258, { resultado: 'aprobado', evidencia: 'prosa' });
 
   // BOOT 1 — la ventana de migración se abre una única vez y cierra el corte.
   const boot1 = seal.migratePreSealBacklog({ pipelineDir: estado, ahora: '2026-08-26T00:00:00Z' });
@@ -393,7 +424,7 @@ test('un aprobado sin sello posterior al corte NO recibe exencion en un boot pos
   // Llega un veredicto NUEVO, posterior al corte, aprobado y sin sello. El
   // `mtime` va explícito (#6034): "posterior al corte" es la premisa del caso,
   // no algo que deba depender de cuándo se corra la suite.
-  escribirVeredicto(estado, 7777, { resultado: 'aprobado', evidencia: 'prosa' }, { mtimeMs: POST_CORTE_MS });
+  escribirVeredictoPostCorte(estado, 7777, { resultado: 'aprobado', evidencia: 'prosa' });
   const antes = seal.checkVerdictFreshness({ pipelineDir: estado, issue: 7777, cwd: repo.dir });
   assert.strictEqual(antes.caduco, true, 'antes del boot el gate ya lo declara caduco');
   assert.strictEqual(antes.motivo, 'sin-sello');
@@ -426,10 +457,11 @@ test('un aprobado sin sello posterior al corte NO recibe exencion en un boot pos
 test('un dropfile ya sellado no recibe exencion', () => {
   const estado = crearEstado();
   // Pre-corte a propósito: el descarte tiene que venir de que YA está sellado,
-  // no de que el dropfile sea posterior al corte (#6034).
-  escribirVeredicto(estado, ISSUE_FIXTURE, {
+  // no de que el dropfile sea posterior al corte (#6034); así el ÚNICO motivo
+  // posible de no-exención es el sello ya presente, no la ventana temporal.
+  escribirVeredictoPreCorte(estado, ISSUE_FIXTURE, {
     resultado: 'aprobado', sello: { version: 1, head: HEAD_FALSO, artefactos: [] },
-  }, { mtimeMs: PRE_CORTE_MS });
+  });
   const res = seal.migratePreSealBacklog({ pipelineDir: estado, ahora: '2026-08-26T00:00:00Z' });
   assert.deepStrictEqual(res.exentos, []);
   assert.strictEqual(leerVeredicto(estado, ISSUE_FIXTURE).sello_exencion, undefined,
@@ -463,9 +495,7 @@ test('el gate sobre el backlog migrado produce cero re-encolados', () => {
   const estado = crearEstado();
   const issues = [5220, 5244, 5459, 5986, 6145, 6208, 6239, 6362, 6432, 6611];
   // Backlog real del corte: todos anteriores a `MIGRACION_CORTE_MS` (#6034).
-  for (const n of issues) {
-    escribirVeredicto(estado, n, { resultado: 'aprobado', evidencia: 'prosa' }, { mtimeMs: PRE_CORTE_MS });
-  }
+  for (const n of issues) escribirVeredictoPreCorte(estado, n, { resultado: 'aprobado', evidencia: 'prosa' });
 
   seal.migratePreSealBacklog({ pipelineDir: estado, ahora: '2026-08-26T00:00:00Z' });
 
