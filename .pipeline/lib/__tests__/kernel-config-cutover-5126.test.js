@@ -50,14 +50,29 @@ test('#5126 CA-B3 · las tres claves del store durable están cargadas', () => {
         'la tabla de no-repudio y la de coordinación no pueden ser la misma');
 });
 
-test('#5126 CA-B3 · durable sigue apagado: encenderlo es una operación supervisada, no un diff', () => {
+// #5208 — La aserción original era `durable === false`, con el argumento de que
+// encenderlo es una operación supervisada del operador y no un diff suelto. Ese
+// argumento sigue en pie; lo que cambió es que la operación supervisada YA SE
+// HIZO (runbook §8: backups, sonda positiva no vacía, reboot, ventana cerrada).
+//
+// Lo que se protege ahora es lo que hace peligroso encenderlo sin acompañamiento:
+// con `durable: true`, la config tiene que traer TODO lo que el driver necesita.
+// Si falta una pieza, el boot no muere — degrada a filesystem con el flag
+// diciendo DynamoDB, que es el falso verde que el cutover vino a eliminar.
+test('#5126 CA-B3 · si durable está encendido, la config trae todo lo que el driver necesita', () => {
     const k = loadKernelSection();
 
-    // Estrictamente `false`, no falsy: el fail-closed de #4820 depende del
-    // booleano exacto.
-    assert.equal(k.durable, false,
-        'kernel.durable debe seguir en false. Encenderlo es un paso del operador dentro de la ' +
-        'ventana de cutover (docs/pipeline/runbook-cutover-durable.md §2), con paridad verificada antes.');
+    // Estrictamente booleano, no falsy: el fail-closed de #4820 depende de eso.
+    assert.equal(typeof k.durable, 'boolean', 'kernel.durable debe ser un booleano exacto');
+    if (k.durable !== true) return;
+
+    assert.ok(k.runtimeProfile,
+        'con `durable: true` falta `kernel.runtimeProfile`: `createAwsCliRunner` exige claves estáticas '
+        + 'y el entorno del pipeline sólo trae AWS_PROFILE. Sin esta clave el boot durable degrada a '
+        + 'filesystem en cada arranque (runbook §8.5-bis).');
+    assert.notEqual(k.runtimeProfile, k.iamAdminProfile,
+        'el perfil del runtime no puede ser el administrativo: los Deny de la policy dejarían de probarse');
+    assert.ok(k.runtimePrincipal, 'con `durable: true` hace falta el principal contra el que verificar la identidad');
 });
 
 test('#5126 CA-B3 · la ventana de cutover está cerrada en régimen normal', () => {

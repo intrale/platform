@@ -13,6 +13,14 @@
 - **Fecha:** 2026-09-04
 - **Estado del fail-safe:** `kernel.durable: false` (`.pipeline/config.yaml:1747`)
 
+> ⚠️ **Este documento es un registro FECHADO, no el estado actual.** Todo lo de
+> abajo describe el sistema el 2026-09-04, con el switch durable **apagado**.
+> **#5208 ejecutó el cutover** y hoy `kernel.durable` está en `true`: el estado
+> vigente, con su evidencia redactada, vive en
+> `docs/pipeline/runbook-cutover-durable.md` §8. Las afirmaciones de acá sobre
+> "durable sigue apagado" siguen siendo verdaderas *para esa fecha* y se
+> conservan a propósito — reescribirlas destruiría la evidencia de #5207.
+
 ---
 
 ## 1. Las tres identidades AWS en juego

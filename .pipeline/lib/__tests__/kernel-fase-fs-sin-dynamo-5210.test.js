@@ -91,7 +91,12 @@ test('CA-5: una fase completa el ciclo pendiente→procesado desde filesystem si
     // La config REAL, con las tres claves ya pobladas: es el escenario que
     // introduce este issue, no un fixture conveniente.
     const cfg = yaml.load(fs.readFileSync(CONFIG_PATH, 'utf8')).kernel;
-    assert.equal(cfg.durable, false, 'precondición: el camino durable sigue apagado');
+    // #5208 — La precondición era `durable === false`. Se quitó a propósito: lo
+    // que este test verifica es que el ciclo pendiente→procesado de una fase
+    // resuelve ENTERO desde filesystem, y eso tiene que valer con el switch
+    // durable encendido TAMBIÉN. Atado a `false`, el test dejaba de cubrir el
+    // escenario justo cuando pasaba a ser el real.
+    assert.equal(typeof cfg.durable, 'boolean', 'precondición: el switch durable es un booleano exacto');
     assert.ok(cfg.tableName, 'precondición: la tabla de no-repudio ESTÁ configurada');
     assert.ok(cfg.coordinationTableName, 'precondición: la tabla de coordinación ESTÁ configurada');
     assert.ok(cfg.region, 'precondición: la región ESTÁ configurada');
@@ -151,13 +156,21 @@ test('CA-5: cargar la config del kernel no dispara por sí sola ninguna llamada 
         delete require.cache[require.resolve('../project-bootstrap')];
         const bootstrap = require('../project-bootstrap');
         const cfg = bootstrap.readKernelConfig({});
-        assert.equal(cfg.durable, false);
         assert.ok(cfg.tableName, 'la tabla está configurada…');
 
         const verify = require('../kernel-table-verify');
         const leida = verify.readKernelTablesConfig({ configPath: CONFIG_PATH });
-        assert.equal(leida.durable, false, '…y el switch durable sigue apagado');
+        // #5208 — Los dos lectores tienen que coincidir. Antes la aserción era
+        // `=== false` en ambos, lo que también los comparaba, pero se rompía al
+        // encender el switch. Comparándolos entre sí, el invariante sobrevive al
+        // cambio de valor: dos lectores que difieren serían un split-brain sobre
+        // la autoridad de la decisión.
+        assert.equal(leida.durable, cfg.durable,
+            'los dos lectores de config deben coincidir sobre el switch durable');
 
+        // Y el veredicto real del test, que #5208 vuelve MÁS importante: con el
+        // camino durable encendido, LEER la config sigue sin hablar con AWS. El
+        // driver es lazy y sólo lo construye el boot.
         assert.deepEqual(sensor.awsCalls, [], 'leer config NUNCA debe hablar con AWS');
     } finally {
         sensor.restore();

@@ -813,3 +813,147 @@ test('CA-17′: el runbook no filtra ARNs, account-ids ni access key ids', () =>
     .filter(({ line }) => /arn:aws|[0-9]{12}|AKIA[0-9A-Z]{16}/.test(line));
   assert.deepEqual(leaks, [], `el runbook no debe contener datos reales: ${JSON.stringify(leaks)}`);
 });
+
+// -----------------------------------------------------------------------------
+// #5208 · CA-2 — `migrated_count` explicado, y prohibición del falso verde
+//
+// El criterio es doble y ninguna mitad alcanza sola: el reporte tiene que EMITIR
+// el conteo, y tiene que EXPLICAR por qué da ese número. Un cero mudo con la
+// palabra "OK" al lado es exactamente el falso verde que la historia anticipa
+// como riesgo.
+// -----------------------------------------------------------------------------
+
+const {
+  buildScopeDiagnostic,
+  readScopeDiagnostic,
+  renderScopeSection,
+  CUTOVER_SCOPE_ENTITIES,
+} = require('../kernel-store-migrate');
+
+test('CA-2: el diagnóstico explica el cero por el id RESERVADO intrale-platform', () => {
+  const diag = buildScopeDiagnostic({
+    descriptors: [{ name: 'intrale-platform.json', projectId: 'intrale-platform' }],
+  });
+  assert.equal(diag.migratedCount, 0);
+  assert.equal(diag.reservedCount, 1);
+  assert.equal(diag.candidateCount, 0, 'un id reservado NO es candidato a alta de producto');
+
+  const texto = diag.causes.join('\n');
+  assert.match(texto, /intrale-platform/, 'la causa debe nombrar el id reservado');
+  assert.match(texto, /RESERVADO/);
+  assert.match(texto, /#5112/, 'debe recordar que las 4 fuentes de coordinación están excluidas');
+});
+
+test('CA-2: un descriptor NO reservado se reporta como candidato PENDIENTE, no como migrado', () => {
+  const diag = buildScopeDiagnostic({
+    descriptors: [
+      { name: 'intrale-platform.json', projectId: 'intrale-platform' },
+      { name: 'acme.json', projectId: 'acme-store' },
+    ],
+  });
+  assert.equal(diag.migratedCount, 0, 'este módulo no tiene ruta para el alcance del cutover');
+  assert.equal(diag.candidateCount, 1);
+  assert.match(diag.causes.join('\n'), /acme-store/);
+  assert.match(diag.causes.join('\n'), /durableRegisterProduct/, 'debe apuntar al poblador real');
+});
+
+test('CA-2: un descriptor ilegible no se cuenta como candidato y se dice explícitamente', () => {
+  const diag = buildScopeDiagnostic({ descriptors: [{ name: 'roto.json', projectId: null }] });
+  assert.equal(diag.candidateCount, 0);
+  assert.equal(diag.descriptors[0].unreadable, true);
+});
+
+test('CA-2: sin ningún descriptor el diagnóstico lo dice, no devuelve un cero mudo', () => {
+  const diag = buildScopeDiagnostic({ descriptors: [] });
+  assert.equal(diag.migratedCount, 0);
+  assert.match(diag.causes.join('\n'), /no hay ningún descriptor legible/);
+});
+
+test('CA-2: la sección del reporte nunca muestra el cero sin la advertencia de que no es paridad', () => {
+  const seccion = renderScopeSection(buildScopeDiagnostic({
+    descriptors: [{ name: 'intrale-platform.json', projectId: 'intrale-platform' }],
+  })).join('\n');
+  assert.match(seccion, /migrated_count: 0/);
+  assert.match(seccion, /DIAGNÓSTICO, no una medida de paridad/);
+  assert.match(seccion, /NO VACÍA/, 'debe decir de dónde sale la evidencia positiva');
+  for (const e of CUTOVER_SCOPE_ENTITIES) {
+    assert.ok(seccion.includes(e), `la sección debe enumerar la entidad del alcance ${e}`);
+  }
+});
+
+test('CA-2: el dry-run emite migrated_count en el reporte Y en el resultado', async () => {
+  const dir = freshTmp('5208');
+  fs.writeFileSync(path.join(dir, 'waves.json'), JSON.stringify({ waves: [] }));
+  const descDir = path.join(dir, 'descriptors');
+  fs.mkdirSync(descDir, { recursive: true });
+  fs.writeFileSync(path.join(descDir, 'intrale-platform.json'), JSON.stringify({ identity: { projectId: 'intrale-platform' } }));
+
+  const res = await migrateState({
+    apply: false,
+    sourceDir: dir,
+    descriptorsDir: descDir,
+    backupRoot: path.join(dir, 'backup'),
+  });
+  assert.equal(res.ok, true);
+  assert.equal(res.migrated_count, 0, 'el resultado estructurado debe llevar migrated_count');
+  assert.match(res.report, /migrated_count: 0/);
+  assert.match(res.report, /intrale-platform/);
+});
+
+test('CA-2 / GAP-UX-2: con migrated_count 0 el reporte NO usa lenguaje de éxito ni de paridad', async () => {
+  const dir = freshTmp('5208');
+  fs.writeFileSync(path.join(dir, 'waves.json'), JSON.stringify({ waves: [] }));
+  const descDir = path.join(dir, 'descriptors');
+  fs.mkdirSync(descDir, { recursive: true });
+  fs.writeFileSync(path.join(descDir, 'intrale-platform.json'), JSON.stringify({ identity: { projectId: 'intrale-platform' } }));
+
+  const store = makeStore();
+  const res = await migrateState({
+    apply: true,
+    sources: [{ file: 'waves.json', key: 'waves' }],
+    sourceDir: dir,
+    descriptorsDir: descDir,
+    backupRoot: path.join(dir, 'backup'),
+    store,
+  });
+  assert.equal(res.ok, true, `la migración de coordinación debe seguir funcionando: ${res.error}`);
+  assert.equal(res.migrated_count, 0);
+
+  // Éste es el assert que mata el falso verde: la frase vieja decía
+  // "[OK] migración aplicada y verificada." con cero entidades del cutover.
+  assert.equal(
+    res.report.includes('[OK] migración aplicada y verificada.'),
+    false,
+    'con migrated_count 0 está prohibido el lenguaje de éxito sin cualificar',
+  );
+  assert.match(res.report, /\[DIAGNÓSTICO\]/);
+  assert.match(res.report, /NO es paridad ni cutover exitoso/);
+});
+
+test('GAP-UX-2: el dry-run no manda al operador a --apply, que está bloqueado a propósito', async () => {
+  const dir = freshTmp('5208');
+  fs.writeFileSync(path.join(dir, 'waves.json'), JSON.stringify({ waves: [] }));
+  const res = await migrateState({ apply: false, sourceDir: dir, backupRoot: path.join(dir, 'backup') });
+  assert.equal(res.report.includes('Re-ejecutar con --apply para persistir.'), false);
+  assert.match(res.report, /alcance_no_implementado/);
+});
+
+test('CA-2: readScopeDiagnostic lee el disco con la gramática cerrada de descriptores', () => {
+  const dir = freshTmp('5208');
+  const descDir = path.join(dir, 'descriptors');
+  fs.mkdirSync(descDir, { recursive: true });
+  fs.writeFileSync(path.join(descDir, 'intrale-platform.json'), JSON.stringify({ identity: { projectId: 'intrale-platform' } }));
+  // Un archivo que NO matchea la gramática no puede entrar al alcance.
+  fs.writeFileSync(path.join(descDir, 'no-es-descriptor.txt'), 'ruido');
+
+  const diag = readScopeDiagnostic(descDir);
+  assert.equal(diag.descriptors.length, 1);
+  assert.equal(diag.descriptors[0].name, 'intrale-platform.json');
+  assert.equal(diag.migratedCount, 0);
+});
+
+test('CA-2: un directorio de descriptores inexistente no produce un cero silencioso', () => {
+  const diag = readScopeDiagnostic(path.join(os.tmpdir(), 'no-existe-5208-' + Date.now()));
+  assert.equal(diag.migratedCount, 0);
+  assert.match(diag.causes.join('\n'), /no hay ningún descriptor legible/);
+});

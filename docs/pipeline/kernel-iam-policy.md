@@ -230,8 +230,15 @@ cutover tiene que contemplar **dos**: aprovisionar la segunda tabla y ampliar el
 provisioner es alcance de #5126 (requiere credenciales AWS), no de #5124. Queda
 escrito acá para que #5126 no arranque con una premisa incompleta.
 
-Mientras `kernel.durable: false` (default) **no hay runtime activo**: la policy es
-un artefacto documental/de bootstrap, sin blast radius.
+> **Actualizado por #5208.** La frase original decía que mientras
+> `kernel.durable: false` **no hay runtime activo** y la policy es un artefacto
+> documental sin blast radius. Eso **ya no aplica**: el cutover se ejecutó y
+> `kernel.durable` está en `true` (evidencia redactada en
+> `runbook-cutover-durable.md` §8). El principal runtime **opera de verdad**
+> contra las dos tablas en cada arranque del pipeline, así que esta policy tiene
+> blast radius real: un `Allow` de más acá es un permiso efectivo, no una
+> hipótesis. El perfil local desde el que se resuelven sus credenciales se
+> declara en `kernel.runtimeProfile` y **no puede ser el administrativo**.
 
 ## Qué cambió en #5211
 
