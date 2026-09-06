@@ -761,3 +761,72 @@ test('#5173 §2.4 del contrato usa vocabulario único kernel/producto/autoridad'
         assert.ok(s24.includes('`' + sec + '`'), '§2.4 no clasifica la sección ' + sec);
     }
 });
+
+// --- 12 · #5801: el umbral de ráfaga del vault no admite coerción -----------
+
+test('#5801 vault.access_audit rechaza sin coerción toda clase inválida de burst_threshold', () => {
+    const base = () => ({
+        vault: {
+            access_audit: {
+                enabled: false,
+                poll_interval_min: 10,
+                lookback_min: 30,
+                expected_principals: [],
+                burst_threshold: 0,
+                authorization_failure_threshold: 3,
+                cooldown_min: 10,
+            },
+        },
+    });
+
+    // Un umbral que el esquema deja pasar por coerción es una alerta apagada:
+    // `"40"`, `true` o `40.5` se leerían como configurados y no lo están.
+    const invalidos = [
+        ['null', null],
+        ['booleano', true],
+        ['string numérico', '40'],
+        ['string vacío', ''],
+        ['negativo', -1],
+        ['fraccionario', 40.5],
+        ['NaN', NaN],
+        ['infinito', Infinity],
+        ['entero inseguro', Number.MAX_SAFE_INTEGER + 2],
+        ['objeto', {}],
+        ['arreglo', [40]],
+    ];
+    for (const [nombre, valor] of invalidos) {
+        const cfg = base();
+        cfg.vault.access_audit.burst_threshold = valor;
+        assert.ok(!validateConfig(cfg).valid, `burst_threshold ${nombre} debe fallar cerrado`);
+    }
+
+    // Y una clave desconocida se rechaza explícitamente: un typo en el nombre
+    // deja el umbral real ausente sin que nadie lo note.
+    const conTypo = base();
+    conTypo.vault.access_audit.burst_threshhold = 40;
+    assert.ok(!validateConfig(conTypo).valid, 'una clave desconocida debe rechazarse');
+
+    // El caso válido sigue validando.
+    const valido = base();
+    valido.vault.access_audit.burst_threshold = 40;
+    assert.ok(validateConfig(valido).valid);
+});
+
+test('#5801 el error del umbral no vuelca el valor crudo configurado', () => {
+    const CANARIO = 'sk-token-que-no-debe-viajar-1234567890';
+    const { errors } = validateConfig({
+        vault: { access_audit: { burst_threshold: CANARIO } },
+    });
+    const serializado = JSON.stringify(errors) + '|' + formatErrors(errors)
+        + '|' + formatErrorsForHuman(errors);
+    assert.ok(!serializado.includes(CANARIO), 'el valor crudo NO debe aparecer');
+});
+
+test('#5801 el TTL de la caché del vault sigue topado en 300 y el config real lo respeta', () => {
+    // Regresión explícita: el cambio de umbral no puede tocar el TTL ni el
+    // resto de la postura de autenticación del vault.
+    const cfg = realConfig();
+    assert.equal(cfg.vault.cache_ttl_seconds, 300);
+    assert.ok(!validateConfig({ vault: { cache_ttl_seconds: 301 } }).valid);
+    assert.ok(validateConfig({ vault: { cache_ttl_seconds: 300 } }).valid);
+});

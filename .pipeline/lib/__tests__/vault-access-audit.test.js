@@ -27,8 +27,29 @@ function event(overrides = {}) {
   };
 }
 
+// #5801 — El default del helper ya NO es `0`: el cero dejó de ser un valor
+// admisible del umbral (es el control apagado) y el esquema lo rechaza. Se usa
+// un entero positivo holgado para que los tests que NO son de ráfaga sigan
+// afirmando sobre su propio comportamiento y no rocen el umbral de rebote.
+const BURST_THRESHOLD_TEST = 12;
+
 function config(overrides = {}) {
-  return { expected_principals: [EXPECTED], cooldown_min: 10, burst_threshold: 0, ...overrides };
+  return {
+    expected_principals: [EXPECTED],
+    cooldown_min: 10,
+    burst_threshold: BURST_THRESHOLD_TEST,
+    ...overrides,
+  };
+}
+
+/** Lectura FÍSICA distinta: id propio para que el dedupe no las colapse. */
+function physicalRead(n) {
+  return event({ id: `physical-${n}` });
+}
+
+/** Evento del rastro LOCAL del vault (`{category, ts_ms}`, #5803). */
+function telemetry(category, n = 0) {
+  return { category, ts_ms: NOW.getTime() - n };
 }
 
 test('principal fuera de la allowlist produce IDENTIDAD_NO_ESPERADA', () => {
@@ -285,7 +306,7 @@ test('CA-6 · el módulo no importa el canal ni arma mensajes con texto del driv
   assert.doesNotMatch(SOURCE, /shell:\s*true/);
 });
 
-test('fallos repetidos de autorización y ráfaga usan causas cerradas', () => {
+test('fallos repetidos de autorización usan la causa cerrada y NO cuentan como ráfaga', () => {
   const events = [1, 2, 3].map((n) => event({
     id: `denied-${n}`,
     detail: { errorCode: 'AccessDenied', requestParameters: null },
@@ -298,5 +319,26 @@ test('fallos repetidos de autorización y ráfaga usan causas cerradas', () => {
   });
   const causes = result.notifications.map((n) => n.causa);
   assert.ok(causes.includes('AUTORIZACION_RECHAZADA'));
+  // #5801 — Un `AccessDenied` NO leyó ningún secreto: no es `physical_read` y
+  // por lo tanto no puede disparar la ráfaga. Ese tráfico ya tiene su propio
+  // control (`authorization_failure_threshold`); contarlo dos veces convertía
+  // un pico de rechazos en una alerta de volumen que no describía nada real.
+  assert.ok(!causes.includes('RAFAGA_DE_LECTURAS'));
+  assert.equal(result.counters.physical_read, 0);
+  assert.equal(result.counters.rechazados, 3);
+});
+
+test('lecturas físicas por encima del umbral sí producen la ráfaga', () => {
+  const result = audit.evaluateAccessEvents({
+    now: NOW,
+    events: [1, 2, 3].map(physicalRead),
+    state: {},
+    config: config({ burst_threshold: 2 }),
+  });
+  const causes = result.notifications.map((n) => n.causa);
   assert.ok(causes.includes('RAFAGA_DE_LECTURAS'));
+  assert.equal(result.counters.physical_read, 3);
+  assert.equal(result.burst.evaluado, true);
+  assert.equal(result.burst.umbral, 2);
+  assert.equal(result.burst.lecturas_fisicas, 3);
 });

@@ -590,6 +590,63 @@ const SCHEMA = {
                 cache_ttl_seconds: { type: 'number', minimum: 1, maximum: 300 },
                 required_scopes: { type: 'array', items: { type: 'string' } },
                 shared_secrets: { type: 'array', items: { type: 'string' } },
+                // #5801 — auditoría de accesos: se tipa CERRADA (`required` +
+                // `additionalProperties: false`) por el mismo motivo que
+                // `cache_ttl_seconds`, sólo que más fuerte. `burst_threshold`
+                // es el numerador de un control de DETECCIÓN: si llega ausente,
+                // en cero, negativo, fraccionario, como string numérico o como
+                // booleano, el efecto no es un warning — es la alerta de ráfaga
+                // apagada sin que nadie se entere, que es la forma más barata
+                // de eludir este control (A05 + A09).
+                //
+                // Por eso NO alcanza con `type: 'number'`: `type: 'integer'`
+                // rechaza `12.5`, `NaN` y `±Infinity` (ninguno es entero), y
+                // `type` rechaza `"12"`, `true` y `null` sin coerción alguna.
+                // `minimum: 1` rechaza el cero y los negativos; `maximum` lo
+                // acota al entero seguro, más allá del cual `n > umbral` deja
+                // de discriminar por pérdida de precisión IEEE-754.
+                //
+                // `additionalProperties: false` cubre el typo, que es la forma
+                // más silenciosa de apagar el control: `burst_threshhold: 40`
+                // dejaba el umbral REAL ausente y al operador convencido de
+                // haberlo configurado.
+                //
+                // POR QUÉ `minimum: 0` Y NO `minimum: 1` TODAVÍA. El umbral
+                // calibrado exige el pico físico medido por la corrida
+                // productiva de #5800, y esa corrida NO se ejecutó: no existe
+                // `.pipeline/audit/vault-load-calibration.json` en ninguna rama
+                // (requiere el vault ENCENDIDO contra AWS, y hoy
+                // `vault.enabled: false`). Poner `minimum: 1` + `required`
+                // ANTES de tener el número dejaría el pipeline sin arrancar por
+                // `ConfigSchemaViolation`, que es exactamente la caída que este
+                // esquema existe para evitar.
+                //
+                // El cero NO queda como un pase libre: `readBurstThreshold`
+                // (`lib/vault-access-audit.js`) lo rechaza igual, y el tick
+                // declara la ráfaga como NO EVALUADA con su motivo en
+                // `pulpo.log` en vez de degradar a «no hay ráfaga». O sea, hoy
+                // el control está apagado y lo dice; nunca finge estar activo.
+                //
+                // `minimum: 1` y `required: ['burst_threshold']` entran en el
+                // MISMO commit que fije el umbral calibrado — ver
+                // `docs/pipeline/vault-rotacion-auditoria.md` §Calibración.
+                access_audit: {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {
+                        enabled: { type: 'boolean' },
+                        poll_interval_min: { type: 'integer', minimum: 1 },
+                        lookback_min: { type: 'integer', minimum: 1 },
+                        expected_principals: { type: 'array', items: { type: 'string' } },
+                        burst_threshold: {
+                            type: 'integer',
+                            minimum: 0,
+                            maximum: Number.MAX_SAFE_INTEGER,
+                        },
+                        authorization_failure_threshold: { type: 'integer', minimum: 1 },
+                        cooldown_min: { type: 'integer', minimum: 0 },
+                    },
+                },
                 // #5899 — cota de namespaces cacheados a la vez. Se tipa por el
                 // mismo motivo que `cache_ttl_seconds`: es un control de
                 // seguridad (acota el plaintext en memoria), no una preferencia.
