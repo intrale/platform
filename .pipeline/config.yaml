@@ -1150,6 +1150,39 @@ rewind:
   #
   # Ver: docs/pipeline/rewind-operador.md → "Segundo frente".
 
+# #4966 — Watcher de mergeabilidad de PRs (observacion, NO transicion).
+#
+# Detecta PRs abiertos de la ola activa que quedaron CONFLICTING contra main y
+# emite un evento candidato. NO rebota, NO cierra, NO mergea: quien actua es
+# pipeline-rewind.rewindFromMergeConflict (#4967) y quien lo engancha al
+# barrido periodico es #4968.
+#
+# Nace APAGADO: se enciende explicitamente, nunca por default. Todos los
+# limites de abajo estan ademas clampeados EN CODIGO (normalizeConfig), asi que
+# un valor absurdo editado a mano degrada al default en vez de disparar miles
+# de llamadas a la API de GitHub.
+#
+# Ver: docs/pipeline/pr-mergeability-watcher.md
+pr_mergeability_watcher:
+  enabled: false
+  # Allowlist: el repo y la base que se consideran propios. Un PR con otra base
+  # o de un fork queda fuera del universo observado.
+  expected_repo: intrale/platform
+  expected_owner: intrale
+  expected_base: main
+  # Cadencia del barrido. Conservadora: se suma un brazo periodico a la presion
+  # de rate limit y el conflicto de un PR no es urgente al minuto.
+  poll_interval_minutes: 10
+  # Separacion minima real entre las dos observaciones que confirman un
+  # conflicto. Junto con el contador monotono pollSeq es la defensa contra
+  # reloj no monotono (NTP / suspension de la maquina).
+  min_poll_interval_ms: 60000
+  # PRs abiertos que se traen por poll. Clampeado a [1,100] en codigo.
+  candidate_limit: 20
+  gh_timeout_ms: 5000
+  # Poda de entradas huerfanas (PRs cerrados o fuera del barrido).
+  state_entry_ttl_hours: 72
+
 # #3085 / S7 multi-provider — aislamiento de credenciales por proceso.
 #
 # Cuando `env_isolation_enabled: true`, el pulpo filtra `process.env` antes de
