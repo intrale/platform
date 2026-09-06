@@ -202,6 +202,23 @@ corrida exige el vault **encendido** contra AWS (hoy `vault.enabled: false`),
 acción de operador, no de build. El runbook completo está en
 [`vault-calibracion-carga.md`](vault-calibracion-carga.md) §3.
 
+Concretamente, lo que falta **no** es tiempo de agente sino un permiso: la
+identidad con la que corre el pipeline no alcanza Secrets Manager, así que ni
+siquiera puede enumerar el namespace que debería medir.
+
+```
+$ aws sts get-caller-identity
+arn:aws:iam::685542269251:user/claude-code
+$ aws secretsmanager list-secrets --max-results 5
+AccessDeniedException: User ... is not authorized to perform: secretsmanager:ListSecrets
+```
+
+Fabricar el número con un driver de laboratorio tampoco sirve: con latencia
+cero la mezcla cambia (menos `single_flight_join`, más `physical_read`) y el
+pico resultante no describe la topología real. Sería evidencia sintética
+presentada como medición, que es justamente lo que el requisito de seguridad 8
+de #5793 prohíbe.
+
 Para cerrar la calibración, en un mismo commit:
 
 1. Correr la corrida productiva y verificar que publica el artefacto:
@@ -210,19 +227,44 @@ Para cerrar la calibración, en un mismo commit:
    ```
 2. Tomar `peak_physical_reads_per_minute` del artefacto, convertirlo a la
    ventana (`× lookback_min`), aplicar el margen y redondear hacia arriba.
-3. Escribir el resultado en `vault.access_audit.burst_threshold`, y anotar acá
-   escenario, parámetros de la corrida, pico, margen y umbral resultante.
-4. Endurecer el esquema en `.pipeline/lib/config-schema.js`: subir el umbral a
-   `minimum: 1` y agregar `required: ['burst_threshold']`. Recién con el número
-   configurado ese par es seguro — antes deja el pipeline sin arrancar por
-   `ConfigSchemaViolation`.
+3. Escribir el resultado en `vault.access_audit.burst_threshold` **y poner
+   `enabled: true`**, en el mismo commit. Anotar acá escenario, parámetros de la
+   corrida, pico, margen y umbral resultante.
 
-Mientras tanto el esquema ya valida **el tipo** fail-closed: `type: 'integer'`
-más `maximum: Number.MAX_SAFE_INTEGER`, y `additionalProperties: false` sobre
-`access_audit`. Eso cierra hoy los dos huecos silenciosos — la coerción
-(`"40"`, `true` y `40.5` pasaban como umbral configurado) y el typo
-(`burst_threshhold: 40` dejaba el umbral real ausente y al operador convencido
-de haberlo configurado).
+No hay un cuarto paso de "endurecer el esquema": el esquema **ya está
+endurecido**, y el endurecimiento es lo que hace que el paso 3 sea indivisible.
+
+#### Lo que el esquema garantiza hoy, sin el número
+
+`.pipeline/lib/config-schema.js` valida `vault.access_audit` de forma
+**condicional al gate**, porque el estado peligroso no es «apagado sin umbral»
+sino **«encendido sin umbral válido»**: ahí el tick corre, deja su rastro y el
+operador cree que la detección de ráfagas está cubierta mientras
+`readBurstThreshold` la declara *no evaluada* en cada pasada.
+
+| `access_audit.enabled` | `burst_threshold` | Resultado al arrancar |
+|---|---|---|
+| `true` | ausente | **`ConfigSchemaViolation`** |
+| `true` | `0` o negativo | **`ConfigSchemaViolation`** |
+| `true` | entero ≥ 1 | arranca — único modo operativo admitido |
+| `false` | `0` / ausente | arranca; la auditoría está apagada **y lo declara** |
+| cualquiera | `"40"`, `true`, `40.5`, `NaN`, `±Infinity`, entero inseguro | **`ConfigSchemaViolation`** |
+
+O sea: **encender la auditoría sin un umbral calibrado es imposible**, y el
+`0` de hoy sólo se admite acompañado de `enabled: false`, donde no afirma nada
+falso. Un `minimum: 1` *incondicional*, en cambio, dejaría el pipeline sin
+arrancar mientras falte el pico — la caída que el esquema existe para evitar.
+
+Las clases inválidas por **tipo** se rechazan en los dos modos (salen de
+`type: 'integer'` + `maximum: Number.MAX_SAFE_INTEGER`, fuera del condicional),
+y `additionalProperties: false` cubre el typo. Eso cierra los dos huecos
+silenciosos que quedaban: la coerción (`"40"`, `true` y `40.5` pasaban como
+umbral configurado) y `burst_threshhold: 40`, que dejaba el umbral real ausente
+y al operador convencido de haberlo configurado.
+
+El control de runtime es independiente a propósito: `readBurstThreshold` vuelve
+a rechazar las mismas clases al evaluar, porque los dos controles fallan en
+momentos distintos y el evaluador también se invoca desde otros llamadores.
 
 #### Qué dice la alerta
 

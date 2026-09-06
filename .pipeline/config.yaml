@@ -2017,10 +2017,20 @@ vault:
   # no crea trails ni modifica event selectors y una allowlist vacía saltea el
   # tick para evitar una tormenta de alertas durante el rollout.
   access_audit:
+    # #5801 — Encender esto EXIGE `burst_threshold` entero positivo en el mismo
+    # commit: el esquema lo valida condicionalmente (`config-schema.js`, rama
+    # `if enabled === true`). No hay forma de dejar la auditoría corriendo con
+    # la detección de ráfagas apagada y que el pipeline arranque igual.
     enabled: false
     poll_interval_min: 10
     lookback_min: 30
     expected_principals: []
+    # `0` NO es un umbral: es la DECLARACIÓN de que todavía no está calibrado.
+    # El pico físico lo publica la corrida productiva de #5800 en
+    # `.pipeline/audit/vault-load-calibration.json`, que hoy no existe (requiere
+    # el vault encendido contra AWS y una identidad de sólo lectura: acción de
+    # operador). Fórmula, unidades y los pasos para cerrarlo están en
+    # `docs/pipeline/vault-rotacion-auditoria.md` §Calibración del umbral.
     burst_threshold: 0
     authorization_failure_threshold: 3
     cooldown_min: 10

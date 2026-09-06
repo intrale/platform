@@ -602,34 +602,54 @@ const SCHEMA = {
                 // Por eso NO alcanza con `type: 'number'`: `type: 'integer'`
                 // rechaza `12.5`, `NaN` y `±Infinity` (ninguno es entero), y
                 // `type` rechaza `"12"`, `true` y `null` sin coerción alguna.
-                // `minimum: 1` rechaza el cero y los negativos; `maximum` lo
-                // acota al entero seguro, más allá del cual `n > umbral` deja
-                // de discriminar por pérdida de precisión IEEE-754.
+                // `minimum: 1` (en la rama `then`, ver abajo) rechaza el cero y
+                // los negativos; `maximum` lo acota al entero seguro, más allá
+                // del cual `n > umbral` deja de discriminar por pérdida de
+                // precisión IEEE-754.
                 //
                 // `additionalProperties: false` cubre el typo, que es la forma
                 // más silenciosa de apagar el control: `burst_threshhold: 40`
                 // dejaba el umbral REAL ausente y al operador convencido de
                 // haberlo configurado.
                 //
-                // POR QUÉ `minimum: 0` Y NO `minimum: 1` TODAVÍA. El umbral
-                // calibrado exige el pico físico medido por la corrida
+                // DÓNDE ESTÁ EL `minimum: 1` Y POR QUÉ ES CONDICIONAL. El
+                // umbral calibrado exige el pico físico medido por la corrida
                 // productiva de #5800, y esa corrida NO se ejecutó: no existe
                 // `.pipeline/audit/vault-load-calibration.json` en ninguna rama
                 // (requiere el vault ENCENDIDO contra AWS, y hoy
-                // `vault.enabled: false`). Poner `minimum: 1` + `required`
-                // ANTES de tener el número dejaría el pipeline sin arrancar por
-                // `ConfigSchemaViolation`, que es exactamente la caída que este
+                // `vault.enabled: false`). Un `minimum: 1` + `required`
+                // INCONDICIONAL, sin el número, dejaría el pipeline sin
+                // arrancar por `ConfigSchemaViolation`: la caída que este
                 // esquema existe para evitar.
                 //
-                // El cero NO queda como un pase libre: `readBurstThreshold`
-                // (`lib/vault-access-audit.js`) lo rechaza igual, y el tick
-                // declara la ráfaga como NO EVALUADA con su motivo en
-                // `pulpo.log` en vez de degradar a «no hay ráfaga». O sea, hoy
-                // el control está apagado y lo dice; nunca finge estar activo.
+                // Pero el estado peligroso NO es «apagado sin umbral» — es
+                // «ENCENDIDO sin umbral válido»: ahí el tick corre, publica su
+                // rastro y el operador cree que la detección de ráfagas está
+                // cubierta cuando `readBurstThreshold` la está declarando NO
+                // EVALUADA en cada pasada. Ése es exactamente el A05 que pide
+                // el requisito 3 de #5793, y se cierra HOY sin el número:
                 //
-                // `minimum: 1` y `required: ['burst_threshold']` entran en el
-                // MISMO commit que fije el umbral calibrado — ver
-                // `docs/pipeline/vault-rotacion-auditoria.md` §Calibración.
+                //   `access_audit.enabled: true`  ⇒ `burst_threshold` es
+                //       REQUERIDO y `minimum: 1`. Ausente, cero o negativo no
+                //       arrancan. No existe forma de encender la auditoría con
+                //       la ráfaga apagada.
+                //   `access_audit.enabled: false` ⇒ el cero se admite como
+                //       DECLARACIÓN de «apagado», que es el estado de hoy.
+                //
+                // Las clases inválidas por TIPO (`"40"`, `true`, `40.5`, `NaN`,
+                // `±Infinity`, entero inseguro) se rechazan en los dos modos:
+                // salen de `type: 'integer'` + `maximum`, fuera del `if/then`.
+                //
+                // El cero tampoco es un pase libre en runtime:
+                // `readBurstThreshold` (`lib/vault-access-audit.js`) lo rechaza
+                // igual y el tick declara la ráfaga NO EVALUADA con su motivo
+                // en `pulpo.log`, en vez de degradar a «no hay ráfaga». Los dos
+                // controles fallan en momentos distintos a propósito.
+                //
+                // El paso que falta para cerrar #5801 es el NÚMERO calibrado en
+                // `config.yaml` (+ `enabled: true`, que a partir de acá lo
+                // exige) — ver `docs/pipeline/vault-rotacion-auditoria.md`
+                // §Calibración del umbral de ráfaga.
                 access_audit: {
                     type: 'object',
                     additionalProperties: false,
@@ -645,6 +665,23 @@ const SCHEMA = {
                         },
                         authorization_failure_threshold: { type: 'integer', minimum: 1 },
                         cooldown_min: { type: 'integer', minimum: 0 },
+                    },
+                    // `required: ['enabled']` dentro del `if`: sin la clave, el
+                    // `if` NO matchea y cae al modo permisivo — que es correcto,
+                    // porque sin `enabled: true` el tick no corre
+                    // (`runAccessAuditTick` sale con `reason: 'disabled'`).
+                    if: {
+                        type: 'object',
+                        properties: { enabled: { const: true } },
+                        required: ['enabled'],
+                    },
+                    then: {
+                        required: ['burst_threshold'],
+                        // `type` repetido a propósito: sin él, Ajv en modo
+                        // estricto emite un warning por `minimum` sin tipo cada
+                        // vez que se carga el módulo — ruido permanente en
+                        // `pulpo.log` por una rama que sólo acota el rango.
+                        properties: { burst_threshold: { type: 'integer', minimum: 1 } },
                     },
                 },
                 // #5899 — cota de namespaces cacheados a la vez. Se tipa por el
