@@ -437,14 +437,17 @@ grep '"decision":"rewound"' .pipeline/audit/pr-mergeability-events.jsonl
 # Por qué un conflicto confirmado NO terminó en rewind
 grep '"decision":"rewind_blocked"' .pipeline/audit/pr-mergeability-events.jsonl
 
+# Conflictos que quedaron para el próximo tick por la cota de 3 rewinds/tick
+grep '"reason_code":"deferred_over_cap"' .pipeline/audit/pr-mergeability-events.jsonl
+
 # Fallos de GitHub que dispararon backoff
 grep '"decision":"poll_failed"' .pipeline/audit/pr-mergeability-events.jsonl
 ```
 
 | `decision` | Significa |
 |---|---|
-| `rewound` | Se ejecutó el rewind canónico. Es la única decisión que muta algo. |
-| `rewind_blocked` | El conflicto se confirmó pero el rewind se cerró. El `reason_code` dice por qué (`PR_SHA_CHANGED`, `PR_CLOSED`, `DEDUPE_HIT`, `OWNER_NOT_FOUND`…). |
+| `rewound` | Se ejecutó el rewind canónico y **mutó**. Es la única decisión que mueve algo. Un `ok:true` con `noop:true` del canónico (dedupe hit, PR cerrado en el medio, SHA cambiado) **no** cuenta acá: sale como `rewind_blocked` con su código. |
+| `rewind_blocked` | El conflicto se confirmó pero el rewind no mutó. El `reason_code` dice por qué (`PR_SHA_CHANGED`, `PR_CLOSED`, `DEDUPE_HIT`, `OWNER_NOT_FOUND`, `deferred_over_cap`, `deferred_dropped`…). |
 | `poll_failed` | La observación falló (`gh_timeout`, `rate_limited`, `schema_invalid`…). Dispara backoff. |
 | `noop` | No había ola activa o no había nada que hacer. |
 | `tick_failed` | Error interno del brazo. Aislado: el tick del Pulpo completó igual. |
@@ -454,6 +457,44 @@ El esquema es **cerrado**: `ts`, `kind`, `repo`, `pr`, `issue`, `decision`,
 mensajes de error de `gh`, ni stack traces. `reason_code` se valida contra un
 vocabulario de códigos internos (deny-by-default), no contra un charset: un
 token de GitHub pasaría un filtro de "letras y números" sin despeinarse.
+
+### 16.4.1. La cota de rewinds por tick difiere, no descarta
+
+El brazo ejecuta como máximo **3 rewinds por tick** (`MAX_REWINDS_PER_TICK`).
+La cota es anti-tormenta: un poll anómalo no puede convertir un tick en una
+avalancha de transiciones que mate agentes en cadena.
+
+Lo que **no** puede pasar es que los eventos sobrantes se pierdan. El poll de
+#4966 marca el evento como `emitted` y **persiste el estado antes** de
+devolverlo, así que un evento descartado no se vuelve a emitir nunca
+(`already_emitted`) salvo que cambie el `headRefOid` o el PR vuelva a estar
+sano — es decir, salvo que un humano lo arregle a mano, que es justo lo que el
+watcher venía a evitar. El caso es el canónico del feature: un merge grande a
+`main` deja 4+ PRs de la ola en conflicto a la vez.
+
+Por eso los sobrantes se **encolan en memoria del brazo** y se procesan en el
+tick siguiente, **antes** que los eventos nuevos (sin esa prioridad, un poll que
+llena la cota todos los ticks los mataría de hambre):
+
+```bash
+# Diferidos al próximo tick (se van a procesar solos)
+grep '"reason_code":"deferred_over_cap"' .pipeline/audit/pr-mergeability-events.jsonl
+
+# Descartados de verdad: el buffer se llenó. Requieren mirada del operador.
+grep '"reason_code":"deferred_dropped"' .pipeline/audit/pr-mergeability-events.jsonl
+```
+
+| `reason_code` | Significa | Acción |
+|---|---|---|
+| `deferred_over_cap` | Conflicto confirmado, encolado para el próximo tick. | Ninguna: se resuelve solo en ~1 intervalo. |
+| `deferred_dropped` | El buffer (20 eventos) se llenó: el evento **se perdió**. | Revisar por qué hay >20 PRs en conflicto simultáneo; los afectados hay que rebobinarlos a mano. |
+
+**Limitación conocida:** el buffer vive en memoria del proceso. Un reinicio del
+Pulpo con eventos diferidos pendientes los pierde. No es una regresión (sin el
+buffer se perdían todos, y en silencio) y la pérdida queda **siempre** auditada
+como `deferred_over_cap`, que es lo que el operador puede grepear. Hacerlo
+durable exige resetear el flag `emitted` del store de #4966, fuera del alcance
+de este split.
 
 ## 16.5. Diagnosticar un brazo wedged
 

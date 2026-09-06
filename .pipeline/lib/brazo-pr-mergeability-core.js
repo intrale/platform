@@ -106,6 +106,13 @@ const TICK_REASONS = Object.freeze({
   NO_ACTIVE_WAVE: 'no_active_wave',
   NO_EVENTS: 'no_events',
   INTERNAL_ERROR: 'internal_error',
+  // R-1: el evento se confirmó pero excedió `MAX_REWINDS_PER_TICK`. Queda
+  // ENCOLADO para el tick siguiente; la línea de auditoría existe para que
+  // `grep '"decision":"rewind_blocked"'` (§16.4) nunca devuelva vacío para un
+  // conflicto confirmado que no terminó en rewind.
+  DEFERRED_OVER_CAP: 'deferred_over_cap',
+  // El buffer de diferidos está lleno: el evento SÍ se pierde, pero auditado.
+  DEFERRED_DROPPED: 'deferred_dropped',
 });
 
 // Estado del guard que se audita.
@@ -150,6 +157,16 @@ const DEFAULT_WEDGE_TIMEOUT_MS = 600_000;
 // ganancia. El recorrido es secuencial y acotado para que un poll anómalo no
 // convierta un tick en una tormenta de transiciones.
 const MAX_REWINDS_PER_TICK = 3;
+
+// Cota del buffer de eventos DIFERIDOS por la cota de arriba (R-1 del code
+// review de #4968). El poll de #4966 marca `emitted: true` y PERSISTE el estado
+// ANTES de devolver los eventos, así que un evento que el brazo descarta no
+// vuelve a emitirse nunca (`ALREADY_EMITTED`) salvo que cambie el `headRefOid` o
+// el PR vuelva a estar sano — o sea, salvo que un humano lo arregle a mano, que
+// es justo lo que el watcher venía a evitar. La cota debe DIFERIR trabajo, no
+// descartarlo: los sobrantes se arrastran al tick siguiente y, si igual se
+// pierden, quedan auditados (nunca en silencio).
+const MAX_DEFERRED_EVENTS = 20;
 
 // -----------------------------------------------------------------------------
 // Helpers puros
@@ -486,6 +503,56 @@ function createSemaphore(limit) {
 }
 
 // -----------------------------------------------------------------------------
+// Buffer de eventos diferidos (R-1) — la cota difiere trabajo, no lo descarta
+// -----------------------------------------------------------------------------
+
+/** Clave de identidad de un evento: la misma tupla que dedupea #4967. */
+function eventKey(ev) {
+  return `${(ev && ev.repo) || ''}#${(ev && ev.pr) || ''}@${(ev && ev.headRefOid) || ''}`;
+}
+
+/**
+ * Cola FIFO acotada de eventos que excedieron `MAX_REWINDS_PER_TICK`.
+ *
+ * Vive en memoria del proceso (el brazo la instancia una vez, como el guard y
+ * el scheduler) y se drena al principio del tick siguiente, ANTES de los
+ * eventos nuevos: sin esa prioridad, un poll que devuelve la cota completa cada
+ * vez mataría de hambre a los diferidos.
+ *
+ * Limitación conocida y declarada: un reinicio del Pulpo vacía el buffer. No es
+ * una regresión —hoy el evento se pierde igual— y la pérdida queda auditada
+ * como `deferred_over_cap`, que es lo que el operador puede grepear. Hacerlo
+ * durable exige tocar el store de #4966 (resetear `emitted`), que está
+ * explícitamente fuera del alcance de este split.
+ */
+function createDeferredBuffer({ max = MAX_DEFERRED_EVENTS } = {}) {
+  const limite = Number.isInteger(max) && max > 0 ? max : MAX_DEFERRED_EVENTS;
+  let cola = [];
+  return {
+    /**
+     * Encola un evento diferido. Devuelve `true` si entró, `false` si la cola
+     * está llena (el caller lo audita como `deferred_dropped`).
+     * Idempotente por tupla: el mismo `{repo, pr, headRefOid}` no se duplica.
+     */
+    push(ev) {
+      const key = eventKey(ev);
+      if (cola.some((e) => eventKey(e) === key)) return true;
+      if (cola.length >= limite) return false;
+      cola.push(ev);
+      return true;
+    },
+    /** Vacía la cola y devuelve su contenido en orden de llegada. */
+    drain() {
+      const out = cola;
+      cola = [];
+      return out;
+    },
+    size: () => cola.length,
+    limit: limite,
+  };
+}
+
+// -----------------------------------------------------------------------------
 // Auditoría del brazo (CA-6) — esquema CERRADO, append-only
 // -----------------------------------------------------------------------------
 
@@ -701,10 +768,16 @@ async function runTick(cfg, deps = {}) {
     }
 
     const eventos = Array.isArray(res.events) ? res.events : [];
-    if (eventos.length === 0) {
+
+    // R-1 — los diferidos del tick anterior van PRIMERO (FIFO): un poll que
+    // devuelve la cota completa cada tick no puede matarlos de hambre.
+    const buffer = deps.deferred && typeof deps.deferred.drain === 'function' ? deps.deferred : null;
+    const arrastrados = buffer ? buffer.drain() : [];
+
+    if (eventos.length === 0 && arrastrados.length === 0) {
       return {
         ok: true, skipped: TICK_REASONS.NO_EVENTS, observed: 0, rewound, blocked,
-        peakConcurrency: semaphore.peak(),
+        deferred: [], peakConcurrency: semaphore.peak(),
       };
     }
 
@@ -715,7 +788,39 @@ async function runTick(cfg, deps = {}) {
 
     const revalidatePr = makeRevalidatePr({ cfg, asyncRunner, fetchPrDetail: deps.fetchPrDetail });
 
-    for (const ev of eventos.slice(0, MAX_REWINDS_PER_TICK)) {
+    // Cola del tick: arrastrados + nuevos, dedupeados por tupla (si el poll
+    // volvió a emitir un evento que ya estaba diferido, es el mismo trabajo).
+    const cola = [];
+    const vistosEnCola = new Set();
+    for (const ev of [...arrastrados, ...eventos]) {
+      const k = eventKey(ev);
+      if (vistosEnCola.has(k)) continue;
+      vistosEnCola.add(k);
+      cola.push(ev);
+    }
+
+    const aProcesar = cola.slice(0, MAX_REWINDS_PER_TICK);
+    const diferidos = [];
+
+    // R-1 — lo que excede la cota se DIFIERE, nunca se descarta en silencio.
+    for (const ev of cola.slice(MAX_REWINDS_PER_TICK)) {
+      const encolado = buffer ? buffer.push(ev) : false;
+      const reasonCode = encolado ? TICK_REASONS.DEFERRED_OVER_CAP : TICK_REASONS.DEFERRED_DROPPED;
+      diferidos.push({ issue: ev.issue, pr: ev.pr, code: reasonCode });
+      audit({
+        repo: ev.repo, pr: ev.pr, issue: ev.issue,
+        decision: DECISIONS.REWIND_BLOCKED, reasonCode,
+      });
+    }
+    if (diferidos.length > 0) {
+      const perdidos = diferidos.filter((d) => d.code === TICK_REASONS.DEFERRED_DROPPED).length;
+      log(`[WARN] ${diferidos.length} evento(s) sobre la cota de ${MAX_REWINDS_PER_TICK} rewinds/tick`
+        + (perdidos > 0
+          ? ` — ${perdidos} DESCARTADO(S): buffer de diferidos lleno`
+          : ' — diferido(s) al próximo tick'));
+    }
+
+    for (const ev of aProcesar) {
       let r;
       try {
         r = await rewind(ev, {
@@ -740,7 +845,18 @@ async function runTick(cfg, deps = {}) {
         continue;
       }
 
-      if (r && r.ok) {
+      if (r && r.ok && r.noop === true) {
+        // R-2 — `ok:true, noop:true` (dedupe hit, PR cerrado, SHA cambiado
+        // durante la revalidación…) es un NO-OP: el rewind NO mutó nada. Se
+        // audita como `rewind_blocked` con el código del canónico, igual que lo
+        // documenta §16.4, y no cuenta como rewind ni dispara el log de rewind.
+        const code = r.code || 'DEDUPE_HIT';
+        blocked.push({ issue: ev.issue, pr: ev.pr, code });
+        audit({
+          repo: ev.repo, pr: ev.pr, issue: ev.issue,
+          decision: DECISIONS.REWIND_BLOCKED, reasonCode: code,
+        });
+      } else if (r && r.ok) {
         rewound.push({ issue: ev.issue, pr: ev.pr });
         audit({
           repo: ev.repo, pr: ev.pr, issue: ev.issue,
@@ -757,7 +873,7 @@ async function runTick(cfg, deps = {}) {
     }
 
     return {
-      ok: true, observed: eventos.length, rewound, blocked,
+      ok: true, observed: eventos.length, rewound, blocked, deferred: diferidos,
       peakConcurrency: semaphore.peak(),
     };
   } catch (e) {
@@ -775,6 +891,8 @@ module.exports = {
   createReentryGuard,
   createScheduler,
   createSemaphore,
+  createDeferredBuffer,
+  eventKey,
   // Orquestación
   runTick,
   // Auditoría
@@ -797,4 +915,5 @@ module.exports = {
   MAX_POLL_INTERVAL_MS,
   DEFAULT_WEDGE_TIMEOUT_MS,
   MAX_REWINDS_PER_TICK,
+  MAX_DEFERRED_EVENTS,
 };

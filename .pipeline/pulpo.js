@@ -23333,6 +23333,12 @@ let _mergeabilityCfg = null;
 
 const _mergeabilityScheduler = brazoPrMergeabilityCore.createScheduler();
 
+// R-1 — buffer de eventos que exceden la cota de rewinds por tick. Vive acá
+// (una sola instancia por proceso, igual que el guard y el scheduler) para que
+// la cota DIFIERA trabajo al tick siguiente en vez de descartarlo: el poll de
+// #4966 ya marcó el evento como `emitted` y no lo vuelve a emitir.
+const _mergeabilityDeferred = brazoPrMergeabilityCore.createDeferredBuffer();
+
 const _mergeabilityGuard = brazoPrMergeabilityCore.createReentryGuard({
   wedgeTimeoutMs: () => (_mergeabilityCfg ? _mergeabilityCfg.wedgeTimeoutMs : null),
   onWedge: ({ wedgeMs, pid }) => {
@@ -23377,6 +23383,7 @@ async function brazoPrMergeability(config) {
       ghCall: (args, timeoutMs, onSpawn) => _ghCallWithTimeout(GH_BIN, args, timeoutMs, onSpawn),
       onChildSpawn: (pid) => _mergeabilityGuard.setActivePid(pid),
       getActiveWave: () => require('./lib/waves').getActiveWave(),
+      deferred: _mergeabilityDeferred,
       // Resuelto EN CADA TICK, no capturado al cargar el módulo: los tests que
       // requieren `pulpo.js` setean `PIPELINE_DIR_OVERRIDE` DESPUÉS del require
       // (mismo motivo que `telegramPendienteDir`, #5924).
@@ -26786,6 +26793,7 @@ if (process.env.PULPO_NO_AUTOSTART === '1') {
     brazoPrMergeabilityCore,
     _getMergeabilityGuard: () => _mergeabilityGuard,
     _getMergeabilityScheduler: () => _mergeabilityScheduler,
+    _getMergeabilityDeferred: () => _mergeabilityDeferred,
     // #3934 (EP4-H1) — conversación persistida por chat: helpers puros/IO
     // expuestos para los tests de aislamiento, sanitización, rehidratación y
     // retención.

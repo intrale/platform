@@ -713,6 +713,109 @@ test('#4968 CA-7: ante UNKNOWN/timeout no se emite NINGÚN mensaje al humano (fa
 });
 
 // -----------------------------------------------------------------------------
+// R-1 / R-2 (code review de #4968) — cadena REAL
+// -----------------------------------------------------------------------------
+
+test('#4968 R-1: un merge grande que deja 5 PRs en conflicto NO pierde ninguno', async () => {
+  // El escenario canónico del feature: `main` avanza y varios PRs de la ola
+  // quedan CONFLICTING a la vez. La cota de 3 rewinds/tick tiene que DIFERIR el
+  // resto, no descartarlo — el poll de #4966 ya los marcó `emitted` y no los
+  // vuelve a emitir.
+  const root = sandbox();
+  const issues = [5001, 5002, 5003, 5004, 5005];
+  const prs = issues.map((n, i) => ({ issue: n, pr: 9000 + i, oid: `${'b'.repeat(39)}${i}` }));
+  for (const n of issues) dropIssue(root, n);
+  const ola = { number: 8, issues: issues.map(n => ({ number: n })) };
+  const clock = reloj();
+
+  const listado = (sanos) => prs.map(p => prJson({
+    number: p.pr,
+    issue: p.issue,
+    headRefOid: p.oid,
+    headRefName: `agent/${p.issue}-pipeline-dev`,
+    ...(sanos ? { mergeable: 'UNKNOWN', mergeStateStatus: 'UNKNOWN' } : {}),
+  }));
+  const detalle = (numero) => {
+    const p = prs.find(x => x.pr === numero);
+    return prJson({ number: p.pr, headRefOid: p.oid, headRefName: `agent/${p.issue}-pipeline-dev` });
+  };
+  const gh = fakeGhCall(async ({ sub, args }) => {
+    if (sub === 'list') return listado(true);
+    const numero = Number(args[2]);
+    return detalle(numero);
+  });
+
+  const buffer = core.createDeferredBuffer();
+  const norm = core.normalizeWatcherConfig(seccion());
+  const correr = async () => core.runTick(norm.cfg, {
+    ghCall: gh, getActiveWave: () => ola, pipelineRoot: root, config: CONFIG, yaml,
+    now: clock.now, deferred: buffer,
+  });
+
+  await correr();            // 1ª muestra: nada muta todavía
+  clock.avanzarPoll();
+  const t2 = await correr(); // se confirman los 5 conflictos
+
+  assert.equal(t2.rewound.length, core.MAX_REWINDS_PER_TICK, 'la cota sigue vigente');
+  assert.equal(t2.deferred.length, 2, 'los sobrantes se reportan');
+  assert.equal(buffer.size(), 2, 'y quedan encolados para el próximo tick');
+
+  // La §16.4 le promete al operador que un conflicto confirmado sin rewind
+  // aparece en el JSONL: eso NO puede ser un renglón vacío.
+  const diferidos = auditJsonl(root).filter(a => a.reason_code === core.TICK_REASONS.DEFERRED_OVER_CAP);
+  assert.equal(diferidos.length, 2);
+  assert.ok(diferidos.every(a => a.decision === core.DECISIONS.REWIND_BLOCKED && a.kind === 'brazo'));
+
+  // Tick siguiente: el poll ya NO re-emite (`already_emitted`) y aun así los
+  // dos diferidos terminan rebobinados por el canónico.
+  clock.avanzarPoll();
+  const t3 = await correr();
+  assert.equal(t3.observed, 0, 'el watcher no vuelve a emitir estos eventos');
+  assert.equal(t3.rewound.length, 2, 'los diferidos se procesaron igual');
+
+  for (const n of issues) {
+    assert.deepEqual(
+      { fase: ubicacion(root, n).fase, estado: ubicacion(root, n).estado },
+      { fase: 'dev', estado: 'pendiente' },
+      `el issue ${n} volvió a dev por el mecanismo canónico`,
+    );
+  }
+  assert.equal(buffer.size(), 0);
+});
+
+test('#4968 R-2: un DEDUPE_HIT del rewind REAL no se reporta como rewind', async () => {
+  const root = sandbox();
+  dropIssue(root, ISSUE_A);
+  const clock = reloj();
+  const gh = fakeGhCall(async ({ sub }) => (sub === 'list' ? [prJson({ mergeable: 'UNKNOWN', mergeStateStatus: 'UNKNOWN' })] : prJson()));
+  const norm = core.normalizeWatcherConfig(seccion());
+
+  // Poll doblado: emite SIEMPRE el mismo evento (misma tupla). La cadena de
+  // rewind es la REAL, así que el 2º tick pega contra la dedupe de #4967.
+  const evento = watcher.buildMergeConflictEvent({
+    repo: REPO, pr: PR_A, issue: ISSUE_A, headRefOid: OID_A, detectedAt: clock.now(),
+  });
+  const correr = async () => core.runTick(norm.cfg, {
+    ghCall: gh, getActiveWave: () => WAVE, pipelineRoot: root, config: CONFIG, yaml,
+    now: clock.now, runWatcherPoll: async () => ({ ok: true, events: [evento] }),
+  });
+
+  const t1 = await correr();
+  assert.deepEqual(t1.rewound, [{ issue: ISSUE_A, pr: PR_A }], 'el primero sí muta');
+
+  clock.avanzarPoll();
+  const t2 = await correr();
+  assert.deepEqual(t2.rewound, [], 'un no-op NO puede contarse como rewind');
+  assert.equal(t2.blocked.length, 1);
+  assert.equal(t2.blocked[0].code, 'DEDUPE_HIT');
+
+  const brazo = auditJsonl(root).filter(a => a.kind === 'brazo');
+  assert.equal(brazo.at(-1).decision, core.DECISIONS.REWIND_BLOCKED, 'el JSONL dice rewind_blocked, como la §16.4');
+  assert.equal(brazo.at(-1).reason_code, 'DEDUPE_HIT');
+  assert.equal(brazo.filter(a => a.decision === core.DECISIONS.REWOUND).length, 1, 'una sola mutación auditada');
+});
+
+// -----------------------------------------------------------------------------
 // CA-9 — limitación de cobertura declarada
 // -----------------------------------------------------------------------------
 

@@ -40,6 +40,23 @@ test('#4968: el brazo y su core quedan expuestos bajo PULPO_NO_AUTOSTART', () =>
   assert.equal(typeof pulpo._getMergeabilityScheduler().state, 'function');
 });
 
+test('#4968 R-1: el buffer de diferidos es ÚNICO por proceso y viaja al core', () => {
+  // Si el brazo instanciara el buffer dentro de `brazoPrMergeability`, cada
+  // tick empezaría con la cola vacía y los eventos diferidos se perderían —
+  // exactamente el defecto que R-1 reporta.
+  const buffer = pulpo._getMergeabilityDeferred();
+  assert.equal(typeof buffer.drain, 'function');
+  assert.equal(typeof buffer.push, 'function');
+  assert.equal(buffer, pulpo._getMergeabilityDeferred(), 'la instancia no se recrea');
+  assert.ok(
+    /createDeferredBuffer\(\)/.test(PULPO_SRC) && /deferred: _mergeabilityDeferred/.test(PULPO_SRC),
+    'el buffer del módulo se inyecta como dep del runTick',
+  );
+  const wrapper = PULPO_SRC.slice(PULPO_SRC.indexOf('async function brazoPrMergeability(config)'));
+  assert.ok(!/createDeferredBuffer/.test(wrapper.slice(0, 3_000)),
+    'el buffer NO puede instanciarse dentro del wrapper: se reiniciaría cada tick');
+});
+
 test('#4968 H-A1: la decisión NO vive en pulpo.js — el wrapper delega en el core', () => {
   // El wrapper puede leer la config y loguear, pero los clamps, el vocabulario
   // de motivos y la orquestación tienen que estar del otro lado.

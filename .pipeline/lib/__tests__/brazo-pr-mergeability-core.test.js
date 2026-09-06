@@ -591,6 +591,221 @@ test('#4968 CA-4: los rewinds de un tick están acotados y son secuenciales', as
   assert.equal(r.rewound.length, core.MAX_REWINDS_PER_TICK);
 });
 
+// -----------------------------------------------------------------------------
+// R-1 (code review #4968) — la cota DIFIERE trabajo, no lo descarta en silencio
+// -----------------------------------------------------------------------------
+
+function eventosDe(cantidad, { desde = 5000 } = {}) {
+  return Array.from({ length: cantidad }, (_, i) => ({
+    source: 'mergeability-watcher',
+    repo: 'intrale/platform',
+    pr: 100 + i,
+    issue: desde + i,
+    headRefOid: `${'e'.repeat(39)}${i % 10}`,
+    detected_at: 1,
+  }));
+}
+
+test('#4968 R-1: los eventos sobre la cota se auditan como rewind_blocked, nunca en silencio', async () => {
+  const cfg = core.normalizeWatcherConfig(CFG_OK).cfg;
+  const audit = [];
+  const logs = [];
+  const r = await core.runTick(cfg, tickDeps({
+    runWatcherPoll: async () => ({ ok: true, events: eventosDe(5) }),
+    deferred: core.createDeferredBuffer(),
+    appendAudit: (rec) => audit.push(rec),
+    log: (m) => logs.push(m),
+  }));
+
+  assert.equal(r.rewound.length, core.MAX_REWINDS_PER_TICK);
+  assert.equal(r.deferred.length, 2, 'los 2 sobrantes quedan reportados');
+  // El grep que la §16.4 le promete al operador tiene que devolver algo.
+  const diferidos = audit.filter(a => a.decision === core.DECISIONS.REWIND_BLOCKED
+    && a.reason_code === core.TICK_REASONS.DEFERRED_OVER_CAP);
+  assert.equal(diferidos.length, 2);
+  assert.deepEqual(diferidos.map(a => a.issue), [5003, 5004]);
+  assert.ok(logs.some(m => m.includes('diferido')), 'el diferimiento se loguea');
+});
+
+test('#4968 R-1: los diferidos se procesan en el tick siguiente aunque el poll ya no los re-emita', async () => {
+  const cfg = core.normalizeWatcherConfig(CFG_OK).cfg;
+  const buffer = core.createDeferredBuffer();
+  const rewound = [];
+  // #4966 marca `emitted:true` y persiste ANTES de devolver los eventos: en el
+  // poll siguiente estos PRs salen `already_emitted` y el poll no trae NADA.
+  let eventos = eventosDe(5);
+  const deps = tickDeps({
+    runWatcherPoll: async () => ({ ok: true, events: eventos }),
+    rewindFromMergeConflict: async (ev) => { rewound.push(ev.issue); return { ok: true }; },
+    deferred: buffer,
+  });
+
+  await core.runTick(cfg, deps);
+  assert.deepEqual(rewound, [5000, 5001, 5002]);
+  assert.equal(buffer.size(), 2);
+
+  eventos = [];
+  const r2 = await core.runTick(cfg, deps);
+  assert.equal(r2.observed, 0, 'el poll ya no los re-emite');
+  assert.deepEqual(rewound, [5000, 5001, 5002, 5003, 5004], 'ninguno se perdió');
+  assert.equal(buffer.size(), 0);
+});
+
+test('#4968 R-1: los diferidos tienen PRIORIDAD sobre los eventos nuevos (sin inanición)', async () => {
+  const cfg = core.normalizeWatcherConfig(CFG_OK).cfg;
+  const buffer = core.createDeferredBuffer();
+  const rewound = [];
+  let eventos = eventosDe(4);
+  const deps = tickDeps({
+    runWatcherPoll: async () => ({ ok: true, events: eventos }),
+    rewindFromMergeConflict: async (ev) => { rewound.push(ev.issue); return { ok: true }; },
+    deferred: buffer,
+  });
+
+  await core.runTick(cfg, deps);           // 5000..5002 procesados, 5003 diferido
+  eventos = eventosDe(3, { desde: 6000 }); // el poll trae eventos NUEVOS
+  await core.runTick(cfg, deps);
+
+  assert.equal(rewound[3], 5003, 'el diferido va primero, no al final de la cola');
+});
+
+test('#4968 R-1: un evento ya diferido no se duplica si el poll lo vuelve a emitir', async () => {
+  const cfg = core.normalizeWatcherConfig(CFG_OK).cfg;
+  const buffer = core.createDeferredBuffer();
+  const rewound = [];
+  const eventos = eventosDe(4);
+  const deps = tickDeps({
+    runWatcherPoll: async () => ({ ok: true, events: eventos }),
+    rewindFromMergeConflict: async (ev) => { rewound.push(ev.issue); return { ok: true }; },
+    deferred: buffer,
+  });
+
+  await core.runTick(cfg, deps);   // 5003 queda diferido
+  await core.runTick(cfg, deps);   // el poll repite los MISMOS 4 eventos
+
+  assert.equal(rewound.filter(i => i === 5003).length, 1, 'el diferido se procesa una sola vez');
+  // La cola del 2º tick fue [5003(diferido), 5000, 5001, 5002] — sin duplicar
+  // 5003. La re-emisión de los otros tres es hipotética (el poll de #4966 los
+  // marca `emitted`); si ocurriera, la dedupe canónica de #4967 la frena.
+  assert.equal(buffer.size(), 1, 'sólo queda el nuevo sobrante, no un 5003 duplicado');
+  assert.deepEqual(buffer.drain().map(e => e.issue), [5002]);
+});
+
+test('#4968 R-1: con el buffer lleno el evento se pierde pero queda AUDITADO', async () => {
+  const cfg = core.normalizeWatcherConfig(CFG_OK).cfg;
+  const buffer = core.createDeferredBuffer({ max: 1 });
+  const audit = [];
+  const logs = [];
+  const r = await core.runTick(cfg, tickDeps({
+    runWatcherPoll: async () => ({ ok: true, events: eventosDe(6) }),
+    deferred: buffer,
+    appendAudit: (rec) => audit.push(rec),
+    log: (m) => logs.push(m),
+  }));
+
+  assert.equal(buffer.size(), 1);
+  const dropped = audit.filter(a => a.reason_code === core.TICK_REASONS.DEFERRED_DROPPED);
+  assert.equal(dropped.length, 2, 'los que no entraron al buffer se auditan como descartados');
+  assert.ok(dropped.every(a => a.decision === core.DECISIONS.REWIND_BLOCKED));
+  assert.ok(logs.some(m => m.includes('DESCARTADO')), 'la pérdida se grita en el log');
+  assert.equal(r.deferred.filter(d => d.code === core.TICK_REASONS.DEFERRED_DROPPED).length, 2);
+});
+
+test('#4968 R-1: sin buffer inyectado el brazo sigue auditando los sobrantes', async () => {
+  const cfg = core.normalizeWatcherConfig(CFG_OK).cfg;
+  const audit = [];
+  const r = await core.runTick(cfg, tickDeps({
+    runWatcherPoll: async () => ({ ok: true, events: eventosDe(5) }),
+    appendAudit: (rec) => audit.push(rec),
+  }));
+  assert.equal(r.rewound.length, core.MAX_REWINDS_PER_TICK);
+  assert.equal(audit.filter(a => a.reason_code === core.TICK_REASONS.DEFERRED_DROPPED).length, 2);
+});
+
+test('#4968 R-1: los códigos del diferimiento pasan el vocabulario cerrado de la auditoría', () => {
+  assert.ok(core.isKnownReasonCode(core.TICK_REASONS.DEFERRED_OVER_CAP));
+  assert.ok(core.isKnownReasonCode(core.TICK_REASONS.DEFERRED_DROPPED));
+  const rec = core.buildBrazoAuditRecord({
+    now: 1, repo: 'intrale/platform', pr: 1, issue: 2,
+    decision: core.DECISIONS.REWIND_BLOCKED, reasonCode: core.TICK_REASONS.DEFERRED_OVER_CAP,
+  });
+  assert.equal(rec.reason_code, 'deferred_over_cap', 'no se descarta como código desconocido');
+});
+
+test('#4968 R-1: el buffer de diferidos es FIFO, acotado e idempotente por tupla', () => {
+  const b = core.createDeferredBuffer({ max: 2 });
+  const ev = (pr) => ({ repo: 'intrale/platform', pr, headRefOid: 'f'.repeat(40) });
+  assert.equal(b.push(ev(1)), true);
+  assert.equal(b.push(ev(1)), true, 'la tupla repetida se acepta sin duplicar');
+  assert.equal(b.size(), 1);
+  assert.equal(b.push(ev(2)), true);
+  assert.equal(b.push(ev(3)), false, 'la cota rechaza, no crece sin límite');
+  assert.deepEqual(b.drain().map(e => e.pr), [1, 2]);
+  assert.equal(b.size(), 0, 'drain vacía');
+  // Un `max` roto cae al default en vez de desactivar la cota.
+  assert.equal(core.createDeferredBuffer({ max: 0 }).limit, core.MAX_DEFERRED_EVENTS);
+  assert.equal(core.createDeferredBuffer({ max: 'x' }).limit, core.MAX_DEFERRED_EVENTS);
+});
+
+// -----------------------------------------------------------------------------
+// R-2 (code review #4968) — `ok:true, noop:true` NO es un rewind
+// -----------------------------------------------------------------------------
+
+test('#4968 R-2: un DEDUPE_HIT se audita como rewind_blocked, no como rewound', async () => {
+  const cfg = core.normalizeWatcherConfig(CFG_OK).cfg;
+  const audit = [];
+  const r = await core.runTick(cfg, tickDeps({
+    runWatcherPoll: async () => ({ ok: true, events: eventosDe(1) }),
+    // Forma REAL de `pipeline-rewind.js:1782` cuando la tupla ya estaba
+    // reclamada: ok:true porque el watcher hizo bien en avisar, pero NO mutó.
+    rewindFromMergeConflict: async () => ({ ok: true, noop: true, code: 'DEDUPE_HIT' }),
+    appendAudit: (rec) => audit.push(rec),
+  }));
+  assert.deepEqual(r.rewound, [], 'un no-op no puede contarse como rewind');
+  assert.deepEqual(r.blocked, [{ issue: 5000, pr: 100, code: 'DEDUPE_HIT' }]);
+  assert.equal(audit.at(-1).decision, core.DECISIONS.REWIND_BLOCKED);
+  assert.equal(audit.at(-1).reason_code, 'DEDUPE_HIT');
+});
+
+test('#4968 R-2: cualquier noop del canónico conserva su código (PR_CLOSED, PR_SHA_CHANGED…)', async () => {
+  const cfg = core.normalizeWatcherConfig(CFG_OK).cfg;
+  for (const code of ['PR_CLOSED', 'PR_SHA_CHANGED', 'PR_NOT_CONFLICTING', 'REVALIDATE_TIMEOUT']) {
+    const audit = [];
+    const r = await core.runTick(cfg, tickDeps({
+      runWatcherPoll: async () => ({ ok: true, events: eventosDe(1) }),
+      rewindFromMergeConflict: async () => ({ ok: true, noop: true, code }),
+      appendAudit: (rec) => audit.push(rec),
+    }));
+    assert.deepEqual(r.rewound, []);
+    assert.equal(r.blocked[0].code, code);
+    assert.equal(audit.at(-1).reason_code, code);
+  }
+});
+
+test('#4968 R-2: un noop sin código cae a DEDUPE_HIT, nunca a un reason_code vacío', async () => {
+  const cfg = core.normalizeWatcherConfig(CFG_OK).cfg;
+  const audit = [];
+  const r = await core.runTick(cfg, tickDeps({
+    runWatcherPoll: async () => ({ ok: true, events: eventosDe(1) }),
+    rewindFromMergeConflict: async () => ({ ok: true, noop: true }),
+    appendAudit: (rec) => audit.push(rec),
+  }));
+  assert.equal(r.blocked[0].code, 'DEDUPE_HIT');
+  assert.equal(audit.at(-1).reason_code, 'DEDUPE_HIT');
+});
+
+test('#4968 R-2: un rewind REAL (sin noop) sigue contándose como rewound', async () => {
+  const cfg = core.normalizeWatcherConfig(CFG_OK).cfg;
+  const audit = [];
+  const r = await core.runTick(cfg, tickDeps({
+    runWatcherPoll: async () => ({ ok: true, events: eventosDe(1) }),
+    rewindFromMergeConflict: async () => ({ ok: true, noop: false, moved: true }),
+    appendAudit: (rec) => audit.push(rec),
+  }));
+  assert.deepEqual(r.rewound, [{ issue: 5000, pr: 100 }]);
+  assert.equal(audit.at(-1).decision, core.DECISIONS.REWOUND);
+});
+
 test('#4968 CA-4: el brazo no reimplementa la observación — le pasa la sección cruda a #4966', async () => {
   const cfg = core.normalizeWatcherConfig({ ...CFG_OK, candidate_limit: 33 }).cfg;
   let visto = null;
