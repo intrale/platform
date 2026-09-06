@@ -83,7 +83,7 @@ Antes de encender nada, tenés que saber que podés apagarlo. Y tenés que saber
 | Las 4 **fuentes de coordinación** (`waves.json`, `blocked-issues.json`, `blocked-by-infra.json`, `infra-health.json`) | `kernel-store-migrate.js --rollback --from <dir>` | ✅ Sí, un comando |
 | Los **descriptores** de `.pipeline/descriptors/` (origen de `product#<id>`) | Helper `restoreDescriptors()` — artefacto y manifest **distintos** | ⚠️ Sí, pero es **otro** comando |
 | `kernel.durable` de vuelta en `false` | Edición manual de `.pipeline/config.yaml` + `node .pipeline/restart.js` | ❌ **Manual** |
-| Ítems ya escritos en la **tabla de no-repudio** (`signature#`, `audit#`) | **No se borran nunca** — son append-only por diseño | ❌ **Manual**, por reconciliación (§2) |
+| Ítems ya escritos en la **tabla de no-repudio** (`signature#`, `audit#`) | **No se borran nunca** — son append-only por diseño. Se **reintegran** al filesystem con `node .pipeline/kernel-reconcile.js --apply --frozen` (§2) | ✅ Sí, un comando (#5209) — pero **no borra** de DynamoDB, copia |
 | Ítems de la **tabla de coordinación** (`claim#`) | Se vencen solos por lease, o `release()` | ❌ **Manual** |
 
 > **Sin esta tabla, esta sección mentiría por omisión.** El rollback automático
@@ -173,26 +173,324 @@ Los ítems `signature#` y `audit#` de la **tabla de no-repudio** son **append-on
 El rollback no los borra, y no debe. Si el cutover se abortó a mitad de camino,
 lo que queda no es "estado sucio a limpiar" sino **evidencia a reconciliar**.
 
-Este es el procedimiento que **#5126 ejecuta** (CA-B6). Acá se prescribe:
+> **#5209 — esto dejó de ser manual.** Hasta acá el procedimiento se ejecutaba a
+> ojo, cruzando listados contra "lo que el pipeline creía haber firmado". Eso no
+> es verificable y falla del peor modo posible: en silencio. Ahora hay un comando
+> que exporta, reintegra y **prueba con conteos y SHA-256** que ningún registro
+> quedó únicamente en DynamoDB — y que se **niega a habilitar el apagado del
+> flag** si la paridad no cierra exacta.
 
-1. **Congelá la ventana.** No dejes que entren firmas nuevas mientras reconciliás
-   (ver §5).
-2. **Listá lo escrito durante la ventana**, acotando por el instante de apertura
-   del cutover, no por "todo".
-3. **Cruzá contra el registro local** de lo que el pipeline creía haber firmado.
-4. **Clasificá cada divergencia** en una de tres, y sólo tres:
-   - *escrita y conocida* → nada que hacer;
-   - *escrita y desconocida localmente* → **no la borres**; anotala en el issue
-     del cutover con su `signatureId` y seguí;
-   - *conocida localmente y no escrita* → se re-firma después de encender, no durante.
-5. **Dejá el resultado por escrito** en el issue del cutover antes de avanzar al
-   bloque siguiente. Una reconciliación que no quedó escrita no ocurrió.
+### 2.1 · El comando
+
+```bash
+# Estado actual (sólo lectura, no toca AWS ni el filesystem)
+node .pipeline/kernel-reconcile.js --status
+
+# Reconciliación real (exige la ventana congelada)
+node .pipeline/kernel-reconcile.js --apply --frozen \
+  --profile <perfil-runtime> --project-id <projectId>
+```
+
+`--frozen` es **obligatorio** y es una afirmación tuya: la ventana está congelada
+y no entran firmas nuevas (§5). Sin él, el comando corta antes de hablar con AWS.
+No es burocracia: si entra una firma mientras se exporta, el conjunto exportado
+nace viejo y la paridad se calcula contra un universo que ya cambió — **daría
+verde sin serlo**.
+
+Salida esperada cuando cierra:
+
+```
+== RECONCILIACIÓN APPEND-ONLY (DynamoDB → filesystem) ==
+[OK] estado final: compare
+     firmas: 3 · audit: 2 · total: 5
+     nuevos: 5 · idempotentes: 0 · sólo locales: 0
+     paridad exacta verificada releyendo del filesystem.
+
+VEREDICTO: HABILITADO para apagar `kernel.durable`.
+```
+
+Exit code `0` **sólo** con paridad exacta. Cualquier otro caso ⇒ `1` y
+`VEREDICTO: BLOQUEADO`.
+
+#### La sonda positiva es parte del comando, no un paso a mano
+
+La reconciliación **aborta con `conjunto_vacio`** si no hay ni una firma ni un
+audit que reconciliar, y eso es correcto: un ensayo sobre un conjunto vacío
+siempre da paridad y no prueba nada. Para que haya algo que reconciliar, la sonda
+se siembra con:
+
+```bash
+# Dry-run: muestra exactamente qué ítems saldrían. No escribe.
+node .pipeline/kernel-drill-seed.js --profile <perfil-runtime> --project-id <projectId>
+
+# Escritura real (irreversible — ver abajo)
+node .pipeline/kernel-drill-seed.js --apply --i-understand-append-only   --profile <perfil-runtime> --project-id <projectId>
+```
+
+Dos cosas que no son detalle:
+
+1. **`--apply` solo no escribe.** Hace falta además `--i-understand-append-only`.
+   La tabla de no-repudio no concede `DeleteItem`, así que la firma y el audit de
+   la sonda quedan en DynamoDB **para siempre**. El flag existe para que nadie
+   descubra eso después de escribir.
+2. **La sonda se escribe por el camino del runtime**, no con `aws dynamodb
+   put-item`. Un ítem crudo saltea el envelope, la validación de schema, la
+   partición por `contextProjectId` y la condición append-only — y queda en la
+   tabla un registro que la reconciliación rechaza como corrupto, **sin poder
+   borrarlo**. Por eso `kernel-drill-seed.js` reusa el mismo cableado de driver
+   que `kernel-reconcile.js` (importa su `buildStore`, no lo reimplementa).
+
+### 2.2 · Qué hace por dentro (y por qué en ese orden)
+
+La máquina de estados es fail-closed y no se puede saltear ningún paso:
+
+```
+precheck → freeze → export → validate → stage → atomic-promote
+         → reread-filesystem → compare
+```
+
+| Paso | Qué garantiza |
+|------|---------------|
+| `precheck` | El destino cuelga de una raíz allowlisted y no es un symlink. |
+| `freeze` | La ventana está congelada; si no, no se exporta nada. |
+| `export` | Lectura **paginada completa** de `signature#`/`audit#`. Una página perdida es una firma perdida. |
+| `validate` | Conjunto no vacío, **una firma Y un audit** como mínimo, sin conflictos de ID. |
+| `stage` | Todo se escribe primero en `.staging/` (0700 dir / 0600 files, con `fsync`). |
+| `atomic-promote` | `rename` por archivo. Si falla a mitad, el destino vuelve a la generación anterior. |
+| `reread-filesystem` | Se relee **del disco**. Comparar contra lo que creemos haber escrito no prueba nada. |
+| `compare` | Paridad exacta de IDs, conteos y SHA-256 — y cobertura: todo lo de DynamoDB está en filesystem. |
+
+Las tres reglas de conflicto, que son las que hacen que reintentar sea seguro:
+
+- **mismo ID + mismo hash** → idempotente. Reintentar no duplica nada.
+- **mismo ID + contenido distinto** → **conflicto fatal**. Un append-only jamás
+  se sobreescribe: aborta y conserva DynamoDB como fuente efectiva.
+- **sólo existe en filesystem** → se **conserva**. Reconciliar no puede borrar un
+  registro local; ese es el modo de falla que convierte "rollback" en "pérdida".
+
+### 2.3 · Abort, reintento y staging
+
+Todo aborto es seguro por construcción:
+
+- El flag **nunca** se apaga en un camino de error. El comando lo dice explícito
+  (`VEREDICTO: BLOQUEADO`).
+- El aborto queda **auditado en el propio store durable** (`kernel.reconcile.abort`),
+  con el estado y el código, redactado.
+- El `.staging/` se limpia solo. Restos de un intento interrumpido **no** se
+  mezclan con el intento siguiente: se borran antes de escribir.
+- Reintentar es la acción correcta ante casi cualquier falla: la reconciliación
+  es idempotente y el segundo intento reporta `nuevos: 0`.
+
+Códigos de aborto y qué hacer con cada uno:
+
+| Código | Qué pasó | Qué hacer |
+|--------|----------|-----------|
+| `ventana_no_congelada` | Falta `--frozen`. | Congelá la ventana (§5) y repetí. |
+| `conjunto_vacio` | No hay nada que reconciliar. | Sembrá la sonda del ensayo con `kernel-drill-seed.js` (§2.1). **No** bajes el mínimo. **No** sirve la de §8.4: da de alta un producto, no escribe firmas ni audit. |
+| `sonda_incompleta` | Hay firmas pero no audit (o al revés). | Generá el tipo que falta con `kernel-drill-seed.js` (§2.1): el ensayo exige los dos. |
+| `conflicto_id` | Mismo ID con contenido distinto. | **No lo fuerces.** Investigá cuál es el bueno y anotalo en el issue. |
+| `hash_divergente` / `linea_corrupta` | El JSONL local fue alterado. | Restaurá desde backup; el archivo perdió integridad. |
+| `promocion_fallida` | El rename se interrumpió. | El destino ya volvió a la generación anterior. Reintentá. |
+| `cobertura_incompleta` | Algo quedó sólo en DynamoDB (falta en filesystem, o llegó con otro hash). | **No apagues el flag.** Reintentá y revisá el listado de `noCubiertos`. |
+| `paridad_fallida` | El filesystem no quedó exactamente como lo reconciliado: sobra un registro, o se perdió uno que **sólo** existía en filesystem. | **No apagues el flag.** Revisá `parity` (faltantes / sobrantes / hash distinto): alguien escribió en el destino por afuera de este comando. |
+
+### 2.4 · Orden de apagado y reinicio (no se negocia)
+
+El comando **no** apaga el flag ni reinicia: eso lo hacés vos, y sólo después de
+`VEREDICTO: HABILITADO`. Un script de reconciliación que además reinicia
+servicios puede dejar el pipeline fuera de servicio si falla a mitad.
+
+```
+1. node .pipeline/kernel-reconcile.js --apply --frozen   → HABILITADO
+2. kernel.durable: false   en .pipeline/config.yaml
+3. reinicio limpio
+4. completar UNA fase leyendo desde filesystem
+5. registrar R8 en el issue del cutover
+```
+
+Invertir 1 y 2 es exactamente la pérdida silenciosa que todo esto evita.
+
+### 2.5 · R8 — el tiempo real de recuperación
+
+**R8** es el tiempo desde que arranca la reconciliación hasta que el pipeline
+completa una fase operando desde filesystem. Se registra en el issue del cutover
+junto con los conteos:
+
+```
+R8 = <minutos> min · firmas reconciliadas: <n> · audit: <m> · paridad: exacta
+```
+
+Un R8 sin conteos al lado no sirve: no distingue "recuperé rápido" de "no había
+nada que recuperar".
+
+**Desglose, para que el número sea interpretable.** R8 tiene un tramo
+automatizado y uno operativo, y conviene registrarlos por separado:
+
+| Tramo | Qué incluye | Medido |
+|-------|-------------|--------|
+| Reconciliación (`precheck` → `compare`) | export desde DynamoDB, validación, staging, promoción atómica, relectura y paridad | **5,2 s** primera pasada · **6,0 s** reintento idempotente (ensayo #5209 contra AWS real, 3 registros) |
+| Retorno operativo | apagar `kernel.durable`, reinicio limpio, primera fase completa desde filesystem | lo mide el operador en el reinicio supervisado |
+
+El tramo automatizado es el que `runDurableRollbackDrill` devuelve como `r8Ms`
+cuando se lo corre con los cuatro callbacks operativos cableados; el CLI cubre
+hasta `compare` a propósito (§2.4).
+
+### 2.6 · Dónde quedan los artefactos (y por qué no en Git)
+
+Los registros reintegrados viven en `.pipeline/audit/kernel-reconcile/`:
+
+- `signatures.jsonl` — una firma por línea.
+- `audit.jsonl` — una entrada de auditoría por línea.
+- `manifest.json` — conteos, `(tipo, id, hash)` de cada registro y `manifestHash`.
+
+Ese directorio está **fuera de Git** (`.pipeline/audit/` está en `.gitignore`) y
+hay un test que lo verifica. Es deliberado: son firmas y auditoría del kernel en
+un repo **público**. Nunca los agregues al diff "para dejar evidencia" — la
+evidencia va al issue, redactada.
 
 > **Nunca** intentes "limpiar" la tabla de no-repudio con un borrado masivo. La
 > policy IAM no concede `DeleteItem` sobre esa tabla justamente para que esto no
-> sea posible (#5124 · `docs/pipeline/kernel-iam-policy.md`).
+> sea posible (#5124 · `docs/pipeline/kernel-iam-policy.md`). La reconciliación
+> **copia, no mueve**: DynamoDB conserva todo, y hay un test que lo comprueba.
+
+### 2.7 · Evidencia del ensayo (#5209) — ejecutado con conjunto NO vacío
+
+El ensayo se corrió contra AWS real con el principal runtime
+(`kernel.runtimePrincipal`, perfil `kernel.runtimeProfile`), sobre la partición
+canónica del control-plane. Se ejecutó **en este orden**, y el orden importa: la
+primera pasada fue deliberadamente contra la partición vacía para comprobar que
+el fail-closed dispara, y recién después se sembró la sonda.
+
+**Paso 0 — identidad efectiva.** Sin esto, cualquier verde posterior podría ser
+de otro principal (por ejemplo el administrativo) y no probaría nada sobre la
+postura least-privilege con la que corre el runtime:
+
+```
+$ aws sts get-caller-identity --profile <perfil-runtime>
+  Arn: <IAM user redactado> .../intrale-kernel-runtime   ← coincide con kernel.runtimePrincipal
+```
+
+**Paso 1 — el fail-closed dispara con la partición vacía.** Es la mitad que
+suele faltar: si nunca se ve abortar, no se sabe si el guard existe:
+
+```
+$ node .pipeline/kernel-reconcile.js --apply --frozen --profile … --project-id …
+  [FALLA] abortó en "validate" (conjunto_vacio)
+  VEREDICTO: BLOQUEADO. NO apagues `kernel.durable`.
+```
+
+Ese aborto además **dejó su propia entrada de audit** en DynamoDB
+(`kernel.reconcile.abort`, actor `kernel-append-only-reconcile`), que después
+apareció en el export — o sea que el rastro del aborto también se reconcilia, no
+se pierde.
+
+**Paso 2 — sonda positiva.** Una firma y una entrada de audit escritas por el
+**mismo camino** que usa el runtime (`putSignature` / `appendAuditEntry` sobre el
+driver del boot durable), no con un `put-item` crudo:
+
+```
+$ node .pipeline/kernel-drill-seed.js --apply --i-understand-append-only \
+       --profile <perfil-runtime> --project-id <projectId>
+  == SONDA DEL ENSAYO DE ROLLBACK ESCRITA ==
+     firma:  signature#mtpcrv2l…
+     audit:  audit#mtpcrwiv…
+```
+
+**Paso 3 — reconciliación real, conjunto NO vacío:**
+
+```
+$ node .pipeline/kernel-reconcile.js --apply --frozen --profile … --project-id …
+  == RECONCILIACIÓN APPEND-ONLY (DynamoDB → filesystem) ==
+  [OK] estado final: compare
+       firmas: 1 · audit: 2 · total: 3
+       nuevos: 3 · idempotentes: 0 · sólo locales: 0
+       paridad exacta verificada releyendo del filesystem.
+  VEREDICTO: HABILITADO para apagar `kernel.durable`.
+```
+
+**Paso 4 — idempotencia del reintento.** Segunda pasada sobre el mismo conjunto,
+sin tocar nada en el medio. Ningún registro se duplicó ni se pisó:
+
+```
+  firmas: 1 · audit: 2 · total: 3
+  nuevos: 0 · idempotentes: 3 · sólo locales: 0
+```
+
+**Paso 5 — paridad verificada por una fuente INDEPENDIENTE.** El reporte del
+propio comando no alcanza como prueba de sí mismo: los IDs se volvieron a leer
+con la AWS CLI cruda (`aws dynamodb query --projection-expression SK`) y se
+compararon contra el manifiesto en disco. Coincidencia exacta, 3 = 3, mismos
+identificadores en ambos lados. Ningún registro quedó únicamente en DynamoDB.
+
+```
+DynamoDB (aws dynamodb query)   filesystem (manifest.json)
+  audit#mtpco98o…                 audit#mtpco98o…
+  audit#mtpcrwiv…                 audit#mtpcrwiv…
+  signature#mtpcrv2l…             signature#mtpcrv2l…
+  total: 3                        total: 3 (counts {signature:1, audit:2})
+```
+
+**Paso 6 — los artefactos no entraron a Git.** `git check-ignore -v` resuelve los
+tres archivos contra `.gitignore:390 (.pipeline/audit/)`, y `git status
+--porcelain` no los lista.
+
+**R8 medido.** El tramo automatizado del retorno — de `precheck` a `compare`,
+contra AWS real — tardó **5,2 s** en la primera pasada y **6,0 s** en el
+reintento idempotente. Es el tiempo que corresponde a la parte que este comando
+cubre; el R8 **total** que se registra en el issue suma además el apagado del
+flag, el reinicio y la fase completa (§2.5), que ejecuta el operador.
+
+#### Lo que sigue quedando del operador
+
+| Paso | Por qué no lo hace un agente |
+|------|------------------------------|
+| Apagar `kernel.durable` en el pipeline vivo y reiniciar | Toca producción: un restart mal coordinado es una caída, y el agente que lo dispara se mata a sí mismo. El valor versionado ya queda en `false`; falta aplicarlo con un reinicio supervisado. |
+| Completar una fase leyendo desde filesystem y cerrar R8 | Depende del reinicio de arriba. |
+
+Lo que **ya no** queda del operador: sembrar la sonda a mano. Ese paso era la
+parte irreproducible del ensayo y ahora es `kernel-drill-seed.js`, con el guard
+de irreversibilidad explícito.
 
 ### Cómo verificar la reconciliación de `signature#` y `audit#`
+
+**1. El estado en filesystem no está vacío:**
+
+```bash
+node .pipeline/kernel-reconcile.js --status
+```
+
+Salida esperada — conteos mayores a cero en ambos tipos:
+
+```
+[OK] registros reintegrados: 5
+     signature: 3 (signatures.jsonl)
+     audit: 2 (audit.jsonl)
+```
+
+Si dice `registros reintegrados: 0`, la reconciliación **no ocurrió**: no avances.
+
+**2. El manifiesto cierra contra lo escrito:**
+
+```bash
+node -e "
+const R=require('./.pipeline/lib/kernel-append-only-reconcile');
+const fs=require('fs'), p='.pipeline/audit/kernel-reconcile';
+const m=JSON.parse(fs.readFileSync(p+'/manifest.json','utf8'));
+const r=R.readFilesystemRecords(p);
+console.log(JSON.stringify(R.validateReconcileManifest(m, r.records)));
+"
+```
+
+Salida esperada:
+
+```
+{"ok":true}
+```
+
+Cualquier otra cosa (`manifest_alterado`, `conteo_divergente`) significa que el
+manifiesto y los datos no coinciden: **no apagues el flag**.
+
+**3. Quedó documentado en el issue del cutover:**
 
 ```bash
 gh issue view <issue-del-cutover> --json comments \
@@ -206,7 +504,7 @@ Salida esperada — al menos un comentario de reconciliación registrado:
 ```
 
 Si devuelve `0`, la reconciliación **no está documentada**: no avances al bloque
-siguiente hasta que lo esté.
+siguiente hasta que lo esté. Una reconciliación que no quedó escrita no ocurrió.
 
 ---
 
@@ -726,9 +1024,18 @@ Si devuelve `0`, estás en un checkout que no tiene #5124: no avances (§4).
 
 ## 8 · Ejecución del cutover — procedimiento y evidencia (#5208)
 
-**Estado: EJECUTADO.** `kernel.durable` quedó en `true` y `kernel.cutover_window`
-en `false` (ventana cerrada). Esta sección es el registro redactado de la corrida
-real, y a la vez el procedimiento a repetir si hay que rehacerla.
+**Estado: EJECUTADO (y ya revertido por el ensayo de rollback).** Durante la
+ventana de cutover `kernel.durable` estuvo en `true`, y al cerrarla
+`kernel.cutover_window` quedó en `false`. Esta sección es el registro redactado
+de esa corrida, y a la vez el procedimiento a repetir si hay que rehacerla.
+
+> **El valor versionado HOY es `durable: false`.** No es una regresión ni una
+> contradicción con esta sección: #5209 (§2.7) ensayó el rollback a filesystem
+> con conjunto NO vacío, y el estado terminal de ese ensayo es justamente el flag
+> apagado. Lo que se escribió en DynamoDB sigue ahí (la tabla de no-repudio no
+> concede `DeleteItem`) y además quedó reintegrado en filesystem. Antes de leer
+> lo de abajo como "el estado actual", verificá contra la fuente de verdad:
+> `grep -n "durable:" .pipeline/config.yaml`.
 
 > **Redacción.** Todo lo de abajo pasó por `redactSecrets` + `redactAccountIds`:
 > el account-id de 12 dígitos sale como `<ACCT>` y los nombres de tabla como
@@ -972,8 +1279,15 @@ grep -n "cutover_window" .pipeline/config.yaml
 ```
 
 La ventana se cierra **sólo con todas las sondas en verde**, y el cierre es parte
-del cutover, no limpieza posterior (§5). `kernel.durable: true` sí queda
-persistido y versionado: es el objetivo de la operación.
+del cutover, no limpieza posterior (§5). Al terminar el cutover,
+`kernel.durable: true` quedó persistido y versionado: era el objetivo de esa
+operación.
+
+> **Y después se apagó, a propósito.** El ensayo de rollback de #5209 (§2.7)
+> reconcilió lo escrito hacia filesystem y dejó el valor versionado en
+> `durable: false`. Si estás leyendo esta sección para saber en qué estado está
+> el switch, la respuesta no está acá sino en `.pipeline/config.yaml` (§0, "Cómo
+> verificar que estás parado donde creés").
 
 ### 8.7 · Cómo re-verificar sin volver a ejecutar el cutover
 

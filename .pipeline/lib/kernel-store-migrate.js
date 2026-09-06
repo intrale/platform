@@ -1229,4 +1229,39 @@ module.exports = {
   // Backup/restore del ALCANCE REAL del cutover (#5136 · CA-13′/CA-13b).
   backupDescriptors,
   restoreDescriptors,
+  // #5209 — helper anti-traversal reusado por la reconciliación append-only.
+  assertWithin,
 };
+
+// -----------------------------------------------------------------------------
+// #5209 — Reconciliación DynamoDB → filesystem de `signature#`/`audit#`.
+//
+// Vive en su propio módulo (`kernel-append-only-reconcile.js`) porque es una
+// máquina de estados distinta de la migración de coordinación: otra dirección,
+// otra unidad de trabajo (registro append-only por tipo+ID) y otras reglas de
+// conflicto. Se re-exporta acá para que operación y tests tengan UN punto de
+// entrada del cutover.
+//
+// El `require` es LAZY (getter) a propósito: el módulo de reconciliación importa
+// de éste (`sha256Canonical`, `redactSecrets`, `assertWithin`), así que un
+// require al tope cerraría el ciclo antes de que `module.exports` esté completo.
+// -----------------------------------------------------------------------------
+const RECONCILE_REEXPORTS = [
+  'reconcileDurableToFilesystem',
+  'runDurableRollbackDrill',
+  'exportAppendOnly',
+  'compareParity',
+  'buildReconcileManifest',
+  'validateReconcileManifest',
+  'renderReconcileReport',
+  'RECONCILE_STATES',
+  'DRILL_STATES',
+  'RECONCILE_TYPES',
+];
+for (const name of RECONCILE_REEXPORTS) {
+  Object.defineProperty(module.exports, name, {
+    enumerable: true,
+    configurable: true,
+    get() { return require('./kernel-append-only-reconcile')[name]; },
+  });
+}
