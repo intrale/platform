@@ -14,10 +14,11 @@ Cubre el **encendido del store durable del kernel** (`kernel.durable: false → 
 en `.pipeline/config.yaml`) y su vuelta atrás: qué respaldar antes, en qué orden
 avanzar, qué reconciliar después y cómo desandar cada paso.
 
-**No** cubre el aprovisionamiento de las tablas de DynamoDB ni la ejecución del
-cutover en sí: eso es #5126 (Bloque B). Este runbook lo **prescribe**; #5126 lo
-**ejecuta**. No hay circularidad: si estás leyendo esto para ejecutar el cutover,
-la fuente de los pasos operativos es este archivo, y el issue que los corre es #5126.
+**No** cubre el aprovisionamiento de las tablas de DynamoDB: eso lo hizo #5207.
+La **ejecución** del cutover la hizo #5208, y su procedimiento con evidencia
+redactada está en **§8** de este mismo archivo. No hay circularidad: los pasos
+operativos se prescriben acá (§1 a §7) y §8 registra la corrida real que los
+siguió.
 
 **Cero datos reales.** Este archivo vive en git. Todo lo que parezca un
 identificador de cuenta, un nombre de tabla o un ARN está escrito como
@@ -30,7 +31,7 @@ Un concepto, un identificador literal, un término en criollo. Sin sinónimos.
 | Identificador literal | En criollo | Qué es |
 |---|---|---|
 | `kernel.durable` | *el switch durable* | Flag de `.pipeline/config.yaml` que enciende el store durable. Default `false`. |
-| `kernel.cutover_window` | *la ventana de cutover* | Clave que declara la ventana de mantenimiento del cutover. **Todavía no existe** (la crea #5135). |
+| `kernel.cutover_window` | *la ventana de cutover* | Clave de `.pipeline/config.yaml` que declara la ventana de mantenimiento del cutover. **Existe** (la creó #5135). Default `false`; sólo el booleano `true` exacto la abre. |
 | `kernel.tableName` | *la tabla de no-repudio* | Tabla con `descriptor#self`, `product#<id>`, `catalog#index`, `signature#` y `audit#`. |
 | `kernel.coordinationTableName` | *la tabla de coordinación* | Segunda tabla, donde viven los `claim#` desde #5124. Es la única que admite `DeleteItem`. |
 | `descriptor#self` | *el descriptor propio* | SK fija: **uno solo por partición de proyecto**. Vive en la **partición del tenant**. |
@@ -610,16 +611,19 @@ las escrituras siguen entrando sin el gate de la ventana. En criollo: **la venta
 abierta es un falso verde permanente.** Cerrarla es parte del cutover, no una
 tarea de limpieza posterior.
 
-> ⚠️ **`kernel.cutover_window` todavía NO existe en `.pipeline/config.yaml`.** La
-> crea la historia hermana **#5135**, que está abierta.
+> ✅ **`kernel.cutover_window` YA EXISTE en `.pipeline/config.yaml`** (la mergeó
+> #5135). Default `false`. **Sólo el booleano `true` exacto la abre**: `"true"`
+> como string, `1` o la clave ausente cuentan como cerrada (fail-closed).
 >
-> **Qué hacer mientras tanto —** mientras #5135 no esté mergeada:
-> 1. **Frená el cutover en este paso.** No hay ventana que abrir, así que no hay
->    forma de declarar mantenimiento ni de detectar que quedó abierta.
-> 2. **Escalá a #5135** dejando comentario en el issue del cutover con el `sha` de
->    `main` que verificaste. No improvises la clave a mano: dos historias tocando
->    `.pipeline/config.yaml` es conflicto garantizado, y **está prohibido
->    implementarla desde acá**.
+> **Qué habilita estando abierta —** `createDegradationSink` pasa a modo
+> *fail-loud*: si el catálogo durable degrada a filesystem durante el arranque, el
+> encendido **aborta** (suspende el dispatch escribiendo `.pipeline/.paused`) en
+> vez de arrancar sobre FS con una alerta. Es lo que evita comparar filesystem
+> contra filesystem mientras el write path escribe a DynamoDB.
+>
+> **Fuera de la ventana** (`false`, régimen normal) el boot durable vuelve a ser
+> best-effort: alerta fuerte y el pipeline arranca igual. Por eso dejarla abierta
+> no es "más seguro": es un estado de mantenimiento permanente que nadie mira.
 
 ### Cómo verificar si `kernel.cutover_window` quedó abierta
 
@@ -629,13 +633,7 @@ Esta pregunta se responde con un comando, no con un párrafo:
 grep -n "cutover_window" .pipeline/config.yaml || echo "AUSENTE"
 ```
 
-Salida esperada **hoy** (#5135 todavía no mergeada — la clave no existe):
-
-```
-AUSENTE
-```
-
-Salida esperada **una vez que #5135 mergee, con la ventana CERRADA**:
+Salida esperada en **régimen normal** (ventana CERRADA):
 
 ```
   cutover_window: false
@@ -647,9 +645,12 @@ Salida que exige acción — **la ventana quedó ABIERTA**:
   cutover_window: true
 ```
 
-Si ves `true`, cerrala (ponela en `false`) y corré `node .pipeline/restart.js`.
-Si ves `AUSENTE` y estabas por ejecutar el cutover, aplicá el "qué hacer mientras
-tanto" de arriba.
+Si ves `true` y no estás ejecutando un cutover, cerrala (ponela en `false`) y
+corré `node .pipeline/restart.js`.
+
+Si ves `AUSENTE`, la clave se perdió en un merge: **frená el cutover**. Sin la
+clave el sink queda en best-effort y la ventana no puede declararse, que es
+justo el falso verde que este paso existe para evitar.
 
 ---
 
@@ -722,6 +723,275 @@ Salida esperada — la decisión está documentada:
 Si devuelve `0`, estás en un checkout que no tiene #5124: no avances (§4).
 
 ---
+
+## 8 · Ejecución del cutover — procedimiento y evidencia (#5208)
+
+**Estado: EJECUTADO.** `kernel.durable` quedó en `true` y `kernel.cutover_window`
+en `false` (ventana cerrada). Esta sección es el registro redactado de la corrida
+real, y a la vez el procedimiento a repetir si hay que rehacerla.
+
+> **Redacción.** Todo lo de abajo pasó por `redactSecrets` + `redactAccountIds`:
+> el account-id de 12 dígitos sale como `<ACCT>` y los nombres de tabla como
+> `<tabla-no-repudio>` / `<tabla-coordinacion>` (los valores reales viven en
+> `.pipeline/config.yaml`, no acá). Los checksums sí van en claro: son datos
+> públicos de integridad, y ocultarlos haría inverificable la evidencia.
+
+### 8.1 · Gate de dependencias y SHA desplegable
+
+El cutover **no puede ejecutarse** con #5204 o #5207 abiertos: sin #5204 el alta y
+la lectura de `catalog#index` caen en particiones distintas, y sin #5207 se prueba
+con permisos que no son los que van a producción.
+
+```bash
+gh issue view 5204 --json state,closedAt
+gh issue view 5207 --json state,closedAt
+git log origin/main --oneline -1
+```
+
+Verificado en la corrida: ambas `CLOSED`, y el `main` desplegable (`6508755bf`) es
+el propio merge de #5207, con #5204 ya integrado.
+
+### 8.2 · Backups verificados, FUERA del repo
+
+Los dos backups se toman con el **mismo epoch** (§1) y a una raíz que **no está
+dentro del working tree**, para que no puedan entrar al diff ni por accidente.
+
+**Verificar** no es "ver que el directorio existe": es recalcular el checksum
+canónico de cada archivo del backup y compararlo contra su `manifest.json`.
+
+> **Ojo con la trampa.** No compares el backup contra el archivo ORIGEN: los 4
+> JSON de coordinación son estado vivo y `infra-health.json` cambia entre que
+> tomás el backup y que lo verificás. Un mismatch ahí es el pipeline
+> funcionando, no un backup corrupto. Lo que importa es que el backup sea
+> **íntegro y restaurable**, y eso se prueba contra su propio manifest.
+
+Resultado de la corrida (checksum declarado en el manifest vs. recalculado sobre
+el contenido respaldado, truncados a 18 hex para que la tabla entre en pantalla):
+
+```
+archivo                           | manifest           | recalculado        | veredicto
+waves.json                        | 49da0288e5d8ed6738 | 49da0288e5d8ed6738 | OK
+blocked-issues.json               | d8aa1c876a0e3b338a | d8aa1c876a0e3b338a | OK
+blocked-by-infra.json             | 05df9fb6a1b4fdc658 | 05df9fb6a1b4fdc658 | OK
+infra-health.json                 | 3827b6120362aa332b | 3827b6120362aa332b | OK
+descriptors/intrale-platform.json | e512095384b5a60691 | e512095384b5a60691 | OK
+
+[OK] backups INTEGROS y restaurables.
+```
+
+Y el diff no los contiene:
+
+```bash
+git status --short   # ningún path de backup, ninguna credencial
+```
+
+### 8.3 · Migrador — `migrated_count: 0` es un DIAGNÓSTICO
+
+```bash
+node .pipeline/lib/kernel-store-migrate.js      # dry-run, sin flags
+```
+
+El reporte trae una sección `--- ALCANCE DEL CUTOVER ---` que **no puede mostrar
+el cero sin explicarlo**:
+
+```
+--- ALCANCE DEL CUTOVER ---
+migrated_count: 0
+entidades del alcance real: descriptor#self, product#<id>, catalog#index, signature#*, audit#*, claim#*
+descriptores hallados: 1 (reservados: 1 · candidatos no reservados: 0)
+  intrale-platform.json | projectId: intrale-platform | [RESERVADO] no se da de alta como producto
+por qué el conteo da ese número:
+  - 1 descriptor(es) declaran un id RESERVADO (intrale-platform): el control-plane NO es un
+    tenant, así que durableRegisterProduct los rechaza por diseño.
+  - las 4 fuentes de coordinación están EXCLUIDAS del cutover por #5112.
+[ATENCIÓN] migrated_count es un DIAGNÓSTICO, no una medida de paridad.
+```
+
+**Por qué el cero no es un problema:** el único descriptor del repo declara el id
+reservado `intrale-platform`, que es el control-plane y **no se da de alta como
+producto**. No hay nada que migrar. **Por qué el cero tampoco es evidencia:**
+comparar cero migrados contra un store vacío da verde sin probar nada. La
+evidencia positiva la aporta §8.4, y sólo ella.
+
+`--apply` sigue cortando con `alcance_no_implementado`, a propósito (ver "Si algo
+sale mal"). No lo destrabes pasándole las 4 fuentes.
+
+### 8.4 · Sonda positiva — la evidencia que sí prueba algo
+
+```bash
+node .pipeline/lib/kernel-cutover-probe.js \
+  --project-id <tenant-controlado-no-reservado> \
+  --profile <perfil-del-principal-runtime>
+```
+
+La sonda hace, en orden y fail-closed: verifica que el **principal efectivo** sea
+el `kernel.runtimePrincipal` del config (con un admin todas las sondas pasan y no
+se prueba nada), da de alta un producto controlado por `durableRegisterProduct`
+—el único poblador—, lee por la API del kernel, lee de nuevo con
+`aws dynamodb get-item --consistent-read` **por un camino separado del driver del
+store**, y compara.
+
+> **El tenant no puede ser `intrale-platform`.** Es un id reservado y el alta
+> corta antes de escribir. Usá un tenant controlado no reservado.
+
+Resultado de la corrida:
+
+```
+[OK] identidad — principal runtime efectivo verificado contra config
+[OK] alta — descriptor#self en la partición del tenant · product#/catalog# en la del control-plane
+[OK] comparación · descriptor#self (partición del tenant)
+     PK | SK | no-vacío | schemaVersion | contenido (sha256 canónico) — coinciden
+[OK] comparación · product#<tenant> (partición del control-plane)
+     PK | SK | no-vacío | schemaVersion | contenido (sha256 canónico) — coinciden
+[OK] comparación · catalog#index (partición del control-plane)
+     PK | SK | body.version (CAS) = 1 | no-vacío (productIds) | indexa el alta
+[OK] negativa cross-tenant — un contexto ajeno fue RECHAZADO; su partición está vacía
+[OK] degradación — cero eventos onDegraded durante toda la sonda
+```
+
+Y la lectura consistente cruda del índice, para que la evidencia sea legible sin
+interpretar el reporte de la sonda:
+
+```json
+{"Item":{"PK":{"S":"kernel-control-plane"},"SK":{"S":"catalog#index"},
+  "entityType":{"S":"catalog"},"schemaVersion":{"S":"1.0"},
+  "body":{"M":{"productIds":{"L":[{"S":"<tenant-controlado>"}]},"version":{"N":"1"}}}}}
+```
+
+> **`ItemCount` NO sirve como evidencia.** DynamoDB lo actualiza cada ~6 horas,
+> así que `describe-table` puede seguir informando `ItemCount: 0` con ítems ya
+> escritos y confirmados. Leer eso como "no se escribió nada" es un falso
+> negativo. La única lectura concluyente es `get-item --consistent-read`.
+
+### 8.5 · Reboot — alta, catálogo y lectura sobre la partición canónica
+
+Con la ventana **abierta** (sink en fail-loud) se ejerce el mismo camino que corre
+el pulpo al arrancar: `bootKernelDurable` con `buildCatalogStore` ligado a
+`kernel-control-plane`.
+
+```
+config efectivo: kernel.durable = true | kernel.cutover_window = true
+sink fail-loud (cutover_window abierta): true
+
+ran      : true
+fatal    : false
+cap      : 2
+spawned  : []
+skipped  : [{"projectId":"<tenant-controlado>","reason":"inactivo"}]
+
+particion leida por el boot   : kernel-control-plane
+eventos onDegraded            : 0
+sink.aborted (halt disparado) : false
+```
+
+**Cómo se lee esto.** Que el producto aparezca en `skipped` con reason
+`inactivo` es el resultado CORRECTO, y es la prueba de la partición canónica: el
+boot **encontró** en `kernel-control-plane` el producto que el alta escribió ahí,
+y lo salteó sólo porque `durableRegisterProduct` lo deja en `onboarding` (sólo
+`active` se instancia). Antes de #5204 el alta caía en la partición del tenant y
+`listProducts()` devolvía vacío: el producto era invisible para el boot y el
+`skipped` habría estado vacío. **Un `skipped` vacío acá es la señal de alarma**,
+no un boot limpio.
+
+### 8.5-bis · El gap que apareció al ejecutar: credenciales del runtime
+
+La primera corrida del reboot pasó **sólo porque el ensayo inyectaba el driver a
+mano**. Por el camino real del pulpo fallaba, y fallaba de la peor manera
+posible: en silencio para el operador y con el flag encendido.
+
+**Qué estaba roto.** Había dos mecanismos que no se hablaban:
+
+| Pieza | Qué provee / qué exige |
+|---|---|
+| #5207 (`kernel-aws-bootstrap.js`) | Aprovisionó el principal runtime como **perfil de la AWS CLI** en la config del usuario. |
+| `createAwsCliRunner` (`provisioner-infra.js`) | Exige **claves estáticas en el env** (`AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY`) y rechaza fail-closed. `AWS_PROFILE` no le sirve. |
+| `credentials.loadIntoEnv()` | **No hidrata ninguna variable `AWS_*`**: no hay descriptores `aws.*` en `ENV_DESCRIPTORS`. |
+| Entorno del pipeline | Sólo define `AWS_PROFILE`, y apuntando al perfil **administrativo**. |
+
+Verificado antes de tocar nada:
+
+```bash
+node -e "
+const { buildAwsScopedEnv } = require('./.pipeline/lib/kernel-provision');
+const { createAwsCliRunner } = require('./.pipeline/lib/provisioner-infra');
+try { createAwsCliRunner(buildAwsScopedEnv({ AWS_PROFILE: '<perfil-admin>' }, '<region>')); }
+catch (e) { console.log(e.message); }
+"
+# createAwsCliRunner: faltan credenciales AWS … Fail-closed: no se invoca la AWS CLI
+# con credenciales vacías.
+```
+
+**Por qué importa tanto.** `buildDurableStore` se llama **dentro** de
+`bootKernelDurable`, así que ese throw no rompía nada visible: caía en el catch,
+salía como `stage: 'boot-durable'` y llegaba al sink de degradación. Con la
+ventana **cerrada** (régimen normal) el sink es best-effort: alerta fuerte por
+Telegram y **el pipeline arranca igual sobre filesystem**. O sea, mergear
+`durable: true` sin cerrar este gap habría dejado el switch diciendo DynamoDB y
+el sistema corriendo sobre FS, con ruido de alerta en cada arranque. Es
+exactamente la degradación silenciosa que el cutover existe para eliminar.
+
+**Cómo se cerró.** `.pipeline/lib/kernel-runtime-credentials.js` resuelve el env
+AWS del runtime en este orden:
+
+1. Claves estáticas ya presentes en el env — **gana el entorno**, cero spawns.
+2. `aws configure get` sobre `kernel.runtimeProfile`, cacheado en memoria por
+   perfil (el boot construye varios stores y no puede pagar dos spawns por cada uno).
+3. Si no, error como **dato** con causa accionable. El módulo nunca lanza.
+
+`pulpo.js` lo usa en `buildDurableStore` en lugar de `buildAwsScopedEnv(process.env, …)`.
+
+> **Las claves NO entran a `process.env`.** Van sólo al env del hijo `aws`.
+> Hidratar `process.env` del pulpo se las regalaría a todo agente que declare el
+> scope `aws` en `build-child-env.js` — una ampliación de superficie que nadie
+> pidió.
+
+> **`kernel.runtimeProfile` ≠ `kernel.runtimePrincipal`.** El *principal* es el
+> nombre IAM contra el que la sonda compara la identidad efectiva; el *profile*
+> es el perfil local del que salen las claves. Y **no apuntes `runtimeProfile` al
+> perfil administrativo** para destrabar un arranque: el kernel dejaría de operar
+> con least-privilege y los `Deny` de la policy no se probarían nunca. Hay un
+> test que falla si los dos perfiles coinciden.
+
+Verificación del cierre, por el camino real y **sin claves en el entorno**:
+
+```
+env del proceso: AWS_ACCESS_KEY_ID presente? false | AWS_PROFILE = <perfil-admin>
+
+ran     : true | fatal: false
+skipped : [{"projectId":"<tenant-controlado>","reason":"inactivo"}]
+onDegraded (boot-durable): 0
+error   : (ninguno)
+```
+
+
+### 8.6 · Cierre de la ventana
+
+```bash
+grep -n "cutover_window" .pipeline/config.yaml
+#   cutover_window: false   ← cerrada
+```
+
+La ventana se cierra **sólo con todas las sondas en verde**, y el cierre es parte
+del cutover, no limpieza posterior (§5). `kernel.durable: true` sí queda
+persistido y versionado: es el objetivo de la operación.
+
+### 8.7 · Cómo re-verificar sin volver a ejecutar el cutover
+
+```bash
+node --test .pipeline/lib/__tests__/kernel-cutover-probe.test.js
+node --test .pipeline/lib/__tests__/kernel-store-migrate.test.js
+node .pipeline/lib/kernel-store-migrate.js
+node .pipeline/lib/kernel-cutover-probe.js --project-id <tenant> --profile <runtime>
+```
+
+La sonda es **re-ejecutable** sobre un tenant ya dado de alta: en ese caso lo
+declara (`el tenant YA estaba dado de alta`) y verifica el estado persistido en
+vez de escribir de nuevo. Esa distinción está en el reporte a propósito — una
+comparación verde sobre un alta vieja no es lo mismo que una escritura fresca, y
+el operador tiene que poder verlo.
+
+---
+
 
 ## Si algo sale mal
 
@@ -808,8 +1078,12 @@ Si `durable:` sigue en `true`, el pipeline **no** volvió atrás todavía.
 ## Referencias
 
 - **#5136** — esta historia: alcance del migrador, backup de descriptores y este runbook.
-- **#5135** — hermana: sink fail-loud de degradación durable y `kernel.cutover_window`. **Abierta.**
-- **#5126** — Bloque B: provisionar, migrar, verificar paridad, encender durable y ensayar el rollback. **Abierta.**
+- **#5135** — hermana: sink fail-loud de degradación durable y `kernel.cutover_window`. **Cerrada y mergeada.**
+- **#5126** — Bloque B (épico): provisionar, migrar, verificar paridad, encender durable y ensayar el rollback.
+- **#5207** — hija de #5126: infraestructura, cifrado e IAM del cutover. **Cerrada y mergeada.**
+- **#5204** — partición canónica de `catalog#index`. **Cerrada y mergeada.**
+- **#5208** — hija de #5126: ESTA ejecución del cutover (§8). **Cerrada.**
+- `.pipeline/lib/kernel-cutover-probe.js` — la sonda positiva del cutover (§8.4).
 - **#5124** — Bloque A: los `claim#` fuera de la partición de no-repudio. **Cerrada y mergeada.**
 - **#5112 / #5107** — historia madre y épico de la Ola 9.4 (E2).
 - `docs/pipeline/kernel-iam-policy.md` — decisión de CA-A1 y policy IAM del kernel.

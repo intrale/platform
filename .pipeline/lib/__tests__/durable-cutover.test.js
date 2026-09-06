@@ -313,10 +313,19 @@ test('security#6: el write path durable no usa driver.putItem directo ni registr
 test('CA-6: readKernelConfig honra kernelDurable inyectado y default fail-closed', () => {
   assert.equal(b.readKernelConfig({ kernelDurable: true }).durable, true);
   assert.equal(b.readKernelConfig({ kernelDurable: false }).durable, false);
-  // CA-6 / D-4 — config.yaml del repo: VÁLIDO y sin sección `kernel:` ⇒ default
-  // OFF. La ausencia de una sección opcional NO es corrupción y sigue cayendo al
-  // default seguro del consumidor. Esta es la aserción que preserva la paridad.
-  assert.equal(b.readKernelConfig({}).durable, false, 'config.yaml default debe ser durable:false');
+  // CA-6 / D-4 — `readKernelConfig({})` lee el config REAL del repo. Lo que el
+  // test protege es que el valor salga de ahí y no de un default inventado por
+  // el consumidor; el valor concreto es una decisión operativa que cambia.
+  //
+  // #5208 lo encendió al ejecutar el cutover, así que la aserción se ancla al
+  // archivo en vez de a la constante `false`: si alguien cambia el config, el
+  // test lo sigue; si alguien rompe la LECTURA (default silencioso), falla.
+  const yamlLib = require('js-yaml');
+  const durableEnArchivo = yamlLib.load(
+    fs.readFileSync(path.join(__dirname, '..', '..', 'config.yaml'), 'utf8'),
+  ).kernel.durable;
+  assert.equal(b.readKernelConfig({}).durable, durableEnArchivo,
+    'readKernelConfig debe reflejar `kernel.durable` del config.yaml real, no un default propio');
 
   // #5172 — CAMBIO DELIBERADO DE CONTRATO. Antes esta línea afirmaba que un
   // `configPath` inexistente devolvía `durable:false`, y lo llamaba "fail-closed

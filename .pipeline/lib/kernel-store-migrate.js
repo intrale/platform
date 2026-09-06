@@ -41,7 +41,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 
-const { canonicalize } = require('./project-descriptor');
+const { canonicalize, isReservedProjectId } = require('./project-descriptor');
 
 // Identidad estable del descriptor (diseño §4.6). Es un dato de config confiable,
 // NUNCA se deriva de input externo.
@@ -73,6 +73,28 @@ const DESCRIPTORS_DIR_NAME = 'descriptors';
 // readdir del backup. El manifest es contenido no confiable y no puede
 // ampliarla. Es el invariante que protege CA-13b.
 const DESCRIPTOR_NAME_RE = /^[A-Za-z0-9._-]+\.json$/;
+
+// -----------------------------------------------------------------------------
+// #5208 · CA-2 — `migrated_count` del ALCANCE DEL CUTOVER.
+//
+// Estas son las entidades que el cutover realmente tiene que dejar en el store
+// durable. NINGUNA tiene ruta de migración en este módulo (D-4 / #5136): el
+// migrador sólo sabe mover las 4 fuentes de coordinación, que son justo las que
+// #5112 PROHÍBE migrar. Por eso `migrated_count` es 0 por CONSTRUCCIÓN y no por
+// "no había nada": es un diagnóstico con causa, nunca evidencia de paridad.
+//
+// Se declara literal (y no derivada de SOURCES ni de un readdir) porque es el
+// contrato del cutover: si mañana aparece una ruta de migración para alguna, el
+// número deja de ser constante y el operador tiene que ver POR QUÉ cambió.
+// -----------------------------------------------------------------------------
+const CUTOVER_SCOPE_ENTITIES = Object.freeze([
+  'descriptor#self',
+  'product#<id>',
+  'catalog#index',
+  'signature#*',
+  'audit#*',
+  'claim#*',
+]);
 
 // -----------------------------------------------------------------------------
 // Copy de errores (CA-23 · UX-7)
@@ -356,7 +378,136 @@ function rollbackCommand(backupDir) {
   return `node .pipeline/lib/kernel-store-migrate.js --rollback --from ${backupDir}`;
 }
 
-function buildReport({ mode, items, before, after, actions, backupDir, integrity }) {
+// -----------------------------------------------------------------------------
+// #5208 · CA-2 — Diagnóstico de alcance: de dónde sale `migrated_count: 0`.
+//
+// Función PURA sobre los nombres de descriptor (no toca el FS; el readdir lo hace
+// el caller con la MISMA gramática cerrada `DESCRIPTOR_NAME_RE` que usa el
+// backup). Devuelve el conteo Y sus causas, para que el reporte nunca pueda
+// mostrar el cero sin explicarlo.
+//
+// @param {object} opts
+// @param {Array<{name:string, projectId:string|null}>} [opts.descriptors]
+// @returns {{ migratedCount:number, entities:string[], descriptors:Array,
+//             reservedCount:number, candidateCount:number, causes:string[] }}
+// -----------------------------------------------------------------------------
+function buildScopeDiagnostic(opts = {}) {
+  const raw = Array.isArray(opts.descriptors) ? opts.descriptors : [];
+  const descriptors = raw.map((d) => {
+    const projectId = d && typeof d.projectId === 'string' ? d.projectId : null;
+    return {
+      name: (d && d.name) || '(sin nombre)',
+      projectId,
+      reserved: projectId ? isReservedProjectId(projectId) : false,
+      unreadable: !projectId,
+    };
+  });
+  const reserved = descriptors.filter((d) => d.reserved);
+  const candidates = descriptors.filter((d) => !d.reserved && !d.unreadable);
+
+  const causes = [];
+  if (reserved.length > 0) {
+    const ids = reserved.map((d) => `\`${d.projectId}\``).join(', ');
+    causes.push(
+      `${reserved.length} descriptor(es) declaran un id RESERVADO (${ids}): el control-plane NO es un tenant, `
+      + 'así que `durableRegisterProduct` los rechaza por diseño y no hay producto que dar de alta desde ellos.',
+    );
+  }
+  if (candidates.length > 0) {
+    const ids = candidates.map((d) => `\`${d.projectId}\``).join(', ');
+    causes.push(
+      `${candidates.length} descriptor(es) NO reservados (${ids}) quedan PENDIENTES: este migrador no tiene ruta `
+      + 'para el alcance del cutover. Los puebla `durableRegisterProduct` (.pipeline/lib/project-bootstrap.js), no este módulo.',
+    );
+  }
+  if (descriptors.length === 0) {
+    causes.push('no hay ningún descriptor legible en .pipeline/descriptors/, así que no hay alcance que migrar.');
+  }
+  causes.push(
+    'las 4 fuentes de coordinación (waves, blocked, blocked-by-infra, health) están EXCLUIDAS del cutover por #5112: '
+    + 'este módulo sabe moverlas, pero no pertenecen al alcance del cutover y no cuentan para `migrated_count`.',
+  );
+
+  return {
+    // Constante por CONSTRUCCIÓN mientras `--apply` no tenga ruta para el alcance
+    // real (guard `alcance_no_implementado`). No se deriva de las escrituras de
+    // coordinación: ésas no son el cutover.
+    migratedCount: 0,
+    entities: CUTOVER_SCOPE_ENTITIES.slice(),
+    descriptors,
+    reservedCount: reserved.length,
+    candidateCount: candidates.length,
+    causes,
+  };
+}
+
+// Lee los descriptores del disco con la gramática cerrada y arma el diagnóstico.
+// Errores como dato: un directorio ilegible produce un diagnóstico que lo DICE,
+// nunca un cero silencioso.
+function readScopeDiagnostic(descriptorsDir) {
+  let names = [];
+  let readError = null;
+  try {
+    names = fs.existsSync(descriptorsDir)
+      ? fs.readdirSync(descriptorsDir).filter((n) => DESCRIPTOR_NAME_RE.test(n)).sort()
+      : [];
+  } catch (e) {
+    readError = redactSecrets(e.message);
+  }
+  const descriptors = names.map((name) => {
+    let projectId = null;
+    try {
+      const parsed = JSON.parse(fs.readFileSync(path.join(descriptorsDir, name), 'utf8'));
+      projectId = (parsed && parsed.identity && typeof parsed.identity.projectId === 'string')
+        ? parsed.identity.projectId
+        : null;
+    } catch (_) { projectId = null; }
+    return { name, projectId };
+  });
+  const diag = buildScopeDiagnostic({ descriptors });
+  if (readError) {
+    diag.causes.unshift(`no se pudo listar ${descriptorsDir}: ${readError}. El cero de abajo NO es concluyente.`);
+  }
+  const unreadable = diag.descriptors.filter((d) => d.unreadable);
+  if (unreadable.length > 0) {
+    diag.causes.unshift(
+      `${unreadable.length} descriptor(es) sin \`identity.projectId\` legible (${unreadable.map((d) => d.name).join(', ')}): `
+      + 'no se pueden clasificar y NO se cuentan como candidatos.',
+    );
+  }
+  return diag;
+}
+
+// Sección del reporte. El cero NUNCA aparece solo: siempre con sus causas y con
+// la advertencia de que no es paridad (criterio UX de #5208 / riesgo del falso
+// verde que la propia historia anticipa).
+function renderScopeSection(scope) {
+  const lines = [];
+  lines.push('--- ALCANCE DEL CUTOVER ---');
+  lines.push(`migrated_count: ${scope.migratedCount}`);
+  lines.push(`entidades del alcance real: ${scope.entities.join(', ')}`);
+  lines.push(
+    `descriptores hallados: ${scope.descriptors.length} `
+    + `(reservados: ${scope.reservedCount} · candidatos no reservados: ${scope.candidateCount})`,
+  );
+  for (const d of scope.descriptors) {
+    const marca = d.unreadable
+      ? '[ILEGIBLE] sin identity.projectId'
+      : (d.reserved ? '[RESERVADO] no se da de alta como producto' : '[CANDIDATO] sin ruta de migración en este módulo');
+    lines.push(`  ${String(d.name).padEnd(28)} | projectId: ${String(d.projectId || '—').padEnd(24)} | ${marca}`);
+  }
+  lines.push('por qué el conteo da ese número:');
+  for (const c of scope.causes) lines.push(`  - ${c}`);
+  lines.push(
+    '[ATENCIÓN] migrated_count es un DIAGNÓSTICO, no una medida de paridad. Cero migrados comparado contra un '
+    + 'store vacío da verde sin probar nada. La evidencia positiva del cutover la aporta una sonda controlada '
+    + 'NO VACÍA, comparada contra `aws dynamodb get-item --consistent-read` '
+    + '(ver docs/pipeline/runbook-cutover-durable.md).',
+  );
+  return lines;
+}
+
+function buildReport({ mode, items, before, after, actions, backupDir, integrity, scope }) {
   const lines = [];
   const tag = mode === 'dry-run' ? '[DRY-RUN]' : mode === 'rollback' ? '[ROLLBACK]' : '[APPLY]';
   lines.push(`===== MIGRACIÓN ESTADO DE COORDINACIÓN ${tag} =====`);
@@ -385,17 +536,36 @@ function buildReport({ mode, items, before, after, actions, backupDir, integrity
     lines.push(`${key.padEnd(18)} | ${b.padEnd(64)} | ${a}`);
   }
 
+  // #5208 · CA-2 — El alcance del cutover va ANTES del resultado, para que el
+  // operador lea el `migrated_count` con su causa antes que cualquier veredicto.
+  if (scope) {
+    lines.push('');
+    lines.push(...renderScopeSection(scope));
+  }
+
   lines.push('');
   lines.push('--- RESULTADO ---');
   if (mode === 'dry-run') {
-    lines.push('[DRY-RUN] no se escribió nada. Re-ejecutar con --apply para persistir.');
+    lines.push('[DRY-RUN] no se escribió nada.');
+    // #5208 · GAP-UX-2 — El texto viejo mandaba a `--apply`, que hoy corta
+    // SIEMPRE con `alcance_no_implementado`. Decírselo al operador en plena
+    // ventana lo manda a un comando que no puede funcionar.
+    lines.push('           `--apply` está bloqueado a propósito (alcance_no_implementado): las 4 fuentes que');
+    lines.push('           este módulo sabe mover son las que #5112 prohíbe migrar en el cutover.');
   } else if (integrity && !integrity.ok) {
     lines.push('[FALLA] verificación de integridad detectó discrepancias:');
     for (const m of integrity.mismatches) lines.push(`  - ${m.key}: ${m.reason}`);
   } else if (mode === 'rollback') {
     lines.push('[OK] estado restaurado desde el backup.');
+  } else if (scope && scope.migratedCount === 0) {
+    // #5208 · CA-2 / GAP-UX-2 — Con cero entidades del alcance migradas está
+    // PROHIBIDO el lenguaje de éxito o de paridad: sería exactamente el falso
+    // verde que la historia existe para evitar.
+    lines.push('[DIAGNÓSTICO] las fuentes de coordinación se escribieron y su integridad verificó, pero');
+    lines.push(`              migrated_count: ${scope.migratedCount} — el cutover NO migró ninguna entidad de su alcance.`);
+    lines.push('              Esto NO es paridad ni cutover exitoso. Falta la sonda positiva no vacía.');
   } else {
-    lines.push('[OK] migración aplicada y verificada.');
+    lines.push(`[OK] migración aplicada y verificada (migrated_count: ${scope ? scope.migratedCount : 'n/d'}).`);
   }
 
   if (backupDir) {
@@ -495,10 +665,15 @@ async function migrateState(opts = {}) {
   // 4a) Snapshot ANTES (desde las fuentes).
   const before = snapshotSources(items);
 
+  // #5208 · CA-2 — Diagnóstico del ALCANCE DEL CUTOVER. Se calcula en TODOS los
+  // modos para que el `migrated_count` viaje siempre con el reporte y con el
+  // resultado, no sólo cuando alguien se acuerda de mirarlo.
+  const scope = readScopeDiagnostic(opts.descriptorsDir || path.join(sourceDir, DESCRIPTORS_DIR_NAME));
+
   // 3/DRY-RUN) Si no es apply, reportar y salir sin escribir.
   if (!apply) {
-    const report = buildReport({ mode: 'dry-run', items, before, after: null, actions: null, backupDir: backup.dir });
-    return { ok: true, dryRun: true, report, backupDir: backup.dir, before };
+    const report = buildReport({ mode: 'dry-run', items, before, after: null, actions: null, backupDir: backup.dir, scope });
+    return { ok: true, dryRun: true, report, backupDir: backup.dir, before, migrated_count: scope.migratedCount, scope };
   }
 
   // Apply requiere store.
@@ -523,18 +698,18 @@ async function migrateState(opts = {}) {
   // 4b) Snapshot DESPUÉS (readback del store) + verificación fail-closed.
   const after = await snapshotStore(opts.store, items);
   const integrity = compareIntegrity(before, after);
-  const report = buildReport({ mode: 'apply', items, before, after, actions, backupDir: backup.dir, integrity });
+  const report = buildReport({ mode: 'apply', items, before, after, actions, backupDir: backup.dir, integrity, scope });
 
   if (!integrity.ok) {
     return {
       ok: false, code: 'integrity_mismatch',
       error: 'verificación de integridad detectó pérdida/discrepancia tras la migración',
       mismatches: integrity.mismatches, report, backupDir: backup.dir, rollbackCmd: rollbackCommand(backup.dir),
-      before, after,
+      before, after, migrated_count: scope.migratedCount, scope,
     };
   }
 
-  return { ok: true, report, backupDir: backup.dir, before, after, actions };
+  return { ok: true, report, backupDir: backup.dir, before, after, actions, migrated_count: scope.migratedCount, scope };
 }
 
 /**
@@ -1039,6 +1214,11 @@ module.exports = {
   SOURCES,
   MIGRATION_KNOWN_KEYS,
   DEFAULT_PROJECT_ID,
+  // #5208 · CA-2 — alcance del cutover y su diagnóstico.
+  CUTOVER_SCOPE_ENTITIES,
+  buildScopeDiagnostic,
+  readScopeDiagnostic,
+  renderScopeSection,
   sha256Canonical,
   countRecords,
   compareIntegrity,

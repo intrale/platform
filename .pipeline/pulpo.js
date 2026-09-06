@@ -24850,10 +24850,22 @@ async function mainLoop() {
       // modo que con `durable:false` NO se construye ningún driver ni se toca AWS.
       const buildDurableStore = (contextProjectId, allowedNamespaces, onAlert) => {
         const { createAwsCliRunner, createAwsCliDynamoDriver } = require('./lib/provisioner-infra');
-        const { buildAwsScopedEnv } = require('./lib/kernel-provision');
         const { createKernelStore } = kernelStoreLib;
-        const env = buildAwsScopedEnv(process.env, cfg.kernel.region);
-        const { run } = createAwsCliRunner(env);
+        // #5208 — El env AWS del runtime viene YA RESUELTO del closure
+        // (`runtimeAws`, más abajo), no de `process.env`.
+        //
+        // `buildAwsScopedEnv(process.env, …)` era un callejón sin salida: el
+        // entorno del pipeline sólo define `AWS_PROFILE` (y apunta al perfil
+        // administrativo), `loadIntoEnv` no hidrata ninguna `AWS_*`, y
+        // `createAwsCliRunner` exige claves ESTÁTICAS y rechaza el perfil pelado.
+        // Con `durable: true` eso reventaba acá y el boot degradaba a filesystem
+        // con el flag diciendo DynamoDB.
+        //
+        // La resolución NO se hace en esta función a propósito: fallar acá sería
+        // una excepción dentro del bloque, y R1 lo prohíbe (el `catch` de abajo
+        // se la tragaría). Se resuelve UNA vez antes del boot y su fallo se
+        // reporta por el sink, que es quien sabe decidir según la ventana.
+        const { run } = createAwsCliRunner(runtimeAws.env);
         const driver = createAwsCliDynamoDriver({ run });
         return createKernelStore({
           driver,
@@ -24909,7 +24921,30 @@ async function mainLoop() {
         redact: redactSecretValue,
       });
 
-      const result = await kernelSupervisor.bootKernelDurable({
+      // #5208 — Credenciales del principal runtime, resueltas UNA sola vez.
+      //
+      // Va DESPUÉS del sink y ANTES del boot por una razón dura: si faltan, el
+      // desenlace tiene que ser el MISMO que el de cualquier otra degradación
+      // del catálogo (alerta + decisión según `cutover_window`), no un throw que
+      // el `catch` del bloque convierta en un `WARN` genérico sin causa.
+      //
+      // `resolveRuntimeAwsEnv` nunca lanza: devuelve el error como dato.
+      const runtimeAws = require('./lib/kernel-runtime-credentials')
+        .resolveRuntimeAwsEnv({ kernel: cfg.kernel });
+      // Sin credenciales no hay driver posible: se reporta como CUALQUIER otra
+      // degradación del catálogo (el sink decide según la ventana) y se arma el
+      // mismo shape que devuelve `bootKernelDurable` cuando no corre, para que el
+      // manejo de abajo siga siendo uno solo.
+      //
+      // NO se usa `return` acá: estamos dentro de `mainLoop()` y salir del bloque
+      // saltearía todo el arranque posterior (integridad de estado,
+      // wave-recovery). Tampoco `throw`: R1 lo prohíbe en este bloque.
+      let result = { ran: false, reason: 'error', error: runtimeAws.code };
+      if (!runtimeAws.ok) {
+        log('pulpo', `WARN [kernel-durable] sin credenciales del runtime: ${redactSecretValue(runtimeAws.error)}`);
+        degradationSink.onDegraded(runtimeAws.error, { stage: 'boot-durable' });
+      } else {
+        result = await kernelSupervisor.bootKernelDurable({
         config: cfg,
         onAlert: (a) => {
           const pid = a && a.projectId ? String(a.projectId) : '—';
@@ -24946,7 +24981,8 @@ async function mainLoop() {
           log('pulpo', `[kernel-durable] instancia registrada para producto ${ctx && ctx.projectId}`);
           return null;
         },
-      });
+        });
+      }
 
       if (result.ran) {
         log('pulpo', `[kernel-durable] boot: ${(result.spawned || []).length} activos instanciados, ${(result.skipped || []).length} salteados (cap ${result.cap}).`);
