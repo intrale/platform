@@ -11,6 +11,7 @@
     "como_se_nombra": "Al operador se le habla de 'la sesión de Claude Code'. Nunca del token ni del archivo donde vive. Lo que se le pide es 'reautenticar', nunca 'rotar' (rotar es el vocabulario del cron de API keys, que es otro horizonte y otra acción).",
     "nunca_por_telegram": "Ningún texto puede pedirle al operador que pegue credenciales en el chat. La acción siempre ocurre 'desde una terminal'.",
     "un_episodio_una_conversacion": "Todo aviso que abre, cierra. Si se avisó T-30 o T-10 y después la sesión se renovó, sale el cierre A5. Si se avisó que el chequeo no lee, y vuelve a leer, sale el cierre A4. Un aviso sin cierre deja al operador sin saber si lo que hizo sirvió.",
+    "de_donde_sale_ce2": "REVISIÓN 2 (2026-09-06). CE-2 NO se infiere del archivo de credenciales. Su única fuente es la señal tipada de #6238: la entrada de provider-disabled con source 'credential-death', que el Pulpo escribe sólo cuando el CLI devolvió la firma tipada de rechazo (TTL 60 min, tick de 5 min = 12 oportunidades de verla). Queda PROHIBIDO encender CE-2 comparando expiresAt entre evaluaciones (crossedWithoutRenewal, renewedBeforeExpiry o equivalentes): esa comparación mide latencia de escritura del CLI, no salud de la renovación, y es lo que produjo el latch permanente de los dos rebotes anteriores. Comparar expiresAt entre evaluaciones sigue siendo válido SÓLO para el reset de umbrales y el apagado de CE-2 (CA-4). Si encendido y apagado coinciden en la misma evaluación, gana el encendido (fail-closed).",
     "silencio_es_la_regla": "El aviso sólo se emite cuando hay algo que el operador puede y debe hacer. La renovación automática — el caso normal, varias veces por día — NO produce ningún mensaje."
   },
 
@@ -18,14 +19,14 @@
     "component": "sesion-claude",
 
     "A1_por_vencer": {
-      "cuando": "Quedan 30 minutos o menos Y se cumple la condición de emisión cerrada por PO el 2026-08-20: CE-1 (el refresh ya no alcanza para el ciclo siguiente) o CE-2 (la cadena de renovación no está probada sana). Exige además lectura previa persistida (CA-6): con el marker ausente no se emite.",
+      "cuando": "Quedan 30 minutos o menos Y se cumple la condición de emisión de la REVISIÓN 2 cerrada por PO el 2026-09-06: CE-1 (el refresh ya no alcanza para el ciclo siguiente, calculable con refreshTokenExpiresAt) o CE-2 (hay evidencia dura de que la credencial fue rechazada — entrada de provider-disabled con source 'credential-death' producida por #6238 — y todavía no se observó que la vigencia volviera a saltar hacia adelante). Exige además lectura previa persistida (CA-6): con el marker ausente no se emite.",
       "level": "warn",
       "message": "La sesión de Claude Code vence en {RESTANTE} y no se está renovando sola.",
       "action": "Reautenticá la sesión desde una terminal antes de que se venza. Si llega a vencerse, los agentes que arranquen después mueren al primer intento y lo vas a ver como una lluvia de rebotes."
     },
 
     "A2_urgente": {
-      "cuando": "Quedan 10 minutos o menos, misma condición de emisión (CE-1 o CE-2).",
+      "cuando": "Quedan 10 minutos o menos, misma condición de emisión (CE-1 o CE-2 de la revisión 2). Si un salto de reloj cruza los dos umbrales en la misma evaluación se emite sólo este, el más urgente (CA-3).",
       "level": "error",
       "message": "Quedan {RESTANTE} de sesión de Claude Code y sigue sin renovarse sola.",
       "action": "Reautenticá ahora desde una terminal. Apenas se venza, todo agente nuevo falla al arrancar hasta que vuelvas a iniciar sesión."
@@ -46,7 +47,7 @@
     },
 
     "A5_renovada": {
-      "cuando": "Se había avisado A1 o A2 y el vencimiento saltó hacia adelante (la sesión se renovó, sola o porque el operador reautenticó).",
+      "cuando": "Se había avisado A1 o A2 y el vencimiento saltó hacia adelante (la sesión se renovó, sola o porque el operador reautenticó). Ese mismo salto apaga CE-2 y resetea los umbrales (CA-4 / CA-15): el episodio se cierra solo, sin intervención humana. Cualquier salto cuenta, se observe antes o después del vencimiento anterior.",
       "level": "info",
       "message": "La sesión de Claude Code se renovó — quedan {RESTANTE}.",
       "action": "Se cerró solo el aviso de recién. No hace falta que hagas nada."
@@ -55,8 +56,8 @@
 
   "silencios": {
     "_comment": "Casos en los que NO se emite absolutamente nada. Están acá para que sean tan explícitos como los mensajes: son la mayor parte del tiempo de vida del chequeo.",
-    "renovacion_normal": "El vencimiento cruza los 30 o los 10 minutos y no se cumple ni CE-1 ni CE-2: el refresh alcanza y la cadena de renovación está probada sana. La renovación ocurre en el vencimiento (T-0), no antes de los umbrales, así que en régimen normal el operador cruza los dos umbrales sin recibir nada. Silencio.",
-    "primera_lectura": "No hay lectura previa persistida (arranque del Pulpo, estado borrado). Sin historial no se puede evaluar CE-2 ni afirmar nada sobre la salud de la renovación. Silencio: se persiste la lectura y se decide en la evaluación siguiente (CA-6).",
+    "renovacion_normal": "El vencimiento cruza los 30 o los 10 minutos y no se cumple ni CE-1 ni CE-2: el refresh alcanza y no hay ninguna evidencia de credencial rechazada vigente. La renovación ocurre en el vencimiento (T-0), no antes de los umbrales, así que en régimen normal el operador cruza los dos umbrales sin recibir nada. Silencio.",
+    "primera_lectura": "No hay lectura previa persistida (arranque del Pulpo, estado borrado). Sin lectura anterior no se puede distinguir un vencimiento que se acerca de una sesión que ya se renovó y todavía no se observó, y el Pulpo reinicia seguido por watchdog. Silencio: se persiste la lectura y se decide en la evaluación siguiente (CA-6).",
     "ya_vencida": "Quedan 0 minutos o menos. El aviso anticipado ya no tiene sentido y ese caso es de #6238. Silencio.",
     "sesion_sana": "Queda más de media hora. Silencio. El dato está en el dashboard para quien lo quiera mirar."
   },

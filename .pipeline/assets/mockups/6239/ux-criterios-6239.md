@@ -87,6 +87,34 @@ propuesta:
 > `dashboard.titles`). Los textos visibles no cambiaron: siguen siendo válidos porque en
 > ambas condiciones la renovación automática efectivamente no va a salvar la sesión.
 
+> 🔁 **ACTUALIZACIÓN 2026-09-06 (fase Validación, pasada 2) — CE-2 fue reescrita (REVISIÓN 2).**
+> La CE-2 del 2026-08-20 resultó **inimplementable**: prescribía inferir la salud de la
+> renovación comparando `expiresAt` entre evaluaciones, y el archivo de credenciales no
+> registra intentos fallidos de refresh — esa inferencia mide *latencia de escritura* del CLI,
+> no *salud de la renovación*. Las dos lecturas posibles se implementaron y `review` rechazó
+> ambas con reproducción empírica (21/08 03:04 y 21/08 20:53).
+>
+> - **CE-2 vigente:** enciende sólo con **evidencia dura y tipada** de credencial rechazada —
+>   entrada de `provider-disabled` con `source: 'credential-death'`, producida por #6238 y ya
+>   mergeada en `main`. Apaga en cuanto la vigencia salta hacia adelante en cualquier
+>   evaluación posterior (CA-4 / CA-15), sin importar si el salto se observa antes o después
+>   del vencimiento anterior.
+> - **Prohibido** encender CE-2 comparando `expiresAt` entre evaluaciones (CA-14). Esa
+>   comparación vale **sólo** para el reset de umbrales y el apagado.
+>
+> **Impacto en UX: ninguno sobre el texto visible.** Se auditaron los 10 textos de Telegram y
+> los 10 del dashboard contra la CE-2 nueva: A1 (*"…y no se está renovando sola"*) y A2
+> (*"…sigue sin renovarse sola"*) describen igual de bien un rechazo de credencial que un
+> refresh que ya no alcanza, y A5 sigue siendo el cierre correcto del episodio. `validate-copy.js`
+> termina en 0 sin cambios. Lo que sí se actualizó son los campos de **guía** de `copy.json`
+> (`cuando`, `silencios`, y la regla nueva `reglas.de_donde_sale_ce2`), que todavía citaban la
+> formulación derogada *"la cadena de renovación no está probada sana"* — la misma asimetría
+> absorbente que produjo los dos rebotes. El copy es fuente para quien implementa: dejar ahí la
+> redacción vieja era una invitación a reincidir.
+>
+> **UX-1 y UX-2 siguen vigentes en su principio**, y ahora además son alcanzables: con la señal
+> de #6238 el régimen sano es silencio absoluto (CA-14) y el aviso se apaga solo (CA-15).
+
 ---
 
 ### UX-2 · Nunca se afirma "no se está renovando" con una sola muestra
