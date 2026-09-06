@@ -140,17 +140,17 @@ línea. Valores de la columna **Lado**:
 | `_frozen/ios-dev` | adaptador | Stack del producto (Compose iOS); congelado. |
 | `_frozen/scrum` | kernel | Proceso de orquestación (zombi V3); congelado, genérico. |
 
-### 2.4. `config.yaml` — clasificación completa de las 63 secciones (#5173)
+### 2.4. `config.yaml` — clasificación completa de las 64 secciones (#5173)
 
 <!-- #5173 · Entrega B de #5111. Reemplaza la tabla parcial del inventario original,
      que clasificaba 6 de 57 secciones y dejaba 4 ítems sin decidir. -->
 
-Las **63** secciones top-level de la configuración efectiva, una por una, con su forma real y su
+Las **64** secciones top-level de la configuración efectiva, una por una, con su forma real y su
 lado. Es la expresión legible de `SIDE_MAP` en `.pipeline/lib/config-schema.js`: **si esta tabla
 y ese mapa divergen, falla el test** `#5173 toda sección top-level de config.yaml está declarada
 en el schema y tiene lado` **en el PR**, no en el arranque.
 
-Reparto: **39 kernel · 12 autoridad · 9 producto**.
+Reparto: **40 kernel · 12 autoridad · 9 producto**.
 
 > **Regla operativa (CA-1).** La raíz del schema está **cerrada**
 > (`additionalProperties: false`). Agregar una sección nueva a `config.yaml` exige declararla en
@@ -232,6 +232,7 @@ Reparto: **39 kernel · 12 autoridad · 9 producto**.
 | 61 | `telegram_voice_outbound` | obj | kernel | #5573: política de reenvío de las PARTES DE AUDIO, separada de `telegram_outbound` (texto) porque la latencia real de un `.ogg` es ~62-74s contra los 5s del texto. Es transporte de salida del motor; mecanismo. |
 | 62 | `operational_state` | obj | kernel | #5110: namespaceo del estado operativo (olas, allowlist, `archived/`, audit) por `projectId`. Es la dimensión de AISLAMIENTO del motor entre proyectos; no conoce el producto y se muda al kernel tal cual. `namespaced.enabled` es un flag de layout con default OFF, no una decisión de autoridad: no habilita ni bloquea a nadie, elige dónde vive el archivo. El halt total (`.paused`) queda explícitamente FUERA del namespace. |
 | 63 | `delivery` | obj | kernel | Techo temporal del polling de checks requeridos antes del auto-merge; mecanismo de orquestación. |
+| 64 | `pr_mergeability_watcher` (1166) | obj | kernel | #4966: cadencia y allowlist repo/base del watcher que observa PRs en conflicto con `main`. Es mecanismo de orquestación (cada cuánto mira, qué considera propio), no política de producto; nace `enabled: false` y sus límites están clampeados en código, no en el YAML. |
 
 #### 2.4.1. Matriz de precedencia
 

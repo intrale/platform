@@ -220,6 +220,10 @@ const SIDE_MAP = Object.freeze({
     historico: 'kernel',
     logs_history: 'kernel',
     rewind: 'kernel',
+    // #4966 — watcher de mergeabilidad de PRs. Mecanismo de orquestacion
+    // (cada cuanto observa, que repo/base considera propios), no politica de
+    // producto: se muda al kernel sin saber que producto corre encima.
+    pr_mergeability_watcher: 'kernel',
     pipeline: 'kernel',
     inflight_fallback: 'kernel',
     sherlock_enabled: 'kernel',
@@ -514,6 +518,25 @@ const SCHEMA = {
 
         logs_history: OBJ(),
         rewind: OBJ(),
+        // #4966 — lenient (lado kernel): la seccion evoluciona y sus limites
+        // estan clampeados en codigo (pr-mergeability-watcher.normalizeConfig),
+        // no confiados al YAML. Se tipan las claves que existen hoy para que un
+        // typo de tipo (enabled: "false" string) salte en la validacion.
+        pr_mergeability_watcher: {
+            type: 'object',
+            additionalProperties: true,
+            properties: {
+                enabled: { type: 'boolean' },
+                expected_repo: { type: 'string' },
+                expected_owner: { type: 'string' },
+                expected_base: { type: 'string' },
+                poll_interval_minutes: { type: 'integer', minimum: 1 },
+                min_poll_interval_ms: { type: 'integer', minimum: 1000 },
+                candidate_limit: { type: 'integer', minimum: 1, maximum: 100 },
+                gh_timeout_ms: { type: 'integer', minimum: 1000 },
+                state_entry_ttl_hours: { type: 'integer', minimum: 1 },
+            },
+        },
         pipeline: OBJ(),
         inflight_fallback: OBJ(),
 
