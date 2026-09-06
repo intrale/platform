@@ -2033,6 +2033,12 @@
             "reason": "PULPO_NO_AUTOSTART escrita en el sentido seguro (apagar)"
         },
         {
+            "file": "lib/__tests__/pulpo-mergeability-wiring.test.js",
+            "line": 20,
+            "kind": "deuda",
+            "reason": "PULPO_NO_AUTOSTART escrita en el sentido seguro (apagar)"
+        },
+        {
             "file": "lib/__tests__/pulpo-night-window.test.js",
             "line": 13,
             "kind": "deuda",
