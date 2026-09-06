@@ -3701,6 +3701,24 @@
             "reason": "escritura de PIPELINE_DIR_OVERRIDE fuera del helper"
         },
         {
+            "file": "lib/vault-load-calibration.test.js",
+            "line": 674,
+            "kind": "deuda",
+            "reason": "escritura de CANARIO_AMBIENTE_5805 fuera del helper"
+        },
+        {
+            "file": "lib/vault-load-calibration.test.js",
+            "line": 726,
+            "kind": "deuda",
+            "reason": "escritura de CANARIO_AMBIENTE_5805 fuera del helper"
+        },
+        {
+            "file": "lib/vault-load-calibration.test.js",
+            "line": 727,
+            "kind": "deuda",
+            "reason": "escritura de CANARIO_AMBIENTE_5805 fuera del helper"
+        },
+        {
             "file": "lib/wizards/allowlist/__tests__/index.test.js",
             "line": 165,
             "kind": "deuda",
