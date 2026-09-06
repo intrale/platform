@@ -286,12 +286,13 @@ Códigos de aborto y qué hacer con cada uno:
 | Código | Qué pasó | Qué hacer |
 |--------|----------|-----------|
 | `ventana_no_congelada` | Falta `--frozen`. | Congelá la ventana (§5) y repetí. |
-| `conjunto_vacio` | No hay nada que reconciliar. | Generá la sonda positiva (§8.4). **No** bajes el mínimo. |
-| `sonda_incompleta` | Hay firmas pero no audit (o al revés). | Generá el tipo que falta: el ensayo exige los dos. |
+| `conjunto_vacio` | No hay nada que reconciliar. | Sembrá la sonda del ensayo con `kernel-drill-seed.js` (§2.1). **No** bajes el mínimo. **No** sirve la de §8.4: da de alta un producto, no escribe firmas ni audit. |
+| `sonda_incompleta` | Hay firmas pero no audit (o al revés). | Generá el tipo que falta con `kernel-drill-seed.js` (§2.1): el ensayo exige los dos. |
 | `conflicto_id` | Mismo ID con contenido distinto. | **No lo fuerces.** Investigá cuál es el bueno y anotalo en el issue. |
 | `hash_divergente` / `linea_corrupta` | El JSONL local fue alterado. | Restaurá desde backup; el archivo perdió integridad. |
 | `promocion_fallida` | El rename se interrumpió. | El destino ya volvió a la generación anterior. Reintentá. |
-| `cobertura_incompleta` | Algo quedó sólo en DynamoDB. | **No apagues el flag.** Reintentá y revisá el listado. |
+| `cobertura_incompleta` | Algo quedó sólo en DynamoDB (falta en filesystem, o llegó con otro hash). | **No apagues el flag.** Reintentá y revisá el listado de `noCubiertos`. |
+| `paridad_fallida` | El filesystem no quedó exactamente como lo reconciliado: sobra un registro, o se perdió uno que **sólo** existía en filesystem. | **No apagues el flag.** Revisá `parity` (faltantes / sobrantes / hash distinto): alguien escribió en el destino por afuera de este comando. |
 
 ### 2.4 · Orden de apagado y reinicio (no se negocia)
 
@@ -1023,9 +1024,18 @@ Si devuelve `0`, estás en un checkout que no tiene #5124: no avances (§4).
 
 ## 8 · Ejecución del cutover — procedimiento y evidencia (#5208)
 
-**Estado: EJECUTADO.** `kernel.durable` quedó en `true` y `kernel.cutover_window`
-en `false` (ventana cerrada). Esta sección es el registro redactado de la corrida
-real, y a la vez el procedimiento a repetir si hay que rehacerla.
+**Estado: EJECUTADO (y ya revertido por el ensayo de rollback).** Durante la
+ventana de cutover `kernel.durable` estuvo en `true`, y al cerrarla
+`kernel.cutover_window` quedó en `false`. Esta sección es el registro redactado
+de esa corrida, y a la vez el procedimiento a repetir si hay que rehacerla.
+
+> **El valor versionado HOY es `durable: false`.** No es una regresión ni una
+> contradicción con esta sección: #5209 (§2.7) ensayó el rollback a filesystem
+> con conjunto NO vacío, y el estado terminal de ese ensayo es justamente el flag
+> apagado. Lo que se escribió en DynamoDB sigue ahí (la tabla de no-repudio no
+> concede `DeleteItem`) y además quedó reintegrado en filesystem. Antes de leer
+> lo de abajo como "el estado actual", verificá contra la fuente de verdad:
+> `grep -n "durable:" .pipeline/config.yaml`.
 
 > **Redacción.** Todo lo de abajo pasó por `redactSecrets` + `redactAccountIds`:
 > el account-id de 12 dígitos sale como `<ACCT>` y los nombres de tabla como
@@ -1269,8 +1279,15 @@ grep -n "cutover_window" .pipeline/config.yaml
 ```
 
 La ventana se cierra **sólo con todas las sondas en verde**, y el cierre es parte
-del cutover, no limpieza posterior (§5). `kernel.durable: true` sí queda
-persistido y versionado: es el objetivo de la operación.
+del cutover, no limpieza posterior (§5). Al terminar el cutover,
+`kernel.durable: true` quedó persistido y versionado: era el objetivo de esa
+operación.
+
+> **Y después se apagó, a propósito.** El ensayo de rollback de #5209 (§2.7)
+> reconcilió lo escrito hacia filesystem y dejó el valor versionado en
+> `durable: false`. Si estás leyendo esta sección para saber en qué estado está
+> el switch, la respuesta no está acá sino en `.pipeline/config.yaml` (§0, "Cómo
+> verificar que estás parado donde creés").
 
 ### 8.7 · Cómo re-verificar sin volver a ejecutar el cutover
 

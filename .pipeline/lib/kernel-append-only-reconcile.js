@@ -111,8 +111,13 @@ const ERR_CONJUNTO_VACIO =
   'Qué pasó: un ensayo de rollback sobre un conjunto vacío siempre da paridad. Eso no prueba que el rollback ' +
   'funcione — prueba que no se probó nada. Por eso acá es un error y no un éxito.\n' +
   '\n' +
-  'Qué hacer ahora: generá al menos UNA firma y UNA entrada de audit durante la ventana durable (§8.4 del ' +
-  'runbook, sonda positiva) y volvé a correr la reconciliación.\n' +
+  'Qué hacer ahora: sembrá la sonda del ensayo — al menos UNA firma y UNA entrada de audit escritas por el ' +
+  'camino del runtime, durante la ventana durable (§2.1 del runbook):\n' +
+  '    node .pipeline/kernel-drill-seed.js --apply --i-understand-append-only --profile <perfil> --project-id <id>\n' +
+  'Después volvé a correr la reconciliación.\n' +
+  '\n' +
+  'Ojo con la sonda equivocada: la de §8.4 (`kernel-cutover-probe.js`, #5208) da de alta un PRODUCTO y no ' +
+  'escribe ni una firma ni un audit: correrla deja este aborto exactamente igual.\n' +
   '\n' +
   'La trampa: no "destrabes" esto bajando el mínimo a cero. El mínimo es el ensayo.';
 
@@ -591,6 +596,64 @@ function compareParity(expected, actual) {
   };
 }
 
+/**
+ * Etapa `compare` como función pura: decide si lo releído del filesystem habilita
+ * apagar `kernel.durable`, o con qué código se aborta.
+ *
+ * Vive separada de la máquina de estados por una razón concreta: las dos ramas de
+ * aborto de `compare` son el último gate antes de tocar el flag, y una rama de
+ * aborto que no se puede ejercitar en un test es una rama que no existe. Acá se
+ * ejercitan las dos con datos, sin depender de que el disco falle de una forma
+ * particular.
+ *
+ * ORDEN: primero COBERTURA (lo exportado de DynamoDB vs el filesystem), después
+ * PARIDAD TOTAL (lo reconciliado vs el filesystem). El orden es el del
+ * diagnóstico, no el del código: si falta un registro que venía de DynamoDB, lo
+ * que el operador necesita leer es "algo quedó sólo en DynamoDB"
+ * (`cobertura_incompleta`), que es el modo de falla que este módulo existe para
+ * impedir. `paridad_fallida` queda para el resto: sobrantes, hashes distintos, o
+ * la pérdida de un registro que sólo estaba en filesystem.
+ *
+ * @param {object} p
+ * @param {Array}  p.exported  registros leídos de DynamoDB.
+ * @param {Array}  p.merged    unión de filesystem previo + exportados.
+ * @param {Array}  p.reread    lo efectivamente releído del disco tras promover.
+ * @returns {object} `{ ok:true, parity, coverage }` o `{ ok:false, code, message, extra }`.
+ */
+function evaluateCompareStage(p = {}) {
+  const exported = p.exported || [];
+  const merged = p.merged || [];
+  const reread = p.reread || [];
+
+  // ---- cobertura: NADA puede quedar únicamente en DynamoDB ------------------
+  const coverage = compareParity(exported, reread);
+  const noCubiertos = coverage.faltantes.concat(coverage.hashDistinto);
+  if (noCubiertos.length) {
+    return {
+      ok: false,
+      code: 'cobertura_incompleta',
+      message: `cobertura_incompleta: ${noCubiertos.length} registro(s) de DynamoDB no quedaron íntegros en filesystem. ` +
+        'Ningún dato puede quedar únicamente en DynamoDB antes de apagar el flag.',
+      extra: { noCubiertos, coverage },
+    };
+  }
+
+  // ---- paridad exacta: el filesystem quedó tal cual se reconcilió -----------
+  const parity = compareParity(merged, reread);
+  if (!parity.ok) {
+    return {
+      ok: false,
+      code: 'paridad_fallida',
+      message: 'paridad_fallida: lo releído del filesystem no coincide exactamente con lo reconciliado. ' +
+        `Faltantes: ${parity.faltantes.length}, sobrantes: ${parity.sobrantes.length}, ` +
+        `hash distinto: ${parity.hashDistinto.length}. NO se apaga \`kernel.durable\`.`,
+      extra: { parity },
+    };
+  }
+
+  return { ok: true, parity, coverage };
+}
+
 // -----------------------------------------------------------------------------
 // Audit de aborto
 // -----------------------------------------------------------------------------
@@ -688,7 +751,8 @@ async function reconcileDurableToFilesystem(p = {}) {
       return await abort('validate', 'sonda_incompleta',
         `sonda_incompleta: el export no trajo ningún registro de tipo ${faltanTipos.join(', ')}. ` +
         'El ensayo exige al menos UNA firma y UNA entrada de audit generadas durante la ventana durable ' +
-        '(§8.4 del runbook): sin las dos, la reconciliación no ejercita ambas rutas.',
+        '(§2.1 del runbook — `kernel-drill-seed.js`, no la sonda de producto de §8.4): sin las dos, la ' +
+        'reconciliación no ejercita ambas rutas.',
         { counts: exported.counts });
     }
   }
@@ -741,23 +805,18 @@ async function reconcileDurableToFilesystem(p = {}) {
   }
 
   // ---- compare --------------------------------------------------------------
-  const parity = compareParity(merged.records, reread.records);
-  if (!parity.ok) {
-    return await abort('compare', 'paridad_fallida',
-      'paridad_fallida: lo releído del filesystem no coincide exactamente con lo reconciliado. ' +
-      `Faltantes: ${parity.faltantes.length}, sobrantes: ${parity.sobrantes.length}, ` +
-      `hash distinto: ${parity.hashDistinto.length}. NO se apaga \`kernel.durable\`.`,
-      { parity });
+  // Las dos ramas de aborto viven en `evaluateCompareStage` (función pura): es el
+  // último gate antes de habilitar el apagado del flag y tiene que ser
+  // ejercitable con datos, no sólo por una falla de disco.
+  const compared = evaluateCompareStage({
+    exported: exported.records,
+    merged: merged.records,
+    reread: reread.records,
+  });
+  if (!compared.ok) {
+    return await abort('compare', compared.code, compared.message, compared.extra);
   }
-  // Cobertura: TODO lo que estaba en DynamoDB tiene que estar en filesystem.
-  const coverage = compareParity(exported.records, reread.records);
-  const noCubiertos = coverage.faltantes.concat(coverage.hashDistinto);
-  if (noCubiertos.length) {
-    return await abort('compare', 'cobertura_incompleta',
-      `cobertura_incompleta: ${noCubiertos.length} registro(s) de DynamoDB no quedaron íntegros en filesystem. ` +
-      'Ningún dato puede quedar únicamente en DynamoDB antes de apagar el flag.',
-      { noCubiertos });
-  }
+  const parity = compared.parity;
 
   return {
     ok: true,
@@ -895,6 +954,7 @@ module.exports = {
   stageReconcileArtifacts,
   promoteReconcileArtifacts,
   compareParity,
+  evaluateCompareStage,
   renderReconcileReport,
   // utilidades / constantes
   RECONCILE_TYPES,

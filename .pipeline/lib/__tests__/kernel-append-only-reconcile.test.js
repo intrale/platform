@@ -644,3 +644,483 @@ test('la API de reconciliación se puede alcanzar desde kernel-store-migrate (pu
   assert.equal(typeof migrate.runDurableRollbackDrill, 'function');
   assert.equal(migrate.reconcileDurableToFilesystem, R.reconcileDurableToFilesystem);
 });
+
+// =============================================================================
+// rev-2 · Transiciones de aborto del estado `compare` (y las que quedaban sin
+// ejercitar). Motivo del rebote de `aprobacion`: el issue exige 100% de las
+// transiciones de aborto de la máquina, y `compare` —el ÚLTIMO gate antes de
+// habilitar el apagado de `kernel.durable`— no tenía ninguna. Se verificó por
+// mutación: con `compareParity` devolviendo `ok: true` constante, la suite
+// entera seguía en verde. Los tests de abajo matan ese mutante.
+// =============================================================================
+
+/**
+ * Sabotea el destino JUSTO después de la promoción atómica y antes del reread.
+ *
+ * Es el único punto donde el filesystem puede divergir de lo reconciliado sin
+ * que la máquina lo note antes: engancharse al `rename` del manifiesto (el
+ * último de la promoción) reproduce exactamente esa ventana.
+ */
+function sabotajePostPromocion(saboteador) {
+  const realRename = fs.renameSync;
+  let disparado = false;
+  fs.renameSync = function (from, to) {
+    realRename(from, to);
+    if (!disparado && path.basename(String(to)) === R.MANIFEST_FILE) {
+      disparado = true;
+      saboteador(path.dirname(String(to)));
+    }
+  };
+  return () => { fs.renameSync = realRename; };
+}
+
+/** Reemplaza temporalmente una función de `fs` (para provocar fallas de disco). */
+function conFsRoto(nombre, impl) {
+  const real = fs[nombre];
+  fs[nombre] = impl(real);
+  return () => { fs[nombre] = real; };
+}
+
+/**
+ * Borra del disco los registros que matchean `filtro` y REGENERA el manifiesto
+ * para que quede coherente con lo que quedó. Sin regenerarlo, la máquina
+ * abortaría antes, en `reread-filesystem`, y nunca llegaría a `compare`.
+ */
+function borrarDelDiscoYRegenerarManifest(dir, filtro) {
+  for (const type of R.RECONCILE_TYPES) {
+    const f = path.join(dir, R.FILE_BY_TYPE[type]);
+    if (!fs.existsSync(f)) continue;
+    const quedan = fs.readFileSync(f, 'utf8').split('\n')
+      .filter((l) => l.trim() !== '')
+      .filter((l) => !filtro(JSON.parse(l)));
+    fs.writeFileSync(f, quedan.length ? `${quedan.join('\n')}\n` : '', 'utf8');
+  }
+  const releido = R.readFilesystemRecords(dir);
+  assert.equal(releido.ok, true, 'el saboteador dejó el JSONL ilegible');
+  const manifest = R.buildReconcileManifest(releido.records, {
+    createdAt: 1700000000000,
+    projectId: CTX,
+  });
+  fs.writeFileSync(path.join(dir, R.MANIFEST_FILE), `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
+}
+
+/** Deja en filesystem un registro que NO existe en DynamoDB (caso `onlyLocal`). */
+function sembrarRegistroSoloLocal(dir, id = 'solo-local-1') {
+  fs.mkdirSync(dir, { recursive: true });
+  const rec = R.toRecord('audit', {
+    SK: `audit#${id}`,
+    projectId: CTX,
+    body: { action: 'gate2.sign', actor: 'leitolarreta', detail: 'firmado antes del cutover' },
+  });
+  const linea = JSON.stringify({
+    type: rec.type, id: rec.id, sk: rec.sk, projectId: rec.projectId, body: rec.body, hash: rec.hash,
+  });
+  fs.writeFileSync(path.join(dir, R.FILE_BY_TYPE.audit), `${linea}\n`, 'utf8');
+  return rec;
+}
+
+// ---- `compareParity` como predicado (el mutante muere acá) -------------------
+
+test('compareParity: un registro que falta en filesystem NO da paridad', () => {
+  const a = { type: 'signature', id: '1', hash: 'h1' };
+  const b = { type: 'audit', id: '2', hash: 'h2' };
+  const r = R.compareParity([a, b], [a]);
+  assert.equal(r.ok, false, 'faltar un registro tiene que romper la paridad');
+  assert.deepEqual(r.faltantes, ['audit#2']);
+  assert.deepEqual(r.sobrantes, []);
+  assert.ok(r.conteoDistinto.includes('audit') && r.conteoDistinto.includes('total'));
+});
+
+test('compareParity: un registro de más en filesystem tampoco da paridad', () => {
+  const a = { type: 'signature', id: '1', hash: 'h1' };
+  const extra = { type: 'signature', id: '9', hash: 'h9' };
+  const r = R.compareParity([a], [a, extra]);
+  assert.equal(r.ok, false, 'un sobrante es divergencia: nadie inventa registros');
+  assert.deepEqual(r.sobrantes, ['signature#9']);
+});
+
+test('compareParity: mismo id con hash distinto NO da paridad (mismo conteo, otro contenido)', () => {
+  const r = R.compareParity(
+    [{ type: 'signature', id: '1', hash: 'h1' }],
+    [{ type: 'signature', id: '1', hash: 'OTRO' }],
+  );
+  assert.equal(r.ok, false, 'el conteo puede cerrar y el contenido estar alterado igual');
+  assert.deepEqual(r.hashDistinto, ['signature#1']);
+  assert.deepEqual(r.conteoDistinto, [], 'el conteo cierra: por eso hace falta comparar hashes');
+});
+
+// ---- las dos ramas de aborto de `compare`, con datos ------------------------
+
+test('compare: con paridad y cobertura exactas, habilita (y devuelve la evidencia)', () => {
+  const s = { type: 'signature', id: '1', hash: 'h1' };
+  const a = { type: 'audit', id: '2', hash: 'h2' };
+  const r = R.evaluateCompareStage({ exported: [s, a], merged: [s, a], reread: [s, a] });
+  assert.equal(r.ok, true);
+  assert.equal(r.parity.ok, true);
+  assert.equal(r.coverage.ok, true);
+});
+
+test('compare aborta con `cobertura_incompleta` si algo quedó sólo en DynamoDB', () => {
+  const s = { type: 'signature', id: '1', hash: 'h1' };
+  const a = { type: 'audit', id: '2', hash: 'h2' };
+  const r = R.evaluateCompareStage({ exported: [s, a], merged: [s, a], reread: [s] });
+  assert.equal(r.ok, false);
+  assert.equal(r.code, 'cobertura_incompleta');
+  assert.deepEqual(r.extra.noCubiertos, ['audit#2']);
+  assert.match(r.message, /únicamente en DynamoDB/);
+});
+
+test('compare aborta con `cobertura_incompleta` si el contenido llegó alterado', () => {
+  const s = { type: 'signature', id: '1', hash: 'h1' };
+  const r = R.evaluateCompareStage({
+    exported: [s],
+    merged: [s],
+    reread: [{ type: 'signature', id: '1', hash: 'ALTERADO' }],
+  });
+  assert.equal(r.ok, false);
+  assert.equal(r.code, 'cobertura_incompleta', 'un hash distinto es "no quedó íntegro", no un faltante');
+  assert.deepEqual(r.extra.noCubiertos, ['signature#1']);
+});
+
+test('compare aborta con `paridad_fallida` si se perdió un registro que sólo estaba en filesystem', () => {
+  const s = { type: 'signature', id: '1', hash: 'h1' };
+  const local = { type: 'audit', id: 'solo-local', hash: 'hL' };
+  const r = R.evaluateCompareStage({ exported: [s], merged: [s, local], reread: [s] });
+  assert.equal(r.ok, false);
+  assert.equal(r.code, 'paridad_fallida', 'la cobertura cierra, pero reconciliar borró un registro local');
+  assert.deepEqual(r.extra.parity.faltantes, ['audit#solo-local']);
+  assert.match(r.message, /NO se apaga `kernel\.durable`/);
+});
+
+test('compare aborta con `paridad_fallida` ante un registro que nadie escribió', () => {
+  const s = { type: 'signature', id: '1', hash: 'h1' };
+  const intruso = { type: 'signature', id: 'intruso', hash: 'hX' };
+  const r = R.evaluateCompareStage({ exported: [s], merged: [s], reread: [s, intruso] });
+  assert.equal(r.ok, false);
+  assert.equal(r.code, 'paridad_fallida');
+  assert.deepEqual(r.extra.parity.sobrantes, ['signature#intruso']);
+});
+
+// ---- las mismas dos ramas, atravesando la máquina completa ------------------
+
+test('la máquina aborta en `compare` con `cobertura_incompleta` si el disco pierde un registro de DynamoDB', async (t) => {
+  const root = tmpRoot();
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const store = await storeConDatos({ signatures: 2, audits: 2 });
+
+  // Se borra del disco una firma que SÍ vino de DynamoDB, con manifiesto
+  // regenerado: el destino queda internamente consistente y mentiroso.
+  const restaurar = sabotajePostPromocion((dir) => {
+    borrarDelDiscoYRegenerarManifest(dir, (rec) => rec.type === 'signature');
+  });
+  let res;
+  try {
+    res = await R.reconcileDurableToFilesystem(args(store, root));
+  } finally {
+    restaurar();
+  }
+
+  assert.equal(res.ok, false);
+  assert.equal(res.state, 'compare');
+  assert.equal(res.code, 'cobertura_incompleta');
+  assert.equal(res.durableSigueSiendoFuente, true);
+  assert.equal(res.abortAudit.emitted, true, 'el aborto de compare también se audita');
+});
+
+test('la máquina aborta en `compare` con `paridad_fallida` si reconciliar perdió un registro local', async (t) => {
+  const root = tmpRoot();
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const store = await storeConDatos({ signatures: 1, audits: 1 });
+  const dir = path.join(root, 'kernel-reconcile');
+  const local = sembrarRegistroSoloLocal(dir);
+
+  // Sólo se borra el registro que NO estaba en DynamoDB: la cobertura cierra y
+  // el único defecto es la pérdida de un dato local. Ese es `paridad_fallida`.
+  const restaurar = sabotajePostPromocion((d) => {
+    borrarDelDiscoYRegenerarManifest(d, (rec) => rec.id === local.id);
+  });
+  let res;
+  try {
+    res = await R.reconcileDurableToFilesystem(args(store, root));
+  } finally {
+    restaurar();
+  }
+
+  assert.equal(res.ok, false);
+  assert.equal(res.state, 'compare');
+  assert.equal(res.code, 'paridad_fallida');
+  assert.deepEqual(res.parity.faltantes, [`audit#${local.id}`]);
+  assert.equal(res.durableSigueSiendoFuente, true);
+});
+
+test('un aborto en `compare` NO apaga durable ni reinicia nada en el ensayo completo', async (t) => {
+  const root = tmpRoot();
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const store = await storeConDatos({ signatures: 2, audits: 1 });
+  const ops = drillOps();
+
+  const restaurar = sabotajePostPromocion((dir) => {
+    borrarDelDiscoYRegenerarManifest(dir, (rec) => rec.type === 'signature');
+  });
+  let res;
+  try {
+    res = await R.runDurableRollbackDrill(Object.assign(args(store, root), ops));
+  } finally {
+    restaurar();
+  }
+
+  assert.equal(res.ok, false);
+  assert.equal(res.state, 'compare');
+  assert.equal(res.code, 'cobertura_incompleta');
+  assert.equal(res.drill, false);
+  assert.equal(ops.estado.durable, true, 'el flag NUNCA se apaga en un camino de error');
+  assert.equal(ops.estado.reinicios, 0);
+  assert.equal(res.r8Ms, null, 'no hay R8 de un ensayo que no llegó a completarse');
+});
+
+test('el manifiesto promovido que desaparece aborta en `reread-filesystem`, no en `compare`', async (t) => {
+  const root = tmpRoot();
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const store = await storeConDatos({ signatures: 1, audits: 1 });
+
+  const restaurar = sabotajePostPromocion((dir) => {
+    fs.rmSync(path.join(dir, R.MANIFEST_FILE), { force: true });
+  });
+  let res;
+  try {
+    res = await R.reconcileDurableToFilesystem(args(store, root));
+  } finally {
+    restaurar();
+  }
+
+  assert.equal(res.ok, false);
+  assert.equal(res.state, 'reread-filesystem');
+  assert.equal(res.code, 'manifest_ilegible');
+  assert.equal(res.durableSigueSiendoFuente, true);
+});
+
+// ---- transiciones de `precheck`, `validate` y `stage` sin cobertura ---------
+
+test('sin store no hay de dónde exportar: aborta en `precheck`', async () => {
+  const res = await R.reconcileDurableToFilesystem({ reconcileDir: 'x', frozen: true });
+  assert.equal(res.state, 'precheck');
+  assert.equal(res.code, 'store_ausente');
+});
+
+test('sin `reconcileDir` no hay destino: aborta en `precheck`', async (t) => {
+  const store = await storeConDatos({ signatures: 1, audits: 1 });
+  const res = await R.reconcileDurableToFilesystem({ store, frozen: true, reconcileDir: '   ' });
+  assert.equal(res.state, 'precheck');
+  assert.equal(res.code, 'reconcile_dir_ausente');
+  t.diagnostic('precheck corta antes de tocar AWS y antes de escribir un byte');
+});
+
+test('un JSONL ilegible aborta la reconciliación (no se reconcilia a ciegas)', async (t) => {
+  const root = tmpRoot();
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const store = await storeConDatos({ signatures: 1, audits: 1 });
+  const dir = path.join(root, 'kernel-reconcile');
+  // El "archivo" de firmas es en realidad un directorio: leerlo falla con EISDIR.
+  fs.mkdirSync(path.join(dir, R.FILE_BY_TYPE.signature), { recursive: true });
+
+  const res = await R.reconcileDurableToFilesystem(args(store, root));
+
+  assert.equal(res.ok, false);
+  assert.equal(res.code, 'lectura_fallida');
+  assert.equal(res.durableSigueSiendoFuente, true);
+});
+
+test('una línea con el `type` que no corresponde al archivo aborta como inconsistente', async (t) => {
+  const root = tmpRoot();
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const store = await storeConDatos({ signatures: 1, audits: 1 });
+  const dir = path.join(root, 'kernel-reconcile');
+  fs.mkdirSync(dir, { recursive: true });
+  // Una firma guardada dentro del archivo de audit: JSON válido, semántica rota.
+  fs.writeFileSync(
+    path.join(dir, R.FILE_BY_TYPE.audit),
+    `${JSON.stringify({ type: 'signature', id: 'x', sk: 'signature#x', projectId: CTX, body: null, hash: 'h' })}\n`,
+    'utf8',
+  );
+
+  const directo = R.readFilesystemRecords(dir);
+  assert.equal(directo.ok, false);
+  assert.equal(directo.code, 'linea_invalida');
+
+  const res = await R.reconcileDurableToFilesystem(args(store, root));
+  assert.equal(res.code, 'linea_invalida');
+  assert.equal(res.durableSigueSiendoFuente, true);
+});
+
+test('si no se puede crear el directorio de reconciliación, aborta antes de stagear', async (t) => {
+  const root = tmpRoot();
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const store = await storeConDatos({ signatures: 1, audits: 1 });
+
+  const restaurar = conFsRoto('mkdirSync', () => () => {
+    const e = new Error('permission denied');
+    e.code = 'EACCES';
+    throw e;
+  });
+  let res;
+  try {
+    res = await R.reconcileDurableToFilesystem(args(store, root));
+  } finally {
+    restaurar();
+  }
+
+  assert.equal(res.state, 'stage');
+  assert.equal(res.code, 'reconcile_dir_mkdir_fallido');
+  assert.equal(res.durableSigueSiendoFuente, true);
+});
+
+test('un staging que no se puede preparar aborta sin tocar el destino', async (t) => {
+  const root = tmpRoot();
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  // El padre del staging es un ARCHIVO: no hay directorio posible debajo.
+  const archivo = path.join(root, 'no-soy-un-directorio');
+  fs.writeFileSync(archivo, 'x', 'utf8');
+
+  const res = R.stageReconcileArtifacts([], R.buildReconcileManifest([], {}), path.join(archivo, '.staging'));
+
+  assert.equal(res.ok, false);
+  assert.equal(res.state, 'stage');
+  assert.equal(res.code, 'staging_mkdir_fallido');
+});
+
+test('un staging que no se puede escribir se limpia solo y no promueve nada', async (t) => {
+  const root = tmpRoot();
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const store = await storeConDatos({ signatures: 1, audits: 1 });
+
+  // Falla de escritura en el staging (disco lleno / permisos): el destino ni se toca.
+  const restaurar = conFsRoto('openSync', (real) => (file, ...rest) => {
+    if (String(file).includes(R.STAGING_DIR_NAME)) {
+      const e = new Error('no space left on device');
+      e.code = 'ENOSPC';
+      throw e;
+    }
+    return real(file, ...rest);
+  });
+  let res;
+  try {
+    res = await R.reconcileDurableToFilesystem(args(store, root));
+  } finally {
+    restaurar();
+  }
+
+  assert.equal(res.state, 'stage');
+  assert.equal(res.code, 'staging_write_fallido');
+  assert.equal(res.durableSigueSiendoFuente, true);
+  assert.equal(
+    fs.existsSync(path.join(root, 'kernel-reconcile', R.MANIFEST_FILE)), false,
+    'no se promovió ningún artefacto',
+  );
+});
+
+// ---- guardián: ninguna transición de aborto puede volver a quedar sin test ---
+
+test('TODA transición de aborto declarada por el módulo tiene al menos un test que la nombra', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'kernel-append-only-reconcile.js'), 'utf8');
+  const suite = fs.readFileSync(__filename, 'utf8');
+  const declarados = new Set();
+  const re = /(?:fail|abort)\('[a-z-]+',\s*'([a-z_]+)'/g;
+  let m;
+  while ((m = re.exec(src)) !== null) declarados.add(m[1]);
+  // `evaluateCompareStage` devuelve sus códigos como dato, no vía fail()/abort().
+  for (const c of ['cobertura_incompleta', 'paridad_fallida']) declarados.add(c);
+
+  const sinCobertura = [...declarados].filter((code) => !suite.includes(`'${code}'`));
+  assert.deepEqual(
+    sinCobertura, [],
+    'estas transiciones de aborto no se ejercitan en ningún test: una rama de aborto ' +
+    'sin test es una rama que nadie probó que exista',
+  );
+});
+
+// =============================================================================
+// Coherencia con lo que el operador va a leer (runbook y config versionado)
+// =============================================================================
+
+const REPO_ROOT = path.join(__dirname, '..', '..', '..');
+const RUNBOOK = path.join(REPO_ROOT, 'docs', 'pipeline', 'runbook-cutover-durable.md');
+
+/** Sección del runbook por su encabezado exacto, hasta el próximo del mismo nivel. */
+function seccionRunbook(encabezado) {
+  const doc = fs.readFileSync(RUNBOOK, 'utf8');
+  const desde = doc.indexOf(encabezado);
+  assert.notEqual(desde, -1, `el runbook perdió la sección ${encabezado}`);
+  const resto = doc.slice(desde + encabezado.length);
+  const nivel = `\n${encabezado.split(' ')[0]} `;
+  const hasta = resto.indexOf(nivel);
+  return hasta === -1 ? resto : resto.slice(0, hasta);
+}
+
+test('el remedio de `conjunto_vacio` manda a la herramienta que resuelve el aborto', async (t) => {
+  const root = tmpRoot();
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const store = await storeConDatos({ signatures: 0, audits: 0 });
+
+  const res = await R.reconcileDurableToFilesystem(args(store, root));
+
+  assert.equal(res.code, 'conjunto_vacio');
+  // La sonda que siembra firma + audit es `kernel-drill-seed.js` (§2.1). La de
+  // §8.4 (`kernel-cutover-probe.js`, #5208) da de alta un producto y deja este
+  // aborto igual: mandar ahí al operador es hacerle perder la corrida.
+  assert.match(res.error, /kernel-drill-seed\.js/);
+  assert.match(res.error, /§2\.1/);
+  assert.ok(
+    fs.existsSync(path.join(REPO_ROOT, '.pipeline', 'kernel-drill-seed.js')),
+    'el remedio cita una herramienta que no existe en el repo',
+  );
+  assert.ok(
+    !/sonda positiva \(§8\.4/.test(res.error),
+    'el remedio no puede derivar a la sonda de producto del cutover',
+  );
+});
+
+test('el remedio de `sonda_incompleta` también apunta al seeder del ensayo', async (t) => {
+  const root = tmpRoot();
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const store = await storeConDatos({ signatures: 2, audits: 0 });
+
+  const res = await R.reconcileDurableToFilesystem(args(store, root));
+
+  assert.equal(res.code, 'sonda_incompleta');
+  assert.match(res.error, /kernel-drill-seed\.js/);
+  assert.match(res.error, /§2\.1/);
+});
+
+test('§2.1 del runbook documenta el seeder y §8.4 no lo confunde con la sonda de producto', () => {
+  const s21 = seccionRunbook('### 2.1 · El comando');
+  assert.match(s21, /kernel-drill-seed\.js/, '§2.1 tiene que documentar cómo se siembra la sonda del ensayo');
+  const s84 = seccionRunbook('### 8.4 · Sonda positiva — la evidencia que sí prueba algo');
+  assert.ok(
+    !/kernel-drill-seed/.test(s84),
+    '§8.4 es la sonda de alta de producto (#5208); si empieza a hablar del seeder, ' +
+    'los mensajes de aborto vuelven a mandar al operador al lugar equivocado',
+  );
+});
+
+test('la tabla de códigos de aborto del runbook cubre los que el módulo emite en `compare`', () => {
+  const s23 = seccionRunbook('### 2.3 · Abort, reintento y staging');
+  for (const code of ['cobertura_incompleta', 'paridad_fallida']) {
+    assert.ok(s23.includes(code), `el runbook no documenta el código de aborto \`${code}\``);
+  }
+});
+
+test('el runbook no afirma un estado de `kernel.durable` distinto al versionado', () => {
+  const config = fs.readFileSync(path.join(REPO_ROOT, '.pipeline', 'config.yaml'), 'utf8');
+  const bloque = config.slice(config.search(/^kernel:$/m));
+  const m = /^\s{2}durable:\s*(true|false)\b/m.exec(bloque);
+  assert.ok(m, 'no se pudo leer `kernel.durable` de .pipeline/config.yaml');
+  const versionado = m[1];
+
+  const s8 = seccionRunbook('## 8 · Ejecución del cutover — procedimiento y evidencia (#5208)');
+  assert.match(
+    s8,
+    new RegExp('valor versionado HOY es `durable: ' + versionado + '`'),
+    'la sección 8 del runbook describe el estado del switch y el config dice otra cosa: ' +
+    'el operador que la lee como "estado actual" queda desinformado',
+  );
+});
