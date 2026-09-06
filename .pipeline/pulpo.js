@@ -317,7 +317,7 @@ const conversationSummary = require('./lib/commander/conversation-summary');
 const commanderProjectState = require('./lib/commander/project-state-pack');
 // #3002 — Parser robusto del marker "Dependencias detectadas por el pipeline".
 // Reemplaza la regex inline rota que extraía deps fantasma del body+comments.
-const { parseDependencyComment } = require('./lib/dep-comment-parser');
+const { parseDependencyComment, parseDependencyCommentDetailed } = require('./lib/dep-comment-parser');
 const {
   resolveDependencies,
   buildAutoPromoteComment,
@@ -4958,6 +4958,26 @@ function brazoBarrido(config) {
                   // de rebote (humanBlock → rev++) que lo destraba o lo escala.
                   continue;
                 }
+              }
+
+              // #6902 CA-5 — Guardrail madre-hija EN EL MOMENTO DE ESCRIBIR el
+              // marker. Una hija de split que declara a su madre cierra un
+              // ciclo por construcción, y detectarlo acá es la diferencia entre
+              // prevención y forense: el ciclo de #6173/#6191 tardó semanas en
+              // salir a la luz. No se filtra la dependencia — el pipeline no
+              // borra deps por su cuenta — pero el operador se entera ya.
+              try {
+                const mhBlock = brazoDesbloqueoCore.detectMotherChildCycle({
+                  title: getIssueTitleCached(issue),
+                  issue,
+                  deps: result.dependsOn,
+                });
+                if (mhBlock.isCycle) {
+                  log('barrido', mhBlock.log);
+                  _notifyDesbloqueoOnce(`madre-hija::${issue}::${mhBlock.parent}`, mhBlock.telegram);
+                }
+              } catch (e) {
+                log('barrido', `[WARN] #${issue} guardrail madre-hija falló (no bloqueante): ${e.message}`);
               }
 
               try {
@@ -24050,7 +24070,21 @@ const UMBRELLA_SKIP_NOTICE_TTL_MS = 24 * 60 * 60 * 1000;
 const UMBRELLA_SKIP_NOTICE_FILE = path.join(PIPELINE, 'desbloqueo-umbrella-avisos.json');
 
 function _notifyUmbrellaSkipOnce(issueNumber, reason, text) {
-  const key = `${issueNumber}::${reason}`;
+  return _notifyDesbloqueoOnce(`${issueNumber}::${reason}`, text);
+}
+
+/**
+ * #6902 — Mismo dedup, con clave libre. Lo usan los avisos de ciclo, que no se
+ * identifican por issue sino por la firma del ciclo: mientras el ciclo no
+ * cambie de forma es el MISMO problema y merece un aviso, no uno por tick.
+ * Sin esto, el brazo convertiría un deadlock silencioso en un deadlock ruidoso
+ * — y un canal que spamea se ignora, que es peor que el silencio.
+ *
+ * @param {string} key — clave de deduplicación (estable mientras dure la causa).
+ * @param {string} text — mensaje a enviar.
+ * @returns {boolean} — true si se envió, false si estaba dentro del TTL.
+ */
+function _notifyDesbloqueoOnce(key, text) {
   const now = Date.now();
   let state = {};
   try {
@@ -24199,6 +24233,40 @@ async function brazoDesbloqueoImpl(config) {
         const depIssueNumbers = resolved.deps.map(String);
         // CA-17 — Observabilidad: registrar fuente detectada por ciclo.
         log('desbloqueo', `#${issue.number}: fuente=${resolved.source} deps=${depIssueNumbers.length} (${sanitizeForLog(depIssueNumbers.join(','), 200)})`);
+
+        // #6902 — Referencias que el marker MENCIONA pero no declara. Antes se
+        // tomaban como dependencias duras y cerraban ciclos irrompibles; ahora
+        // se descartan, pero el descarte queda trazado: si el operador quiso
+        // declararlas de verdad, sin este log no tendría cómo enterarse.
+        try {
+          const detalle = parseDependencyCommentDetailed(commentsArray, issue.number);
+          const mencionadas = [];
+          for (const entry of (detalle.ignored || [])) {
+            for (const n of entry.numbers) if (!mencionadas.includes(n)) mencionadas.push(n);
+          }
+          if (mencionadas.length > 0) {
+            log('desbloqueo', `#${issue.number}: ${mencionadas.length} referencia(s) mencionada(s) en prosa NO tomadas como dependencia (${sanitizeForLog(mencionadas.join(','), 200)}) — declarar como bullet \`- #N\` si alguna es real`);
+          }
+        } catch (e) {
+          log('desbloqueo', `#${issue.number}: no se pudo calcular el detalle de menciones (no bloqueante): ${e.message}`);
+        }
+
+        // #6902 CA-5 — Guardrail madre-hija: una hija de split que declara a su
+        // madre cierra un ciclo por construcción (la madre depende de sus
+        // hijas). Se avisa, NO se rompe: cuál dependencia sobra es humano.
+        try {
+          const mh = brazoDesbloqueoCore.detectMotherChildCycle({
+            title: issue.title,
+            issue: issue.number,
+            deps: depIssueNumbers,
+          });
+          if (mh.isCycle) {
+            log('desbloqueo', mh.log);
+            _notifyDesbloqueoOnce(`madre-hija::${issue.number}::${mh.parent}`, mh.telegram);
+          }
+        } catch (e) {
+          log('desbloqueo', `#${issue.number}: guardrail madre-hija falló (no bloqueante): ${e.message}`);
+        }
         if (depIssueNumbers.length === 0) {
           log('desbloqueo', `#${issue.number}: marker presente pero sin issue numbers reconocibles — registrado sin deps`);
           blockedBy[issue.number] = [];
@@ -24426,6 +24494,24 @@ async function brazoDesbloqueoImpl(config) {
     // (sin carrera con el release del brazo principal); `seenLive` evita
     // re-consultar los issues que este brazo ya procesó.
     await _selfHealPhantomBlocks({ allowlistSet, seenLive });
+
+    // #6902 — Detección de ciclos sobre el grafo recién construido. Un ciclo
+    // no se resuelve solo NUNCA, y hasta ahora era invisible: cada issue del
+    // ciclo, mirado de a uno, está "esperando una dependencia abierta", que es
+    // un estado sano. Se reporta explícitamente; romperlo sigue siendo humano.
+    try {
+      const ciclos = brazoDesbloqueoCore.detectDependencyCycles(blockedBy);
+      for (const c of ciclos) {
+        const alerta = brazoDesbloqueoCore.buildCycleAlert(c);
+        log('desbloqueo', alerta.log);
+        _notifyDesbloqueoOnce(`ciclo::${alerta.key}`, alerta.telegram);
+      }
+      if (ciclos.length > 0) {
+        log('desbloqueo', `🔴 ${ciclos.length} ciclo(s) de dependencias activo(s) — requieren decisión humana, el brazo no los rompe`);
+      }
+    } catch (e) {
+      log('desbloqueo', `[WARN] detección de ciclos falló (no bloqueante): ${e.message}`);
+    }
 
     // Persistir mapeos para el dashboard
     try {

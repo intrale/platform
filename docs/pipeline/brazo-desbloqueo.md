@@ -63,6 +63,49 @@ body del issue (además del marker canónico en comentarios del pulpo). Todos so
 Si varias fuentes declaran deps, la salida es la **unión** (deduplicada, ordenada
 ascendente, con cap de 20).
 
+### Sólo cuenta lo que está DECLARADO (#6902)
+
+Dentro del bloque del marker, una dependencia se declara como **item de lista con
+la referencia al inicio del item**. Todo lo demás se ignora, incluidas las
+menciones que aparecen dentro de la descripción de un bullet:
+
+```markdown
+## Dependencias detectadas por el pipeline
+
+- #6190 — descripción libre, puede citar #9999 sin consecuencias   → declara 6190
+- #100, #200 y #300 — referencias contiguas al inicio              → declara las tres
+1. #4242 — lista numerada                                          → declara 4242
+#4243 — referencia sin bullet, al inicio de línea                  → declara 4243
+| 1 de 3 | #5689 | celda de tabla que ES una referencia |          → declara 5689
+
+Esta historia espera a #6190 porque la madre #6173 lo pide.        → NO declara nada
+```
+
+Hasta #6902 el bloque se parseaba entero con un `matchAll(/#(\d+)/g)` y **toda
+mención narrativa se convertía en dependencia dura**. Como la madre de un split
+depende legítimamente de sus hijas, bastaba con que una hija citara a la madre
+en la prosa del marker para cerrar un ciclo irrompible:
+
+```
+#6173 → #6191 → #6173      #6199 → #6207 → #6199
+#6173 → #6192 → #6173      #6199 → #6209 → #6199
+```
+
+Seis issues de la ola 9.4 quedaron congelados de forma permanente, y un séptimo
+(#6240) esperaba a un issue que su propio marker declaraba explícitamente como
+**fuera de alcance**.
+
+Las referencias descartadas no se pierden en silencio: el brazo las loguea
+(`N referencia(s) mencionada(s) en prosa NO tomadas como dependencia`) y el
+reporte de markers históricos las lista.
+
+### Corregir un marker: repostearlo
+
+El parser ordena los comentarios con marker por fecha y **gana el más reciente**.
+Esa es la vía oficial para corregir un marker mal escrito: postear uno nuevo con
+los bullets correctos, dejando la prosa detrás de una línea `---` (el HR termina
+el bloque). No hace falta editar ni borrar el comentario viejo.
+
 ## Semántica fail-closed
 
 El default seguro es **no tocar labels / mantener bloqueado**:
@@ -215,8 +258,64 @@ hija `[Split de #N]`, la cerró el brazo con el comentario espurio, no tiene
 ningún PR asociado, y no tiene sub-historias propias todas cerradas. Es
 idempotente: un issue ya reabierto queda descartado con `no-esta-cerrado`.
 
+## Ciclos de dependencias (#6902)
+
+Un ciclo en el grafo `blockedBy` es un deadlock permanente. Lo peligroso no es
+que exista: es que **era invisible**. Cada issue del ciclo, mirado de a uno,
+está "esperando una dependencia abierta", que es un estado perfectamente sano —
+así que ningún watchdog lo levanta y nadie se entera. Los seis issues de la ola
+9.4 estuvieron congelados días sin que ninguna alarma sonara.
+
+`brazoDesbloqueoImpl` construye el grafo `blockedBy` en cada ciclo y lo pasa por
+`brazoDesbloqueoCore.detectDependencyCycles()` antes de persistir
+`blocked-issues.json`. Por cada ciclo detectado emite un log y un aviso al
+operador con la **ruta completa** (`#6173 → #6191 → #6173`), no un genérico "hay
+un ciclo": el operador tiene que poder decidir cuál dependencia es la espuria
+sin abrir cuatro issues.
+
+- **No se rompe automáticamente.** Cuál de las dos dependencias sobra es juicio
+  humano; borrar la equivocada destruiría una dependencia real.
+- **Anti-spam.** El aviso se deduplica por la firma canónica del ciclo
+  (invariante ante rotaciones) con el TTL de `desbloqueo-umbrella-avisos.json`.
+  Un ciclo persiste hasta que un humano lo rompe: sin dedup, el brazo convertiría
+  un deadlock silencioso en un deadlock ruidoso, y un canal que spamea se ignora.
+- **Límite conocido.** El grafo sólo tiene los issues con `blocked:dependencies`
+  vivo. Un ciclo cuyo eslabón no tenga el label no se cierra en este grafo y no
+  se detecta — conservador por diseño: mejor no reportar que inventar un ciclo
+  con datos parciales.
+
+### Guardrail madre-hija
+
+Una hija de split (`[Split de #N] ...`) que declare a `#N` como dependencia es un
+ciclo **por construcción**, y para saberlo alcanza el título más la lista de
+deps. Por eso `detectMotherChildCycle()` corre en dos momentos:
+
+1. **Al escribir el marker** (brazo de barrido, antes de
+   `reportDependencyBlock`) — prevención: el operador se entera en el acto.
+2. **Al leerlo** (brazo de desbloqueo, sobre los markers ya existentes) —
+   forense: cubre los markers escritos antes de este guardrail.
+
+En ambos casos **avisa, no filtra**: el marker se escribe igual. El pipeline no
+borra dependencias por su cuenta.
+
+### Reporte de markers históricos
+
+```bash
+node .pipeline/scripts/report-prose-deps.js            # texto legible
+node .pipeline/scripts/report-prose-deps.js --json     # para procesar
+```
+
+Recorre los issues abiertos con `blocked:dependencies` y lista, por issue, cada
+referencia sospechosa **con la línea donde apareció**. Sólo lee: no edita
+issues, no toca labels, no repostea markers. La corrección es humana.
+
 ## Tests
 
+- `.pipeline/lib/__tests__/dep-comment-parser-prosa-6902.test.js` — regla de
+  declaración vs. prosa y regresión contra los markers reales de #6191, #6192,
+  #6207 y #6209.
+- `.pipeline/lib/__tests__/brazo-desbloqueo-ciclos-6902.test.js` — detección de
+  ciclos sobre el grafo real de la ola 9.4 y guardrail madre-hija.
 - `.pipeline/lib/__tests__/dep-resolver.test.js` — patrones B1–B4, fail-closed,
   code fences, bounds, negaciones, cap y dedup.
 - `.pipeline/lib/__tests__/brazo-desbloqueo-core.test.js` — decisión pura y los
