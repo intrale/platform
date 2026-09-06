@@ -20331,7 +20331,7 @@ const {
 // (el mismo label de admisión de `config.yaml`) y hoy quedan afuera SÓLO por el
 // `-label:needs-human` del search. Cuando #5691 migre esas recomendaciones a
 // `needs:triage-backlog`, dejarían de estar filtradas: GitHub aplica el
-// `--limit 50` SERVER-SIDE, antes de `calcularPrioridad()`, así que los 50 slots
+// `--limit` SERVER-SIDE, antes de `calcularPrioridad()`, así que los slots
 // se llenarían de recomendaciones y el intake de definición real se ahogaría en
 // silencio, sin ninguna alarma.
 //
@@ -20404,6 +20404,32 @@ function buildIntakeSearchRescueQuery() {
 function buildIntakeSearchQueries() {
   return [buildIntakeSearchQuery(), buildIntakeSearchRescueQuery()];
 }
+
+// =============================================================================
+// #7013 — TOPE DE LISTADO DEL INTAKE (starvation por antiguedad).
+//
+// GitHub aplica `--limit` SERVER-SIDE y devuelve los issues MAS NUEVOS primero.
+// El filtro de ola (`partial_pause` / allowlist) se aplica DESPUES, en JS, sobre
+// lo ya traido. Con el tope en 50 y ~187 issues admisibles abiertos, el intake
+// traia siempre la misma ventana de los 50 mas nuevos y descartaba el 100% por
+// no ser de la ola: los issues de ola con numero mas bajo que el corte no
+// entraban NUNCA, por mas que la ola siguiera activa.
+//
+// Caso vivo al momento del fix: #5113, #5215, #5691, #6191, #6192 (y #6173
+// colgado de los dos ultimos) esperando definicion sin poder ser vistos.
+//
+// Es el mismo hambreado que #5689 corrigio para la poblacion de recomendaciones,
+// pero aquella solucion acoto una poblacion concreta; la poblacion "issues
+// viejos" quedo destapada. Subir el techo muy por encima del backlog real
+// (187 hoy) cierra el agujero sin cambiar el diseno del brazo.
+//
+// Costo: 1 request por pase/repo igual que antes — cambia el tamano de la
+// pagina, no la cantidad de llamadas.
+//
+// El arreglo de raiz (consultar a GitHub SOLO los issues de la ola cuando hay
+// ola activa, y que el tope deje de importar) queda como trabajo aparte.
+// =============================================================================
+const INTAKE_GH_LIST_LIMIT = 500;
 
 // #4687 (Ola Puente P2) — Descubrimiento side-effect-free del tablero (dry-run).
 //
@@ -20482,7 +20508,7 @@ function discoverWorkDryRun(config, opts = {}) {
           // (no encola, no spawnea). Si alguna vez pasa a alimentar encolado,
           // DEBE sumar `labels` al `--json` y pasar por el mismo gate que
           // `brazoIntake`, o abre un bypass total del control autoritativo.
-          const out = execFn(`"${GH_BIN}" issue list --repo ${repo} --label "${label}" --state open --json number,title --limit 50 --search "${search}"`);
+          const out = execFn(`"${GH_BIN}" issue list --repo ${repo} --label "${label}" --state open --json number,title --limit ${INTAKE_GH_LIST_LIMIT} --search "${search}"`);
           for (const it of JSON.parse(out || '[]')) {
             if (seenNumbers.has(it.number)) continue;
             seenNumbers.add(it.number);
@@ -20554,7 +20580,7 @@ function brazoIntake(config) {
               // #5337 CA-4 — `body` se suma a los campos EXISTENTES (misma llamada,
               // cero requests extra) para que el detector de decisión de
               // arquitectura pueda clasificar el issue al entrar a definición.
-              `"${GH_BIN}" issue list --repo ${repo} --label "${label}" --state open --json number,title,labels,body --limit 50 --search "${search}"`,
+              `"${GH_BIN}" issue list --repo ${repo} --label "${label}" --state open --json number,title,labels,body --limit ${INTAKE_GH_LIST_LIMIT} --search "${search}"`,
               { cwd: ROOT, encoding: 'utf8', timeout: 15000, windowsHide: true }
             );
             const repoIssues = JSON.parse(result || '[]');
@@ -23246,7 +23272,7 @@ function _maybeLogReentrySkip() {
 // Estado:
 //   - `_exhaustionLastTickAt`: ms del último tick exitoso (default 0 — primer
 //     tick corre apenas el loop arranca).
-//   - El brazo es síncrono y rápido (gh issue list con --limit 50 + un
+//   - El brazo es síncrono y rápido (gh issue list con --limit INTAKE_GH_LIST_LIMIT + un
 //     gh issue edit por cada issue destrabable). No usa guard de re-entrada
 //     porque el intervalo mínimo de 60s lo previene naturalmente.
 let _exhaustionLastTickAt = 0;
@@ -26666,6 +26692,7 @@ if (process.env.PULPO_NO_AUTOSTART === '1') {
     buildIntakeSearchRescueQuery,
     buildIntakeSearchQueries,
     INTAKE_SEARCH_EXCLUDED_LABELS,
+    INTAKE_GH_LIST_LIMIT,
     // #5689 (SEC-1/SEC-2) — gate autoritativo de recomendaciones del intake.
     isPendingRecommendationIssue,
     // #4763 (Ola Puente P4) — ruteo product-aware por instancia (fallback single-product).
