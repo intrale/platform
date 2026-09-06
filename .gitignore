@@ -514,3 +514,14 @@ security-report-*.md
 # también qué productos existen y qué secretos tiene cada uno. Vive en
 # ~/.claude/pipeline-state/ (fuera del árbol, sobrevive al reset --hard).
 .pipeline/credential-reminder-state.json
+
+# Scratch de agentes en la RAIZ del repo (#5126 / CA-B2).
+# `.pipeline/_tmp/` (arriba) cubre el scratchpad de adentro del pipeline, pero
+# los skills tambien escriben scratchpads al lado del repo: `.tmp<issue>/`,
+# `.tmp-<rol>/` y `.tmp-issue-<n>.txt`. Cuatro de esos quedaron versionados
+# (40 archivos, 17.5 MB de dumps de la API de issues) y uno publicaba el
+# account-id AWS real dentro de un ARN completo, en un repo PUBLICO — justo lo
+# que CA-0 y CA-B2 de #5126 prohiben ("el account-id nunca se commitea").
+# Un `git add -A` durante una corrida alcanzaba para colarlos.
+/.tmp*/
+/.tmp-*.txt
