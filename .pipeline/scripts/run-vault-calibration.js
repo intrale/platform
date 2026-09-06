@@ -1,0 +1,445 @@
+#!/usr/bin/env node
+'use strict';
+
+// =============================================================================
+// run-vault-calibration.js — Issue #5805 (hija de #5800)
+//
+// Ejecuta la carga reproducible contra el vault y publica el artefacto de
+// evidencia en `.pipeline/audit/vault-load-calibration.json`.
+//
+// ESTE ARCHIVO NO TIENE LÓGICA DE NEGOCIO. Todo lo que valida, mide, calcula o
+// construye evidencia vive en `../lib/vault-load-calibration.js` (#5805), que a
+// su vez consume el núcleo/runner de `../lib/vault-calibration-scenario.js`
+// (#5804) y el enum de telemetría de `../lib/secret-vault.js` (#5803).
+//
+// Acá sólo hay: parseo de argumentos, lectura de stdin, cableado de los puertos
+// reales (git, fs, crypto, reloj y el driver que resuelve contra el vault),
+// traducción de `code` a código de salida + texto de operador, y `exitCode`.
+//
+// Uso:
+//   cat corrida.json | node .pipeline/scripts/run-vault-calibration.js --stdin
+//   cat corrida.json | node .pipeline/scripts/run-vault-calibration.js --stdin --json
+//   node .pipeline/scripts/run-vault-calibration.js --help
+//
+// Sobre esperado por stdin (claves CERRADAS):
+//   {
+//     "scenario": {                      // contrato de #5804
+//       "window_start_ms": 1735689600000,
+//       "window_duration_ms": 60000,
+//       "bucket_ms": 10000,
+//       "concurrency": 8,
+//       "launches": 16,
+//       "distribution": "sequential",    // sequential | uniform | burst
+//       "sequence_seed": 7,
+//       "unit": "physical_read"
+//     },
+//     "required_commits": [              // las cuatro dependencias duras
+//       { "issue": 5339, "commit": "<sha>" },
+//       { "issue": 5340, "commit": "<sha>" },
+//       { "issue": 5791, "commit": "<sha>" },
+//       { "issue": 5792, "commit": "<sha>" }
+//     ],
+//     "project_id": "<producto>",
+//     "scope_logico": "<nombre logico del scope medido>",
+//     "shared_scopes": []                // opcional
+//   }
+//
+// IMPORTANTE — la corrida INVALIDA la evidencia anterior: al arrancar borra
+// `.pipeline/audit/vault-load-calibration.json` y los temporales que hayan
+// quedado. Es deliberado (CA-1): una evidencia de otro HEAD conviviendo con una
+// corrida fallida se confunde con la nueva y termina firmando un umbral falso.
+// =============================================================================
+
+const fs = require('fs');
+const path = require('path');
+const crypto = require('crypto');
+const { execFileSync } = require('child_process');
+
+const {
+    runCalibration,
+    createGitPort,
+    ARTIFACT_FILENAME,
+    LOAD_CALIBRATION_ERROR_CODES: E,
+} = require('../lib/vault-load-calibration');
+
+const REPO_ROOT = path.resolve(__dirname, '..', '..');
+const AUDIT_DIR = path.join(REPO_ROOT, '.pipeline', 'audit');
+/** Ruta RELATIVA para mostrarle al operador: un path absoluto no se imprime. */
+const ARTIFACT_RELATIVO = `.pipeline/audit/${ARTIFACT_FILENAME}`;
+
+/**
+ * Códigos de salida ESTABLES. Un operador (o un wrapper) discrimina por número,
+ * no parseando el mensaje. La numeración separa "no llegué a medir" (1-4) de "la
+ * medición no cerró" (5-6) y de "no pude publicar" (7).
+ */
+const EXIT = Object.freeze({
+    OK: 0,
+    USAGE: 1,        // argumentos ausentes, desconocidos o mal formados
+    INPUT: 2,        // stdin ausente, no es JSON, o el sobre tiene claves ajenas
+    PREFLIGHT: 3,    // HEAD, árbol sucio o dependencia no integrada
+    IDENTITY: 4,     // la identidad no es de sólo lectura o excede los scopes
+    RUN: 5,          // el escenario o el runner no pasaron la validación
+    EVIDENCE: 6,     // la evidencia no cierra o no está limpia
+    PUBLISH: 7,      // no se pudo publicar el artefacto
+    INTERNAL: 8,     // excepción no prevista, ya sanitizada
+});
+
+/** Claves admitidas en el sobre de stdin. Enum CERRADO. */
+const PAYLOAD_KEYS = Object.freeze([
+    'scenario', 'required_commits', 'project_id', 'scope_logico', 'shared_scopes',
+]);
+
+/**
+ * Traducción de cada `code` a (salida, impacto, próximo paso).
+ *
+ * Los textos son literales ESTÁTICOS: nunca se interpola el input, así que esta
+ * tabla no puede reintroducir un canario que el módulo ya descartó. El `detail`
+ * del error (nombres de campo e índices, ya saneados) se imprime aparte.
+ */
+const TRADUCCION = Object.freeze({
+    [E.HEAD_UNRESOLVED]: [EXIT.PREFLIGHT,
+        'no se pudo resolver el SHA de HEAD, asi que la medicion no seria atribuible a ningun codigo',
+        'correr el comando dentro del repo, con un HEAD valido (`git rev-parse HEAD`)'],
+    [E.WORKTREE_DIRTY]: [EXIT.PREFLIGHT,
+        'el arbol de trabajo tiene cambios sin commitear: el SHA registrado no describiria el codigo que corrio',
+        'commitear o descartar los cambios y volver a correr (`git status --porcelain` debe quedar vacio)'],
+    [E.INTEGRATION_UNRESOLVED]: [EXIT.PREFLIGHT,
+        'el commit declarado para esa dependencia no resuelve o es ambiguo, asi que no se puede probar que este integrado',
+        'corregir el SHA de la dependencia informada en `detail.field` (usar el commit completo de 40 hex)'],
+    [E.INTEGRATION_MISSING]: [EXIT.PREFLIGHT,
+        'esa dependencia NO esta integrada en el HEAD: la calibracion medida seria sobre un codigo incompleto',
+        'mergear la dependencia informada en `detail.field` y volver a correr sobre el HEAD integrado'],
+    [E.REQUIRED_COMMITS_INVALID]: [EXIT.INPUT,
+        'la lista de dependencias no paso la validacion, asi que no se verifico ninguna integracion',
+        'revisar `required_commits`: cada entrada es `{issue, commit}` con SHA hexadecimal en minuscula'],
+    [E.GIT_PORT_MISSING]: [EXIT.INTERNAL,
+        'no se pudo construir el acceso a git, asi que no hubo preflight',
+        'verificar que `git` este en el PATH y que el comando corra dentro del repo'],
+    [E.IDENTITY_INVALID]: [EXIT.IDENTITY,
+        'la identidad declarada no tiene la forma esperada y la corrida no se ejecuto',
+        'declarar `scope_logico` como nombre logico en minusculas (sin ARN, path ni account id)'],
+    [E.IDENTITY_NOT_READ_ONLY]: [EXIT.IDENTITY,
+        'la corrida exige una identidad de SOLO LECTURA y la provista no lo es',
+        'ejecutar con la identidad de lectura del vault; ningun verbo de escritura puede estar disponible'],
+    [E.IDENTITY_SCOPES_EXCESIVOS]: [EXIT.IDENTITY,
+        'la identidad tiene mas scopes que el que se mide: seria privilegio sin justificacion',
+        'acotar la identidad al unico scope declarado en `scope_logico`'],
+    [E.UNKNOWN_FIELD]: [EXIT.INPUT,
+        'la entrada trae un campo de mas y se rechazo entera: un campo desconocido puede ser un parametro viejo que ya no se respeta',
+        'quitar el campo informado en `detail.field` o corregir su nombre'],
+    [E.SCOPE_INVALID]: [EXIT.INPUT,
+        'el scope declarado no es un nombre logico, asi que se rechazo antes de medir',
+        'usar el NOMBRE logico del scope (minusculas, digitos, `_` y `-`), nunca su ARN ni su ruta'],
+    [E.COUNTERS_INVALID]: [EXIT.RUN,
+        'los contadores de resolucion no cubren exactamente las tres vias, asi que el pico seria inventado',
+        'revisar la instrumentacion del vault: cada resolucion emite una y solo una categoria'],
+    [E.WINDOW_INVALID]: [EXIT.RUN,
+        'la ventana de medicion no paso la validacion y no se calculo ninguna metrica',
+        'revisar `scenario`: la duracion debe ser multiplo exacto de `bucket_ms`'],
+    [E.FORMULA_INVALID]: [EXIT.RUN,
+        'la formula de extrapolacion pedida no esta soportada',
+        'usar la familia `ceil_rate_extrapolation` con horizonte `month`'],
+    [E.PREFLIGHT_INVALID]: [EXIT.RUN,
+        'la procedencia de la corrida no paso la validacion',
+        'volver a correr: el preflight y la medicion deben ocurrir en la misma pasada'],
+    [E.RUNNER_FAILED]: [EXIT.RUN,
+        'el runner no pudo completar la carga, asi que no hay medicion que publicar',
+        'revisar el acceso de lectura al vault y volver a correr'],
+    [E.RUNNER_RESULT_INVALID]: [EXIT.RUN,
+        'el runner devolvio un resultado que no tiene la forma esperada',
+        'reportar el incidente: es un defecto del nucleo de calibracion, no del escenario'],
+    [E.NON_FINITE_RESULT]: [EXIT.EVIDENCE,
+        'una metrica no dio un numero finito, asi que no se publica nada',
+        'revisar la ventana y los contadores de la corrida'],
+    [E.UNSAFE_INTEGER_RESULT]: [EXIT.EVIDENCE,
+        'la extrapolacion excede el rango entero seguro y seria un numero enganoso',
+        'acortar la ventana o reducir los launches del escenario'],
+    [E.EVIDENCE_NOT_CLEAN]: [EXIT.EVIDENCE,
+        'la evidencia contenia un dato que no puede publicarse y se descarto entera',
+        'reportar el incidente: ningun dato sensible deberia llegar al artefacto'],
+    [E.ARTIFACT_DIR_INVALID]: [EXIT.PUBLISH,
+        'el directorio del artefacto no es valido, asi que no se publico nada',
+        'verificar que `.pipeline/audit/` exista y sea escribible'],
+    [E.ARTIFACT_WRITE_FAILED]: [EXIT.PUBLISH,
+        'no se pudo escribir el artefacto; no quedo ningun archivo a medio publicar',
+        'verificar permisos y espacio en disco, y volver a correr'],
+    [E.PORT_MISSING]: [EXIT.INTERNAL,
+        'falto un puerto obligatorio, asi que la corrida no arranco',
+        'reportar el incidente: es un defecto de cableado del wrapper'],
+});
+
+// -----------------------------------------------------------------------------
+// Uso
+// -----------------------------------------------------------------------------
+
+const USO = `
+run-vault-calibration — corrida de calibracion de trafico fisico del vault (#5805)
+
+  cat corrida.json | node .pipeline/scripts/run-vault-calibration.js --stdin
+
+Opciones
+  --stdin    lee el sobre de la corrida desde la entrada estandar (obligatorio)
+  --json     imprime el resultado como JSON (para consumo programatico)
+  --help     muestra esta ayuda
+
+Sobre esperado (claves cerradas)
+  scenario          escenario de carga: window_start_ms, window_duration_ms,
+                    bucket_ms, concurrency, launches, distribution,
+                    sequence_seed, unit
+  required_commits  [{issue, commit}] de las dependencias que el HEAD debe integrar
+  project_id        producto cuyo namespace del vault se mide
+  scope_logico      nombre logico del scope medido (nunca ARN ni ruta)
+  shared_scopes     opcional, scopes compartidos del producto
+
+Salida
+  publica ${ARTIFACT_RELATIVO} con permisos minimos.
+  La corrida INVALIDA la evidencia anterior al arrancar: si falla, ese
+  directorio queda limpio a proposito.
+
+Codigos de salida
+  0 ok · 1 uso · 2 entrada · 3 preflight · 4 identidad · 5 corrida
+  6 evidencia · 7 publicacion · 8 interno
+`.trim();
+
+// -----------------------------------------------------------------------------
+// Parseo de argumentos
+// -----------------------------------------------------------------------------
+
+function parseArgs(argv) {
+    const out = { help: false, stdin: false, json: false, desconocido: null };
+    for (const arg of argv) {
+        if (arg === '--help' || arg === '-h') out.help = true;
+        else if (arg === '--stdin') out.stdin = true;
+        else if (arg === '--json') out.json = true;
+        else { out.desconocido = arg; break; }
+    }
+    return out;
+}
+
+function leerStdin() {
+    try {
+        return fs.readFileSync(0, 'utf8');
+    } catch (e) {
+        return null;
+    }
+}
+
+/** Valida el sobre por allowlist. No valida el contenido: eso es del módulo. */
+function parsearSobre(texto) {
+    let sobre;
+    try {
+        sobre = JSON.parse(texto);
+    } catch (e) {
+        return { error: 'la entrada no es JSON valido' };
+    }
+    if (sobre === null || typeof sobre !== 'object' || Array.isArray(sobre)) {
+        return { error: 'la entrada debe ser un objeto JSON' };
+    }
+    for (const clave of Object.keys(sobre)) {
+        if (!PAYLOAD_KEYS.includes(clave)) {
+            // Nombrar la clave sobrante es seguro (es un NOMBRE, no un valor) y
+            // es la única forma de que el error sea accionable.
+            return { error: `clave desconocida en el sobre: ${JSON.stringify(String(clave)).slice(0, 80)}` };
+        }
+    }
+    for (const clave of ['scenario', 'required_commits', 'project_id', 'scope_logico']) {
+        if (!Object.prototype.hasOwnProperty.call(sobre, clave)) {
+            return { error: `falta \`${clave}\` en el sobre` };
+        }
+    }
+    return { sobre };
+}
+
+// -----------------------------------------------------------------------------
+// Cableado del driver real
+// -----------------------------------------------------------------------------
+
+/**
+ * Traduce una resolución del vault a la categoría que la clasifica.
+ *
+ * No clasifica NADA por su cuenta: el `sink` es por invocación, así que la
+ * categoría la dicta el único evento que emite la capa que tomó la decisión
+ * (`secret-vault.js` para `physical_read` / `cache_hit`, `credentials.js` para
+ * `single_flight_join`). Un sink por pedido es lo que mantiene la correlación
+ * launch ↔ categoría exacta bajo concurrencia, sin observar eventos ajenos.
+ *
+ * @param {object} deps
+ * @param {object} deps.credentials módulo `credentials.js` (inyectable para tests)
+ * @param {string} deps.projectId
+ * @param {string} deps.scope
+ * @param {string[]} [deps.sharedScopes]
+ * @returns {function(): Promise<{category:string}>}
+ */
+function createVaultResolutionDriver({ credentials, projectId, scope, sharedScopes }) {
+    return async function driver() {
+        let categoria = null;
+        const resultado = await credentials.resolveInstanceVaultAsync(
+            {
+                projectId,
+                scopes: [scope],
+                sharedScopes: Array.isArray(sharedScopes) ? sharedScopes : [],
+            },
+            // Latch de "a lo sumo un evento por invocación": la primera categoría
+            // emitida es la de ESTA resolución.
+            { vaultSink: (evento) => { if (categoria === null && evento) categoria = evento.category; } },
+        );
+
+        if (!resultado || resultado.ok !== true) {
+            // El error del vault se DESCARTA: su texto puede traer namespace,
+            // ruta o diagnóstico del backend. Sólo sobrevive un código propio.
+            const err = new Error('VAULT_RESOLUTION_FAILED');
+            err.code = 'VAULT_RESOLUTION_FAILED';
+            throw err;
+        }
+        if (categoria === null) {
+            // Sin evento no hay resolución clasificable: fail-closed, nunca se
+            // asume una categoría por default.
+            const err = new Error('VAULT_RESOLUTION_UNCLASSIFIED');
+            err.code = 'VAULT_RESOLUTION_UNCLASSIFIED';
+            throw err;
+        }
+        return { category: categoria };
+    };
+}
+
+// -----------------------------------------------------------------------------
+// Salida
+// -----------------------------------------------------------------------------
+
+function traducir(err) {
+    const entrada = err && err.code ? TRADUCCION[err.code] : null;
+    if (entrada) return { exit: entrada[0], impacto: entrada[1], siguiente: entrada[2] };
+    return {
+        exit: EXIT.INTERNAL,
+        impacto: 'la corrida termino por una condicion no prevista y no se publico nada',
+        siguiente: 'reportar el incidente con el codigo de error informado',
+    };
+}
+
+function imprimirError(err, json) {
+    const { exit, impacto, siguiente } = traducir(err);
+    const code = (err && err.code) || 'DESCONOCIDO';
+    const detail = (err && err.detail) || {};
+    if (json) {
+        console.log(JSON.stringify({ ok: false, code, detail, impacto, siguiente }));
+    } else {
+        console.error(`[calibracion] FALLO ${code}`);
+        if (detail && Object.keys(detail).length > 0) {
+            console.error(`[calibracion] detalle: ${JSON.stringify(detail)}`);
+        }
+        console.error(`[calibracion] impacto: ${impacto}`);
+        console.error(`[calibracion] proximo paso: ${siguiente}`);
+    }
+    return exit;
+}
+
+function imprimirOk(evidence, json) {
+    if (json) {
+        console.log(JSON.stringify({ ok: true, artifact: ARTIFACT_RELATIVO, evidence }));
+        return EXIT.OK;
+    }
+    console.log('[calibracion] corrida completa');
+    console.log(`[calibracion] HEAD medido: ${evidence.head_sha}`);
+    console.log(`[calibracion] integraciones verificadas: ${evidence.integrated_commits.map((c) => `#${c.issue}`).join(', ')}`);
+    console.log(`[calibracion] ventana: ${evidence.window.started_at} · ${evidence.window.duration_ms} ms · `
+        + `${evidence.window.launches} launches · concurrencia ${evidence.window.concurrency} · ${evidence.window.distribution}`);
+    console.log(`[calibracion] resoluciones: ${JSON.stringify(evidence.counts)}`);
+    console.log(`[calibracion] pico: ${evidence.peak_physical_reads_per_minute} ${evidence.peak_unit}`);
+    console.log(`[calibracion] extrapolacion: ${evidence.monthly_extrapolation} ${evidence.formula.unit}`);
+    console.log(`[calibracion] formula: ${evidence.formula.expression}`);
+    console.log(`[calibracion] sustitucion: ${evidence.formula.substitution}`);
+    console.log(`[calibracion] artefacto: ${ARTIFACT_RELATIVO}`);
+    return EXIT.OK;
+}
+
+// -----------------------------------------------------------------------------
+// main
+// -----------------------------------------------------------------------------
+
+async function main(argv, deps = {}) {
+    const args = parseArgs(argv);
+
+    if (args.help) {
+        console.log(USO);
+        return EXIT.OK;
+    }
+    if (args.desconocido !== null) {
+        console.error(`[calibracion] argumento desconocido: ${JSON.stringify(String(args.desconocido)).slice(0, 80)}`);
+        console.error(USO);
+        return EXIT.USAGE;
+    }
+    if (!args.stdin) {
+        console.error('[calibracion] falta --stdin: el sobre de la corrida se lee por la entrada estandar');
+        console.error(USO);
+        return EXIT.USAGE;
+    }
+
+    const texto = deps.stdinTexto !== undefined ? deps.stdinTexto : leerStdin();
+    if (typeof texto !== 'string' || texto.trim() === '') {
+        console.error('[calibracion] no llego ningun sobre por stdin');
+        return EXIT.INPUT;
+    }
+    const parseado = parsearSobre(texto);
+    if (parseado.error) {
+        console.error(`[calibracion] ${parseado.error}`);
+        return EXIT.INPUT;
+    }
+    const sobre = parseado.sobre;
+
+    const credentials = deps.credentials || require('../lib/credentials');
+    const driver = createVaultResolutionDriver({
+        credentials,
+        projectId: sobre.project_id,
+        scope: sobre.scope_logico,
+        sharedScopes: sobre.shared_scopes,
+    });
+
+    try {
+        const { evidence } = await runCalibration({
+            git: deps.git || createGitPort({
+                execFileSync,
+                cwd: REPO_ROOT,
+                // Requisito 3 de Security: el hijo recibe SÓLO las variables
+                // allowlisted del módulo, nunca `{ ...process.env }`.
+                env: process.env,
+            }),
+            requiredCommits: sobre.required_commits,
+            scenario: sobre.scenario,
+            clock: deps.clock || (() => Date.now()),
+            driver,
+            // La corrida se ejecuta por el camino de SÓLO LECTURA del vault
+            // (`VAULT_READONLY_COMMANDS`), acotado al único scope medido.
+            identity: { read_only: true, scopes: [sobre.scope_logico] },
+            scopeLogico: sobre.scope_logico,
+            formula: { kind: 'ceil_rate_extrapolation', horizon: 'month' },
+            dir: deps.dir || AUDIT_DIR,
+            fs,
+            crypto,
+        });
+        return imprimirOk(evidence, args.json);
+    } catch (err) {
+        return imprimirError(err, args.json);
+    }
+}
+
+if (require.main === module) {
+    main(process.argv.slice(2))
+        .then((codigo) => { process.exitCode = codigo; })
+        .catch(() => {
+            // Red de seguridad: nada del error se imprime, puede traer paths.
+            console.error('[calibracion] FALLO INTERNO no previsto');
+            process.exitCode = EXIT.INTERNAL;
+        });
+}
+
+module.exports = {
+    main,
+    TRADUCCION,
+    parseArgs,
+    parsearSobre,
+    createVaultResolutionDriver,
+    traducir,
+    EXIT,
+    PAYLOAD_KEYS,
+    ARTIFACT_RELATIVO,
+};
