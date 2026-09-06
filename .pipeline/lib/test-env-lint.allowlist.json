@@ -5235,6 +5235,12 @@
             "line": 607,
             "kind": "deuda",
             "reason": "escritura de CANARIO_5804 fuera del helper"
+        },
+        {
+            "file": "lib/__tests__/intake-gh-list-limit-7013.test.js",
+            "line": 14,
+            "kind": "deuda",
+            "reason": "PULPO_NO_AUTOSTART escrita en el sentido seguro (apagar)"
         }
     ]
 }
