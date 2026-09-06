@@ -212,6 +212,34 @@ VEREDICTO: HABILITADO para apagar `kernel.durable`.
 Exit code `0` **sólo** con paridad exacta. Cualquier otro caso ⇒ `1` y
 `VEREDICTO: BLOQUEADO`.
 
+#### La sonda positiva es parte del comando, no un paso a mano
+
+La reconciliación **aborta con `conjunto_vacio`** si no hay ni una firma ni un
+audit que reconciliar, y eso es correcto: un ensayo sobre un conjunto vacío
+siempre da paridad y no prueba nada. Para que haya algo que reconciliar, la sonda
+se siembra con:
+
+```bash
+# Dry-run: muestra exactamente qué ítems saldrían. No escribe.
+node .pipeline/kernel-drill-seed.js --profile <perfil-runtime> --project-id <projectId>
+
+# Escritura real (irreversible — ver abajo)
+node .pipeline/kernel-drill-seed.js --apply --i-understand-append-only   --profile <perfil-runtime> --project-id <projectId>
+```
+
+Dos cosas que no son detalle:
+
+1. **`--apply` solo no escribe.** Hace falta además `--i-understand-append-only`.
+   La tabla de no-repudio no concede `DeleteItem`, así que la firma y el audit de
+   la sonda quedan en DynamoDB **para siempre**. El flag existe para que nadie
+   descubra eso después de escribir.
+2. **La sonda se escribe por el camino del runtime**, no con `aws dynamodb
+   put-item`. Un ítem crudo saltea el envelope, la validación de schema, la
+   partición por `contextProjectId` y la condición append-only — y queda en la
+   tabla un registro que la reconciliación rechaza como corrupto, **sin poder
+   borrarlo**. Por eso `kernel-drill-seed.js` reusa el mismo cableado de driver
+   que `kernel-reconcile.js` (importa su `buildStore`, no lo reimplementa).
+
 ### 2.2 · Qué hace por dentro (y por qué en ese orden)
 
 La máquina de estados es fail-closed y no se puede saltear ningún paso:
@@ -294,6 +322,18 @@ R8 = <minutos> min · firmas reconciliadas: <n> · audit: <m> · paridad: exacta
 Un R8 sin conteos al lado no sirve: no distingue "recuperé rápido" de "no había
 nada que recuperar".
 
+**Desglose, para que el número sea interpretable.** R8 tiene un tramo
+automatizado y uno operativo, y conviene registrarlos por separado:
+
+| Tramo | Qué incluye | Medido |
+|-------|-------------|--------|
+| Reconciliación (`precheck` → `compare`) | export desde DynamoDB, validación, staging, promoción atómica, relectura y paridad | **5,2 s** primera pasada · **6,0 s** reintento idempotente (ensayo #5209 contra AWS real, 3 registros) |
+| Retorno operativo | apagar `kernel.durable`, reinicio limpio, primera fase completa desde filesystem | lo mide el operador en el reinicio supervisado |
+
+El tramo automatizado es el que `runDurableRollbackDrill` devuelve como `r8Ms`
+cuando se lo corre con los cuatro callbacks operativos cableados; el CLI cubre
+hasta `compare` a propósito (§2.4).
+
 ### 2.6 · Dónde quedan los artefactos (y por qué no en Git)
 
 Los registros reintegrados viven en `.pipeline/audit/kernel-reconcile/`:
@@ -312,39 +352,103 @@ evidencia va al issue, redactada.
 > sea posible (#5124 · `docs/pipeline/kernel-iam-policy.md`). La reconciliación
 > **copia, no mueve**: DynamoDB conserva todo, y hay un test que lo comprueba.
 
-### 2.7 · Evidencia del ensayo (#5209) y qué queda del operador
+### 2.7 · Evidencia del ensayo (#5209) — ejecutado con conjunto NO vacío
 
-Lo **verificado en AWS real** con el principal runtime (`intrale-kernel-runtime`,
-perfil `kernel-runtime`), sin escribir ni borrar nada:
+El ensayo se corrió contra AWS real con el principal runtime
+(`kernel.runtimePrincipal`, perfil `kernel.runtimeProfile`), sobre la partición
+canónica del control-plane. Se ejecutó **en este orden**, y el orden importa: la
+primera pasada fue deliberadamente contra la partición vacía para comprobar que
+el fail-closed dispara, y recién después se sembró la sonda.
+
+**Paso 0 — identidad efectiva.** Sin esto, cualquier verde posterior podría ser
+de otro principal (por ejemplo el administrativo) y no probaría nada sobre la
+postura least-privilege con la que corre el runtime:
 
 ```
-$ aws sts get-caller-identity --profile kernel-runtime
-  Arn: arn:aws:iam::<ACCOUNT>:user/intrale-kernel-runtime     ← coincide con kernel.runtimePrincipal
-
-$ node -e "...exportAppendOnly(store, { pageSize: 25 })..."   ← Query real contra la tabla
-  EXPORT REAL OK · counts = {"total":0,"signature":0,"audit":0}
+$ aws sts get-caller-identity --profile <perfil-runtime>
+  Arn: <IAM user redactado> .../intrale-kernel-runtime   ← coincide con kernel.runtimePrincipal
 ```
 
-Dos conclusiones, y ninguna es cosmética:
+**Paso 1 — el fail-closed dispara con la partición vacía.** Es la mitad que
+suele faltar: si nunca se ve abortar, no se sabe si el guard existe:
 
-1. **`dynamodb:Query` está concedido** al principal runtime sobre la tabla de
-   no-repudio. No era obvio: la policy es least-privilege y hasta #5209 nadie
-   necesitaba `Query` (todo se leía por `GetItem`). Si faltara, la reconciliación
-   fallaría en producción con `AccessDeniedException` — no con un conjunto vacío.
-2. **Hoy la partición está vacía.** Por eso la reconciliación aborta con
-   `conjunto_vacio`, que es el comportamiento correcto: sin datos no hay ensayo.
+```
+$ node .pipeline/kernel-reconcile.js --apply --frozen --profile … --project-id …
+  [FALLA] abortó en "validate" (conjunto_vacio)
+  VEREDICTO: BLOQUEADO. NO apagues `kernel.durable`.
+```
 
-Lo que **falta y lo hace el operador**, porque son acciones irreversibles o que
-tocan producción:
+Ese aborto además **dejó su propia entrada de audit** en DynamoDB
+(`kernel.reconcile.abort`, actor `kernel-append-only-reconcile`), que después
+apareció en el export — o sea que el rastro del aborto también se reconcilia, no
+se pierde.
 
-| Paso | Por qué no lo automatiza un agente |
-|------|-----------------------------------|
-| Generar la sonda positiva (una firma + un audit reales) | Es una escritura **irreversible** en la tabla de no-repudio: la policy IAM no concede `DeleteItem`, así que lo que se escribe queda para siempre. |
-| Apagar `kernel.durable` y reiniciar | Toca el pipeline en producción. Un restart mal coordinado es una caída. |
-| Registrar R8 | Depende de los dos anteriores. |
+**Paso 2 — sonda positiva.** Una firma y una entrada de audit escritas por el
+**mismo camino** que usa el runtime (`putSignature` / `appendAuditEntry` sobre el
+driver del boot durable), no con un `put-item` crudo:
 
-Recién con esos tres pasos el ensayo queda cerrado. La herramienta ya está y es
-idempotente: se puede correr las veces que haga falta.
+```
+$ node .pipeline/kernel-drill-seed.js --apply --i-understand-append-only \
+       --profile <perfil-runtime> --project-id <projectId>
+  == SONDA DEL ENSAYO DE ROLLBACK ESCRITA ==
+     firma:  signature#mtpcrv2l…
+     audit:  audit#mtpcrwiv…
+```
+
+**Paso 3 — reconciliación real, conjunto NO vacío:**
+
+```
+$ node .pipeline/kernel-reconcile.js --apply --frozen --profile … --project-id …
+  == RECONCILIACIÓN APPEND-ONLY (DynamoDB → filesystem) ==
+  [OK] estado final: compare
+       firmas: 1 · audit: 2 · total: 3
+       nuevos: 3 · idempotentes: 0 · sólo locales: 0
+       paridad exacta verificada releyendo del filesystem.
+  VEREDICTO: HABILITADO para apagar `kernel.durable`.
+```
+
+**Paso 4 — idempotencia del reintento.** Segunda pasada sobre el mismo conjunto,
+sin tocar nada en el medio. Ningún registro se duplicó ni se pisó:
+
+```
+  firmas: 1 · audit: 2 · total: 3
+  nuevos: 0 · idempotentes: 3 · sólo locales: 0
+```
+
+**Paso 5 — paridad verificada por una fuente INDEPENDIENTE.** El reporte del
+propio comando no alcanza como prueba de sí mismo: los IDs se volvieron a leer
+con la AWS CLI cruda (`aws dynamodb query --projection-expression SK`) y se
+compararon contra el manifiesto en disco. Coincidencia exacta, 3 = 3, mismos
+identificadores en ambos lados. Ningún registro quedó únicamente en DynamoDB.
+
+```
+DynamoDB (aws dynamodb query)   filesystem (manifest.json)
+  audit#mtpco98o…                 audit#mtpco98o…
+  audit#mtpcrwiv…                 audit#mtpcrwiv…
+  signature#mtpcrv2l…             signature#mtpcrv2l…
+  total: 3                        total: 3 (counts {signature:1, audit:2})
+```
+
+**Paso 6 — los artefactos no entraron a Git.** `git check-ignore -v` resuelve los
+tres archivos contra `.gitignore:390 (.pipeline/audit/)`, y `git status
+--porcelain` no los lista.
+
+**R8 medido.** El tramo automatizado del retorno — de `precheck` a `compare`,
+contra AWS real — tardó **5,2 s** en la primera pasada y **6,0 s** en el
+reintento idempotente. Es el tiempo que corresponde a la parte que este comando
+cubre; el R8 **total** que se registra en el issue suma además el apagado del
+flag, el reinicio y la fase completa (§2.5), que ejecuta el operador.
+
+#### Lo que sigue quedando del operador
+
+| Paso | Por qué no lo hace un agente |
+|------|------------------------------|
+| Apagar `kernel.durable` en el pipeline vivo y reiniciar | Toca producción: un restart mal coordinado es una caída, y el agente que lo dispara se mata a sí mismo. El valor versionado ya queda en `false`; falta aplicarlo con un reinicio supervisado. |
+| Completar una fase leyendo desde filesystem y cerrar R8 | Depende del reinicio de arriba. |
+
+Lo que **ya no** queda del operador: sembrar la sonda a mano. Ese paso era la
+parte irreproducible del ensayo y ahora es `kernel-drill-seed.js`, con el guard
+de irreversibilidad explícito.
 
 ### Cómo verificar la reconciliación de `signature#` y `audit#`
 

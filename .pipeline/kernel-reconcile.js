@@ -118,6 +118,7 @@ function buildStore(args) {
   try {
     return {
       ok: true,
+      contextProjectId,
       store: createKernelStore({ driver: drv.driver, contextProjectId, config: { kernel: kernelCfg } }),
     };
   } catch (e) {
@@ -197,4 +198,9 @@ if (require.main === module) {
   });
 }
 
-module.exports = { parseArgs, renderStatus, DEFAULT_RECONCILE_DIR };
+// `buildStore` se exporta para que `kernel-drill-seed.js` escriba la sonda del
+// ensayo por el MISMO cableado de driver que después lee la reconciliación. Si
+// cada uno armara el suyo, un desacople entre ambos se leería como
+// `conjunto_vacio` con la tabla llena — el diagnóstico apuntaría al lugar
+// equivocado (#5209).
+module.exports = { parseArgs, renderStatus, buildStore, DEFAULT_RECONCILE_DIR };

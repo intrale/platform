@@ -1758,17 +1758,29 @@ kernel:
   # probes siguen siendo válidos y el drift se reporta como "no verificado".
   iamPolicyName: "IntraleKernelStore"        # policy adjunta al principal runtime
   iamAdminProfile: "intrale"                 # perfil con iam:GetPolicy (solo lectura)
-  # #5208 — ENCENDIDO. El store durable del kernel es la fuente de verdad: el
-  # boot lee el catalogo del control-plane desde DynamoDB y el alta escribe ahi.
-  # Se encendio dentro de la ventana de cutover, despues de: dependencias #5204 y
-  # #5207 integradas, backups verificados fuera del repo, identidad runtime
-  # efectiva comprobada y sonda positiva NO VACIA verde contra
+  # #5208 — ENCENDIDO durante la ventana de cutover. El store durable del kernel
+  # paso a ser la fuente de verdad: el boot leia el catalogo del control-plane
+  # desde DynamoDB y el alta escribia ahi. Se encendio despues de: dependencias
+  # #5204 y #5207 integradas, backups verificados fuera del repo, identidad
+  # runtime efectiva comprobada y sonda positiva NO VACIA verde contra
   # `get-item --consistent-read`. Evidencia redactada: runbook §8.
   #
-  # Para volver atras: poner `false` y correr `node .pipeline/restart.js`
-  # (runbook §1). El rollback NO borra lo escrito en DynamoDB — la tabla de
-  # no-repudio es append-only por policy IAM; simplemente deja de leerse.
-  durable: true
+  # #5209 — APAGADO. Estado final del ENSAYO DE ROLLBACK, no una regresion: el
+  # ensayo consiste justamente en demostrar que se puede volver a filesystem sin
+  # perder firmas ni auditoria, y su estado terminal es `false`. Antes de apagar
+  # se corrio la reconciliacion DynamoDB → filesystem contra AWS real con
+  # conjunto NO VACIO (1 firma + 2 audit): paridad exacta de ids, conteos y
+  # SHA-256, verificada ademas con una lectura independiente por AWS CLI cruda.
+  # Runbook §2.7. Un conjunto vacio NO habilita este apagado y el comando aborta
+  # con `conjunto_vacio` — el codigo no deja bajar ese minimo.
+  #
+  # El apagado NO borra nada: la tabla de no-repudio es append-only por policy
+  # IAM (no concede `DeleteItem`), asi que lo escrito sigue en DynamoDB y ademas
+  # quedo reintegrado en filesystem. Simplemente deja de leerse de alli.
+  #
+  # Para volver a encender: `true` + `node .pipeline/restart.js` (runbook §1),
+  # con la ventana de cutover abierta y las sondas de §8 en verde.
+  durable: false
   # #5135 CA-1 -- Ventana de cutover SUPERVISADA. Default OFF (fail-closed: solo
   # el booleano `true` exacto la abre).
   #
