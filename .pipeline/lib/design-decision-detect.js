@@ -60,7 +60,7 @@
 //      de una decisión de arquitectura.
 //
 // Medición después del cambio (`gh issue list --label needs-definition
-// --search "-label:needs-human" --limit 50`, o sea lo que consume brazoIntake):
+// --search "-label:needs-human" --limit INTAKE_GH_LIST_LIMIT`, o sea lo que consume brazoIntake):
 //
 //     antes:   50 issues | 18 frenados = 36%
 //     después: 50 issues |  0 frenados =  0%
