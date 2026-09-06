@@ -25,7 +25,8 @@ const {
     walkJs, lintFile, loadAllowlist, loadBaseline, applyAllowlist, classify,
     resolveKey, resolveValue, validarFormaPatron, inScope, safeSnippet,
     writeAllowlist, SELF_EXEMPT, NO_CONTROL_BLACKLIST,
-    puedeHornearse, assertWorktreeLimpio, REMEDIOS_OBSOLETAS,
+    puedeHornearse, assertWorktreeLimpio, estrictaKeyLaxa, writeBaseline,
+    REMEDIOS_OBSOLETAS, REMEDIOS_ESTRICTAS, REMEDIOS_COBERTURA,
 } = lint._internal;
 const { execFileSync } = require('node:child_process');
 
@@ -954,4 +955,143 @@ test('rev-2 / R-A2 · `puedeHornearse` solo marca lo que el writer podria escrib
     // `?? dir/` — git colapsa el directorio untracked; adentro puede haber tests.
     assert.strictEqual(puedeHornearse('.pipeline/lib/nuevo-dir/'), true);
     assert.strictEqual(puedeHornearse('.pipeline/_tmp/'), false);
+});
+
+// =============================================================================
+// rev-2 · el MISMO deadlock en la ruta hermana: deuda ESTRICTA congelada.
+//
+// El baseline ancla por (file, LINE, variable, sentido). Editar un archivo con
+// estrictas congeladas desplaza sus lineas y las 17 (medido en el repo real, en
+// `__tests__/quota-snapshot-scheduler.test.js`) se leian como 17 estrictas
+// NUEVAS: `--check` rojo, `--write-baseline` abortaba por "creceria",
+// `--write-allowlist` abortaba por CA-24. Las tres salidas cerradas.
+//
+// El fix mide el crecimiento por clave LAXA (archivo, variable, sentido): el
+// baseline sigue siendo por entrada (seccion 1), re-anclar la misma deuda a su
+// linea nueva se permite, y MOVER una estricta a otro archivo o agregar una
+// nueva sigue siendo rojo.
+// =============================================================================
+
+test('rev-2 · editar un archivo con deuda ESTRICTA congelada tiene salida SIN `--no-verify`', { skip: SIN_GIT }, () => {
+    const { repo, pipelineRoot } = makeTmpGitRepo();
+    writeJson(pipelineRoot, 'lib/test-env-lint.protected.json', registroBase());
+    writeJson(pipelineRoot, 'lib/test-env-lint.allowlist.json', { min_scanned: 1, files: [], rules: [] });
+    writeJson(pipelineRoot, 'lib/test-env-lint.baseline.json', { entries: [] });
+    // Una estricta (sentido inseguro `apagar`) + una deuda ordinaria, como los
+    // archivos reales del pipeline.
+    placeJs(pipelineRoot, 'lib/__tests__/mixto.test.js', [
+        '// l1',
+        PE + '.QUOTA_SNAPSHOT_ENABLED = "0";',
+        PE + '.FOO_CORRIENTE = "1";',
+        '',
+    ].join('\n'));
+    commitTodo(repo, 'base');
+
+    assert.strictEqual(writeBaseline(pipelineRoot, silentLogger()), 0);
+    assert.strictEqual(writeAllowlist(pipelineRoot, silentLogger()), 0);
+    commitTodo(repo, 'ratchet');
+    assert.strictEqual(lint.check({ pipelineRoot }).code, 0, 'punto de partida verde');
+
+    // El dev agrega UNA linea arriba: cero violations nuevas, todas desplazadas.
+    placeJs(pipelineRoot, 'lib/__tests__/mixto.test.js', [
+        '// l0',
+        '// l1',
+        PE + '.QUOTA_SNAPSHOT_ENABLED = "0";',
+        PE + '.FOO_CORRIENTE = "1";',
+        '',
+    ].join('\n'));
+    git(repo, ['add', '-A']);
+    // Frena con exit 2: la estricta se desplazo justo encima de la linea que
+    // tenia anclada la entry `deuda` vieja (colision de anclaje). Mismo
+    // fenomeno, tercera cara — y el copy de ese rojo nombra los dos writers.
+    const rojo = lint.check({ pipelineRoot });
+    assert.strictEqual(rojo.code, 2, 'el hook frena');
+    assert.match(rojo.remedios.join('\n'), /--write-baseline/);
+    assert.match(rojo.remedios.join('\n'), /--write-allowlist/);
+
+    // Salida real, en el orden que indica el copy: baseline primero (re-ancla),
+    // allowlist despues. Ninguno de los dos aborta.
+    assert.strictEqual(writeBaseline(pipelineRoot, silentLogger()), 0,
+        'rev-1 abortaba aca con "el baseline CRECERIA": ese era el segundo deadlock');
+    assert.strictEqual(writeAllowlist(pipelineRoot, silentLogger()), 0);
+    assert.strictEqual(lint.check({ pipelineRoot }).code, 0, 'ciclo cerrado sin --no-verify');
+
+    // Y la deuda NO se diluyo: sigue congelada, una entrada, re-anclada.
+    const baseline = JSON.parse(fs.readFileSync(
+        path.join(pipelineRoot, 'lib', 'test-env-lint.baseline.json'), 'utf8'));
+    assert.strictEqual(baseline.entries.length, 1);
+    assert.strictEqual(baseline.entries[0].line, 3, 'se re-anclo a la linea nueva');
+    assert.strictEqual(baseline.entries[0].variable, 'QUOTA_SNAPSHOT_ENABLED');
+});
+
+test('rev-2 · re-anclar NO es un bypass: una estricta NUEVA sigue abortando `--write-baseline`', { skip: SIN_GIT }, () => {
+    const { repo, pipelineRoot } = makeTmpGitRepo();
+    writeJson(pipelineRoot, 'lib/test-env-lint.protected.json', registroBase());
+    writeJson(pipelineRoot, 'lib/test-env-lint.allowlist.json', { min_scanned: 0, files: [], rules: [] });
+    writeJson(pipelineRoot, 'lib/test-env-lint.baseline.json', { entries: [] });
+    placeJs(pipelineRoot, 'lib/__tests__/e.test.js', PE + '.QUOTA_SNAPSHOT_ENABLED = "0";\n');
+    commitTodo(repo, 'base');
+    assert.strictEqual(writeBaseline(pipelineRoot, silentLogger()), 0);
+    commitTodo(repo, 'baseline');
+
+    // Segunda estricta de la MISMA variable en el MISMO archivo: el conteo sube.
+    placeJs(pipelineRoot, 'lib/__tests__/e.test.js', [
+        PE + '.QUOTA_SNAPSHOT_ENABLED = "0";',
+        PE + '.QUOTA_SNAPSHOT_ENABLED = "false";',
+        '',
+    ].join('\n'));
+    const logger = silentLogger();
+    assert.strictEqual(writeBaseline(pipelineRoot, logger, { skipGitCheck: true }), 1);
+    assert.match(logger.out.join('\n'), /ABORTA/);
+    assert.match(logger.out.join('\n'), /CRECERIA en 1 entrada/);
+});
+
+test('rev-2 · re-anclar NO permite MOVER una estricta a otro archivo (seccion 1)', { skip: SIN_GIT }, () => {
+    const { repo, pipelineRoot } = makeTmpGitRepo();
+    writeJson(pipelineRoot, 'lib/test-env-lint.protected.json', registroBase());
+    writeJson(pipelineRoot, 'lib/test-env-lint.allowlist.json', { min_scanned: 0, files: [], rules: [] });
+    writeJson(pipelineRoot, 'lib/test-env-lint.baseline.json', { entries: [] });
+    placeJs(pipelineRoot, 'lib/__tests__/origen.test.js', PE + '.QUOTA_SNAPSHOT_ENABLED = "0";\n');
+    commitTodo(repo, 'base');
+    assert.strictEqual(writeBaseline(pipelineRoot, silentLogger()), 0);
+    commitTodo(repo, 'baseline');
+
+    // Misma variable, mismo sentido, TOTAL identico — pero en otro archivo.
+    fs.unlinkSync(path.join(pipelineRoot, 'lib/__tests__/origen.test.js'));
+    placeJs(pipelineRoot, 'lib/__tests__/destino.test.js', PE + '.QUOTA_SNAPSHOT_ENABLED = "0";\n');
+    const logger = silentLogger();
+    assert.strictEqual(writeBaseline(pipelineRoot, logger, { skipGitCheck: true }), 1,
+        'la clave laxa conserva el archivo: el destino CRECE');
+    assert.match(logger.out.join('\n'), /destino\.test\.js/);
+});
+
+test('rev-2 · `estrictaKeyLaxa` ignora la linea pero NUNCA el archivo', () => {
+    const a = { file: 'lib/__tests__/x.test.js', line: 10, variable: 'V', sentido: 'apagar' };
+    const b = { file: 'lib/__tests__/x.test.js', line: 99, variable: 'V', sentido: 'apagar' };
+    const c = { file: 'lib/__tests__/y.test.js', line: 10, variable: 'V', sentido: 'apagar' };
+    const d = { file: 'lib/__tests__/x.test.js', line: 10, variable: 'V', sentido: 'encender' };
+    assert.strictEqual(estrictaKeyLaxa(a), estrictaKeyLaxa(b));
+    assert.notStrictEqual(estrictaKeyLaxa(a), estrictaKeyLaxa(c));
+    assert.notStrictEqual(estrictaKeyLaxa(a), estrictaKeyLaxa(d));
+    // Clave/sentido no resolubles no colapsan con un nombre real.
+    assert.match(estrictaKeyLaxa({ file: 'f.test.js', line: 1, variable: null, sentido: null }),
+        /\(clave no resoluble\)::\(n\/a\)/);
+});
+
+test('rev-2 · el copy ante una ESTRICTA nueva nombra `--write-baseline` para el re-anclaje', () => {
+    const texto = REMEDIOS_ESTRICTAS.join('\n');
+    assert.match(texto, /--write-baseline/);
+    assert.match(texto, /desplazada/);
+    // El bloque de obsoletas explica el ORDEN correcto de los dos writers.
+    const obsoletas = REMEDIOS_OBSOLETAS.join('\n');
+    assert.match(obsoletas, /--write-baseline/);
+    assert.match(obsoletas, /PRIMERO/);
+});
+
+test('rev-2 · el copy del exit 2 por cobertura distingue la entry a mano de la colision', () => {
+    const texto = REMEDIOS_COBERTURA.join('\n');
+    assert.match(texto, /SEC-2 \/ SEC-6/);
+    assert.match(texto, /COLISION/);
+    assert.match(texto, /--write-baseline/);
+    assert.match(texto, /--write-allowlist/);
 });

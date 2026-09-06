@@ -35,7 +35,7 @@
 // ------
 //   node .pipeline/lib/test-env-lint.js --check            0 limpio / 1 violations / 2 error de config
 //   node .pipeline/lib/test-env-lint.js --write-allowlist  regenera allowlist (aborta con estrictas, CA-24)
-//   node .pipeline/lib/test-env-lint.js --write-baseline   regenera baseline, SOLO si encoge
+//   node .pipeline/lib/test-env-lint.js --write-baseline   regenera baseline: re-ancla, nunca crece
 //
 // Los dos writers abortan si hay archivos UNTRACKED en alcance bajo `.pipeline`
 // (R-A2). Un TRACKED modificado NO bloquea: viaja en el mismo commit. Para el
@@ -876,10 +876,39 @@ const REMEDIOS_OBSOLETAS = [
     '  2) Los archivos TRACKED modificados NO bloquean la regeneracion (viajan en el mismo',
     '     commit). Si ademas hay archivos NUEVOS untracked que entran en ESTE commit,',
     '     agregar `--allow-dirty`.',
-    '  3) Si hay una violation ESTRICTA presente, `--write-allowlist` aborta (CA-24):',
-    '     esa se arregla, no se allowlistea.',
-    '  4) `--no-verify` NO es la salida: mueve el rojo al CI en vez de resolverlo.',
+    '  3) Si el archivo que editaste tambien tiene deuda ESTRICTA congelada, sus lineas',
+    '     se desplazaron igual: correr PRIMERO `--write-baseline` (re-ancla la misma',
+    '     deuda a su linea nueva; si CRECIERA, aborta) y despues `--write-allowlist`.',
+    '  4) Una violation ESTRICTA nueva de verdad hace abortar a los dos writers: esa se',
+    '     arregla, no se congela ni se allowlistea.',
+    '  5) `--no-verify` NO es la salida: mueve el rojo al CI en vez de resolverlo.',
 ];
+
+// Exit 2 por "entries que cubren estrictas" tiene DOS causas muy distintas:
+// (a) alguien allowlisteo a mano una estricta — SEC-2/SEC-6, se arregla; y
+// (b) colision de anclaje: la entry `deuda` apuntaba a una linea que, tras
+//     editar el archivo, hoy ocupa una estricta desplazada. Es (b) el que se
+//     cruza en el ciclo normal de edicion, y el remedio es el mismo par de
+//     writers. Regenerar nunca esconde una estricta: `--write-allowlist` emite
+//     SOLO entries `deuda` y aborta si hay una estricta sin congelar (CA-24).
+const REMEDIOS_COBERTURA = [
+    '  1) Si la entry se agrego a mano sobre una violation ESTRICTA: sacarla y arreglar',
+    '     la violation. Una estricta no es perdonable por allowlist (SEC-2 / SEC-6).',
+    '  2) Si es una COLISION de anclaje (editaste el archivo y una estricta se desplazo',
+    '     encima de una entry `deuda` vieja), re-anclar y regenerar, en este orden:',
+    '       node .pipeline/lib/test-env-lint.js --write-baseline',
+    '       node .pipeline/lib/test-env-lint.js --write-allowlist',
+    '     El primero re-ancla la deuda congelada (aborta si CRECE); el segundo reescribe',
+    '     las entries `deuda` (aborta si queda una estricta sin congelar).',
+    '  3) `--no-verify` NO es la salida: mueve el rojo al CI en vez de resolverlo.',
+];
+
+const REMEDIOS_ESTRICTAS = REMEDIOS_VIOLATIONS.concat([
+    '  4) Si la estricta NO es nueva sino la MISMA de siempre con la linea desplazada',
+    '     (editaste un archivo con deuda congelada), re-anclarla:',
+    '       node .pipeline/lib/test-env-lint.js --write-baseline',
+    '     Solo re-ancla: si el conteo de (archivo, variable, sentido) sube, aborta.',
+]);
 
 /**
  * Corrida completa en modo `--check`, con el ORDEN FAIL-CLOSED del issue: el
@@ -925,7 +954,7 @@ function check(opts = {}) {
             lines.push('  ' + e.entry + ' -> ' + e.file + ':' + e.line + ' variable `'
                 + (e.variable === null ? '(clave no resoluble)' : e.variable) + '` — ' + e.reason);
         }
-        return { code: 2, lines, scanned, violations, remedios: REMEDIOS_VIOLATIONS };
+        return { code: 2, lines, scanned, violations, remedios: REMEDIOS_COBERTURA };
     }
     // 6) violations nuevas (incluye baseline que CRECIO — CA-36)
     if (r.nuevas.length) {
@@ -937,7 +966,10 @@ function check(opts = {}) {
             lines.push(estrictasNuevas.length + ' de ellas son ESTRICTAS: el baseline CRECIO. '
                 + 'Una estricta nueva es rojo duro siempre — no se allowlistea, se arregla.');
         }
-        return { code: 1, lines, scanned, violations, remedios: REMEDIOS_VIOLATIONS };
+        return {
+            code: 1, lines, scanned, violations,
+            remedios: estrictasNuevas.length ? REMEDIOS_ESTRICTAS : REMEDIOS_VIOLATIONS,
+        };
     }
 
     // Verde: los dos conteos de CA-22 + la deuda del baseline en LINEA PROPIA.
@@ -1059,6 +1091,27 @@ function writeAllowlist(pipelineRoot, logger, opts = {}) {
     return 0;
 }
 
+/**
+ * Clave LAXA de una estricta: (archivo, variable, sentido) — sin la linea.
+ *
+ * El baseline sigue siendo POR ENTRADA `(file, line, variable, sentido)` como
+ * exige la seccion 1: NO se degrada a un contador suelto. Esta clave se usa solo
+ * para decidir si el baseline CRECE, y por eso conserva el `file`: mover una
+ * estricta de un archivo a otro hace crecer la clave del destino ⇒ sigue siendo
+ * rojo, que es exactamente el agujero que la seccion 1 cierra.
+ */
+function estrictaKeyLaxa(v) {
+    const variable = (v.variable === null || v.variable === undefined) ? '(clave no resoluble)' : v.variable;
+    const sentido = (v.sentido === null || v.sentido === undefined) ? '(n/a)' : v.sentido;
+    return normalizeRel(v.file) + '::' + variable + '::' + sentido;
+}
+
+function contarPorClave(items) {
+    const m = new Map();
+    for (const it of items) m.set(estrictaKeyLaxa(it), (m.get(estrictaKeyLaxa(it)) || 0) + 1);
+    return m;
+}
+
 function writeBaseline(pipelineRoot, logger, opts = {}) {
     if (!opts.skipGitCheck) assertWorktreeLimpio(pipelineRoot);
     const registry = loadRegistry(pipelineRoot);
@@ -1067,12 +1120,31 @@ function writeBaseline(pipelineRoot, logger, opts = {}) {
     let prev;
     try { prev = loadBaseline(pipelineRoot); }
     catch { prev = { entries: [] }; }
-    const prevKeys = new Set(prev.entries.map(baselineKey));
-    const nuevas = estrictas.filter((v) => !prevKeys.has(baselineKey(v)));
     // Shrink-only: crecer es rojo. Una estricta nueva se arregla, no se congela.
-    if (prev.entries.length > 0 && nuevas.length > 0) {
-        logger.error('--write-baseline ABORTA: el baseline CRECERIA en ' + nuevas.length + ' entrada(s).');
-        for (const v of nuevas) logger.error(formatViolation(v));
+    //
+    // "Crecer" se mide por clave LAXA, no por entrada exacta (rev-2). Editar un
+    // archivo con deuda congelada desplaza sus lineas y, con la entrada exacta,
+    // las 17 estrictas del archivo se leian como 17 estrictas NUEVAS: el check
+    // daba rojo, `--write-baseline` abortaba por "creceria", `--write-allowlist`
+    // abortaba por CA-24 y la unica salida quedaba `--no-verify` — el mismo
+    // deadlock que rev-2 cierra en la ruta de la allowlist. RE-ANCLAR la misma
+    // deuda a su linea nueva no la agranda ni la esconde: el diff del baseline
+    // viaja en el PR y sigue siendo revisable. Lo que NO se permite es que el
+    // conteo de (archivo, variable, sentido) suba.
+    const prevCount = contarPorClave(prev.entries);
+    const curCount = contarPorClave(estrictas);
+    const crecidas = [];
+    for (const [k, n] of curCount) {
+        const antes = prevCount.get(k) || 0;
+        if (n > antes) crecidas.push({ key: k, antes, ahora: n });
+    }
+    if (prev.entries.length > 0 && crecidas.length) {
+        const total = crecidas.reduce((acc, c) => acc + (c.ahora - c.antes), 0);
+        logger.error('--write-baseline ABORTA: el baseline CRECERIA en ' + total + ' entrada(s).');
+        const keysCrecidas = new Set(crecidas.map((c) => c.key));
+        for (const v of estrictas.filter((v2) => keysCrecidas.has(estrictaKeyLaxa(v2)))) {
+            logger.error(formatViolation(v));
+        }
         return 1;
     }
     const entries = estrictas.map((v) => ({
@@ -1141,7 +1213,8 @@ module.exports = {
         lintFile, loadAllowlist, loadBaseline, applyAllowlist, classify,
         resolveKey, resolveValue, literalString, validarFormaPatron, escapeRegExp,
         baselineKey, inScope, formatViolation, safeSnippet, writeAllowlist, writeBaseline,
-        assertWorktreeLimpio, puedeHornearse, REMEDIOS_VIOLATIONS, REMEDIOS_OBSOLETAS,
+        assertWorktreeLimpio, puedeHornearse, estrictaKeyLaxa,
+        REMEDIOS_VIOLATIONS, REMEDIOS_OBSOLETAS, REMEDIOS_ESTRICTAS, REMEDIOS_COBERTURA,
         largoPrefijoLiteral, largoSufijoLiteral, tieneComodinLibre, defaultLogger,
         ASSIGN_RE, COMPUTED_RE, DELETE_RE, WHOLE_RE,
         SELF_EXEMPT, SKIP_DIRS, SCRATCH_DIR_RE, NO_CONTROL_BLACKLIST, SENTIDOS, KINDS,

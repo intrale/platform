@@ -2694,13 +2694,13 @@
         },
         {
             "file": "lib/__tests__/test-env-lint.test.js",
-            "line": 119,
+            "line": 120,
             "kind": "deuda",
             "reason": "escritura de X fuera del helper"
         },
         {
             "file": "lib/__tests__/test-env-lint.test.js",
-            "line": 562,
+            "line": 563,
             "kind": "deuda",
             "reason": "escritura de X fuera del helper"
         },
