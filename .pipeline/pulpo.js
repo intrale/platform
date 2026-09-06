@@ -4921,7 +4921,8 @@ function brazoBarrido(config) {
               const motivoSanitized = sanitizePipelineText(m.motivo).slice(0, 1500);
 
               // #3079 — Pre-validar deps en GitHub: si todas las dependencias
-              // numéricas que el clasificador identificó ya están CLOSED, NO
+              // numéricas que el clasificador identificó ya están cumplidas
+              // (CLOSED o MERGED, #6901), NO
               // pegar `blocked:dependencies` y NO archivar. El agente trabajó
               // sobre estado stale (worktree viejo o cache de contexto) y el
               // bloqueo nacería zombi — el brazoDesbloqueo después lo destrabaría
@@ -4940,13 +4941,14 @@ function brazoBarrido(config) {
                   issueLabelsCache.delete(issueCacheKey(depNum));
                   const info = getIssueInfo(depNum);
                   stateLog.push(`#${depNum}=${info.state}`);
-                  if (info.state !== 'CLOSED') {
+                  // #6901 - MERGED (PR mergeado) tambien es dep cumplida.
+                  if (!brazoDesbloqueoCore.isDependencySatisfied(info.state)) {
                     todasCerradas = false;
                     break;
                   }
                 }
                 if (todasCerradas) {
-                  log('barrido', `🪢⏭ #${issue} dependency_block IGNORADO — todas las deps ya CLOSED (${stateLog.join(',')}). No se pega label, no se archiva. El motivo era stale.`);
+                  log('barrido', `🪢⏭ #${issue} dependency_block IGNORADO — todas las deps ya cumplidas (${stateLog.join(',')}). No se pega label, no se archiva. El motivo era stale.`);
                   // No archivar, no pegar label. El issue cae al flujo normal
                   // de rebote (humanBlock → rev++) que lo destraba o lo escala.
                   continue;
@@ -23349,7 +23351,7 @@ async function reapStaleHumanBlocks({ allowlistSet } = {}) {
         10000
       );
       const st = String(depState || '').trim();
-      if (st) issueStates[String(dep)] = st; // 'OPEN' | 'CLOSED'
+      if (st) issueStates[String(dep)] = st; // 'OPEN' | 'CLOSED' | 'MERGED' (#6901)
     } catch (e) {
       log('desbloqueo', `[human-block] no se pudo leer estado de #${dep}: ${e.message} — fail-closed`);
     }
@@ -23360,7 +23362,9 @@ async function reapStaleHumanBlocks({ allowlistSet } = {}) {
   for (const m of toRelease) {
     const deps = m.precondition.depends_on;
     const depStates = deps.map(n => `#${n}=${issueStates[String(n)] || 'desconocido'}`).join(', ');
-    const guidance = `Auto-destrabe (#4748): precondición resuelta. Dependencia(s) ${deps.map(n => '#' + n).join(', ')} cerrada(s). El pipeline re-encola este issue para continuar su ciclo.`;
+    // #6901 CA-5 - verbo POR dependencia: una dep que es un PR se mergeo, no
+    // se cerro. Decir 'cerrada(s)' en bloque falsea el rastro del destrabe.
+    const guidance = `Auto-destrabe (#4748): precondición resuelta. ${brazoDesbloqueoCore.describeSatisfiedDeps(deps, issueStates)}. El pipeline re-encola este issue para continuar su ciclo.`;
 
     let res;
     try {
@@ -24134,9 +24138,14 @@ async function brazoDesbloqueoImpl(config) {
           }
         }
 
-        // 3. Verificar si todas las dependencias están cerradas
+        // 3. Verificar si todas las dependencias están CUMPLIDAS. #6901: el
+        //    criterio unico vive en brazoDesbloqueoCore.isDependencySatisfied
+        //    (CLOSED + MERGED). Se guarda el estado observado de cada dep para
+        //    nombrarla despues con su verbo real y para poder distinguir
+        //    'sigue abierta' de 'no se pudo leer' en el log del freno.
         let allClosed = true;
         const openDeps = [];
+        const depStates = {};
         for (const depNum of depIssueNumbers) {
           ghThrottle();
           try {
@@ -24144,12 +24153,16 @@ async function brazoDesbloqueoImpl(config) {
               ['issue', 'view', String(depNum), '--json', 'state', '--jq', '.state', '--repo', repoTarget.getRepoForIssue(issue)],
               10000
             );
-            if (depState.trim() !== 'CLOSED') {
+            const st = String(depState || '').trim();
+            if (st) depStates[String(depNum)] = st;
+            if (!brazoDesbloqueoCore.isDependencySatisfied(st)) {
               allClosed = false;
               openDeps.push(depNum);
             }
           } catch (e) {
-            // Si no se puede leer el estado, asumir que está abierto
+            // Estado ilegible: se asume abierta (fail-closed intacto). Queda
+            // FUERA de depStates a proposito - esa ausencia es lo que le
+            // permite al log decir 'no se pudo leer' en vez de 'sigue abierta'.
             allClosed = false;
             openDeps.push(depNum);
           }
@@ -24188,6 +24201,7 @@ async function brazoDesbloqueoImpl(config) {
           const decision = brazoDesbloqueoCore.decideSplitUmbrellaClose({
             issue,
             deps: depIssueNumbers,
+            depStates,
             children: splitChildren,
             childrenSource: splitChildrenSource,
             childStates: splitChildStates,
@@ -24263,7 +24277,10 @@ async function brazoDesbloqueoImpl(config) {
             }
 
             // Agregar comentario de desbloqueo
-            const unblockComment = `## Dependencias resueltas 🟢\n\nLas siguientes dependencias cerraron: ${depIssueNumbers.map(n => '#' + n).join(', ')}.\n\nEl pipeline reentra a este issue automáticamente.`;
+            // #6901 CA-5 - 'Se destrabo porque #5203 fue mergeada y #5204 fue
+            // cerrada': el verbo lo pone cada dependencia, no el conjunto.
+            const depDetalle = brazoDesbloqueoCore.describeSatisfiedDeps(depIssueNumbers, depStates);
+            const unblockComment = `## Dependencias resueltas 🟢\n\nSe destrabó porque ${depDetalle}.\n\nEl pipeline reentra a este issue automáticamente.`;
             ghThrottle();
             await ghDesbloqueoCall(
               ['issue', 'comment', String(issue.number), '--body', unblockComment, '--repo', repoTarget.getRepoForIssue(issue)],
@@ -24275,12 +24292,14 @@ async function brazoDesbloqueoImpl(config) {
             // lo reemplaza: mandar los dos era ruido duplicado en el canal.
             sendTelegram(
               decision.telegram
-              || `🪢→🟢 #${issue.number} destrabado automáticamente (deps cerradas: ${depIssueNumbers.map(n => '#' + n).join(',')})`
+              || `🪢→🟢 #${issue.number} destrabado automáticamente: ${depDetalle}.`
             );
             log('desbloqueo', `#${issue.number} desbloqueado exitosamente`);
           }
         } else {
-          log('desbloqueo', `🪢⏳ #${issue.number} sigue esperando ${openDeps.map(n => '#' + n).join(',')}`);
+          // #6901 / UX - el freno se explica: 'sigue abierta' y 'no se pudo
+          // leer el estado' son cosas distintas para el operador.
+          log('desbloqueo', `🪢⏳ #${issue.number} sigue esperando: ${brazoDesbloqueoCore.describePendingDeps(openDeps, depStates)}`);
         }
       } catch (e) {
         log('desbloqueo', `Error procesando #${issue.number}: ${e.message}`);
@@ -24431,7 +24450,8 @@ async function _selfHealPhantomBlocks({
           ['issue', 'view', depNum, '--json', 'state', '--jq', '.state', '--repo', repoTarget.getPrimaryRepo()],
           10000
         );
-        if (String(depState).trim() !== 'CLOSED') { anyOpen = true; break; }
+        // #6901 - mismo criterio unico que el brazo principal (CLOSED+MERGED).
+        if (!brazoDesbloqueoCore.isDependencySatisfied(depState)) { anyOpen = true; break; }
       } catch {
         anyOpen = true; break;                                  // estado ilegible → fail-closed
       }
