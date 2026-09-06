@@ -17,6 +17,11 @@ const {
   verifyHandoffIntegrity,
 } = require('./gate-verdict');
 
+// #6258 — aislamiento de `process.env`: sin esto el resultado de este archivo
+// depende del entorno del proceso que lo corre (con PIPELINE_GATE0_ENABLED=1
+// exportado daba 37/38, sin la variable 38/38, en el mismo commit).
+const { withEnv } = require('./test-helpers/with-env');
+
 // ----------------------------------------------------------------------------
 // Flag de enforcement — default OFF (CA-8, SEC-R6)
 // ----------------------------------------------------------------------------
@@ -32,8 +37,25 @@ test('isGate0Enabled es true sólo con PIPELINE_GATE0_ENABLED=1', () => {
 });
 
 test('isGate0Enabled usa process.env por default sin argumentos', () => {
-  // En el entorno de test el flag no está seteado → false.
-  assert.strictEqual(isGate0Enabled(), false);
+  // #6258 (D-2 / CA-6258-14): la rama del default-arg se ejercita con el flag
+  // FORZADO A AUSENTE, no con el que herede el proceso. La rama `true` ya está
+  // cubierta por inyección explícita en el test de acá arriba.
+  //
+  // #6260 (CA-40.2, sección 11(b)): bajo el vocabulario del consumidor real,
+  // forzar la ausencia es la dirección INSEGURA de `PIPELINE_GATE0_ENABLED`
+  // — la familia `*GATE*_ENABLED` es `apagar`, y ausencia apaga el gate tan
+  // bien como `'0'`. Este uso es exactamente el que el opt-in de la sección 9
+  // existe para atender, así que migra al opt-in con `motivo` no vacío.
+  // Prohibido reescribirlo tocando `process.env` a mano: es el patrón que
+  // #6260 vino a prohibir, y esta línea es la ÚNICA cobertura de la rama
+  // default-arg de `isGate0Enabled()`.
+  withEnv({ PIPELINE_GATE0_ENABLED: undefined }, () => {
+    assert.strictEqual(isGate0Enabled(), false);
+  }, {
+    permitirApagarControl: ['PIPELINE_GATE0_ENABLED'],
+    motivo: 'ejercita la rama default-arg de isGate0Enabled() con el flag ausente; '
+      + 'la ausencia forzada es deliberada y es la única cobertura de esa rama',
+  });
 });
 
 test('shouldEvaluateGate0 sólo corre en desarrollo/verificacion con flag ON', () => {

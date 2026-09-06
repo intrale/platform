@@ -1,0 +1,104 @@
+{
+  "_doc": "Registro HIBRIDO de variables de control de seguridad (#6260, secciones 3-5 del issue). Es la UNICA fuente de verdad: la consumen `test-env-lint.js` (para clasificar por direccion de riesgo) y `lib/test-helpers/with-env.js` (para SEC-7). Dos listas divergentes fueron la causa raiz del hallazgo alta de `security` #3 — no se agrega una segunda lista en ningun lado.",
+  "_forma_doc": "Cada entrada es `nombre` (variable literal) o `patron` (familia abierta). La cobertura es la UNION de ambas formas: una nunca resta cobertura a la otra. `sentido_inseguro` es OBLIGATORIO en las dos formas, sin default (CA-27.1 / CA-27.2). Cuando una variable matchea a la vez una entrada `nombre` y una `patron`, la DIRECCION la fija la nominal, y si difiere de la de su familia debe declarar `motivo_precedencia` no vacio (CA-27.5). La cobertura nunca se resuelve por precedencia: ahi siempre es union.",
+  "_sentidos_doc": "apagar = apaga el control; apaga todo valor con String(v).trim() !== '1' (la AUSENCIA incluida). encender = enciende el bypass; enciende todo valor fuera de {undefined,null,'','0','false','off','no'} (case-insensitive, con trim). cualquiera = variable no booleana: TODA escritura es insegura.",
+  "vars": [
+    {
+      "nombre": "PULPO_SKIP_AGENT_MODELS_VALIDATE",
+      "motivo": "escape hatch que saltea la validacion de agent-models.json en el arranque del pulpo",
+      "control_que_apaga": "pulpo.js:26050 — validacion de agent-models al boot",
+      "sentido_inseguro": "encender"
+    },
+    {
+      "nombre": "PULPO_SKIP_DATA_RESIDENCY_VALIDATE",
+      "motivo": "escape hatch que saltea la validacion de residencia de datos",
+      "control_que_apaga": "pulpo.js — kill-switch de la validacion de data residency",
+      "sentido_inseguro": "encender"
+    },
+    {
+      "nombre": "PULPO_SKIP_SECRETS_HALT",
+      "motivo": "escape hatch que evita el halt del pulpo ante secretos detectados",
+      "control_que_apaga": "pulpo.js:45 — halt por secretos",
+      "sentido_inseguro": "encender"
+    },
+    {
+      "nombre": "PULPO_ALLOW_FORCE_PROVIDER_OVERRIDE",
+      "motivo": "acepta FORCE_PROVIDER_OVERRIDE, que saltea la eleccion de proveedor validada",
+      "control_que_apaga": "pulpo.js:26109 — rechazo de FORCE_PROVIDER_OVERRIDE",
+      "sentido_inseguro": "encender"
+    },
+    {
+      "nombre": "QUOTA_RECONCILE_DISABLED",
+      "motivo": "desactiva la reconciliacion de cuota sin redeploy",
+      "control_que_apaga": "lib/quota-exhausted.js:1059 — veto por reconciliacion de cuota",
+      "sentido_inseguro": "encender"
+    },
+    {
+      "nombre": "PULPO_NO_AUTOSTART",
+      "motivo": "evita que el pulpo arranque agentes solo; en tests es la posicion INERTE y por eso segura",
+      "control_que_apaga": "autostart de agentes del pulpo",
+      "sentido_inseguro": "apagar",
+      "motivo_precedencia": "la familia PULPO_NO_* es `encender` porque negar un comportamiento suele ser el bypass; esta fila es el caso inverso: PULPO_NO_AUTOSTART='1' NO arranca agentes (posicion mas segura, la que usan las 49 lineas del patron P1 de #6259) y lo inseguro es APAGARLA, porque eso deja al test lanzando agentes reales."
+    },
+    {
+      "nombre": "ADMISSION_SWEEP_ENABLED",
+      "motivo": "habilita el barrido de admision; apagarlo deja entrar trabajo sin control de admision",
+      "control_que_apaga": "lib/config-resolver.js:562 — admission sweep",
+      "sentido_inseguro": "apagar"
+    },
+    {
+      "nombre": "QUOTA_SNAPSHOT_ENABLED",
+      "motivo": "kill switch global del snapshot de cuota; apagarlo ciega la contabilidad de cuota entera",
+      "control_que_apaga": "lib/quota-snapshot-integration.js:89 — snapshot de cuota",
+      "sentido_inseguro": "apagar"
+    },
+    {
+      "nombre": "QUOTA_SNAPSHOT_GATE_ENABLED",
+      "motivo": "kill switch del gate de snapshot de cuota; apagarlo deja pasar lanzamientos sin gate",
+      "control_que_apaga": "lib/quota-snapshot-integration.js:96 — gate de snapshot de cuota",
+      "sentido_inseguro": "apagar"
+    },
+    {
+      "nombre": "PIPELINE_CFG_FIRMA_OPERADOR__ENABLED",
+      "motivo": "override por env del gate de firma humana del operador; apagarlo saltea la firma",
+      "control_que_apaga": "lib/config-resolver.js — override de config `firma_operador.enabled`",
+      "sentido_inseguro": "apagar"
+    },
+    {
+      "nombre": "PIPELINE_CODEX_HEALTHCHECK_ENABLED",
+      "motivo": "healthcheck del proveedor Codex antes de lanzar; apagarlo lanza sin validar el toolchain",
+      "control_que_apaga": "lib/agent-launcher.js:282 — healthcheck de Codex",
+      "sentido_inseguro": "apagar"
+    },
+    {
+      "nombre": "ANTHROPIC_1M_WORKAROUND_ENABLED",
+      "motivo": "feature flag del workaround de contexto 1M; apagarlo reintroduce el modo de fallo que mitiga",
+      "control_que_apaga": "lib/commander/anthropic-1m-workaround.js — workaround 1M",
+      "sentido_inseguro": "apagar"
+    },
+    {
+      "nombre": "PULPO_LIVENESS_KILL_SECONDS",
+      "motivo": "umbral NO booleano del watchdog de liveness: '99999' lo desactiva tan bien como '0', asi que no hay dos posiciones sino un rango",
+      "control_que_apaga": "pulpo-liveness-run.js:133 — piso del umbral del watchdog",
+      "sentido_inseguro": "cualquiera"
+    },
+    {
+      "patron": "^PULPO_SKIP_[A-Z0-9_]+$",
+      "motivo": "familia PULPO_SKIP_* — saltear una validacion es el sentido inseguro. Familia ABIERTA a proposito (SEC-6 / R-8): el proximo PULPO_SKIP_* nace protegido solo, sin que nadie lo agregue a ninguna lista.",
+      "control_que_apaga": "la validacion que cada PULPO_SKIP_* saltea",
+      "sentido_inseguro": "encender"
+    },
+    {
+      "patron": "^PULPO_NO_[A-Z0-9_]+$",
+      "motivo": "familia PULPO_NO_* — negar un comportamiento es el sentido inseguro. PULPO_NO_AUTOSTART es la excepcion documentada y declara `motivo_precedencia`.",
+      "control_que_apaga": "el comportamiento que cada PULPO_NO_* niega",
+      "sentido_inseguro": "encender"
+    },
+    {
+      "patron": "^[A-Z0-9_]*GATE[0-9A-Z_]*_ENABLED$",
+      "motivo": "familia de flags de gate — apagar un gate es el sentido inseguro. Cubre los TRES gates reales de produccion (PIPELINE_GATE0_ENABLED, PIPELINE_VISUAL_GATE_ENABLED, PIPELINE_WAVE_COHERENCE_GATE_ENABLED) SIN escribirlos en ninguna lista: la proxima flag de gate nace protegida sola.",
+      "control_que_apaga": "el gate que cada flag habilita",
+      "sentido_inseguro": "apagar"
+    }
+  ]
+}

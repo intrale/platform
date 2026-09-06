@@ -380,6 +380,40 @@ function createInMemoryDynamoDriver() {
             return { item: found ? JSON.parse(JSON.stringify(found)) : null };
         },
 
+        // #5209 — Query paginada por partición + prefijo de sort key.
+        //
+        // La reconciliación de `signature#`/`audit#` (append-only, no-repudio)
+        // necesita LEER TODO lo escrito, y `getItem` sólo sabe traer una clave
+        // conocida. Sin esta primitiva el export salía vacío y la paridad daba
+        // falso verde por conjunto vacío, que es exactamente el riesgo que
+        // #5209 existe para cerrar.
+        //
+        // Contrato (idéntico en ambos drivers): filtra por PK exacta y
+        // `begins_with(SK, prefix)`, ordena por SK ascendente (determinístico) y
+        // devuelve `{ items, lastEvaluatedKey }`. `lastEvaluatedKey` es `null`
+        // cuando NO quedan páginas — el caller pagina hasta verlo en `null`.
+        async query(spec, params = {}) {
+            const t = tables.get(spec.tableName);
+            if (!t) throw new Error(`tabla inexistente: ${spec.tableName}`);
+            const pk = params.partitionKey;
+            const prefix = typeof params.skPrefix === 'string' ? params.skPrefix : '';
+            const all = [];
+            for (const it of t.items.values()) {
+                if (it.PK !== pk) continue;
+                if (prefix && !String(it.SK).startsWith(prefix)) continue;
+                all.push(JSON.parse(JSON.stringify(it)));
+            }
+            all.sort((a, b) => (String(a.SK) < String(b.SK) ? -1 : String(a.SK) > String(b.SK) ? 1 : 0));
+            const startSk = params.exclusiveStartKey && params.exclusiveStartKey.SK;
+            const from = startSk == null ? 0 : all.findIndex((it) => String(it.SK) > String(startSk));
+            const rest = from < 0 ? [] : all.slice(from);
+            const limit = Number.isFinite(params.limit) && params.limit > 0 ? Math.floor(params.limit) : rest.length;
+            const page = rest.slice(0, limit);
+            const hasMore = rest.length > page.length;
+            const last = hasMore && page.length ? { PK: page[page.length - 1].PK, SK: page[page.length - 1].SK } : null;
+            return { items: page, lastEvaluatedKey: last };
+        },
+
         async deleteItem(spec, key, opts = {}) {
             const t = tables.get(spec.tableName);
             if (!t) throw new Error(`tabla inexistente: ${spec.tableName}`);
@@ -574,6 +608,36 @@ function createAwsCliDynamoDriver({ run } = {}) {
                 '--key', JSON.stringify(toAttrValues(key)), '--consistent-read',
             ]);
             return { item: res && res.Item ? fromAttrValues(res.Item) : null };
+        },
+
+        // #5209 — Query paginada (ver contrato en el driver in-memory).
+        //
+        // `--key-condition-expression` es una CONSTANTE de código con
+        // placeholders (`#pk`, `#sk`, `:pk`, `:pfx`): ni el nombre de atributo
+        // ni los valores se interpolan en el string, y cada flag viaja como
+        // ELEMENTO SEPARADO del array que consume `run(args)` → `spawn`. Cero
+        // superficie de inyección de shell / de expresión (A03).
+        async query(spec, params = {}) {
+            const args = [
+                'query', '--table-name', spec.tableName,
+                '--key-condition-expression', '#pk = :pk AND begins_with(#sk, :pfx)',
+                '--expression-attribute-names', JSON.stringify({ '#pk': 'PK', '#sk': 'SK' }),
+                '--expression-attribute-values', JSON.stringify(toAttrValues({
+                    ':pk': params.partitionKey,
+                    ':pfx': typeof params.skPrefix === 'string' ? params.skPrefix : '',
+                })),
+                '--consistent-read',
+            ];
+            if (Number.isFinite(params.limit) && params.limit > 0) {
+                args.push('--limit', String(Math.floor(params.limit)));
+            }
+            if (params.exclusiveStartKey) {
+                args.push('--exclusive-start-key', JSON.stringify(toAttrValues(params.exclusiveStartKey)));
+            }
+            const res = await cli(args);
+            const items = Array.isArray(res && res.Items) ? res.Items.map(fromAttrValues) : [];
+            const lek = res && res.LastEvaluatedKey ? fromAttrValues(res.LastEvaluatedKey) : null;
+            return { items, lastEvaluatedKey: lek };
         },
 
         async deleteItem(spec, key, opts = {}) {

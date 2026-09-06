@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// #6812 — Windows: suprimir la ventana de consola de cada hijo (gh, git,
+// tasklist, powershell). Debe ir ANTES de cualquier require que spawnee.
+require('./lib/force-windows-hide').apply();
 // =============================================================================
 // Servicio GitHub — Cola con retry, create-issue y condensador generico
 // Procesa cola de servicios/github/pendiente/
@@ -38,6 +41,13 @@ const labelGuardrail = require('./lib/label-guardrail');
 // #4693 CA-0 — fuente de verdad única del repo destino. Reemplaza el literal
 // DEFAULT_REPO por el `primary` del bloque `repos` de pipeline.config.json.
 const repoTarget = require('./lib/repo-target');
+
+// #6496 (F2) — labels de gate QA que se pueden RETRACTAR de un PR con una orden
+// `remove-label` + `gate_retraction: true`. Son exactamente los que `hasQaGate`
+// (`skills-deterministicos/delivery.js`) acepta como autoridad de merge: quitar
+// cualquiera de los dos sólo puede CERRAR el gate, nunca abrirlo. Enumerado a
+// propósito — nada fuera de esta lista atraviesa el bloqueo de labels a PRs.
+const PR_GATE_RETRACTABLE = new Set(['qa:passed', 'qa:skipped']);
 // #5863 CA-R3 — canal de vuelta hacia el Pulpo. Este proceso es el único que
 // aplica labels de verdad; el Pulpo cachea labels 10 min y, sin este registro,
 // no tiene forma de enterarse de una mutación aplicada acá.
@@ -77,6 +87,23 @@ function listWorkFiles(dir) {
       .filter(f => !f.startsWith('.') && f.endsWith('.json'))
       .map(f => ({ name: f, path: path.join(dir, f) }));
   } catch { return []; }
+}
+
+// #6274 — Lectura de un job de la cola tolerante al BOM.
+//
+// Incidente (2026-08-28 → 2026-08-31): cuatro jobs `qa-<issue>-passed.json`
+// quedaron atascados en `pendiente/` durante días. Los cuatro habían sido
+// escritos con BOM UTF-8 (`EF BB BF`), y `JSON.parse` rechaza el BOM como
+// `Unexpected token`. Consecuencia: el label `qa:passed` nunca se aplicó y el
+// `qa:failed` viejo quedó vigente, bloqueando el merge de esos issues.
+//
+// El BOM es basura de encoding, no un dato: quien escribe el job (PowerShell
+// `Out-File`/`Set-Content` en Windows lo agrega por default) no está emitiendo
+// un payload distinto. Por eso se descarta en la lectura en vez de rechazar el
+// job — `JSON.parse` es el único que se ofende.
+function readJobFile(filePath) {
+  const raw = fs.readFileSync(filePath, 'utf8');
+  return JSON.parse(raw.replace(/^﻿/, ''));
 }
 
 // =============================================================================
@@ -155,6 +182,40 @@ const defaultGhClient = {
 
   commentIssue(issueNumber, body) {
     cp.execFileSync(GH_BIN, ['issue', 'comment', String(issueNumber), '--body-file', '-'], {
+      cwd: ROOT, encoding: 'utf8', input: body == null ? '' : String(body),
+      timeout: 15000, windowsHide: true,
+    });
+  },
+
+  /**
+   * #6296 — PR ABIERTO del issue, resuelto por la convención de rama de agente
+   * (`agent/<issue>-<slug>`, CLAUDE.md). Devuelve `null` si no hay ninguno.
+   *
+   * Se matchea por `headRefName` y no por texto del título/cuerpo a propósito:
+   * el nombre de rama es un dato estructurado que produce el propio pipeline,
+   * mientras que un `--search` sobre título haría match con cualquier PR que
+   * MENCIONE el número (un PR de otro issue que escriba "#6296" en el body
+   * recibiría el comentario).
+   */
+  prForIssue(issueNumber) {
+    const n = Number(issueNumber);
+    if (!Number.isInteger(n) || n <= 0) return null;
+    let out;
+    try {
+      out = cp.execFileSync(GH_BIN, ['pr', 'list', '--state', 'open', '--limit', '100', '--json', 'number,headRefName'], {
+        cwd: ROOT, encoding: 'utf8', timeout: 20000, windowsHide: true,
+      });
+    } catch { return null; }
+    let list;
+    try { list = JSON.parse(out); } catch { return null; }
+    if (!Array.isArray(list)) return null;
+    const prefix = `agent/${n}-`;
+    const hit = list.find((p) => p && typeof p.headRefName === 'string' && p.headRefName.startsWith(prefix));
+    return hit && Number.isInteger(hit.number) ? hit.number : null;
+  },
+
+  commentPullRequest(prNumber, body) {
+    cp.execFileSync(GH_BIN, ['pr', 'comment', String(prNumber), '--body-file', '-'], {
       cwd: ROOT, encoding: 'utf8', input: body == null ? '' : String(body),
       timeout: 15000, windowsHide: true,
     });
@@ -708,7 +769,7 @@ function processQueue({ ghClient = defaultGhClient } = {}) {
 
     let data;
     try {
-      const rawData = JSON.parse(fs.readFileSync(trabajandoPath, 'utf8'));
+      const rawData = readJobFile(trabajandoPath);
       // #2334: sanitizar body/title/label ANTES de invocar al ghClient.
       // El body viaja a la API pública de GitHub, visible por cualquiera.
       // (CA-4 #3025: la sanitización se queda en el call site del worker —
@@ -721,6 +782,27 @@ function processQueue({ ghClient = defaultGhClient } = {}) {
           ghClient.commentIssue(data.issue, data.body);
           log(`Comentario en #${data.issue}`);
           break;
+
+        // #6296 — observación de severidad LEVE al PR del issue. Mismo `body` ya
+        // sanitizado por `sanitizeGithubPayload` que el resto de la cola.
+        //
+        // Si el issue no tiene PR abierto NO se cae al comentario del issue: son
+        // audiencias distintas y el carril leve está definido sobre el PR. Se
+        // descarta con causa visible (`discarded`), que es lo que deja el
+        // silencio auditable en `listo/`.
+        case 'pr-comment': {
+          const pr = ghClient.prForIssue ? ghClient.prForIssue(data.issue) : null;
+          if (!pr) {
+            data.discarded = 'pr-not-found';
+            data.discarded_at = new Date().toISOString();
+            log(`pr-comment descartado: #${data.issue} sin PR abierto (rama agent/${data.issue}-*)`);
+            break;
+          }
+          ghClient.commentPullRequest(pr, data.body);
+          data.result = { pr };
+          log(`Comentario en PR #${pr} (issue #${data.issue})`);
+          break;
+        }
 
         case 'label': {
           // #2994 — guardia idempotente: si la orden trae `marker_path`/
@@ -772,6 +854,30 @@ function processQueue({ ghClient = defaultGhClient } = {}) {
           // cualquier issue bloqueado por un humano sin dejar rastro.
           if (applyLabelGuardrail(data, ghClient, file.name)) break;
           if (applyGateLabelAction(data, ghClient)) break;
+          // #6496 rebote security rev-3 (F2) — RETRACTACIÓN del gate QA de un PR.
+          //
+          // `hasQaGate` acepta `qa:passed` Y `qa:skipped` como autoridad de
+          // merge, pero el `gate-label-reconciler` sólo conoce
+          // passed/failed/pending (ampliarle `GATE_LABELS` es #5869), así que
+          // `applyGateLabelAction` no toca `qa:skipped` y la orden caía en el
+          // bloqueo genérico de abajo. Eso dejaba un PR con `qa:skipped` vivo
+          // sobre un HEAD que nadie verificó cuando el gate de caducidad frenaba
+          // el merge.
+          //
+          // Por qué es seguro abrir esta puerta: QUITAR un label que sólo puede
+          // ABRIR el gate es monótono hacia lo cerrado — no existe entrada que
+          // convierta esto en un permiso de merge. El bloqueo genérico existe
+          // para impedir escrituras arbitrarias de labels a PRs; esto es su
+          // opuesto exacto. Enumerado (no un patrón), y sólo con la marca
+          // explícita de retractación.
+          if (data.target === 'pr'
+              && data.gate_retraction === true
+              && PR_GATE_RETRACTABLE.has(data.label)) {
+            ghClient.editPullRequest(data.issue, { removeLabel: data.label });
+            log(`Gate QA retractado: "${data.label}" removido del PR #${data.issue}`);
+            recordLabelMutation(data.issue, data.label, 'remove-label', 'pr');
+            break;
+          }
           if (data.target === 'pr') {
             data.discarded = 'non-gate-pr-label-blocked';
             log(`Orden no-gate a PR bloqueada: #${data.issue} remove-label=${data.label}`);
@@ -834,7 +940,7 @@ function processQueue({ ghClient = defaultGhClient } = {}) {
     } catch (e) {
       log(`Error procesando ${file.name}: ${e.message}`);
       try {
-        const itemData = data || JSON.parse(fs.readFileSync(trabajandoPath, 'utf8'));
+        const itemData = data || readJobFile(trabajandoPath);
         itemData.retries = (itemData.retries || 0) + 1;
         itemData.lastError = e.message;
 
@@ -848,9 +954,33 @@ function processQueue({ ghClient = defaultGhClient } = {}) {
           try { fs.unlinkSync(trabajandoPath); } catch {}
           log(`${file.name} → pendiente/ (reintento ${itemData.retries}/${MAX_RETRIES})`);
         }
-      } catch {
-        // Fallback: mover de vuelta como estaba
-        try { fs.renameSync(trabajandoPath, file.path); } catch {}
+      } catch (inner) {
+        // #6274 — Poison message: el payload no se pudo parsear NI para
+        // contarle un reintento. El fallback histórico lo devolvía a
+        // `pendiente/` tal cual, pero sin poder incrementar `retries` el job
+        // volvía a fallar idéntico 10s después: `MAX_RETRIES` era inalcanzable
+        // por construcción y el archivo rebotaba trabajando/→pendiente/ para
+        // siempre, ensuciando el log y sin llegar nunca a `fallido/`.
+        //
+        // Un job ilegible no se vuelve legible por reintentarlo. Se corta el
+        // bucle mandándolo a `fallido/` con el contenido crudo preservado,
+        // que es donde un humano puede verlo.
+        try {
+          let rawContent = null;
+          try { rawContent = fs.readFileSync(trabajandoPath, 'utf8'); } catch {}
+          fs.writeFileSync(path.join(FALLIDO, file.name), JSON.stringify({
+            unparseable: true,
+            error: inner.message,
+            originalError: e.message,
+            failed_at: new Date().toISOString(),
+            raw: rawContent,
+          }, null, 2));
+          try { fs.unlinkSync(trabajandoPath); } catch {}
+          log(`${file.name} → fallido/ (payload ilegible: ${inner.message})`);
+        } catch {
+          // Último recurso: dejarlo como estaba para no perder el job.
+          try { fs.renameSync(trabajandoPath, file.path); } catch {}
+        }
       }
     }
   }

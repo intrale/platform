@@ -13,14 +13,53 @@
  *   T4 — Migración: skill-profiles.json v1 se renombra a .v1.bak al arrancar
  */
 
+// #6259 (P1) — Hermeticidad: `PULPO_NO_AUTOSTART` es variable de CONTROL DE
+// SEGURIDAD y tiene que estar seteada ANTES del `require` de pulpo, asi que no
+// se puede envolver con `withEnv`. Patron P1: `snapshotEnv` (nombres explicitos,
+// SEC-1) + `process.on('exit')`. El hook es imprescindible aca: este script
+// termina con `process.exit(N)`, camino donde `after()` no correria.
+const { snapshotEnv, restoreEnv } = require('./lib/test-helpers/with-env');
+
+function enableWorktreeDependencies() {
+  try { require.resolve('js-yaml'); return; } catch (_) { /* worktree sin node_modules */ }
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const gitFile = fs.readFileSync(path.join(__dirname, '..', '.git'), 'utf8').trim();
+  const gitDir = path.resolve(path.join(__dirname, '..'), gitFile.replace(/^gitdir:\s*/, ''));
+  process.env.NODE_PATH = path.join(gitDir, '..', '..', '..', 'node_modules');
+  require('node:module').Module._initPaths();
+}
+
+const __envSnap = snapshotEnv(['PULPO_NO_AUTOSTART', 'PIPELINE_DIR_OVERRIDE', 'NODE_PATH']);
+enableWorktreeDependencies();
+process.on('exit', () => restoreEnv(__envSnap));
+
 process.env.PULPO_NO_AUTOSTART = '1';
+
+// #6259 (CA-6259-8) — `PIPELINE_DIR_OVERRIDE` HEREDADO tiene que neutralizarse
+// antes del require: `pulpo.js:596` congela `PIPELINE` al importar honrando esa
+// variable (#4832), mientras que T3/T4 escriben sus fixtures en `__dirname`. Con
+// la variable sucia en el entorno, pulpo lee de un lado y el test escribe del
+// otro -> 13 OK / 3 fallos (medido). Forzar la AUSENCIA la vuelve determinista.
+// Es variable comun, no de control: se borra, no se habilita.
+delete process.env.PIPELINE_DIR_OVERRIDE;
 
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
 
-// Cargar pulpo.js como módulo
-const pulpo = require('C:/Workspaces/Intrale/platform.session-fixpipe-20260411-220349/.pipeline/pulpo.js');
+// Cargar pulpo.js como módulo.
+// #6259 (D-6259-4 / R-3) — antes esto era un path ABSOLUTO a un worktree ajeno
+// (`platform.session-fixpipe-20260411-220349`) que ya no tiene `node_modules`.
+// El test solo pasaba porque el entorno del operador exporta `NODE_PATH` al
+// `node_modules` del repo principal — es decir, pasaba gracias a la misma
+// contaminacion de entorno que esta historia combate: con entorno vacio moria
+// con `Cannot find module 'js-yaml'`. Pasa a relativo, como los otros dos.
+const pulpo = require('./pulpo.js');
+
+// D-6259-8 — restauracion inmediata: el flag ya gateo el import; los asserts
+// corren con el control ENCENDIDO. El hook de 'exit' queda como piso.
+restoreEnv(__envSnap);
 
 let passed = 0;
 let failed = 0;
@@ -87,9 +126,11 @@ console.log('── T3: recordSkillResourceUsage aprende por delta ──');
 // escribimos temporalmente skill-profiles.json + metrics-history.jsonl
 // en el mismo directorio, corremos la función, y restauramos.
 
-const PIPELINE_DIR = path.join(path.dirname(require.resolve(
-  'C:/Workspaces/Intrale/platform.session-fixpipe-20260411-220349/.pipeline/pulpo.js'
-)));
+// #6259 (D-6259-4 / R-3) — segunda ocurrencia del mismo path absoluto al
+// worktree ajeno. Tenia que caer con la de arriba: dejarla apuntando afuera hace
+// que T3/T4 escriban sus fixtures en un `.pipeline/` distinto del que lee el
+// `pulpo` importado, y los tests fallan (13 OK / 3 fallos, medido).
+const PIPELINE_DIR = path.dirname(require.resolve('./pulpo.js'));
 const profilesPath = path.join(PIPELINE_DIR, 'skill-profiles.json');
 const metricsPath = path.join(PIPELINE_DIR, 'metrics-history.jsonl');
 

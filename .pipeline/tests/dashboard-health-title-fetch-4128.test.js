@@ -29,7 +29,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const http = require('http');
-const { spawn } = require('child_process');
+const { spawnDashboard, waitForDashboardBoot } = require('./helpers/dashboard-boot');
 const { getFreePort } = require('./helpers/free-port');
 const { seedConfig } = require('./helpers/sandbox-config');
 
@@ -159,7 +159,8 @@ before(async function () {
     '@echo off\r\nping -n 3 127.0.0.1 >nul\r\necho {"data":{"repository":{}}}\r\n');
 
   port = await getFreePort();
-  child = spawn(process.execPath, [dashboardPath], {
+  child = spawnDashboard({
+    dashboardPath,
     env: {
       ...process.env,
       PIPELINE_STATE_DIR: tmpDir,
@@ -171,19 +172,13 @@ before(async function () {
       DASHBOARD_PROC_STATUS_TTL_MS: '50',
       DASHBOARD_ETA_TTL_MS: '50',
     },
-    stdio: ['ignore', 'ignore', 'ignore'],
   });
 
-  await new Promise((resolve, reject) => {
-    let tries = 0;
-    const tick = () => {
-      getJson(port, '/api/health', 5000, (err, r) => {
-        if (!err && r && r.status === 200) return resolve();
-        if (++tries > 60) return reject(new Error('dashboard no levantó: ' + (err && err.message)));
-        setTimeout(tick, 250);
-      });
-    };
-    setTimeout(tick, 500);
+  await waitForDashboardBoot({
+    child,
+    probe: () => new Promise((resolve, reject) => {
+      getJson(port, '/api/health', 5000, (err, r) => (err ? reject(err) : resolve(r && r.status === 200)));
+    }),
   });
 });
 

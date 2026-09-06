@@ -1,0 +1,2 @@
+{"type":"system","subtype":"init","model":"claude-opus-5"}
+{"is_error":true,"num_turns":3,"terminal_reason":"api_error","subtype":"success","api_error_status":529,"result":"API Error: 529 overloaded_error","type":"result","duration_ms":4200}

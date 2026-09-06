@@ -564,8 +564,16 @@ test('#5456 CA-3 — el cierre de intento NO invoca el dedup del aviso proactivo
         .filter((l) => !l.trim().startsWith('//'))
         .join('\n');
 
+    // #6179 — el dedup del aviso proactivo dejó de ser la ventana de 5 min de
+    // `shouldEmitFallbackNotice` (borrada) y pasó a ser la política por episodio
+    // de `fallback-episode-state.recordDispatch`. El propósito de ESTE assert no
+    // cambia: la respuesta REACTIVA contesta el turno que se perdió y no puede
+    // deduplicarse nunca — dedupear una respuesta deja al operador sin
+    // contestación. Se reapunta al mecanismo nuevo (CA-18), no se borra.
     assert.ok(!/shouldEmitFallbackNotice\s*\(/.test(codigo),
-        'la respuesta REACTIVA no puede pasar por el dedup de 5 min del aviso proactivo');
+        'la política vieja no puede reaparecer en el cierre de intento');
+    assert.ok(!/recordDispatch\s*\(/.test(codigo),
+        'la respuesta REACTIVA no puede pasar por el dedup por episodio del aviso proactivo');
     assert.ok(!/setFlag\s*\(/.test(codigo),
         'persistencia única: el cierre de intento no vuelve a escribir el flag');
     assert.ok(!/writeFileSync\s*\(/.test(codigo),
@@ -582,7 +590,23 @@ test('#5456 CA-3 — el cierre de intento NO invoca el dedup del aviso proactivo
     assert.ok(/formatMidTurnQuotaResponse\s*\(/.test(codigo),
         'sanity: el recorte del bloque incluye el código del cierre de intento');
 
-    // Y el aviso PROACTIVO conserva su deduplicación intacta.
-    assert.match(src, /commanderMP\.shouldEmitFallbackNotice\(\{/,
-        'el aviso proactivo sigue dedupeado por shouldEmitFallbackNotice');
+    // Y el aviso PROACTIVO conserva su deduplicación intacta — ahora por
+    // episodio (#6179). El guardián sigue siendo el mismo: que nadie deje al
+    // aviso proactivo emitiendo sin ninguna política de emisión.
+    assert.match(src, /episodeState\.recordDispatch\(\{/,
+        'el aviso proactivo sigue dedupeado, ahora por episodio (#6179)');
+    assert.ok(!/commanderMP\.shouldEmitFallbackNotice\(\{/.test(src),
+        'la política vieja se borró: dos políticas vivas = el ruido vuelve por la que quedó');
+
+    // #6179 SEC-9 — la causa que se le muestra al operador no puede volver a ser
+    // un literal. Un `401` reportado como "cuota agotada" era, con el aviso por
+    // episodio, un único mensaje con el motivo equivocado que no se repetía más.
+    const bloqueProactivo = src.slice(src.indexOf('if (resolution.crossProvider)'));
+    const finProactivo = bloqueProactivo.indexOf('#3258 — args dependen del provider efectivo');
+    const codigoProactivo = bloqueProactivo.slice(0, finProactivo > 0 ? finProactivo : 4000)
+        .split('\n').filter((l) => !l.trim().startsWith('//')).join('\n');
+    assert.ok(!/errorCode:\s*'quota_exhausted'/.test(codigoProactivo),
+        'la causa se deriva de provider-pause-cause, nunca se hardcodea (CA-6)');
+    assert.ok(!/\bcause\s*:/.test(codigoProactivo),
+        'ningún call site puede pasar `cause` por parámetro: no está en la firma (D1)');
 });

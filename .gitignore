@@ -128,6 +128,30 @@ qa/evidence/**/*.png
 qa/evidence/**/*.zip
 qa/evidence/**/*.html
 qa/evidence/**/*.mp3
+# #6497 — el hueco que dejaba trackeable la mitad de lo que promueve
+# `promoteSpoolEvidence()`. Su allowlist de forma (`SPOOL_PROMOTABLE_EXT` en
+# `.pipeline/servicio-drive.js`) acepta mp4|webm|mkv|mov|m4v|avi|gif|png|jpe?g|pdf|xml,
+# y de esas sólo mp4/png/pdf estaban cubiertas: un `.webm`, un `.jpg`, un `.gif`
+# o un `test-results.xml` promovidos automáticamente entraban a git. `qa/evidence`
+# ya es causa raíz documentada del disco lleno (950+ archivos trackeados) y este
+# PR le agrega un productor automático de copias: se cierra la lista entera.
+qa/evidence/**/*.webm
+qa/evidence/**/*.mkv
+qa/evidence/**/*.mov
+qa/evidence/**/*.m4v
+qa/evidence/**/*.avi
+qa/evidence/**/*.gif
+qa/evidence/**/*.jpg
+qa/evidence/**/*.jpeg
+qa/evidence/**/*.xml
+# #5244 rev-9 — los logs de probe que los agentes dejan al verificar un rechazo
+# (`.txt`) y los scripts de reproducción de una pasada (`.sh`) son artefactos de
+# corrida, no metadatos: mismo criterio que el resto del bloque. `qa/evidence`
+# ya es causa raíz documentada del disco lleno y no hay motivo para versionar
+# la transcripción de un comando que se puede volver a correr.
+qa/evidence/**/*.txt
+qa/evidence/**/*.sh
+qa/evidence/**/*.log
 # Re-incluir SOLO los metadatos tracked (orden importa: el ! va DESPUES del ignore — #4173)
 !qa/evidence/**/*.json
 !qa/evidence/**/.gitkeep
@@ -223,6 +247,18 @@ scripts/planner-plan.json
 # Mismo criterio que el de arriba: es runtime puro y el `reset --hard` del repo
 # principal lo pisaria, reiniciando la escalera de avisos en cada respawn.
 .pipeline/.desync-block-notify.json
+# #6118 — silencios activos de la alerta de dependencias faltantes. Estado
+# runtime puro y por maquina: versionarlo haria que el `reset --hard` del
+# respawn lo pise y el "no avisarme por 24 h" del operador se pierda, que es
+# justamente la falla que el silencio persistente vino a evitar.
+.pipeline/partial-pause-deps-mute.json
+.pipeline/partial-pause-deps-mute.json.*.tmp
+# #6801 — dedupe de avisos de paraguas que el brazo de desbloqueo decide NO
+# auto-cerrar (fail-closed). Estado runtime puro y por checkout: se crea en el
+# `.pipeline/` de cada worktree donde corre el brazo, y como `reset --hard` no
+# toca untracked quedaria como `??` permanente en el repo principal.
+.pipeline/desbloqueo-umbrella-avisos.json
+.pipeline/desbloqueo-umbrella-avisos.json.*.tmp
 .pipeline/last-restart.json
 # #5646 — registro de servicios que quedaron con codigo viejo tras un
 # `reset --hard` y guard de ronda del restart selectivo. Estado runtime puro:
@@ -262,7 +298,13 @@ scripts/planner-plan.json
 .pipeline/package-lock.json
 .pipeline/circuit-breaker-infra.json
 .pipeline/circuit-breaker-infra.json.tmp
-# #5723 — contador de rollbacks consecutivos. Va fuera del arbol versionado a
+
+# #6708 — Estado del guardián de disco. Lo reescribe el Pulpo en cada tick;
+# versionarlo generaría un diff sucio en cada worktree y lo bloquearía el guard
+# de estado runtime del CI. El audit JSONL ya está cubierto por `.pipeline/audit/`.
+.pipeline/disk-guard-state.json
+.pipeline/disk-guard-state.json.tmp
+# #5723 — contador de rollbacks consecutivos. Va fuera del árbol versionado a
 # proposito: el rollback hace `git checkout <target> -- .pipeline/` y se
 # llevaria puesto el estado si estuviera trackeado.
 .pipeline/rollback-state.json
@@ -278,7 +320,7 @@ scripts/planner-plan.json
 .dur
 # #5216 (R-1, hallazgo bloqueante de `security`) — el flag `sensible: true` de
 # `writeDeliverable` SOLO excluye el entregable del canal Drive; NO lo excluye de
-# git. Los .md de `.pipeline/assets/docs/` estan trackeados y este repo es PUBLICO,
+# git. Los .md de `.pipeline/assets/docs/` estan trackeados y este repo es PÚBLICO,
 # asi que un entregable sensible se publicaria igual. Esta regla es la unica
 # contencion real. El inventario detallado de credenciales de #5216 mapea
 # `archivo:linea` de cada consumidor y su cadena de resolucion: es un mapa de
@@ -300,6 +342,13 @@ scripts/planner-plan.json
 .pipeline/servicios/*/trabajando/*
 .pipeline/servicios/*/listo/*
 .pipeline/servicios/*/procesado/*
+# #6496 — cola de re-encolados por caducidad del sello de QA. Estado runtime:
+# la escribe delivery.js y la drena el Pulpo. Mismo tratamiento que servicios/.
+.pipeline/verificacion-requeue/*/*
+!.pipeline/verificacion-requeue/*/.gitkeep
+# #6496 — contador de re-encolados por caducidad, por issue.
+.pipeline/desarrollo/verificacion/.*.seal-retries
+.pipeline/desarrollo/verificacion/.seal-migracion-anunciada
 # #2335 — estado operativo del connectivity-state (no comitear)
 .pipeline/connectivity-state.json
 .pipeline/blocked-by-infra.json
@@ -316,6 +365,8 @@ scripts/planner-plan.json
 .pipeline/.tts-state.json
 # EP1-H4 (#3919) — estado de dedup de avisos de degradación multimedia — efímero
 .pipeline/.degradation-notify-state.json
+# #6144 — cooldown del aviso hablado de cadena de IA caída — efímero, por máquina
+.pipeline/.provider-down-audio-state.json
 # #2653 — cache de recomendaciones pendientes (refresca desde gh) — efímero
 .pipeline/recommendations-cache.json
 # #2895 — caches de issue title/summary (refresca desde gh) — efímero
@@ -380,6 +431,12 @@ __pycache__/
 # ignorados; confirmar el target y contar con respaldo antes de ejecutarlo.
 .pipeline/state/*
 
+# #6206 — depósito de pendientes de firma del canal único de aprobación.
+# Índice de presentación, NUNCA autoridad (CA-A4). No versionar: el repo hace
+# `reset --hard` en cada respawn y git podría resucitar un pendiente resuelto
+# o borrar uno vivo sin dejar rastro en la cadena de audit.
+.pipeline/approval-channel/*
+
 # #4536 — estado runtime del scheduler de ventanas OFF por proveedor (#3871) y
 # del disable manual por proveedor. Fail-open, con updated_at, generado/persistido
 # en ejecución (lib/provider-schedule.js, lib/provider-disabled.js). NO commitear:
@@ -403,3 +460,68 @@ security-report-*.md
 # snapshot del estado de coordinación local; se retienen sólo para rollback y NO
 # deben versionarse (ni filtrarse por un `git add -A`).
 .pipeline/backup/
+
+# #5110 (Ola 9.4 · E2 · R2) — estado operativo namespaceado por projectId.
+#
+# BLOQUEANTE, y va en el MISMO commit que el cambio de layout. Las entradas del
+# layout plano (`.pipeline/waves.json:255`, `.pipeline/.partial-pause.json:213`,
+# `.pipeline/archived/:332`, `.pipeline/audit/`) son paths LITERALES: ninguna
+# cubre `.pipeline/projects/<projectId>/...`. Verificado antes del cambio:
+#
+#   $ git check-ignore -q .pipeline/waves.json                             → IGNORADO
+#   $ git check-ignore -q .pipeline/projects/intrale-platform/waves.json   → TRACKEABLE
+#
+# O sea que al namespacear, el estado operativo (que incluye la allowlist, el
+# registro de olas y el audit JSONL con motivos de rechazo y metadata interna)
+# dejaba de estar ignorado en un repo PÚBLICO. Mismo precedente que `27d790aba`,
+# que destrackeó `.pipeline/state/`.
+#
+# Cubre `waves.json`, `.partial-pause.json`, `archived/`, `audit/` y los markers
+# de promote/archive de TODOS los proyectos, presentes y futuros.
+.pipeline/projects/
+
+# #5110 (rev-2, B3) — lock de exclusión mutua del migrador de estado operativo.
+#
+# `migrate-operational-state-namespace.js` aplica `git check-ignore` al backup y
+# al destino (regla R2/SEC-7 propia del script) pero se salteaba el ÚNICO otro
+# archivo que él mismo crea: su lock. Verificado antes del cambio:
+#
+#   $ git check-ignore -q .pipeline/.opstate-migration.lock ; echo $?
+#   1     → TRACKEABLE
+#
+# En un repo público, un `git add -A` durante una migración lo levantaba (con el
+# PID del operador adentro). Ahora el script también lo pasa por `assertIgnored()`,
+# así que sin esta entrada la migración aborta antes de escribir un solo byte.
+.pipeline/.opstate-migration.lock
+
+# Artefactos de corridas de test de agentes (JUnit XML + listados temporales)
+# quedaron commiteados por error en #6145; nunca son entregables.
+/[0-9]*-junit*.xml
+/[0-9]*-testfiles.tmp
+
+# Scratch de agentes del pipeline: destinos de prueba, sondas y fixtures que los
+# skills escriben durante una corrida. Nunca son entregables.
+# Se agrego tras el rechazo de QA en #5220: una corrida de verificacion habia
+# dejado versionada una copia entera de `.claude/` (232 archivos con estado
+# runtime del operador y 4 JSON con marcadores de conflicto sin resolver) bajo
+# `.pipeline/_tmp/po5220/dst-ca2b/`, justo la clase de replica que este issue
+# existe para erradicar. Un `git add -A` alcanzaba para colarla al PR.
+.pipeline/_tmp/
+
+# Estado del cron de rotación de credenciales (#5901 / REQ-SEC-1).
+# El repo es PÚBLICO: el archivo publica el inventario de nombres de
+# variables de secretos con su calendario de vencimiento y, desde #5901,
+# también qué productos existen y qué secretos tiene cada uno. Vive en
+# ~/.claude/pipeline-state/ (fuera del árbol, sobrevive al reset --hard).
+.pipeline/credential-reminder-state.json
+
+# Scratch de agentes en la RAIZ del repo (#5126 / CA-B2).
+# `.pipeline/_tmp/` (arriba) cubre el scratchpad de adentro del pipeline, pero
+# los skills tambien escriben scratchpads al lado del repo: `.tmp<issue>/`,
+# `.tmp-<rol>/` y `.tmp-issue-<n>.txt`. Cuatro de esos quedaron versionados
+# (40 archivos, 17.5 MB de dumps de la API de issues) y uno publicaba el
+# account-id AWS real dentro de un ARN completo, en un repo PUBLICO — justo lo
+# que CA-0 y CA-B2 de #5126 prohiben ("el account-id nunca se commitea").
+# Un `git add -A` durante una corrida alcanzaba para colarlos.
+/.tmp*/
+/.tmp-*.txt

@@ -61,8 +61,43 @@ const DEFAULT_COVERAGE_THRESHOLD = 80;
 //      termina, mucho antes del watchdog del Pulpo. El motivo se reporta.
 //   3) Heartbeat de progreso para diagnosticar a cuál archivo le tocaba el cuelgue.
 const NODE_TEST_PER_TEST_TIMEOUT_MS = 120 * 1000;
-const NODE_TEST_WALL_TIMEOUT_MS = 12 * 60 * 1000;
 const NODE_TEST_IDLE_LOG_INTERVAL_MS = 30 * 1000;
+
+// Presupuesto de wall-clock de la batería completa (rebote #5901 rev-1).
+//
+// Historia: el valor original era 12 min. Se eligió cuando la suite del
+// pipeline tenía ~800 archivos y corría en 3-5 min. La suite creció a 920
+// archivos / 17k tests y el margen se consumió solo — sin que ningún cambio
+// lo tocara y sin que nadie lo notara, porque el síntoma aparece como un
+// rebote al dev del issue en curso y no como una alerta de infraestructura.
+//
+// Medición empírica de esta pasada, misma suite, misma máquina (8 vCPU):
+//   - máquina descargada:              469 s  (7m49s, exit 0, 16657 tests)
+//   - máquina bajo carga del pipeline: 720-850 s → cruzaba los 12 min
+// La contención es el multiplicador dominante: archivos individuales pasan
+// de 38 s a 180 s (4,7x) cuando corren varios agentes en paralelo. Y correr
+// con el pipeline cargado no es el caso patológico: es el caso NORMAL, porque
+// el tester se dispara desde `verificacion` mientras hay dev y build vivos.
+//
+// Evidencia de que el techo viejo rechazaba código sano: dos issues distintos
+// el mismo día, con diffs sin relación entre sí, rebotados por exit 124 con
+// la suite en verde — #5802 (4 archivos tocados, wall 732 s) y #5901
+// (17 archivos, wall 720 s). Ver `.pipeline/logs/{5802,5901}-tester.log`.
+//
+// 25 min = ~1,8x sobre el peor caso observado (850 s) y deja ~20 min de
+// margen contra el watchdog del Pulpo, que mata al tester a los 45 min. El
+// wall-clock sigue existiendo para cortar CUELGUES (su motivo original), no
+// para presupuestar una suite lenta.
+//
+// Override operativo por env var para ajustar sin tocar código.
+const NODE_TEST_WALL_TIMEOUT_DEFAULT_MS = 25 * 60 * 1000;
+const NODE_TEST_WALL_TIMEOUT_MS = (() => {
+    const raw = process.env.PIPELINE_TESTER_NODE_WALL_TIMEOUT_MS;
+    const n = raw != null ? Number(raw) : NaN;
+    // Fail-safe: un override inválido o absurdo (0, negativo, no numérico)
+    // cae al default en vez de dejar la batería sin techo o matarla al toque.
+    return Number.isFinite(n) && n >= 60 * 1000 ? n : NODE_TEST_WALL_TIMEOUT_DEFAULT_MS;
+})();
 
 // Presupuesto de longitud para la porción de archivos de la línea de comandos
 // de `node --test <files...>` (rebote #3953).
@@ -356,6 +391,148 @@ const GRADLE_INPUT_PATTERNS = [
  */
 function isGradleInput(file) {
     return GRADLE_INPUT_PATTERNS.some((re) => re.test(file));
+}
+
+// -- Relevancia del gate de cobertura (rebote #6362) ------------------
+// Problema: el gate de cobertura compara la cobertura ABSOLUTA del repo
+// contra `--threshold` (default 80%). Pero la baseline real del producto es
+// ~36% (Compose/Android sin tests). Consecuencia: CUALQUIER diff que no sea
+// `pipeline_only` y produzca reporte Kover se rechaza siempre, sin importar
+// su calidad -- el gate no puede pasar nunca y no mide nada del cambio.
+//
+// Verificacion empirica del rebote #6362 rev-1 (deliverable del tester en
+// `.pipeline/assets/docs/6362/tester-verificacion-6362.md`):
+//   - Tests: 6761 total - 0 failures - 0 errors - 2 skipped (OK)
+//   - Cobertura: 36.05% (16622/46110 lineas) vs umbral 80%
+//   - Paquetes bajo umbral: `ui`, `AndroidPlatform`,
+//     `ComposableSingletons$MainKt$lambda$-1618970650$1` -> todos Compose/
+//     Android, baseline preexistente del producto.
+//   - `git diff --numstat origin/main...HEAD` -> CERO archivos `.kt`/`.java`
+//     bajo `src/`. El unico archivo Gradle tocado es `build.gradle.kts` con
+//     +5 lineas dentro de `dependencyCheck { nvd { ... } }` (config del plugin
+//     OWASP, no del compilador ni de Kover).
+//   - El propio reporte imprime "Delta vs baseline: baseline: no disponible":
+//     el umbral absoluto se esta usando como si fuera un gate de regresion.
+//
+// Es la misma clase de falso rebote ya documentada ~10 veces arriba (#2895,
+// #3072, #3081, #3092, #2398, #3409, #3576, #3929, #3943, #5065), pero esas
+// se resolvieron ensanchando PIPELINE_ONLY_PATTERNS. Aca NO se puede: la
+// exclusion de `build.gradle.kts` de esa lista es correcta y deliberada (un
+// build script SI puede alterar que se compila y que mide Kover), y esta
+// protegida por el test `PIPELINE_ONLY_PATTERNS sigue rechazando
+// build.gradle.kts`. Por eso el fix va en la otra punta: no en "es
+// pipeline-only?" sino en "puede este diff MOVER el numero de cobertura?".
+//
+// Principio (el mismo de GRADLE_INPUT_PATTERNS / #3943): la cobertura mide
+// fuentes Kotlin/Java. Si el diff no toca ninguna fuente ni recurso medido, y
+// tampoco toca construcciones del build script que cambien que se compila o
+// que se instrumenta, entonces numerador y denominador de Kover son --por
+// construccion-- identicos a los de `origin/main`. Comparar ese numero contra
+// un umbral absoluto evalua la historia del repo, no el cambio.
+//
+// Alcance deliberadamente conservador (FAIL-CLOSED en cada rama dudosa):
+//   - Un diff que toca cualquier `.kt`/`.java` bajo `src/` sigue gateado al
+//     80% exactamente como hoy (agregar codigo sin tests sigue rebotando).
+//   - Un diff que toca un build script se considera relevante salvo que
+//     NINGUNA de sus lineas agregadas/borradas mencione un token que afecte
+//     compilacion o instrumentacion (COVERAGE_AFFECTING_TOKENS).
+//   - Si el diff no se pudo calcular, o no se pudieron leer las lineas del
+//     build script -> se gatea igual (comportamiento legacy).
+//   - Sobre-matchear un token es INOFENSIVO: preserva el gate actual. El
+//     unico riesgo seria sub-matchear, por eso la lista es generosa.
+// El gate NO se elimina cuando no aplica: la cobertura se sigue midiendo y
+// reportando, solo que de forma informativa (ver renderReport / logs).
+const COVERAGE_SOURCE_PATTERNS = [
+    /(^|\/)src\/.*\.(kt|java)$/i,          // fuentes de produccion y de test
+    /(^|\/)src\/.*\/(res|resources)\//,    // recursos Android/JVM empaquetados
+];
+
+const BUILD_SCRIPT_PATTERNS = [
+    /(^|\/)[^/]*\.gradle(\.kts)?$/i,       // build.gradle(.kts), settings.gradle(.kts)
+    /(^|\/)gradle\.properties$/i,          // flags de build/JVM
+    /(^|\/)[^/]*\.versions\.toml$/i,       // version catalogs (libs.versions.toml)
+];
+
+// Tokens cuya aparicion en el diff de un build script implica que la
+// compilacion o la instrumentacion de Kover PODRIAN cambiar. Ante la duda se
+// gatea: la lista es intencionalmente amplia.
+const COVERAGE_AFFECTING_TOKENS = new RegExp('\\b(?:' + [
+    'sourceSets', 'srcDir', 'srcDirs', 'kover', 'jacoco', 'instrumentation',
+    'dependencies', 'implementation', 'api', 'compileOnly', 'runtimeOnly',
+    'testImplementation', 'testRuntimeOnly', 'kapt', 'ksp', 'annotationProcessor',
+    'plugins', 'kotlinOptions', 'compilerOptions', 'freeCompilerArgs',
+    'jvmToolchain', 'kotlin', 'android', 'targets', 'sourceCompatibility',
+    'targetCompatibility', 'excludes?', 'includes?', 'reports?', 'testLogging',
+    'useJUnit\\w*', 'maxParallelForks', 'classDirectories', 'sourceDirectories',
+].join('|') + ')\\b', 'i');
+
+function isCoverageSource(file) {
+    return COVERAGE_SOURCE_PATTERNS.some((re) => re.test(file));
+}
+
+function isBuildScript(file) {
+    return BUILD_SCRIPT_PATTERNS.some((re) => re.test(file));
+}
+
+/**
+ * Decide si el umbral ABSOLUTO de cobertura debe gatear este diff.
+ *
+ * @param {string[]|null} files  archivos del diff vs origin/main.
+ * @param {string[]|null} buildScriptLines  lineas `+`/`-` de los build scripts
+ *        del diff (ver getBuildScriptChangedLines). Solo se consulta si hay
+ *        build scripts en `files`.
+ * @returns {boolean} `true` -> aplicar el umbral (comportamiento clasico).
+ *          `false` -> el diff no puede mover la cobertura; reportar sin gatear.
+ */
+function coverageGateApplies(files, buildScriptLines) {
+    // Diff desconocido (git fallo / sin base) -> fail-closed.
+    if (!Array.isArray(files)) return true;
+    // Sin cambios: no hay nada que gatear, pero conservamos el gate por si
+    // alguna ruta llega aca con reporte Kover valido.
+    if (files.length === 0) return true;
+
+    // Cualquier fuente o recurso medido por Kover -> gate clasico.
+    if (files.some(isCoverageSource)) return true;
+
+    const buildScripts = files.filter(isBuildScript);
+    if (buildScripts.length > 0) {
+        // No se pudieron leer las lineas -> fail-closed.
+        if (!Array.isArray(buildScriptLines)) return true;
+        if (buildScriptLines.some((line) => COVERAGE_AFFECTING_TOKENS.test(line))) return true;
+    }
+
+    return false;
+}
+
+/**
+ * Devuelve las lineas agregadas/borradas (`+`/`-`, sin los headers `+++`/`---`)
+ * de los build scripts presentes en el diff vs `origin/main`, o `null` si git
+ * falla. Usa `-U0` para no traer contexto: solo el cambio real.
+ *
+ * Probamos las mismas bases que getChangedFilesVsMain para cubrir worktrees
+ * sin `origin/main` local.
+ */
+function getBuildScriptChangedLines(repoRoot, files) {
+    const buildScripts = Array.isArray(files) ? files.filter(isBuildScript) : [];
+    if (buildScripts.length === 0) return Promise.resolve([]);
+
+    return new Promise((resolve) => {
+        const bases = ['origin/main', 'main', 'origin/HEAD'];
+        const tryNext = (idx) => {
+            if (idx >= bases.length) return resolve(null);
+            execFile('git', ['diff', '-U0', `${bases[idx]}...HEAD`, '--', ...buildScripts], {
+                cwd: repoRoot, windowsHide: true, maxBuffer: 4 * 1024 * 1024,
+            }, (err, stdout) => {
+                if (err) return tryNext(idx + 1);
+                const lines = String(stdout).split(/\r?\n/).filter((l) => (
+                    (l.startsWith('+') || l.startsWith('-'))
+                    && !l.startsWith('+++') && !l.startsWith('---')
+                )).map((l) => l.slice(1));
+                resolve(lines);
+            });
+        };
+        tryNext(0);
+    });
 }
 
 /**
@@ -925,6 +1102,10 @@ async function runNodeTests(repoRoot, env, opts = {}) {
         const batches = buildNodeTestBatches(files, repoRoot, maxCmdline);
         const singleBatch = batches.length === 1;
         onLog(`[tester:node-test] ${files.length} archivos en ${batches.length} batch(es) (límite cmdline ${maxCmdline} chars)`);
+        // Dejar el techo vigente en el log: cuando la batería se corta, saber
+        // contra qué presupuesto se cortó es la mitad del diagnóstico (#5901).
+        onLog(`[tester:node-test] techo de wall-clock: ${Math.round(NODE_TEST_WALL_TIMEOUT_MS / 1000)}s`
+            + `${process.env.PIPELINE_TESTER_NODE_WALL_TIMEOUT_MS ? ' (override por env)' : ' (default)'}`);
 
         // Acumulador del summary agregado (shape compatible con parseNodeTestJunit).
         const agg = {
@@ -941,6 +1122,12 @@ async function runNodeTests(repoRoot, env, opts = {}) {
         // Deadline global compartido por todos los batches: el wall-clock total
         // de la batería no puede exceder NODE_TEST_WALL_TIMEOUT_MS.
         const deadlineAt = started + NODE_TEST_WALL_TIMEOUT_MS;
+
+        // Cuántos batches llegaron a terminar por sí mismos. Alimenta el motivo
+        // del rebote: sin esto el dev recibe "sin reporte JUnit parseable" y no
+        // puede distinguir "la suite no corrió" de "corrió 9376 tests en verde y
+        // se quedó sin tiempo en el último batch" (rebote #5901 rev-1).
+        let batchesCompleted = 0;
 
         for (let i = 0; i < batches.length; i++) {
             const batchLabel = `${i + 1}/${batches.length}`;
@@ -980,6 +1167,7 @@ async function runNodeTests(repoRoot, env, opts = {}) {
                 exitCode = 124;
                 break;
             }
+            batchesCompleted++;
             if (res.exit_code !== 0 && exitCode === 0) {
                 exitCode = res.exit_code;
             }
@@ -992,8 +1180,66 @@ async function runNodeTests(repoRoot, env, opts = {}) {
             report_file: lastReportFile, files,
             timed_out: timedOut,
             last_progress_line: lastProgressLine,
+            batches_total: batches.length,
+            batches_completed: batchesCompleted,
             summary: agg,
         };
+}
+
+/**
+ * Motivo del rebote cuando la batería `node --test` no produjo un veredicto
+ * confiable. Función PURA: no toca fs ni spawnea — se testea sin correr tests.
+ *
+ * Rebote #5901 rev-1. El motivo anterior era una sola línea para dos causas
+ * muy distintas:
+ *
+ *     `node --test exit code 124 sin reporte JUnit parseable`
+ *
+ * y era falso en el caso más común. En #5901 el batch 1/2 SÍ produjo un JUnit
+ * parseable con 9376 tests y 0 fallas; el que se quedó sin tiempo fue el 2/2.
+ * El dev leyó "sin reporte JUnit parseable" y salió a buscar un test roto o un
+ * reporter mal configurado — que no existían. La causa era el techo de
+ * wall-clock. Un motivo que apunta al lugar equivocado cuesta una pasada
+ * completa del pipeline por issue, y acá costó dos (#5802 y #5901).
+ *
+ * El veredicto NO cambia: timeout sigue siendo rechazo (fail-closed, una
+ * batería incompleta no prueba nada sobre los tests que no llegaron a correr).
+ * Lo que cambia es que el motivo dice la verdad y trae con qué diagnosticar.
+ */
+function buildNodeTestFailureMotivo(res) {
+    const summary = (res && res.summary) || {};
+    const wallS = Math.round((Number(res && res.wall_ms) || 0) / 1000);
+    const total = Number(res && res.batches_total) || 0;
+    const done = Number(res && res.batches_completed) || 0;
+
+    if (res && res.timed_out) {
+        const partes = [
+            `node --test excedió el techo de wall-clock (${wallS}s) — batería INCOMPLETA`,
+        ];
+        if (total > 1) partes.push(`batches completados: ${done}/${total}`);
+        // Lo ya corrido no aprueba nada, pero ubica el problema: si los tests
+        // que alcanzaron a correr están en verde, el sospechoso es el techo o
+        // la contención de la máquina, no el diff del issue.
+        if (summary.tests > 0) {
+            const fallas = (Number(summary.failures) || 0) + (Number(summary.errors) || 0);
+            partes.push(`tests corridos antes del corte: ${summary.tests} con ${fallas} fallas`);
+        } else {
+            partes.push('ningún test alcanzó a reportarse antes del corte');
+        }
+        if (res.last_progress_line) {
+            partes.push(`última línea de progreso: "${String(res.last_progress_line).slice(0, 160)}"`);
+        }
+        partes.push('revisar `.pipeline/logs/<issue>-tester.log` (heartbeat con elapsed/idle por batch)'
+            + ' — si los tests corridos están en verde el diff no es el sospechoso;'
+            + ' ajustar `PIPELINE_TESTER_NODE_WALL_TIMEOUT_MS` o descargar la máquina');
+        return partes.join(' · ');
+    }
+
+    // No hubo timeout: el proceso salió con código ≠ 0 y aun así el JUnit no
+    // se pudo parsear. Acá sí el sospechoso es el runner o un crash temprano.
+    return `node --test salió con exit code ${res && res.exit_code} sin reporte JUnit parseable`
+        + ' (el proceso terminó por su cuenta, no por timeout) — probable crash del runner'
+        + ' o reporter mal configurado; revisar stdout/stderr en el log del tester';
 }
 
 // ── Parseo de argumentos ────────────────────────────────────────────
@@ -1283,7 +1529,7 @@ function updateMarker(trabajandoPath, payload) {
 // explícitamente el motivo de excepción en vez de silencio (CA-4). El bloque
 // "Baseline y gaps" cubre el CA-1 (delta vs baseline + gaps) aunque hoy no
 // exista baseline estructurado en HEAD.
-function renderReport({ issue, module, coverage, threshold, gradle, tests, coverageAgg, exitCode, motivo, pipelineOnly, exception }) {
+function renderReport({ issue, module, coverage, threshold, gradle, tests, coverageAgg, exitCode, motivo, pipelineOnly, exception, coverageGate }) {
     const verdict = exitCode === 0 ? 'APROBADO ✅' : 'RECHAZADO ❌';
     const durMs = gradle ? gradle.wall_ms : 0;
     const mins = Math.floor(durMs / 60000);
@@ -1300,6 +1546,17 @@ function renderReport({ issue, module, coverage, threshold, gradle, tests, cover
     lines.push('');
     if (coverage) {
         lines.push(kover.renderCoverageSection(coverageAgg, threshold));
+        // #6362: si la cobertura se midio pero no gateo, decirlo explicitamente.
+        // Degradarse en silencio es lo que hizo que este defecto viviera ~10
+        // rebotes sin diagnostico.
+        if (coverageGate === false) {
+            lines.push('');
+            lines.push('> ℹ️ **Umbral informativo, no bloqueante en esta corrida.** El diff no toca'
+                + ' fuentes Kotlin/Java (`src/**/*.kt|java`) ni recursos medidos, y los build'
+                + ' scripts modificados no alteran compilación ni instrumentación. La cobertura'
+                + ' medida es —por construcción— la misma que la de `origin/main`, así que el'
+                + ' umbral absoluto evaluaría la historia del repo, no este cambio (#6362).');
+        }
         lines.push('');
     }
 
@@ -1404,6 +1661,20 @@ async function main() {
         logAppend('[tester] no se pudo determinar diff vs main; usando ruta gradle por defecto');
     }
 
+    // Rebote #6362: decidir si el umbral ABSOLUTO de cobertura puede gatear
+    // este diff. Solo interesa en la ruta gradle (la ruta node no mide Kover).
+    // Ver coverageGateApplies() para el principio y las ramas fail-closed.
+    let coverageGate = true;
+    if (!pipelineOnly && args.coverage) {
+        const buildScriptLines = await getBuildScriptChangedLines(diffCwd, changedFiles);
+        coverageGate = coverageGateApplies(changedFiles, buildScriptLines);
+        if (!coverageGate) {
+            logAppend('[tester] gate de cobertura NO aplica: el diff no toca fuentes '
+                + 'Kotlin/Java ni recursos medidos, y los build scripts no alteran '
+                + 'compilacion/instrumentacion. La cobertura se reporta sin gatear.');
+        }
+    }
+
     const cmd = buildGradleCommand(args.module, args.coverage);
     if (!pipelineOnly) {
         logAppend(`[tester] cmd="${cmd.cmd} ${cmd.args.join(' ')}" modules=${cmd.modules.join(',')}`);
@@ -1472,9 +1743,17 @@ async function main() {
             } else if (nodeRes.no_tests) {
                 logAppend('[tester] pipeline-only sin tests Node detectados — aprobando con qa:skipped equivalente');
                 // tests.valid queda en false; el report lo muestra como "skipped"
+            } else if (nodeRes.timed_out) {
+                // Timeout: rechazo fail-closed AUNQUE los batches completados
+                // estén en verde — una batería incompleta no dice nada sobre
+                // los tests que no llegaron a correr. Lo que cambia respecto de
+                // antes es el motivo, que ahora nombra la causa real y trae el
+                // parcial para diagnosticar (rebote #5901 rev-1).
+                exitCode = 1;
+                motivo = buildNodeTestFailureMotivo(nodeRes);
             } else if (!tests.valid && nodeRes.exit_code !== 0) {
                 exitCode = 1;
-                motivo = `node --test exit code ${nodeRes.exit_code} sin reporte JUnit parseable`;
+                motivo = buildNodeTestFailureMotivo(nodeRes);
             } else if (!tests.valid) {
                 logAppend('[tester] WARNING: node --test exit 0 pero reporte no parseable; aprobando por exit code');
             }
@@ -1548,7 +1827,7 @@ async function main() {
             } else if (tests.valid && (tests.failures > 0 || tests.errors > 0)) {
                 exitCode = 1;
                 motivo = `Tests fallidos: ${tests.failures} failures + ${tests.errors} errors sobre ${tests.tests} totales`;
-            } else if (args.coverage && koverData.aggregate.valid && koverData.aggregate.total.line.percent < args.threshold) {
+            } else if (args.coverage && coverageGate && koverData.aggregate.valid && koverData.aggregate.total.line.percent < args.threshold) {
                 exitCode = 1;
                 motivo = `Cobertura de líneas ${koverData.aggregate.total.line.percent}% por debajo del umbral ${args.threshold}%`;
             } else if (gradleResult.exit_code !== 0 && parsedGradle.errors[0]) {
@@ -1593,6 +1872,7 @@ async function main() {
             gradle: gradleResult, tests: tests || { valid: false },
             coverageAgg: koverData.aggregate, exitCode, motivo,
             pipelineOnly, exception: exceptionNote,
+            coverageGate: pipelineOnly ? null : coverageGate,
         });
         logAppend('[tester] --- REPORTE ---');
         logAppend(report);
@@ -1654,6 +1934,10 @@ async function main() {
             tester_tests_failed: tests && tests.valid ? (tests.failures + tests.errors) : 0,
             tester_coverage_line_percent: koverData.aggregate.valid ? koverData.aggregate.total.line.percent : null,
             tester_coverage_threshold: args.threshold,
+            // #6362: `false` => la cobertura se midio pero no gateo, porque el
+            // diff no puede moverla (sin fuentes Kotlin/Java ni build scripts
+            // que alteren compilacion/instrumentacion).
+            tester_coverage_gated: pipelineOnly ? null : coverageGate,
             tester_escalate_to: escalateTo,
             tester_mode: 'deterministic',
         });
@@ -1807,10 +2091,22 @@ module.exports = {
     parseNodeTestJunit,
     buildNodeTestBatches,
     runNodeTests,
+    // Diagnóstico honesto del corte de la batería (rebote #5901 rev-1).
+    buildNodeTestFailureMotivo,
+    NODE_TEST_WALL_TIMEOUT_MS,
+    NODE_TEST_WALL_TIMEOUT_DEFAULT_MS,
     ensureGitInPath,
     getChangedFilesVsMain,
     getDeletedFilesVsMain,
     isGradleInput,
+    // Relevancia del gate de cobertura (rebote #6362)
+    coverageGateApplies,
+    getBuildScriptChangedLines,
+    isCoverageSource,
+    isBuildScript,
+    COVERAGE_SOURCE_PATTERNS,
+    BUILD_SCRIPT_PATTERNS,
+    COVERAGE_AFFECTING_TOKENS,
     resolveGitDir,
     PIPELINE_ONLY_PATTERNS,
     GRADLE_INPUT_PATTERNS,

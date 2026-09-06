@@ -454,3 +454,119 @@ test('#4743 CA-4 · aws-cli: match preciso — un stderr que sólo menciona la p
         },
     );
 });
+
+// --- #5209 · query paginada (partición + prefijo de sort key) ----------------
+//
+// La reconciliación del append-only necesita leer TODO lo escrito. Sin Query, el
+// export salía vacío y la paridad daba falso verde por conjunto vacío.
+
+function specPkSk(overrides = {}) {
+    return {
+        tableName: 'KernelStore',
+        keys: [
+            { name: 'PK', attributeType: 'S', keyType: 'HASH' },
+            { name: 'SK', attributeType: 'S', keyType: 'RANGE' },
+        ],
+        ...overrides,
+    };
+}
+
+test('#5209 · in-memory: query filtra por partición y prefijo de SK, ordenado', async () => {
+    const driver = prov.createInMemoryDynamoDriver();
+    const spec = specPkSk();
+    await driver.createTable(spec);
+    await driver.putItem(spec, { PK: 'a', SK: 'signature#3' });
+    await driver.putItem(spec, { PK: 'a', SK: 'signature#1' });
+    await driver.putItem(spec, { PK: 'a', SK: 'audit#9' });
+    await driver.putItem(spec, { PK: 'b', SK: 'signature#2' });
+
+    const res = await driver.query(spec, { partitionKey: 'a', skPrefix: 'signature#' });
+
+    assert.deepEqual(res.items.map((i) => i.SK), ['signature#1', 'signature#3']);
+    assert.equal(res.lastEvaluatedKey, null);
+});
+
+test('#5209 · in-memory: query pagina con limit y exclusiveStartKey sin perder ni repetir ítems', async () => {
+    const driver = prov.createInMemoryDynamoDriver();
+    const spec = specPkSk();
+    await driver.createTable(spec);
+    for (let i = 0; i < 7; i += 1) {
+        await driver.putItem(spec, { PK: 'a', SK: `audit#${String(i).padStart(2, '0')}` });
+    }
+
+    const vistos = [];
+    let start = null;
+    let vueltas = 0;
+    do {
+        vueltas += 1;
+        const page = await driver.query(spec, { partitionKey: 'a', skPrefix: 'audit#', limit: 3, exclusiveStartKey: start });
+        vistos.push(...page.items.map((i) => i.SK));
+        start = page.lastEvaluatedKey;
+    } while (start && vueltas < 20);
+
+    assert.equal(vistos.length, 7);
+    assert.equal(new Set(vistos).size, 7, 'ninguna página puede repetir un ítem');
+    assert.deepEqual(vistos, vistos.slice().sort());
+});
+
+test('#5209 · in-memory: la última página devuelve lastEvaluatedKey null (fin de la paginación)', async () => {
+    const driver = prov.createInMemoryDynamoDriver();
+    const spec = specPkSk();
+    await driver.createTable(spec);
+    await driver.putItem(spec, { PK: 'a', SK: 'audit#1' });
+    await driver.putItem(spec, { PK: 'a', SK: 'audit#2' });
+
+    const page = await driver.query(spec, { partitionKey: 'a', skPrefix: 'audit#', limit: 2 });
+
+    assert.equal(page.items.length, 2);
+    assert.equal(page.lastEvaluatedKey, null);
+});
+
+test('#5209 · aws-cli: query arma la key-condition como constante con placeholders (sin interpolar)', async () => {
+    const calls = [];
+    const run = async (args) => { calls.push(args); return { code: 0, stdout: JSON.stringify({ Items: [] }) }; };
+    const driver = prov.createAwsCliDynamoDriver({ run });
+
+    await driver.query(specPkSk(), { partitionKey: 'acme', skPrefix: 'signature#', limit: 50 });
+
+    const call = calls.find((c) => c[0] === 'query');
+    const kceIdx = call.indexOf('--key-condition-expression');
+    // La expresión es literal: ni la PK ni el prefijo aparecen dentro del string.
+    assert.equal(call[kceIdx + 1], '#pk = :pk AND begins_with(#sk, :pfx)');
+    assert.ok(!call[kceIdx + 1].includes('acme'));
+    assert.ok(!call[kceIdx + 1].includes('signature#'));
+
+    const namesIdx = call.indexOf('--expression-attribute-names');
+    assert.deepEqual(JSON.parse(call[namesIdx + 1]), { '#pk': 'PK', '#sk': 'SK' });
+
+    const valsIdx = call.indexOf('--expression-attribute-values');
+    assert.deepEqual(JSON.parse(call[valsIdx + 1]), { ':pk': { S: 'acme' }, ':pfx': { S: 'signature#' } });
+
+    assert.ok(call.includes('--consistent-read'), 'la reconciliación exige lectura consistente');
+    assert.equal(call[call.indexOf('--limit') + 1], '50');
+});
+
+test('#5209 · aws-cli: query decodifica Items y propaga LastEvaluatedKey', async () => {
+    const run = async () => ({
+        code: 0,
+        stdout: JSON.stringify({
+            Items: [{ PK: { S: 'acme' }, SK: { S: 'audit#1' }, body: { M: { action: { S: 'x' } } } }],
+            LastEvaluatedKey: { PK: { S: 'acme' }, SK: { S: 'audit#1' } },
+        }),
+    });
+    const driver = prov.createAwsCliDynamoDriver({ run });
+
+    const res = await driver.query(specPkSk(), { partitionKey: 'acme', skPrefix: 'audit#' });
+
+    assert.deepEqual(res.items, [{ PK: 'acme', SK: 'audit#1', body: { action: 'x' } }]);
+    assert.deepEqual(res.lastEvaluatedKey, { PK: 'acme', SK: 'audit#1' });
+});
+
+test('#5209 · aws-cli: una respuesta sin Items no rompe — devuelve conjunto vacío explícito', async () => {
+    const run = async () => ({ code: 0, stdout: '{}' });
+    const driver = prov.createAwsCliDynamoDriver({ run });
+
+    const res = await driver.query(specPkSk(), { partitionKey: 'acme', skPrefix: 'audit#' });
+
+    assert.deepEqual(res, { items: [], lastEvaluatedKey: null });
+});

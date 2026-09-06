@@ -45,6 +45,19 @@ const path = require('node:path');
 let sharedEscape = null;
 try { sharedEscape = require('../../lib/escape-html.js'); } catch { /* opcional */ }
 
+// #6498 — Chip del sello de evidencia de QA. FUENTE UNICA compartida con la
+// pestana /pipeline: la funcion se serializa tal cual dentro del script del
+// cliente (mas abajo), asi que SSR e hidratacion no pueden divergir. Require
+// defensivo: sin el modulo, `_selloChip` queda null y la card se pinta como
+// hoy, sin chip y sin romperse.
+let _selloChip = null;
+try { _selloChip = require('../../lib/sello-evidencia-chip.js'); } catch { /* opcional */ }
+const _SELLO_CHIP_CSS = (_selloChip && _selloChip.SELLO_CHIP_CSS) || '';
+function _selloChipHTML(sello, esc) {
+    if (!_selloChip || typeof _selloChip.selloChipHTML !== 'function') return '';
+    try { return _selloChip.selloChipHTML(sello, esc); } catch { return ''; }
+}
+
 function escapeHtmlSsr(input) {
     if (sharedEscape && typeof sharedEscape.escapeHtmlText === 'function') {
         return sharedEscape.escapeHtmlText(input);
@@ -227,6 +240,10 @@ function normalizeIssue(id, data, priorityIndex) {
         rechazado_en_fase: d.rechazado_en_fase || null,
         rechazado_skill_previo: d.rechazado_skill_previo || null,
         logFile: d.logFile || null,
+        // #6498 — estado del sello YA resuelto por pipelineSlice (matrix[id].
+        // selloEvidencia). Aditivo: si el snapshot es viejo o el resolver
+        // degrado, queda null y no se pinta nada (cero ruido en el camino feliz).
+        selloEvidencia: (d.selloEvidencia && typeof d.selloEvidencia === 'object') ? d.selloEvidencia : null,
         skill,
         priority: (typeof priorityIndex === 'number' && priorityIndex >= 0)
             ? priorityIndex + 1 : null,
@@ -281,6 +298,10 @@ function renderIssueCard(issue) {
         const tip = 'Rechazado en ' + faseRej + skillRej + ': ' + motivo;
         reboteChip = '<span class="iss-rebote" title="' + escapeHtmlAttr(tip) + '">↩ rechazo</span>';
     }
+
+    // #6498 — Chip del sello. Va DESPUES del chip de rebote, en la misma fila
+    // `.iss-meta`, que es donde el operador ya busca el "por que" de un issue.
+    const selloChip = _selloChipHTML(i.selloEvidencia, escapeHtmlAttr);
 
     const bouncesBadge = bounces > 0
         ? '<span class="iss-bounces' + (bounces > 2 ? ' warn' : '') + '" '
@@ -385,6 +406,7 @@ function renderIssueCard(issue) {
         +     '<span>' + faseEsc + '</span></span>'
         +   bouncesBadge
         +   reboteChip
+        +   selloChip
         + '</div>'
         + '<div class="iss-actions">'
         +   primaryHtml
@@ -921,6 +943,14 @@ function renderIssuesClientScript() {
     return '<svg class="' + cls + '" aria-hidden="true" focusable="false" viewBox="0 0 24 24"><use href="#' + safe + '"></use></svg>';
   }
   function faseShort(f) { var raw = String(f || ''); if (!raw) return ''; var p = raw.split('/'); return p[p.length - 1] || raw; }
+  /* #6498 — La MISMA funcion que usa el SSR, serializada aca desde
+     lib/sello-evidencia-chip.js. No es una copia escrita a mano: si alguien
+     agrega un estado, las dos superficies lo reciben en el mismo commit y
+     ninguna puede quedar muda (leccion de #6459). Si el modulo no cargo, se
+     define un stub que devuelve cadena vacia y el cliente no se rompe. */
+  ${(_selloChip && typeof _selloChip.selloChipHTML === 'function')
+      ? String(_selloChip.selloChipHTML)
+      : 'function selloChipHTML() { return String(); }'}
   function faseIconId(f) { return FASE_ICON[f] || 'ic-issues-count'; }
   function deriveState(d) {
     var labels = (d && d.labels) || [];
@@ -1017,6 +1047,7 @@ function renderIssuesClientScript() {
       var tip = 'Rechazado en ' + (d.rechazado_en_fase || '?') + (d.rechazado_skill_previo ? '/' + d.rechazado_skill_previo : '') + ': ' + motivo;
       rebote = '<span class="iss-rebote" title="' + escapeHtml(tip) + '">↩ rechazo</span>';
     }
+    var sello = selloChipHTML(d.selloEvidencia, escapeHtml);
     var bbadge = bounces > 0
       ? '<span class="iss-bounces' + (bounces > 2 ? ' warn' : '') + '" title="' + escapeHtml(bounces + ' rebote(s) acumulados') + '">' + escapeHtml(String(bounces)) + '×</span>'
       : '';
@@ -1058,7 +1089,7 @@ function renderIssuesClientScript() {
       + '<a class="iss-num" href="' + escapeHtml(gh) + '" target="_blank" rel="noopener">#' + num + '</a>'
       + '<span class="iss-state ' + cls + '">' + escapeHtml(label) + '</span></div>'
       + '<div class="iss-title' + (paused ? ' is-paused' : '') + '" title="' + escapeHtml(d.title || '') + '">' + escapeHtml(d.title || '') + '</div>'
-      + '<div class="iss-meta"><span class="iss-fase">' + iconSvg(faseIconId(fase), 'iss-ico') + '<span>' + escapeHtml(fase) + '</span></span>' + bbadge + rebote + '</div>'
+      + '<div class="iss-meta"><span class="iss-fase">' + iconSvg(faseIconId(fase), 'iss-ico') + '<span>' + escapeHtml(fase) + '</span></span>' + bbadge + rebote + sello + '</div>'
       + '<div class="iss-actions">' + primary + '<div class="iss-access-row" role="group" aria-label="' + escapeHtml('Accesos del issue ' + num) + '">' + access + menu + '</div></div>'
       + '</article>';
   }
@@ -1478,6 +1509,7 @@ function renderIssuesHTML(opts) {
 <style>${chromeCss}</style>
 <style>${ISSUES_CSS}</style>
 <style>${_DSB_CSS}</style>
+<style>${_SELLO_CHIP_CSS}</style>
 </head>
 <body>
 <div aria-hidden="true" style="position:absolute;width:0;height:0;overflow:hidden">${spriteInline}</div>

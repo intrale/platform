@@ -155,3 +155,32 @@ test('loadSuggestion devuelve null sin fuente de criterios', () => {
     assert.equal(wo.loadSuggestion({ deps: {} }), null);
     assert.equal(wo.loadSuggestion({ deps: { criteriaSource: { criterios: [] } } }), null);
 });
+
+// ===========================================================================
+// #6208 · CA-16 — GATE 1 se llama GATE 1 en todas las superficies.
+//
+// `waiting-operator.js:58` decía `GATE 0` para `waiting-operator-def`, contra la
+// doc canónica (`docs/pipeline/gates-firma-operador.md:167`) y contra la vista,
+// que ya decía GATE 1 (H-UX-6199-2). Este test FIJA la tabla para que no vuelva
+// a divergir: si alguien la cambia, se entera acá.
+// ===========================================================================
+test('#6208 · CA-16: la tabla de orígenes fija los nombres de gate y no divergen de la vista', () => {
+    const view = require('../../views/dashboard/esperando-firma.js');
+    const esperado = {
+        'waiting-operator-def': 'GATE 1',
+        'waiting-operator-acc': 'GATE 2',
+        gate3: 'GATE 3',
+    };
+    const actual = {};
+    for (const s of require('../waiting-operator.js').SOURCES) actual[s.origen] = s.gate;
+    assert.deepEqual(actual, esperado);
+
+    // D-3 — `esperando-firma.js:70` YA estaba bien y no se toca: los dos lados
+    // dicen lo mismo.
+    for (const [origen, gate] of Object.entries(esperado)) {
+        assert.ok(
+            view.ORIGENES[origen].label.startsWith(gate),
+            `${origen}: la vista dice "${view.ORIGENES[origen].label}" y la tabla dice "${gate}"`,
+        );
+    }
+});

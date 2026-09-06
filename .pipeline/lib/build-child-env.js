@@ -62,6 +62,11 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 
+// #5901 — punto ÚNICO de identidad de proyecto. Módulo HOJA (sin `fs`/`path` ni
+// requires de otros módulos del pipeline): importarlo acá no puede abrir un
+// ciclo ni fallar por IO.
+const { isSafeProjectId, KERNEL_PROJECT_ID } = require('./safe-project-id');
+
 // -----------------------------------------------------------------------------
 // SYSTEM_ALLOWLIST — variables del sistema permitidas en TODOS los childs.
 //
@@ -155,6 +160,69 @@ const CREDENTIAL_SCOPES = Object.freeze({
 // Scope always-on sin secretos, conservado por compatibilidad de hooks.
 const SCOPES_ALWAYS_ON = Object.freeze(['telegram-hooks']);
 
+// -----------------------------------------------------------------------------
+// SCOPES_BY_FASE — TECHO de scopes por fase del pipeline (#5901 · REQ-SEC-4).
+//
+// **Esto NO es el pedido, es el máximo.** El scope efectivo de un child se
+// resuelve como `pedido_del_skill ∩ techo_de_la_fase` — INTERSECCIÓN, nunca
+// unión. Un skill no gana un scope por estar declarado en el techo, y no
+// conserva uno que su fase no autoriza. Propiedad que se deriva de eso y que
+// el test verifica para toda combinación viva: el efectivo es siempre
+// SUBCONJUNTO del efectivo de hoy — el cambio es monótonamente restrictivo,
+// ningún `(skill, fase)` puede ganar privilegios respecto del comportamiento
+// previo. Esa es la red que hace seguro cablear el eje en los callsites.
+//
+// **Fail-closed**: una fase ausente o desconocida NO cae a "todos los scopes";
+// cae a techo VACÍO (sólo `SCOPES_ALWAYS_ON`, que no lleva material
+// criptográfico) y emite un diagnóstico accionable (UX-4). Degradar a
+// permisivo sería exactamente el modo de falla que este techo viene a cerrar.
+//
+// Fases verificadas contra `config.yaml` (`pipelines.definicion.fases:6` y
+// `pipelines.desarrollo.fases:11`) y los skills que realmente se despachan en
+// cada una contra `pipeline.config.json · productConfig.pipelines.*
+// .skills_por_fase`. Cada techo es la UNIÓN de lo que hoy piden los skills de
+// esa fase (`DEFAULT_REQUIRES_BY_SKILL`), no una lista aspiracional: por eso
+// ninguna combinación viva pierde un scope.
+//
+// **NO ampliar un techo sin justificar qué skill de esa fase lo necesita** —
+// cada scope de más es blast radius que se le regala a todos los skills de la
+// fase.
+// -----------------------------------------------------------------------------
+
+// Fase sintética del kernel (GURU-3): el commander no corre dentro de ningún
+// pipeline, así que no tiene fase real. Sin una entrada propia caería al
+// fail-closed y perdería scopes el día que #5040 active el aislamiento.
+const KERNEL_FASE = 'kernel';
+
+const SCOPES_BY_FASE = Object.freeze({
+    // --- pipeline `definicion` (config.yaml:6) --------------------------------
+    // guru, security · po, ux, architect · planner — todos sólo leen/comentan
+    // issues por `gh`. Ninguno compila ni toca AWS.
+    analisis:     Object.freeze(['github']),
+    criterios:    Object.freeze(['github']),
+    sizing:       Object.freeze(['github']),
+
+    // --- pipeline `desarrollo` (config.yaml:11) -------------------------------
+    // po, ux, guru — igual que en definición.
+    validacion:   Object.freeze(['github']),
+    // backend-dev pide aws + gradle-android; android-dev/web-dev gradle-android;
+    // pipeline-dev sólo github. El techo es la unión de los cuatro.
+    dev:          Object.freeze(['github', 'gradle-android', 'aws']),
+    // skill determinístico `build`: compila, no habla con GitHub.
+    build:        Object.freeze(['gradle-android']),
+    // tester (gradle) · security (github) · qa (gradle + aws + github).
+    verificacion: Object.freeze(['github', 'gradle-android', 'aws']),
+    // `linter` es Node puro sobre el worktree: no necesita ninguna credencial.
+    linteo:       Object.freeze([]),
+    // review, po, ux, architect — comentan el PR.
+    aprobacion:   Object.freeze(['github']),
+    // `delivery` mergea a main.
+    entrega:      Object.freeze(['github']),
+
+    // --- kernel (commander) ---------------------------------------------------
+    [KERNEL_FASE]: Object.freeze(['github']),
+});
+
 // Material reservado que jamás puede cruzar al child, ni con aislamiento
 // desactivado ni reintroducido desde pipelineExtras bajo otro nombre.
 const RESERVED_CHILD_SECRET_NAMES = Object.freeze(['TELEGRAM_BOT_TOKEN']);
@@ -206,6 +274,35 @@ const PROVIDER_STATIC_ENV = Object.freeze({
         // `claude` habla contra esta base URL en vez de api.anthropic.com.
         ANTHROPIC_BASE_URL: 'https://api.moonshot.ai/anthropic',
     }),
+});
+
+// -----------------------------------------------------------------------------
+// PROVIDER_MODEL_ENV — nombre de la variable de entorno por la que cada provider
+// NO-Anthropic espera recibir el modelo a usar (#6272).
+//
+// Mismo criterio de diseño que PROVIDER_STATIC_ENV (#4880): CONSTANTE de código,
+// scopeada al provider ACTIVO del despacho, jamás derivada de `processEnv` ni de
+// input del operador. El valor que se inyecta es el modelo resuelto, y pasa antes
+// por la whitelist estricta de `lib/model-propagation.js` (SR-A.1).
+//
+// Los providers cuyo launcher es `claude` (anthropic, kimi-moonshot) NO figuran
+// acá a propósito: reciben el modelo por el flag `--model` en el array de args
+// (ver providers/anthropic.js::buildSpawn), no por env. `lib/model-propagation.js`
+// decide el canal (`arg` vs `env`) y usa este mapa como fuente única de nombres.
+//
+// Los nombres coinciden con lo que cada handler YA lee hoy:
+//   - openai-codex   → providers/openai-codex.js  (`env.CODEX_MODEL`)
+//   - gemini-google  → providers/gemini-google.js (`env.AGY_MODEL || env.GEMINI_MODEL`)
+//   - cerebras       → providers/cerebras.js      (`env.CEREBRAS_MODEL`)
+//   - nvidia-nim     → providers/nvidia-nim.js    (`env.NVIDIA_NIM_MODEL`)
+//
+// **NO agregar entradas sin que el handler correspondiente lea esa variable** —
+// el guardrail anti-regresión (CA-7) verifica justamente esa correspondencia.
+const PROVIDER_MODEL_ENV = Object.freeze({
+    'openai-codex': 'CODEX_MODEL',
+    'gemini-google': 'GEMINI_MODEL',
+    'cerebras': 'CEREBRAS_MODEL',
+    'nvidia-nim': 'NVIDIA_NIM_MODEL',
 });
 
 // -----------------------------------------------------------------------------
@@ -341,10 +438,57 @@ function buildChildEnv(opts = {}) {
         pipelineExtras = {},
         fsImpl,
         skillConfigOverride,
+        // #5901 — eje de identidad de proyecto y techo por fase.
+        fase,
+        projectId,
+        // Diagnóstico inyectable (UX-4). Default a `console.warn` para que el
+        // fail-closed NUNCA sea mudo: un techo faltante que no se ve es un
+        // agente sin credenciales que nadie sabe por qué falla.
+        warn = (m) => console.warn(m),
     } = opts;
 
     if (!skill || typeof skill !== 'string') {
         throw new Error('[build-child-env] buildChildEnv: parámetro "skill" requerido (string).');
+    }
+
+    // #5901 · CA-1 — identidad de proyecto, fail-closed sobre lo PRESENTE.
+    //
+    // Dos casos que NO son el mismo y por eso no se tratan igual:
+    //   - AUSENTE (`undefined`/`null`): es el camino single-project vigente. El
+    //     `projectBinding` del pulpo es best-effort y vale `null` cuando no se
+    //     pudo escribir (`pulpo.js`, catch del binding), así que exigirlo
+    //     rompería un spawn que hoy funciona. Se resuelve al slug del kernel y
+    //     se deja rastro. Nunca se toma de `processEnv`: `PIPELINE_PROJECT_ID`
+    //     viaja en el env pero el env NO es autoridad (#5110 · SEC-1) — el
+    //     `projectId` autoritativo lo resuelve el CALLER con
+    //     `project-context.resolveProjectContext()` y lo pasa por parámetro.
+    //   - PRESENTE PERO INVÁLIDO (`''`, `__proto__`, `constructor`, con `/`,
+    //     con `..`, no-string): alguien declaró una identidad y no es usable
+    //     como clave ni como segmento de path. Fail-closed ruidoso: throw.
+    const projectIdAusente = (projectId === undefined || projectId === null);
+    if (!projectIdAusente && !isSafeProjectId(projectId)) {
+        throw new Error(
+            `[build-child-env] buildChildEnv: "projectId" inválido para skill '${skill}'. `
+            + 'Debe cumplir ^[a-z0-9][a-z0-9-]{1,63}$ y no ser un nombre reservado de prototipo '
+            + '(__proto__, constructor, prototype) ni contener "..", "/" o "\\". '
+            + 'Acción: resolvelo con lib/project-context.resolveProjectContext(), '
+            + `no lo tomes del env. Ver lib/safe-project-id.js.`
+        );
+    }
+    const effectiveProjectId = projectIdAusente ? KERNEL_PROJECT_ID : projectId;
+
+    // #5799 — cuando el caller ENTREGA un env (el snapshot por intento de
+    // `attempt-credential-snapshot.js`), ése es el ÚNICO origen del material:
+    // no hay fallback implícito a `process.env`. Un `processEnv` presente pero
+    // no-objeto sería exactamente ese fallback silencioso disfrazado de default
+    // de parámetro (`null` no dispara el default de desestructuración, y el
+    // resultado sería un env vacío que aparenta éxito). Fail-closed y ruidoso.
+    if (opts.processEnv !== undefined
+        && (opts.processEnv === null || typeof opts.processEnv !== 'object')) {
+        throw new Error(
+            '[build-child-env] buildChildEnv: "processEnv" entregado por el caller debe ser un objeto. '
+            + 'No se degrada a process.env: el env del intento es su única fuente (#5799).'
+        );
     }
 
     const { skillCfg, providersCfg } = resolveSkillConfig(skill, {
@@ -375,6 +519,15 @@ function buildChildEnv(opts = {}) {
     }
 
     // 2. PIPELINE_* — siempre se propagan (contexto del child).
+    //
+    // #5110 · SEC-1 — este loop es exactamente la mecánica que hace que
+    // `PIPELINE_PROJECT_ID` NO pueda ser autoridad: cualquier `PIPELINE_*` que
+    // esté en el env del pulpo (o que un agente exporte y herede un nieto) se
+    // propaga sin validar. Por eso `lib/project-context.js` trata esa var como
+    // TRANSPORTE y exige que venga apareada con `PIPELINE_PROJECT_BINDING`, un
+    // nonce que sólo el pulpo escribe en `.pipeline/state/project-bindings/`.
+    // El comportamiento de este loop NO cambia — se documenta la razón por la
+    // que el consumidor desconfía de lo que acá se propaga.
     for (const k of Object.keys(processEnv)) {
         if (k.startsWith('PIPELINE_') && processEnv[k] !== undefined) {
             out[k] = processEnv[k];
@@ -414,9 +567,54 @@ function buildChildEnv(opts = {}) {
         ? skillCfg.requires_credentials
         : (DEFAULT_REQUIRES_BY_SKILL[skill] || []);
 
-    // Mergear con scopes always-on (telegram-hooks). Set para deduplicar si
-    // el skill ya los declaró.
-    const effectiveScopes = Array.from(new Set([...declared, ...SCOPES_ALWAYS_ON]));
+    // I-S3 (preservado) — un scope declarado que no existe en CREDENTIAL_SCOPES
+    // es un error de configuración y sigue siendo FATAL. Se valida ANTES de la
+    // intersección con el techo a propósito: si se validara después, un scope
+    // mal escrito quedaría filtrado por el techo y el error se volvería mudo
+    // — el agente arrancaría sin la credencial y el operador no sabría por qué.
+    for (const scope of declared) {
+        if (!CREDENTIAL_SCOPES[scope]) {
+            throw new Error(
+                `[build-child-env] Scope desconocido '${scope}' declarado por skill '${skill}'. ` +
+                `Scopes válidos: ${Object.keys(CREDENTIAL_SCOPES).join(', ')}. ` +
+                `Verificar agent-models.json o DEFAULT_REQUIRES_BY_SKILL.`
+            );
+        }
+    }
+
+    // #5901 · REQ-SEC-4 — techo por fase e INTERSECCIÓN, nunca unión.
+    //
+    // Fase ausente o no declarada en SCOPES_BY_FASE → techo `null` = VACÍO
+    // (fail-closed). El child se queda con `SCOPES_ALWAYS_ON`, que no lleva
+    // material criptográfico. Nunca se degrada a "todos los scopes": ese es
+    // justamente el modo de falla que el techo cierra.
+    const ceiling = (typeof fase === 'string'
+        && Object.prototype.hasOwnProperty.call(SCOPES_BY_FASE, fase))
+        ? SCOPES_BY_FASE[fase]
+        : null;
+    if (ceiling === null) {
+        // UX-4 · CA-4 — diagnosticable, no mudo: skill + fase + projectId +
+        // scopes omitidos + acción concreta. SÓLO NOMBRES de scope: ningún
+        // valor de credencial cruza al log (invariante I-S2).
+        const omitidos = declared.filter((sc) => !SCOPES_ALWAYS_ON.includes(sc));
+        warn(
+            `[build-child-env] fase '${fase === undefined ? '(ausente)' : fase}' sin techo declarado `
+            + `— skill='${skill}' projectId='${effectiveProjectId}' `
+            + `scopes omitidos=[${omitidos.join(', ')}]. `
+            + 'Acción: agregar la fase a SCOPES_BY_FASE en lib/build-child-env.js '
+            + `(fases con techo: ${Object.keys(SCOPES_BY_FASE).join(', ')}).`
+        );
+    }
+    const allowed = ceiling || [];
+
+    // Intersección + always-on. Set para deduplicar si el skill ya los declaró.
+    // Propiedad garantizada por construcción y verificada por test: el
+    // resultado es SUBCONJUNTO de `declared ∪ SCOPES_ALWAYS_ON`, que es el
+    // efectivo previo a este issue (monotonía).
+    const effectiveScopes = Array.from(new Set([
+        ...declared.filter((sc) => allowed.includes(sc)),
+        ...SCOPES_ALWAYS_ON,
+    ]));
 
     for (const scope of effectiveScopes) {
         const vars = CREDENTIAL_SCOPES[scope];
@@ -509,8 +707,13 @@ module.exports = {
     SYSTEM_ALLOWLIST,
     PROVIDER_DEFAULT_CREDENTIAL_ENV,
     PROVIDER_STATIC_ENV,
+    PROVIDER_MODEL_ENV,
     CREDENTIAL_SCOPES,
     SCOPES_ALWAYS_ON,
+    // #5901 — techo por fase + fase sintética del kernel.
+    SCOPES_BY_FASE,
+    KERNEL_FASE,
+    KERNEL_PROJECT_ID,
     RESERVED_CHILD_SECRET_NAMES,
     DEFAULT_REQUIRES_BY_SKILL,
     stripReservedChildSecrets,

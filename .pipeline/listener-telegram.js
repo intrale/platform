@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// #6812 — Windows: suprimir la ventana de consola de cada hijo (gh, git,
+// tasklist, powershell). Debe ir ANTES de cualquier require que spawnee.
+require('./lib/force-windows-hide').apply();
 // =============================================================================
 // Listener Telegram V2 — Long-polling puro, cero tokens
 // Recibe mensajes y los encola en servicios/commander/pendiente/
@@ -7,6 +10,8 @@
 const https = require('https');
 const fs = require('fs');
 const path = require('path');
+// #6226 - escritura fail-closed de dropfiles.
+const dropfileWriter = require('./lib/dropfile-writer');
 
 const PIPELINE = process.env.PIPELINE_STATE_DIR || path.resolve(__dirname);
 const COMMANDER_QUEUE = path.join(PIPELINE, 'servicios', 'commander', 'pendiente');
@@ -106,6 +111,7 @@ function telegramRequest(method, params) {
 const deps = {
   telegramRequest,
   operatorGate: null, // override para tests; null → getDefault() lazy.
+  operationalExecutorOptions: null, // seam de dependencias; el executor sigue siendo el real.
   // #4780 — commander product-aware; override para tests, null → lazy build.
   productCommander: null,
   // #4780 — ejecutor de la acción product-aware ya autorizada+confirmada.
@@ -331,6 +337,43 @@ async function downloadTelegramFile(fileId, ext) {
 // =============================================================================
 
 let _operatorGate = null;
+let _operationalExecutor = null;
+function getOperationalExecutor() {
+  if (_operationalExecutor && !deps.operationalExecutorOptions) return _operationalExecutor;
+  const { createOperationalExecutor } = require('./lib/vault-cut-fallback');
+  const credentials = require('./lib/credentials');
+  const { getVaultShadowMetrics, ESTADO } = require('./lib/vault-shadow-metrics');
+  const configResolver = require('./lib/config-resolver');
+  const configPath = path.join(PIPELINE, 'config.yaml');
+  const defaults = {
+    configPath,
+    resolveOptions: ({ operatorId, issuedAt }) => ({
+      validateAllowlist: async () => String(credentials.resolveVaultOnly('telegram.leo_operator_chat_id')) === String(operatorId),
+      evaluateCoverage: async () => {
+        // La precondición se revalida contra la autoridad efectiva completa
+        // inmediatamente antes del corte; `reload` evita usar un snapshot stale.
+        const cfg = configResolver.resolve({ configPath, reload: true });
+        const shadow = (cfg && cfg.vault && cfg.vault.shadow_window) || {};
+        const result = getVaultShadowMetrics().evaluate({
+          descriptors: credentials.HYDRATED_DESCRIPTORS,
+          hostsActivos: shadow.hosts_activos,
+          durationHours: shadow.duration_hours,
+          retentionDays: shadow.retention_days,
+        });
+        return result && result.estado === ESTADO.CUMPLE;
+      },
+      // El nonce ya fue consumido atómicamente por signer.verify().
+      authorization: { issuedAt: new Date(issuedAt).toISOString(), consumed: true },
+    }),
+  };
+  const executor = createOperationalExecutor({
+    ...defaults,
+    ...(deps.operationalExecutorOptions || {}),
+  });
+  if (!deps.operationalExecutorOptions) _operationalExecutor = executor;
+  return executor;
+}
+
 function getOperatorGate() {
   if (deps.operatorGate) return deps.operatorGate; // override de tests
   if (_operatorGate === undefined) return null;
@@ -437,7 +480,18 @@ function enqueueCommanderCommand(text) {
     text: String(text || ''),
     date: Math.floor(Date.now() / 1000),
   };
-  fs.writeFileSync(path.join(COMMANDER_QUEUE, `${id}.json`), JSON.stringify(content, null, 2));
+  // #6226 - nombre unico + escritura `wx`. El nombre era `${Date.now()}-cbcmd`
+  // SIN ningun desempate: dos toques de boton inline en el mismo milisegundo
+  // resolvian al mismo path y el segundo comando del operador se perdia en
+  // silencio (el listener logueaba "encolado" para los dos).
+  dropfileWriter.writeUniqueFileSync({
+    dir: COMMANDER_QUEUE,
+    filename: `${id}.json`,
+    data: JSON.stringify(content, null, 2),
+    onCollision: (name, attempt) => log(
+      `Colision de nombre en la cola del commander (${name}, intento ${attempt + 1}) - se reintenta, no se sobreescribe`
+    ),
+  });
   log(`Comando de callback encolado al commander: "${String(text).slice(0, 50)}"`);
 }
 
@@ -869,6 +923,73 @@ async function handleCallbackQuery(cbq) {
     return;
   }
 
+  // #5458 — DESPACHO OPERACIONAL AISLADO. Antes del gate de lifecycle, se
+  // clasifica el binding server-side: si el `callback_data` corresponde a una
+  // acción OPERACIONAL (`vault-cut-fallback`), se deriva a su handler dedicado y
+  // se corta el flujo. Esa acción no puede pasar por `handleSignature()` — ahí
+  // abajo vive `applyTransition()`, que mueve work-files. La clasificación no
+  // consume nada: si el id es desconocido, cae al camino de firma de siempre y
+  // éste responde el toast genérico.
+  let callbackKind = null;
+  try {
+    callbackKind = typeof gate.classifyCallback === 'function'
+      ? gate.classifyCallback(cbq.data)
+      : null;
+  } catch (e) {
+    log(`Error clasificando callback: ${e.message}`);
+    callbackKind = null;
+  }
+
+  if (callbackKind === 'operational') {
+    let opResult;
+    try {
+      opResult = await gate.handleOperationalCallback({
+        operatorId: cbq.from?.id,
+        callbackData: cbq.data,
+        executor: getOperationalExecutor(),
+      });
+    } catch (e) {
+      log(`Error procesando callback operacional: ${e.message}`);
+      await answerCallbackQuery(cbq.id, 'No se pudo procesar la acción');
+      return;
+    }
+
+    // Respuesta TERMINAL en todos los caminos: se corta el spinner y, cuando el
+    // resultado es definitivo, se quitan los botones para que un segundo toque
+    // no pueda repetir nada (el nonce ya está gastado de todos modos).
+    await answerCallbackQuery(cbq.id, opResult.toast);
+    if (opResult.editMessage && cbq.message) {
+      const actorName = cbq.from?.first_name || cbq.from?.id || 'operador';
+      const hora = new Date().toISOString().replace('T', ' ').slice(0, 16);
+      // El footer es la constancia PERMANENTE en el chat: sólo puede afirmar
+      // "Confirmado" cuando el efecto realmente ocurrió. En los caminos
+      // terminales fallidos (`executor-unavailable`, `precondition-failed`,
+      // `expired`, `unavailable`) el binding se gastó pero NO se ejecutó nada,
+      // así que la constancia registra el intento y su autor sin afirmar el
+      // corte. Mismo criterio que el footer de product-command (`execOk`).
+      const prefijo = opResult.ok
+        ? `✅ Confirmado por ${actorName}`
+        : `⚠️ No aplicado · pidió ${actorName}`;
+      await removeInlineKeyboard(
+        cbq.message,
+        `${prefijo} · ${hora} — ${opResult.toast}`
+      );
+    }
+    try {
+      appendHistory({
+        direction: 'in',
+        handler: 'operator-gate-operational',
+        from: cbq.from?.first_name || 'unknown',
+        from_id: cbq.from?.id,
+        ok: !!opResult.ok,
+        action: opResult.action || null,
+        issue: opResult.issue || null,
+        reason: opResult.reason || null,
+      });
+    } catch { /* best-effort */ }
+    return;
+  }
+
   // A01/A07: la autorización se valida DENTRO de operator-gate contra `from.id`
   // (no `chat.id`) + binding tenant→operador server-side. Acá sólo pasamos los
   // datos crudos del callback (tratados como no confiables).
@@ -1113,6 +1234,7 @@ module.exports = {
   answerCallbackQuery,
   removeInlineKeyboard,
   getOperatorGate,
+  getOperationalExecutor,
   getProductCommander, // #4780 — seam product-aware para el handler NL
   // #4780 — wiring runtime del commander product-aware (inbound + confirmación).
   maybeHandleProductCommand,

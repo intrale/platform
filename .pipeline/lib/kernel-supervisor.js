@@ -38,6 +38,7 @@
 // estado sin namespace.
 // =============================================================================
 
+const fs = require('node:fs');
 const path = require('node:path');
 
 const { createKernelStore, KernelStoreIsolationError } = require('./kernel-store');
@@ -54,9 +55,30 @@ const repoTarget = require('./repo-target');
 // #5899 — el camino de secretos por instancia resuelve contra el VAULT, no
 // contra el archivo. `resolveScopedRefs` sigue vivo para sus otros consumidores
 // (`product-seed.js`), pero el kernel ya no lo usa.
-const { resolveInstanceVault, redactScoped } = require('./credentials');
+const {
+  resolveInstanceVault,
+  redactScoped,
+  isPlaceholderOrEmpty,
+  INSTANCE_VAULT_ERROR_CODES,
+} = require('./credentials');
 const { scopeVaultSegment } = require('./secret-scopes');
+// #6034 — la DECISION de herencia vive en un módulo hoja y puro; acá sólo se
+// EJECUTA (leer config, pedirle al vault, auditar). Esa separación es la que
+// mantiene la autorización testeable sin I/O y sin ciclo de `require`.
+const {
+  MOTIVOS_HERENCIA,
+  FUENTE_PROPIA,
+  FUENTE_HEREDADA,
+  evaluarHerenciaScope,
+  mensajeHerencia,
+} = require('./kernel-inheritance');
+const auditLog = require('./audit-log');
+const redact = require('./redact');
 const { segmentProductState } = require('./product-state-segment');
+// #5214 — Guard fail-closed de configuración durable. Módulo SIN dependencias
+// (no arrastra Ajv, ni el store, ni AWS) para poder correr antes que cualquier
+// construcción de cliente o resolución de credenciales.
+const durableConfigGuard = require('./kernel-durable-config-guard');
 
 const ACTIVE_STATUS = 'active';
 
@@ -293,6 +315,332 @@ function resolveProjectId(product) {
  * @param {function} [deps.now]                fuente de tiempo (ms).
  * @returns {object} API del supervisor.
  */
+// -----------------------------------------------------------------------------
+// #6034 · Herencia de credenciales del kernel — EJECUCIÓN
+//
+// La DECISIÓN vive en `kernel-inheritance.js` (módulo hoja y puro). Acá está lo
+// que esa decisión no puede hacer sin I/O: leer la config del kernel, pedirle al
+// vault y dejar la traza encadenada. La separación no es estética — es lo que
+// permite testear la autorización como función pura y evita el ciclo de
+// `require` que aparecería si el módulo de decisión importara `credentials`.
+// -----------------------------------------------------------------------------
+
+// `.pipeline/` derivado del propio archivo (`.pipeline/lib/kernel-supervisor.js`).
+// Se prefiere a `REPO_ROOT` porque no depende de variables de entorno: el destino
+// del audit no puede moverse porque alguien exportó otra raíz.
+const PIPELINE_DIR_SUPERVISOR = path.resolve(__dirname, '..');
+const AUDIT_HERENCIA = path.join(PIPELINE_DIR_SUPERVISOR, 'audit', 'kernel-credential-inheritance.jsonl');
+// Nombre LÓGICO para los mensajes: el path absoluto publicaría la raíz del repo
+// en el host, y estos textos van a Telegram (mismo criterio que
+// `STORE_DIR_LOGICO` en credentials.js).
+const AUDIT_HERENCIA_LOGICO = '.pipeline/audit/kernel-credential-inheritance.jsonl';
+
+/**
+ * Sección `vault:` del kernel, para la identidad del kernel y sus grants.
+ *
+ * FAIL-CLOSED: cualquier problema de lectura devuelve `null`, y sin config no
+ * hay herencia posible. Nunca "asumo defaults y sigo": un default silencioso acá
+ * significaría heredar sin que nadie lo haya declarado.
+ */
+function leerConfigVaultKernel(opts) {
+  if (opts && opts.vaultConfig !== undefined) return opts.vaultConfig || null;
+  try {
+    const pipelineDir = opts && opts.pipelineDir
+      ? path.resolve(opts.pipelineDir)
+      : PIPELINE_DIR_SUPERVISOR;
+    const cfg = require('./config-resolver').resolve({ pipelineDir });
+    return (cfg && cfg.vault) || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * ¿El valor resuelto para un scope es inservible (vacío o placeholder)?
+ *
+ * `isPlaceholderOrEmpty` opera sobre ESCALARES, y los valores del camino por
+ * instancia son OBJETOS (`{ token: '...' }`, `{ apiKey: '...' }`): aplicárselo al
+ * objeto da `String(v) === '[object Object]'` y devuelve `false` SIEMPRE, con lo
+ * cual el control no controlaría nada. Por eso se baja a las hojas.
+ *
+ * Basta UNA hoja vacía para descartar el scope (fail-closed): media credencial
+ * no es una credencial, y el fallo tardío que produce es peor que el rechazo
+ * temprano. El objeto sin hojas también cuenta como vacío.
+ */
+function valorSinCredencial(valor, profundidad = 0) {
+  if (valor === null || valor === undefined) return true;
+  if (typeof valor === 'object') {
+    if (profundidad >= 4) return false;             // cota dura: nunca recursión sin fondo
+    const hojas = Object.values(valor);
+    if (!hojas.length) return true;
+    return hojas.some((hoja) => valorSinCredencial(hoja, profundidad + 1));
+  }
+  return isPlaceholderOrEmpty(valor);
+}
+
+/**
+ * Traza encadenada de una decisión de herencia (CA-9 · REQ-SEC-3 · A09).
+ *
+ * Conceder una credencial del kernel a otro producto OTORGA privilegio: necesita
+ * traza no repudiable, no un log line que rota. Va por el mismo par
+ * `appendChained` + `redactObject` que ya usan los pedidos de control de
+ * producto, con archivo propio.
+ *
+ * Nunca recibe un VALOR: la entrada es `projectId` + `scope` + motivo. La
+ * redacción es defensa en profundidad sobre algo que ya no trae secretos.
+ */
+function registrarHerencia(entrada, opts) {
+  const auditImpl = (opts && opts.auditImpl) || auditLog;
+  const fsImpl = (opts && opts.fsImpl) || fs;
+  const file = (opts && opts.auditFile) || AUDIT_HERENCIA;
+  return auditImpl.appendChained({
+    file,
+    entry: redact.redactObject({ event: 'credential-inheritance', ...entrada }),
+    fsImpl,
+  });
+}
+
+/**
+ * CA-1 / REQ-SEC-6 — la PUERTA ÚNICA a la herencia, en una sola expresión.
+ *
+ * Está factorizada (en vez de inline) por una razón de verificabilidad, no de
+ * estilo: el vault real no puede fabricar `VAULT_DISABLED` con `missing` no
+ * vacío —`failInstancia` vacía `missing` en casi todos los códigos—, así que la
+ * única forma de barrer los seis códigos del enum MÁS uno sintético contra la
+ * condición REAL de producción es poder llamarla. Un test que la reimplemente
+ * verificaría su propia copia, que es exactamente el fail-open que se busca
+ * evitar.
+ *
+ * Se compara contra el símbolo IMPORTADO del enum, jamás contra un literal: si
+ * el enum cambiara de forma, esto revienta ruidoso en vez de degradar a `false`
+ * en silencio.
+ */
+function herenciaHabilitadaPorCodigo(code) {
+  return code === INSTANCE_VAULT_ERROR_CODES.VAULT_SCOPE_MISSING;
+}
+
+/**
+ * Aplica la herencia del kernel SOBRE el veredicto del vault de una instancia.
+ *
+ * Se llama SIEMPRE (también con veredicto `ok`), porque dos de las ocho
+ * situaciones no dependen de que algo haya fallado: M1 (scope propio presente
+ * pero vacío/placeholder) sólo es visible cuando el vault dijo que sí.
+ *
+ * @returns {{resolved:object, sources:object|null}} `resolved` con la forma que
+ *          `redactScoped` ya come, y el origen por scope (`null` si falló).
+ */
+function aplicarHerenciaKernel({
+  projectId, resolved, motivoFallo, scopesContrato, inheritSolicitado,
+  aSegmento, sharedSegmentos, reContextualizar, vaultOpts, opts,
+}) {
+  const logger = typeof opts.logger === 'function' ? opts.logger : null;
+  const pidioHerencia = inheritSolicitado.length > 0;
+
+  // La DENEGACIÓN se audita sólo si el producto pidió heredar algo. Ésa es la
+  // superficie que REQ-SEC-3 protege: sondear qué le concede el kernel
+  // declarando `inherit` y mirando la respuesta. Un producto que nunca pidió
+  // herencia y al que le falta su credencial propia ya se reporta por `onAlert`;
+  // auditarlo acá llenaría la cadena de ruido que esconde las decisiones reales,
+  // que es otra forma de no tener auditoría.
+  const auditarDenegacion = (scope, motivo, submotivo) => {
+    if (!pidioHerencia) return;
+    try {
+      registrarHerencia({
+        decision: 'denied', projectId, scope: scope || null, motivo, submotivo: submotivo || null,
+      }, opts);
+    } catch (e) {
+      // Ya se está denegando: perder la traza no puede ADEMÁS tumbar el
+      // pipeline. Se avisa, no se propaga.
+      if (logger) {
+        logger(`[kernel-supervisor] WARN: no se pudo auditar la denegacion de herencia del producto `
+          + `"${projectId}" (${(e && e.message) || 'error'}). Impacto: la denegacion SIGUE en pie, pero sin `
+          + `traza encadenada. Proximo paso: revisar permisos de escritura de ${AUDIT_HERENCIA_LOGICO}`);
+      }
+    }
+  };
+
+  const fallar = (motivo, datos, mensajeHecho, missingExtra) => {
+    auditarDenegacion(datos.scope, motivo, datos.submotivo);
+    const missing = missingExtra
+      ? [...new Set([...(resolved.missing || []), ...missingExtra])]
+      : (resolved.missing || []);
+    return {
+      resolved: {
+        ...resolved,
+        ok: false,
+        scopes: {},                                  // nunca secretos parciales
+        missing,
+        error: mensajeHecho || mensajeHerencia(motivo, datos),
+      },
+      sources: null,
+    };
+  };
+
+  // CA-3 / M1 — se evalúa SIEMPRE, también con veredicto `ok`. El vault sólo
+  // clasifica como faltante lo `undefined|null` (`finalizarInstancia`), así que
+  // un `''` o un placeholder llega como RESUELTO. Un scope propio roto no es
+  // "un scope que el producto no tiene": es error, jamás la puerta a la herencia.
+  const vaciosPropios = Object.keys(resolved.scopes || {})
+    .filter((scope) => valorSinCredencial(resolved.scopes[scope]));
+  if (vaciosPropios.length) {
+    return fallar(MOTIVOS_HERENCIA.M1, { projectId, scope: vaciosPropios[0] }, null, vaciosPropios);
+  }
+
+  if (resolved.ok) {
+    const propias = Object.create(null);
+    for (const scope of Object.keys(resolved.scopes)) propias[scope] = FUENTE_PROPIA;
+    return { resolved, sources: propias };
+  }
+
+  // CA-1 / REQ-SEC-6 — PUERTA ÚNICA, escrita en positivo y cerrada. Cualquier
+  // código distinto de `VAULT_SCOPE_MISSING` —presente o futuro— es error. Una
+  // enumeración de códigos que dan error sería fail-open: el que se agregue
+  // mañana y nadie liste caería por default en la rama de herencia.
+  if (!herenciaHabilitadaPorCodigo(resolved.code)) {
+    if (motivoFallo === MOTIVOS_HERENCIA.M8) {
+      // El texto de M8 ya se construyó donde se conoce la clave rechazada; es
+      // más específico que M7 y no se pisa.
+      auditarDenegacion(null, MOTIVOS_HERENCIA.M8, null);
+      return { resolved, sources: null };
+    }
+    return fallar(MOTIVOS_HERENCIA.M7, {
+      projectId,
+      scope: scopesContrato[0] || '',
+      scopes: scopesContrato,
+      code: resolved.code,
+      detalle: resolved.error,
+    });
+  }
+
+  const faltantes = Array.isArray(resolved.missing) ? [...resolved.missing] : [];
+  if (!faltantes.length) return { resolved, sources: null };   // nada que heredar
+
+  const cfgVault = leerConfigVaultKernel(opts);
+  const projectIdKernel = cfgVault && typeof cfgVault.projectId === 'string' ? cfgVault.projectId.trim() : '';
+
+  // ANTI-RECURSIÓN — el kernel no hereda de sí mismo, y un `projectId` reservado
+  // tampoco puede tomar prestada la identidad del kernel. Se implementa vaciando
+  // los grants disponibles en vez de saltear la evaluación: así el resultado
+  // sigue siendo un motivo TIPADO y auditado (M4, "el kernel no te concedió ese
+  // scope") en lugar de un camino mudo que nadie puede diagnosticar. Sin
+  // `vault.projectId` legible tampoco hay herencia: fail-closed.
+  const esElKernel = !projectIdKernel
+    || projectId === projectIdKernel
+    || isReservedProjectId(projectId);
+  const grants = esElKernel ? [] : (cfgVault.inheritance || []);
+  const ahora = typeof opts.now === 'function' ? opts.now() : Date.now();
+
+  for (const scope of faltantes) {
+    const decision = evaluarHerenciaScope({
+      projectId, scope, inherit: inheritSolicitado, grants, ahora,
+    });
+    if (!decision.ok) {
+      return fallar(decision.motivo, { projectId, scope, submotivo: decision.submotivo }, decision.mensaje);
+    }
+  }
+
+  // La traza de la CONCESIÓN va ANTES de la lectura cross-namespace: así no
+  // existe ningún camino donde el kernel entregue una credencial suya sin que
+  // haya quedado constancia previa. Si no se puede auditar, no se hereda —
+  // fail-closed, no best-effort: una credencial entregada sin registro es
+  // exactamente lo que REQ-SEC-3 viene a impedir.
+  try {
+    for (const scope of faltantes) {
+      registrarHerencia({
+        decision: 'granted', projectId, scope, source: FUENTE_HEREDADA, kernelProjectId: projectIdKernel,
+      }, opts);
+    }
+  } catch (e) {
+    return {
+      resolved: {
+        ...resolved,
+        ok: false,
+        scopes: {},
+        error: `no se pudo dejar traza de la herencia de credenciales del producto "${projectId}", asi que `
+          + `la herencia se DENIEGA (${(e && e.message) || 'error'}): una credencial del kernel no se entrega `
+          + 'sin registro no repudiable. '
+          + 'Impacto: la instancia queda SIN credenciales (fail-closed). '
+          + `Proximo paso: revisar permisos de escritura de ${AUDIT_HERENCIA_LOGICO}`,
+      },
+      sources: null,
+    };
+  }
+
+  // RIESGO ALTO — `failInstancia` devuelve `scopes: {}` cuando hay faltantes
+  // (credentials.js), así que a esta altura los scopes PROPIOS que sí resolvieron
+  // YA se perdieron del veredicto. Sin re-resolverlos, la instancia quedaría con
+  // SÓLO lo heredado, y el defecto pasaría verde en todo test de un único scope.
+  const propios = scopesContrato.filter((scope) => !faltantes.includes(scope));
+  const efectivos = Object.create(null);
+  const fuentes = Object.create(null);
+  let namespaceEfectivo = resolved.namespace || projectId;
+
+  const fallarPorVault = (rv) => ({
+    resolved: {
+      ...resolved, ok: false, scopes: {}, code: rv.code || resolved.code, error: reContextualizar(rv.error),
+    },
+    sources: null,
+  });
+
+  try {
+    if (propios.length) {
+      // Sólo los que YA estaban: pedir la lista completa devolvería el mismo
+      // `VAULT_SCOPE_MISSING`. Si la lista quedara vacía se saltea la llamada,
+      // porque pedir cero scopes devuelve `VAULT_SCOPES_REQUIRED` y rompería el
+      // flujo con un error espurio.
+      const rp = resolveInstanceVault(
+        { projectId, scopes: propios.map(aSegmento), sharedScopes: sharedSegmentos },
+        vaultOpts,
+      );
+      if (!rp.ok) return fallarPorVault(rp);
+      namespaceEfectivo = rp.namespace || namespaceEfectivo;
+      for (const scope of propios) {
+        efectivos[scope] = rp.scopes[aSegmento(scope)];
+        fuentes[scope] = FUENTE_PROPIA;
+      }
+    }
+
+    // CA-8 — el namespace del kernel sale de `vault.projectId` (out-of-band), NO
+    // del descriptor hijo ni de `declared.path`. La herencia es una llamada
+    // APARTE y explícita: la línea que fuerza el namespace propio en la
+    // resolución de arriba no se debilita ni un poco.
+    const rh = resolveInstanceVault(
+      { projectId: projectIdKernel, scopes: faltantes.map(aSegmento), sharedScopes: [] },
+      vaultOpts,
+    );
+    if (!rh.ok) return fallarPorVault(rh);
+    for (const scope of faltantes) {
+      efectivos[scope] = rh.scopes[aSegmento(scope)];
+      fuentes[scope] = FUENTE_HEREDADA;
+    }
+  } catch (err) {
+    // `VaultConfigError` u otro fallo ruidoso del vault: fail-closed, nunca
+    // parcial. El mensaje nombra la clave, jamás `err.message` crudo.
+    return fallarPorVault({
+      code: (err && err.code) || INSTANCE_VAULT_ERROR_CODES.VAULT_CONFIG_INVALID,
+      error: 'la configuracion del vault no valida, asi que no se pudo completar la herencia del producto '
+        + `"${projectId}" (clave: ${(err && err.clave) || 'vault'}). `
+        + 'Impacto: la instancia queda SIN credenciales (fail-closed); NO se cae al archivo. '
+        + 'Proximo paso: corregir esa clave en .pipeline/config.yaml',
+    });
+  }
+
+  // M1 otra vez, ahora sobre lo efectivo: un scope heredado que llega vacío o
+  // con placeholder tampoco sirve, y el producto nombrado es el DUEÑO del
+  // namespace donde está roto (el kernel), que es quien lo puede arreglar.
+  const vaciosEfectivos = Object.keys(efectivos).filter((scope) => valorSinCredencial(efectivos[scope]));
+  if (vaciosEfectivos.length) {
+    const scope = vaciosEfectivos[0];
+    const duenio = fuentes[scope] === FUENTE_HEREDADA ? projectIdKernel : projectId;
+    return fallar(MOTIVOS_HERENCIA.M1, { projectId: duenio, scope }, null, vaciosEfectivos);
+  }
+
+  return {
+    resolved: { ok: true, code: null, namespace: namespaceEfectivo, scopes: efectivos, missing: [] },
+    sources: fuentes,
+  };
+}
+
 function createKernelSupervisor(deps = {}) {
   const catalogStore = deps.catalogStore;
   const storeFactory = typeof deps.storeFactory === 'function' ? deps.storeFactory : createKernelStore;
@@ -832,11 +1180,12 @@ function createKernelSupervisor(deps = {}) {
     const scopesContrato = delDescriptor ? unir('scopes') : opts.scopes;
     const sharedContrato = Array.isArray(opts.sharedScopes) ? opts.sharedScopes
       : (delDescriptor ? unir('shared') : []);
-    const inheritIgnorado = delDescriptor ? unir('inherit') : [];
-    if (inheritIgnorado.length > 0 && typeof opts.logger === 'function') {
-      opts.logger('[kernel-supervisor] INFO: credentials[].inherit se ignora en este borde; '
-        + `no altera los scopes efectivos (${inheritIgnorado.join(', ')})`);
-    }
+    // #6034 — `credentials[].inherit` es la SOLICITUD del producto hijo, y ya no
+    // se ignora (ése era el borde provisional de #6033). No alcanza por sí sola:
+    // abajo se cruza con el grant del kernel, que es donde vive la AUTORIDAD.
+    // Con `opts.scopes` explícito (camino legacy) no hay descriptor que leer, así
+    // que no hay solicitud: fail-closed.
+    const inheritSolicitado = delDescriptor ? unir('inherit') : [];
 
     // Unico borde contrato -> vault. Quien pueble el vault (#5339/#5393) debe
     // cargar `providers__<vendor>`; descriptor, logs y consumidores usan `providers:<vendor>`.
@@ -854,22 +1203,33 @@ function createKernelSupervisor(deps = {}) {
     if (typeof opts.logger === 'function') vaultOpts.logger = opts.logger;
 
     let resolved;
+    let motivoFallo = null;
     try {
       resolved = resolveInstanceVault({ projectId, scopes, sharedScopes }, vaultOpts);
     } catch (err) {
       // CA-6 — `VaultConfigError` (namespace del vault mal configurado) llega
       // acá como fail-closed. REQ-SEC-9: al operador viaja la CLAVE de config
       // que hay que tocar, nunca `err.message` crudo del vault.
+      //
+      // #6034 · CA-12 — `vault.scope` es la excepción, y no es un detalle: el
+      // scope lo escribió el DESCRIPTOR del producto, así que mandar al operador
+      // a `.pipeline/config.yaml` lo manda al archivo equivocado a buscar algo
+      // que no está ahí. Las demás claves (`vault.prefix`, `vault.hostId`…) sí
+      // son dato del host y conservan el texto de siempre.
+      const claveVault = (err && err.clave) || 'vault';
+      if (claveVault === 'vault.scope') motivoFallo = MOTIVOS_HERENCIA.M8;
       resolved = {
         ok: false,
-        code: (err && err.code) || 'VAULT_CONFIG_INVALID',
+        code: (err && err.code) || INSTANCE_VAULT_ERROR_CODES.VAULT_CONFIG_INVALID,
         namespace: projectId,
         scopes: {},
         missing: [],
-        error: 'la configuracion del vault no valida, asi que el producto '
-          + `"${projectId}" no puede resolver credenciales (clave: ${(err && err.clave) || 'vault'}). `
-          + 'Impacto: la instancia queda SIN credenciales (fail-closed); NO se cae al archivo. '
-          + 'Proximo paso: corregir esa clave en .pipeline/config.yaml',
+        error: motivoFallo === MOTIVOS_HERENCIA.M8
+          ? mensajeHerencia(MOTIVOS_HERENCIA.M8, { projectId, scopes: scopesContrato })
+          : ('la configuracion del vault no valida, asi que el producto '
+            + `"${projectId}" no puede resolver credenciales (clave: ${claveVault}). `
+            + 'Impacto: la instancia queda SIN credenciales (fail-closed); NO se cae al archivo. '
+            + 'Proximo paso: corregir esa clave en .pipeline/config.yaml'),
       };
     }
     const aContrato = new Map(pares.map(({ scope, segmento }) => [segmento, scope]));
@@ -891,7 +1251,34 @@ function createKernelSupervisor(deps = {}) {
       missing: (resolved.missing || []).map((scope) => aContrato.get(scope) || scope),
       error: reContextualizarScopes(resolved.error),
     };
+
+    // #6034 — herencia OPT-IN por scope. Va acá y no antes: DESPUÉS del veredicto
+    // del vault (para decidir por CÓDIGO, no por vacío) y DESPUÉS del re-mapeo a
+    // contrato (para que la decisión y los mensajes hablen el vocabulario que el
+    // operador escribió). La decisión es del módulo hoja; esto sólo la ejecuta.
+    const herencia = aplicarHerenciaKernel({
+      projectId,
+      resolved,
+      motivoFallo,
+      scopesContrato,
+      inheritSolicitado,
+      aSegmento,
+      sharedSegmentos: sharedScopes,
+      reContextualizar: reContextualizarScopes,
+      vaultOpts,
+      opts,
+    });
+    resolved = herencia.resolved;
+
     const meta = redactScoped(resolved);          // A02: sólo nombres de scope, nunca valores
+    // CA-10 — el ORIGEN por scope persiste en el META, no sólo en el evento de
+    // auditoría. Sin esta marca, `buildChildEnv` (#5901) no distingue un secreto
+    // propio de uno heredado y la rotación de la credencial del kernel no sabe a
+    // qué hijos alcanza: un secreto rotado dejaría hijos con credencial muerta.
+    // Extensión ADITIVA sobre lo que `redactScoped` ya devolvió: la función no se
+    // toca y ningún caller existente se rompe. Sigue siendo sólo-nombres — la
+    // etiqueta de origen no es un valor.
+    if (herencia.sources) meta.sources = herencia.sources;
 
     if (!resolved.ok) {
       // Fail-closed: no dejar secretos parciales/ajenos en el ctx.
@@ -1118,7 +1505,13 @@ function createKernelSupervisor(deps = {}) {
  * @param {function} [opts.spawn]              spawn(ctx) AISLADO por instancia (A04). Opcional.
  * @param {function} [opts.onAlert]            callback de alerta fail-closed (A09).
  * @param {function} [opts.createSupervisor]   factory del supervisor (test override; default: createKernelSupervisor).
- * @returns {Promise<{ran:boolean, reason?:string, cap?:number, spawned?:string[], skipped?:Array, error?:string}>}
+ * #5214: el best-effort NO cubre la CONFIGURACIÓN durable inválida. Con el flag
+ * ON y `kernel.tableName` ausente/vacío/whitespace se devuelve
+ * `{ran:false, reason:'config-invalid', fatal:true, exitCode}` sin tocar AWS: es
+ * un error del operador, no un fallo operativo, y el caller debe ABORTAR con
+ * código no-cero en vez de seguir arrancando degradado.
+ *
+ * @returns {Promise<{ran:boolean, reason?:string, fatal?:boolean, configReason?:string, exitCode?:number, cap?:number, spawned?:string[], skipped?:Array, error?:string}>}
  */
 async function bootKernelDurable(opts = {}) {
   const config = opts.config && typeof opts.config === 'object' ? opts.config : {};
@@ -1130,6 +1523,46 @@ async function bootKernelDurable(opts = {}) {
   // y el arranque FS actual del pulpo no cambia.
   if (kernel.durable !== true) {
     return { ran: false, reason: 'flag-off' };
+  }
+
+  // #5214 · CA-1/CA-2/CA-4 — Guard fail-closed de config durable, ANTES del
+  // `try` y ANTES de invocar `buildCatalogStore()`.
+  //
+  // El orden importa y es lo que el CA pide testear: `buildCatalogStore` es el
+  // closure que construye el runner del AWS CLI y el driver DynamoDB, así que
+  // salir acá garantiza CERO clientes AWS, CERO credenciales consumidas y CERO
+  // procesamiento (no se instancia el supervisor ni se drena ninguna cola).
+  //
+  // Va FUERA del `try` a propósito. El `catch` de abajo es best-effort y degrada
+  // cualquier fallo a `{ran:false, reason:'error'}` — que es correcto para fallos
+  // OPERATIVOS (driver caído, catálogo corrupto) pero sería exactamente el
+  // fallback silencioso que la historia elimina si se aplicara a una config
+  // durable inválida. Por eso la config inválida sale por una rama propia.
+  //
+  // Se DEVUELVE en vez de lanzar: el contrato "esta función nunca lanza" lo
+  // consumen callers que la envuelven en try/catch (`pulpo.js`), y un throw acá
+  // se lo tragarían, convirtiendo el aborto en un WARN. El desenlace fatal lo
+  // ejecuta el entrypoint leyendo `fatal:true` — ver `pulpo.js`, que además
+  // corre este mismo guard antes de siquiera cargar el store.
+  const durableCfg = durableConfigGuard.inspectDurableKernelConfig(config);
+  if (!durableCfg.ok) {
+    // La alerta lleva el TEXTO CONSTANTE, nunca el valor recibido ni la config
+    // (A02). La variante concreta viaja aparte, en `reason`.
+    try {
+      onAlert({
+        projectId: null,
+        stage: 'boot-durable-config',
+        errors: [{ detail: durableCfg.message, reason: durableCfg.reason }],
+      });
+    } catch { /* alerta best-effort: el fail-closed va igual */ }
+    return {
+      ran: false,
+      reason: 'config-invalid',
+      fatal: true,
+      configReason: durableCfg.reason,
+      exitCode: durableCfg.exitCode,
+      error: durableCfg.message,
+    };
   }
 
   const createSupervisor = typeof opts.createSupervisor === 'function'
@@ -1187,4 +1620,8 @@ module.exports = {
   resolveInstanceForEvent,
   deriveRepoConfig,
   extractRepoSlug,
+  // #6034 — expuesto SOLO para el barrido de CA-1 (los 6 codigos del enum mas
+  // un `FAKE_CODE` sintetico). No tiene call-site productivo fuera de
+  // `aplicarHerenciaKernel`.
+  _herenciaHabilitadaPorCodigo: herenciaHabilitadaPorCodigo,
 };

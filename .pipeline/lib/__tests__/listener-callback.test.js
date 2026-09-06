@@ -67,6 +67,7 @@ function installFakeCommanderRouter(onRoute, routeResult = true) {
 
 function resetDeps() {
     listener.deps.operatorGate = null;
+    listener.deps.operationalExecutorOptions = null;
     listener.deps.commanderRouter = null;
     listener.deps.telegramRequest = async () => ({ ok: true });
     delete process.env.TELEGRAM_LEO_OPERATOR_CHAT_ID;
@@ -364,4 +365,249 @@ test('#5923 el listener NO emite toast propio cuando el router devuelve true (D5
         'el listener delega el toast al handler en el camino handled===true',
     );
     resetDeps();
+});
+
+// =============================================================================
+// #5458 — DESPACHO OPERACIONAL AISLADO (`vault-cut-fallback`).
+//
+// El listener debe clasificar el `callback_data` ANTES del gate de lifecycle y
+// derivar las acciones operacionales a `handleOperationalCallback()`. Si eso no
+// pasa, el callback cae en `handleSignature()` — donde vive `applyTransition()`
+// — y el corte del fallback terminaría moviendo work-files.
+// =============================================================================
+
+/**
+ * Gate fake que implementa las DOS superficies (firma + operacional) y registra
+ * cuál se invocó. `kind` decide la clasificación del `callback_data`.
+ */
+function installFakeGateConClasificacion(kind, opResult) {
+    const calls = { classify: [], signature: [], operational: [] };
+    listener.deps.operatorGate = {
+        classifyCallback: (data) => { calls.classify.push(data); return kind; },
+        handleSignature: (args) => {
+            calls.signature.push(args);
+            return { ok: true, editMessage: true, toast: 'firma', action: 'approve', issue: 4579 };
+        },
+        handleOperationalCallback: (args) => {
+            calls.operational.push(args);
+            return opResult;
+        },
+    };
+    return calls;
+}
+
+const OP_OK = {
+    ok: true, editMessage: true, status: 'cut',
+    toast: '✅ Confirmado — corte del fallback aplicado',
+    action: 'vault-cut-fallback', issue: 5458, reason: null,
+};
+
+test('#5458 un callback operacional va al handler dedicado y NUNCA a handleSignature', async () => {
+    const calls = installFakeTransport();
+    const gateCalls = installFakeGateConClasificacion('operational', OP_OK);
+
+    await listener.handleCallbackQuery({ ...CBQ, data: 'ffff0000ffff0000' });
+
+    assert.equal(gateCalls.operational.length, 1, 'debe usar el handler operacional');
+    assert.equal(gateCalls.signature.length, 0, 'NO debe pasar por el canal de firma');
+    // Autorización por from.id (no chat.id) y callback_data crudo.
+    assert.equal(gateCalls.operational[0].operatorId, 111222333);
+    assert.equal(gateCalls.operational[0].callbackData, 'ffff0000ffff0000');
+    // Respuesta terminal: se corta el spinner y se quitan los botones.
+    const methods = calls.map(c => c.method);
+    assert.ok(methods.includes('answerCallbackQuery'));
+    assert.ok(methods.includes('editMessageText'));
+    const edit = calls.find(c => c.method === 'editMessageText');
+    assert.deepEqual(edit.params.reply_markup, { inline_keyboard: [] });
+    assert.match(edit.params.text, /corte del fallback aplicado/);
+    // Sin copy de lifecycle.
+    assert.doesNotMatch(edit.params.text, /definici[oó]n|Firmado por/);
+    resetDeps();
+});
+
+test('#5458 un callback de gate sigue yendo al canal de firma (sin regresión)', async () => {
+    installFakeTransport();
+    const gateCalls = installFakeGateConClasificacion('gate', OP_OK);
+
+    await listener.handleCallbackQuery(CBQ);
+
+    assert.equal(gateCalls.signature.length, 1);
+    assert.equal(gateCalls.operational.length, 0);
+    resetDeps();
+});
+
+test('#5458 un gate SIN classifyCallback (versión vieja) cae al canal de firma', async () => {
+    const calls = installFakeTransport();
+    installFakeGate({ ok: true, editMessage: false, toast: 'ok', action: 'approve', issue: 1 });
+
+    await listener.handleCallbackQuery(CBQ);
+
+    assert.ok(calls.some(c => c.method === 'answerCallbackQuery'), 'degradación sin romper');
+    resetDeps();
+});
+
+test('#5458 rechazo operacional responde toast terminal y no toca el lifecycle', async () => {
+    const calls = installFakeTransport();
+    const gateCalls = installFakeGateConClasificacion('operational', {
+        ok: false, editMessage: false, status: 'precondition-failed',
+        reason: 'precondition-failed',
+        toast: '🔒 Las condiciones del corte ya no se cumplen; el fallback se conserva',
+    });
+
+    await listener.handleCallbackQuery({ ...CBQ, data: 'ffff0000ffff0001' });
+
+    assert.equal(gateCalls.signature.length, 0);
+    const methods = calls.map(c => c.method);
+    assert.ok(methods.includes('answerCallbackQuery'), 'CA-9: siempre corta el spinner');
+    assert.ok(!methods.includes('editMessageText'), 'no edita si el resultado no es terminal');
+    const answer = calls.find(c => c.method === 'answerCallbackQuery');
+    assert.match(answer.params.text, /fallback se conserva/);
+    resetDeps();
+});
+
+test('#5458 si el handler operacional explota, el spinner se corta igual', async () => {
+    const calls = installFakeTransport();
+    listener.deps.operatorGate = {
+        classifyCallback: () => 'operational',
+        handleSignature: () => { throw new Error('no debería llamarse'); },
+        handleOperationalCallback: () => { throw new Error('boom C:\Users\Administrator\secreto'); },
+    };
+
+    await listener.handleCallbackQuery({ ...CBQ, data: 'ffff0000ffff0002' });
+
+    const answer = calls.find(c => c.method === 'answerCallbackQuery');
+    assert.ok(answer, 'CA-9: responde aunque el handler explote');
+    assert.doesNotMatch(answer.params.text, /boom|Administrator/);
+    resetDeps();
+});
+
+test('#5458 classifyCallback que explota degrada al canal de firma sin romper', async () => {
+    const calls = installFakeTransport();
+    const gateCalls = { signature: [] };
+    listener.deps.operatorGate = {
+        classifyCallback: () => { throw new Error('store ilegible'); },
+        handleSignature: (args) => {
+            gateCalls.signature.push(args);
+            return { ok: false, editMessage: false, toast: 'Acción inválida o expirada', reason: 'unknown-id' };
+        },
+    };
+
+    await listener.handleCallbackQuery(CBQ);
+
+    assert.equal(gateCalls.signature.length, 1);
+    const answer = calls.find(c => c.method === 'answerCallbackQuery');
+    assert.match(answer.params.text, /inválida o expirada/);
+    resetDeps();
+});
+
+test('#5459 integración productiva usa gate y executor REALES y modifica bootstrap_fallback', async () => {
+    const { createOperatorGate } = require('../operator-gate');
+    const { createTokenSigner } = require('../action-token');
+
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'listener-5458-'));
+    const dirs = {
+        storeDir: path.join(root, 'store'),
+        waitingDir: path.join(root, 'waiting-operator'),
+        approvedDir: path.join(root, 'procesado'),
+        rejectedDir: path.join(root, 'pendiente'),
+        auditFile: path.join(root, 'audit', 'sig.jsonl'),
+        nonceFile: path.join(root, 'audit', 'nonces.jsonl'),
+    };
+    fs.mkdirSync(dirs.waitingDir, { recursive: true });
+    fs.writeFileSync(path.join(dirs.waitingDir, '5458.json'), '{"issue":5458}');
+
+    const configPath = path.join(root, 'config.yaml');
+    fs.writeFileSync(configPath, [
+      'vault:',
+      '  bootstrap_fallback: true',
+      '  cut_fallback:',
+      '    authorization_ttl_seconds: 300',
+      '    operation_timeout_ms: 10000',
+      '    runbook: docs/pipeline/vault-secretos-aws.md',
+      '',
+    ].join('\n'));
+    const gate = createOperatorGate({
+        ...dirs,
+        signer: createTokenSigner({ secret: 'listener-5458', nonceFile: dirs.nonceFile, ttlMs: 60_000 }),
+        operatorAllowlist: ['111222333'],
+    });
+    listener.deps.operatorGate = gate;
+    listener.deps.operationalExecutorOptions = {
+      configPath,
+      resolveOptions: ({ issuedAt }) => ({
+        validateAllowlist: async () => true,
+        evaluateCoverage: async () => true,
+        authorization: { issuedAt: new Date(issuedAt).toISOString(), consumed: true },
+      }),
+    };
+    const calls = installFakeTransport();
+
+    const { callbackData } = gate.register({ issue: 5458, action: 'vault-cut-fallback' });
+    await listener.handleCallbackQuery({ ...CBQ, data: callbackData });
+
+    assert.equal(require('js-yaml').load(fs.readFileSync(configPath, 'utf8')).vault.bootstrap_fallback, false,
+      'el executor real modifica bootstrap_fallback en el camino productivo');
+    // El work-file de waiting-operator NO se movió a ningún lado.
+    assert.ok(fs.existsSync(path.join(dirs.waitingDir, '5458.json')));
+    assert.equal(fs.existsSync(path.join(dirs.approvedDir, '5458.json')), false);
+    assert.equal(fs.existsSync(path.join(dirs.rejectedDir, '5458.json')), false);
+    const answer = calls.find(c => c.method === 'answerCallbackQuery');
+    assert.match(answer.params.text, /Confirmado/);
+
+    // Segundo toque: terminal e idempotente, sin volver a ejecutar.
+    await listener.handleCallbackQuery({ ...CBQ, id: 'cbq-2', data: callbackData });
+    assert.equal(require('js-yaml').load(fs.readFileSync(configPath, 'utf8')).vault.bootstrap_fallback, false,
+      'no se repite ni revierte el efecto');
+    resetDeps();
+});
+
+// --- #5458 rebote rev-1: el footer PERMANENTE no puede mentir -------------
+// El bug original afirmaba "Confirmado por <operador>" en los 4 caminos
+// terminales donde la acción NO se ejecutó. Los tests previos sólo cubrían
+// fallos con `editMessage: false` (que ni siquiera escriben footer), así que
+// el defecto pasó. Estos casos ejercitan fallo terminal CON edición.
+const OP_FALLIDOS_TERMINALES = [
+  { status: 'executor-unavailable', toast: '🔒 Ejecutor no disponible; el fallback se conserva' },
+  { status: 'precondition-failed', toast: '🔒 Las condiciones del corte ya no se cumplen; el fallback se conserva' },
+  { status: 'expired', toast: '⏱️ Acción expirada; el fallback se conserva' },
+  { status: 'unavailable', toast: '🔒 No se pudo confirmar de forma segura; el fallback se conserva' },
+];
+
+for (const caso of OP_FALLIDOS_TERMINALES) {
+  test(`#5458 el footer NO dice "Confirmado" cuando la acción falló (${caso.status})`, async () => {
+    const calls = installFakeTransport();
+    installFakeGateConClasificacion('operational', {
+      ok: false, editMessage: true, status: caso.status,
+      reason: caso.status, toast: caso.toast,
+      action: 'vault-cut-fallback', issue: 5458,
+    });
+
+    await listener.handleCallbackQuery({ ...CBQ, data: 'ffff0000ffff0003' });
+
+    const edit = calls.find(c => c.method === 'editMessageText');
+    assert.ok(edit, 'resultado terminal: debe dejar constancia en el chat');
+    assert.doesNotMatch(
+      edit.params.text, /Confirmado por/,
+      'no puede afirmar una confirmación que no ocurrió',
+    );
+    assert.match(edit.params.text, /No aplicado/, 'debe decir que no se aplicó');
+    // La atribución al operador se conserva (valor de auditoría).
+    assert.match(edit.params.text, /Leo/);
+    // El motivo real sigue visible.
+    assert.ok(edit.params.text.includes(caso.toast.slice(2).trim()));
+    resetDeps();
+  });
+}
+
+test('#5458 el footer SÍ dice "Confirmado por" cuando el corte se aplicó', async () => {
+  const calls = installFakeTransport();
+  installFakeGateConClasificacion('operational', OP_OK);
+
+  await listener.handleCallbackQuery({ ...CBQ, data: 'ffff0000ffff0004' });
+
+  const edit = calls.find(c => c.method === 'editMessageText');
+  assert.ok(edit);
+  assert.match(edit.params.text, /✅ Confirmado por Leo/);
+  assert.doesNotMatch(edit.params.text, /No aplicado/);
+  resetDeps();
 });

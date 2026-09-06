@@ -41,6 +41,13 @@ function snapshotOk(over = {}) {
         files: ['.pipeline/skills-deterministicos/delivery.js'],
         headRefOid: HEAD_SHA,
         headRefName: 'agent/5401-pipeline-dev',
+        // #6612 — `getPRSnapshot` SIEMPRE setea este campo (array = leido,
+        // `null` = no se pudo leer). Un snapshot sin la clave es una forma que
+        // produccion no puede producir, y el gate de allowlist de seguridad la
+        // trata como "no pude leer el rollup" => fail-closed. `[]` es lo que
+        // devuelve un PR cuyos checks todavia no se instanciaron: exactamente el
+        // estado que estas suites modelan.
+        statusCheckRollup: [],
         ...over,
     };
 }
@@ -207,6 +214,12 @@ test('#5420 — snapshot degradado (gh falla) ⇒ bloqueo, sin merge', () => {
 // #6012 re-baseline — el snapshot ahora trae TAMBIÉN el estado de mergeabilidad
 // (`mergeable`, `mergeStateStatus`, `state`) en la misma lectura. El invariante
 // que fija este test no cambió: sigue siendo UNA sola llamada, sin TOCTOU.
+//
+// #6431 re-baseline (mismo criterio) — se suma `reviewDecision` al nivel 1 de la
+// escalera de campos. El invariante SIGUE SIENDO EL MISMO y es el que este test
+// protege: `calls.length === 1`. Lo único que se actualiza es la lista esperada
+// de campos, que es un detalle de implementacion; ninguna aserción se relaja ni
+// se borra. Si mañana alguien parte esto en dos lecturas, el test falla igual.
 test('#5420/#6012 — getPRSnapshot: labels, files, head, rama y estado de merge en UNA sola llamada', () => {
     const calls = [];
     const snap = delivery.getPRSnapshot(777, {
@@ -234,8 +247,8 @@ test('#5420/#6012 — getPRSnapshot: labels, files, head, rama y estado de merge
     assert.deepEqual(calls[0].argv.slice(0, 4), ['pr', 'view', '777', '--json']);
     assert.equal(
         calls[0].argv[4],
-        'labels,files,headRefOid,headRefName,mergeable,mergeStateStatus,state',
-        '#6012 CA-1: el estado de mergeabilidad viaja en la MISMA llamada que los gates',
+        'labels,files,headRefOid,headRefName,mergeable,mergeStateStatus,state,statusCheckRollup,reviewDecision',
+        '#6012 CA-1 + #6431: estado de mergeabilidad Y decisión de review viajan en la MISMA llamada que los gates',
     );
     // El PR de este fixture no devolvió los campos nuevos: se normalizan a null
     // (nunca a 'UNKNOWN'), que es lo que mantiene el default fail-closed.
