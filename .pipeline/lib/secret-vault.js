@@ -220,6 +220,93 @@ const VAULT_NO_FILE_SENTINEL = 'vault-instance-profile-sin-archivos';
 // son categorías que se cuentan pero NO son tráfico físico.
 const VAULT_TELEMETRY_CATEGORIES = Object.freeze(['physical_read', 'cache_hit', 'single_flight_join']);
 
+// #5803 — nombres DERIVADOS del enum de arriba por su índice contractual. No es
+// una segunda fuente de verdad: acá no se escribe ningún literal de categoría,
+// cada valor sale del array congelado. Existe para que `credentials.js` pueda
+// emitir la decisión que toma esa capa (memo hit / join de vuelo) sin escribir
+// un literal propio, que es exactamente la deriva que CA-17 viene a frenar.
+const VAULT_TELEMETRY = Object.freeze({
+    PHYSICAL_READ: VAULT_TELEMETRY_CATEGORIES[0],
+    CACHE_HIT: VAULT_TELEMETRY_CATEGORIES[1],
+    SINGLE_FLIGHT_JOIN: VAULT_TELEMETRY_CATEGORIES[2],
+});
+
+/**
+ * #5803 — emisor ÚNICO de telemetría del vault en todo el repo.
+ *
+ * Es módulo-level y sin estado global a propósito: las dos capas que toman
+ * decisiones clasificables (este archivo y `credentials.js`) lo CONSUMEN, y
+ * ninguna reimplementa la emisión. La regla de dueño único dice que cada
+ * categoría la emite la capa que toma la decisión, exactamente una vez;
+ * ninguna capa observa, cuenta, filtra ni reclasifica los eventos de la otra:
+ * las dos escriben en el MISMO sink inyectado y el agregador es #5805.
+ *
+ * El contexto (`crearContexto()`) es el latch de "a lo sumo un evento por
+ * invocación": lo crea quien delimita la invocación (el envoltorio público del
+ * vault, o el pedido en `credentials.js`), nunca el núcleo. Sin el latch,
+ * `nucleoResolveScope` delegando en `nucleoResolveNamespace` emitiría dos
+ * eventos por una sola invocación pública.
+ *
+ * @param {object} [args]
+ * @param {function} [args.sink]     recibe `{category, ts_ms}`; sin él todo es no-op
+ * @param {function} [args.now]      reloj inyectado (ms). NUNCA `Date.now()` directo:
+ *                                   si no, los tests de expiración medirían un tiempo
+ *                                   y el evento otro.
+ * @param {function} [args.onError]  notificación de que el sink falló. Recibe SÓLO
+ *                                   el error; el evento no se le pasa (CA-13).
+ */
+function createVaultTelemetryEmitter({ sink, now, onError } = {}) {
+    // CA-14 — sin sink el emisor es un no-op PURO: no construye el evento y no
+    // lee el reloj. Un espía sobre `now` tiene que quedar en cero llamadas.
+    if (typeof sink !== 'function') {
+        return { crearContexto: () => null, emitir: () => {} };
+    }
+    const reloj = typeof now === 'function' ? now : () => Date.now();
+    return {
+        crearContexto: () => ({ emitido: false }),
+        emitir(ctx, categoria) {
+            // Sin contexto no hay invocación que clasificar (gate cerrado, o un
+            // caller que decidió no instrumentar esta rama). Y con el latch ya
+            // consumido, esta decisión ya tiene dueño.
+            if (!ctx || ctx.emitido) return;
+            if (!VAULT_TELEMETRY_CATEGORIES.includes(categoria)) {
+                // Fail-closed del vocabulario: no se emite una categoría
+                // inventada, que el agregador de #5804 rechazaría igual pero
+                // recién en #5805, lejos del bug. El mensaje dice el TIPO y no
+                // el VALOR a propósito: `emitir` es exportado, así que un caller
+                // podría pasarle cualquier cosa y el mensaje va a un log.
+                throw new VaultConfigError('vault.telemetry',
+                    `recibió una categoría desconocida (tipo ${typeof categoria}); `
+                    + 'el vocabulario es `VAULT_TELEMETRY_CATEGORIES`');
+            }
+            ctx.emitido = true;
+            // SEC-A/B/F — construcción por ENUMERACIÓN de exactamente dos
+            // campos. PROHIBIDO el spread del estado interno: cualquier campo
+            // que mañana se agregue al caché entraría solo al canal. Y sin
+            // `namespace_ref`/`scopes`/`tier` no hay superficie de CR/LF ni de
+            // topología adivinable (CA-9/CA-12), ni referencia viva al material
+            // de secreto que un buffer del sink pudiera retener (CA-11).
+            const evento = Object.freeze({ category: categoria, ts_ms: reloj() });
+            try {
+                sink(evento);
+            } catch (err) {
+                // SEC-D — el sink NO altera la resolución: no se reintenta la
+                // lectura, no se emite un segundo evento, no cambia el valor
+                // devuelto. El error se reporta REDACTADO y SIN re-incluir el
+                // evento (un sink que falla imprimiendo su argumento suele
+                // meterlo en el mensaje de la excepción).
+                if (typeof onError === 'function') {
+                    try {
+                        onError(err);
+                    } catch (_) {
+                        // Un `onError` roto tampoco puede voltear la resolución.
+                    }
+                }
+            }
+        },
+    };
+}
+
 const MAX_CACHE_TTL_SECONDS = 300;            // SEC-6 — tope DURO, no default
 const DEFAULT_TIMEOUT_MS = 5000;
 const DEFAULT_MAX_BUFFER = 8 * 1024 * 1024;
@@ -1189,9 +1276,17 @@ function validateVaultConfig(config) {
  * @param {object} args.driver   port de lectura (in-memory o aws-cli)
  * @param {object} [args.logger] logger opcional; recibe SÓLO nombres de scope
  * @param {function} [args.now]  reloj inyectable (ms) para los tests de TTL
+ * @param {function} [args.sink] #5803 — sumidero opcional de telemetría; recibe
+ *   `{category, ts_ms}` una vez por invocación pública que entre al núcleo con
+ *   el gate abierto. Sin él, la instrumentación es un no-op puro (CA-14).
+ *   `sink` y `now` son SÓLO parámetros de este factory: no entran a
+ *   `VAULT_CONFIG_KEYS` a propósito, así que no se alcanzan desde
+ *   `.pipeline/config.yaml` ni desde el ambiente (SEC-E/CA-16). Un reloj que el
+ *   operador pudiera congelar desde config extendería la vigencia de un secreto
+ *   ya rotado.
  * @returns {{resolveNamespace: Function, resolveScope: Function, clearCache: Function}}
  */
-function createSecretVault({ config, driver, logger, now } = {}) {
+function createSecretVault({ config, driver, logger, now, sink } = {}) {
     const cfg = config && typeof config === 'object' ? config : {};
     const enabled = cfg.enabled === true;   // fail-closed: sólo el booleano exacto
     const reloj = typeof now === 'function' ? now : () => Date.now();
@@ -1231,6 +1326,24 @@ function createSecretVault({ config, driver, logger, now } = {}) {
         logger[nivel](msg, meta);   // CA-23: `meta` sólo lleva NOMBRES de scope
     }
 
+    // #5803 — un emisor por instancia, sobre el MISMO `reloj` que la caché usa
+    // para el TTL. Un sink que falla en cada resolución no puede inundar el log:
+    // se avisa UNA vez por instancia, y el latch del warn no toca el conteo de
+    // eventos ni el comportamiento funcional.
+    let sinkFalloAvisado = false;
+    const telemetria = createVaultTelemetryEmitter({
+        sink,
+        now: reloj,
+        onError: (err) => {
+            if (sinkFalloAvisado) return;
+            sinkFalloAvisado = true;
+            // CA-13 — redactado: el nombre del error y nada más. Ni el evento
+            // (que el sink pudo haber metido en su propio mensaje) ni
+            // `err.message` crudo.
+            log('warn', 'vault: el sink de telemetría falló', { error: err && err.name });
+        },
+    });
+
     // D-SYNC-6 — el camino sync exige el port sync del driver. Si falta, se
     // falla cerrado NOMBRANDO el método: nunca se devuelve vacío y nunca se
     // espera la Promise con un hack de bloqueo.
@@ -1267,10 +1380,16 @@ function createSecretVault({ config, driver, logger, now } = {}) {
      *
      * @param {object} [opts]
      * @param {string[]} [opts.scopes] subconjunto de `required_scopes`
+     * @param {object|null} [ctx] #5803 — latch de telemetría de la invocación
+     *   pública que conduce este núcleo. Lo crea el ENVOLTORIO, nunca el núcleo:
+     *   `nucleoResolveScope` delega acá, y si cada núcleo creara el suyo una
+     *   sola invocación pública emitiría dos eventos.
      */
-    function* nucleoResolveNamespace(opts = {}) {
+    function* nucleoResolveNamespace(opts = {}, ctx = null) {
         if (!enabled) {
             // CA-25 / test 15 — ni una llamada al driver.
+            // #5803 — con el gate cerrado NO se emite: no hubo resolución que
+            // clasificar. Es deliberado, no un agujero de instrumentación.
             return { enabled: false, namespace: null, scopes: {}, tiers: {} };
         }
         const pedidos = normalizarScopes(opts.scopes);
@@ -1279,6 +1398,9 @@ function createSecretVault({ config, driver, logger, now } = {}) {
         if (entrada) {
             if (entrada.expiraEn > reloj()) {
                 if (pedidos.every((s) => Object.prototype.hasOwnProperty.call(entrada.scopes, s))) {
+                    // D3 — entrada vigente Y con todos los scopes pedidos: la
+                    // única rama que se sirve sin tocar el driver.
+                    telemetria.emitir(ctx, VAULT_TELEMETRY.CACHE_HIT);
                     return proyectar(entrada, pedidos, clave);
                 }
             } else {
@@ -1338,6 +1460,10 @@ function createSecretVault({ config, driver, logger, now } = {}) {
                 expiraEn: reloj() + ttlSegundos * 1000,
             };
             cache.set(clave, nueva);   // SIN negative caching: sólo se cachea el éxito
+            // D4 — hubo lectura física batch (una o dos llamadas, según el
+            // presupuesto por tier): UN `physical_read` por invocación pública,
+            // no uno por llamada al driver.
+            telemetria.emitir(ctx, VAULT_TELEMETRY.PHYSICAL_READ);
             log('info', 'vault: namespace resuelto', redactScoped({
                 ok: true, namespace: clave, scopes: resueltos, missing: [],
             }));
@@ -1349,6 +1475,12 @@ function createSecretVault({ config, driver, logger, now } = {}) {
             log('warn', 'vault: fallo de resolución', {
                 namespace: clave, scopes: pedidos, error: err && err.name, code: err && err.code,
             });
+            // #5803 / CA-7 / CA-18 — la lectura física OCURRIÓ aunque terminara
+            // mal, así que se clasifica igual y JAMÁS como `cache_hit`. La
+            // emisión va ANTES del `throw` y no lo envuelve: un `try/catch`
+            // alrededor de esta rama convertiría el fail-closed en fail-open,
+            // tragándose `VaultSecretMissingError` o salteando `invalidarSiEsAuth`.
+            telemetria.emitir(ctx, VAULT_TELEMETRY.PHYSICAL_READ);
             throw err;   // CA-22: un fallo de auth se PROPAGA, jamás se degrada
         }
     }
@@ -1384,10 +1516,17 @@ function createSecretVault({ config, driver, logger, now } = {}) {
      * @param {object} args
      * @param {string[]} args.scopes
      * @param {'shared'|'host'|'rotating'} [args.tier] `rotating` va a Secrets Manager
+     * @param {object|null} [ctx] #5803 — latch de la invocación pública (ver
+     *   `nucleoResolveNamespace`). Se PROPAGA a la delegación de abajo: es lo
+     *   único que impide que el camino no-rotating emita dos veces.
      */
-    function* nucleoResolveScope({ scopes, tier } = {}) {
+    function* nucleoResolveScope({ scopes, tier } = {}, ctx = null) {
         if (!enabled) return {};
         if (tier === 'rotating') {
+            // D5 — camino SIN caché por construcción: Secrets Manager no se
+            // memoiza acá. Es el que más fácil se olvida de instrumentar porque
+            // no aparece en la conversación de caché ni de single-flight, y
+            // dejarlo mudo subestimaría el tráfico físico que #5800 quiere medir.
             const pedidos = normalizarScopes(scopes);
             const out = {};
             for (const scope of pedidos) {
@@ -1399,14 +1538,25 @@ function createSecretVault({ config, driver, logger, now } = {}) {
                     res = yield { op: 'getSecretValue', name, opts: { scopes: [scope] } };
                 } catch (err) {
                     invalidarSiEsAuth(err);
+                    // La emisión va ANTES del `throw` y no lo envuelve (CA-18).
+                    telemetria.emitir(ctx, VAULT_TELEMETRY.PHYSICAL_READ);
                     throw err;
                 }
+                // La lectura física YA ocurrió, salga bien o mal lo que viene
+                // después (secreto ausente, JSON inválido). Se clasifica acá para
+                // que ninguna rama de error posterior quede sin evento; el latch
+                // garantiza UNO por invocación pública, no uno por scope.
+                telemetria.emitir(ctx, VAULT_TELEMETRY.PHYSICAL_READ);
                 if (!res || res.value == null) throw new VaultSecretMissingError(scope, name, 'rotating');
                 out[scope] = parsearScope(scope, res.value);
             }
+            // `pedidos` vacío ⇒ no hubo yield y el latch sigue abierto: la
+            // invocación pública entró al núcleo con el gate abierto, así que
+            // igual se clasifica (invariante «un evento por decisión», (a)).
+            telemetria.emitir(ctx, VAULT_TELEMETRY.PHYSICAL_READ);
             return out;
         }
-        const res = yield* nucleoResolveNamespace({ scopes });
+        const res = yield* nucleoResolveNamespace({ scopes }, ctx);
         return res.scopes;
     }
 
@@ -1419,24 +1569,33 @@ function createSecretVault({ config, driver, logger, now } = {}) {
     // `Promise`), así que la superficie observable de #5352 no cambia y su
     // suite queda verde sin editarse.
 
+    //
+    // #5803 — los CUATRO envoltorios son los que delimitan una «invocación
+    // pública», así que son los que crean el contexto/latch de telemetría. El
+    // núcleo nunca lo crea: si lo hiciera, `resolveScope` no-rotating emitiría
+    // dos eventos (uno propio y otro de la delegación en `nucleoResolveNamespace`).
+    // Ninguno de los cuatro puede emitir `single_flight_join`: el vault no
+    // coalesce nada — no hay mapa de vuelos en este archivo — y afirmarlo es
+    // parte de la garantía (CA-3/CA-6).
+
     /** @returns {Promise<{enabled:boolean, namespace:string|null, scopes:object, tiers:object}>} */
     async function resolveNamespace(opts = {}) {
-        return conducirAsync(nucleoResolveNamespace(opts), ejecutarAsync);
+        return conducirAsync(nucleoResolveNamespace(opts, telemetria.crearContexto()), ejecutarAsync);
     }
 
     /** @returns {Promise<object>} mapa `scope -> objeto` */
     async function resolveScope(args = {}) {
-        return conducirAsync(nucleoResolveScope(args), ejecutarAsync);
+        return conducirAsync(nucleoResolveScope(args, telemetria.crearContexto()), ejecutarAsync);
     }
 
     /** Gemelo sync: MISMO cuerpo, mismos errores, mismos códigos (D1.4). */
     function resolveNamespaceSync(opts = {}) {
-        return conducirSync(nucleoResolveNamespace(opts), ejecutarSync);
+        return conducirSync(nucleoResolveNamespace(opts, telemetria.crearContexto()), ejecutarSync);
     }
 
     /** Gemelo sync: MISMO cuerpo, mismos errores, mismos códigos (D1.4). */
     function resolveScopeSync(args = {}) {
-        return conducirSync(nucleoResolveScope(args), ejecutarSync);
+        return conducirSync(nucleoResolveScope(args, telemetria.crearContexto()), ejecutarSync);
     }
 
     /** SEC-6(c) — invalidación explícita, idempotente. */
@@ -1518,6 +1677,11 @@ module.exports = {
     VAULT_ALLOWED_FLAGS,
     VAULT_TIERS,
     VAULT_TELEMETRY_CATEGORIES,
+    // #5803 — nombres derivados del enum + emisor ÚNICO. `credentials.js` los
+    // consume para emitir SU decisión (memo hit / join de vuelo) sin escribir
+    // literales de categoría ni armar el evento a mano.
+    VAULT_TELEMETRY,
+    createVaultTelemetryEmitter,
     VAULT_ERROR_CODES,
     MAX_CACHE_TTL_SECONDS,
     // #5426 — mecanismo de identidad del host. `VAULT_AUTH_MODES` se exporta
