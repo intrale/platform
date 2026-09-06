@@ -346,20 +346,40 @@ test('CA-1: config.yaml real tiene las tres claves pobladas y tablas distintas',
     assert.notEqual(cfg.tableName, cfg.coordinationTableName);
 });
 
-// #5208 — La aserción original de #5210 era `durable === false`, y era correcta
-// MIENTRAS #5210/#5207 sólo preparaban infraestructura: poblar los nombres de
-// tabla no podía encender nada. #5208 es la historia que ejecutó el cutover y
-// encendió el switch con evidencia positiva (runbook §8), así que lo que hay que
-// proteger ahora es otra cosa: que el encendido esté COMPLETO y que la ventana
-// de cutover NO haya quedado abierta.
-test('#5208: config.yaml real tiene kernel.durable encendido y la ventana de cutover CERRADA', () => {
+// El valor esperado de `kernel.durable` en el config REAL se movió dos veces, y
+// cada movimiento fue el entregable de una historia distinta:
+//
+//   #5210/#5207 → `false`. Sólo preparaban infraestructura: poblar nombres de
+//                 tabla no podía encender nada.
+//   #5208       → `true`.  Ejecutó el cutover y encendió el switch con evidencia
+//                 positiva (runbook §8).
+//   #5209       → `false`. ENSAYO DE ROLLBACK. Su entregable es demostrar que se
+//                 puede volver a filesystem sin perder firmas ni auditoría, y el
+//                 estado terminal de ese ensayo es el flag apagado.
+//
+// Por eso el test no se limita a comparar un booleano: un `false` puede ser el
+// cierre de #5209 o el descuido de alguien que apagó el camino durable sin
+// reconciliar. Lo que distingue a uno del otro es que el apagado esté ATADO a su
+// justificación en el mismo archivo. Eso es lo que se verifica acá.
+test('#5209: config.yaml real volvió a kernel.durable:false y el apagado está justificado', () => {
     const cfg = v.readKernelTablesConfig({ configPath: CONFIG_PATH });
-    assert.equal(cfg.durable, true, 'el cutover de #5208 dejó el camino durable encendido');
+    assert.equal(cfg.durable, false, 'el ensayo de rollback de #5209 termina con el camino durable apagado');
+
+    const raw = fs.readFileSync(CONFIG_PATH, 'utf8');
+
+    // El apagado tiene que venir con su razón al lado. Un `durable: false` mudo
+    // es indistinguible de una regresión silenciosa: el pipeline seguiría
+    // andando (filesystem es el fail-safe) y nadie se enteraría de que el camino
+    // durable se apagó por accidente.
+    const idx = raw.search(/^\s*durable:\s*false\s*$/m);
+    assert.ok(idx > 0, 'la clave `durable: false` debe existir en config.yaml');
+    const preambulo = raw.slice(Math.max(0, idx - 2000), idx);
+    assert.match(preambulo, /#5209/, 'el apagado debe citar la historia que lo decidió');
+    assert.match(preambulo, /reconciliaci|paridad/i, 'y la condición que lo habilitó: la reconciliación con paridad');
 
     // La ventana abierta es un falso verde permanente (runbook §5): dentro de
     // ella una degradación aborta el arranque, y fuera vuelve a ser best-effort.
     // Dejarla `true` en régimen deja el pipeline en mantenimiento para siempre.
-    const raw = fs.readFileSync(CONFIG_PATH, 'utf8');
     const m = raw.match(/^\s*cutover_window:\s*(\S+)/m);
     assert.ok(m, 'la clave `cutover_window` debe existir en config.yaml (la creó #5135)');
     assert.equal(m[1], 'false', 'la ventana de cutover tiene que quedar CERRADA al terminar');
