@@ -970,3 +970,190 @@ test('CA-2/CA-3: el cableado de pulpo.js filtra por stage, redacta el log y NO a
   assert.doesNotMatch(supervisorSrc, /kernel-degradation-alert|classifyDegradation/,
     'CA-3/D-2: el mapeo vive en el borde de salida, no en kernel-supervisor.js');
 });
+
+// =============================================================================
+// #5209 — Máquina de estados del ROLLBACK durable → filesystem.
+//
+// El cutover de ida ya está cubierto arriba. Esto modela la vuelta, que es donde
+// se pierde evidencia en silencio: apagar `kernel.durable` sin reintegrar deja
+// las firmas de la ventana sólo en DynamoDB y nadie se entera.
+//
+// Secuencia obligatoria:
+//   ventana durable NO vacía → freeze → export → validate → reintegrate
+//   → reread filesystem → exact parity → durable:false → restart → fase completa
+//
+// Invariante transversal: CUALQUIER discrepancia conserva DynamoDB como fuente
+// efectiva (el flag no se apaga) y audita el aborto.
+// =============================================================================
+
+const reconcile = require('../kernel-append-only-reconcile');
+
+function tmpDirCutover(t) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cutover-5209-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  return dir;
+}
+
+/** Ventana durable con al menos una firma y una entrada de audit (sonda positiva). */
+async function ventanaDurableNoVacia({ signatures = 2, audits = 2 } = {}) {
+  let clock = 1700000000000;
+  const store = ks.createKernelStore({ contextProjectId: 'acme-store', now: () => (clock += 1) });
+  for (let i = 0; i < signatures; i += 1) {
+    await store.putSignature({ signer: 'leitolarreta', target: `pr-${i}`, checksum: 'c'.repeat(64) });
+  }
+  for (let i = 0; i < audits; i += 1) {
+    await store.appendAuditEntry({ action: 'gate2.sign', actor: 'leitolarreta', detail: `firma ${i}` });
+  }
+  return store;
+}
+
+/** Mundo operativo observable: flag durable, reinicios y fases completadas. */
+function mundoOperativo() {
+  const w = { durable: true, reinicios: 0, fasesCompletadas: 0, r8: null, lecturas: [] };
+  return {
+    w,
+    disableDurable: async () => { w.durable = false; return { ok: true }; },
+    restart: async () => { w.reinicios += 1; return { ok: true }; },
+    completePhase: async ({ reconciliacion }) => {
+      // La fase sólo se puede completar leyendo del FILESYSTEM. Si el flag sigue
+      // encendido, seguiríamos leyendo de DynamoDB y no habríamos probado nada.
+      if (w.durable !== false) return { ok: false, error: 'el flag durable sigue encendido' };
+      const enDisco = reconcile.readFilesystemRecords(reconciliacion.reconcileDir);
+      if (!enDisco.ok || enDisco.records.length === 0) return { ok: false, error: 'no hay evidencia en filesystem' };
+      w.lecturas.push(enDisco.records.length);
+      w.fasesCompletadas += 1;
+      return { ok: true };
+    },
+    recordR8: async ({ r8Ms }) => { w.r8 = r8Ms; },
+  };
+}
+
+test('#5209: la secuencia completa del rollback llega a fase completa desde filesystem', async (t) => {
+  const root = tmpDirCutover(t);
+  const store = await ventanaDurableNoVacia({ signatures: 3, audits: 2 });
+  const op = mundoOperativo();
+  let reloj = 0;
+
+  const res = await reconcile.runDurableRollbackDrill({
+    store,
+    reconcileDir: path.join(root, 'kernel-reconcile'),
+    allowedRoot: root,
+    frozen: true,
+    clock: () => (reloj += 3000),
+    disableDurable: op.disableDurable,
+    restart: op.restart,
+    completePhase: op.completePhase,
+    recordR8: op.recordR8,
+  });
+
+  assert.equal(res.ok, true, res.error);
+  assert.equal(res.state, 'record-R8');
+  // El orden importa: el flag se apagó DESPUÉS de la paridad, no antes.
+  assert.deepEqual(res.completados, ['disable-durable', 'restart', 'complete-phase', 'record-R8']);
+  assert.equal(op.w.durable, false);
+  assert.equal(op.w.reinicios, 1);
+  assert.equal(op.w.fasesCompletadas, 1);
+  assert.deepEqual(op.w.lecturas, [5], 'la fase leyó los 5 registros reintegrados desde filesystem');
+  assert.equal(op.w.r8, 3000, 'R8 quedó registrado');
+});
+
+test('#5209: ventana durable VACÍA nunca llega a apagar el flag', async (t) => {
+  const root = tmpDirCutover(t);
+  const store = ks.createKernelStore({ contextProjectId: 'acme-store', now: () => 1 });
+  const op = mundoOperativo();
+
+  const res = await reconcile.runDurableRollbackDrill({
+    store,
+    reconcileDir: path.join(root, 'kernel-reconcile'),
+    allowedRoot: root,
+    frozen: true,
+    disableDurable: op.disableDurable,
+    restart: op.restart,
+    completePhase: op.completePhase,
+  });
+
+  assert.equal(res.ok, false);
+  assert.equal(res.code, 'conjunto_vacio');
+  assert.equal(op.w.durable, true, 'DynamoDB sigue siendo la fuente efectiva');
+  assert.equal(op.w.reinicios, 0);
+});
+
+test('#5209: una discrepancia de paridad conserva DynamoDB como fuente y audita el aborto', async (t) => {
+  const root = tmpDirCutover(t);
+  const store = await ventanaDurableNoVacia();
+  const op = mundoOperativo();
+  const auditsAntes = (await store.listAuditEntries()).length;
+
+  // El filesystem ya tiene un registro con el MISMO id y contenido distinto:
+  // discrepancia irreconciliable, porque un append-only jamás se pisa.
+  const dir = path.join(root, 'kernel-reconcile');
+  fs.mkdirSync(dir, { recursive: true });
+  const durables = await store.listSignatures();
+  const impostor = reconcile.toRecord('signature', {
+    SK: durables[0].SK, projectId: 'acme-store', body: { signer: 'impostor', target: 'x', checksum: 'z' },
+  });
+  fs.writeFileSync(path.join(dir, 'signatures.jsonl'), `${JSON.stringify(impostor)}\n`);
+
+  const res = await reconcile.runDurableRollbackDrill({
+    store,
+    reconcileDir: dir,
+    allowedRoot: root,
+    frozen: true,
+    disableDurable: op.disableDurable,
+    restart: op.restart,
+    completePhase: op.completePhase,
+  });
+
+  assert.equal(res.ok, false);
+  assert.equal(res.code, 'conflicto_id');
+  assert.equal(op.w.durable, true);
+  assert.equal(res.abortAudit.emitted, true, 'el aborto tiene que quedar auditado');
+
+  const auditsDespues = await store.listAuditEntries();
+  assert.equal(auditsDespues.length, auditsAntes + 1);
+  assert.match(auditsDespues[auditsDespues.length - 1].body.detail, /conflicto_id/);
+});
+
+test('#5209: el rollback no borra nada de DynamoDB — el append-only queda intacto', async (t) => {
+  const root = tmpDirCutover(t);
+  const store = await ventanaDurableNoVacia({ signatures: 4, audits: 3 });
+  const op = mundoOperativo();
+  const sksAntes = (await store.listSignatures()).map((i) => i.SK);
+
+  const res = await reconcile.runDurableRollbackDrill({
+    store,
+    reconcileDir: path.join(root, 'kernel-reconcile'),
+    allowedRoot: root,
+    frozen: true,
+    disableDurable: op.disableDurable,
+    restart: op.restart,
+    completePhase: op.completePhase,
+    recordR8: op.recordR8,
+  });
+  assert.equal(res.ok, true, res.error);
+
+  const sksDespues = (await store.listSignatures()).map((i) => i.SK);
+  assert.deepEqual(sksDespues, sksAntes, 'reconciliar copia, no mueve: DynamoDB conserva todo');
+});
+
+test('#5209: reintegrar es aditivo — una segunda ventana no pisa lo reconciliado antes', async (t) => {
+  const root = tmpDirCutover(t);
+  const dir = path.join(root, 'kernel-reconcile');
+  let clock = 1700000000000;
+  const store = ks.createKernelStore({ contextProjectId: 'acme-store', now: () => (clock += 1) });
+
+  await store.putSignature({ signer: 'leitolarreta', target: 'pr-1', checksum: 'c'.repeat(64) });
+  await store.appendAuditEntry({ action: 'gate2.sign', actor: 'leitolarreta' });
+  const primera = await reconcile.reconcileDurableToFilesystem({ store, reconcileDir: dir, allowedRoot: root, frozen: true });
+  assert.equal(primera.ok, true, primera.error);
+  assert.equal(primera.counts.total, 2);
+
+  // Segunda ventana: entra una firma más. Lo anterior tiene que seguir estando.
+  await store.putSignature({ signer: 'leitolarreta', target: 'pr-2', checksum: 'd'.repeat(64) });
+  const segunda = await reconcile.reconcileDurableToFilesystem({ store, reconcileDir: dir, allowedRoot: root, frozen: true });
+
+  assert.equal(segunda.ok, true, segunda.error);
+  assert.equal(segunda.counts.signature, 2);
+  assert.equal(segunda.added.length, 1, 'sólo la firma nueva se agrega');
+  assert.equal(segunda.idempotent.length, 2, 'las dos previas se reconocen como ya presentes');
+});
