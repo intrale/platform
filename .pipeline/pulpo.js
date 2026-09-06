@@ -4063,12 +4063,20 @@ function brazoDiskGuard(config) {
  * `alert_freed_gb`. "Sin borrado silencioso de cosas grandes": si el guardián
  * se llevó varios GB, el operador se entera aunque el umbral ya no esté cruzado.
  */
+// El early-return de esta función descartaba la alerta EXACTAMENTE en el caso
+// de falla: si la corrida no liberaba nada, no se re-evaluaba y nadie se
+// enteraba de que el remedio no servía. Ahora siempre se re-evalúa y es
+// `decide()` quien resuelve — incluido el motivo `limpieza-inefectiva`, que por
+// definición sólo aparece cuando `freedGb` es chico.
 function diskGuardMaybeAlert(config, budget, freedGb) {
-  if (!diskGuard || !(Number(freedGb) >= budget.alert_freed_gb)) return;
+  if (!diskGuard) return;
   try {
     const freeGb = diskGuard.measureFreeGb();
     const prev = diskGuard.readState({ pipelineDir: PIPELINE });
-    const d = diskGuard.decide({ freeGb, budget, state: prev, now: Date.now(), freedGbThisRun: freedGb });
+    const d = diskGuard.decide({
+      freeGb, budget, state: prev, now: Date.now(),
+      freedGbThisRun: freedGb, cleanupRan: true,
+    });
     diskGuard.writeState(d.nextState, { pipelineDir: PIPELINE });
     lastDiskSnapshot = d;
     if (d.alert.should) diskGuardAlert(d, budget, freedGb);
@@ -4086,6 +4094,7 @@ function diskGuardAlert(decision, budget, freedGb) {
       freedGb,
       frozen: decision.frozen,
       reason: decision.alert.reason,
+      ineffectiveRuns: decision.alert.ineffectiveRuns,
     }));
     log('disco', `Alerta enviada a Telegram (${decision.level}, motivo: ${decision.alert.reason})`);
   } catch (e) {

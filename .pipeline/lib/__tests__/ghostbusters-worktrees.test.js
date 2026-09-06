@@ -379,3 +379,141 @@ test('applyCap: cap inválido cae al default 5', () => {
   assert.equal(gb.applyCap(items, NaN).selected.length, 5);
   assert.equal(gb.applyCap(items, 3).selected.length, 3);
 });
+
+// -----------------------------------------------------------------------------
+// Rescate de trabajo local en worktrees eternamente protegidos
+//
+// El guard de seguridad es correcto pero su respuesta nunca cambia sola: un
+// `session/*` de abril con un commit sin pushear seguía protegido en
+// septiembre, y con él 17 de 18 candidatos. El rescate le saca exclusividad al
+// trabajo (commit + tag en el object store compartido) en vez de relajar el
+// guard, y es FAIL-CLOSED: si algo del respaldo falla, no se borra nada.
+// -----------------------------------------------------------------------------
+
+const DIA_MS = 24 * 60 * 60 * 1000;
+const AHORA = Date.parse('2026-09-05T12:00:00Z');
+
+function fsConEdad(wtPath, dias) {
+  return fakeFs({ stats: { [wtPath]: { birthtimeMs: AHORA - dias * DIA_MS, mtimeMs: AHORA - dias * DIA_MS } } });
+}
+
+test('un worktree joven no se rescata: sigue protegido', () => {
+  const wt = 'C:/Workspaces/Intrale/platform.session-nueva';
+  const r = gb.rescueLocalWork(wt, 'session/nueva', {
+    fsImpl: fsConEdad(wt, 10), nowMs: AHORA, spawnImpl: fakeSpawn(),
+  });
+  assert.equal(r.rescued, false);
+  assert.match(r.reason, /10d < 90d/);
+});
+
+test('un worktree de +90 dias con trabajo pendiente se commitea y taguea', () => {
+  const wt = 'C:/Workspaces/Intrale/platform.session-vieja';
+  const spawnImpl = fakeSpawn([
+    { stdout: ' M archivo.js' },   // status --porcelain
+    { stdout: '' },                // add -A
+    { stdout: '' },                // commit
+    { stdout: '' },                // tag
+    { stdout: 'abc1234' },         // rev-parse --verify
+  ]);
+  const r = gb.rescueLocalWork(wt, 'session/vieja', {
+    fsImpl: fsConEdad(wt, 120), nowMs: AHORA, spawnImpl,
+  });
+  assert.equal(r.rescued, true);
+  assert.match(r.tag, /^rescate\/session-vieja-/);
+  const comandos = spawnImpl.calls.map(c => c.args[0]);
+  assert.deepEqual(comandos, ['status', 'add', 'commit', 'tag', 'rev-parse']);
+});
+
+test('sin cambios pendientes se taguea directo, sin commit vacio', () => {
+  const wt = 'C:/Workspaces/Intrale/platform.session-limpia';
+  const spawnImpl = fakeSpawn([
+    { stdout: '' },          // status: limpio
+    { stdout: '' },          // tag
+    { stdout: 'abc1234' },   // rev-parse
+  ]);
+  const r = gb.rescueLocalWork(wt, 'session/limpia', {
+    fsImpl: fsConEdad(wt, 200), nowMs: AHORA, spawnImpl,
+  });
+  assert.equal(r.rescued, true);
+  const comandos = spawnImpl.calls.map(c => c.args[0]);
+  assert.deepEqual(comandos, ['status', 'tag', 'rev-parse']);
+});
+
+test('si el tag no queda registrado, NO se declara rescatado', () => {
+  // Fail-closed: el borrado no puede confiar en un exit code que mintio.
+  const wt = 'C:/Workspaces/Intrale/platform.session-fallada';
+  const spawnImpl = fakeSpawn([
+    { stdout: '' },              // status limpio
+    { stdout: '' },              // tag "ok"
+    { status: 1, stdout: '' },   // rev-parse no lo encuentra
+  ]);
+  const r = gb.rescueLocalWork(wt, 'session/fallada', {
+    fsImpl: fsConEdad(wt, 200), nowMs: AHORA, spawnImpl,
+  });
+  assert.equal(r.rescued, false);
+  assert.match(r.reason, /no quedó registrado/);
+});
+
+test('si falla el commit del trabajo pendiente, NO se rescata', () => {
+  const wt = 'C:/Workspaces/Intrale/platform.session-commitfail';
+  const spawnImpl = fakeSpawn([
+    { stdout: ' M archivo.js' },
+    { stdout: '' },
+    { status: 1, stdout: '' },   // commit falla
+  ]);
+  const r = gb.rescueLocalWork(wt, 'session/commitfail', {
+    fsImpl: fsConEdad(wt, 200), nowMs: AHORA, spawnImpl,
+  });
+  assert.equal(r.rescued, false);
+  assert.match(r.reason, /no pude commitear/);
+});
+
+test('en dry-run se informa la elegibilidad y NO se toca git', () => {
+  const wt = 'C:/Workspaces/Intrale/platform.session-dry';
+  const spawnImpl = fakeSpawn();
+  const r = gb.rescueLocalWork(wt, 'session/dry', {
+    fsImpl: fsConEdad(wt, 200), nowMs: AHORA, spawnImpl, dryRun: true,
+  });
+  assert.equal(r.rescued, true);
+  assert.equal(r.dryRun, true);
+  assert.equal(spawnImpl.calls.length, 0, 'un dry-run que commitea no es un dry-run');
+});
+
+test('NO se commitea trabajo pendiente sobre una rama protegida', () => {
+  // Pasó de verdad en la corrida del 2026-09-05: un worktree de abril tenía la
+  // `main` LOCAL checked out y el commit de rescate la movió 134 días atrás,
+  // por delante de origin/main.
+  for (const rama of ['main', 'develop', 'MAIN']) {
+    const wt = `C:/Workspaces/Intrale/platform.session-${rama}`;
+    const spawnImpl = fakeSpawn([{ stdout: ' M archivo.js' }]);
+    const r = gb.rescueLocalWork(wt, rama, {
+      fsImpl: fsConEdad(wt, 200), nowMs: AHORA, spawnImpl,
+    });
+    assert.equal(r.rescued, false, `${rama} no puede rescatarse`);
+    assert.match(r.reason, /rama protegida/);
+    assert.deepEqual(spawnImpl.calls.map(c => c.args[0]), ['status'],
+      'no puede llegar a ejecutar el commit');
+  }
+});
+
+test('una rama protegida SIN trabajo pendiente sí se puede taguear', () => {
+  // Sin cambios no hay commit, así que la rama no se mueve: taguear es inocuo.
+  const wt = 'C:/Workspaces/Intrale/platform.session-main-limpia';
+  const spawnImpl = fakeSpawn([
+    { stdout: '' },          // status limpio
+    { stdout: '' },          // tag
+    { stdout: 'abc1234' },   // rev-parse
+  ]);
+  const r = gb.rescueLocalWork(wt, 'main', {
+    fsImpl: fsConEdad(wt, 200), nowMs: AHORA, spawnImpl,
+  });
+  assert.equal(r.rescued, true);
+});
+
+test('una edad ilegible no habilita el rescate', () => {
+  const r = gb.rescueLocalWork('C:/no/existe', 'session/x', {
+    fsImpl: fakeFs(), nowMs: AHORA, spawnImpl: fakeSpawn(),
+  });
+  assert.equal(r.rescued, false);
+  assert.match(r.reason, /desconocida/);
+});

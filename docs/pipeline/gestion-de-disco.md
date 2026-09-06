@@ -93,6 +93,21 @@ Qué rota:
 - `npm-cache` — solo si supera 2 GB.
 - `build/`, `.gradle/`, `.kotlin/`, `kotlin-js-store/` de worktrees sin heartbeat
   fresco.
+- **Temporales de agentes fuera de `%TEMP%`** — `C:\Temp`, `C:\tmp` y el propio
+  `%TEMP%`, por antigüedad del árbol (48h). Los agentes de `qa`, `po`, `ux` y
+  `review` dejan ahí copias del repo con nombre de issue (`qa5244-ci-...`,
+  `po6432-wt`): en la medición del 2026-09-05 sumaban **15,5 GB de issues ya
+  cerrados**, más que todos los worktrees juntos. Nadie los miraba — ni
+  `rotate-caches`, que sólo veía cachés de máquina, ni `ghostbusters`, que sólo
+  mira `C:\Workspaces`. Por eso el guardián reclamaba 0,00 GB corrida tras
+  corrida con el disco al 98%.
+
+  El criterio es la antigüedad, no el estado del issue: consultar GitHub por
+  cada entrada es caro y falla sin red, mientras que un temporal sin tocar en
+  48h no lo usa nadie. Se mira el mtime más nuevo del **árbol**, porque en
+  Windows el del directorio raíz no se propaga desde los hijos. Nunca se tocan
+  `claude` (scratchpad de las sesiones), `chocolatey` ni los temporales de
+  Gradle.
 
 Se engancha en `tryFreeResources()` del Pulpo, que hasta ahora limpiaba solo el
 mapa en memoria de `activeProcesses` — ni un byte de disco. Corre desacoplado
@@ -237,6 +252,80 @@ Cualquiera de los cuatro requiere reiniciar el Pulpo para tomar efecto.
   (`pendiente`/`trabajando`/`listo`/`procesado`). Un `find -name build` se lo
   lleva puesto. El walk corta en `.pipeline` por esto.
 - **Logs y audios** — son operación. No se podan sin OK explícito.
+
+## Cuando la limpieza no alcanza (incidente 2026-09-05)
+
+El guardián de #6708 corrió **10 horas seguidas con exit 0 liberando 0,00 GB por
+corrida**, mientras el disco caía de 13,4 a 5,0 GB de 236. Nadie se enteró. Tres
+defectos distintos, con la misma forma: *el guardián estaba escrito para el caso
+en que la limpieza funciona*.
+
+### 1. Sólo se avisaba cuando la limpieza servía
+
+`diskGuardMaybeAlert()` arrancaba con
+`if (!(freedGb >= budget.alert_freed_gb)) return`, o sea que descartaba la
+alerta **exactamente en el caso de falla**. Los tres motivos que existían
+(`escalada`, `persistencia`, `liberacion-grande`) presuponen que algo se movió, y
+`persistencia` sólo dispara cada `alert_cooldown_min` sin decir que el remedio no
+sirve.
+
+Ahora `decide()` cuenta las corridas seguidas que liberaron menos de
+`ineffective_freed_gb` (0,5 GB) y al llegar a `ineffective_runs_alert` (3) avisa
+con el motivo `limpieza-inefectiva`: *"el guardián no da abasto, hace falta
+revisar a mano"*. El contador se reinicia al avisar, así que no spamea, y sólo
+cuenta cuando hubo una corrida real (`cleanupRan`), no en cada tick. En verde no
+alerta: no liberar nada cuando no hay nada que liberar es lo correcto.
+
+### 2. Los temporales de los agentes no los miraba nadie
+
+Ver *Rotación de cachés*: 15,5 GB en `C:\Temp` y `C:\tmp`, fuera del alcance de
+los dos limpiadores.
+
+### 3. Los worktrees protegidos lo estaban para siempre
+
+`isWorktreeSafeToDelete` responde *"¿hay trabajo que sólo existe acá?"* y para eso
+está bien — pero **su respuesta nunca cambia sola**. Un `session/*` de abril con
+un commit sin pushear seguía protegido en septiembre y lo estaría el año que
+viene. Eran **17 de 18 candidatos**; el brazo `--run --no-cap` reclamaba uno cada
+tanto y reportaba 0,00 GB.
+
+La salida no es relajar el guard, es **sacarle al trabajo su exclusividad**. Si el
+worktree lleva más de `DEFAULT_RESCUE_AFTER_DAYS` (90 días) sin actividad,
+`rescueLocalWork()` commitea lo pendiente y deja un tag `rescate/<rama>-<sello>`.
+El tag vive en el object store, que los worktrees **comparten**, así que sobrevive
+al borrado del directorio:
+
+```bash
+git tag -l 'rescate/*'          # ver qué se respaldó
+git checkout rescate/<tag>      # recuperar el trabajo de un worktree borrado
+```
+
+Es **fail-closed**: si cualquier paso falla — el `git commit`, el `git tag`, o el
+`rev-parse` que verifica que el tag quedó registrado — el worktree queda protegido
+igual que antes. Nunca se borra trabajo que no se pudo respaldar. En `--dry-run`
+no se toca git: se informa la elegibilidad y nada más.
+
+**El rescate nunca commitea sobre `main`, `master` ni `develop`.** El commit de
+lo pendiente avanza la rama del worktree, y un worktree viejo puede tener una
+rama compartida checked out: en la primera corrida real de este código, un
+worktree de abril tenía la `main` **local** y el rescate la movió 134 días atrás,
+por delante de `origin/main` (se restauró con `git branch -f main origin/main`; el
+trabajo quedó en su tag). Ahí el rescate se rechaza y el worktree sigue
+protegido, para que decida una persona. Sin trabajo pendiente no hay commit, así
+que taguear una rama protegida sí es inocuo.
+
+### Y un cuarto, de seguridad
+
+`ghostbusters --worktrees` proponía borrar **el worktree de la sesión de Claude en
+curso**. Los dos guards que existían no cubren una sesión interactiva: el
+heartbeat lo escriben los agentes del pipeline (una sesión no escribe ninguno) y
+la detección por proceso busca la ruta del worktree en la *línea de comando*, que
+un `claude` lanzado desde ese directorio no lleva. Con la rama sin pushear y el
+árbol limpio — el estado normal de una sesión a mitad de trabajo — quedaba
+marcado como borrable, y el brazo `--run --no-cap` del guardián lo habría borrado
+bajo los pies. Ahora `worktreeRecentlyActive()` protege cualquier worktree tocado
+en la última hora, salteando `.git` y los artefactos de build, que se reescriben
+sin que haya nadie trabajando.
 
 ## Deuda pendiente
 
