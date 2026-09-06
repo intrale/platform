@@ -56,11 +56,24 @@ fi
 # Issue #6260 — Guardrail de contaminacion de `process.env` en tests.
 #
 # BLOQUEANTE DESDE EL DIA UNO (seccion 2 del issue), no `--report-only`: bajo el
-# ratchet el hook solo frena LO NUEVO. Las estrictas preexistentes estan
+# ratchet el hook solo frena VIOLATIONS NUEVAS. Las estrictas preexistentes estan
 # congeladas en `test-env-lint.baseline.json` (shrink-only, deuda visible) y la
-# deuda ordinaria en `test-env-lint.allowlist.json`, asi que un commit que no
-# agrega nada nuevo pasa. Con `--report-only` el gate no gatea; con el ratchet
-# no hay que elegir entre bloquear y no romper a nadie.
+# deuda ordinaria en `test-env-lint.allowlist.json`. Con `--report-only` el gate
+# no gatea; con el ratchet no hay que elegir entre bloquear y no romper a nadie.
+#
+# PERO OJO — el hook tambien frena por entries de allowlist OBSOLETAS (CA-21), y
+# eso NO es "algo nuevo": la allowlist ancla `deuda` por (archivo, LINEA), asi que
+# editar un test allowlisteado desplaza sus lineas y desactualiza sus entries.
+# Es el caso normal, no el excepcional (~23% de los tests del pipeline tienen
+# deuda anclada por linea). La salida NO es `--no-verify` — es regenerar:
+#
+#     node .pipeline/lib/test-env-lint.js --write-allowlist
+#
+# El writer solo aborta por archivos UNTRACKED en alcance (R-A2) o por una
+# violation ESTRICTA presente (CA-24). Los TRACKED modificados/staged NO lo
+# bloquean, que es lo que en rev-1 producia el deadlock (hook exige regenerar,
+# writer exigia commitear, hook no deja commitear). El propio `--check` imprime
+# este remedio cuando el rojo son entries obsoletas.
 #
 # ANCLA DE INSERCION: inmediatamente despues del `fi` que cierra el bloque de
 # `operational-state-lint`. Se inserta por ancla TEXTUAL y no por numero de

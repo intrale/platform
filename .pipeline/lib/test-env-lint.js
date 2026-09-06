@@ -37,6 +37,10 @@
 //   node .pipeline/lib/test-env-lint.js --write-allowlist  regenera allowlist (aborta con estrictas, CA-24)
 //   node .pipeline/lib/test-env-lint.js --write-baseline   regenera baseline, SOLO si encoge
 //
+// Los dos writers abortan si hay archivos UNTRACKED en alcance bajo `.pipeline`
+// (R-A2). Un TRACKED modificado NO bloquea: viaja en el mismo commit. Para el
+// caso legitimo de regenerar con archivos nuevos: `--allow-dirty`.
+//
 // API:
 //   const { lint } = require('./test-env-lint');
 //   const { violations, scanned } = lint({ pipelineRoot });
@@ -849,11 +853,39 @@ function formatViolation(v) {
         + '\n    snippet: ' + v.snippet + ' =';
 }
 
+// --- Copy accionable (seccion 10: el remedio se DERIVA del motivo del rojo) --
+//
+// Un bloque fijo termina ofreciendo la salida equivocada. Ante entries OBSOLETAS
+// decir "agregar entry con `kind` y `reason`" es instruccion ERRADA — hay que
+// REGENERAR, no agregar — y al no nombrar `--write-allowlist` dejaba
+// `--no-verify` como unica salida aparente (rev-2).
+const REMEDIOS_VIOLATIONS = [
+    '  1) Usar `withEnv(vars, fn)` de `.pipeline/lib/test-helpers/with-env.js` en vez de',
+    '     tocar `process.env` a mano. Restaura el entorno pase lo que pase.',
+    '  2) Si el test NECESITA apagar un control, el opt-in explicito:',
+    "     withEnv({ VAR: '0' }, fn, { permitirApagarControl: ['VAR'], motivo: '...' })",
+    '  3) Si es deuda preexistente o falso positivo, agregar entry con `kind` y `reason`',
+    '     en `.pipeline/lib/' + ALLOWLIST_FILE + '`. Las ESTRICTAS no se allowlistean.',
+];
+
+const REMEDIOS_OBSOLETAS = [
+    '  1) Una entry obsoleta NO se agrega ni se edita a mano: se REGENERA.',
+    '       node .pipeline/lib/test-env-lint.js --write-allowlist',
+    '     Reescribe las entries `deuda` contra las lineas actuales; el diff va en el PR.',
+    '     Editar un test allowlisteado desplaza sus lineas y llega aca: es el caso normal.',
+    '  2) Los archivos TRACKED modificados NO bloquean la regeneracion (viajan en el mismo',
+    '     commit). Si ademas hay archivos NUEVOS untracked que entran en ESTE commit,',
+    '     agregar `--allow-dirty`.',
+    '  3) Si hay una violation ESTRICTA presente, `--write-allowlist` aborta (CA-24):',
+    '     esa se arregla, no se allowlistea.',
+    '  4) `--no-verify` NO es la salida: mueve el rojo al CI en vez de resolverlo.',
+];
+
 /**
  * Corrida completa en modo `--check`, con el ORDEN FAIL-CLOSED del issue: el
  * primero que falla corta.
  *
- * @returns {{code:number, lines:string[], scanned:number, violations:Array}}
+ * @returns {{code:number, lines:string[], scanned:number, violations:Array, remedios:string[]}}
  */
 function check(opts = {}) {
     const pipelineRoot = opts.pipelineRoot || DEFAULT_PIPELINE_ROOT;
@@ -869,13 +901,13 @@ function check(opts = {}) {
     // 2) scanned === 0 — SEC-3 fail-closed, mensaje LITERAL.
     if (scanned === 0) {
         lines.push('glob no matcheo ningun archivo');
-        return { code: 1, lines, scanned, violations: [] };
+        return { code: 1, lines, scanned, violations: [], remedios: REMEDIOS_VIOLATIONS };
     }
     // 3) piso de escaneo (CA-15')
     if (scanned < allowlist.min_scanned) {
         lines.push('piso de escaneo incumplido: esperado >= ' + allowlist.min_scanned
             + ', encontrado ' + scanned + '. Un alcance recortado reporta verde sobre un scan vacio de contenido.');
-        return { code: 1, lines, scanned, violations };
+        return { code: 1, lines, scanned, violations, remedios: REMEDIOS_VIOLATIONS };
     }
 
     const r = applyAllowlist(violations, allowlist, baseline);
@@ -884,7 +916,7 @@ function check(opts = {}) {
     if (r.obsoletas.length) {
         lines.push(r.obsoletas.length + ' entry(s) de allowlist OBSOLETA(s):');
         for (const o of r.obsoletas) lines.push('  ' + o.entry + ' — ' + o.reason);
-        return { code: 1, lines, scanned, violations };
+        return { code: 1, lines, scanned, violations, remedios: REMEDIOS_OBSOLETAS };
     }
     // 5) entries que cubren estrictas (SEC-2 / SEC-6 / CA-14)
     if (r.entriesQueCubrenEstrictas.length) {
@@ -893,7 +925,7 @@ function check(opts = {}) {
             lines.push('  ' + e.entry + ' -> ' + e.file + ':' + e.line + ' variable `'
                 + (e.variable === null ? '(clave no resoluble)' : e.variable) + '` — ' + e.reason);
         }
-        return { code: 2, lines, scanned, violations };
+        return { code: 2, lines, scanned, violations, remedios: REMEDIOS_VIOLATIONS };
     }
     // 6) violations nuevas (incluye baseline que CRECIO — CA-36)
     if (r.nuevas.length) {
@@ -905,7 +937,7 @@ function check(opts = {}) {
             lines.push(estrictasNuevas.length + ' de ellas son ESTRICTAS: el baseline CRECIO. '
                 + 'Una estricta nueva es rojo duro siempre — no se allowlistea, se arregla.');
         }
-        return { code: 1, lines, scanned, violations };
+        return { code: 1, lines, scanned, violations, remedios: REMEDIOS_VIOLATIONS };
     }
 
     // Verde: los dos conteos de CA-22 + la deuda del baseline en LINEA PROPIA.
@@ -923,26 +955,75 @@ function check(opts = {}) {
         lines.push('El baseline ENCOGIO: ' + r.resueltas.length + ' entrada(s) ya no aplican. '
             + 'Correr `--write-baseline` y dejar el diff en el PR.');
     }
-    return { code: 0, lines, scanned, violations };
+    return { code: 0, lines, scanned, violations, remedios: [] };
 }
 
 // --- CLI --------------------------------------------------------------------
 
-/** R-A2 — abortar si el worktree de `.pipeline` esta sucio. */
+/**
+ * R-A2 — un path UNTRACKED puede hornearse en la allowlist/baseline?
+ *
+ * Solo si el writer pudiera emitir una entry para el: un archivo en alcance
+ * (`inScope`) fuera de los directorios que `walkJs` ya saltea. Un directorio
+ * untracked (git colapsa `?? dir/`) cuenta como riesgoso salvo que sea skip o
+ * scratch: no sabemos que hay adentro.
+ */
+function puedeHornearse(repoPath) {
+    const rel = repoPath.replace(/\\/g, '/').replace(/^\.pipeline\//, '');
+    const segs = rel.split('/').filter(Boolean);
+    if (!segs.length) return true;
+    for (const s of segs.slice(0, -1)) {
+        if (SKIP_DIRS.has(s) || SCRATCH_DIR_RE.test(s)) return false;
+    }
+    const last = segs[segs.length - 1];
+    // `?? dir/` — directorio untracked colapsado por git.
+    if (rel.endsWith('/')) return !(SKIP_DIRS.has(last) || SCRATCH_DIR_RE.test(last));
+    return inScope(last);
+}
+
+/**
+ * R-A2 — abortar si hay UNTRACKED horneables bajo `.pipeline`.
+ *
+ * El riesgo que R-A2 nombra es acotado y tiene una sola forma: el writer hornea
+ * un archivo que el CI NO tiene, y por CA-21 esa entry nace obsoleta ⇒ rojo.
+ * Eso solo lo produce un archivo UNTRACKED. Un archivo TRACKED modificado viaja
+ * en el mismo commit que la regeneracion, asi que el CI lo ve: no hay riesgo.
+ *
+ * Bloquear tambien por tracked (como hacia rev-1) producia un DEADLOCK operativo
+ * (rev-2): editar un test con deuda allowlisteada por linea desplaza sus lineas
+ * ⇒ el hook exige regenerar la allowlist; el writer exigia commitear primero;
+ * y el hook no deja commitear. La unica salida era `--no-verify`, justo el modo
+ * de fallo que la seccion 2 del issue existe para evitar. La mitigacion habia
+ * quedado mas ancha que el riesgo.
+ *
+ * `--allow-dirty` (`opts.skipGitCheck`) es la salida explicita y documentada para
+ * el caso legitimo restante: regenerar con archivos NUEVOS que entran en este
+ * mismo commit. El mensaje de error lo nombra.
+ */
 function assertWorktreeLimpio(pipelineRoot) {
     let out;
     try {
-        out = execFileSync('git', ['status', '--porcelain', '--', '.pipeline'], {
+        out = execFileSync('git', ['status', '--porcelain', '-z', '--', '.pipeline'], {
             cwd: path.resolve(pipelineRoot, '..'),
             encoding: 'utf8',
         });
     } catch {
         throw new ConfigError('no se pudo consultar `git status --porcelain -- .pipeline` (R-A2)');
     }
-    if (out.trim() !== '') {
+    // Con `-z` el path no viene quoteado. Los registros de rename agregan un path
+    // suelto sin prefijo XY: no matchea `?? `, se ignora solo.
+    const untracked = out.split('\0')
+        .filter((r) => r.startsWith('?? '))
+        .map((r) => r.slice(3))
+        .filter(puedeHornearse);
+    if (untracked.length) {
+        const muestra = untracked.slice(0, 10).join(', ') + (untracked.length > 10 ? ', ...' : '');
         throw new ConfigError(
-            'worktree sucio bajo `.pipeline`. Regenerar allowlist/baseline con cambios sin commitear hornea '
-            + 'archivos untracked y pinta el CI de rojo por entries obsoletas (R-A2). Commitea o limpia primero.',
+            untracked.length + ' archivo(s) UNTRACKED en alcance bajo `.pipeline`: ' + muestra
+            + '. Regenerar con ellos hornea entries que el CI no tiene y pinta el CI de rojo por '
+            + 'entries obsoletas (R-A2). Commitealos, borralos, o volve a correr con `--allow-dirty` '
+            + 'si entran en ESTE mismo commit. Los archivos TRACKED modificados no bloquean: viajan '
+            + 'en el mismo commit que la regeneracion.',
         );
     }
 }
@@ -1012,24 +1093,24 @@ function main() {
     const logger = defaultLogger();
     const argv = process.argv.slice(2);
     const pipelineRoot = DEFAULT_PIPELINE_ROOT;
+    // `--allow-dirty` — salida explicita y documentada del chequeo R-A2, para
+    // regenerar cuando hay archivos NUEVOS que entran en este mismo commit.
+    const wopts = { skipGitCheck: argv.includes('--allow-dirty') };
     try {
-        if (argv.includes('--write-allowlist')) process.exit(writeAllowlist(pipelineRoot, logger));
-        if (argv.includes('--write-baseline')) process.exit(writeBaseline(pipelineRoot, logger));
-        if (argv.length !== 0 && !argv.includes('--check')) {
-            logger.error('uso: node test-env-lint.js [--check | --write-allowlist | --write-baseline]');
+        if (argv.includes('--write-allowlist')) process.exit(writeAllowlist(pipelineRoot, logger, wopts));
+        if (argv.includes('--write-baseline')) process.exit(writeBaseline(pipelineRoot, logger, wopts));
+        const soloFlagsConocidos = argv.every((a) => a === '--check' || a === '--allow-dirty');
+        if (argv.length !== 0 && !soloFlagsConocidos) {
+            logger.error('uso: node test-env-lint.js '
+                + '[--check | --write-allowlist | --write-baseline] [--allow-dirty]');
             process.exit(2);
         }
-        const { code, lines } = check({ pipelineRoot });
+        const { code, lines, remedios } = check({ pipelineRoot });
         for (const l of lines) (code === 0 ? logger.info : logger.error)(l);
         if (code !== 0) {
             console.error('');
             console.error('Para resolver:');
-            console.error('  1) Usar `withEnv(vars, fn)` de `.pipeline/lib/test-helpers/with-env.js` en vez de');
-            console.error('     tocar `process.env` a mano. Restaura el entorno pase lo que pase.');
-            console.error('  2) Si el test NECESITA apagar un control, el opt-in explicito:');
-            console.error("     withEnv({ VAR: '0' }, fn, { permitirApagarControl: ['VAR'], motivo: '...' })");
-            console.error('  3) Si es deuda preexistente o falso positivo, agregar entry con `kind` y `reason`');
-            console.error('     en `.pipeline/lib/' + ALLOWLIST_FILE + '`. Las ESTRICTAS no se allowlistean.');
+            for (const l of (remedios && remedios.length ? remedios : REMEDIOS_VIOLATIONS)) console.error(l);
         }
         process.exit(code);
     } catch (e) {
@@ -1057,9 +1138,10 @@ module.exports = {
     // expuesto para tests
     _internal: {
         walkJs, walkProduccion, detectarPodredumbre, FORMA_DE_CONTROL_RE,
-        walkJs, lintFile, loadAllowlist, loadBaseline, applyAllowlist, classify,
+        lintFile, loadAllowlist, loadBaseline, applyAllowlist, classify,
         resolveKey, resolveValue, literalString, validarFormaPatron, escapeRegExp,
         baselineKey, inScope, formatViolation, safeSnippet, writeAllowlist, writeBaseline,
+        assertWorktreeLimpio, puedeHornearse, REMEDIOS_VIOLATIONS, REMEDIOS_OBSOLETAS,
         largoPrefijoLiteral, largoSufijoLiteral, tieneComodinLibre, defaultLogger,
         ASSIGN_RE, COMPUTED_RE, DELETE_RE, WHOLE_RE,
         SELF_EXEMPT, SKIP_DIRS, SCRATCH_DIR_RE, NO_CONTROL_BLACKLIST, SENTIDOS, KINDS,

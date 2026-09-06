@@ -2040,13 +2040,13 @@
         },
         {
             "file": "lib/__tests__/qa-evidence-seal-freshness.test.js",
-            "line": 1002,
+            "line": 1032,
             "kind": "deuda",
             "reason": "escritura de PIPELINE_DIR_OVERRIDE fuera del helper"
         },
         {
             "file": "lib/__tests__/qa-evidence-seal-freshness.test.js",
-            "line": 1003,
+            "line": 1033,
             "kind": "deuda",
             "reason": "PULPO_NO_AUTOSTART escrita en el sentido seguro (apagar)"
         },
@@ -2694,13 +2694,13 @@
         },
         {
             "file": "lib/__tests__/test-env-lint.test.js",
-            "line": 117,
+            "line": 119,
             "kind": "deuda",
             "reason": "escritura de X fuera del helper"
         },
         {
             "file": "lib/__tests__/test-env-lint.test.js",
-            "line": 560,
+            "line": 562,
             "kind": "deuda",
             "reason": "escritura de X fuera del helper"
         },

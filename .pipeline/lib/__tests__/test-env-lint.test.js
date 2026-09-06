@@ -25,7 +25,9 @@ const {
     walkJs, lintFile, loadAllowlist, loadBaseline, applyAllowlist, classify,
     resolveKey, resolveValue, validarFormaPatron, inScope, safeSnippet,
     writeAllowlist, SELF_EXEMPT, NO_CONTROL_BLACKLIST,
+    puedeHornearse, assertWorktreeLimpio, REMEDIOS_OBSOLETAS,
 } = lint._internal;
+const { execFileSync } = require('node:child_process');
 
 // R-A9: nunca escribir el token literal que el guardrail busca.
 const PE = 'process' + '.env';
@@ -807,4 +809,149 @@ test('rev-1 · el helper y el lint coinciden: lo que withEnv bloquea, el lint lo
         const v = lint.lint({ pipelineRoot: root, registry }).violations;
         assert.strictEqual(v.length, 1, nombre + ' es visible para el lint');
     }
+});
+
+// =============================================================================
+// rev-2 · DEADLOCK del ciclo edicion -> commit (rechazo de `aprobacion`).
+//
+// El hook frena por entries de allowlist OBSOLETAS, y la allowlist ancla la
+// deuda por (archivo, LINEA): editar un test allowlisteado desplaza sus lineas
+// y las vuelve obsoletas SIN agregar ninguna violation nueva. En rev-1 el remedio
+// (`--write-allowlist`) abortaba por "worktree sucio" ante cualquier cambio sin
+// commitear, incluidos los TRACKED. Hook exige regenerar -> writer exige
+// commitear -> hook no deja commitear: la unica salida era `--no-verify`, el modo
+// de fallo que la seccion 2 del issue existe para evitar.
+// =============================================================================
+
+function gitDisponible() {
+    try { execFileSync('git', ['--version'], { stdio: 'ignore' }); return true; }
+    catch { return false; }
+}
+const SIN_GIT = !gitDisponible();
+
+function git(cwd, args) {
+    return execFileSync('git', args, { cwd, encoding: 'utf8', stdio: 'pipe' });
+}
+
+/** Repo git real con un `.pipeline/` adentro (el chequeo R-A2 consulta git de verdad). */
+function makeTmpGitRepo() {
+    const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'test-env-lint-git-')));
+    git(repo, ['init', '-q']);
+    git(repo, ['config', 'user.email', 'pipeline@test.local']);
+    git(repo, ['config', 'user.name', 'pipeline test']);
+    git(repo, ['config', 'commit.gpgsign', 'false']);
+    const pipelineRoot = path.join(repo, '.pipeline');
+    fs.mkdirSync(path.join(pipelineRoot, 'lib'), { recursive: true });
+    return { repo, pipelineRoot };
+}
+
+function commitTodo(repo, msg) {
+    git(repo, ['add', '-A']);
+    git(repo, ['commit', '-q', '--no-verify', '-m', msg]);
+}
+
+function silentLogger() {
+    const out = [];
+    return { out, info: (m) => out.push(m), warn: (m) => out.push(m), error: (m) => out.push(m) };
+}
+
+test('rev-2 · editar un test con deuda allowlisteada tiene salida SIN `--no-verify`', { skip: SIN_GIT }, () => {
+    const { repo, pipelineRoot } = makeTmpGitRepo();
+    writeJson(pipelineRoot, 'lib/test-env-lint.protected.json', registroBase());
+    writeJson(pipelineRoot, 'lib/test-env-lint.allowlist.json', { min_scanned: 1, files: [], rules: [] });
+    writeJson(pipelineRoot, 'lib/test-env-lint.baseline.json', { entries: [] });
+    placeJs(pipelineRoot, 'lib/__tests__/deuda.test.js', ['// l1', PE + '.FOO_CORRIENTE = "1";', ''].join('\n'));
+    commitTodo(repo, 'base');
+
+    // Worktree limpio: la allowlist se genera y el check queda verde.
+    assert.strictEqual(writeAllowlist(pipelineRoot, silentLogger()), 0);
+    commitTodo(repo, 'allowlist');
+    assert.strictEqual(lint.check({ pipelineRoot }).code, 0, 'punto de partida verde');
+
+    // El dev edita el test allowlisteado: UNA linea arriba, cero violations nuevas.
+    placeJs(pipelineRoot, 'lib/__tests__/deuda.test.js',
+        ['// l0', '// l1', PE + '.FOO_CORRIENTE = "1";', ''].join('\n'));
+    git(repo, ['add', '-A']);   // como lo dejaria el dev antes de commitear
+
+    // 1) el hook frena por entry OBSOLETA (no por algo nuevo)
+    const rojo = lint.check({ pipelineRoot });
+    assert.strictEqual(rojo.code, 1);
+    assert.match(rojo.lines.join('\n'), /OBSOLETA/);
+
+    // 2) el remedio existe y NO aborta por el archivo TRACKED modificado y staged
+    const logger = silentLogger();
+    assert.strictEqual(writeAllowlist(pipelineRoot, logger), 0,
+        'rev-1 abortaba aca con exit 2 por "worktree sucio": ese era el deadlock');
+
+    // 3) y cierra el ciclo: verde sin `--no-verify`
+    assert.strictEqual(lint.check({ pipelineRoot }).code, 0);
+});
+
+test('rev-2 · el copy ante entries obsoletas nombra `--write-allowlist`, no "agregar entry"', () => {
+    const texto = REMEDIOS_OBSOLETAS.join('\n');
+    assert.match(texto, /--write-allowlist/);
+    assert.match(texto, /--allow-dirty/);
+    assert.doesNotMatch(texto, /agregar entry/);
+    // Y `check()` lo devuelve para ESE rojo y no para los demas.
+    const root = makeTmpPipeline();
+    placeJs(root, 'lib/__tests__/x.test.js', PE + '.FOO_CORRIENTE = "1";\n');
+    const obsoleta = checkTmp(root, {
+        allowlist: {
+            min_scanned: 0,
+            files: [],
+            rules: [{ file: 'lib/__tests__/x.test.js', line: 99, kind: 'deuda', reason: 'r' }],
+        },
+    });
+    assert.strictEqual(obsoleta.code, 1);
+    assert.match(obsoleta.remedios.join('\n'), /--write-allowlist/);
+    const nueva = checkTmp(root);
+    assert.strictEqual(nueva.code, 1);
+    assert.match(nueva.remedios.join('\n'), /withEnv/);
+});
+
+test('rev-2 / R-A2 · el writer sigue abortando por UNTRACKED en alcance, nombrando `--allow-dirty`', { skip: SIN_GIT }, () => {
+    const { repo, pipelineRoot } = makeTmpGitRepo();
+    writeJson(pipelineRoot, 'lib/test-env-lint.protected.json', registroBase());
+    writeJson(pipelineRoot, 'lib/test-env-lint.allowlist.json', { min_scanned: 0, files: [], rules: [] });
+    writeJson(pipelineRoot, 'lib/test-env-lint.baseline.json', { entries: [] });
+    placeJs(pipelineRoot, 'lib/__tests__/deuda.test.js', PE + '.FOO_CORRIENTE = "1";\n');
+    commitTodo(repo, 'base');
+
+    // Archivo NUEVO en alcance, sin commitear: el CI no lo tiene -> hornearlo pinta rojo.
+    placeJs(pipelineRoot, 'lib/__tests__/nuevo.test.js', PE + '.OTRA_CORRIENTE = "1";\n');
+    assert.throws(
+        () => assertWorktreeLimpio(pipelineRoot),
+        (e) => e instanceof ConfigError
+            && /UNTRACKED/.test(e.message)
+            && /--allow-dirty/.test(e.message),
+    );
+    // La salida explicita y documentada si el archivo entra en ESTE commit.
+    assert.strictEqual(writeAllowlist(pipelineRoot, silentLogger(), { skipGitCheck: true }), 0);
+});
+
+test('rev-2 / R-A2 · un UNTRACKED fuera de alcance no bloquea la regeneracion', { skip: SIN_GIT }, () => {
+    const { repo, pipelineRoot } = makeTmpGitRepo();
+    writeJson(pipelineRoot, 'lib/test-env-lint.protected.json', registroBase());
+    writeJson(pipelineRoot, 'lib/test-env-lint.allowlist.json', { min_scanned: 0, files: [], rules: [] });
+    writeJson(pipelineRoot, 'lib/test-env-lint.baseline.json', { entries: [] });
+    placeJs(pipelineRoot, 'lib/__tests__/deuda.test.js', PE + '.FOO_CORRIENTE = "1";\n');
+    commitTodo(repo, 'base');
+
+    placeJs(pipelineRoot, 'lib/notas.md', 'no es un archivo de test\n');
+    assert.doesNotThrow(() => assertWorktreeLimpio(pipelineRoot));
+    assert.strictEqual(writeAllowlist(pipelineRoot, silentLogger()), 0);
+});
+
+test('rev-2 / R-A2 · `puedeHornearse` solo marca lo que el writer podria escribir', () => {
+    assert.strictEqual(puedeHornearse('.pipeline/lib/__tests__/a.test.js'), true);
+    assert.strictEqual(puedeHornearse('.pipeline/lib/test-algo.js'), true);
+    assert.strictEqual(puedeHornearse('.pipeline/lib/notas.md'), false);
+    assert.strictEqual(puedeHornearse('.pipeline/lib/produccion.js'), false);
+    // `walkJs` ya saltea estos: hornearlos es imposible.
+    assert.strictEqual(puedeHornearse('.pipeline/_tmp/x/a.test.js'), false);
+    assert.strictEqual(puedeHornearse('.pipeline/node_modules/p/a.test.js'), false);
+    assert.strictEqual(puedeHornearse('.pipeline/tmp-review-9/a.test.js'), false);
+    // `?? dir/` — git colapsa el directorio untracked; adentro puede haber tests.
+    assert.strictEqual(puedeHornearse('.pipeline/lib/nuevo-dir/'), true);
+    assert.strictEqual(puedeHornearse('.pipeline/_tmp/'), false);
 });
