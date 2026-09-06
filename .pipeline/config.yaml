@@ -2017,10 +2017,14 @@ vault:
   # no crea trails ni modifica event selectors y una allowlist vacía saltea el
   # tick para evitar una tormenta de alertas durante el rollout.
   access_audit:
-    # #5801 — Encender esto EXIGE `burst_threshold` entero positivo en el mismo
-    # commit: el esquema lo valida condicionalmente (`config-schema.js`, rama
-    # `if enabled === true`). No hay forma de dejar la auditoría corriendo con
-    # la detección de ráfagas apagada y que el pipeline arranque igual.
+    # #5801 — Declarar este bloque EXIGE `burst_threshold` entero positivo en el
+    # mismo commit: el esquema lo pide INCONDICIONALMENTE (`config-schema.js`,
+    # `required: ['burst_threshold']` bajo `vault.access_audit`), o sea también
+    # con `enabled: false`. Es a propósito y más estricto que atarlo al gate:
+    # así el umbral no puede quedar sin calibrar mientras la auditoría está
+    # apagada, para que encenderla nunca sea el momento en que se descubre que
+    # falta. No hay forma de dejar la auditoría corriendo con la detección de
+    # ráfagas apagada y que el pipeline arranque igual.
     enabled: false
     poll_interval_min: 10
     lookback_min: 30
