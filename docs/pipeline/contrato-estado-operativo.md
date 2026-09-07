@@ -269,7 +269,7 @@ shape (**#6106**):
   desactualizada sin romper nada. Antes era el ancla, y ese era el bug: un
   cambio inocente que insertaba líneas arriba rompía el build, y —peor— la
   coordenada podía pasar a apuntar a **otro** acceso, que heredaba la exención
-  sin pasar por review.
+  sin que nadie la mirara.
 - **No la escribas a mano.** `node .pipeline/lib/operational-state-lint.js
   --anchor=<archivo>:<linea>` emite la entry lista para pegar (con `occurrence`
   ya calculado si el ancla no es única); sólo hay que completar la `reason`.
@@ -277,9 +277,18 @@ shape (**#6106**):
   `occurrence` explícito o se usa un acceso más específico. Y un ancla que no
   matchea nada se reporta como **excepción obsoleta** — nunca queda muda.
 
-El archivo está en `.github/CODEOWNERS`: toda entry requiere review humano de
-@leitolarreta. Lo que se autoriza es **ese acceso**, no esa coordenada; re-anclar
-a un acceso distinto es una autorización nueva y vuelve a pasar por el review.
+Lo que se autoriza es **ese acceso**, no esa coordenada: re-anclar a un acceso
+distinto es una autorización nueva y hay que volver a revisarla.
+
+**Dónde NO vive el enforcement de esa revisión** (#5986, Opción A — dicho acá
+porque es el destino del link que emite el propio binario): `.github/CODEOWNERS`
+declara la responsabilidad de @leitolarreta sobre este archivo, pero es
+**declarativo** — no tiene reglas activas, así que no activa ningún gate de
+ownership, y `protect-main` corre con `require_code_owner_review: false`, o sea
+que GitHub tampoco lo mira. Y `operational-state-lint` corre en `--check` pero es
+**ADVISORY**: no está en el rollup `pr-status` ni es required check de `main`,
+así que puede quedar rojo sin frenar el merge. Nadie te va a aprobar la entry:
+**revisala a mano**. Activar el enforcement real es #5183.
 
 ---
 
