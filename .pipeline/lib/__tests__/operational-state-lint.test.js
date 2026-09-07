@@ -23,6 +23,9 @@ const os = require('node:os');
 const { spawnSync } = require('node:child_process');
 
 const lint = require('../operational-state-lint');
+// #5986 · CA-3 / SEC-4: el MISMO parser que consume el gate de merge de
+// `delivery.js`. Prohibido reimplementar el parseo — dos parsers derivan.
+const codeowners = require('../../skills-deterministicos/lib/codeowners');
 const I = lint._internal;
 
 const BIN_NAME = 'operational-state-lint.js';
@@ -1248,16 +1251,243 @@ test('smoke · los casos de copy/dominio verificados del repo real NO se reporta
     }
 });
 
-test('smoke · el binario real y su allowlist estan en CODEOWNERS (CA-5 / SEC-1)', () => {
-    const co = fs.readFileSync(path.join(__dirname, '..', '..', '..', '.github', 'CODEOWNERS'), 'utf8');
-    for (const p of [
-        '/.pipeline/lib/operational-state-lint.js',
-        '/.pipeline/lib/operational-state-lint.allowlist.json',
-        '/.pipeline/lib/__tests__/operational-state-lint.test.js',
-    ]) {
-        assert.ok(co.includes(p), `CODEOWNERS debe cubrir ${p}`);
+// ─── #5986 · la asercion de CODEOWNERS PARSEA, no matchea texto ─────────────
+//
+// La version original de este bloque (#5202) hacia `co.includes('/.pipeline/
+// lib/operational-state-lint.js')` sobre el archivo CRUDO. Cuando #5175/#5975
+// reescribieron CODEOWNERS como archivo declarativo sin reglas activas, los 3
+// paths quedaron como COMENTARIOS y la asercion siguio pasando: verde sobre una
+// frontera desprotegida, que es peor que no tener control porque induce a no
+// mirar. #5986 la reconcilia contra el mecanismo real.
+
+/**
+ * SEC-1: el 4to path es el propio CODEOWNERS. Sin el, un PR que toca solo ese
+ * archivo borra las otras 3 reglas y auto-mergea (bypass de dos pasos); el PR
+ * siguiente ya edita la allowlist libre. Precedente real: #5975 toco unicamente
+ * `.github/CODEOWNERS` y mergeo con 14 checks verdes.
+ */
+const GUARDRAIL_PATHS = [
+    '.pipeline/lib/operational-state-lint.js',
+    '.pipeline/lib/operational-state-lint.allowlist.json',
+    '.pipeline/lib/__tests__/operational-state-lint.test.js',
+    '.github/CODEOWNERS',
+];
+
+/**
+ * Paths del guardrail SIN owner humano por una regla ACTIVA.
+ *
+ * Delega en el MISMO modulo que consume el gate de merge de `delivery.js`
+ * (`skills-deterministicos/lib/codeowners.js`) a proposito: dos parsers derivan,
+ * y el dia que difieran el test dice verde mientras el gate no bloquea — el
+ * mismo falso verde que #5986 cierra, reconstruido un nivel mas arriba.
+ *
+ * `getHumanOwners` y no `parseCodeowners` a secas: el parser ACEPTA owners tipo
+ * team/bot (`@intrale/bots`), asi que un assert sobre `rules.length`
+ * sobreviviria la mutacion (c).
+ */
+function uncoveredGuardrailPaths(codeownersContent) {
+    const rules = codeowners.parseCodeowners(codeownersContent);
+    return GUARDRAIL_PATHS.filter(p => codeowners.getHumanOwners(rules, [p]).length === 0);
+}
+
+const GATE_CODEOWNERS_ESPERADO = false;
+
+/** Clasificacion pura del contenido, independiente del filesystem. */
+function classifyGuardrailCodeowners(codeownersContent) {
+    const rules = codeowners.parseCodeowners(codeownersContent);
+    const active = codeowners.resolveOwners(rules, GUARDRAIL_PATHS).length;
+    const mentioned = GUARDRAIL_PATHS.filter(p => codeownersContent.includes(`/${p}`)).length;
+    if (active > 0) return 'regla-activa';
+    if (mentioned > 0) return 'solo-comentarios';
+    return 'sin-mencion';
+}
+
+function readRealCodeowners() {
+    return fs.readFileSync(path.join(__dirname, '..', '..', '..', '.github', 'CODEOWNERS'), 'utf8');
+}
+
+test('smoke · el CODEOWNERS real es coherente con la politica declarativa vigente', () => {
+    const mode = classifyGuardrailCodeowners(readRealCodeowners());
+    assert.equal(mode, GATE_CODEOWNERS_ESPERADO ? 'regla-activa' : 'solo-comentarios');
+});
+
+// ─── CA-4 · tabla de mutacion: la asercion tiene que MORIR ───────────────────
+//
+// Contenido sintetico, no se toca el archivo real. La asercion vieja
+// (`String.includes`) sobrevive (a) y (d) — ese es exactamente el defecto.
+
+const CO_OK = [
+    '/.pipeline/lib/operational-state-lint.js                 @leitolarreta',
+    '/.pipeline/lib/operational-state-lint.allowlist.json     @leitolarreta',
+    '/.pipeline/lib/__tests__/operational-state-lint.test.js  @leitolarreta',
+    '/.github/CODEOWNERS                                      @leitolarreta',
+].join('\n');
+
+const MODOS_CODEOWNERS = [
+    ['sin-mencion', '# responsables generales, sin paths del guardrail\n'],
+    ['solo-comentarios', CO_OK.split('\n').map(l => `# ${l}`).join('\n')],
+    ['regla-activa', CO_OK],
+];
+
+for (const [modo, contenido] of MODOS_CODEOWNERS) {
+    test(`#5986 · clasifica el modo ${modo} como funcion pura`, () => {
+        assert.equal(classifyGuardrailCodeowners(contenido), modo);
+    });
+}
+
+test('#5986 · un owner bot sigue siendo regla activa, pero no ownership humano', () => {
+    const contenido = CO_OK.replace(/@leitolarreta/g, '@intrale/bots');
+    assert.equal(classifyGuardrailCodeowners(contenido), 'regla-activa');
+    assert.equal(uncoveredGuardrailPaths(contenido).length, GUARDRAIL_PATHS.length);
+});
+
+test('CA-8/CA-UX-1 · el _doc de la allowlist describe la politica declarativa vigente', () => {
+    const doc = JSON.parse(fs.readFileSync(path.join(__dirname, '..', ALLOWLIST_NAME), 'utf8'))._doc;
+    assert.match(doc, /declarativ/i);
+    assert.match(doc, /sin reglas activas/i);
+    assert.equal(classifyGuardrailCodeowners(readRealCodeowners()), 'solo-comentarios');
+
+    // #5986 (rebote ux) · el _doc es la otra superficie que lee el operador
+    // justo cuando va a agregar una exencion. Prometer ahi un control requerido
+    // que no existe lo induce a NO revisar a mano — el mismo patron de
+    // afirmacion inerte que este issue vino a cerrar (CA-8 / CA-10 / R6).
+    assert.doesNotMatch(doc, /requerid/i, 'el _doc no puede prometer un control REQUERIDO inexistente');
+    assert.match(doc, /advisory/i, 'el _doc debe decir que el lint es advisory');
+    assert.match(doc, /#5183/, 'debe apuntar al issue que activaria el enforcement real');
+});
+
+// ─── CA-12 · assert de INVENTARIO sobre las superficies de copy ──────────────
+//
+// Por que INVENTARIO y no un `slice`: la version anterior de este assert hacia
+// `bin.slice(idx, idx + 1200)` arrancando en `indexOf('Si la excepcion es
+// legitima')`, o sea barria HACIA ADELANTE desde el bloque de
+// `remediationLines`. Las otras emisoras (`anchorRemediationLines` :1038,
+// `formatAnchorIssue` :1016, la `LintConfigError` de `sanitizeReason` :523, el
+// modo `--anchor` :1369) viven ANTES de ese offset: eran inalcanzables POR
+// CONSTRUCCION. La suite quedo 90/90 verde con 8 afirmaciones falsas vivas, tres
+// de ellas llegando al operador por el mismo GITHUB_STEP_SUMMARY. Un criterio de
+// inventario no puede tener como scope una lista cerrada de coordenadas dentro
+// de archivos que se editan: se barre el archivo ENTERO.
+
+// Toda atribucion del mecanismo de autorizacion a un review/aprobacion de
+// GitHub. La Opcion A (#5986) elimino ese mecanismo: `.github/CODEOWNERS` no
+// tiene reglas activas, `protect-main` corre con `require_code_owner_review:
+// false` y el lint es ADVISORY (fuera del rollup `pr-status`, ver #5183).
+//
+// Los `\s+` no son cosmetica: evitan que el literal de ESTE detector se cuente a
+// si mismo cuando el barrido de CA-12 se corre con `git grep` sobre el arbol.
+const ATRIBUCION_FALSA = new RegExp([
+    'review\\s+humano',
+    'reviewer\\b',
+    'review\\s+de\\s+@leitolarreta',
+    'pasa(?:r)?\\s+por\\s+el\\s+review',
+    'requiere\\s+review',
+    'el\\s+review\\s+es\\s+sobre',
+    'aprobacion\\s+de\\s+code\\s+owner',
+].join('|'), 'i');
+
+const REPO_ROOT_T = path.join(__dirname, '..', '..', '..');
+const SUPERFICIES_COPY = [
+    ['.pipeline/lib/operational-state-lint.js', REAL_BIN],
+    ['.pipeline/lib/' + ALLOWLIST_NAME, path.join(__dirname, '..', ALLOWLIST_NAME)],
+    ['.github/CODEOWNERS', path.join(REPO_ROOT_T, '.github', 'CODEOWNERS')],
+    ['docs/pipeline/contrato-estado-operativo.md', path.join(REPO_ROOT_T, 'docs', 'pipeline', 'contrato-estado-operativo.md')],
+];
+
+for (const [nombre, file] of SUPERFICIES_COPY) {
+    test(`CA-12 inventario · ${nombre}: cero atribuciones a un review de GitHub`, () => {
+        const src = fs.readFileSync(file, 'utf8');
+        const hits = src.split('\n')
+            .map((linea, i) => `${nombre}:${i + 1}: ${linea.trim()}`)
+            .filter(l => ATRIBUCION_FALSA.test(l));
+        assert.deepEqual(hits, [], 'CA-12 exige CERO ocurrencias en el archivo ENTERO');
+    });
+}
+
+test('CA-12 · las TRES emisoras que ve el operador coinciden entre si (misma corrida)', () => {
+    // `anchorRemediationLines` y `remediationLines` salen por el mismo `out()`
+    // del mismo `main()`, y ambas se publican en el GITHUB_STEP_SUMMARY del
+    // workflow (`:56`). Que una prometa un review y la otra lo niegue le llega
+    // al operador como una contradiccion dentro de una sola corrida. Se mide
+    // sobre la salida RENDERIZADA invocando al emisor real, no leyendo el fuente.
+    const anchorIssue = I.formatAnchorIssue({
+        status: I.ANCHOR_STALE,
+        entry: { where: `${ALLOWLIST_NAME} rules[0]`, file: 'pulpo.js', index: 0, line: 1 },
+        matches: [],
+    });
+    const renders = {
+        'remediationLines()': I.remediationLines(new Set(['path-level', 'internal-bypass'])).join('\n'),
+        'anchorRemediationLines()': I.anchorRemediationLines().join('\n'),
+        'formatAnchorIssue()': anchorIssue,
+    };
+    for (const [emisor, render] of Object.entries(renders)) {
+        assert.ok(render.length > 0, `${emisor} no emitio nada`);
+        assert.doesNotMatch(render, ATRIBUCION_FALSA, `${emisor} atribuye la autorizacion a un review de GitHub`);
+        assert.doesNotMatch(render, /requerid/i, `${emisor} no puede prometer un control REQUERIDO: el lint es advisory (#5183)`);
+        assert.doesNotMatch(render, /needs-human|owner humano|NO auto-mergea/i, `${emisor} promete un locus que no existe`);
     }
-    assert.match(co, /@leitolarreta/);
+    // Los dos bloques de remediacion (los que el operador lee entero) dicen
+    // ademas donde NO vive el enforcement.
+    for (const emisor of ['remediationLines()', 'anchorRemediationLines()']) {
+        assert.match(renders[emisor], /declarativ/i, `${emisor} debe encuadrar la politica vigente`);
+        assert.match(renders[emisor], /advisory/i, `${emisor} debe decir donde NO vive el enforcement`);
+        assert.match(renders[emisor], /#5183/, `${emisor} debe apuntar al issue que activaria el enforcement real`);
+    }
+});
+
+test('CA-12 · el doc que linkea el binario no desmiente al binario', () => {
+    // El copy ya corregido remite a `contrato-estado-operativo.md §7`: el
+    // operador sigue el link desde el mensaje honesto y tiene que aterrizar en
+    // el mismo encuadre, no en la promesa que este issue vino a borrar.
+    const doc = fs.readFileSync(path.join(REPO_ROOT_T, 'docs', 'pipeline', 'contrato-estado-operativo.md'), 'utf8');
+    assert.match(doc, /declarativ/i);
+    assert.match(doc, /advisory/i);
+    assert.match(doc, /#5183/);
+    assert.match(doc, /require_code_owner_review/);
+    assert.match(I.anchorRemediationLines().join('\n'), /contrato-estado-operativo\.md/,
+        'si el binario deja de linkear el doc, este assert deja de proteger nada');
+});
+
+test('CA-8/CA-12 · el _shape_doc.anchor de la allowlist no se contradice con el _doc', () => {
+    // Vivian a 4 lineas de distancia diciendo cosas opuestas: el `_doc` (:2)
+    // corregido y el `_shape_doc.anchor` (:6) con el texto viejo.
+    const json = JSON.parse(fs.readFileSync(path.join(__dirname, '..', ALLOWLIST_NAME), 'utf8'));
+    const anchorDoc = json._shape_doc.anchor;
+    assert.doesNotMatch(anchorDoc, ATRIBUCION_FALSA);
+    assert.doesNotMatch(anchorDoc, /requerid/i);
+    assert.match(anchorDoc, /declarativ/i);
+    assert.match(anchorDoc, /advisory/i);
+    assert.match(anchorDoc, /#5183/);
+});
+
+test('CA-10/CA-13/CA-UX-3 · el header fija la politica declarativa y su alcance real', () => {
+    const co = readRealCodeowners();
+    const lineasHeader = co.split('\n').filter(l => /^\s*#/.test(l));
+    const header = lineasHeader.join('\n');
+    assert.match(header, /NO declara reglas activas/);
+    assert.match(header, /GATE_CODEOWNERS_ESPERADO=false/);
+    assert.equal(classifyGuardrailCodeowners(co), 'solo-comentarios');
+
+    // CA-12 · el header es una superficie de copy mas, con el mismo par.
+    assert.doesNotMatch(header, ATRIBUCION_FALSA);
+    assert.doesNotMatch(header, /requerid/i, 'el header no puede presentar controles advisory como requeridos');
+    assert.match(header, /advisory/i, 'el header debe decir que los lints son advisory');
+    assert.match(header, /#5183/, 'debe apuntar al issue que activaria el enforcement real');
+
+    // CA-13 · ninguna linea que nombre a los dos lints puede presentarlos como
+    // algo que `main` exige. Se mide POR LINEA, que es la unidad de lectura del
+    // operador: en origin/main eran bullets separados y este PR los fundio en
+    // una enumeracion corrida con `pr-status`, que si es required check.
+    for (const l of lineasHeader) {
+        if (!/operational-state-lint|ghost-artifact-lint/.test(l)) continue;
+        assert.doesNotMatch(
+            l, /requerid|required|obligatori|\bexige\b|bloquea el merge/i,
+            `CA-13: el header presenta un lint ADVISORY como control de main -> ${l.trim()}`,
+        );
+    }
+    // Y dice explicito donde NO vive el enforcement (los 3 loci verificados).
+    assert.match(header, /pr-status/, 'debe nombrar el rollup del que los lints NO forman parte');
+    assert.match(header, /require_code_owner_review:\s*false/, 'GitHub no lee estas reglas');
 });
 
 test('CA-9b/#5179 · el hook pre-commit invoca --check y PROPAGA el exit code', () => {
@@ -1311,6 +1541,18 @@ test('CA-4a/CA-4c/CA-9b · el workflow corre en enforce, con permissions read y 
     // `pull_request_target` esta prohibido, y esa prosa no debe hacer fallar el
     // assert.
     assert.ok(!/^\s*pull_request_target\s*:/m.test(wf), 'pull_request_target corre con el token del repo base sobre codigo de un fork');
+
+    // #5986 · CA-5: sin `.github/CODEOWNERS` en el `paths:`, un PR que toca solo
+    // ese archivo no dispara el job — o sea, la asercion de CA-3/CA-4 no corre
+    // en el unico PR donde importa (verificado en el PR #5975).
+    // CA-6: se mide el `paths:` de AMBOS triggers, sin tocar permissions ni el
+    // --report-only (los asserts de arriba los fijan).
+    const bloquesPaths = wf.split(/^\s*paths:\s*$/m).slice(1);
+    assert.ok(bloquesPaths.length >= 2, 'el workflow debe filtrar por paths en pull_request y en push');
+    for (const [i, bloque] of bloquesPaths.entries()) {
+        const lista = bloque.split(/\n(?=\s*(?:on|jobs|permissions|push|pull_request)\b)/)[0];
+        assert.match(lista, /-\s*'\.github\/CODEOWNERS'/, `el bloque paths #${i + 1} debe incluir .github/CODEOWNERS`);
+    }
 });
 
 // ─── Rebote rev-1 · la SALIDA no puede ser secuestrada (SEC-3) ───────────────

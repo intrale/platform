@@ -3,35 +3,40 @@
 # Sintaxis: <pattern> <owner-or-team>
 # Ultimo match gana. Los patrones son glob-style (similar a .gitignore).
 #
-# ── Estado actual (issue #5175) ────────────────────────────────────
-# Este archivo NO declara reglas activas a proposito. El gate de
-# "aprobacion obligatoria de code owner" sobre /.github/ resultaba
-# inaplicable: el pipeline abre los PRs con la misma cuenta que era
-# code owner (@leitolarreta) y GitHub no permite auto-aprobarse, con lo
-# cual todo cambio en /.github/ quedaba trabado esperando una firma
-# imposible (caso testigo: PR #5202).
+# Estado actual (issues #5175, #5975 y decision humana de #5986)
+# Este archivo NO declara reglas activas a proposito. El gate de aprobacion
+# obligatoria resultaba inaplicable: el pipeline abre los PRs con la misma
+# cuenta que era code owner y GitHub no permite auto-aprobarse.
 #
-# La proteccion de esos cambios NO se relaja: pasa a apoyarse en
-# controles automaticos verificables sobre `main`:
-#   - PR obligatorio + historia lineal (ruleset `protect-main`)
-#   - todos los hilos de revision resueltos antes de mergear
-#   - review automatico en cada push (Copilot code review)
-#   - checks de PR agregados en `pr-status` (required)
-#   - SAST: Semgrep, detect-secrets, OWASP Dependency Check
-#   - Actions fijadas por SHA en los workflows
-#   - ghost-artifact-lint y operational-state-lint
+# La proteccion se apoya en los controles que main SI enforza: PR obligatorio,
+# hilos resueltos, SAST, Actions fijadas por SHA y el rollup `pr-status`, que es
+# el unico status check que main exige (ruleset main-required-checks).
 #
-# ── Responsabilidad declarada (informativa, no bloqueante) ─────────
+# Donde NO vive el enforcement (#5986, CA-13 — decirlo evita leer estas lineas
+# como una garantia mas fuerte de la que son):
+#   - `operational-state-lint` y `ghost-artifact-lint` son ADVISORY. Corren en
+#     su propio workflow, NO estan entre los `needs` del rollup `pr-status`
+#     (pr-checks.yml:562) y no aparecen en pr-checks.yml: pueden quedar rojos
+#     sin frenar el merge. Sumarlos al rollup es #5183, todavia pendiente.
+#   - GitHub no lee estas declaraciones: `protect-main` corre con
+#     `require_code_owner_review: false`, asi que no pide ni exige aprobacion de
+#     code owner. No hay revisor asignado ni boton que destrabe.
+#   - Corolario operativo: agregar una entry a la allowlist del guardrail NO
+#     dispara ninguna aprobacion automatica. Se revisa a mano.
+#
+# Responsabilidad declarada (informativa, no bloqueante):
 #   /.github/       responsable: @leitolarreta
 #   /.pipeline/     responsable: @leitolarreta
 #
-#   Guardrail operational-state-lint (#5202 · CA-5 / SEC-1) — se declara
-#   path por path porque el binario y su allowlist son la frontera del
-#   guardrail: quien los edita puede bajarlo.
-#   /.pipeline/lib/operational-state-lint.js            responsable: @leitolarreta
-#   /.pipeline/lib/operational-state-lint.allowlist.json  responsable: @leitolarreta
-#   /.pipeline/lib/__tests__/operational-state-lint.test.js  responsable: @leitolarreta
+# Guardrail operational-state-lint (#5202):
+#   /.pipeline/lib/operational-state-lint.js               responsable: @leitolarreta
+#   /.pipeline/lib/operational-state-lint.allowlist.json    responsable: @leitolarreta
+#   /.pipeline/lib/__tests__/operational-state-lint.test.js responsable: @leitolarreta
+#   /.github/CODEOWNERS                                     responsable: @leitolarreta
 #
-# Si en el futuro aparece un caso que exija de verdad separacion entre
-# autor y aprobador, la salida correcta es una identidad de servicio
-# propia del pipeline — no reactivar una regla que solo se auto-bloquea.
+# La clasificacion semantica de #5986 distingue sin-mencion,
+# solo-comentarios y regla-activa. La politica vigente espera el modo
+# declarativo solo-comentarios (GATE_CODEOWNERS_ESPERADO=false).
+#
+# Si se exige separacion entre autor y aprobador, corresponde una identidad
+# de servicio propia del pipeline, no reactivar una regla auto-bloqueante.

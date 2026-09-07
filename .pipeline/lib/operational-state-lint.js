@@ -112,8 +112,8 @@
 //     un call site no se extiende sola a N. Se desambigua con `occurrence`
 //     EXPLÍCITO, nunca implícito.
 //   - `line` sobrevive como campo OPCIONAL e INDICATIVO (para el mensaje y para
-//     el review humano). NO participa del match: puede quedar desactualizado
-//     sin ninguna consecuencia, que es justamente el punto.
+//     la revisión manual de la entry). NO participa del match: puede quedar
+//     desactualizado sin ninguna consecuencia, que es justamente el punto.
 //
 // Comportamiento por modo ante un diagnóstico de ancla (CA-5 pide que esté
 // documentado): `--check` ⇒ **exit 2** — es un error de CONFIGURACIÓN del
@@ -520,7 +520,7 @@ function sanitizeReason(raw, where) {
     // Misma puerta que usan los sinks (`sanitizeForLog`) — un solo tratamiento.
     const clean = sanitizeForLog(raw);
     if (!clean) {
-        throw new LintConfigError(`${where}: "reason" vacía. Cada excepción necesita una justificación real — el review humano de @leitolarreta es sobre ESE texto.`);
+        throw new LintConfigError(`${where}: "reason" vacía. Cada excepción necesita una justificación real — la revisión manual de la entry es sobre ESE texto. Nadie la aprueba por vos: la política vigente (#5986, Opción A) es declarativa, sin gate de ownership, y el lint es ADVISORY (pendiente #5183).`);
     }
     if (clean.startsWith('::')) {
         throw new LintConfigError(`${where}: "reason" no puede empezar con "::" (workflow command de GitHub Actions — SEC-3)`);
@@ -557,7 +557,9 @@ const ANCHOR_UNSCANNED = 'archivo-no-escaneado';
  * NO puede ser uno de los placeholders que `sanitizeReason` rechaza (UX-2): si
  * el copy-paste de la remediación sale por exit 2, el dev aprende a no usarla.
  * Que se pueda pegar sin completar es deliberado — lo que atrapa una `reason`
- * sin contenido real es el review humano de CODEOWNERS, no un regex.
+ * sin contenido real es la revisión manual de la entry, no un regex. Ojo: esa
+ * revisión no la enforza nadie — la política vigente (#5986, Opción A) es
+ * declarativa, sin gate de ownership, y el lint es ADVISORY (pendiente #5183).
  */
 const ANCHOR_REASON_PLACEHOLDER = 'COMPLETAR: por que este acceso directo es legitimo, que alternativa del envoltorio se descarto, y cual es la version estructural (issue).';
 
@@ -716,11 +718,11 @@ function loadAllowlist(pipelineRoot) {
         if (anchorNormalized.includes('\n')) {
             throw new LintConfigError(`${where}: "anchor" debe ser UNA sola línea de código. Toda violation se reporta en una línea única, así que un ancla multilínea no puede identificar ninguna.`);
         }
-        // `line` sobrevive INDICATIVA (UX-3: el reviewer tiene que poder ubicar
+        // `line` sobrevive INDICATIVA (UX-3: quien revisa tiene que poder ubicar
         // el acceso sin salir del diff). No participa del match: que quede
         // desactualizada no rompe nada, y eso es exactamente el punto de #6106.
         if (entry.line !== undefined && (!Number.isInteger(entry.line) || entry.line < 1)) {
-            throw new LintConfigError(`${where}: "line" es OPCIONAL e INDICATIVA desde #6106 (sólo para el mensaje y el review), pero si está debe ser un entero >= 1 (recibido: ${JSON.stringify(entry.line)})`);
+            throw new LintConfigError(`${where}: "line" es OPCIONAL e INDICATIVA desde #6106 (sólo para el mensaje y para ubicar la entry a mano), pero si está debe ser un entero >= 1 (recibido: ${JSON.stringify(entry.line)})`);
         }
         if (entry.occurrence !== undefined && (!Number.isInteger(entry.occurrence) || entry.occurrence < 1)) {
             throw new LintConfigError(`${where}: "occurrence" es opcional (desambigua un ancla que matchea varias líneas) pero si está debe ser un entero >= 1 (recibido: ${JSON.stringify(entry.occurrence)})`);
@@ -1020,7 +1022,7 @@ function formatAnchorIssue(it) {
     const file = sanitizeForLog(it.entry.file);
     const hint = it.entry.line === undefined ? '' : ` (linea indicativa de la entry: ${sanitizeForLog(it.entry.line)})`;
     if (it.status === ANCHOR_STALE) {
-        return `${where}: excepcion obsoleta - el ancla no matchea ninguna linea de \`${file}\`${hint}. Dos causas, dos acciones: si el acceso SE BORRO (migrado al envoltorio), borra la entry; si el acceso CAMBIO, re-anclala con \`--anchor=${file}:<linea>\` y volve a pasar por el review de @leitolarreta - un ancla nueva es una autorizacion nueva.`;
+        return `${where}: excepcion obsoleta - el ancla no matchea ninguna linea de \`${file}\`${hint}. Dos causas, dos acciones: si el acceso SE BORRO (migrado al envoltorio), borra la entry; si el acceso CAMBIO, re-anclala con \`--anchor=${file}:<linea>\` y revisa la entry nueva a mano - un ancla nueva es una autorizacion nueva, y nadie la aprueba por vos: la politica vigente (#5986, Opcion A) es declarativa, sin gate de ownership, y el lint es ADVISORY (pendiente #5183).`;
     }
     if (it.status === ANCHOR_AMBIGUOUS) {
         return `${where}: ancla ambigua - matchea ${it.matches.length} lineas de \`${file}\` (${it.matches.join(', ')}) y NINGUNA queda exenta. Una exencion aprobada para un call site no se extiende sola a ${it.matches.length}: desambigua con \`"occurrence": <1..${it.matches.length}>\` explicito, o usa un ancla mas especifica.`;
@@ -1045,8 +1047,14 @@ function anchorRemediationLines() {
         '  diagnostico aca significa que el ancla dejo de identificar UN acceso concreto.',
         '  Para regenerar la entry con el ancla ya normalizada:',
         '    node .pipeline/lib/operational-state-lint.js --anchor=<archivo>:<linea>',
-        '  El review humano de @leitolarreta (CODEOWNERS) es sobre el ACCESO, no sobre la',
-        `  coordenada: re-anclar a un acceso distinto es una autorizacion nueva. Ver ${CONTRACT_DOC} §7.`,
+        '  La revision manual de la entry es sobre el ACCESO, no sobre la coordenada:',
+        '  re-anclar a un acceso distinto es una autorizacion nueva.',
+        '  `.github/CODEOWNERS` declara la responsabilidad sobre este archivo,',
+        '  pero la politica vigente (#5986, Opcion A) es declarativa y no activa',
+        '  un gate de ownership.',
+        '  `operational-state-lint` corre en `--check`, pero es ADVISORY: no esta',
+        '  en el rollup `pr-status` ni es required check de `main`, asi que puede',
+        `  quedar rojo sin frenar el merge (pendiente #5183). Revisa la entry a mano. Ver ${CONTRACT_DOC} §7.`,
     ];
 }
 
@@ -1084,11 +1092,17 @@ function remediationLines(rules) {
     if (out.length) {
         out.push('');
         out.push('  Si la excepcion es legitima: entry { file, anchor, reason } en');
-        out.push(`  \`.pipeline/${ALLOWLIST_REL}\` — requiere review humano de @leitolarreta (CODEOWNERS).`);
+        out.push(`  \`.pipeline/${ALLOWLIST_REL}\`.`);
         out.push('  El `anchor` es la LINEA DE CODIGO exenta, en claro: desde #6106 la exencion');
         out.push('  viaja con el acceso y no se transfiere a otro call site si el archivo deriva.');
         out.push('  NO la escribas a mano — genera la entry lista para pegar con:');
         out.push('    node .pipeline/lib/operational-state-lint.js --anchor=<archivo>:<linea>');
+        out.push('  `.github/CODEOWNERS` declara la responsabilidad sobre este archivo,');
+        out.push('  pero la politica vigente (#5986, Opcion A) es declarativa y no activa');
+        out.push('  un gate de ownership.');
+        out.push('  `operational-state-lint` corre en `--check`, pero es ADVISORY: no esta');
+        out.push('  en el rollup `pr-status` ni es required check de `main`, asi que puede');
+        out.push('  quedar rojo sin frenar el merge (pendiente #5183). Revisa la entry a mano.');
     }
     return out;
 }
@@ -1265,7 +1279,7 @@ function anchorEntryFor(pipelineRoot, spec) {
     for (let i = 0; i < srcLines.length; i++) {
         if (normalizeAnchor(srcLines[i]) === anchor) matches.push(i + 1);
     }
-    // Orden de claves deliberado: lo primero que lee el reviewer es QUÉ acceso
+    // Orden de claves deliberado: lo primero que lee quien revisa es QUÉ acceso
     // se autoriza (`anchor`), no dónde estaba (`line`, indicativa).
     const entry = { file: rel, anchor, line };
     // El ordinal se emite EXPLÍCITO, ya calculado: implícito sería el pecado que
@@ -1360,8 +1374,10 @@ function main(argv = process.argv.slice(2)) {
         // arranca con `{`, `}` o indentacion — nunca con `::`.
         const emit = oneLineSink(console.log);
         for (const l of JSON.stringify(built.entry, null, 2).split('\n')) emit(l);
-        logger.info(`pegala en \`.pipeline/${ALLOWLIST_REL}\` > "rules" y COMPLETA la "reason" (el review es sobre ESE texto).`);
-        logger.info('requiere review humano de @leitolarreta (CODEOWNERS): lo que se autoriza es el ACCESO, no la coordenada.');
+        logger.info(`pegala en \`.pipeline/${ALLOWLIST_REL}\` > "rules" y COMPLETA la "reason" (la revision manual de la entry es sobre ESE texto).`);
+        logger.info('lo que se autoriza es el ACCESO, no la coordenada: re-anclar a un acceso distinto es una autorizacion nueva.');
+        logger.info('`.github/CODEOWNERS` declara la responsabilidad sobre la allowlist, pero la politica vigente (#5986, Opcion A) es declarativa y no activa un gate de ownership.');
+        logger.info('`operational-state-lint` corre en `--check`, pero es ADVISORY: no esta en el rollup `pr-status` ni es required check de `main`, asi que puede quedar rojo sin frenar el merge (pendiente #5183). Revisa la entry a mano.');
         if (built.matches.length > 1) {
             logger.warn(`ojo: el ancla matchea ${built.matches.length} lineas (${built.matches.join(', ')}), por eso la entry lleva "occurrence". Si podes, usa un acceso mas especifico.`);
         }
