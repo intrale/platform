@@ -1,0 +1,149 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="960" viewBox="0 0 1440 960" font-family="Segoe UI, Inter, Helvetica Neue, Arial, sans-serif">
+  <title>#6192 — Aviso de GATE 1 en Telegram: hoy vs. ficha de decision con botones</title>
+  <desc>Columna izquierda: salida real del aviso de pulpo.js:6946, repetida en cada barrido. Columna derecha: ficha de tipo firma renderizada por decision-card.js con la botonera de operator-gate.js.</desc>
+
+  <defs>
+    <linearGradient id="marca" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#00D6FF"/>
+      <stop offset="1" stop-color="#1890FF"/>
+    </linearGradient>
+    <linearGradient id="chatbg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#161B22"/>
+      <stop offset="1" stop-color="#12171E"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1440" height="960" fill="#0D1117"/>
+
+  <!-- Encabezado -->
+  <rect x="0" y="0" width="1440" height="6" fill="url(#marca)"/>
+  <text x="48" y="62" fill="#E6EDF3" font-size="26" font-weight="700">#6192 · El aviso del gate de firma en Telegram</text>
+  <text x="48" y="90" fill="#8B949E" font-size="15">Izquierda: salida real de pulpo.js:6946 sobre HEAD 177ab2bf6. Derecha: ficha de tipo firma renderizada por decision-card.js + botonera de operator-gate.js:684.</text>
+
+  <!-- ============================== ANTES ============================== -->
+  <g>
+    <rect x="48" y="120" width="632" height="792" rx="14" fill="url(#chatbg)" stroke="#30363D"/>
+    <rect x="48" y="120" width="632" height="52" rx="14" fill="#1C2128"/>
+    <rect x="48" y="158" width="632" height="14" fill="#1C2128"/>
+    <circle cx="76" cy="146" r="11" fill="#30363D"/>
+    <text x="76" y="151" text-anchor="middle" fill="#8B949E" font-size="12" font-weight="700">IP</text>
+    <text x="98" y="151" fill="#E6EDF3" font-size="14" font-weight="600">Intrale Pipeline</text>
+    <rect x="556" y="134" width="104" height="24" rx="12" fill="rgba(248,81,73,0.14)" stroke="#F85149"/>
+    <text x="608" y="150" text-anchor="middle" fill="#F85149" font-size="11" font-weight="700">HOY</text>
+
+    <!-- burbuja 1 -->
+    <rect x="72" y="196" width="560" height="66" rx="12" fill="#1C2128" stroke="#30363D"/>
+    <text x="90" y="222" fill="#E6EDF3" font-size="13.5">🛑 #6192 GATE 1 (firma de definición) retuvo admisión a</text>
+    <text x="90" y="242" fill="#E6EDF3" font-size="13.5">desarrollo: sin firma del operador para la definición</text>
+    <text x="614" y="256" text-anchor="end" fill="#6E7681" font-size="10.5">09:12</text>
+
+    <!-- burbuja 2 -->
+    <rect x="72" y="276" width="560" height="66" rx="12" fill="#1C2128" stroke="#30363D"/>
+    <text x="90" y="302" fill="#E6EDF3" font-size="13.5">🛑 #6192 GATE 1 (firma de definición) retuvo admisión a</text>
+    <text x="90" y="322" fill="#E6EDF3" font-size="13.5">desarrollo: sin firma del operador para la definición</text>
+    <text x="614" y="336" text-anchor="end" fill="#6E7681" font-size="10.5">09:14</text>
+
+    <!-- burbuja 3 -->
+    <rect x="72" y="356" width="560" height="66" rx="12" fill="#1C2128" stroke="#30363D"/>
+    <text x="90" y="382" fill="#E6EDF3" font-size="13.5">🛑 #6192 GATE 1 (firma de definición) retuvo admisión a</text>
+    <text x="90" y="402" fill="#E6EDF3" font-size="13.5">desarrollo: sin firma del operador para la definición</text>
+    <text x="614" y="416" text-anchor="end" fill="#6E7681" font-size="10.5">09:16</text>
+
+    <text x="352" y="452" text-anchor="middle" fill="#6E7681" font-size="13" font-style="italic">…un mensaje idéntico por barrido, cada 2 minutos</text>
+
+    <!-- diagnostico -->
+    <rect x="72" y="482" width="560" height="404" rx="12" fill="rgba(248,81,73,0.07)" stroke="#F85149" stroke-opacity="0.5"/>
+    <text x="96" y="514" fill="#F85149" font-size="14" font-weight="700">Qué falla, leído desde el operador</text>
+
+    <circle cx="103" cy="546" r="4" fill="#F85149"/>
+    <text x="120" y="551" fill="#E6EDF3" font-size="13">No dice qué decisión hay que tomar. Informa una retención.</text>
+    <circle cx="103" cy="578" r="4" fill="#F85149"/>
+    <text x="120" y="583" fill="#E6EDF3" font-size="13">No dice desde cuándo está frenado ni qué título es.</text>
+    <circle cx="103" cy="610" r="4" fill="#F85149"/>
+    <text x="120" y="615" fill="#E6EDF3" font-size="13">No ofrece ninguna forma de decidir desde el propio aviso.</text>
+    <circle cx="103" cy="642" r="4" fill="#F85149"/>
+    <text x="120" y="647" fill="#E6EDF3" font-size="13">Se repite en cada barrido: el aviso se vuelve fondo de pantalla.</text>
+    <circle cx="103" cy="674" r="4" fill="#F85149"/>
+    <text x="120" y="679" fill="#E6EDF3" font-size="13">Habla en interno: «GATE 1», «firma de definición», «admisión».</text>
+    <circle cx="103" cy="706" r="4" fill="#F85149"/>
+    <text x="120" y="711" fill="#E6EDF3" font-size="13">Va con formato Markdown por defecto e interpola el motivo crudo:</text>
+    <text x="120" y="731" fill="#8B949E" font-size="13">un guion bajo o un asterisco en el motivo y el envío se pierde</text>
+    <text x="120" y="751" fill="#8B949E" font-size="13">entero, sin rastro (la regresión #5421).</text>
+
+    <rect x="96" y="778" width="512" height="84" rx="10" fill="#0D1117" stroke="#30363D"/>
+    <text x="116" y="804" fill="#8B949E" font-size="11.5" font-family="Consolas, monospace">$ grep -n "GATE 1" .pipeline/pulpo.js</text>
+    <text x="116" y="824" fill="#B1BAC4" font-size="11.5" font-family="Consolas, monospace">6927 / 6946 / 6960 — tres sendTelegram crudos</text>
+    <text x="116" y="844" fill="#B1BAC4" font-size="11.5" font-family="Consolas, monospace">sin guarda de "ya notificado", sin botones</text>
+  </g>
+
+  <!-- flecha -->
+  <g>
+    <line x1="700" y1="500" x2="748" y2="500" stroke="#484F58" stroke-width="2"/>
+    <path d="M748 494 L762 500 L748 506 Z" fill="#484F58"/>
+  </g>
+
+  <!-- ============================== DESPUES ============================== -->
+  <g>
+    <rect x="784" y="120" width="608" height="792" rx="14" fill="url(#chatbg)" stroke="#1F6FEB"/>
+    <rect x="784" y="120" width="608" height="52" rx="14" fill="#1C2128"/>
+    <rect x="784" y="158" width="608" height="14" fill="#1C2128"/>
+    <circle cx="812" cy="146" r="11" fill="url(#marca)"/>
+    <text x="812" y="151" text-anchor="middle" fill="#0A1C36" font-size="12" font-weight="700">IP</text>
+    <text x="834" y="151" fill="#E6EDF3" font-size="14" font-weight="600">Intrale Pipeline</text>
+    <rect x="1258" y="134" width="114" height="24" rx="12" fill="rgba(63,185,80,0.14)" stroke="#3FB950"/>
+    <text x="1315" y="150" text-anchor="middle" fill="#3FB950" font-size="11" font-weight="700">PROPUESTO</text>
+
+    <!-- ficha -->
+    <rect x="808" y="196" width="560" height="524" rx="12" fill="#1C2128" stroke="#30363D"/>
+
+    <text x="828" y="228" fill="#E6EDF3" font-size="15" font-weight="700">¿Aprobás el alcance de #6192 para que arranque</text>
+    <text x="828" y="250" fill="#E6EDF3" font-size="15" font-weight="700">el desarrollo?</text>
+
+    <text x="828" y="282" fill="#8B949E" font-size="13">Qué está frenado: <tspan fill="#E6EDF3">#6192 «Gate de firma: ficha de</tspan></text>
+    <text x="828" y="302" fill="#E6EDF3" font-size="13">decisión, botones autorizados y fin del aviso repetido»</text>
+    <text x="828" y="322" fill="#E6EDF3" font-size="13">— hace 20 h.</text>
+
+    <text x="828" y="352" fill="#8B949E" font-size="13">Por qué: <tspan fill="#E6EDF3">Está listo para arrancar, pero el alcance</tspan></text>
+    <text x="828" y="372" fill="#E6EDF3" font-size="13">necesita tu visto bueno antes.</text>
+
+    <text x="828" y="404" fill="#8B949E" font-size="13">Opciones:</text>
+
+    <text x="844" y="428" fill="#E6EDF3" font-size="13" font-weight="600">1. Aprobar el alcance</text>
+    <text x="866" y="448" fill="#B1BAC4" font-size="12.5">Qué pasa: Arranca el desarrollo con los criterios tal</text>
+    <text x="866" y="466" fill="#B1BAC4" font-size="12.5">como están.</text>
+
+    <text x="844" y="492" fill="#E6EDF3" font-size="13" font-weight="600">2. Rechazar</text>
+    <text x="866" y="512" fill="#B1BAC4" font-size="12.5">Qué pasa: No arranca. El alcance vuelve a replantearse</text>
+    <text x="866" y="530" fill="#B1BAC4" font-size="12.5">desde el principio.</text>
+
+    <text x="844" y="556" fill="#E6EDF3" font-size="13" font-weight="600">3. Ajustar los criterios</text>
+    <text x="866" y="576" fill="#B1BAC4" font-size="12.5">Qué pasa: No arranca todavía. Editás los criterios y el</text>
+    <text x="866" y="594" fill="#B1BAC4" font-size="12.5">pedido vuelve con el texto nuevo.</text>
+
+    <rect x="828" y="612" width="520" height="30" rx="8" fill="rgba(24,144,255,0.10)" stroke="#1F6FEB" stroke-opacity="0.6"/>
+    <text x="844" y="632" fill="#58A6FF" font-size="12.5" font-weight="600">No hay recomendación: la decisión es tuya.</text>
+
+    <text x="828" y="666" fill="#8B949E" font-size="12.5">Si no decidís: <tspan fill="#B1BAC4">Nada arranca. El trabajo queda listo pero</tspan></text>
+    <text x="828" y="684" fill="#B1BAC4" font-size="12.5">parado, y no se te vuelve a avisar hasta que cambie lo que</text>
+    <text x="828" y="702" fill="#B1BAC4" font-size="12.5">hay que firmar.</text>
+
+    <!-- botonera -->
+    <rect x="808" y="730" width="180" height="44" rx="8" fill="#21262D" stroke="#3FB950" stroke-opacity="0.55"/>
+    <text x="898" y="757" text-anchor="middle" fill="#E6EDF3" font-size="14" font-weight="600">✅ Aprobar</text>
+    <rect x="998" y="730" width="180" height="44" rx="8" fill="#21262D" stroke="#F85149" stroke-opacity="0.55"/>
+    <text x="1088" y="757" text-anchor="middle" fill="#E6EDF3" font-size="14" font-weight="600">❌ Rechazar</text>
+    <rect x="1188" y="730" width="180" height="44" rx="8" fill="#21262D" stroke="#D29922" stroke-opacity="0.55"/>
+    <text x="1278" y="757" text-anchor="middle" fill="#E6EDF3" font-size="14" font-weight="600">✏️ Ajustar</text>
+    <text x="1368" y="790" text-anchor="end" fill="#6E7681" font-size="10.5">09:12</text>
+
+    <!-- pie de destrabe -->
+    <text x="808" y="814" fill="#8B949E" font-size="12.5">Para decidir, respondé: <tspan fill="#58A6FF" font-family="Consolas, monospace">/unblock 6192 aprobar</tspan></text>
+
+    <!-- reglas -->
+    <rect x="808" y="832" width="560" height="56" rx="10" fill="rgba(63,185,80,0.07)" stroke="#3FB950" stroke-opacity="0.45"/>
+    <text x="828" y="856" fill="#3FB950" font-size="12.5" font-weight="700">Un solo mensaje mientras nada cambie.</text>
+    <text x="828" y="876" fill="#B1BAC4" font-size="12">Botón N ↔ opción N · sin recomendada · texto plano explícito.</text>
+  </g>
+
+  <text x="48" y="938" fill="#6E7681" font-size="11.5">Sistema visual: .pipeline/assets/design-tokens.css — cero color nuevo, cero ícono nuevo. Copy literal de decision-card.js (tipo firma).</text>
+</svg>
