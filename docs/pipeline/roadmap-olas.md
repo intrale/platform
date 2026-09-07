@@ -109,7 +109,7 @@ después hay que corregir.
 |-------|--------|-------------|--------|
 | ✅ | **Release firmado del kernel** (E1) | Sin release publicado, `consume:true` no tiene de dónde consumir. Raíz de todo. | **Hecho** — `v0.1.2` publicado y firmado |
 | **En curso** | **Ola 9.4 · Partir config + externalizar el estado operativo por proyecto** (épico #5107) | **Cuello de botella real.** Mientras el estado sea plano y global, dos proyectos se pisan: no hay multi-proyecto, no hay app operadora, no se puede encender el consumo en serio. Alcance ampliado por decisión del operador (28/07): incluye además el **encendido del store durable** y el **almacenamiento externo** del estado operativo. Cadena `#5108 → #5109 → #5110 → #5113`; **#5111** paralelo tras #5108; **#5112** totalmente paralelizable. | Abierta 28/07 — 6 hijos, #5108 y #5112 habilitados |
-| **1.º** | **Ola 9.3 · Partir skills híbridos** (E6) | Grande y la **más riesgosa**: el producto puede perder reglas propias (strings, flavors, gates de QA) sin que nadie lo note. Su red de contención, el guardrail anti-regresión **#5068**, ya está cerrada — la red existe. | Sin épico creado |
+| **1.º** | **Ola 9.3 · Partir skills híbridos** (E6) | Grande y la **más riesgosa**: el producto puede perder reglas propias (strings, flavors, gates de QA) sin que nadie lo note. Su red de contención, el guardrail anti-regresión **#5068**, ya está cerrada — la red existe. | **Épico #7027** creado 06/09 · **fuera** de la ola 9.4 |
 | **2.º** | **Red de seguridad del corte** (E3) + **launcher/updater externo** (E5) | Precondición del cutover: botón de pánico independiente, snapshot verificado, timeout de decisión y **simulacro verde obligatorio**. Sin ensayo, no hay corte. | Sin épico creado |
 | **3.º** | **Ola 9.5 · Cutover con freeze + observación** (E7) | Punto de no retorno. Ventana acotada y agendada, drenaje previo, motor local congelado como destino de rollback. | Sin épico creado |
 | **4.º** | **App operadora móvil** (E9) | Prueba de fuego del desacople: si el kernel no puede operar un proyecto que no es Intrale, el corte no terminó. **Depende dura de E2** (una app móvil no lee archivos locales). | Sin épico creado |
@@ -127,6 +127,69 @@ Aunque el número sugiera lo contrario:
 2. **9.3 sin guardrail es migrar sin red.** Su contención (#5068) es el último eslabón de la 9.2.
 3. **Riesgo asimétrico.** Un error en 9.4 se ve enseguida (algo no arranca). Un error en 9.3 es
    silencioso: una regla del producto se evapora y se descubre semanas después.
+
+---
+
+### 2.2 Reajuste del plan — 06/09/2026
+
+Registro del reajuste acordado con el operador al entrar la Ola 9.4 en su tramo final. **El orden
+canónico de §2 no cambia**; lo que se documenta acá es qué se ajustó alrededor de ese orden y por qué,
+para que no se pierda entre conversaciones.
+
+#### a) El épico del próximo bloque se crea *fuera* de la ola activa
+
+La Ola 9.3 ya tiene su épico paraguas: **#7027**. Se creó con `needs-definition` (**no** `Ready`) y
+**no** se agregó a `active_wave` de `waves.json` ni a la allowlist de dispatch.
+
+> **Regla operativa derivada (R6 aplicada al horizonte):** crear el épico del próximo bloque **no**
+> debe alterar el alcance de la ola en curso. El épico se crea, se refina y se parte con calma; recién
+> se habilita al abrir formalmente su ola, con el gate humano de **R7**. Un épico del horizonte
+> presente en la allowlist es un desvío de recursos de la ola activa, no un adelanto.
+
+Esto además protege contra el modo de falla ya visto (#4753, #5073): al cerrar una ola, la poda de la
+allowlist puede dejarla vacía, y **allowlist vacía significa "todo habilitado"**. Un épico del
+horizonte con `Ready` quedaría despachable sin que nadie lo decidiera. Con `needs-definition` no.
+
+#### b) Lo que quedó pendiente y sigue vivo: los gates de firma
+
+La ola de **Gates de firma del operador** (épico #4570) cerró el 12/07 con 21/21 entregados, pero los
+motores quedaron **construidos y apagados** — que es distinto de "no hechos":
+
+| Motor | Clave en `config.yaml` | Estado al 06/09 | Qué implica |
+|-------|------------------------|-----------------|-------------|
+| Escalera de autonomía / auto-aprobación de firma | `firma_operador.enabled` | `false` (`modo: dry-run`) | El gate hace cortocircuito ⇒ **siempre firma humana**. Es el default seguro, pero la calibración nunca arranca. |
+| Gate de coherencia de ola (cross-issue) | `wave_coherence_gate.enabled` | `false` | El gate es **inerte**: no corre el paso de cierre de ola. |
+| GATE 2 · firma de aceptación humana por issue | — | Modelo previsto, **no enforzado** | Descrito en `CLAUDE.md` y en [`gates-firma-operador.md`](gates-firma-operador.md) §11–§13. |
+
+El rollout de ambos está documentado en sus propios bloques de `config.yaml` y es gradual
+(`enabled: false` → `dry-run` observando el audit → `enforce`). **Ninguno se enciende de oficio:**
+encender un gate es una decisión del operador, no un efecto colateral de otra ola.
+
+#### c) El backlog acumulado durante la 9.4 es insumo del próximo reajuste, no un desvío
+
+Al 06/09 hay **400 issues abiertos**, de los cuales **261 son recomendaciones de agentes** con
+`needs:triage-backlog` (mayoritariamente `priority:low`; salidas de `/review`, `/security`, `/po`,
+`/ux` y `/guru` durante la ola). No se planifican de a uno: entran por triaje, y la priorización
+proactiva a partir de la telemetría es justamente lo que pide **#6809** (auditor).
+
+Fuera de ese volumen, lo surgido en la 9.4 que **sí** tiene entidad propia queda anotado acá para no
+perderse:
+
+- **#7008** — proteger `main` con status checks obligatorios (`priority:high`). Causa raíz de que
+  `main` se rompiera tres veces en un día: no hay branch protection y cualquier merge integra en rojo.
+- **#7019** — intake por ola: consultar a GitHub sólo los issues de la allowlist (`priority:high`).
+- **#7025** — el brazo de huérfanos rebota agentes vivos que cerraron con `exit_code 0` (`priority:high`).
+- **#6996** — el marker de dependencias no valida la autoría del comentario; en un repo público
+  cualquiera puede reescribir el grafo del pipeline (`priority:high`).
+- **#6987** / **#6890** — higiene de credenciales AWS (account-id commiteado, access keys de root).
+- **#6929** / **#6931** — guardián de disco ciego y `qa/evidence` trackeado en git.
+- **#5055** — reconciliación automática del registro contra GitHub (**R1**), todavía manual.
+
+#### d) Qué NO cambió
+
+- El **orden canónico de §2** sigue en pie: 9.4 (en curso) → 9.3 → E3+E5 → 9.5 → E9.
+- Las **reglas R1–R8** siguen vigentes sin excepción.
+- El **gate humano entre olas (R7)** sigue siendo la única forma de abrir la 9.3.
 
 ---
 
