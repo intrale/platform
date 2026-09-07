@@ -1091,8 +1091,10 @@ function remediationLines(rules) {
         out.push('    node .pipeline/lib/operational-state-lint.js --anchor=<archivo>:<linea>');
         out.push('  `.github/CODEOWNERS` declara la responsabilidad sobre este archivo,');
         out.push('  pero la politica vigente (#5986, Opcion A) es declarativa y no activa');
-        out.push('  un gate de ownership. El cambio se valida mediante los controles');
-        out.push('  automaticos requeridos del PR, incluido operational-state-lint.');
+        out.push('  un gate de ownership.');
+        out.push('  `operational-state-lint` corre en `--check`, pero es ADVISORY: no esta');
+        out.push('  en el rollup `pr-status` ni es required check de `main`, asi que puede');
+        out.push('  quedar rojo sin frenar el merge (pendiente #5183). Revisa la entry a mano.');
     }
     return out;
 }

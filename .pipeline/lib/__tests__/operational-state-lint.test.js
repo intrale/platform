@@ -1346,6 +1346,14 @@ test('CA-8/CA-UX-1 · el _doc de la allowlist describe la politica declarativa v
     assert.match(doc, /declarativ/i);
     assert.match(doc, /sin reglas activas/i);
     assert.equal(classifyGuardrailCodeowners(readRealCodeowners()), 'solo-comentarios');
+
+    // #5986 (rebote ux) · el _doc es la otra superficie que lee el operador
+    // justo cuando va a agregar una exencion. Prometer ahi un control requerido
+    // que no existe lo induce a NO revisar a mano — el mismo patron de
+    // afirmacion inerte que este issue vino a cerrar (CA-8 / CA-10 / R6).
+    assert.doesNotMatch(doc, /requerid/i, 'el _doc no puede prometer un control REQUERIDO inexistente');
+    assert.match(doc, /advisory/i, 'el _doc debe decir que el lint es advisory');
+    assert.match(doc, /#5183/, 'debe apuntar al issue que activaria el enforcement real');
 });
 
 test('CA-UX-1/CA-UX-2 · el bloque de remediacion no promete un gate CODEOWNERS inexistente', () => {
@@ -1358,6 +1366,21 @@ test('CA-UX-1/CA-UX-2 · el bloque de remediacion no promete un gate CODEOWNERS 
     assert.match(bloque, /declarativ/i);
     assert.match(bloque, /no activa/i);
     assert.doesNotMatch(bloque, /needs-human|owner humano|NO auto-mergea/i);
+
+    // #5986 (rebote ux) · la promesa falsa de CODEOWNERS no puede reemplazarse por
+    // una promesa falsa NUEVA. Verificado contra la API de GitHub: el unico
+    // required check de `main` (ruleset main-required-checks) es el rollup
+    // `pr-status`, y `operational-state-lint` NO esta entre sus `needs` en
+    // pr-checks.yml — corre en su propio workflow, o sea ADVISORY. Se mide sobre
+    // la SALIDA RENDERIZADA, que es lo que el operador lee en el STEP_SUMMARY.
+    const render = I.remediationLines(new Set(['path-level', 'internal-bypass'])).join('\n');
+    assert.doesNotMatch(
+        render,
+        /requerid/i,
+        'no se puede prometer un control REQUERIDO: el lint es advisory (ver #5183)',
+    );
+    assert.match(render, /advisory/i, 'el bloque debe decir donde NO vive el enforcement');
+    assert.match(render, /#5183/, 'debe apuntar al issue que activaria el enforcement real');
 });
 
 test('CA-10/CA-UX-3 · el header fija la politica declarativa sin reglas activas', () => {
