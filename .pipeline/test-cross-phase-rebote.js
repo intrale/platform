@@ -12,10 +12,37 @@
 // validado por observación real en el próximo ciclo de #2505 post-merge.
 // =============================================================================
 
+// #6259 (P1) — Hermeticidad: `PULPO_NO_AUTOSTART` es variable de CONTROL DE
+// SEGURIDAD y tiene que estar seteada ANTES del `require('./pulpo.js')`, asi que
+// no se puede envolver con `withEnv` (el helper rechaza habilitarla, por diseno).
+// Patron P1: `snapshotEnv` con nombres EXPLICITOS (SEC-1) + restauracion.
+const { snapshotEnv, restoreEnv } = require('./lib/test-helpers/with-env');
+
+function enableWorktreeDependencies() {
+  try { require.resolve('js-yaml'); return; } catch (_) { /* worktree sin node_modules */ }
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const gitFile = fs.readFileSync(path.join(__dirname, '..', '.git'), 'utf8').trim();
+  const gitDir = path.resolve(path.join(__dirname, '..'), gitFile.replace(/^gitdir:\s*/, ''));
+  process.env.NODE_PATH = path.join(gitDir, '..', '..', '..', 'node_modules');
+  require('node:module').Module._initPaths();
+}
+
+const __envSnap = snapshotEnv(['PULPO_NO_AUTOSTART', 'NODE_PATH']);
+enableWorktreeDependencies();
+
+// SEC-2 — piso de restauracion: `process.on('exit')` corre tambien ante
+// `process.exit(N)` y excepcion no capturada; `after()` de node:test no.
+process.on('exit', () => restoreEnv(__envSnap));
+
 process.env.PULPO_NO_AUTOSTART = '1';
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const pulpo = require('./pulpo.js');
+
+// D-6259-8 — restauracion inmediata: el flag ya cumplio su unica funcion (gatear
+// el import). Los tests corren con el control ENCENDIDO. Idempotente con el hook.
+restoreEnv(__envSnap);
 
 const CONFIG_FAKE = {
   pipelines: {

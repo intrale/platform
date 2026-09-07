@@ -1,0 +1,9 @@
+archivo = C:\Users\ADMINI~1\AppData\Local\Temp\qa6459-89VkR6/logs/commander-dispatch-2026-08-25.jsonl | existe = true
+lineas  = 3
+verifyChain (posicional) = {"ok":true,"entriesChecked":3}
+tras appendear una entry LEGACY sin los campos nuevos:
+verifyChain = {"ok":true,"entriesChecked":4}
+tras appendear una entry NUEVA despues de la legacy:
+verifyChain = {"ok":true,"entriesChecked":5}
+  entry: {"commander_req_id":"deadbeefcafe-1787000000000","delivery_state":"delivery_observed"}
+  entry: {"commander_req_id":"deadbeefcafe-1787000000001","success":false,"error_code":"delivered=false","delivery_state":"delivery_failed"}

@@ -50,6 +50,8 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { redactSecretValue, redactSensitive, redactObject } = require('./redact');
+// #6226 - escritura fail-closed con reintento para los dropfiles de la cola.
+const dropfileWriter = require('./dropfile-writer');
 
 const PIPELINE_DIR_DEFAULT = path.join(__dirname, '..');
 
@@ -294,9 +296,24 @@ function notifyTelegram(payload) {
     };
     if (destination.chatId != null) drop.chat_id = destination.chatId;
 
+    // #6226 - el `wx` ya evitaba SOBREESCRIBIR, pero sin reintento: dos alertas
+    // del mismo componente en el mismo milisegundo terminaban en EEXIST y la
+    // segunda se DESCARTABA (`write_failed`). CA-3 pide reintentar con otro
+    // nombre y dejar registro, no perder el aviso. `writeUniqueFileSync`
+    // conserva el nombre EXACTO en el camino feliz -- importa, porque
+    // `servicio-telegram.js` parsea el prefijo (`startsWith('alert-svc-telegram')`)
+    // -- y solo ante colision real desambigua con `-<n>` antes de la extension.
     try {
-        fs.writeFileSync(dropPath, JSON.stringify(drop, null, 2), { mode: 0o600, flag: 'wx' });
-        return { ok: true, dropPath };
+        const escrito = dropfileWriter.writeUniqueFileSync({
+            dir,
+            filename,
+            data: JSON.stringify(drop, null, 2),
+            mode: 0o600,
+            onCollision: (name, attempt) => console.warn(
+                `[notify-telegram] colision de nombre de aviso (${name}, intento ${attempt + 1}) - se reintenta, no se descarta`
+            ),
+        });
+        return { ok: true, dropPath: escrito.filePath };
     } catch (err) {
         console.warn(`[notify-telegram] no se pudo escribir ${dropPath}: ${err.message}`);
         return { ok: false, reason: 'write_failed' };

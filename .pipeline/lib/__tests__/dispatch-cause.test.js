@@ -48,6 +48,8 @@ const TABLA_GATES = [
     [CAUSAS.HALT_HUMANO, 'Detenido por humano'],
     [CAUSAS.CB_INFRA, 'Circuit breaker de infraestructura'],
     [CAUSAS.PRESION_RECURSOS, 'Presión de recursos'],
+    // #6708 — guardián de disco en rojo: frena build/verificacion.
+    [CAUSAS.DISCO_LLENO, 'Sin espacio en disco'],
     [CAUSAS.VENTANA_HORARIA, 'Fuera de ventana horaria'],
     [CAUSAS.REST_MODE, 'Modo descanso'],
     [CAUSAS.COOLDOWN, 'En cooldown'],
@@ -68,8 +70,8 @@ for (const [causa, labelEsperado] of TABLA_GATES) {
     });
 }
 
-test('los 10 gates conocidos están cubiertos por la precedencia', () => {
-    assert.strictEqual(dc.PRECEDENCIA.length, 10);
+test('los 11 gates conocidos están cubiertos por la precedencia', () => {
+    assert.strictEqual(dc.PRECEDENCIA.length, 11);
     for (const [causa] of TABLA_GATES) {
         assert.ok(dc.PRECEDENCIA.includes(causa), `PRECEDENCIA debe incluir ${causa}`);
     }

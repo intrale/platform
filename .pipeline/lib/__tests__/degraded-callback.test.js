@@ -134,12 +134,24 @@ test('#5923 sin _repoRoot el handler es fail-closed con toast, nunca throw', asy
 
 test('#5923 pp: no destructivo ejecuta, avisa el resultado concreto y retira el teclado', async () => {
     const calls = installFakeTgApi();
-    const requests = installFakeFetch(() => ({ status: 200, body: { ok: true, msg: 'Allowlist actualizado: 5923, 5924.' } }));
+    // #6118 — El endpoint responde AMBOS textos: `msg` para el dashboard y
+    // `operatorMsg` para Telegram. El handler tiene que elegir el segundo.
+    const requests = installFakeFetch(() => ({
+        status: 200,
+        body: {
+            ok: true,
+            msg: 'Allowlist actualizado: 5923, 5924.',
+            operatorMsg: 'Listo: #5924 quedó habilitado en esta ola. #5923 ya puede avanzar.',
+        },
+    }));
     try {
+        // Acción histórica: los mensajes anteriores a #6118 siguen en el chat con
+        // `pp:include-deps`. El alias la normaliza y la manda al endpoint acotado
+        // en vez de dejar el botón muerto.
         await handler.handleDegradedActionCallback('pp:include-deps:5923', 'cbq-4', MESSAGE, OPERADOR);
 
         assert.equal(requests.length, 1);
-        assert.equal(requests[0].url, 'http://127.0.0.1:3200/api/partial-pause/include-deps',
+        assert.equal(requests[0].url, 'http://127.0.0.1:3200/api/partial-pause/include-deps-for-issue',
             'el destino sale del mapa congelado, nunca de interpolar el action');
         assert.equal(requests[0].opts.method, 'POST');
         assert.equal(requests[0].opts.headers['Content-Type'], 'application/json');
@@ -150,13 +162,22 @@ test('#5923 pp: no destructivo ejecuta, avisa el resultado concreto y retira el 
         const sent = JSON.parse(requests[0].opts.body);
         assert.equal(sent.authorizedBy, 'telegram:operator', 'origen registrado en el enum, no un valor inventado');
         assert.equal(sent.operatorRef, '111222333', 'el operador real viaja para la trazabilidad fina');
+        // #6118 — El issue viaja en el body. Antes se parseaba y se descartaba,
+        // así que el servidor no podía saber sobre cuál de los issues alertados
+        // se apretó el botón y toda acción terminaba siendo de alcance global.
+        assert.equal(sent.issue, '5923', 'el issue de la alerta llega al servidor');
         const audit = require('../partial-pause-audit');
         assert.equal(audit.validateAuthorizedBy(sent.authorizedBy).valid, true,
             'lo que se manda tiene que pasar el validador REAL, no sólo un fake');
 
         const toast = toastOf(calls);
         assert.ok(toast.params.text.length > 0, 'nunca un ack vacío');
-        assert.match(toast.params.text, /Allowlist actualizado/, 'feedback CONCRETO del resultado');
+        // #6118 CA-7 — el toast usa `operatorMsg`, no el `msg` interno: el
+        // operador de Telegram lee sobre el issue y su dependencia, no sobre el
+        // vocabulario del dashboard.
+        assert.match(toast.params.text, /#5923 ya puede avanzar/, 'feedback CONCRETO del resultado');
+        assert.doesNotMatch(toast.params.text, /allowlist/i,
+            'la jerga interna del dashboard no puede filtrarse a Telegram');
 
         const edit = editOf(calls);
         assert.ok(edit, 'deja constancia en el mensaje');
@@ -206,7 +227,11 @@ test('#5923 R-SEC-9.a sin from.id es fail-closed: cero requests, cero audit, toa
     // Cada acción privilegiada del canal, con cada forma de "no hay identidad".
     // El `0` entra a propósito: no hay usuario de Telegram con id 0, así que
     // tratarlo como identidad válida sería aceptar un valor centinela.
-    for (const cbData of ['pp:include-deps:5923', 'pp:c:cancel-partial-pause', 'hb:unblock:5923', 'hb:c:devolver-definicion:5923']) {
+    // #6118 — la lista sigue a los botones vigentes: silenciar también es
+    // privilegiado (deja de avisar sobre un issue trabado), así que sin
+    // identidad tampoco puede correr.
+    for (const cbData of ['pp:include-deps-for-issue:5923', 'pp:mute-alert:5923', 'pp:keep-original:5923',
+                          'hb:unblock:5923', 'hb:c:devolver-definicion:5923']) {
         for (const sinId of [undefined, null, '', 0, '   ', 'undefined']) {
             clearAudit();
             const calls = installFakeTgApi();
@@ -264,35 +289,49 @@ test('#5923 R-SEC-9.b devolver-definicion (descarta trabajo) también queda asen
 
 // ─── Doble tap de las acciones destructivas (CA-17 / CA-UX-1..3) ─────────────
 
-test('#5923 pp:cancel-partial-pause NO ejecuta al primer tap: pide confirmación', async () => {
-    const calls = installFakeTgApi();
+// #6118 CA-6 — El botón de alcance global se retiró. No alcanzaba con sacarlo
+// del teclado que emite el Pulpo: el `callback_data` no tiene nonce ni TTL y los
+// mensajes viven para siempre en el chat. Este test cubre el escenario Gherkin
+// "un tap sobre un mensaje viejo no cambia el alcance global".
+test('#6118 CA-6 pp:cancel-partial-pause de un mensaje histórico ya NO resuelve', async () => {
     const requests = installFakeFetch();
     try {
-        await handler.handleDegradedActionCallback('pp:cancel-partial-pause', 'cbq-8', MESSAGE, OPERADOR);
-        assert.equal(requests.length, 0, 'un tap solo no puede liberar todo el backlog');
+        for (const cbData of ['pp:cancel-partial-pause', 'pp:c:cancel-partial-pause', 'pp:cancel-partial-pause:5923']) {
+            const calls = installFakeTgApi();
+            const handled = await handler.handleDegradedActionCallback(cbData, 'cbq-8', MESSAGE, OPERADOR);
 
-        const toast = toastOf(calls);
-        assert.equal(toast.params.show_alert, true, 'modal, no un toast que se pierde');
-        assert.match(toast.params.text, /TODO el backlog/, 'la consecuencia literal, no un genérico');
-
-        const kb = editOf(calls).params.reply_markup.inline_keyboard[0];
-        assert.equal(kb.length, 2);
-        assert.match(kb[0].text, /^⚠️ Sí,/, 'confirmar a la izquierda');
-        assert.equal(kb[0].callback_data, 'pp:c:cancel-partial-pause');
-        assert.match(kb[1].text, /Cancelar/);
-        assert.equal(kb[1].callback_data, 'pp:x:cancel-partial-pause');
-        assert.match(editOf(calls).params.text, /TODO el backlog/, 'la consecuencia queda escrita en el mensaje');
+            assert.equal(handled, true, 'el namespace sigue siendo nuestro: no cae al fail-safe del listener');
+            assert.equal(requests.length, 0, `${cbData} no puede generar ningún request saliente`);
+            assert.match(toastOf(calls).params.text, /no reconocida|ya no disponible/i,
+                'el operador se entera de que ese botón ya no existe');
+            assert.equal(editOf(calls), undefined, 'no se toca el mensaje');
+        }
     } finally { requests.restore(); }
+});
+
+// El doble tap sigue existiendo como mecanismo; lo que ya no hay es una acción
+// `pp:` de alto impacto que lo dispare (silenciar y habilitar deps no son
+// destructivos). La cobertura del mecanismo vive en el test de
+// `hb:devolver-definicion`, que sí descarta trabajo.
+test('#6118 ninguna acción de la alerta de dependencias exige doble tap', () => {
+    for (const [action, meta] of Object.entries(handler.PP_META)) {
+        assert.equal(meta.highImpact, false,
+            `${action} no muta el alcance global: pedir confirmación sería fricción sin motivo`);
+    }
 });
 
 test('#5923 el 2do tap (pp:c:) sí ejecuta', async () => {
     const calls = installFakeTgApi();
-    const requests = installFakeFetch(() => ({ status: 200, body: { ok: true, msg: 'Pausa parcial levantada.' } }));
+    const requests = installFakeFetch(() => ({
+        status: 200,
+        body: { ok: true, msg: 'Se mantiene el allowlist actual (2 issues).',
+                operatorMsg: '#5923 va a seguir avanzando sin esperar a #6032. El riesgo queda asumido.' },
+    }));
     try {
-        await handler.handleDegradedActionCallback('pp:c:cancel-partial-pause', 'cbq-9', MESSAGE, OPERADOR);
+        await handler.handleDegradedActionCallback('pp:c:keep-original:5923', 'cbq-9', MESSAGE, OPERADOR);
         assert.equal(requests.length, 1);
-        assert.equal(requests[0].url, 'http://127.0.0.1:3200/api/partial-pause/cancel-partial-pause');
-        assert.match(toastOf(calls).params.text, /levantada/);
+        assert.equal(requests[0].url, 'http://127.0.0.1:3200/api/partial-pause/keep-original');
+        assert.match(toastOf(calls).params.text, /sin esperar a #6032/);
         assert.deepEqual(editOf(calls).params.reply_markup, { inline_keyboard: [] });
     } finally { requests.restore(); }
 });
@@ -303,9 +342,9 @@ test('#5923 cancelar la confirmación (pp:x:) restaura el teclado original y no 
     try {
         const confirmado = {
             ...MESSAGE,
-            text: MESSAGE.text + '\n\n⚠️ Vas a levantar la pausa parcial: el pipeline vuelve a tomar TODO el backlog, no sólo el allowlist actual.',
+            text: MESSAGE.text + '\n\n⚠️ Vas a dejar que el issue avance sin esperar a sus dependencias, asumiendo el riesgo.',
         };
-        await handler.handleDegradedActionCallback('pp:x:cancel-partial-pause', 'cbq-10', confirmado, OPERADOR);
+        await handler.handleDegradedActionCallback('pp:x:keep-original:5923', 'cbq-10', confirmado, OPERADOR);
 
         assert.equal(requests.length, 0);
         assert.match(toastOf(calls).params.text, /Cancelado/);
@@ -313,8 +352,30 @@ test('#5923 cancelar la confirmación (pp:x:) restaura el teclado original y no 
         assert.equal(edit.params.text, MESSAGE.text, 'restaura el texto original, sin el bloque de confirmación');
         const kb = edit.params.reply_markup.inline_keyboard.flat();
         assert.deepEqual(kb.map(b => b.callback_data),
-            ['pp:include-deps', 'pp:keep-original', 'pp:cancel-partial-pause'],
-            'CA-UX-3: cancelar RESTAURA el teclado, no lo retira');
+            ['pp:include-deps-for-issue:5923', 'pp:keep-original:5923', 'pp:mute-alert:5923'],
+            'CA-UX-3: cancelar RESTAURA el teclado, no lo retira — ya sin el botón de alcance global');
+    } finally { requests.restore(); }
+});
+
+// #6118 — Blinda la falla silenciosa: si `_degradedOriginalKeyboard` tira, el
+// `try/catch` devuelve `null` y el operador lee "no se pudo restaurar el
+// teclado" sin que ningún test se entere. Sacar una acción de `PP_META` sin
+// tocar el rearmado producía exactamente eso (un `undefined.text`).
+test('#6118 el rearmado del teclado pp: devuelve 3 filas de 1 botón, nunca null', async () => {
+    const calls = installFakeTgApi();
+    const requests = installFakeFetch();
+    try {
+        await handler.handleDegradedActionCallback('pp:x:keep-original:6033', 'cbq-kb', MESSAGE, OPERADOR);
+        const rows = editOf(calls).params.reply_markup.inline_keyboard;
+        assert.ok(Array.isArray(rows) && rows.length === 3, 'tres filas, no un teclado vacío ni null');
+        for (const row of rows) {
+            assert.equal(row.length, 1, 'un botón por fila: dos de ~30 chars se truncan con … en el celular');
+            assert.ok(Buffer.byteLength(row[0].callback_data, 'utf8') <= 64, 'entra en el límite de la Bot API');
+            assert.ok(row[0].text.length > 0);
+        }
+        const textos = rows.flat().map(b => b.text).join(' | ');
+        assert.doesNotMatch(textos, /pausa parcial|allowlist|dispatch/i,
+            'CA-1: el teclado rearmado tampoco puede traer jerga de vuelta');
     } finally { requests.restore(); }
 });
 
@@ -339,15 +400,38 @@ test('#5923 hb: no destructivo NO pide confirmación (un tap y listo)', async ()
 
 // ─── Contrato del mapa de rutas ──────────────────────────────────────────────
 
-test('#5923 PP_ROUTES está congelado y cubre exactamente los 3 botones emitidos', () => {
+test('#6118 PP_ROUTES está congelado y cubre exactamente los 3 botones emitidos', () => {
     assert.ok(Object.isFrozen(handler.PP_ROUTES));
     assert.deepEqual(Object.keys(handler.PP_ROUTES).sort(),
-        ['cancel-partial-pause', 'include-deps', 'keep-original']);
+        ['include-deps-for-issue', 'keep-original', 'mute-alert']);
     for (const [action, route] of Object.entries(handler.PP_ROUTES)) {
         assert.equal(route, `/api/partial-pause/${action}`);
     }
     // Ningún botón se entrega sin rama: todo lo que emite el pulpo está mapeado.
     assert.deepEqual(Object.keys(handler.PP_META).sort(), Object.keys(handler.PP_ROUTES).sort());
+});
+
+test('#6118 los `consequence` de PP_META están libres de jerga interna (CA-1, 4ta superficie)', () => {
+    // Son texto VISIBLE: van al modal de confirmación y quedan escritos en el
+    // mensaje editado. Los tres de antes concentraban los tres términos.
+    for (const [action, meta] of Object.entries(handler.PP_META)) {
+        for (const texto of [meta.text, meta.consequence]) {
+            assert.doesNotMatch(texto, /pausa parcial|allowlist|dispatch|cooldown|\bdeps\b/i,
+                `${action}: "${texto}" expone vocabulario interno al operador`);
+        }
+    }
+});
+
+test('#6118 `pp:` sigue siendo namespace privilegiado y el botón nuevo matchea', () => {
+    // Sin `COMMANDER_NAMESPACES` el callback cae en `operator-gate` y el botón
+    // nace muerto; con él pero sin `PRIVILEGED_NAMESPACES`, cualquiera del chat
+    // podría silenciar la alerta. Por eso se reusa `pp:` y no un prefijo nuevo.
+    // Se usan los helpers REALES de membresía, no una reimplementación del
+    // matcheo: si mañana cambia la regla de prefijos, el test la sigue.
+    for (const data of ['pp:mute-alert:6033', 'pp:include-deps-for-issue:6033', 'pp:keep-original:6033']) {
+        assert.ok(handler.isCommanderNamespace(data), `${data} tiene que rutear al commander`);
+        assert.ok(handler.isPrivilegedNamespace(data), `${data} exige authz por from.id`);
+    }
 });
 
 test('#5923 los 4 botones de human-block tienen ejecución en el handler', () => {

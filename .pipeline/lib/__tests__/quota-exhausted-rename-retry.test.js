@@ -68,6 +68,38 @@ test('el budget de retry tolera mas de un solo reintento bajo contencion sosteni
     );
 });
 
+// #6612 — REGRESION DEL REBOTE. El test de arriba caia de forma intermitente en
+// la corrida completa (15124 tests, 837 archivos en 2 batches): fallo 1 vez con
+// "Got unwanted exception: stub EBUSY" tardando 527ms, y en aislamiento pasaba
+// siempre. Causa raiz: el budget tenia DOS techos, 6 intentos y 400ms, pero el
+// de 400ms se medía contra el reloj de PARED. Con la maquina cargada, el tiempo
+// que la maquina tardaba en atender cada intento consumia el techo de ms y el
+// retry se rendia con 4 o 5 intentos gastados en vez de 6.
+//
+// Era un defecto de produccion, no solo del test: el budget se achicaba solo
+// justo bajo contencion, que es el unico escenario para el que existe (#5400).
+//
+// Este test fija el contrato con la contencion HECHA EXPLICITA (lag inyectado
+// en el propio syscall) en vez de depender de que la maquina este cargada: es
+// determinístico y falla contra la implementacion vieja.
+test('#6612 el budget de intentos NO se lo come la lentitud de la maquina', (t) => {
+    let calls = 0;
+    withRenameStub(t, () => {
+        calls++;
+        // Cada intento tarda 60ms: exactamente lo que hacia que el techo de
+        // pared (400ms) se agotara antes que los 6 intentos.
+        const fin = Date.now() + 60;
+        while (Date.now() < fin) { /* contencion simulada */ }
+        if (calls < RENAME_RETRY_MAX_ATTEMPTS) throw errWithCode('EBUSY');
+    });
+
+    assert.doesNotThrow(
+        () => renameWithRetry('/tmp/x.tmp', '/tmp/x.json'),
+        'bajo carga el retry tiene que gastar sus 6 intentos, no rendirse antes'
+    );
+    assert.equal(calls, RENAME_RETRY_MAX_ATTEMPTS);
+});
+
 test('EACCES se trata como transitorio: es la carrera mas comun de Windows', (t) => {
     assert.ok(RENAME_RETRYABLE_ERRORS.has('EACCES'), 'EACCES debe ser retriable');
     assert.ok(RENAME_RETRYABLE_ERRORS.has('EPERM'), 'EPERM debe ser retriable');

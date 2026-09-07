@@ -87,9 +87,18 @@ test('#5421 — payload ilegible cae al default histórico, no rompe el envío',
 // escribe el productor, en vez de afirmar sobre un objeto inventado a mano.
 // -----------------------------------------------------------------------------
 
-/** Réplica del armado de payload de `pulpo.js::sendTelegramWithMarkup`. */
+/**
+ * Réplica del armado de payload de `pulpo.js::sendTelegramWithMarkup`.
+ *
+ * Que sea una réplica es deuda conocida: el test de guarda del final del
+ * archivo (#6190) la afirma contra el fuente real, así que si producción cambia
+ * y esto no, falla acá en vez de en Telegram.
+ */
 function payloadDePulpo(msg, { plain, parseMode = 'Markdown' }) {
-    return plain ? { text: msg, plain: true } : { text: msg, parse_mode: parseMode };
+    const payload = plain ? { text: msg, plain: true } : { text: msg, parse_mode: parseMode };
+    // #6190 / SEC-D — sin vista previa en los salientes de texto plano.
+    if (plain) payload.disable_web_page_preview = true;
+    return payload;
 }
 
 test('#5421 — INTEGRACIÓN: el aviso crítico de pulpo llega a Telegram sin parse_mode', () => {
@@ -172,4 +181,76 @@ test('#5421 — alcanza con que UN archivo del grupo traiga metadata para consol
     const sinMeta = avisoDePulpo('b.json', 1500, 'otro');
     const out = burstGrouper.formatConsolidatedMessage({ key: 'k', files: [conMeta, sinMeta] });
     assert.ok(out, 'el grupo declara un tipo conocido: es una ráfaga legítima');
+});
+
+// -----------------------------------------------------------------------------
+// 4) #6190 / SEC-D — el saliente de texto plano va SIN vista previa
+//
+// Complemento defensivo del filtro de enlaces de `decision-card.js`: el aviso
+// del canal de bloqueados cita texto que escribió un tercero (el repo es
+// público), y la vista previa es una segunda superficie por la que el contenido
+// de ese tercero se dibuja adentro del mensaje del pipeline.
+//
+// Vale la misma advertencia que en el módulo: esto NO reemplaza al filtro. Si
+// estos tests pasaran y el filtro estuviera roto, el enlace seguiría llegando
+// tappable — quien protege es `URL_RE` (ver `decision-card.test.js`, SEC-D).
+// -----------------------------------------------------------------------------
+
+test('#6190 — `disable_web_page_preview:true` sobrevive el cruce de proceso', () => {
+    assert.equal(svc.resolveOutboundPreview({ text: 'x', disable_web_page_preview: true }), true);
+});
+
+test('#6190 — default cerrado: sin el campo, el saliente conserva la vista previa', () => {
+    assert.equal(svc.resolveOutboundPreview({ text: 'x' }), false);
+    assert.equal(svc.resolveOutboundPreview({ text: 'x', disable_web_page_preview: false }), false);
+});
+
+test('#6190 — sólo el booleano `true` desactiva la previa (default cerrado sobre el tipo)', () => {
+    for (const raro of ['true', 1, {}, [], 'plain']) {
+        assert.equal(
+            svc.resolveOutboundPreview({ text: 'x', disable_web_page_preview: raro }),
+            false,
+            `disable_web_page_preview=${JSON.stringify(raro)} no debe contar como declaración`,
+        );
+    }
+});
+
+test('#6190 — payload ilegible no rompe el envío', () => {
+    assert.equal(svc.resolveOutboundPreview(null), false);
+    assert.equal(svc.resolveOutboundPreview(undefined), false);
+    assert.equal(svc.resolveOutboundPreview('no soy un objeto'), false);
+});
+
+test('#6190 — INTEGRACIÓN: el aviso plano de pulpo pide explícitamente sin previa', () => {
+    // Mismo recorrido que el test de `plain`: payload del productor → JSON →
+    // consumidor. El bug de #5421 vivía justo en ese cruce.
+    const dropfile = payloadDePulpo('🚧 #6190 «enlace omitido» esperando tu decisión', { plain: true });
+    const recibido = JSON.parse(JSON.stringify(dropfile));
+    assert.equal(svc.resolveOutboundParseMode(recibido), null);
+    assert.equal(svc.resolveOutboundPreview(recibido), true,
+        'el saliente de texto plano debe viajar con disable_web_page_preview');
+});
+
+test('#6190 — un saliente con formato (no plano) conserva su vista previa', () => {
+    // La previa sólo se apaga donde se cita texto externo. Un reporte con
+    // Markdown que el pipeline arma entero no pierde nada por tenerla.
+    const recibido = JSON.parse(JSON.stringify(payloadDePulpo('*reporte*', { plain: false })));
+    assert.equal(svc.resolveOutboundPreview(recibido), false);
+});
+
+test('#6190 — GUARDA: la réplica de payload de este test no divergió de pulpo.js', () => {
+    // `payloadDePulpo` es una RÉPLICA del armado real. Una réplica que diverge
+    // deja los dos tests de integración de arriba verdes mientras producción
+    // manda otra cosa — que es exactamente la clase de fallo que se rechazó dos
+    // veces en este issue (una tabla/secuencia duplicada que se separó del
+    // original). Se afirma contra el fuente real de `pulpo.js`.
+    const pulpoSrc = fs.readFileSync(path.join(__dirname, '..', '..', 'pulpo.js'), 'utf8');
+    assert.ok(
+        /if \(plain\) payload\.disable_web_page_preview = true;/.test(pulpoSrc),
+        'pulpo.js ya no marca los salientes planos como sin-previa: la réplica de este test quedó desactualizada',
+    );
+    assert.ok(
+        /const payload = plain \? \{ text: msg, plain: true \}/.test(pulpoSrc),
+        'cambió el armado de payload de pulpo.js: actualizar `payloadDePulpo`',
+    );
 });

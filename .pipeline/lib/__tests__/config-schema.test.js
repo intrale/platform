@@ -72,6 +72,20 @@ test('config válido pasa la validación', () => {
     assert.deepStrictEqual(errors, []);
 });
 
+test('#6347 delivery acepta un techo positivo para la espera de checks', () => {
+    const cfg = validConfig();
+    cfg.delivery = { merge_checks_timeout_ms: 360000 };
+    assert.strictEqual(validateConfig(cfg).valid, true);
+});
+
+test('#6347 delivery rechaza techos no positivos y claves desconocidas', () => {
+    for (const delivery of [{ merge_checks_timeout_ms: 0 }, { otra: 1 }]) {
+        const cfg = validConfig();
+        cfg.delivery = delivery;
+        assert.strictEqual(validateConfig(cfg).valid, false);
+    }
+});
+
 test('#5419 worktree_provenance acepta una lista de committers', () => {
     const cfg = validConfig();
     cfg.worktree_provenance = { committers: ['backend-dev-agent@intrale'] };

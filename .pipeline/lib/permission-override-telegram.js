@@ -15,6 +15,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+const dropfileWriter = require('./dropfile-writer');
 
 const OPENING_VERBS = [
     'Override de permisos creado',
@@ -88,10 +89,15 @@ function enqueueTelegramNotification({ payload, pipelineRoot, fsImpl } = {}) {
     if (!_fs.existsSync(svcDir)) {
         _fs.mkdirSync(svcDir, { recursive: true });
     }
-    const filename = `${Date.now()}-permission-override.json`;
-    const fullPath = path.join(svcDir, filename);
-    _fs.writeFileSync(fullPath, JSON.stringify(payload), 'utf8');
-    return fullPath;
+    // #6226 — nombre único + escritura `wx`: dos dropfiles del mismo
+    // milisegundo ya no se pisan entre sí ni pisan los de otro proceso.
+    const { filePath } = dropfileWriter.writeDropfileSync({
+        dir: svcDir,
+        suffix: 'permission-override.json',
+        data: JSON.stringify(payload),
+        fsImpl: _fs,
+    });
+    return filePath;
 }
 
 /**

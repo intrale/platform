@@ -15,6 +15,10 @@ El pipeline de seguridad estático (SAST) analiza el código fuente y sus depend
 **Configuración:**
 - Plugin Gradle: `org.owasp.dependencycheck:12.2.0`
 - `failBuildOnCVSS = 11.0` → nunca falla (CVSS máximo es 10.0)
+- La variable `NVD_API_KEY`, cuando existe y no está vacía, se conecta a `dependencyCheck.nvd.apiKey` sin imprimirse ni persistirse.
+- La credencial se declara en `jobs.dependency-check.env`, **no** en el `env:` de un step: el bloque `env:` de un step no está en scope para el `if:` de ese mismo step, así que declararla ahí haría que la condición leyera un contexto indefinido y se cumpliera siempre. Ese alcance de job es lo que permite consultar la *presencia* del secret desde un `if:` (el contexto `secrets` no está disponible en condiciones).
+- La detección es **por presencia, nunca por valor**: sólo se compara `env.NVD_API_KEY` contra cadena vacía. No se usan `contains(...)`, prefijos, longitud ni hash, que convertirían el chequeo en un oráculo sobre el secret.
+- La base NVD usa caches renovables `nvd-data-v2-<run_id>` y sólo restaura entradas del prefijo `nvd-data-v2-`; no recupera la cache `v1` histórica.
 - Genera reportes en el directorio por defecto de Gradle
 
 **Task Gradle:**
@@ -112,6 +116,36 @@ Si un archivo tiene un falso positivo, agregar un comentario en línea:
 | `NVD_API_KEY` | API key de NVD para evitar rate limiting en OWASP DC | GitHub Secrets |
 
 > Sin `NVD_API_KEY`, el scan puede ser más lento o fallar por rate limiting de NVD. Para obtener una key gratuita: https://nvd.nist.gov/developers/request-an-api-key
+
+### Alta manual de `NVD_API_KEY`
+
+> **Bloqueo humano explícito: [#6391](https://github.com/intrale/platform/issues/6391)** (`needs-human`, OPEN).
+> El secret **no está aprovisionado**: `gh secret list` sólo devuelve los cinco secrets de Firebase.
+> El alta y la medición de las tres corridas consecutivas viven en #6391, no en #6362.
+> Hasta que #6391 cierre, el job corre por la rama de credencial ausente y lo declara en el summary.
+
+El secret todavía requiere una acción humana porque NVD confirma el alta por correo:
+
+1. Solicitar una API key en https://nvd.nist.gov/developers/request-an-api-key y completar la confirmación recibida por correo.
+2. Cargarla sin imprimirla: `gh secret set NVD_API_KEY --repo intrale/platform` y pegar el valor cuando `gh` lo solicite.
+3. Comprobar únicamente su presencia con `gh secret list --repo intrale/platform`; el comando debe listar `NVD_API_KEY`.
+
+### Estado de la credencial en el summary del workflow
+
+El job declara el estado de la credencial en **ambas** ramas, nunca en silencio y nunca interpolando el valor:
+
+| Situación | Línea en `$GITHUB_STEP_SUMMARY` |
+|-----------|---------------------------------|
+| Secret ausente (`env.NVD_API_KEY == ''`) | `Estado de credencial: API key del NVD no disponible.` + aviso de mayor duración por rate limit anónimo |
+| Secret presente (`env.NVD_API_KEY != ''`) | `Estado de credencial: API key del NVD disponible.` |
+
+El encabezado `## OWASP Dependency Check` lo emite un step **sin `if:`** ubicado **antes** de ambas ramas: `$GITHUB_STEP_SUMMARY` es append-only en orden de ejecución, así que un encabezado dentro de un step condicional dejaría huérfanas las líneas `Estado del reporte: …` cuando esa rama no corre.
+
+Los pull requests desde forks no reciben secrets. En ese caso el workflow continúa en modo warning, informa que la API key no está disponible y anticipa la mayor duración, sin mostrar el valor. El reporte consolidado diferencia estos estados textuales:
+
+- `scan válido`: la task terminó correctamente y existe un reporte OWASP.
+- `scan fallido`: la task terminó con error; que el modo warning no bloquee el merge no significa que el scanner haya funcionado.
+- `reporte ausente`: la task no dejó un reporte verificable y no se interpreta como ausencia de vulnerabilidades.
 
 ## Próximas iteraciones
 

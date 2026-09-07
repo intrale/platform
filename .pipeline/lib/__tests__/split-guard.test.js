@@ -610,3 +610,64 @@ test('CA-2: un plan de 3 partes con 2 indistinguibles se rechaza (no solo si TOD
     assert.ok(r.errors.some((e) => /indistinguibles/.test(e)), r.errors.join(' | '));
     assert.ok(r.errors.some((e) => /partes 1 y 2/.test(e)), 'el error dice CUALES partes chocan');
 });
+
+// =============================================================================
+// SG-6 (#6801) — parseSplitRegistroHijas: leer la relación explícita padre→hijas
+//
+// El registro del split YA escribia la linea `- **Sub-historias**: #a, #b` en el
+// body del padre, pero nadie la leia. El brazo de desbloqueo decidia "esto es un
+// paraguas" con el label `split` —que llevan padre E hijas— y cerraba usando las
+// DEPENDENCIAS como si fueran hijas.
+// =============================================================================
+
+test('#6801 parseSplitRegistroHijas lee las sub-historias del registro', () => {
+    const body = sg.upsertSplitRegistro('Body original del padre.\n', {
+        criterio: 'por capa',
+        justificacionN: 'Dos partes.',
+        hijas: [5797, 5798],
+    });
+    assert.deepStrictEqual(sg.parseSplitRegistroHijas(body), [5797, 5798]);
+});
+
+test('#6801 parseSplitRegistroHijas devuelve null cuando no se puede determinar', () => {
+    // Sin registro.
+    assert.strictEqual(sg.parseSplitRegistroHijas('Un body cualquiera.'), null);
+    // Registro sin la linea de sub-historias (split declarado sin hijas creadas).
+    assert.strictEqual(
+        sg.parseSplitRegistroHijas('## Registro del split\n\n- **N elegido**: 3\n'),
+        null,
+    );
+    // Linea presente pero sin ningun #N legible.
+    assert.strictEqual(
+        sg.parseSplitRegistroHijas('## Registro del split\n- **Sub-historias**: por definir\n'),
+        null,
+    );
+    // Entradas basura.
+    for (const basura of [null, undefined, 42, '', '   ']) {
+        assert.strictEqual(sg.parseSplitRegistroHijas(basura), null);
+    }
+});
+
+test('#6801 parseSplitRegistroHijas ignora un registro dentro de un bloque de codigo', () => {
+    const body = [
+        'Asi se ve el registro:',
+        '',
+        '```markdown',
+        '## Registro del split',
+        '- **Sub-historias**: #111, #222',
+        '```',
+        '',
+    ].join('\n');
+    assert.strictEqual(
+        sg.parseSplitRegistroHijas(body),
+        null,
+        'un ejemplo documentado no es la relacion real del padre',
+    );
+});
+
+test('#6801 parseSplitRegistroHijas tolera variantes de escritura y deduplica', () => {
+    assert.deepStrictEqual(
+        sg.parseSplitRegistroHijas('## Registro del split\n* Sub historias: #10 y #11, #10\n'),
+        [10, 11],
+    );
+});

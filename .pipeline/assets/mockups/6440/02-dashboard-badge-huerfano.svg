@@ -1,0 +1,172 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Mockup 02 - Dashboard: el quinto badge de resultado, `huerfano` (#6440)
+  =============================================================================
+  Demuestra:
+    - EL SET COMPLETO (panel A): los cuatro badges vigentes de result-badge.js
+      mas el nuevo. A tamano real (0.72 em, que es como se ve en el panel de
+      conversaciones) y ampliado, para verificar que el glifo se distingue.
+    - EL PROBLEMA QUE CIERRA (paneles B y C): hoy un pedido cuya respuesta se
+      perdio se ve EXACTAMENTE igual que un log viejo sin metadata - las dos
+      filas quedan sin badge. Ese es el sintoma que el issue quiere eliminar:
+      si el dashboard no lo distingue, nadie lo puede auditar despues.
+    - POR QUE NO ES ROJO (panel D): un pedido con respuesta perdida NO fallo.
+      Se ejecuto entero. Pintarlo de var(danger) le haria leer al operador "fallo"
+      donde dice "se hizo y no te enteraste" - el malentendido opuesto al que
+      el issue viene a cerrar. Rosa-rojo de var(alert-anomaly), ya declarado en la
+      paleta como distinguible del danger puro.
+    - LOS TOKENS Y EL CONTRASTE (panel D): valores medidos, no estimados.
+
+  Copy normativo:  .pipeline/assets/copy/orphan-turn/copy.json -> dashboard.badge
+  Criterios:       .pipeline/assets/mockups/6440/ux-criterios-6440.md
+  Paleta:          .pipeline/assets/design-tokens.css -> var(result-huerfano)
+  Superficie:      .pipeline/lib/commander/result-badge.js (RESULT_BADGES)
+                   .pipeline/lib/commander/request-classify.js (RESULTADOS)
+                   .pipeline/dashboard.js (.cmd-result-*)
+
+  Asset estatico: sin codigo activo, sin manejadores de eventos, sin recursos externos.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="830" viewBox="0 0 1280 830" role="img"
+     aria-label="Mockup del badge huerfano en el dashboard para el issue 6440">
+  <title>#6440 - Badge `huerfano` en el dashboard</title>
+  <desc>Muestra los cinco badges de resultado del Commander, el contraste entre una fila sin badge
+        y una fila con el badge nuevo, y los tokens de color con sus ratios de contraste medidos.</desc>
+
+  <defs>
+    <style>
+      .sans  { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+      .mono  { font-family: "SF Mono", Consolas, "Liberation Mono", Menlo, Monaco, monospace; }
+      .h1    { font-size: 25px; font-weight: 700; fill: #E6EDF3; }
+      .sub   { font-size: 13px; fill: #7D8590; }
+      .panel-t { font-size: 12px; font-weight: 700; letter-spacing: 0.1em; }
+      .row   { font-size: 13px; fill: #E6EDF3; }
+      .row-dim { font-size: 12px; fill: #7D8590; }
+      .small { font-size: 11.5px; fill: #B1BAC4; }
+      .tiny  { font-size: 10.5px; fill: #7D8590; }
+      .note  { font-size: 11.5px; fill: #7D8590; font-style: italic; }
+      .badge-s { font-size: 9.4px; font-weight: 600; }
+      .badge-l { font-size: 19px; font-weight: 600; }
+    </style>
+  </defs>
+
+  <rect width="1280" height="830" fill="#0D1117"/>
+
+  <!-- ================= HEADER ================= -->
+  <text class="sans h1" x="40" y="50">#6440 · El quinto resultado: <tspan fill="#FF6B8A">huérfano</tspan></text>
+  <text class="sans sub" x="40" y="74">Un pedido que se ejecutó y cuya respuesta nunca se confirmó como entregada. Sin badge propio es indistinguible de un log viejo sin metadata.</text>
+  <rect x="40" y="88" width="1200" height="1" fill="#30363D"/>
+
+  <!-- ================= PANEL A · EL SET COMPLETO ================= -->
+  <rect x="40" y="110" width="1200" height="196" rx="10" fill="#161B22" stroke="#30363D"/>
+  <text class="sans panel-t" x="64" y="140" fill="#7D8590">EL SET COMPLETO DE RESULTADOS · tamaño real (0,72 em) y ampliado</text>
+
+  <!-- fila de badges ampliados -->
+  <!-- ok -->
+  <rect x="64" y="162" width="112" height="34" rx="7" fill="rgba(63,185,80,0.14)" stroke="#196C2E"/>
+  <text class="sans badge-l" x="120" y="185" text-anchor="middle" fill="#3FB950">✓ ok</text>
+  <!-- ajustada -->
+  <rect x="200" y="162" width="150" height="34" rx="7" fill="rgba(210,153,34,0.14)" stroke="#9E6A03"/>
+  <text class="sans badge-l" x="275" y="185" text-anchor="middle" fill="#D29922">✎ ajustada</text>
+  <!-- fallback -->
+  <rect x="374" y="162" width="150" height="34" rx="7" fill="rgba(88,166,255,0.14)" stroke="#1F6FEB"/>
+  <text class="sans badge-l" x="449" y="185" text-anchor="middle" fill="#58A6FF">↪ fallback</text>
+  <!-- error -->
+  <rect x="548" y="162" width="122" height="34" rx="7" fill="rgba(248,81,73,0.14)" stroke="#8B1A14"/>
+  <text class="sans badge-l" x="609" y="185" text-anchor="middle" fill="#F85149">✗ error</text>
+  <!-- huerfano (nuevo) -->
+  <rect x="694" y="158" width="160" height="42" rx="8" fill="rgba(255,107,138,0.16)" stroke="#B8254A" stroke-width="1.5"/>
+  <text class="sans badge-l" x="774" y="185" text-anchor="middle" fill="#FF6B8A">∅ huérfano</text>
+  <text class="sans tiny" x="774" y="216" text-anchor="middle" fill="#FF6B8A">NUEVO</text>
+
+  <!-- separador -->
+  <rect x="890" y="150" width="1" height="130" fill="#30363D"/>
+
+  <text class="sans small" x="918" y="168">A tamaño real, como se ve en la fila:</text>
+  <rect x="918" y="180" width="46" height="16" rx="5" fill="rgba(63,185,80,0.14)" stroke="#196C2E"/>
+  <text class="sans badge-s" x="941" y="191" text-anchor="middle" fill="#3FB950">✓ ok</text>
+  <rect x="972" y="180" width="66" height="16" rx="5" fill="rgba(210,153,34,0.14)" stroke="#9E6A03"/>
+  <text class="sans badge-s" x="1005" y="191" text-anchor="middle" fill="#D29922">✎ ajustada</text>
+  <rect x="1046" y="180" width="64" height="16" rx="5" fill="rgba(88,166,255,0.14)" stroke="#1F6FEB"/>
+  <text class="sans badge-s" x="1078" y="191" text-anchor="middle" fill="#58A6FF">↪ fallback</text>
+  <rect x="1118" y="180" width="50" height="16" rx="5" fill="rgba(248,81,73,0.14)" stroke="#8B1A14"/>
+  <text class="sans badge-s" x="1143" y="191" text-anchor="middle" fill="#F85149">✗ error</text>
+  <rect x="1176" y="180" width="64" height="16" rx="5" fill="rgba(255,107,138,0.16)" stroke="#B8254A"/>
+  <text class="sans badge-s" x="1208" y="191" text-anchor="middle" fill="#FF6B8A">∅ huérfano</text>
+
+  <text class="sans note" x="918" y="222">El conjunto vacío dice literalmente lo que pasó: no llegó nada.</text>
+  <text class="sans note" x="918" y="240">No se confunde con ✓ ✎ ↪ ✗ ni a 9 px, que es el tamaño real.</text>
+
+  <text class="sans small" x="64" y="244" fill="#B1BAC4">Tooltip: <tspan fill="#E6EDF3">“Se ejecutó, pero su respuesta nunca se confirmó como entregada”</tspan></text>
+  <text class="sans small" x="64" y="266">Enum <tspan class="mono" fill="#E6EDF3">huerfano</tspan> (sin tilde — el enum es cerrado) · clase <tspan class="mono" fill="#E6EDF3">cmd-result-huerfano</tspan></text>
+  <text class="sans note" x="64" y="290">El enum y el badge se agregan en el mismo cambio: un valor de enum sin badge deja la fila muda otra vez.</text>
+
+  <!-- ================= PANEL B · HOY ================= -->
+  <rect x="40" y="326" width="590" height="248" rx="10" fill="#161B22" stroke="#30363D"/>
+  <text class="sans panel-t" x="64" y="356" fill="#F85149">HOY · las dos filas se ven igual</text>
+
+  <rect x="64" y="374" width="542" height="46" rx="7" fill="#0D1117" stroke="#30363D"/>
+  <text class="sans row" x="82" y="394">“cerrá #5978 y #6116, y partí #6423 en dos”</text>
+  <text class="sans row-dim mono" x="82" y="411">6529617704-1787574376808 · 24/08 09:26</text>
+  <text class="sans tiny" x="588" y="400" text-anchor="end" fill="#7D8590">(sin badge)</text>
+
+  <rect x="64" y="430" width="542" height="46" rx="7" fill="#0D1117" stroke="#30363D"/>
+  <text class="sans row" x="82" y="450">“cómo viene la ola”</text>
+  <text class="sans row-dim mono" x="82" y="467">6529617704-1785201883114 · 11/07 18:44</text>
+  <text class="sans tiny" x="588" y="456" text-anchor="end" fill="#7D8590">(sin badge)</text>
+
+  <text class="sans small" x="64" y="502">La primera se ejecutó y su respuesta se perdió.</text>
+  <text class="sans small" x="64" y="522">La segunda es un log viejo, anterior al sidecar de metadata.</text>
+  <text class="sans note" x="64" y="548">Indistinguibles. Si el dashboard no las separa, la pérdida no se puede auditar después.</text>
+
+  <!-- ================= PANEL C · CON EL BADGE ================= -->
+  <rect x="650" y="326" width="590" height="248" rx="10" fill="#161B22" stroke="#30363D"/>
+  <text class="sans panel-t" x="674" y="356" fill="#3FB950">CON EL BADGE · se separan de un vistazo</text>
+
+  <rect x="674" y="374" width="542" height="46" rx="7" fill="#0D1117" stroke="rgba(255,107,138,0.28)"/>
+  <rect x="674" y="374" width="3" height="46" rx="1.5" fill="#FF6B8A"/>
+  <text class="sans row" x="692" y="394">“cerrá #5978 y #6116, y partí #6423 en dos”</text>
+  <text class="sans row-dim mono" x="692" y="411">6529617704-1787574376808 · 24/08 09:26</text>
+  <rect x="1128" y="386" width="64" height="16" rx="5" fill="rgba(255,107,138,0.16)" stroke="#B8254A"/>
+  <text class="sans badge-s" x="1160" y="397" text-anchor="middle" fill="#FF6B8A">∅ huérfano</text>
+
+  <rect x="674" y="430" width="542" height="46" rx="7" fill="#0D1117" stroke="#30363D"/>
+  <text class="sans row" x="692" y="450">“cómo viene la ola”</text>
+  <text class="sans row-dim mono" x="692" y="467">6529617704-1785201883114 · 11/07 18:44</text>
+  <text class="sans tiny" x="1198" y="456" text-anchor="end" fill="#7D8590">(sin badge)</text>
+
+  <text class="sans small" x="674" y="502">La fila sin badge vuelve a significar una sola cosa: no hay dato.</text>
+  <text class="sans small" x="674" y="522">Y el estado nuevo se lee sin abrir nada.</text>
+  <text class="sans note" x="674" y="548">Los logs previos al cambio no se re-etiquetan: son fuente de baja confianza, no evidencia.</text>
+
+  <!-- ================= PANEL D · TOKENS Y CONTRASTE ================= -->
+  <rect x="40" y="594" width="1200" height="180" rx="10" fill="#161B22" stroke="#30363D"/>
+  <text class="sans panel-t" x="64" y="624" fill="#7D8590">TOKENS Y CONTRASTE · medidos, no estimados</text>
+
+  <text class="sans small mono" x="64" y="652" fill="#E6EDF3">--result-huerfano</text>
+  <text class="sans small mono" x="240" y="652">var(--alert-anomaly)  #FF6B8A</text>
+  <text class="sans small" x="470" y="652">glifo y etiqueta</text>
+  <text class="sans small" x="620" y="652" fill="#3FB950">6,96:1 sobre surface-0 — AA</text>
+
+  <text class="sans small mono" x="64" y="674" fill="#E6EDF3">--result-huerfano-bg</text>
+  <text class="sans small mono" x="240" y="674">var(--alert-anomaly-bg)  α 0,16</text>
+  <text class="sans small" x="470" y="674">fondo del badge</text>
+  <text class="sans small" x="620" y="674" fill="#3FB950">5,62:1 texto sobre fondo — AA</text>
+
+  <text class="sans small mono" x="64" y="696" fill="#E6EDF3">--result-huerfano-dim</text>
+  <text class="sans small mono" x="240" y="696">var(--alert-anomaly-dim)  #B8254A</text>
+  <text class="sans small" x="470" y="696">borde</text>
+  <text class="sans small" x="620" y="696" fill="#7D8590">referencia: `error` rinde 5,65:1</text>
+
+  <rect x="890" y="614" width="1" height="140" fill="#30363D"/>
+  <text class="sans panel-t" x="918" y="624" fill="#FF6B8A">POR QUÉ NO ES ROJO</text>
+  <text class="sans small" x="918" y="650">El pedido no falló: se ejecutó entero.</text>
+  <text class="sans small" x="918" y="670">Lo que se perdió fue la respuesta.</text>
+  <text class="sans small" x="918" y="694">Pintarlo de <tspan class="mono" fill="#F85149">--danger</tspan> haría leer “falló”</text>
+  <text class="sans small" x="918" y="712">donde dice “se hizo y no te enteraste”:</text>
+  <text class="sans small" x="918" y="730" fill="#FF6B8A">el malentendido opuesto al del issue.</text>
+
+  <text class="sans note" x="64" y="726">El color no reusa --danger a propósito. La distinción entre “falló” y “se hizo y no te enteraste” es la historia entera.</text>
+  <text class="sans note" x="64" y="748">Ambos ratios se calcularon sobre el fondo compuesto real (#341F29), no sobre el color plano.</text>
+
+  <text class="sans tiny" x="40" y="806">UX · fase definicion/criterios · issue #6440 — tokens en design-tokens.css, badge en result-badge.js, enum en request-classify.js</text>
+</svg>

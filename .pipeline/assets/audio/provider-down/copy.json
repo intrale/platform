@@ -1,0 +1,43 @@
+{
+  "_comment": "UX #6144 — copy canónico del aviso de cadena de IA caída. Fuente de verdad del texto (Telegram) y del guion hablado (TTS + clips pregrabados). Voz: perfil 'need-human' (es-AR-ElenaNeural, +0%, +0Hz). NO editar sin pasar por UX.",
+  "reglas": {
+    "texto_max_chars": 600,
+    "voz_max_chars": 600,
+    "slash_en_texto": "PERMITIDO sólo para la allowlist de comandos determinísticos (/status, /listado, /lanzar). Cualquier otro '/' es fuga de ruta.",
+    "slash_en_voz": "PROHIBIDO. El guion hablado nunca contiene '/', '\\', '.js' ni emojis.",
+    "hora": "Sólo la causa 'reposo' lleva hora exacta, y sólo en el texto y en el guion dinámico. Los clips pregrabados NUNCA llevan hora."
+  },
+  "texto": {
+    "bloque_sigue": "El pipeline y los agentes siguen trabajando: las tareas en curso no se frenan. Los comandos /status, /listado y /lanzar responden normalmente.",
+    "bloque_pedido": "Tu mensaje no quedó encolado: repetilo cuando vuelva el servicio.",
+    "causas": {
+      "reposo": {
+        "titular": "⚠️ La respuesta con IA está pausada por horario.",
+        "recuperacion": "Se reanuda a las {HH:MM}."
+      },
+      "cuota": {
+        "titular": "⚠️ Se agotó el cupo de uso.",
+        "recuperacion": "Se reintenta solo, pero no tengo una hora confiable para darte."
+      },
+      "transitoria": {
+        "titular": "⚠️ Hay una caída temporal del servicio.",
+        "recuperacion": "Se reintenta solo, pero no tengo una hora confiable para darte."
+      },
+      "auth": {
+        "titular": "⚠️ Hay un problema de acceso que necesita tu intervención.",
+        "recuperacion": "Esto no se resuelve solo: hace falta que revises el acceso."
+      },
+      "generico": {
+        "titular": "⚠️ Ahora mismo no puedo responderte con IA.",
+        "recuperacion": "Se reintenta solo. Todavía no puedo confirmarte el motivo."
+      }
+    }
+  },
+  "voz_clip": {
+    "reposo": "Aviso del sistema. La respuesta con inteligencia artificial está pausada por horario. El pipeline y los agentes siguen trabajando, y los comandos de estado siguen respondiendo. Tu mensaje no quedó encolado: repetilo cuando vuelva el servicio. La hora de reanudación está en el mensaje de texto.",
+    "cuota": "Aviso del sistema. Se agotó el cupo de uso, así que por ahora no puedo responderte con inteligencia artificial. El pipeline y los agentes siguen trabajando, y los comandos de estado siguen respondiendo. Tu mensaje no quedó encolado: repetilo cuando vuelva el servicio. Se reintenta solo, pero no tengo una hora confiable para darte.",
+    "transitoria": "Aviso del sistema. Hay una caída temporal del servicio, así que por ahora no puedo responderte con inteligencia artificial. El pipeline y los agentes siguen trabajando, y los comandos de estado siguen respondiendo. Tu mensaje no quedó encolado: repetilo cuando vuelva el servicio. Se reintenta solo, pero no tengo una hora confiable para darte.",
+    "auth": "Aviso del sistema. Hay un problema de acceso que necesita tu intervención, y por eso no puedo responderte con inteligencia artificial. El pipeline y los agentes siguen trabajando, y los comandos de estado siguen respondiendo. Tu mensaje no quedó encolado. Esto no se resuelve solo: hace falta que revises el acceso.",
+    "generico": "Aviso del sistema. Ahora mismo no puedo responderte con inteligencia artificial y todavía no puedo confirmarte el motivo. El pipeline y los agentes siguen trabajando, y los comandos de estado siguen respondiendo. Tu mensaje no quedó encolado: repetilo cuando vuelva el servicio."
+  }
+}

@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// #6812 — Windows: suprimir la ventana de consola de cada hijo (gh, git,
+// tasklist, powershell). Debe ir ANTES de cualquier require que spawnee.
+require('./lib/force-windows-hide').apply();
 // outbox-drain.js — Mini-servicio standalone que drena el outbox de Telegram
 // Se auto-mata si detecta que el Pulpo está corriendo (él ya drena)
 // Se levanta automáticamente desde context-cli al unirse a un canal telegram

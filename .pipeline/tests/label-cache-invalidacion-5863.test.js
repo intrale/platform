@@ -334,13 +334,31 @@ test('CA-R4 la rama AUSENTE reconcilia el marker por la ruta de destrabe existen
     'debe conservar el bloque de reconciliación de #5863 con su manejo de error');
 
   const bloque = src.slice(ausente, finReconciliacion);
-  assert.match(bloque, /humanBlock\.findBlockedMarker\(/,
-    'debe buscar el marker previo antes de decidir qué hacer con él');
-  assert.match(bloque, /humanBlock\.unblockIssue\(/,
-    'debe reusar la ruta de destrabe existente, no reimplementarla');
+  // #6448 CA-25 — la reconciliación dejó de ser inline y de tomar UN solo
+  // marker: se mudó a `humanBlock.reconcileBlockedMarkers()`, que barre TODOS
+  // los markers del issue. El motivo es un defecto real: con dos bloqueos vivos
+  // sobre la misma causa (2026-08-24), `findBlockedMarker()` reconciliaba el
+  // primero y dejaba el segundo huérfano, así que remover el label no
+  // destrababa el issue.
+  //
+  // La GARANTÍA de CA-R4 no cambia y se sigue verificando; lo que cambia es
+  // dónde vive. Por eso el assert baja al lib.
+  assert.match(bloque, /humanBlock\.reconcileBlockedMarkers\(/,
+    'debe delegar en el barrido que cubre TODOS los markers del issue (#6448)');
   assert.match(bloque, /unlocker: 'github:label-removed'/,
     'CA-R4 pide trazabilidad de que el destrabe vino de GitHub');
-  assert.match(bloque, /reason\.json/,
+
+  const lib = fs.readFileSync(path.join(__dirname, '..', 'lib', 'human-block.js'), 'utf8');
+  const desde = lib.indexOf('function reconcileBlockedMarkers(');
+  assert.ok(desde > 0, 'el barrido de reconciliación tiene que existir en el lib');
+  const hasta = lib.indexOf('\nfunction ', desde + 1);
+  const cuerpo = lib.slice(desde, hasta > desde ? hasta : lib.length);
+
+  assert.match(cuerpo, /listBlockedMarkers\(/,
+    'debe buscar los markers previos antes de decidir qué hacer con ellos');
+  assert.match(cuerpo, /unblockIssue\(/,
+    'debe reusar la ruta de destrabe existente, no reimplementarla');
+  assert.match(cuerpo, /reasonFilePath\(/,
     'el `.reason.json` huérfano también se limpia');
 });
 

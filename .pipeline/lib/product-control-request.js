@@ -35,6 +35,8 @@
 
 const fs = require('fs');
 const path = require('path');
+// #6226 - escritura fail-closed de dropfiles.
+const dropfileWriter = require('./dropfile-writer');
 
 const trace = require('./traceability');
 const auditLog = require('./audit-log');
@@ -96,12 +98,25 @@ function auditAndEnqueue(record, fileBase, deps) {
     if (!path.resolve(requestPath).startsWith(path.resolve(queueDir) + path.sep)) {
         return { ok: false, status: 400, msg: 'path-escape', audit_persisted: auditRes.persisted };
     }
+    // #6226 - escritura fail-closed. Los 6 call-sites arman el nombre como
+    // `<accion>-<projectId>-<ts>`: dos pedidos identicos en el mismo milisegundo
+    // resolvian al mismo path y el segundo pisaba al primero. Se conserva el
+    // nombre; solo ante colision real se desambigua con `-<n>`.
+    let escrito;
     try {
-        _fs.writeFileSync(requestPath, JSON.stringify(record), 'utf8');
+        escrito = dropfileWriter.writeUniqueFileSync({
+            dir: queueDir,
+            filename: fileName,
+            data: JSON.stringify(record),
+            fsImpl: _fs,
+            onCollision: (name, attempt) => console.warn(
+                `[product-control-request] colision de nombre de pedido (${name}, intento ${attempt + 1}) - se reintenta, no se sobreescribe`
+            ),
+        });
     } catch (e) {
         return { ok: false, status: 500, msg: `no se pudo encolar el pedido: ${e.message}`, audit_persisted: auditRes.persisted };
     }
-    return { ok: true, status: 202, request_path: requestPath, audit_persisted: auditRes.persisted };
+    return { ok: true, status: 202, request_path: escrito.filePath, audit_persisted: auditRes.persisted };
 }
 
 function auditRequestFailure(record, deps) {

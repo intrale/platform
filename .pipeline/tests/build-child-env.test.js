@@ -161,7 +161,12 @@ test('CA-3: skill OpenAI recibe OPENAI_API_KEY pero NO ANTHROPIC_API_KEY', () =>
 
 test('CA-3: skill determinístico no recibe ninguna API key del LLM', () => {
     const env = buildChildEnv({
+        // #5901 — `builder` se despacha en la fase `build`, cuyo techo autoriza
+        // `gradle-android`. Sin la fase el techo es vacío (fail-closed) y el
+        // scope no se entrega: el eje es obligatorio para conservar privilegios.
         skill: 'builder',
+        fase: 'build',
+        projectId: 'kernel',
         processEnv: fullOperatorEnv(),
         skillConfigOverride: {
             skill: { provider: 'deterministic', requires_credentials: ['gradle-android'] },
@@ -181,6 +186,8 @@ test('CA-3: skill determinístico no recibe ninguna API key del LLM', () => {
 test('CA-4: scope github inyecta GH_TOKEN + GITHUB_TOKEN en skills que lo declaran', () => {
     const env = buildChildEnv({
         skill: 'security',
+        fase: 'analisis',   // #5901 — techo de `analisis` = ['github'].
+        projectId: 'kernel',
         processEnv: fullOperatorEnv(),
         skillConfigOverride: {
             skill: { provider: 'anthropic', requires_credentials: ['github'] },
@@ -194,6 +201,8 @@ test('CA-4: scope github inyecta GH_TOKEN + GITHUB_TOKEN en skills que lo declar
 test('CA-4: scope aws inyecta TODAS las AWS_* en skills que lo declaran', () => {
     const env = buildChildEnv({
         skill: 'qa',
+        fase: 'verificacion',   // #5901 — techo de `verificacion` incluye `aws`.
+        projectId: 'kernel',
         processEnv: fullOperatorEnv(),
         skillConfigOverride: {
             skill: { provider: 'anthropic', requires_credentials: ['aws'] },
@@ -210,6 +219,8 @@ test('CA-4: scope aws inyecta TODAS las AWS_* en skills que lo declaran', () => 
 test('CA-4: scope gradle-android inyecta JAVA_HOME, GRADLE_USER_HOME, ANDROID_*', () => {
     const env = buildChildEnv({
         skill: 'builder',
+        fase: 'build',
+        projectId: 'kernel',
         processEnv: fullOperatorEnv(),
         skillConfigOverride: {
             skill: { provider: 'deterministic', requires_credentials: ['gradle-android'] },
@@ -325,6 +336,8 @@ test('CA-5: skill determinístico SIN API key NO throwa (no necesita LLM)', () =
     delete envSinKeys.OPENAI_API_KEY;
     const env = buildChildEnv({
         skill: 'builder',
+        fase: 'build',
+        projectId: 'kernel',
         processEnv: envSinKeys,
         skillConfigOverride: {
             skill: { provider: 'deterministic', requires_credentials: ['gradle-android'] },
@@ -498,6 +511,8 @@ test('CA-7: defaults hardcoded (DEFAULT_REQUIRES_BY_SKILL) aplican cuando no hay
     // Sin override y sin pipelineDir → usa defaults por skill.
     const envSec = buildChildEnv({
         skill: 'security',
+        fase: 'analisis',
+        projectId: 'kernel',
         processEnv: fullOperatorEnv(),
     });
     // security tiene default ['github']
@@ -507,6 +522,8 @@ test('CA-7: defaults hardcoded (DEFAULT_REQUIRES_BY_SKILL) aplican cuando no hay
 
     const envBuilder = buildChildEnv({
         skill: 'builder',
+        fase: 'build',
+        projectId: 'kernel',
         processEnv: fullOperatorEnv(),
     });
     // builder tiene default ['gradle-android']
@@ -541,6 +558,8 @@ test('CA-7: lectura de agent-models.json fallida (JSON inválido) cae a defaults
     };
     const env = buildChildEnv({
         skill: 'security',
+        fase: 'analisis',
+        projectId: 'kernel',
         pipelineDir: '/fake/.pipeline',
         fsImpl: fakeFs,
         processEnv: fullOperatorEnv(),
@@ -621,7 +640,11 @@ test('CA-7: agent-models.json válido OVERRIDE los defaults hardcoded', () => {
         }),
     };
     const env = buildChildEnv({
+        // `security` también se despacha en `verificacion`, cuyo techo incluye
+        // `aws`: la intersección deja pasar el override sin recortarlo.
         skill: 'security',
+        fase: 'verificacion',
+        projectId: 'kernel',
         pipelineDir: '/fake/.pipeline',
         fsImpl: fakeFs,
         processEnv: fullOperatorEnv(),
@@ -772,6 +795,8 @@ test('#3198: partial override { provider } mergea con skill cfg de disk y selecc
     };
     const env = buildChildEnv({
         skill: 'guru',
+        fase: 'analisis',
+        projectId: 'kernel',
         pipelineDir: '/fake/.pipeline',
         fsImpl: fakeFs,
         processEnv: fullOperatorEnv(),
@@ -908,6 +933,8 @@ test('#3198: partial override { provider } preserva requires_credentials del ski
     };
     const env = buildChildEnv({
         skill: 'security',
+        fase: 'verificacion',   // techo con github + aws: la intersección no recorta.
+        projectId: 'kernel',
         pipelineDir: '/fake/.pipeline',
         fsImpl: fakeFs,
         processEnv: fullOperatorEnv(),
@@ -948,4 +975,397 @@ test('#3198: partial override { provider } con API key del FALLBACK faltante en 
         }),
         /OPENAI_API_KEY no está en el env del pulpo/,
     );
+});
+
+// =============================================================================
+// #5799 — SNAPSHOT DE CREDENCIALES POR INTENTO
+//
+// Estos tests cubren la frontera nueva (`lib/attempt-credential-snapshot.js`) y
+// el endurecimiento del contrato de `buildChildEnv({ processEnv })`. El eje es
+// siempre el mismo: el material de credenciales de un intento no puede venir de
+// otro lado que su propio snapshot, y un snapshot que no se pudo emitir aborta
+// el intento en vez de degradar a `process.env`.
+// =============================================================================
+
+const attemptSnapshot = require('../lib/attempt-credential-snapshot');
+const {
+    createAttemptSnapshot,
+    composeAttemptProcessEnv,
+    isSnapshotEnabled,
+    isSnapshotRequired,
+    providerRequiresCredential,
+    providerCredentialEnvNames,
+    AttemptSnapshotError,
+    SNAPSHOT_DESTINATION,
+} = attemptSnapshot;
+
+// Config de test con el gate del snapshot abierto/cerrado.
+function cfgSnapshot(enabled) {
+    return { pipeline: { credential_snapshot_enabled: enabled } };
+}
+
+// `providers` equivalente al de agent-models.json, con los tres regímenes:
+// api_key explícita, oauth (no consume env) y provider sin declaración.
+function providersDeTest() {
+    return {
+        anthropic: { credentials_env: ['ANTHROPIC_API_KEY'], auth_mode: 'api_key' },
+        'openai-codex': { credentials_env: ['OPENAI_API_KEY'], auth_mode: 'api_key' },
+        'gemini-google': { auth_mode: 'oauth' },
+        cerebras: { credentials_env: ['CEREBRAS_API_KEY'] },
+        'kimi-moonshot': { credentials_env: ['ANTHROPIC_AUTH_TOKEN'], auth_mode: 'api_key' },
+    };
+}
+
+// Fake de `createCredentialSnapshot` (#5798): devuelve SIEMPRE un objeto nuevo
+// y registra qué se le pidió, para poder afirmar sobre el destino/provider.
+function fakeSnapshotFactory({ fallarCon = null, registro = [] } = {}) {
+    return async ({ destination, scopes, provider }) => {
+        registro.push({ destination, scopes: [...(scopes || [])], provider });
+        if (fallarCon) {
+            const e = new Error(`fake: ${fallarCon}`);
+            e.name = 'CredentialSnapshotError';
+            e.code = fallarCon;
+            e.destination = destination;
+            throw e;
+        }
+        const nombre = provider === 'openai-codex' ? 'OPENAI_API_KEY'
+            : provider === 'cerebras' ? 'CEREBRAS_API_KEY'
+                : provider === 'kimi-moonshot' ? 'ANTHROPIC_AUTH_TOKEN'
+                    : 'ANTHROPIC_API_KEY';
+        return {
+            destination,
+            namespace: null,
+            scopes: [...(scopes || [])],
+            keys: [`providers.${provider}.api_key`],
+            env: { [nombre]: `snapshot-${provider}-v1` },
+        };
+    };
+}
+
+// -----------------------------------------------------------------------------
+// Gate de rollout
+// -----------------------------------------------------------------------------
+test('#5799: el gate del snapshot es fail-closed — solo el booleano true exacto lo abre', () => {
+    assert.equal(isSnapshotEnabled(cfgSnapshot(true)), true);
+    assert.equal(isSnapshotEnabled(cfgSnapshot(false)), false);
+    assert.equal(isSnapshotEnabled(cfgSnapshot('true')), false);
+    assert.equal(isSnapshotEnabled(cfgSnapshot(1)), false);
+    assert.equal(isSnapshotEnabled({}), false);
+    assert.equal(isSnapshotEnabled(null), false);
+    assert.equal(isSnapshotEnabled(undefined), false);
+});
+
+test('#5799: con el gate cerrado no se pide snapshot ni se llama a la API de #5798', async () => {
+    const registro = [];
+    const res = await createAttemptSnapshot({
+        destination: SNAPSHOT_DESTINATION.AGENT_CHILD,
+        provider: 'anthropic',
+        providersCfg: providersDeTest(),
+        config: cfgSnapshot(false),
+        createSnapshotFn: fakeSnapshotFactory({ registro }),
+    });
+    assert.deepEqual(res, { required: false, snapshot: null });
+    assert.equal(registro.length, 0, 'con el gate cerrado no se emite ni una llamada');
+});
+
+// -----------------------------------------------------------------------------
+// Providers: quien consume credencial del env
+// -----------------------------------------------------------------------------
+test('#5799: un provider oauth no requiere snapshot (autentica fuera del env)', () => {
+    const providersCfg = providersDeTest();
+    assert.equal(providerRequiresCredential('gemini-google', providersCfg), false);
+    assert.equal(isSnapshotRequired({ config: cfgSnapshot(true), provider: 'gemini-google', providersCfg }), false);
+});
+
+test('#5799: un provider con credentials_env requiere snapshot con el gate abierto', () => {
+    const providersCfg = providersDeTest();
+    assert.equal(providerRequiresCredential('cerebras', providersCfg), true);
+    assert.equal(isSnapshotRequired({ config: cfgSnapshot(true), provider: 'cerebras', providersCfg }), true);
+    assert.equal(isSnapshotRequired({ config: cfgSnapshot(false), provider: 'cerebras', providersCfg }), false);
+});
+
+test('#5799: un provider desconocido para el inventario no exige credencial (no hay key que pedir)', () => {
+    assert.equal(providerRequiresCredential('provider-inexistente', providersDeTest()), false);
+    assert.equal(providerRequiresCredential('', providersDeTest()), false);
+    assert.equal(providerRequiresCredential(null, providersDeTest()), false);
+});
+
+test('#5799: `deterministic` no consume credencial de provider', () => {
+    assert.equal(providerRequiresCredential('deterministic', providersDeTest()), false);
+});
+
+test('#5799: los nombres a purgar se DERIVAN del inventario, no de una lista escrita a mano', () => {
+    const nombres = providerCredentialEnvNames(providersDeTest());
+    assert.ok(nombres.has('ANTHROPIC_API_KEY'));
+    assert.ok(nombres.has('OPENAI_API_KEY'));
+    assert.ok(nombres.has('CEREBRAS_API_KEY'));
+    assert.ok(nombres.has('ANTHROPIC_AUTH_TOKEN'));
+    // Un provider agregado en runtime entra sin tocar el modulo (leccion #3353).
+    const conNuevo = providerCredentialEnvNames({
+        ...providersDeTest(),
+        groq: { credentials_env: 'GROQ_API_KEY' },
+    });
+    assert.ok(conNuevo.has('GROQ_API_KEY'));
+});
+
+// -----------------------------------------------------------------------------
+// Rotacion N / N+1 y aislamiento por referencia
+// -----------------------------------------------------------------------------
+test('#5799 (CA-1): dos lanzamientos alrededor de una rotacion reciben versiones distintas sin reiniciar', async () => {
+    const providersCfg = providersDeTest();
+    let version = 1;
+    const rotante = async ({ destination, scopes }) => ({
+        destination, namespace: null, scopes: [...scopes], keys: [],
+        env: { ANTHROPIC_API_KEY: `sk-ant-v${version}` },
+    });
+
+    const a = await createAttemptSnapshot({
+        destination: SNAPSHOT_DESTINATION.AGENT_CHILD, provider: 'anthropic',
+        providersCfg, config: cfgSnapshot(true), createSnapshotFn: rotante,
+    });
+    version = 2; // rotacion en el vault, con el Pulpo vivo
+    const b = await createAttemptSnapshot({
+        destination: SNAPSHOT_DESTINATION.AGENT_CHILD, provider: 'anthropic',
+        providersCfg, config: cfgSnapshot(true), createSnapshotFn: rotante,
+    });
+
+    assert.equal(a.snapshot.env.ANTHROPIC_API_KEY, 'sk-ant-v1');
+    assert.equal(b.snapshot.env.ANTHROPIC_API_KEY, 'sk-ant-v2');
+    assert.notEqual(a.snapshot, b.snapshot, 'cada intento tiene su propio objeto');
+});
+
+test('#5799 (CA-2): lanzamientos concurrentes no comparten ni contaminan snapshots', async () => {
+    const providersCfg = providersDeTest();
+    const pedir = (provider) => createAttemptSnapshot({
+        destination: SNAPSHOT_DESTINATION.AGENT_CHILD, provider,
+        providersCfg, config: cfgSnapshot(true),
+        createSnapshotFn: fakeSnapshotFactory({}),
+    });
+
+    const [uno, dos, tres] = await Promise.all([
+        pedir('anthropic'), pedir('openai-codex'), pedir('anthropic'),
+    ]);
+
+    assert.notEqual(uno.snapshot, tres.snapshot, 'dos intentos del mismo provider no comparten objeto');
+    assert.notEqual(uno.snapshot.env, tres.snapshot.env, 'tampoco comparten el contenedor env');
+
+    uno.snapshot.env.ANTHROPIC_API_KEY = 'CONTAMINADO';
+    assert.equal(tres.snapshot.env.ANTHROPIC_API_KEY, 'snapshot-anthropic-v1');
+    assert.equal(dos.snapshot.env.OPENAI_API_KEY, 'snapshot-openai-codex-v1');
+});
+
+// -----------------------------------------------------------------------------
+// Fail-closed
+// -----------------------------------------------------------------------------
+test('#5799 (CA-4): vault deshabilitado con el gate abierto aborta el intento (fail-closed)', async () => {
+    await assert.rejects(
+        () => createAttemptSnapshot({
+            destination: SNAPSHOT_DESTINATION.AGENT_CHILD,
+            provider: 'anthropic',
+            providersCfg: providersDeTest(),
+            config: cfgSnapshot(true),
+            createSnapshotFn: fakeSnapshotFactory({ fallarCon: 'SNAPSHOT_VAULT_DISABLED' }),
+        }),
+        (e) => {
+            assert.ok(e instanceof AttemptSnapshotError);
+            assert.equal(e.code, 'SNAPSHOT_VAULT_DISABLED');
+            assert.equal(e.provider, 'anthropic');
+            assert.equal(e.destination, 'agent-child');
+            return true;
+        },
+    );
+});
+
+test('#5799 (CA-4): un snapshot mal formado no se acepta como exito', async () => {
+    for (const malo of [null, undefined, {}, { env: null }, { env: 'no-es-objeto' }]) {
+        await assert.rejects(
+            () => createAttemptSnapshot({
+                destination: SNAPSHOT_DESTINATION.AGENT_CHILD,
+                provider: 'anthropic',
+                providersCfg: providersDeTest(),
+                config: cfgSnapshot(true),
+                createSnapshotFn: async () => malo,
+            }),
+            AttemptSnapshotError,
+        );
+    }
+});
+
+test('#5799 (CA-5): el error del snapshot no lleva valores, hashes ni la serializacion del snapshot', async () => {
+    const lineas = [];
+    const secreto = 'sk-ant-SUPER-SECRETO-NO-DEBE-APARECER';
+    await assert.rejects(
+        () => createAttemptSnapshot({
+            destination: SNAPSHOT_DESTINATION.COMMANDER,
+            provider: 'anthropic',
+            providersCfg: providersDeTest(),
+            config: cfgSnapshot(true),
+            logger: (m) => lineas.push(m),
+            createSnapshotFn: async () => {
+                const e = new Error(`fallo con valor ${secreto}`);
+                e.name = 'CredentialSnapshotError';
+                e.code = 'SNAPSHOT_SECRET_INVALID';
+                throw e;
+            },
+        }),
+        (e) => {
+            assert.ok(!e.message.includes(secreto), 'el mensaje NO reenvia el error del driver');
+            assert.equal(e.code, 'SNAPSHOT_SECRET_INVALID');
+            return true;
+        },
+    );
+    assert.ok(lineas.length > 0, 'hay senal local');
+    for (const l of lineas) assert.ok(!l.includes(secreto), `la linea de log filtro material: ${l}`);
+});
+
+test('#5799: destino ausente con el gate abierto aborta (no se adivina un destino)', async () => {
+    await assert.rejects(
+        () => createAttemptSnapshot({
+            provider: 'anthropic',
+            providersCfg: providersDeTest(),
+            config: cfgSnapshot(true),
+            createSnapshotFn: fakeSnapshotFactory({}),
+        }),
+        AttemptSnapshotError,
+    );
+});
+
+test('#5799: el pedido nombra el destino y el scope `providers` del catalogo de #5798', async () => {
+    const registro = [];
+    await createAttemptSnapshot({
+        destination: SNAPSHOT_DESTINATION.COMMANDER,
+        provider: 'openai-codex',
+        providersCfg: providersDeTest(),
+        config: cfgSnapshot(true),
+        createSnapshotFn: fakeSnapshotFactory({ registro }),
+    });
+    assert.deepEqual(registro, [{
+        destination: 'commander', scopes: ['providers'], provider: 'openai-codex',
+    }]);
+});
+
+// -----------------------------------------------------------------------------
+// composeAttemptProcessEnv — minimo privilegio y no-contaminacion
+// -----------------------------------------------------------------------------
+test('#5799 (CA-3): con snapshot, la credencial del PRIMARIO no sobrevive en el env del intento del fallback', () => {
+    const base = fullOperatorEnv();
+    base.ANTHROPIC_API_KEY = 'sk-ant-PRIMARIO';
+    base.OPENAI_API_KEY = 'sk-openai-VIEJA-DEL-PADRE';
+
+    const compuesto = composeAttemptProcessEnv({
+        baseEnv: base,
+        snapshot: { env: { OPENAI_API_KEY: 'sk-openai-DEL-SNAPSHOT' } },
+        providersCfg: providersDeTest(),
+    });
+
+    assert.equal(compuesto.ANTHROPIC_API_KEY, undefined, 'la key del primario no cruza');
+    assert.equal(compuesto.OPENAI_API_KEY, 'sk-openai-DEL-SNAPSHOT', 'el material sale del snapshot');
+    assert.equal(compuesto.CEREBRAS_API_KEY, undefined);
+    assert.equal(compuesto.PATH, base.PATH);
+    assert.equal(compuesto.PIPELINE_ROOT, base.PIPELINE_ROOT);
+    assert.equal(compuesto.GH_TOKEN, base.GH_TOKEN);
+});
+
+test('#5799: componer no muta el env base ni devuelve su referencia', () => {
+    const base = fullOperatorEnv();
+    const antes = JSON.stringify(base);
+    const compuesto = composeAttemptProcessEnv({
+        baseEnv: base,
+        snapshot: { env: { ANTHROPIC_API_KEY: 'sk-nueva' } },
+        providersCfg: providersDeTest(),
+    });
+    compuesto.PATH = 'MUTADO';
+    compuesto.NUEVA = 'x';
+    assert.equal(JSON.stringify(base), antes, 'el env base quedo intacto');
+    assert.notEqual(compuesto, base);
+});
+
+test('#5799: dos composiciones del mismo intento devuelven objetos distintos', () => {
+    const base = fullOperatorEnv();
+    const snapshot = { env: { ANTHROPIC_API_KEY: 'sk-1' } };
+    const a = composeAttemptProcessEnv({ baseEnv: base, snapshot, providersCfg: providersDeTest() });
+    const b = composeAttemptProcessEnv({ baseEnv: base, snapshot, providersCfg: providersDeTest() });
+    assert.notEqual(a, b);
+    a.ANTHROPIC_API_KEY = 'CONTAMINADA';
+    assert.equal(b.ANTHROPIC_API_KEY, 'sk-1');
+});
+
+test('#5799: sin snapshot, el env base se devuelve TAL CUAL (camino legacy intacto)', () => {
+    const base = fullOperatorEnv();
+    const compuesto = composeAttemptProcessEnv({ baseEnv: base, snapshot: null, providersCfg: providersDeTest() });
+    assert.equal(compuesto, base, 'misma referencia: no se degrada el lookup case-insensitive de process.env');
+});
+
+test('#5799: la copia con snapshot preserva PATH aunque Windows lo guarde como "Path"', () => {
+    // Repro del riesgo real: `process.env` resuelve case-insensitive en Windows,
+    // un objeto literal NO. Sin canonicalizacion, el hijo se queda sin PATH.
+    const baseWindows = {
+        Path: 'C:\\bin;C:\\Windows\\System32',
+        ProgramFiles: 'C:\\Program Files',
+        windir: 'C:\\Windows',
+        SystemRoot: 'C:\\Windows',
+        ANTHROPIC_API_KEY: 'sk-vieja',
+        PIPELINE_ROOT: '/repo',
+    };
+    const compuesto = composeAttemptProcessEnv({
+        baseEnv: baseWindows,
+        snapshot: { env: { ANTHROPIC_API_KEY: 'sk-nueva' } },
+        providersCfg: providersDeTest(),
+    });
+
+    assert.equal(compuesto.PATH, 'C:\\bin;C:\\Windows\\System32');
+    assert.equal(compuesto.PROGRAMFILES, 'C:\\Program Files');
+    assert.equal(compuesto.WINDIR, 'C:\\Windows');
+    // Y buildChildEnv, que busca por el nombre canonico, ahora los encuentra.
+    const env = buildChildEnv({
+        skill: 'linter',
+        processEnv: compuesto,
+        skillConfigOverride: {
+            skill: { provider: 'anthropic', requires_credentials: [] },
+            providers: { anthropic: { credentials_env: 'ANTHROPIC_API_KEY' } },
+        },
+    });
+    assert.equal(env.PATH, 'C:\\bin;C:\\Windows\\System32');
+    assert.equal(env.ANTHROPIC_API_KEY, 'sk-nueva');
+});
+
+test('#5799: la canonicalizacion no reintroduce una credencial de provider purgada', () => {
+    const base = {
+        PATH: '/usr/bin',
+        // Casing raro a proposito: si la canonicalizacion no respetara la purga,
+        // esta variable volveria bajo el nombre canonico.
+        anthropic_api_key: 'sk-ant-POR-LA-PUERTA-DE-ATRAS',
+        OPENAI_API_KEY: 'sk-openai-vieja',
+    };
+    const compuesto = composeAttemptProcessEnv({
+        baseEnv: base,
+        snapshot: { env: { OPENAI_API_KEY: 'sk-openai-nueva' } },
+        providersCfg: providersDeTest(),
+    });
+    assert.equal(compuesto.ANTHROPIC_API_KEY, undefined);
+    assert.equal(compuesto.OPENAI_API_KEY, 'sk-openai-nueva');
+});
+
+// -----------------------------------------------------------------------------
+// Contrato endurecido de buildChildEnv
+// -----------------------------------------------------------------------------
+test('#5799: buildChildEnv NO cae a process.env cuando el caller entrega un processEnv invalido', () => {
+    for (const malo of [null, 'no-es-objeto', 42]) {
+        assert.throws(
+            () => buildChildEnv({ skill: 'linter', processEnv: malo }),
+            /processEnv/,
+            `processEnv=${String(malo)} deberia fallar ruidosamente`,
+        );
+    }
+});
+
+test('#5799: buildChildEnv sin processEnv sigue usando process.env (compatibilidad)', () => {
+    const env = buildChildEnv({
+        skill: 'linter',
+        skillConfigOverride: {
+            skill: { provider: 'deterministic', requires_credentials: [] },
+            providers: { deterministic: {} },
+        },
+    });
+    assert.ok(typeof env === 'object' && env !== null);
 });

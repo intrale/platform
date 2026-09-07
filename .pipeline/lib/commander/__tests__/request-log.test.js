@@ -246,3 +246,368 @@ test('writeRequestMeta es idempotente (sobreescribe)', () => {
   const parsed = JSON.parse(fs.readFileSync(p, 'utf8'));
   assert.equal(parsed.resultado, 'error');
 });
+
+// =============================================================================
+// #6458 — Canal estructurado de etapas (`commander-<reqId>.stages.jsonl`).
+//
+//   T-6   CA-1 / REQ-SEC-2 — durabilidad AL `stage()`, sin `close()`.
+//   T-7   CA-2 / SEC-1     — `line()` con delimitador forjado no fabrica etapas.
+//   T-8   CA-3 / REQ-SEC-4 — el canal no tiene handle ni path exportado.
+//   T-9   CA-4 / REQ-SEC-6 — lectura fail-closed sin prototype pollution.
+//   T-10  CA-5 / REQ-SEC-5 — sin path traversal.
+//   T-11  CA-6 / REQ-SEC-3 — los secrets salen redactados y la línea sigue JSON.
+//   T-12  CA-7 / SEC-3     — una entrada = una línea.
+//   T-13  D2  / REQ-SEC-1  — `buildAuditReqRef` no filtra el chat id crudo.
+// =============================================================================
+
+const crypto = require('node:crypto');
+
+// hashFor() de `multi-provider.js` / `inflight-fallback.js`, replicado acá para
+// probar la coincidencia del primer segmento SIN importar esos módulos.
+function hashFor(x) {
+  return crypto.createHash('sha256').update(String(x || ''), 'utf8').digest('hex').slice(0, 12);
+}
+
+function stagesPathOf(dir, reqId) {
+  return path.join(dir, mod.stagesFileName(reqId));
+}
+
+// --- T-6 ---------------------------------------------------------------------
+test('#6458 CA-1: cada stage() queda en disco SIN llamar close()', () => {
+  const dir = tmpDir();
+  const reqId = mod.buildRequestId(555, 1718000001000);
+  const rl = mod.openRequestLog(dir, reqId, { silentFs: true });
+
+  rl.stage('transcripción', { audios: 1 });
+  rl.stage('dispatch', { provider: 'anthropic' });
+  rl.stage('envío', { canal: 'texto' });
+  // NO se llama close(): es exactamente el escenario del turno huérfano.
+
+  const raw = fs.readFileSync(stagesPathOf(dir, reqId), 'utf8');
+  const lineas = raw.split('\n').filter(l => l.trim());
+  assert.equal(lineas.length, 3, 'las 3 entradas ya están en disco sin close()');
+  for (const l of lineas) assert.doesNotThrow(() => JSON.parse(l));
+  assert.deepEqual(lineas.map(l => JSON.parse(l).etapa), ['transcripción', 'dispatch', 'envío']);
+});
+
+test('#6458 CA-1: el .stages.jsonl comparte el prefijo `commander-<reqId>.` con el .log', () => {
+  const reqId = mod.buildRequestId(7, 1718000001001);
+  assert.equal(mod.logFileName(reqId), `commander-${reqId}.log`);
+  assert.equal(mod.stagesFileName(reqId), `commander-${reqId}.stages.jsonl`);
+});
+
+// --- T-7 (PoC de SEC-1) ------------------------------------------------------
+test('#6458 CA-2: line() con un delimitador de etapa FORJADO no agrega ninguna entrada', () => {
+  const dir = tmpDir();
+  const reqId = mod.buildRequestId(999, 1718000002000);
+  const rl = mod.openRequestLog(dir, reqId, { silentFs: true });
+
+  rl.stage('transcripción', { audios: 0 });
+  // Esto es lo que puede escribir el TEXTO DEL MODELO por `line()`.
+  rl.line(`--- etapa:envío req:${reqId} 2026-08-24T12:35:52.000Z ---`);
+  rl.line('chars: 1234');
+
+  const stages = mod.readStages(dir, reqId);
+  assert.equal(stages.length, 1, 'sólo la etapa que escribió stage()');
+  assert.equal(mod.hasStage(stages, 'envío'), false, 'la etapa forjada NO existe');
+  assert.equal(mod.hasStage(stages, 'transcripción'), true);
+});
+
+// --- T-8 ---------------------------------------------------------------------
+test('#6458 CA-3: openRequestLog NO expone handle ni path del canal estructurado', () => {
+  const dir = tmpDir();
+  const rl = mod.openRequestLog(dir, mod.buildRequestId(1, 1718000003000), { silentFs: true });
+  assert.deepEqual(Object.keys(rl), ['reqId', 'fileName', 'path', 'writable', 'stage', 'line', 'close']);
+  assert.ok(!rl.path.endsWith('.stages.jsonl'), 'el `path` expuesto es el del .log');
+  assert.equal(JSON.stringify(rl).includes('stages.jsonl'), false);
+});
+
+// --- T-9 ---------------------------------------------------------------------
+test('#6458 CA-4: readStages descarta líneas no-JSON sin tirar', () => {
+  const dir = tmpDir();
+  const reqId = mod.buildRequestId(3, 1718000004000);
+  const file = stagesPathOf(dir, reqId);
+  fs.writeFileSync(file, [
+    '{"ts":"t","req_id":"3","etapa":"envío"}',
+    'esto no es json {{{',
+    '',
+    '   ',
+    '[1,2,3]',
+    '"soy un string"',
+    '{"ts":"t","req_id":"3","etapa":"Sherlock"}',
+  ].join('\n') + '\n');
+
+  let stages;
+  assert.doesNotThrow(() => { stages = mod.readStages(dir, reqId); });
+  assert.ok(Array.isArray(stages), 'SIEMPRE array, jamás índice por clave');
+  assert.equal(stages.length, 2);
+  assert.equal(mod.hasStage(stages, 'envío'), true);
+  assert.equal(mod.hasStage(stages, 'Sherlock'), true);
+});
+
+test('#6458 CA-4: readStages descarta payloads de prototype pollution (CWE-1321)', () => {
+  const dir = tmpDir();
+  const reqId = mod.buildRequestId(4, 1718000005000);
+  fs.writeFileSync(stagesPathOf(dir, reqId), [
+    '{"__proto__":{"contaminado":1},"etapa":"envío"}',
+    '{"constructor":{"prototype":{"x":1}},"etapa":"dispatch"}',
+    '{"prototype":{"y":1},"etapa":"Sherlock"}',
+    '{"ts":"t","req_id":"4","etapa":"transcripción"}',
+  ].join('\n') + '\n');
+
+  const stages = mod.readStages(dir, reqId);
+  assert.equal(stages.length, 1, 'sólo sobrevive la entrada limpia');
+  assert.equal(stages[0].etapa, 'transcripción');
+  assert.equal(({}).contaminado, undefined, 'el prototipo de Object quedó intacto');
+  assert.equal(({}).x, undefined);
+  assert.equal(({}).y, undefined);
+});
+
+test('#6458 CA-4: readStages devuelve [] cuando el archivo no existe (nunca tira)', () => {
+  const dir = tmpDir();
+  assert.deepEqual(mod.readStages(dir, 'no-existe-1'), []);
+  assert.equal(mod.hasStage(mod.readStages(dir, 'no-existe-1'), 'envío'), false);
+});
+
+test('#6458 CA-4: hasStage es fail-closed ante entradas basura', () => {
+  assert.equal(mod.hasStage(null, 'envío'), false);
+  assert.equal(mod.hasStage('envío', 'envío'), false);
+  assert.equal(mod.hasStage([null, 3, 'x'], 'envío'), false);
+  assert.equal(mod.hasStage([{ etapa: 'envío' }], 'envío'), true);
+});
+
+test('#6458 CA-4: stage() no copia claves peligrosas ni claves fuera del patrón', () => {
+  const dir = tmpDir();
+  const reqId = mod.buildRequestId(41, 1718000005500);
+  const rl = mod.openRequestLog(dir, reqId, { silentFs: true });
+  const meta = { ok_1: 'si', 'clave con espacios': 'no', 'a.b': 'no', constructor: 'no' };
+  meta['__proto__'] = 'no'; // asignación explícita: no crea propiedad propia igual
+  rl.stage('envío', meta);
+
+  const stages = mod.readStages(dir, reqId);
+  assert.equal(stages.length, 1);
+  assert.equal(stages[0].ok_1, 'si');
+  assert.equal('clave con espacios' in stages[0], false);
+  assert.equal('a.b' in stages[0], false);
+  assert.equal(Object.prototype.hasOwnProperty.call(stages[0], 'constructor'), false);
+});
+
+// --- T-10 --------------------------------------------------------------------
+test('#6458 CA-5: stagesFileName neutraliza el path traversal', () => {
+  const name = mod.stagesFileName('../../etc/x');
+  assert.equal(name.includes('/'), false);
+  assert.equal(name.includes('\\'), false);
+  assert.equal(name.includes('..'), false);
+  assert.match(name, /^commander-[a-zA-Z0-9-]*\.stages\.jsonl$/);
+});
+
+test('#6458 CA-5: readStages con reqId hostil no lee fuera de logDir', () => {
+  const base = tmpDir();
+  const dir = path.join(base, 'logs');
+  fs.mkdirSync(dir, { recursive: true });
+  // Archivo "sensible" fuera del logDir, con nombre alcanzable por traversal.
+  fs.writeFileSync(path.join(base, 'commander-etcx.stages.jsonl'),
+    '{"ts":"t","req_id":"x","etapa":"secreto"}\n');
+
+  const stages = mod.readStages(dir, '../../etc/x');
+  assert.deepEqual(stages, [], 'no escapó de logDir');
+  assert.equal(mod.hasStage(stages, 'secreto'), false);
+});
+
+// --- T-11 --------------------------------------------------------------------
+test('#6458 CA-6: un secret en una etapa sale REDACTADO y la línea sigue siendo JSON', () => {
+  const dir = tmpDir();
+  const reqId = mod.buildRequestId(6, 1718000006000);
+  const rl = mod.openRequestLog(dir, reqId, { silentFs: true });
+  rl.stage('envío', { k: 'AKIAIOSFODNN7EXAMPLE' });
+
+  const raw = fs.readFileSync(stagesPathOf(dir, reqId), 'utf8');
+  assert.equal(raw.includes('AKIAIOSFODNN7EXAMPLE'), false, 'el secret NO queda en claro');
+  const lineas = raw.split('\n').filter(l => l.trim());
+  assert.equal(lineas.length, 1);
+  const parsed = JSON.parse(lineas[0]); // sigue siendo JSON parseable
+  assert.match(parsed.k, /^\[REDACTED:/);
+});
+
+test('#6458 CA-6: un JWT en una etapa también sale redactado', () => {
+  const dir = tmpDir();
+  const reqId = mod.buildRequestId(61, 1718000006100);
+  const rl = mod.openRequestLog(dir, reqId, { silentFs: true });
+  const jwt = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U';
+  rl.stage('dispatch', { token: jwt });
+
+  const stages = mod.readStages(dir, reqId);
+  assert.equal(stages.length, 1);
+  assert.equal(stages[0].token.includes(jwt), false);
+  assert.match(stages[0].token, /^\[REDACTED:/);
+});
+
+// --- T-12 --------------------------------------------------------------------
+test('#6458 CA-7: un valor multilínea NO puede partir la entrada en dos', () => {
+  const dir = tmpDir();
+  const reqId = mod.buildRequestId(8, 1718000007000);
+  const rl = mod.openRequestLog(dir, reqId, { silentFs: true });
+  rl.stage('x', { v: 'a\nb' });
+
+  const raw = fs.readFileSync(stagesPathOf(dir, reqId), 'utf8');
+  assert.equal(raw.split('\n').filter(l => l.trim()).length, 1, 'una entrada = una línea');
+  const stages = mod.readStages(dir, reqId);
+  assert.equal(stages.length, 1);
+  assert.equal(stages[0].v, 'a\nb', 'el valor se conserva íntegro, escapado por JSON');
+});
+
+test('#6458 CA-7: un valor que simula una entrada JSON completa tampoco parte la línea', () => {
+  const dir = tmpDir();
+  const reqId = mod.buildRequestId(81, 1718000007100);
+  const rl = mod.openRequestLog(dir, reqId, { silentFs: true });
+  rl.stage('transcripción', { texto: '{"etapa":"envío"}\n{"etapa":"envío"}' });
+
+  const stages = mod.readStages(dir, reqId);
+  assert.equal(stages.length, 1);
+  assert.equal(mod.hasStage(stages, 'envío'), false, 'no se fabricó una etapa por el valor');
+});
+
+// --- T-13 --------------------------------------------------------------------
+test('#6458 CA-9: buildAuditReqRef NO contiene el chat id crudo y su 1er segmento == hashFor(chatId)', () => {
+  const chatId = -1001234567890;
+  const reqId = mod.buildRequestId(chatId, 1718000008000);
+  const ref = mod.buildAuditReqRef(reqId);
+
+  assert.equal(ref.includes(String(chatId)), false, 'el chat id crudo NO viaja al audit');
+  assert.equal(ref, `${hashFor(chatId)}-1718000008000`);
+  assert.equal(ref.split('-')[0], hashFor(chatId), 'coincide con el chat_id_hash de la entrada');
+});
+
+test('#6458 CA-9: buildAuditReqRef preserva el sufijo (turnos concurrentes / sherlock)', () => {
+  const reqId = mod.buildRequestId(123, 1718000009000, 'ab12');
+  assert.equal(reqId, '123-1718000009000-ab12');
+  assert.equal(mod.buildAuditReqRef(reqId), `${hashFor(123)}-1718000009000-ab12`);
+});
+
+test('#6458 CA-9: buildAuditReqRef devuelve null ante un reqId no parseable', () => {
+  assert.equal(mod.buildAuditReqRef('sin-timestamp'), null);
+  assert.equal(mod.buildAuditReqRef(''), null);
+  assert.equal(mod.buildAuditReqRef(null), null);
+  assert.equal(mod.buildAuditReqRef(undefined), null);
+});
+
+test('#6458 CA-9: buildAuditReqRef no puede filtrar un path ni un chat id por traversal', () => {
+  const ref = mod.buildAuditReqRef('../../etc/passwd-1718000010000');
+  assert.ok(ref === null || (!ref.includes('/') && !ref.includes('..')));
+});
+
+// =============================================================================
+// #6460 — updateRequestMeta: actualización MERGE-AWARE del sidecar.
+//
+// El riesgo que estos tests anclan: usar `writeRequestMeta` para estampar un
+// campo suelto SOBREESCRIBE el sidecar entero y borra `resultado`/`provider`,
+// con lo cual DESAPARECE el badge que entregó #6459. Es una regresión invisible
+// en tests de la capa de aviso y visible sólo en el dashboard del operador.
+// =============================================================================
+
+test('#6460: updateRequestMeta preserva resultado y provider al estampar aviso_entregado', () => {
+  const dir = tmpDir();
+  const reqId = '123-1718000000000';
+  mod.writeRequestMeta(dir, reqId, {
+    resultado: 'fallback', provider: 'openai', sameProviderVerification: true,
+  });
+
+  mod.updateRequestMeta(dir, reqId, { aviso_entregado: false });
+
+  const meta = JSON.parse(fs.readFileSync(path.join(dir, mod.metaFileName(reqId)), 'utf8'));
+  assert.equal(meta.resultado, 'fallback');
+  assert.equal(meta.provider, 'openai');
+  assert.equal(meta.sameProviderVerification, true);
+  assert.equal(meta.aviso_entregado, false);
+});
+
+test('#6460: updateRequestMeta NO pisa un resultado ya asentado (error gana sobre huerfano)', () => {
+  const dir = tmpDir();
+  const reqId = '123-1718000000001';
+  mod.writeRequestMeta(dir, reqId, { resultado: 'error', provider: 'anthropic' });
+
+  mod.updateRequestMeta(dir, reqId, { resultado: 'huerfano', aviso_entregado: false });
+
+  const meta = JSON.parse(fs.readFileSync(path.join(dir, mod.metaFileName(reqId)), 'utf8'));
+  assert.equal(meta.resultado, 'error', 'la precedencia de #6459 CA-1 no se invierte');
+});
+
+test('#6460: sin sidecar previo se crea con el resultado del patch', () => {
+  const dir = tmpDir();
+  const reqId = '123-1718000000002';
+  const p = mod.updateRequestMeta(dir, reqId, { resultado: 'huerfano', aviso_entregado: false });
+  assert.ok(p, 'devuelve el path escrito');
+
+  const meta = JSON.parse(fs.readFileSync(p, 'utf8'));
+  assert.equal(meta.resultado, 'huerfano');
+  assert.equal(meta.aviso_entregado, false);
+  assert.equal(meta.provider, '');
+});
+
+test('#6460: aviso_entregado es TRI-ESTADO — no-boolean se OMITE del sidecar', () => {
+  const dir = tmpDir();
+  for (const [i, valor] of ['false', 0, null, 'si', undefined, {}].entries()) {
+    const reqId = `123-171800000010${i}`;
+    mod.updateRequestMeta(dir, reqId, { resultado: 'huerfano', aviso_entregado: valor });
+    const meta = JSON.parse(fs.readFileSync(path.join(dir, mod.metaFileName(reqId)), 'utf8'));
+    assert.ok(
+      !Object.prototype.hasOwnProperty.call(meta, 'aviso_entregado'),
+      `${JSON.stringify(valor)} no es boolean ⇒ el campo se omite`,
+    );
+  }
+  // Y `true` sí se persiste (el render decide no pintarlo, pero el dato existe).
+  const reqOk = '123-1718000000200';
+  mod.updateRequestMeta(dir, reqOk, { aviso_entregado: true });
+  const metaOk = JSON.parse(fs.readFileSync(path.join(dir, mod.metaFileName(reqOk)), 'utf8'));
+  assert.equal(metaOk.aviso_entregado, true);
+});
+
+test('#6460: un aviso_entregado ya asentado sobrevive a un patch que no lo trae', () => {
+  const dir = tmpDir();
+  const reqId = '123-1718000000300';
+  mod.updateRequestMeta(dir, reqId, { resultado: 'huerfano', aviso_entregado: false });
+  mod.updateRequestMeta(dir, reqId, { provider: 'anthropic' });
+
+  const meta = JSON.parse(fs.readFileSync(path.join(dir, mod.metaFileName(reqId)), 'utf8'));
+  assert.equal(meta.aviso_entregado, false);
+  assert.equal(meta.provider, 'anthropic');
+});
+
+test('#6460: un sidecar corrupto no rompe — se reescribe desde el patch', () => {
+  const dir = tmpDir();
+  const reqId = '123-1718000000400';
+  fs.writeFileSync(path.join(dir, mod.metaFileName(reqId)), '{no json', 'utf8');
+
+  const p = mod.updateRequestMeta(dir, reqId, { resultado: 'huerfano', aviso_entregado: false });
+  assert.ok(p);
+  const meta = JSON.parse(fs.readFileSync(p, 'utf8'));
+  assert.equal(meta.resultado, 'huerfano');
+});
+
+test('#6460: el shape es CERRADO — ni el sidecar leído ni el patch inyectan claves nuevas', () => {
+  const dir = tmpDir();
+  const reqId = '123-1718000000500';
+  fs.writeFileSync(
+    path.join(dir, mod.metaFileName(reqId)),
+    JSON.stringify({ resultado: 'ok', secreto: 'AKIA-no-deberia-estar', __proto__: { pwn: 1 } }),
+    'utf8',
+  );
+
+  mod.updateRequestMeta(dir, reqId, { aviso_entregado: false, otroCampo: 'x' });
+
+  const raw = fs.readFileSync(path.join(dir, mod.metaFileName(reqId)), 'utf8');
+  assert.ok(!raw.includes('secreto'), 'un campo ajeno del archivo no se propaga');
+  assert.ok(!raw.includes('otroCampo'), 'un campo ajeno del patch no se propaga');
+  assert.equal({}.pwn, undefined, 'sin prototype pollution');
+  assert.deepEqual(
+    Object.keys(JSON.parse(raw)).sort(),
+    ['aviso_entregado', 'crossProviderDispatch', 'provider', 'resultado'],
+  );
+});
+
+test('#6460: updateRequestMeta es best-effort — un logDir inexistente devuelve null y no tira', () => {
+  const p = mod.updateRequestMeta(
+    path.join(tmpDir(), 'no', 'existe'), '123-1718000000600', { aviso_entregado: false },
+  );
+  assert.equal(p, null);
+});

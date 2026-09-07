@@ -89,7 +89,12 @@ test('resolveAlias explícito (validacion-ux) ignora currentPosition', () => {
 test('resolveAlias explícito review → desarrollo/aprobacion/review', () => {
     const r = pm.resolveAlias('review', { pipeline: 'desarrollo', fase: 'aprobacion' }, FAKE_CONFIG);
     assert.equal(r.ok, true);
-    assert.deepEqual(r.target, { pipeline: 'desarrollo', fase: 'aprobacion', skill: 'review', explicit: true });
+    // #6747 — el target suma `deferredSkill`, que para los 23 aliases previos
+    // es `null`: traen el skill cerrado y no difieren nada.
+    assert.deepEqual(r.target, {
+        pipeline: 'desarrollo', fase: 'aprobacion', skill: 'review',
+        deferredSkill: null, explicit: true,
+    });
 });
 
 test('Decisión 2 — alias ambiguo "ux" desde aprobacion resuelve al ux upstream más cercano (aprobacion)', () => {
@@ -162,4 +167,72 @@ test('PHASE_MAPPING es inmutable (Object.freeze) — defensa contra mutación ac
         // En strict mode esto tira; en sloppy mode lo ignora pero sin mutar.
         pm.PHASE_MAPPING.foo = { skill: 'malicious', explicit: true };
     });
+});
+
+// =============================================================================
+// #6747 — alias `dev` (canal manual de rescate a `desarrollo/dev`)
+// =============================================================================
+
+test('#6747 CA-1/CA-2: alias `dev` resuelve con skill null + deferredSkill "labels"', () => {
+    const r = pm.resolveAlias('dev', {}, FAKE_CONFIG);
+    assert.equal(r.ok, true, 'el alias `dev` ya no puede dar ALIAS_NOT_IN_WHITELIST');
+    assert.deepEqual(r.target, {
+        pipeline: 'desarrollo',
+        fase: 'dev',
+        // CA-2 — el enum NO fija el skill: `dev` es mono-skill resuelto por
+        // labels, y el caller lo cierra con el determinarDevSkill existente.
+        skill: null,
+        deferredSkill: 'labels',
+        explicit: true,
+    });
+});
+
+test('#6747 CA-1: `dev` es explícito — no necesita currentPosition', () => {
+    // Los aliases ambiguos sin posición dan AMBIGUOUS_ALIAS_NEEDS_POSITION.
+    // `dev` es explícito, así que resuelve igual con `null`.
+    const r = pm.resolveAlias('dev', null, FAKE_CONFIG);
+    assert.equal(r.ok, true);
+    assert.equal(r.target.fase, 'dev');
+    assert.equal(r.normalizedAlias, 'dev');
+});
+
+test('#6747 CA-1: `dev` se normaliza (case + espacios) como cualquier alias', () => {
+    for (const raw of ['DEV', '  dev  ', 'Dev']) {
+        const r = pm.resolveAlias(raw, {}, FAKE_CONFIG);
+        assert.equal(r.ok, true, `"${raw}" debería normalizar a dev`);
+        assert.equal(r.target.fase, 'dev');
+    }
+});
+
+test('#6747 SEC-6b: cero fuzzy — los vecinos de `dev` siguen fuera de la whitelist', () => {
+    // Los 4 primeros son nombres de skill: serían un selector DIRECTO de agente
+    // privilegiado que saltea determinarDevSkill. Los otros los acepta el
+    // productor de aliases (G-5), así que son justo los que el operador va a
+    // tipear creyendo que funcionan.
+    const prohibidos = [
+        'desarrollo', 'android-dev', 'backend-dev', 'pipeline-dev',
+        'codear', 'codeo', 'implementar', 'desarrollo/dev',
+    ];
+    for (const alias of prohibidos) {
+        const r = pm.resolveAlias(alias, { pipeline: 'desarrollo', fase: 'verificacion' }, FAKE_CONFIG);
+        assert.equal(r.ok, false, `"${alias}" NO puede resolver`);
+        assert.equal(r.code, 'ALIAS_NOT_IN_WHITELIST', `"${alias}" debe dar ALIAS_NOT_IN_WHITELIST`);
+    }
+});
+
+test('#6747 SEC-6b: el enum sumó exactamente 1 clave (23 → 24)', () => {
+    const aliases = pm.listAliases();
+    assert.equal(aliases.length, 24, 'si esto sube de 24, alguien agregó un alias "de paso"');
+    assert.ok(aliases.includes('dev'));
+});
+
+test('#6747 no-regresión: los 23 aliases previos siguen con deferredSkill nulo', () => {
+    const previos = pm.listAliases().filter(a => a !== 'dev');
+    assert.equal(previos.length, 23);
+    for (const alias of previos) {
+        const r = pm.resolveAlias(alias, { pipeline: 'desarrollo', fase: 'entrega' }, FAKE_CONFIG);
+        assert.equal(r.ok, true, `"${alias}" debería seguir resolviendo`);
+        assert.ok(!r.target.deferredSkill, `"${alias}" no puede diferir la resolución de skill`);
+        assert.equal(typeof r.target.skill, 'string', `"${alias}" debe traer skill cerrado`);
+    }
 });

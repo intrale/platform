@@ -118,10 +118,12 @@ test('si no hay chat_id ni source válido, deja source vacío (consumer rechaza)
     // El consumer va a rechazar con OPERATOR_ID_REQUIRED o SOURCE_NOT_AUTHORIZED.
 });
 
-test('preserva source desconocido cuando no hay chat_id (consumer rechaza con audit)', () => {
-    // Caso extraño: source raro Y sin chat_id. Lo dejamos pasar para que el
-    // consumer rechace con SOURCE_NOT_AUTHORIZED y quede en el audit log
-    // (forensics: ¿de dónde vino?).
+test('#4967 CA-2: DESCARTA el source desconocido cuando no hay chat_id (fail-closed)', () => {
+    // Cambio de contrato explícito de #4967 (CA-2). Antes este source se
+    // propagaba tal cual "para que el consumer lo bloquee"; eso convertía al
+    // bus de rejections en un canal para NOMBRAR orígenes arbitrarios, incluidos
+    // los internos del pipeline. Ahora se colapsa a vacío y el consumer rechaza
+    // con SOURCE_NOT_AUTHORIZED igual — pero el nombre nunca sale de acá.
     const event = {
         issue: 3416,
         fase: 'ux',
@@ -131,8 +133,44 @@ test('preserva source desconocido cuando no hay chat_id (consumer rechaza con au
 
     const normalized = normalizeProducerEvent(event);
 
-    assert.equal(normalized.source, 'random-bot');
+    assert.equal(normalized.source, '');
     assert.equal(normalized.operatorId, null);
+    // El forensics no se pierde: el valor original vive en el envelope, que
+    // ningún gate de autorización lee.
+    assert.equal(normalized._envelope.transcribe_source, 'random-bot');
+});
+
+test('#4967 CA-2: ningún source arbitrario atraviesa el adapter, con o sin chat_id', () => {
+    const arbitrarios = [
+        'mergeability-watcher', 'pulpo', 'internal', 'system',
+        'TELEGRAM-COMMANDER', ' cli-local', 'cli-local ',
+    ];
+    for (const source of arbitrarios) {
+        // Sin chat_id: se descarta.
+        assert.equal(
+            normalizeProducerEvent({ issue: 3416, fase: 'ux', source }).source, '',
+            `"${source}" sin chat_id debe colapsar a vacío`,
+        );
+        // Con chat_id: es un evento del Commander de Telegram, y eso es lo que
+        // se emite — nunca el nombre que trajo el archivo.
+        assert.equal(
+            normalizeProducerEvent({ issue: 3416, fase: 'ux', source, chat_id: 42 }).source,
+            'telegram-commander',
+            `"${source}" con chat_id debe normalizar a telegram-commander`,
+        );
+    }
+});
+
+test('#4967 CA-2: el adapter sólo puede emitir sources de la whitelist (o vacío)', () => {
+    const permitidos = new Set(['telegram-commander', 'cli-local', '']);
+    const eventos = [
+        {}, { source: 'text' }, { source: 'audio', chat_id: 1 }, { source: 'whisper-local' },
+        { source: 'telegram-commander' }, { source: 'cli-local' }, { chat_id: 7 },
+        { source: 'lo-que-sea', chat_id: 7 }, { source: 'lo-que-sea' },
+    ];
+    for (const e of eventos) {
+        assert.ok(permitidos.has(normalizeProducerEvent(e).source), JSON.stringify(e));
+    }
 });
 
 test('null safety: no rompe con event nulo o vacío', () => {

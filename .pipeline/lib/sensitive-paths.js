@@ -301,6 +301,25 @@ const SENSITIVE_PATHS = Object.freeze([
         motivo: 'Estado de los servicios del pipeline (respuestas de providers, mensajes). Cobertura por contenido, no por ignore (ver comentario).',
         test: (p) => p.startsWith('.pipeline/servicios/') && p.endsWith('.json'),
     },
+    {
+        id: 'pipeline-credential-reminder-state',
+        clase: 'estado',
+        reglas: ['.pipeline/credential-reminder-state.json'],
+        muestras: ['.pipeline/credential-reminder-state.json'],
+        pathspecs: ['.pipeline/credential-reminder-state.json'],
+        requiereIgnore: true,
+        escaneaContenido: true,
+        // #5901 · REQ-SEC-1. El archivo estuvo TRACKEADO en un repo PÚBLICO
+        // (contenido `{}`, historial benigno: no hace falta reescribir historia).
+        // El estado ahora vive en `~/.claude/pipeline-state/`, fuera del árbol.
+        // Esta regla es lo que impide que vuelva a entrar por un `git add .`:
+        // sin ella el destrackeo se revierte solo en el próximo commit amplio.
+        // Lo que publicaba no es el VALOR de ningún secreto sino el mapa:
+        // qué variables usa Intrale, de qué proyecto es cada una y qué día
+        // vence cada una. Reconocimiento dirigido, gratis y sin dejar rastro.
+        motivo: 'Estado del cron de rotación: nombres de variables de secretos, su proyecto y su calendario de vencimiento. El repo es público.',
+        test: (p) => p === '.pipeline/credential-reminder-state.json',
+    },
 ]);
 
 /**

@@ -428,6 +428,9 @@ test('iterationMs — se parsea defensivo del contenido no confiable (SEC-2)', (
 const SHIMS = {
     'pulpo-liveness': path.join(REAL_LIB, 'pulpo-liveness.js'),
     'pulpo-liveness-margin': path.join(REAL_LIB, 'pulpo-liveness-margin.js'),
+    // #6146: el copy al operador vive en su propio módulo. Sin este shim el
+    // runner no lo encuentra en el tmpdir y el aviso se pierde en el fail-soft.
+    'pulpo-liveness-copy': path.join(REAL_LIB, 'pulpo-liveness-copy.js'),
     'watchdog-supervisor': path.join(REAL_LIB, 'watchdog-supervisor.js'),
     'notify-telegram': path.join(REAL_LIB, 'notify-telegram.js'),
     'config-resolver': path.join(REAL_LIB, 'config-resolver.js'),
@@ -541,15 +544,29 @@ test('E2E — margen degradado: alerta con el dato numérico y NO reinicia', () 
     const msgs = alertas(dir);
     assert.strictEqual(msgs.length, 1, `esperaba 1 alerta, hubo ${msgs.length}`);
     const texto = msgs[0];
-    // UX: el número concreto es parte del copy, no un adjunto.
-    assert.match(texto, /220s/, 'falta el pico observado');
-    assert.match(texto, /270s/, 'falta el umbral efectivo');
-    assert.match(texto, /81% consumido/, 'falta el % consumido');
+    // #6146 — el copy al operador cambió: antes acá viajaban el pico, el umbral,
+    // el % consumido y la ruta del archivo de configuración. El operador dijo
+    // textual que así no se entendía. Ahora el aviso es síntoma + consecuencia y
+    // el detalle numérico vive en el log (se verifica abajo).
+    assert.match(texto, /reiniciaría el Pulpo aunque esté trabajando bien/);
     // UX: nombrar el síntoma que el operador va a percibir — es lo que evita
     // 3 horas de diagnóstico en la dirección equivocada.
-    assert.match(texto, /el Commander no responde/);
-    // UX: la acción nombra el mecanismo concreto, no un verbo abstracto.
-    assert.match(texto, /config\.yaml/);
+    assert.match(texto, /el Commander deja de responder/);
+    // #6146 CA-5: pico 220s contra umbral 270s => quedan 50s, o sea nivel
+    // "atención", no "inminente".
+    assert.match(texto, /todavía hay aire: quedan 50 segundos de tolerancia/);
+    // #6146 CA-2: el aviso ya NO filtra vocabulario interno ni rutas.
+    assert.doesNotMatch(texto, /config\.yaml/);
+    assert.doesNotMatch(texto, /umbral/i);
+    assert.doesNotMatch(texto, /pulpo_liveness_/);
+    // #6146 CA-7: todo el detalle técnico sigue disponible para diagnóstico.
+    const log6146 = logDelRunner(dir);
+    assert.match(log6146, /alerta_margen emitida urgencia=atencion/);
+    assert.match(log6146, /repeticionesSilenciadas=0/);
+    assert.match(log6146, /peakSeconds=220/);
+    assert.match(log6146, /effectiveSeconds=270/);
+    assert.match(log6146, /consumedPct=81/);
+    assert.match(log6146, /marginSeconds=50/);
     // UX: ⚠️ = "el pipeline sigue", distinto del glifo de escalada.
     assert.match(texto, /⚠/);
 });
@@ -779,4 +796,175 @@ test('estado — el tmp de escritura es por-proceso (dos runners no se pisan)', 
         .filter((f) => f.startsWith('estado-tmp.json.') && f.endsWith('.tmp'));
     assert.deepStrictEqual(sobrantes, [], 'el tmp no debe quedar tirado tras el rename');
     assert.deepStrictEqual(JSON.parse(fs.readFileSync(file, 'utf8')).samples, [{ t: 1, ms: 5 }]);
+});
+
+// ---------------------------------------------------------------------------
+// Parte 8 — #6146: la línea de persistencia sólo sale cuando hay evidencia
+//
+// `review` bloqueó la pasada anterior porque el aviso le afirmaba al operador un
+// hecho falso: "ya te avisé hace 3 días y sigue pasando" para una condición que
+// había aparecido en ese mismo ciclo. La causa era pasar `lastAlertTs` crudo al
+// módulo de copy — esa marca dice CUÁNDO se avisó, no DESDE CUÁNDO sigue
+// pasando, y nadie la reseteaba al recuperarse la condición.
+//
+// El arreglo son dos mitades que sólo funcionan juntas: el gate de persistencia
+// (no pasar la marca si no hubo repeticiones) y la rama de recuperación (limpiar
+// la evidencia cuando el margen vuelve a estar sano). Estos casos son el testigo
+// end-to-end de esa pareja: cada mitad sola deja uno de ellos en rojo.
+// ---------------------------------------------------------------------------
+
+/** Estado que el runner dejó escrito en disco. */
+function estadoEnDisco(dir) {
+    return JSON.parse(
+        fs.readFileSync(path.join(dir, 'logs', 'pulpo-liveness-state.json'), 'utf8'),
+    );
+}
+
+const NOVENTA_MIN_MS = 90 * 60 * 1000;
+
+test('E2E #6146 CA-6a+CA-6b — recuperarse borra la evidencia: el episodio nuevo no dice "ya te avisé"', () => {
+    const dir = armarPipeline();
+    const hace90min = Date.now() - NOVENTA_MIN_MS;
+
+    // Episodio VIEJO ya cerrado: se avisó hace 90 min y hubo 3 ciclos degradados
+    // silenciados por el cooldown. La serie de ahora está sana (pico 100s contra
+    // 270s efectivos), o sea la condición se recuperó.
+    const sano = serieConPico(100000);
+    sano.lastAlertTs = hace90min;
+    sano.alertRepeats = 3;
+    sembrarEstado(dir, sano);
+
+    const out = correr(dir, { PLV_HB_AGE_MS: String(120 * 1000) });
+    assert.strictEqual(out, 'ACTION:skip', 'CA-13: la decisión del watchdog no cambia');
+    assert.deepStrictEqual(alertas(dir), [], 'un margen sano no le avisa nada al operador');
+
+    const trasRecuperar = estadoEnDisco(dir);
+    assert.strictEqual(
+        trasRecuperar.alertRepeats,
+        0,
+        'CA-6b: la evidencia de persistencia caduca cuando la condición se recupera',
+    );
+    assert.strictEqual(
+        trasRecuperar.lastAlertTs,
+        hace90min,
+        'la cadencia NO se resetea: pisar lastAlertTs haría alertar en cada oscilación',
+    );
+
+    // Episodio NUEVO: vuelve a degradarse con el cooldown ya vencido. Como la
+    // evidencia se limpió, el aviso NO puede afirmar que ya se había avisado.
+    const degradado = serieConPico(220000);
+    degradado.lastAlertTs = trasRecuperar.lastAlertTs;
+    degradado.alertRepeats = trasRecuperar.alertRepeats;
+    sembrarEstado(dir, degradado);
+
+    const out2 = correr(dir, { PLV_HB_AGE_MS: String(120 * 1000) });
+    assert.strictEqual(out2, 'ACTION:skip');
+
+    const msgs = alertas(dir);
+    assert.strictEqual(msgs.length, 1, `esperaba 1 aviso, hubo ${msgs.length}`);
+    assert.doesNotMatch(
+        msgs[0],
+        /ya te avisé/,
+        'CA-6a: sin repeticiones en la ventana no hay evidencia, así que la línea se omite',
+    );
+    assert.match(msgs[0], /reiniciaría el Pulpo aunque esté trabajando bien/);
+
+    // CA-7: el log conserva por qué se omitió; si no, un aviso sin la línea es
+    // indistinguible de un bug del módulo de copy.
+    const l = logDelRunner(dir);
+    assert.match(l, /prevAlertTsEnviado=omitido/);
+    assert.match(l, /repeticionesSilenciadas=0/);
+});
+
+test('E2E #6146 CA-6b — una laguna de datos NO es una recuperación: la evidencia sobrevive', () => {
+    const dir = armarPipeline();
+    const hace90min = Date.now() - NOVENTA_MIN_MS;
+
+    // Sin muestras no hay pico observable, y `evaluateMargin` devuelve
+    // `degraded: false` igual que en un margen sano. Si la rama de recuperación
+    // no distinguiera los dos casos, este hueco borraría la evidencia de un
+    // episodio que sigue vivo.
+    sembrarEstado(dir, {
+        samples: [],
+        kills: [],
+        lastAlertTs: hace90min,
+        lastEscalationTs: 0,
+        alertRepeats: 3,
+    });
+
+    const out = correr(dir, { PLV_HB_AGE_MS: String(120 * 1000) });
+    assert.strictEqual(out, 'ACTION:skip');
+    assert.deepStrictEqual(alertas(dir), []);
+    assert.strictEqual(
+        estadoEnDisco(dir).alertRepeats,
+        3,
+        'sin pico medido no se puede afirmar que la condición se recuperó',
+    );
+});
+
+test('E2E #6146 — episodio realmente persistente: la frase sale, sin exponer el contador', () => {
+    const dir = armarPipeline();
+
+    const degradado = serieConPico(220000);
+    degradado.lastAlertTs = Date.now() - NOVENTA_MIN_MS; // cooldown de 60 min vencido
+    degradado.alertRepeats = 3; // hubo ciclos degradados dentro de la ventana
+    sembrarEstado(dir, degradado);
+
+    const out = correr(dir, { PLV_HB_AGE_MS: String(120 * 1000) });
+    assert.strictEqual(out, 'ACTION:skip');
+
+    const msgs = alertas(dir);
+    assert.strictEqual(msgs.length, 1);
+    // 90 min => "hace una hora" (CA-11: singular, no "hace 1 horas").
+    assert.match(msgs[0], /ya te avisé hace una hora y sigue pasando/);
+    // CA-6: el operador nunca ve el contador interno que respalda la frase.
+    assert.doesNotMatch(msgs[0], /repeticion/i);
+    assert.doesNotMatch(msgs[0], /alertRepeats/);
+    assert.doesNotMatch(msgs[0], /silenciad/i);
+    // CA-2: la frase nueva tampoco filtra jerga ni rutas.
+    assert.doesNotMatch(msgs[0], /config\.yaml/);
+    assert.doesNotMatch(msgs[0], /umbral/i);
+    assert.doesNotMatch(msgs[0], /percentil/i);
+
+    // CA-7: el detalle sí queda en el log, incluido que la marca se dejó pasar.
+    const l = logDelRunner(dir);
+    assert.match(l, /repeticionesSilenciadas=3/);
+    assert.match(l, /prevAlertTsEnviado=\d+/);
+});
+
+test('E2E #6146 CA-12 — si el copy no carga, el operador igual recibe UN aviso (no silencio)', () => {
+    const dir = armarPipeline();
+    // Shim roto: simula el módulo de copy inutilizable. El mensaje de error trae
+    // una ruta absoluta a propósito, para verificar que no se filtra al canal.
+    fs.writeFileSync(
+        path.join(dir, 'lib', 'pulpo-liveness-copy.js'),
+        'throw new Error("boom en /c/Workspaces/Intrale/platform/.pipeline/lib/roto.js");\n',
+    );
+    sembrarEstado(dir, serieConPico(220000));
+
+    const out = correr(dir, { PLV_HB_AGE_MS: String(120 * 1000) });
+    assert.strictEqual(out, 'ACTION:skip', 'CA-13: un fallo de copy no cambia la decisión');
+
+    const msgs = alertas(dir);
+    assert.strictEqual(
+        msgs.length,
+        1,
+        `el aviso degradado sale una sola vez (ni silencio ni duplicado); hubo ${msgs.length}`,
+    );
+    const texto = msgs[0];
+    assert.match(texto, /El vigilante puede reiniciar el Pulpo aunque está trabajando bien/);
+    assert.match(texto, /el Commander deja de responder/);
+    // CA-9: sigue siendo `warn` (⚠️), no se degrada ni se escala de severidad.
+    assert.match(texto, /⚠/);
+    assert.doesNotMatch(texto, /\u{1F6A8}/u);
+    // SEC-6: el texto de rescate es constante — ni el error ni las rutas viajan.
+    assert.doesNotMatch(texto, /boom/);
+    assert.doesNotMatch(texto, /\.pipeline/);
+    assert.doesNotMatch(texto, /roto\.js/);
+    assert.doesNotMatch(texto, /Workspaces/);
+
+    // CA-7: el detalle del fallo queda en el log, que es donde se diagnostica.
+    const l = logDelRunner(dir);
+    assert.match(l, /copy de la alerta de margen no disponible/);
+    assert.match(l, /alerta_margen emitida urgencia=desconocida/);
 });

@@ -272,9 +272,16 @@ const KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER = Object.freeze({
     // para groq ahora falla la cross-validation con mensaje accionable.
     //
     // #3220 — Cerebras también es OpenAI-compatible. Lista conservadora.
+    // #5978 — `insufficient_quota` verificado empíricamente: al agotarse el
+    // crédito, Cerebras devuelve HTTP 402 con
+    // `{"error":{"status":402,"message":"Payment required...","code":"insufficient_quota"}}`.
+    // Sin este tipo el 402 no seteaba flag de cuota y el provider seguía en la
+    // cadena, matando agentes al spawn y rebotando issues sanos. Alineado con
+    // nvidia-nim/kimi-moonshot, que ya lo declaran (mismo contrato OpenAI-compat).
     cerebras: Object.freeze([
         'rate_limit_exceeded',
         'quota_exceeded',
+        'insufficient_quota',
     ]),
     // #3243 — NVIDIA NIM, 4to free provider. API OpenAI-compat: `_detectOpenAI`
     // reusa el shape SSE sin código nuevo. Lista conservadora — NVIDIA no
@@ -332,6 +339,23 @@ function ensureDir(dir) {
 // concurrentes sobre el mismo destino con la máquina cargada (la suite completa
 // corre miles de tests en paralelo). Síntoma: `setFlag` lanzaba EPERM y el test
 // de concurrencia caía de forma intermitente, sólo bajo carga.
+//
+// #6612 — El techo de 400ms es de ESPERA ACUMULADA, no de reloj de pared.
+// Antes se medía `Date.now()` contra un deadline absoluto, y eso tenía el
+// defecto exactamente invertido: bajo carga —el único escenario donde el retry
+// importa— cada intento tarda más, el deadline de pared se consume con el
+// tiempo que la máquina pasa haciendo otra cosa, y el retry se rinde ANTES de
+// gastar sus 6 intentos. O sea: el budget se achicaba solo justo cuando hacía
+// falta entero, reintroduciendo el flaky que #5400 vino a cerrar.
+// Reproducido con `fs.renameSync` instrumentado (lag por syscall simulado):
+//
+//     lag= 0ms  wall= 215ms  OK (llego a los 6 intentos)
+//     lag=40ms  wall= 447ms  OK (llego a los 6 intentos)
+//     lag=60ms  wall= 415ms  THROW EBUSY tras 5/6 intentos   <-- se rinde antes
+//
+// El anti-DoS se mantiene y encima es más fuerte, porque ahora es determinístico
+// y no depende de la carga: como mucho 6 syscalls y como mucho 400ms dormidos
+// (el backoff con jitter suma a lo sumo 1.5*(5+10+20+40+80) = 232.5ms).
 const RENAME_RETRY_MAX_ATTEMPTS = 6;
 const RENAME_RETRY_MAX_TOTAL_MS = 400;
 const RENAME_RETRY_INITIAL_MS = 5;
@@ -362,7 +386,10 @@ function sleepSyncMs(ms) {
 function renameWithRetry(tmp, filepath) {
     let lastErr = null;
     let delayMs = RENAME_RETRY_INITIAL_MS;
-    const totalDeadline = Date.now() + RENAME_RETRY_MAX_TOTAL_MS;
+    // #6612 — presupuesto de ESPERA (ver la nota del constante). Se descuenta
+    // sólo lo que efectivamente se duerme; el tiempo que la máquina tarda en
+    // ejecutar el `renameSync` NO come intentos.
+    let sleptMs = 0;
     for (let attempt = 1; attempt <= RENAME_RETRY_MAX_ATTEMPTS; attempt++) {
         try {
             fs.renameSync(tmp, filepath);
@@ -371,12 +398,14 @@ function renameWithRetry(tmp, filepath) {
             lastErr = err;
             if (!RENAME_RETRYABLE_ERRORS.has(err && err.code)) throw err;
             if (attempt === RENAME_RETRY_MAX_ATTEMPTS) throw err;
-            const remaining = totalDeadline - Date.now();
+            const remaining = RENAME_RETRY_MAX_TOTAL_MS - sleptMs;
             if (remaining <= 0) throw err;
             // Jitter [0.5x, 1.5x): N escritores que chocan a la vez esperan lo
             // mismo y vuelven a chocar a la vez. El jitter rompe ese lockstep.
             const jittered = Math.max(1, Math.round(delayMs * (0.5 + Math.random())));
-            sleepSyncMs(Math.min(jittered, remaining));
+            const dormir = Math.min(jittered, remaining);
+            sleptMs += dormir;
+            sleepSyncMs(dormir);
             delayMs = Math.min(delayMs * 2, RENAME_RETRY_MAX_TOTAL_MS);
         }
     }
@@ -1654,9 +1683,18 @@ function _detectAnthropic(evt, allowlist, opts = {}) {
  *   Alternativa observada en algunos clientes OpenAI:
  *   `evt.type === 'response.error' && evt.error.type ∈ allowlist`
  *
- * Soportamos ambos shapes para tolerancia. PROHIBIDO matchear por substring
+ *   Shape DESNUDO observado empíricamente en Cerebras (#5978, 2026-08-22), sin
+ *   sobre SSE y con el discriminador en `code` en vez de `type`:
+ *   `{"error":{"status":402,"message":"Payment required ...","code":"insufficient_quota"}}`
+ *   Este shape hacía invisible el 402 de billing: el detector devolvía
+ *   `matched:false`, nunca se seteaba el flag de cuota, el resolver seguía
+ *   eligiendo el provider muerto y cada relanzamiento quemaba un reintento del
+ *   ISSUE hasta rebotarlo por "huérfano tras 3 reintentos".
+ *
+ * Soportamos los tres shapes para tolerancia. PROHIBIDO matchear por substring
  * sobre texto libre. PROHIBIDO matchear contra campos controlados por el
- * modelo (canal de contenido).
+ * modelo (canal de contenido). El match sigue siendo fail-closed: `type`/`code`
+ * sólo cuentan si el provider DECLARÓ ese error_type en su allowlist.
  */
 function _detectOpenAI(evt, allowlist) {
     if (!evt || typeof evt !== 'object') return { matched: false };
@@ -1676,6 +1714,23 @@ function _detectOpenAI(evt, allowlist) {
         const errType = typeof evt.error.type === 'string' ? evt.error.type : null;
         if (errType && allowlist.includes(errType)) {
             return { matched: true, errorType: errType };
+        }
+    }
+
+    // Shape DESNUDO (#5978): `{ error: { status, message, code } }` — sin sobre
+    // SSE. Es lo que emite Cerebras (y varios OpenAI-compat) al morir por 402 de
+    // billing. Se leen SOLO los campos de control `type` y `code` del objeto
+    // `error` de nivel raíz; nunca texto libre ni canal de contenido. Se exige
+    // que NO haya discriminador de evento (`evt.event`/`evt.type`) para no pisar
+    // los shapes de arriba, y el valor debe estar en la allowlist del provider
+    // (fail-closed: un provider que no declara el tipo jamás matchea).
+    if (!evt.event && !evt.type && evt.error && typeof evt.error === 'object' && !Array.isArray(evt.error)) {
+        const bareType = typeof evt.error.type === 'string' ? evt.error.type : null;
+        const bareCode = typeof evt.error.code === 'string' ? evt.error.code : null;
+        for (const candidate of [bareType, bareCode]) {
+            if (candidate && allowlist.includes(candidate)) {
+                return { matched: true, errorType: candidate };
+            }
         }
     }
 

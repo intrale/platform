@@ -47,6 +47,8 @@ const { redactSensitive } = require('./redact');
 const { sanitize } = require('../sanitizer');
 const { MODEL_PRICING } = require('./traceability');
 const agentModels = require('./agent-models');
+// #6226 — nombres únicos + escritura fail-closed para los dropfiles de la cola.
+const dropfileWriter = require('./dropfile-writer');
 
 // ─── Constantes ──────────────────────────────────────────────────────────────
 
@@ -981,15 +983,34 @@ function sendAlert(prevSha, headSha, opts) {
         if (!dryRun) {
             try {
                 if (!fs.existsSync(queueDir)) fs.mkdirSync(queueDir, { recursive: true });
-                const filename = `${now}-agent-models-change.json`;
-                const file = path.join(queueDir, filename);
-                fs.writeFileSync(file, JSON.stringify({
-                    text,
-                    parse_mode: 'MarkdownV2',
-                    narration_text: narration,  // para que un drainer futuro arme el TTS
-                }), 'utf8');
+                // #6226 — nombre único (`<ts>-<seq>-agent-models-change.json`) +
+                // escritura `wx`. Antes el nombre se armaba con el `now`
+                // capturado UNA sola vez arriba, FUERA de este `for (const
+                // window of windows)`. Con N ventanas consolidadas el path era
+                // literalmente el mismo para todas —no dependía de la velocidad
+                // del reloj, era determinista— y cada ventana pisaba a la
+                // anterior: sobrevivía sólo la última y `alerts[]` seguía
+                // reportando N alertas `ok:true`.
+                //
+                // El `now` se sigue usando como timestamp base (así todas las
+                // ventanas de un mismo batch quedan agrupadas y `opts.now` sigue
+                // siendo inyectable en tests); el `seq` del writer es el que
+                // desempata, y preserva el orden de emisión de las ventanas.
+                const { filePath } = dropfileWriter.writeDropfileSync({
+                    dir: queueDir,
+                    suffix: 'agent-models-change.json',
+                    data: JSON.stringify({
+                        text,
+                        parse_mode: 'MarkdownV2',
+                        narration_text: narration,  // para que un drainer futuro arme el TTS
+                    }),
+                    now: () => now,
+                    onCollision: (name, attempt) => console.warn(
+                        `[agent-models-change-alert] colisión de nombre de dropfile (${name}, intento ${attempt + 1}) — se reintenta con otro nombre, no se sobreescribe`
+                    ),
+                });
                 alertResult.ok = true;
-                alertResult.queueFile = file;
+                alertResult.queueFile = filePath;
             } catch (e) {
                 alertResult.reason = `cannot_write_queue: ${e.message}`;
             }

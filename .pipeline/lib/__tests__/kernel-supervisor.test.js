@@ -37,6 +37,15 @@ const { _resetVaultCache } = require('../credentials');
 // Helpers
 // -----------------------------------------------------------------------------
 
+// #5214 — Desde que existe el guard fail-closed de config durable, un fixture
+// con `durable: true` y SIN `tableName` ya no es una config durable válida: el
+// boot aborta antes de llegar a lo que estos tests miden (cap, flag, best-effort
+// del store). Los fixtures de abajo cargan un nombre de tabla ficticio para
+// seguir ejerciendo lo suyo. El nombre nunca sale de acá: todos estos tests
+// inyectan `buildCatalogStore`/`createSupervisor` fake, así que no se construye
+// ningún driver real ni se toca AWS.
+const TABLE_FIXTURE = 'kernel-supervisor-test-table';
+
 // Store fake mínimo que sólo expone listProducts() (rol de catálogo/control-plane).
 function fakeCatalogStore(products) {
   return { listProducts: async () => products.slice() };
@@ -1172,7 +1181,7 @@ for (const [caso, cfg] of [
 test('#4822 · CA-1 · boot durable con flag ON instancia los active del store durable', async () => {
   const spawnedProducts = [];
   const res = await bootKernelDurable({
-    config: { kernel: { durable: true, max_concurrent_instances: 3 } },
+    config: { kernel: { durable: true, tableName: TABLE_FIXTURE, max_concurrent_instances: 3 } },
     buildCatalogStore: () => fakeCatalogStore(CATALOG_MIXTO),
     buildStoreFactory: () => recordingStoreFactory([]),
     spawn: (ctx) => { spawnedProducts.push(ctx.projectId); return { alive: true }; },
@@ -1187,7 +1196,7 @@ test('#4822 · CA-1 · boot durable con flag ON instancia los active del store d
 // CA-SEC-4 end-to-end vía bootKernelDurable: cap de config aplicado sobre N>cap.
 test('#4822 · CA-SEC-4 · boot durable aplica el cap de config sobre N>cap activos', async () => {
   const res = await bootKernelDurable({
-    config: { kernel: { durable: true, max_concurrent_instances: 1 } },
+    config: { kernel: { durable: true, tableName: TABLE_FIXTURE, max_concurrent_instances: 1 } },
     buildCatalogStore: () => fakeCatalogStore(CATALOG_N_ACTIVOS),
     buildStoreFactory: () => recordingStoreFactory([]),
     spawn: () => ({ alive: true }),
@@ -1201,7 +1210,7 @@ test('#4822 · CA-SEC-4 · boot durable aplica el cap de config sobre N>cap acti
 // Con flag ON pero sin cota válida en config, cae al default seguro (nunca sin techo).
 test('#4822 · CA-SEC-4 · sin cota válida en config el boot durable usa el default seguro', async () => {
   const res = await bootKernelDurable({
-    config: { kernel: { durable: true } },
+    config: { kernel: { durable: true, tableName: TABLE_FIXTURE } },
     buildCatalogStore: () => fakeCatalogStore(CATALOG_N_ACTIVOS),
     buildStoreFactory: () => recordingStoreFactory([]),
     spawn: () => ({ alive: true }),
@@ -1215,7 +1224,7 @@ test('#4822 · CA-SEC-4 · sin cota válida en config el boot durable usa el def
 test('#4822 · boot durable es best-effort: un fallo del store no lanza (no tumba el pulpo)', async () => {
   const alerts = [];
   const res = await bootKernelDurable({
-    config: { kernel: { durable: true, max_concurrent_instances: 2 } },
+    config: { kernel: { durable: true, tableName: TABLE_FIXTURE, max_concurrent_instances: 2 } },
     buildCatalogStore: () => { throw new Error('driver AWS no disponible'); },
     onAlert: (a) => alerts.push(a),
   });
@@ -1227,7 +1236,7 @@ test('#4822 · boot durable es best-effort: un fallo del store no lanza (no tumb
 
 // Falta buildCatalogStore con flag ON ⇒ best-effort error, no throw.
 test('#4822 · boot durable sin buildCatalogStore devuelve error sin lanzar', async () => {
-  const res = await bootKernelDurable({ config: { kernel: { durable: true } } });
+  const res = await bootKernelDurable({ config: { kernel: { durable: true, tableName: TABLE_FIXTURE } } });
   assert.equal(res.ran, false);
   assert.equal(res.reason, 'error');
   assert.match(res.error, /buildCatalogStore/, 'explica el requisito faltante');

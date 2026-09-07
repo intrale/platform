@@ -66,12 +66,20 @@
 //        Por eso `sanitizeCliError` construye un error NUEVO: nunca se re-lanza
 //        el original ni se le copia `stdout`/`output`/`message`.
 //
-//   SEC-2 El env del spawn se arma por ALLOWLIST con `buildAwsScopedEnv`
-//        (kernel-provision.js:110-119). El ambiente global del proceso NO se
-//        nombra ni una sola vez en este archivo — ni para leerlo: el ambiente de
-//        origen se recibe SIEMPRE por parámetro y se valida que sea un objeto,
-//        porque `buildAwsScopedEnv` cae al ambiente global si recibe otra cosa.
-//        El test 10b lo afirma con un grep sobre el propio archivo.
+//   SEC-2 El env del spawn se arma por ALLOWLIST con `buildVaultAwsEnv` —
+//        builder PROPIO del vault (#5426 · G-2), no el compartido de
+//        `kernel-provision.js`, que tiene tres consumidores con principales
+//        distintos. El ambiente global del proceso NO se nombra ni una sola vez
+//        en este archivo — ni para leerlo: el ambiente de origen se recibe
+//        SIEMPRE por parámetro y se valida que sea un objeto. El test 10b lo
+//        afirma con un grep sobre el propio archivo.
+//
+//   SEC-7 El ambiente TRANSPORTA material de credencial; nunca ELIGE el
+//        principal (#5426 · T2-1/CA-13). `AWS_PROFILE`, `AWS_CONFIG_FILE` y
+//        `AWS_SHARED_CREDENTIALS_FILE` del ambiente de origen se descartan: el
+//        perfil sale de `vault.awsProfile` y las rutas se calculan con
+//        `os.homedir()`. El mecanismo se declara con `vault.authMode` (enum
+//        cerrado), por SEÑAL POSITIVA: nunca por ausencia de variables.
 //
 //   SEC-6 Caché con tope duro de TTL, clave que incluye el namespace, sin
 //        negative caching y sin persistencia a disco.
@@ -84,7 +92,8 @@
 // compartir una sola clase. Cada mensaje nombra la ACCIÓN, no sólo el síntoma:
 //
 //   VaultSecretMissingError      VAULT_SECRET_MISSING      -> subir el parámetro al vault
-//   VaultCliError                VAULT_CLI                 -> `aws login` / corregir la policy IAM
+//   VaultCliError                VAULT_CLI                 -> renovar la credencial del mecanismo
+//                                                            declarado / corregir la policy IAM
 //   VaultTruncatedResponseError  VAULT_TRUNCATED_RESPONSE  -> revisar paginación; el vault está bien
 //
 // La cuarta falla — config del vault inválida al ENCENDER el gate (CA-29) — no
@@ -98,9 +107,19 @@
 
 const util = require('node:util');
 
+const os = require('node:os');
+const path = require('node:path');
+
 const { redactAwsEvidence } = require('./kernel-table-verify');
-const { buildAwsScopedEnv } = require('./kernel-provision');
 const { redactScoped } = require('./credentials');
+
+// #5426 (G-2) — `buildAwsScopedEnv` (kernel-provision.js:110-119) YA NO se
+// importa acá. Tiene tres consumidores con PRINCIPALES distintos (provisión =
+// admin, vault = rol de lectura del host, `pulpo.js` = `kernel-runtime` de
+// #5126). Ensancharlo para que el vault pueda imponer su perfil movería el
+// blast radius a los otros dos, y el daño no se vería en este PR porque
+// `kernel.durable: false` mantiene dormido al tercero. El vault arma su propio
+// ambiente con `buildVaultAwsEnv` (abajo).
 
 // -----------------------------------------------------------------------------
 // Allowlist de verbos read-only — fail-closed ANTES de spawnear
@@ -140,14 +159,153 @@ const VAULT_ALLOWED_FLAGS = Object.freeze([
 const SEGMENT_RE = /^[A-Za-z0-9_-]+$/;        // D8 — segmentos del path
 const PREFIX_RE = /^(\/[A-Za-z0-9_-]+)+$/;    // SEC-5 — prefix de config.yaml
 const FILE_URI_RE = /file:\/\//i;             // SEC-5 — la CLI lee archivos con `file://`
+// #5426 — nombre de perfil de la AWS CLI. Más permisivo que `SEGMENT_RE` (los
+// perfiles admiten punto) y más cerrado que "cualquier string": sin barras, sin
+// espacios y sin `-`/`.` inicial, que es lo que evita que un valor de config con
+// forma de flag llegue al ambiente del hijo.
+const PROFILE_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
 const VAULT_TIERS = Object.freeze(['shared', 'host', 'rotating']);
+
+// -----------------------------------------------------------------------------
+// #5426 — mecanismo de identidad del vault, por SEÑAL POSITIVA de config
+// -----------------------------------------------------------------------------
+//
+// T2-2 — El guard viejo aceptaba/rechazaba mirando qué variables había en el
+// ambiente. Eso tiene dos defectos que no se arreglan por separado:
+//
+//   1. Rechaza por construcción el único mecanismo que este host tiene
+//      (assume-role encadenado), porque no deja par estático en el ambiente.
+//   2. Aceptar «instance profile» mirando el env obliga a dejar de exigir algo
+//      — o sea, convertir el fail-closed en fail-open disfrazado.
+//
+// Por eso la señal es `vault.authMode`, un enum CERRADO que viene de config
+// (código commiteado), no del ambiente. El ambiente sólo puede TRANSPORTAR
+// material de credencial; nunca ELIGE con qué principal corre la CLI.
+const VAULT_AUTH_MODES = Object.freeze([
+    'assume-role-chain',
+    'session-token',
+    'static-key',
+    'instance-profile',
+]);
+
+// Material de credencial que cada modo admite copiar del ambiente de origen.
+//
+// T2-1 (endurecido respecto de la receta) — los modos que resuelven la identidad
+// por PERFIL o por METADATA no copian NINGUNA variable de credencial. No es
+// cosmética: la AWS CLI le da precedencia a `AWS_ACCESS_KEY_ID`/`SECRET` del
+// ambiente POR ENCIMA del perfil, así que copiarlas en modo
+// `assume-role-chain` dejaría que un par estático heredado del padre le gane al
+// rol declarado en config — exactamente el agujero que `vault.awsProfile` viene
+// a cerrar, sólo que por la otra puerta.
+const VAULT_AUTH_MATERIAL = Object.freeze({
+    'assume-role-chain': Object.freeze([]),
+    'instance-profile': Object.freeze([]),
+    'session-token': Object.freeze([
+        'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN',
+    ]),
+    'static-key': Object.freeze(['AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY']),
+});
+
+// Nombre de archivo que NO debe existir nunca. Se usa como valor de
+// `AWS_CONFIG_FILE`/`AWS_SHARED_CREDENTIALS_FILE` en `instance-profile` para
+// cortar la cadena de credenciales basada en archivos (ver `buildVaultAwsEnv`).
+// Es un nombre neutro a propósito: este repo es público y un nombre de perfil
+// del host sería reconocimiento gratuito (REQ-SEC-5 de #5339).
+const VAULT_NO_FILE_SENTINEL = 'vault-instance-profile-sin-archivos';
 
 // #5804/#5803 — UNICA fuente de verdad del vocabulario de telemetría del vault.
 // El ORDEN es contractual: el primer elemento es la categoría de lectura FISICA
 // (la única que factura y la única que alimenta pico y extrapolación); el resto
 // son categorías que se cuentan pero NO son tráfico físico.
 const VAULT_TELEMETRY_CATEGORIES = Object.freeze(['physical_read', 'cache_hit', 'single_flight_join']);
+
+// #5803 — nombres DERIVADOS del enum de arriba por su índice contractual. No es
+// una segunda fuente de verdad: acá no se escribe ningún literal de categoría,
+// cada valor sale del array congelado. Existe para que `credentials.js` pueda
+// emitir la decisión que toma esa capa (memo hit / join de vuelo) sin escribir
+// un literal propio, que es exactamente la deriva que CA-17 viene a frenar.
+const VAULT_TELEMETRY = Object.freeze({
+    PHYSICAL_READ: VAULT_TELEMETRY_CATEGORIES[0],
+    CACHE_HIT: VAULT_TELEMETRY_CATEGORIES[1],
+    SINGLE_FLIGHT_JOIN: VAULT_TELEMETRY_CATEGORIES[2],
+});
+
+/**
+ * #5803 — emisor ÚNICO de telemetría del vault en todo el repo.
+ *
+ * Es módulo-level y sin estado global a propósito: las dos capas que toman
+ * decisiones clasificables (este archivo y `credentials.js`) lo CONSUMEN, y
+ * ninguna reimplementa la emisión. La regla de dueño único dice que cada
+ * categoría la emite la capa que toma la decisión, exactamente una vez;
+ * ninguna capa observa, cuenta, filtra ni reclasifica los eventos de la otra:
+ * las dos escriben en el MISMO sink inyectado y el agregador es #5805.
+ *
+ * El contexto (`crearContexto()`) es el latch de "a lo sumo un evento por
+ * invocación": lo crea quien delimita la invocación (el envoltorio público del
+ * vault, o el pedido en `credentials.js`), nunca el núcleo. Sin el latch,
+ * `nucleoResolveScope` delegando en `nucleoResolveNamespace` emitiría dos
+ * eventos por una sola invocación pública.
+ *
+ * @param {object} [args]
+ * @param {function} [args.sink]     recibe `{category, ts_ms}`; sin él todo es no-op
+ * @param {function} [args.now]      reloj inyectado (ms). NUNCA `Date.now()` directo:
+ *                                   si no, los tests de expiración medirían un tiempo
+ *                                   y el evento otro.
+ * @param {function} [args.onError]  notificación de que el sink falló. Recibe SÓLO
+ *                                   el error; el evento no se le pasa (CA-13).
+ */
+function createVaultTelemetryEmitter({ sink, now, onError } = {}) {
+    // CA-14 — sin sink el emisor es un no-op PURO: no construye el evento y no
+    // lee el reloj. Un espía sobre `now` tiene que quedar en cero llamadas.
+    if (typeof sink !== 'function') {
+        return { crearContexto: () => null, emitir: () => {} };
+    }
+    const reloj = typeof now === 'function' ? now : () => Date.now();
+    return {
+        crearContexto: () => ({ emitido: false }),
+        emitir(ctx, categoria) {
+            // Sin contexto no hay invocación que clasificar (gate cerrado, o un
+            // caller que decidió no instrumentar esta rama). Y con el latch ya
+            // consumido, esta decisión ya tiene dueño.
+            if (!ctx || ctx.emitido) return;
+            if (!VAULT_TELEMETRY_CATEGORIES.includes(categoria)) {
+                // Fail-closed del vocabulario: no se emite una categoría
+                // inventada, que el agregador de #5804 rechazaría igual pero
+                // recién en #5805, lejos del bug. El mensaje dice el TIPO y no
+                // el VALOR a propósito: `emitir` es exportado, así que un caller
+                // podría pasarle cualquier cosa y el mensaje va a un log.
+                throw new VaultConfigError('vault.telemetry',
+                    `recibió una categoría desconocida (tipo ${typeof categoria}); `
+                    + 'el vocabulario es `VAULT_TELEMETRY_CATEGORIES`');
+            }
+            ctx.emitido = true;
+            // SEC-A/B/F — construcción por ENUMERACIÓN de exactamente dos
+            // campos. PROHIBIDO el spread del estado interno: cualquier campo
+            // que mañana se agregue al caché entraría solo al canal. Y sin
+            // `namespace_ref`/`scopes`/`tier` no hay superficie de CR/LF ni de
+            // topología adivinable (CA-9/CA-12), ni referencia viva al material
+            // de secreto que un buffer del sink pudiera retener (CA-11).
+            const evento = Object.freeze({ category: categoria, ts_ms: reloj() });
+            try {
+                sink(evento);
+            } catch (err) {
+                // SEC-D — el sink NO altera la resolución: no se reintenta la
+                // lectura, no se emite un segundo evento, no cambia el valor
+                // devuelto. El error se reporta REDACTADO y SIN re-incluir el
+                // evento (un sink que falla imprimiendo su argumento suele
+                // meterlo en el mensaje de la excepción).
+                if (typeof onError === 'function') {
+                    try {
+                        onError(err);
+                    } catch (_) {
+                        // Un `onError` roto tampoco puede voltear la resolución.
+                    }
+                }
+            }
+        },
+    };
+}
 
 const MAX_CACHE_TTL_SECONDS = 300;            // SEC-6 — tope DURO, no default
 const DEFAULT_TIMEOUT_MS = 5000;
@@ -196,11 +354,13 @@ class VaultSecretMissingError extends Error {
 
 /**
  * La AWS CLI falló (auth denegada, sesión expirada, timeout, exit ≠ 0).
- * Remediación: `aws login` o corregir la policy IAM.
+ * Remediación: renovar la credencial del mecanismo declarado en `vault.authMode`
+ * o corregir la policy IAM.
  *
  * CA-31 — el stderr saneado se PRESERVA a propósito: `redactAwsEvidence` deja
  * intacto el verbo AWS denegado (`ssm:GetParameter` vs `kms:Decrypt`, que
- * desambiguan remediaciones distintas) y el texto de remediación (`aws login`).
+ * desambiguan remediaciones distintas) y el texto de remediación que trae la
+ * propia CLI.
  * Colapsar esto a «error de CLI» sería más «seguro» y dejaría al operador sin
  * diagnóstico.
  */
@@ -211,8 +371,12 @@ class VaultCliError extends Error {
             `vault: la AWS CLI falló — ${service} ${verb} (exit=${exitCode == null ? 'null' : exitCode})`
             + `${detalle ? `: ${detalle}` : ''}`
             + ` · scopes=[${(scopes || []).join(',')}]`
-            + ' · Remediación: reautenticar (`aws login`) o corregir la policy IAM del rol '
-            + 'de lectura del vault.',
+            // #5426 · CA-11(c) — la remediación nombra el MECANISMO declarado,
+            // no un comando concreto: reautenticar por SSO no aplica a un host
+            // que se autentica por assume-role encadenado, y sugerirlo manda el
+            // diagnóstico para el lado equivocado. Tampoco se nombra el perfil.
+            + ' · Remediación: renovar la credencial del mecanismo declarado en '
+            + '`vault.authMode` o corregir la policy IAM del rol de lectura del vault.',
         );
         this.name = 'VaultCliError';
         this.code = VAULT_ERROR_CODES.CLI;
@@ -274,6 +438,10 @@ const VAULT_CONFIG_KEYS = new Set([
     'vault.prefix',
     'vault.projectId',
     'vault.hostId',
+    // #5426 — mecanismo de identidad del host. Las dos son claves que el
+    // operador edita a mano, así que el error las manda a `config.yaml`.
+    'vault.authMode',
+    'vault.awsProfile',
     'vault.cache_ttl_seconds',
     'vault.required_scopes',
     'vault.required_scopes[]',
@@ -375,6 +543,207 @@ function assertPrefix(clave, value) {
             `inválido (${describeTipo(value)}): debe empezar con "/" y no terminar en "/" `
             + '(ejemplo válido: `/intrale`)');
     }
+}
+
+// -----------------------------------------------------------------------------
+// #5426 · CA-11 / CA-13 — identidad del vault: config manda, ambiente no elige
+// -----------------------------------------------------------------------------
+
+/**
+ * Valida el mecanismo de identidad declarado en config. Fail-closed por SEÑAL
+ * POSITIVA (T2-2): el error nombra la CLAVE (`vault.authMode`), nunca un regex
+ * ni «faltan variables» — un operador no puede accionar sobre la ausencia de
+ * algo que nunca supo que tenía que estar.
+ *
+ * Se llama desde `createAwsCliVaultRunner` (el único camino que efectivamente
+ * necesita una identidad AWS) y desde `validateVaultConfig` cuando la clave
+ * está presente. NO se exige en el driver in-memory: acoplar la validación del
+ * NAMESPACE a la identidad de AWS sería una dependencia falsa — el driver de
+ * tests no habla con AWS ni una vez.
+ *
+ * @param {object} cfg  sección `vault:` de config.yaml (+ `region`)
+ */
+function assertVaultAuthConfig(cfg) {
+    const modo = cfg && cfg.authMode;
+    if (typeof modo !== 'string' || !VAULT_AUTH_MODES.includes(modo)) {
+        throw new VaultConfigError('vault.authMode',
+            `sin mecanismo de identidad declarado (recibido: ${describeTipo(modo)}). `
+            + `Valores aceptados: ${VAULT_AUTH_MODES.join(' | ')}. `
+            + 'La identidad del vault se declara en config, nunca se infiere del ambiente');
+    }
+    const perfil = cfg.awsProfile;
+    const usaPerfil = modo === 'assume-role-chain';
+    if (usaPerfil) {
+        if (typeof perfil !== 'string' || perfil === '') {
+            throw new VaultConfigError('vault.awsProfile',
+                `sin configurar (recibido: ${describeTipo(perfil)}); `
+                + `\`authMode: ${modo}\` resuelve la identidad por perfil de la AWS CLI, `
+                + 'y el perfil sale de config — nunca del ambiente');
+        }
+        if (!PROFILE_RE.test(perfil)) {
+            throw new VaultConfigError('vault.awsProfile',
+                'inválido: sólo letras, números, punto, guion y guion bajo, '
+                + 'empezando por letra o número');
+        }
+    } else if (perfil != null && perfil !== '') {
+        // Combinación ambigua: con perfil Y material de credencial en el mismo
+        // ambiente, la AWS CLI resuelve por el material y el perfil queda de
+        // adorno. Un operador que la escribe cree estar usando el rol.
+        throw new VaultConfigError('vault.awsProfile',
+            `sólo aplica con \`authMode: assume-role-chain\` (declarado: \`${modo}\`)`);
+    }
+}
+
+/**
+ * Arma el ambiente del proceso hijo del vault. Es el ÚNICO lugar donde se
+ * decide con qué principal corre la AWS CLI que lee el vault.
+ *
+ * Cuatro invariantes, todas de #5426:
+ *
+ *   T2-1.1 — `AWS_PROFILE` del ambiente de origen se DESCARTA sin excepción. El
+ *            perfil sale de `vault.awsProfile`. Cerrado el bug de R2, un
+ *            `AWS_PROFILE` heredado dejaría de ser inerte y pasaría a elegir el
+ *            principal; el conjunto alcanzable de un host de desarrollo incluye
+ *            perfiles muy por encima del rol de lectura.
+ *   T2-1.3 — `AWS_CONFIG_FILE` y `AWS_SHARED_CREDENTIALS_FILE` se CALCULAN con
+ *            `os.homedir()`. Nunca se copian del ambiente: quien los pueda
+ *            escribir redirige la resolución de identidad a archivos suyos.
+ *   T2-1.4 — `instance-profile` apunta la cadena por ARCHIVOS a una ruta
+ *            inexistente y no setea `AWS_PROFILE`. Es el único modo sin señal en
+ *            el ambiente; sin este corte el hijo sale con sólo `AWS_REGION` y la
+ *            CLI resuelve contra el `[default]` de `~/.aws`, devolviéndole al
+ *            disco la elección del principal.
+ *   T2-1.5 — El material de credencial que se copia depende del modo
+ *            (`VAULT_AUTH_MATERIAL`): los modos por perfil/metadata no copian
+ *            ninguno, así que un par estático heredado no le puede ganar al rol.
+ *
+ * NO reutiliza `buildAwsScopedEnv` a propósito (G-2): ese builder es compartido
+ * por tres principales distintos.
+ *
+ * @param {object} sourceEnv  ambiente de origen, EXPLÍCITO
+ * @param {object} cfg        `{ region, authMode, awsProfile }`
+ * @returns {object} ambiente del hijo — sólo claves `AWS_*`
+ */
+function buildVaultAwsEnv(sourceEnv, cfg) {
+    const src = sourceEnv && typeof sourceEnv === 'object' && !Array.isArray(sourceEnv)
+        ? sourceEnv
+        : {};
+    const out = {};
+    if (cfg && cfg.region) out.AWS_REGION = cfg.region;
+
+    const modo = cfg && cfg.authMode;
+    if (modo === 'assume-role-chain' && cfg.awsProfile) {
+        const home = os.homedir();
+        out.AWS_PROFILE = cfg.awsProfile;
+        out.AWS_CONFIG_FILE = path.join(home, '.aws', 'config');
+        out.AWS_SHARED_CREDENTIALS_FILE = path.join(home, '.aws', 'credentials');
+    } else if (modo === 'instance-profile') {
+        // T2-1.4 — el ÚNICO modo cuya señal no vive en el ambiente (su guard en
+        // `assertVaultAuthSignal` es incondicionalmente verde, porque el rol se
+        // resuelve por metadata del host). Sin esto el hijo arrancaba con SÓLO
+        // `AWS_REGION`: sin material y sin saber dónde buscarlo, la AWS CLI baja
+        // por su cadena por defecto hasta `~/.aws/config` y termina resolviendo
+        // contra el perfil `[default]` del disco — es decir, el ambiente le
+        // vuelve a ELEGIR el principal al vault, que es justo lo que SEC-7
+        // prohíbe, sólo que por la puerta del modo que no deja señal.
+        //
+        // Neutralizamos la cadena basada en ARCHIVOS apuntándola a una ruta que
+        // no existe (la CLI la trata como config vacía), y NO seteamos
+        // `AWS_PROFILE`: así el único origen posible de identidad es la metadata
+        // del host. El sentinel vive bajo el home —no bajo un temp world-writable—
+        // para que plantarlo exija ya tener la cuenta del operador.
+        const sentinel = path.join(os.homedir(), '.aws', VAULT_NO_FILE_SENTINEL);
+        out.AWS_CONFIG_FILE = sentinel;
+        out.AWS_SHARED_CREDENTIALS_FILE = sentinel;
+    }
+
+    const material = VAULT_AUTH_MATERIAL[modo] || [];
+    for (const name of material) {
+        const v = src[name];
+        if (v != null && v !== '') out[name] = v;
+    }
+    return out;
+}
+
+/**
+ * Verifica que el mecanismo declarado tenga su señal en el ambiente ya armado.
+ *
+ * El mensaje NO sugiere reautenticar por SSO (la remediación vieja, que este
+ * archivo ya no nombra ni en un comentario, no satisfacía al guard
+ * que la emitía) y NO enumera perfiles del host: un mensaje de error viaja a
+ * logs y a Telegram, y ahí un nombre de perfil es reconocimiento gratis
+ * (REQ-SEC-5 de #5339).
+ */
+function assertVaultAuthSignal(env, cfg) {
+    const modo = cfg.authMode;
+    let ok;
+    switch (modo) {
+        case 'assume-role-chain':
+            ok = !!env.AWS_PROFILE;
+            break;
+        case 'session-token':
+            ok = !!env.AWS_SESSION_TOKEN && !!env.AWS_ACCESS_KEY_ID
+                && !!env.AWS_SECRET_ACCESS_KEY;
+            break;
+        case 'static-key':
+            ok = !!env.AWS_ACCESS_KEY_ID && !!env.AWS_SECRET_ACCESS_KEY;
+            break;
+        case 'instance-profile':
+            // La señal es `vault.authMode`, no el ambiente: el rol de instancia
+            // se resuelve por metadata del host y no deja rastro en el env.
+            ok = true;
+            break;
+        default:
+            ok = false;
+    }
+    if (!ok) {
+        throw new VaultConfigError('vault.credenciales',
+            `el mecanismo declarado (\`${modo}\`) no tiene su señal en el ambiente del vault: `
+            + 'faltan las credenciales AWS que ese modo necesita. Fail-closed: no se invoca la '
+            + 'AWS CLI con credenciales vacías. Remediación: revisar `vault.authMode` y el '
+            + 'scope `aws` del proceso que arranca el pipeline');
+    }
+}
+
+/**
+ * Resuelve el `hostId` del namespace del vault.
+ *
+ * D9 / T2-5 — `vault.hostId` se commitea VACÍO y **nunca** se llena en
+ * `.pipeline/config.yaml`: ese archivo está trackeado en un repo PÚBLICO, y el
+ * hostname expone la estructura `hosts/<hostId>/` que sostiene el aislamiento
+ * entre hosts. El alta de host lo resuelve en RUNTIME desde `os.hostname()` —
+ * el mismo criterio de identidad que ya usan `file-lock.js:145` y
+ * `notify-telegram.js:106`.
+ *
+ * La resolución en runtime NO es implícita: la habilita
+ * `vault.hostIdFromHostname`, que es una SEÑAL POSITIVA commiteada (el
+ * MECANISMO se publica; el VALOR nunca). Si fuera el default silencioso, un
+ * `hostId` vacío dejaría de ser distinguible de «sin configurar» y se perdería
+ * el fail-closed que hoy nombra la clave — que es justo lo que CA-12(e) pide
+ * conservar.
+ *
+ * No normaliza ni recorta: un hostname con puntos (FQDN) NO se trunca a su
+ * primera etiqueta, porque `a.uno.local` y `a.dos.local` colapsarían al mismo
+ * namespace y el aislamiento por host se perdería en silencio. Si no resuelve a
+ * un segmento válido, devuelve cadena vacía y `validateVaultConfig` falla
+ * cerrado NOMBRANDO `vault.hostId` (CA-12.e) — nunca contra `hosts//`.
+ *
+ * @param {object} cfg          sección `vault:` de config.yaml
+ * @param {object} [deps]       `{ hostname }` inyectable para tests
+ * @returns {string} hostId resuelto (puede ser '' — el llamador falla cerrado)
+ */
+function resolveVaultHostId(cfg, deps = {}) {
+    const declarado = cfg && cfg.hostId;
+    if (typeof declarado === 'string' && declarado !== '') return declarado;
+    if (!cfg || cfg.hostIdFromHostname !== true) return '';
+    const hostname = typeof deps.hostname === 'function' ? deps.hostname : () => os.hostname();
+    let valor = '';
+    try {
+        valor = hostname();
+    } catch {
+        return '';
+    }
+    return typeof valor === 'string' ? valor.trim() : '';
 }
 
 // -----------------------------------------------------------------------------
@@ -494,35 +863,46 @@ function sanitizeCliError(err, { service, verb, scopes, root }) {
  *
  * @param {object} sourceEnv  ambiente de origen, SIEMPRE explícito. El ambiente
  *                            global del proceso no se usa nunca (SEC-2).
- * @param {string} region     región AWS (se reutiliza `kernel.region`).
+ * @param {object} cfg        sección `vault:` de config.yaml + `region`. #5426:
+ *                            deja de ser un string de región. La identidad sale
+ *                            de acá (`authMode`/`awsProfile`), o sea de código
+ *                            commiteado — nunca del ambiente (T2-1/CA-13).
  * @param {object} [deps]     `{ execFileSync }` inyectable para tests.
  * @returns {{ run: (service: string, args: string[]) => string }}
  */
-function createAwsCliVaultRunner(sourceEnv, region, deps = {}) {
-    // SEC-2 — `buildAwsScopedEnv` CAE al ambiente global del proceso si el
-    // primer argumento no es un objeto. Ese fallback silencioso es exactamente
-    // lo que SEC-2 prohíbe, así que acá se cierra antes de llamarlo.
+function createAwsCliVaultRunner(sourceEnv, cfg, deps = {}) {
+    // SEC-2 — el ambiente de origen es EXPLÍCITO. Un no-objeto acá era, con el
+    // builder viejo, un fallback SILENCIOSO al ambiente global del proceso.
     if (!sourceEnv || typeof sourceEnv !== 'object' || Array.isArray(sourceEnv)) {
         throw new VaultConfigError('vault.env',
             'requiere un ambiente de origen EXPLÍCITO (objeto); el vault nunca cae al '
             + 'ambiente global del proceso');
     }
-    // SEC-2 — env por ALLOWLIST. `buildAwsScopedEnv` copia SÓLO las vars del
-    // scope `aws` (AWS_ACCESS_KEY_ID/SECRET/SESSION_TOKEN/REGION/PROFILE): un
-    // `AWS_ENDPOINT_URL` o un `AWS_CONFIG_FILE` del ambiente de entrada NO
-    // llegan al hijo, así que nadie puede redirigir la lectura del vault a un
-    // endpoint controlado por él.
-    const env = buildAwsScopedEnv(sourceEnv, region);
+    // #5426 — la firma cambió: antes el 2º argumento era la región (string).
+    // Un string acá NO se acepta por compatibilidad: aceptarlo obligaría a
+    // asumir un `authMode` implícito, y un modo de identidad implícito es
+    // exactamente lo que T2-2 prohíbe. Falla ruidoso, nombrando la clave.
+    if (!cfg || typeof cfg !== 'object' || Array.isArray(cfg)) {
+        throw new VaultConfigError('vault.authMode',
+            `requiere la config del vault (objeto), no ${describeTipo(cfg)}. El mecanismo de `
+            + 'identidad se declara en config y nunca se infiere');
+    }
+    const region = cfg.region;
+
+    // Fail-closed por SEÑAL POSITIVA, ANTES de armar el ambiente (T2-2).
+    assertVaultAuthConfig(cfg);
+
+    // SEC-2 — env por ALLOWLIST propia del vault (G-2: no se reutiliza el
+    // builder compartido). Un `AWS_ENDPOINT_URL`, un `AWS_CONFIG_FILE` o un
+    // `AWS_PROFILE` del ambiente de entrada NO llegan al hijo, así que nadie
+    // puede redirigir la lectura del vault ni elegirle el principal.
+    const env = buildVaultAwsEnv(sourceEnv, cfg);
 
     // Fail-closed de credenciales ANTES de spawnear (mismo criterio que
     // provisioner-infra.js:447-454): invocar la CLI con credenciales vacías
     // produce un error de auth indistinguible de una policy mal puesta.
-    if (!env.AWS_ACCESS_KEY_ID || !env.AWS_SECRET_ACCESS_KEY) {
-        throw new VaultConfigError('vault.credenciales',
-            'sin credenciales AWS en el ambiente (scope `aws`: AWS_ACCESS_KEY_ID / '
-            + 'AWS_SECRET_ACCESS_KEY). Fail-closed: no se invoca la AWS CLI con credenciales '
-            + 'vacías. Remediación: `aws login` o exportar el scope `aws`');
-    }
+    assertVaultAuthSignal(env, cfg);
+
     if (!region) {
         throw new VaultConfigError('kernel.region', 'sin configurar; el vault la reutiliza');
     }
@@ -843,10 +1223,23 @@ function createAwsCliVaultDriver({ run } = {}) {
 function validateVaultConfig(config) {
     assertPrefix('vault.prefix', config.prefix);
     assertSegment('vault.projectId', config.projectId);
-    // `hostId` se commitea VACÍO (CA-29): el valor real es `os.hostname()` del
-    // host — cf. file-lock.js:145, notify-telegram.js:106. Un placeholder tipo
+    // `hostId` se commitea VACÍO (CA-29 · D9 de #5426): el valor real es el
+    // `os.hostname()` del host — cf. file-lock.js:145, notify-telegram.js:106 —
+    // y lo resuelve `resolveVaultHostId` en runtime. Un placeholder tipo
     // `<host>` pasaba el YAML y explotaba recién el día del rollout.
+    //
+    // CA-12(e) — vacío o no resoluble falla NOMBRANDO `vault.hostId`, y jamás
+    // se sigue adelante contra un namespace colapsado (`hosts//`).
     assertSegment('vault.hostId', config.hostId);
+
+    // #5426 · CA-11(b) — el mecanismo de identidad se valida cuando la clave
+    // está declarada. El camino de producción la exige siempre, porque
+    // `createAwsCliVaultRunner` llama a `assertVaultAuthConfig` antes de armar
+    // el ambiente; acá se cubre además el caso de una config con la clave
+    // presente pero inválida y un driver inyectado.
+    if (config.authMode !== undefined || config.awsProfile != null) {
+        assertVaultAuthConfig(config);
+    }
 
     const ttl = config.cache_ttl_seconds;
     if (typeof ttl !== 'number' || !Number.isFinite(ttl) || ttl <= 0) {
@@ -883,9 +1276,17 @@ function validateVaultConfig(config) {
  * @param {object} args.driver   port de lectura (in-memory o aws-cli)
  * @param {object} [args.logger] logger opcional; recibe SÓLO nombres de scope
  * @param {function} [args.now]  reloj inyectable (ms) para los tests de TTL
+ * @param {function} [args.sink] #5803 — sumidero opcional de telemetría; recibe
+ *   `{category, ts_ms}` una vez por invocación pública que entre al núcleo con
+ *   el gate abierto. Sin él, la instrumentación es un no-op puro (CA-14).
+ *   `sink` y `now` son SÓLO parámetros de este factory: no entran a
+ *   `VAULT_CONFIG_KEYS` a propósito, así que no se alcanzan desde
+ *   `.pipeline/config.yaml` ni desde el ambiente (SEC-E/CA-16). Un reloj que el
+ *   operador pudiera congelar desde config extendería la vigencia de un secreto
+ *   ya rotado.
  * @returns {{resolveNamespace: Function, resolveScope: Function, clearCache: Function}}
  */
-function createSecretVault({ config, driver, logger, now } = {}) {
+function createSecretVault({ config, driver, logger, now, sink } = {}) {
     const cfg = config && typeof config === 'object' ? config : {};
     const enabled = cfg.enabled === true;   // fail-closed: sólo el booleano exacto
     const reloj = typeof now === 'function' ? now : () => Date.now();
@@ -925,6 +1326,24 @@ function createSecretVault({ config, driver, logger, now } = {}) {
         logger[nivel](msg, meta);   // CA-23: `meta` sólo lleva NOMBRES de scope
     }
 
+    // #5803 — un emisor por instancia, sobre el MISMO `reloj` que la caché usa
+    // para el TTL. Un sink que falla en cada resolución no puede inundar el log:
+    // se avisa UNA vez por instancia, y el latch del warn no toca el conteo de
+    // eventos ni el comportamiento funcional.
+    let sinkFalloAvisado = false;
+    const telemetria = createVaultTelemetryEmitter({
+        sink,
+        now: reloj,
+        onError: (err) => {
+            if (sinkFalloAvisado) return;
+            sinkFalloAvisado = true;
+            // CA-13 — redactado: el nombre del error y nada más. Ni el evento
+            // (que el sink pudo haber metido en su propio mensaje) ni
+            // `err.message` crudo.
+            log('warn', 'vault: el sink de telemetría falló', { error: err && err.name });
+        },
+    });
+
     // D-SYNC-6 — el camino sync exige el port sync del driver. Si falta, se
     // falla cerrado NOMBRANDO el método: nunca se devuelve vacío y nunca se
     // espera la Promise con un hack de bloqueo.
@@ -961,10 +1380,16 @@ function createSecretVault({ config, driver, logger, now } = {}) {
      *
      * @param {object} [opts]
      * @param {string[]} [opts.scopes] subconjunto de `required_scopes`
+     * @param {object|null} [ctx] #5803 — latch de telemetría de la invocación
+     *   pública que conduce este núcleo. Lo crea el ENVOLTORIO, nunca el núcleo:
+     *   `nucleoResolveScope` delega acá, y si cada núcleo creara el suyo una
+     *   sola invocación pública emitiría dos eventos.
      */
-    function* nucleoResolveNamespace(opts = {}) {
+    function* nucleoResolveNamespace(opts = {}, ctx = null) {
         if (!enabled) {
             // CA-25 / test 15 — ni una llamada al driver.
+            // #5803 — con el gate cerrado NO se emite: no hubo resolución que
+            // clasificar. Es deliberado, no un agujero de instrumentación.
             return { enabled: false, namespace: null, scopes: {}, tiers: {} };
         }
         const pedidos = normalizarScopes(opts.scopes);
@@ -973,6 +1398,9 @@ function createSecretVault({ config, driver, logger, now } = {}) {
         if (entrada) {
             if (entrada.expiraEn > reloj()) {
                 if (pedidos.every((s) => Object.prototype.hasOwnProperty.call(entrada.scopes, s))) {
+                    // D3 — entrada vigente Y con todos los scopes pedidos: la
+                    // única rama que se sirve sin tocar el driver.
+                    telemetria.emitir(ctx, VAULT_TELEMETRY.CACHE_HIT);
                     return proyectar(entrada, pedidos, clave);
                 }
             } else {
@@ -1032,6 +1460,10 @@ function createSecretVault({ config, driver, logger, now } = {}) {
                 expiraEn: reloj() + ttlSegundos * 1000,
             };
             cache.set(clave, nueva);   // SIN negative caching: sólo se cachea el éxito
+            // D4 — hubo lectura física batch (una o dos llamadas, según el
+            // presupuesto por tier): UN `physical_read` por invocación pública,
+            // no uno por llamada al driver.
+            telemetria.emitir(ctx, VAULT_TELEMETRY.PHYSICAL_READ);
             log('info', 'vault: namespace resuelto', redactScoped({
                 ok: true, namespace: clave, scopes: resueltos, missing: [],
             }));
@@ -1043,6 +1475,12 @@ function createSecretVault({ config, driver, logger, now } = {}) {
             log('warn', 'vault: fallo de resolución', {
                 namespace: clave, scopes: pedidos, error: err && err.name, code: err && err.code,
             });
+            // #5803 / CA-7 / CA-18 — la lectura física OCURRIÓ aunque terminara
+            // mal, así que se clasifica igual y JAMÁS como `cache_hit`. La
+            // emisión va ANTES del `throw` y no lo envuelve: un `try/catch`
+            // alrededor de esta rama convertiría el fail-closed en fail-open,
+            // tragándose `VaultSecretMissingError` o salteando `invalidarSiEsAuth`.
+            telemetria.emitir(ctx, VAULT_TELEMETRY.PHYSICAL_READ);
             throw err;   // CA-22: un fallo de auth se PROPAGA, jamás se degrada
         }
     }
@@ -1078,10 +1516,17 @@ function createSecretVault({ config, driver, logger, now } = {}) {
      * @param {object} args
      * @param {string[]} args.scopes
      * @param {'shared'|'host'|'rotating'} [args.tier] `rotating` va a Secrets Manager
+     * @param {object|null} [ctx] #5803 — latch de la invocación pública (ver
+     *   `nucleoResolveNamespace`). Se PROPAGA a la delegación de abajo: es lo
+     *   único que impide que el camino no-rotating emita dos veces.
      */
-    function* nucleoResolveScope({ scopes, tier } = {}) {
+    function* nucleoResolveScope({ scopes, tier } = {}, ctx = null) {
         if (!enabled) return {};
         if (tier === 'rotating') {
+            // D5 — camino SIN caché por construcción: Secrets Manager no se
+            // memoiza acá. Es el que más fácil se olvida de instrumentar porque
+            // no aparece en la conversación de caché ni de single-flight, y
+            // dejarlo mudo subestimaría el tráfico físico que #5800 quiere medir.
             const pedidos = normalizarScopes(scopes);
             const out = {};
             for (const scope of pedidos) {
@@ -1093,14 +1538,25 @@ function createSecretVault({ config, driver, logger, now } = {}) {
                     res = yield { op: 'getSecretValue', name, opts: { scopes: [scope] } };
                 } catch (err) {
                     invalidarSiEsAuth(err);
+                    // La emisión va ANTES del `throw` y no lo envuelve (CA-18).
+                    telemetria.emitir(ctx, VAULT_TELEMETRY.PHYSICAL_READ);
                     throw err;
                 }
+                // La lectura física YA ocurrió, salga bien o mal lo que viene
+                // después (secreto ausente, JSON inválido). Se clasifica acá para
+                // que ninguna rama de error posterior quede sin evento; el latch
+                // garantiza UNO por invocación pública, no uno por scope.
+                telemetria.emitir(ctx, VAULT_TELEMETRY.PHYSICAL_READ);
                 if (!res || res.value == null) throw new VaultSecretMissingError(scope, name, 'rotating');
                 out[scope] = parsearScope(scope, res.value);
             }
+            // `pedidos` vacío ⇒ no hubo yield y el latch sigue abierto: la
+            // invocación pública entró al núcleo con el gate abierto, así que
+            // igual se clasifica (invariante «un evento por decisión», (a)).
+            telemetria.emitir(ctx, VAULT_TELEMETRY.PHYSICAL_READ);
             return out;
         }
-        const res = yield* nucleoResolveNamespace({ scopes });
+        const res = yield* nucleoResolveNamespace({ scopes }, ctx);
         return res.scopes;
     }
 
@@ -1113,24 +1569,33 @@ function createSecretVault({ config, driver, logger, now } = {}) {
     // `Promise`), así que la superficie observable de #5352 no cambia y su
     // suite queda verde sin editarse.
 
+    //
+    // #5803 — los CUATRO envoltorios son los que delimitan una «invocación
+    // pública», así que son los que crean el contexto/latch de telemetría. El
+    // núcleo nunca lo crea: si lo hiciera, `resolveScope` no-rotating emitiría
+    // dos eventos (uno propio y otro de la delegación en `nucleoResolveNamespace`).
+    // Ninguno de los cuatro puede emitir `single_flight_join`: el vault no
+    // coalesce nada — no hay mapa de vuelos en este archivo — y afirmarlo es
+    // parte de la garantía (CA-3/CA-6).
+
     /** @returns {Promise<{enabled:boolean, namespace:string|null, scopes:object, tiers:object}>} */
     async function resolveNamespace(opts = {}) {
-        return conducirAsync(nucleoResolveNamespace(opts), ejecutarAsync);
+        return conducirAsync(nucleoResolveNamespace(opts, telemetria.crearContexto()), ejecutarAsync);
     }
 
     /** @returns {Promise<object>} mapa `scope -> objeto` */
     async function resolveScope(args = {}) {
-        return conducirAsync(nucleoResolveScope(args), ejecutarAsync);
+        return conducirAsync(nucleoResolveScope(args, telemetria.crearContexto()), ejecutarAsync);
     }
 
     /** Gemelo sync: MISMO cuerpo, mismos errores, mismos códigos (D1.4). */
     function resolveNamespaceSync(opts = {}) {
-        return conducirSync(nucleoResolveNamespace(opts), ejecutarSync);
+        return conducirSync(nucleoResolveNamespace(opts, telemetria.crearContexto()), ejecutarSync);
     }
 
     /** Gemelo sync: MISMO cuerpo, mismos errores, mismos códigos (D1.4). */
     function resolveScopeSync(args = {}) {
-        return conducirSync(nucleoResolveScope(args), ejecutarSync);
+        return conducirSync(nucleoResolveScope(args, telemetria.crearContexto()), ejecutarSync);
     }
 
     /** SEC-6(c) — invalidación explícita, idempotente. */
@@ -1212,8 +1677,21 @@ module.exports = {
     VAULT_ALLOWED_FLAGS,
     VAULT_TIERS,
     VAULT_TELEMETRY_CATEGORIES,
+    // #5803 — nombres derivados del enum + emisor ÚNICO. `credentials.js` los
+    // consume para emitir SU decisión (memo hit / join de vuelo) sin escribir
+    // literales de categoría ni armar el evento a mano.
+    VAULT_TELEMETRY,
+    createVaultTelemetryEmitter,
     VAULT_ERROR_CODES,
     MAX_CACHE_TTL_SECONDS,
+    // #5426 — mecanismo de identidad del host. `VAULT_AUTH_MODES` se exporta
+    // para que el enum viva en UN solo lugar: la config, el guard y los tests
+    // leen la misma lista congelada, y no hay una segunda copia que se
+    // desincronice.
+    VAULT_AUTH_MODES,
+    buildVaultAwsEnv,
+    assertVaultAuthConfig,
+    resolveVaultHostId,
     buildParameterPath,
     // #5464 — validación canónica reutilizable por el tramo de provisión
     // (#5425). Los regex NO se exportan a propósito: exportarlos habilitaría

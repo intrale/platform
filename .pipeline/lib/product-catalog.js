@@ -24,16 +24,13 @@
 const fs = require('fs');
 const path = require('path');
 
-// Espeja `project-descriptor.isSafeId` / `product-state-segment.isSafeProjectId`
-// (mantenido dependency-free a propósito; la coincidencia se cubre por test).
-const SAFE_ID_RE = /^[a-z0-9][a-z0-9-]{1,63}$/;
-
-function isSafeProjectId(id) {
-    if (typeof id !== 'string') return false;
-    if (!SAFE_ID_RE.test(id)) return false;
-    if (id.includes('..') || id.includes('/') || id.includes('\\')) return false;
-    return true;
-}
+// #5901 — punto ÚNICO de identidad de proyecto. Acá vivía una copia local del
+// regex, con la nota de que "la coincidencia se cubre por test". La copia se
+// eliminó: `safe-project-id.js` es dependency-free (sin `fs`/`path`, sin
+// requires del pipeline), así que importarlo no cuesta ni abre ciclos, y evita
+// que una copia se endurezca (denylist de `constructor`/`prototype`) mientras
+// las otras quedan viejas. Se re-exporta para no romper a los consumidores.
+const { SAFE_ID_RE, isSafeProjectId } = require('./safe-project-id');
 
 // Proyección pública de UN descriptor. Whitelist explícita. Devuelve null si el
 // descriptor no tiene un projectId seguro (fail-closed).

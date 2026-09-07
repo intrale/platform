@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<title>Cutover al store durable del kernel — estado y continuación</title>
+<style>
+  @page { margin: 18mm 14mm; }
+  * { box-sizing: border-box; }
+  body {
+    font-family: "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font-size: 10.5pt; line-height: 1.55; color: #1a1a1a; margin: 0;
+  }
+  h1 { font-size: 20pt; margin: 0 0 4px; color: #0b3d5c; letter-spacing: -0.3px; }
+  .sub { color: #5a6b78; font-size: 10pt; margin-bottom: 22px; }
+  h2 {
+    font-size: 14pt; color: #0b3d5c; margin: 26px 0 10px;
+    padding-bottom: 5px; border-bottom: 2px solid #d6e4ee;
+  }
+  h3 { font-size: 11.5pt; color: #14506e; margin: 18px 0 7px; }
+  p { margin: 0 0 10px; }
+  table { width: 100%; border-collapse: collapse; margin: 10px 0 16px; font-size: 9.5pt; }
+  th, td { border: 1px solid #d9e2e8; padding: 6px 9px; text-align: left; vertical-align: top; }
+  th { background: #eff5f9; font-weight: 600; color: #0b3d5c; }
+  tr:nth-child(even) td { background: #fafcfd; }
+  code {
+    font-family: Consolas, "Courier New", monospace; font-size: 9pt;
+    background: #f1f4f6; padding: 1px 4px; border-radius: 3px; color: #294;
+  }
+  pre {
+    background: #1e2a33; color: #e8eef2; padding: 10px 12px; border-radius: 5px;
+    font-family: Consolas, "Courier New", monospace; font-size: 8.5pt;
+    line-height: 1.45; overflow-x: auto; white-space: pre-wrap; word-break: break-word;
+  }
+  pre code { background: none; color: inherit; padding: 0; }
+  .ok { color: #1a7f37; font-weight: 600; }
+  .no { color: #b42318; font-weight: 600; }
+  .warn { color: #9a6700; font-weight: 600; }
+  .box {
+    border-left: 4px solid #0b3d5c; background: #f4f9fc;
+    padding: 10px 14px; margin: 14px 0; border-radius: 0 4px 4px 0;
+  }
+  .box.alert { border-left-color: #b42318; background: #fdf4f3; }
+  .box.decision { border-left-color: #9a6700; background: #fffaeb; }
+  .box h4 { margin: 0 0 6px; font-size: 10.5pt; color: #0b3d5c; }
+  .box.alert h4 { color: #b42318; }
+  .box.decision h4 { color: #9a6700; }
+  ul, ol { margin: 0 0 10px; padding-left: 22px; }
+  li { margin-bottom: 5px; }
+  .meta {
+    background: #eff5f9; padding: 10px 14px; border-radius: 5px;
+    font-size: 9pt; margin-bottom: 20px;
+  }
+  .meta strong { color: #0b3d5c; }
+  .flow {
+    font-family: Consolas, monospace; font-size: 8.5pt; background: #f8fafb;
+    border: 1px solid #d9e2e8; border-radius: 4px; padding: 12px; margin: 12px 0;
+    white-space: pre; overflow-x: auto; line-height: 1.5;
+  }
+  .tag {
+    display: inline-block; font-size: 8pt; padding: 1px 7px; border-radius: 9px;
+    font-weight: 600; vertical-align: middle;
+  }
+  .tag.done { background: #d3f0d8; color: #1a7f37; }
+  .tag.block { background: #fbdcd9; color: #b42318; }
+  .tag.dec { background: #fdf0cd; color: #9a6700; }
+  .footnote { font-size: 8.5pt; color: #5a6b78; font-style: italic; margin-top: 4px; }
+</style>
+</head>
+<body>
+
+<h1>Cutover al store durable del kernel</h1>
+<div class="sub">Estado de lo hecho, lo que falta y las decisiones pendientes &middot; Issue #5126 &middot; 30 de julio de 2026</div>
+
+<div class="meta">
+<strong>Objetivo:</strong> que el estado del pipeline deje de vivir sólo en archivos locales y pase a una base remota (DynamoDB), con vuelta atrás ensayada.<br>
+<strong>Issue:</strong> #5126 &mdash; Bloque B del cutover (split de #5112 &larr; #5107 &middot; Ola 9.4)<br>
+<strong>PR abierto:</strong> #5203 &middot; rama <code>agent/5126-ca-b3-config-kernel</code> &middot; 2 commits &middot; 8 archivos &middot; 268 tests en verde<br>
+<strong>Estado del flag:</strong> <code>kernel.durable: false</code> &mdash; el pipeline sigue operando 100% desde archivos. Nada en producción cambió de comportamiento.
+</div>
+
+<h2>1. De qué se trata, en criollo</h2>
+
+<p>Hoy el pipeline guarda su estado en archivos JSON dentro del repo (<code>waves.json</code>, descriptores, etc.). Eso funciona pero tiene un techo: si la máquina se cae, o si algún día hay más de un pipeline corriendo, no hay una fuente de verdad compartida.</p>
+
+<p>La solución ya estaba <strong>construida y mergeada</strong> hace tiempo (el store DynamoDB, el migrador, el driver, los leases). Estaba <strong>apagada a propósito</strong> con un flag. Esta historia no construye nada nuevo: <strong>enciende lo que ya existe</strong>, y ensaya cómo apagarlo si sale mal.</p>
+
+<p>Para encenderlo hacían falta credenciales AWS que no existían. Eso era el famoso <strong>CA-0</strong>: un prerrequisito que sólo podías cumplir vos, porque implica permisos de administrador. Eso es lo que se resolvió en esta sesión.</p>
+
+<div class="flow">El camino completo, y dónde estamos parados:
+
+  CA-0   credenciales + tablas + policy IAM ................ HECHO
+  CA-B1  postura de seguridad de las tablas ................ HECHO (falta CloudTrail)
+  CA-B2  permisos mínimos verificados de verdad ............ HECHO
+  CA-B3  cargar config con el flag TODAVÍA apagado ......... HECHO
+  CA-B4  migrar datos y verificar que coincidan ............ BLOQUEADO
+  CA-B5  encender el flag ................................... BLOQUEADO
+  CA-B6  ensayar la vuelta atrás ............................ BLOQUEADO
+</div>
+
+<h2>2. Qué quedó hecho</h2>
+
+<h3>2.1 Credenciales acotadas, y un script que las genera solo</h3>
+
+<p>Antes, el pipeline usaba el usuario <code>claude-code</code>, que tenía <strong>permiso de borrado sobre toda la producción</strong>: las 7 tablas de negocio, las Lambdas, Cognito, los buckets. Un nombre mal escrito en un comando alcanzaba para borrar pedidos de clientes.</p>
+
+<p>Ahora hay un usuario <strong>separado y mínimo</strong> (<code>intrale-kernel-runtime</code>) que sólo puede tocar las dos tablas del pipeline.</p>
+
+<p>Vos habías corrido los comandos a mano y la clave secreta se perdió en el camino (AWS no la muestra dos veces). Eso pasó porque el procedimiento era manual. Se reemplazó por <strong>un solo script</strong> que crea todo y <strong>genera y guarda la clave él mismo</strong>: nunca aparece en pantalla, ni en el portapapeles, ni en un historial de terminal.</p>
+
+<pre><code>node .pipeline/lib/kernel-aws-bootstrap.js --admin-profile default            # muestra el plan
+node .pipeline/lib/kernel-aws-bootstrap.js --admin-profile default --apply     # lo ejecuta</code></pre>
+
+<p>Tiene 9 protecciones para no pisar nada en uso. Las tres que más importan:</p>
+<ul>
+  <li>Sólo acepta nombres de tabla que empiecen con <code>intrale-kernel-</code>. Si te equivocás y ponés <code>business</code>, <strong>aborta antes de tocar AWS</strong>.</li>
+  <li>Si una tabla ya existe, <strong>no le escribe nada</strong> &mdash; ni una fila de prueba.</li>
+  <li>El archivo de credenciales se escribe de forma atómica, con backup previo, y el perfil <code>intrale</code> que usan el QA remoto y el deploy de Lambda <strong>queda intacto</strong>.</li>
+</ul>
+
+<h3>2.2 La política de permisos que te pasé antes estaba mal</h3>
+
+<div class="box alert">
+<h4>Hallazgo: el candado no cerraba</h4>
+<p>La política que te dicté por Telegram tenía un <code>Deny</code> condicionado por <code>dynamodb:LeadingKeys</code> con patrones <code>signature#*</code> / <code>audit#*</code>. Eso <strong>no protege nada</strong>: esa condición evalúa la <em>clave de partición</em>, y en el kernel las firmas son <em>claves de ordenamiento</em>. La condición nunca se cumple, así que el candado nunca cerraba.</p>
+<p>Además cubría 2 de las 7 operaciones que en DynamoDB permiten borrar o pisar un dato.</p>
+<p>Ya estaba resuelto en el repo (lo corrigió el Bloque A el 28/07); mi mensaje era de esa misma mañana, anterior al arreglo. La política vigente hoy es la correcta.</p>
+</div>
+
+<h3>2.3 Permisos verificados de verdad, no en el papel</h3>
+
+<p>No alcanza con leer la política y decir "se ve bien". Se probó contra AWS real:</p>
+
+<table>
+<tr><th>Se intentó</th><th>Resultado</th></tr>
+<tr><td>Borrar una firma de la tabla de no-repudio</td><td class="ok">RECHAZADO (deny explícito)</td></tr>
+<tr><td>Modificar un dato de esa tabla</td><td class="ok">RECHAZADO</td></tr>
+<tr><td>Leer la tabla <code>business</code> (datos de clientes)</td><td class="ok">RECHAZADO</td></tr>
+<tr><td>Crear usuarios o dar permisos en AWS</td><td class="ok">RECHAZADO</td></tr>
+<tr><td>Tomar y liberar un lease (lo que el pipeline necesita hacer)</td><td class="ok">FUNCIONA</td></tr>
+</table>
+
+<p class="footnote">Las pruebas de borrado se hicieron con operaciones reales que rebotaron, no sólo con simulaciones. El dato de prueba que se escribió quedó borrado.</p>
+
+<h3>2.4 Cifrado: se cambió la clave por una propia</h3>
+
+<p>Las tablas se habían creado con la clave por defecto de AWS. El runbook del proyecto lo prohíbe explícitamente, por tres motivos concretos:</p>
+
+<ul>
+  <li>Una clave de AWS <strong>no tiene política</strong>: no hay dónde declarar quién puede descifrar.</li>
+  <li><strong>No deja rastro auditable</strong> de quién la usó.</li>
+  <li><strong>No se puede deshabilitar</strong>: si perdés control del acceso, no tenés ninguna palanca. Con una clave propia la apagás y todo el contenido queda ilegible en un solo movimiento.</li>
+</ul>
+
+<p>Esto había que resolverlo <strong>antes</strong> de la primera escritura, no después: las firmas y el registro de auditoría son <em>imborrables por diseño</em>. Lo que se escriba queda para siempre bajo la clave que hubiera en ese momento.</p>
+
+<p>Se creó la clave propia (<code>alias/intrale-kernel-store</code>) con rotación anual, restringida a que <strong>sólo sirva desde DynamoDB</strong>: si alguien roba la credencial del pipeline, no puede usar la clave para descifrar nada por otro lado.</p>
+
+<h3>2.5 El error más peligroso de la sesión</h3>
+
+<div class="box alert">
+<h4>Al cambiar la clave, el pipeline perdió acceso a sus propias tablas</h4>
+<p>La política de permisos termina con una regla que dice <em>"prohibido todo lo que no sean estas dos tablas"</em>. Con la clave vieja eso era inofensivo. Con la clave nueva dejó de serlo: cada vez que se lee un dato, DynamoDB necesita descifrarlo, y ese permiso se evalúa contra <strong>la clave</strong> &mdash; que no es ninguna de las dos tablas. Entonces caía en el "prohibido todo lo demás".</p>
+<p><strong>Por qué es peligroso:</strong> el comando que aplica la política <em>sale bien</em>. El error aparece recién cuando algo intenta leer un dato. Nada avisa en el medio.</p>
+<p><strong>No hubo impacto</strong> porque el flag está apagado y nadie usa esas tablas todavía. Si se hubiera descubierto con el flag encendido, el pipeline se quedaba sin estado.</p>
+<p><strong>Arreglado en dos lugares</strong>, no uno: en la política vigente, y en el generador de políticas. Esto último es lo importante &mdash; sin eso, la próxima vez que alguien regenerara la política, el problema volvía con un comando de apariencia inocua. Quedó cubierto con tests para que no reaparezca.</p>
+</div>
+
+<h3>2.6 Backups del estado exacto</h3>
+
+<p>Antes de tocar cualquier cosa se respaldó el estado del momento, por duplicado:</p>
+
+<table>
+<tr><th>Qué</th><th>Dónde</th><th>Contenido</th></tr>
+<tr><td>Estado de coordinación</td><td><code>.pipeline/backup/2026-07-30T00-24-30-631Z/</code></td><td>7 olas, 2 bloqueados, 3 bloqueados por infra, 3 de salud &mdash; con checksum por archivo</td></tr>
+<tr><td>Descriptores</td><td><code>.pipeline/backup/2026-07-30T00-24-44-417Z/descriptors/</code></td><td><code>intrale-platform.json</code>, 11 registros</td></tr>
+<tr><td>Copia cruda extra</td><td>fuera del repo</td><td>los 5 archivos, verificados byte a byte</td></tr>
+</table>
+
+<p>La copia cruda se hizo <strong>antes</strong> de usar el mecanismo de backup, a propósito: así el respaldo no depende de que ese mecanismo funcione. Y se ensayó la restauración completa: el archivo volvió con el checksum original intacto.</p>
+
+<h2>3. Por qué no se puede seguir todavía</h2>
+
+<p>Acá está el nudo, y es lo más importante de este reporte.</p>
+
+<h3>3.1 No hay nada que migrar <span class="tag block">bloquea CA-B4</span></h3>
+
+<p>El criterio pedía "migrar los datos y verificar que coincidan entidad por entidad". Al ir a hacerlo, apareció esto: <strong>no hay datos que migrar.</strong></p>
+
+<p>El único producto registrado en el pipeline es el propio monorepo, <code>intrale-platform</code>. Pero ese identificador está en una <strong>lista de reservados</strong> (decisión de #4853): el monorepo raíz no puede tratarse como un producto más. Se verificó ejecutándolo:</p>
+
+<pre><code>registrar el descriptor real como producto
+  → RECHAZADO: "id de producto/proyecto reservado"
+catálogo resultante
+  → vacío (0 productos)</code></pre>
+
+<p><strong>Por qué importa:</strong> si igual se corriera la verificación de paridad, daría <span class="ok">verde</span> &mdash; porque estaría comparando dos conjuntos vacíos. Ese es exactamente el "falso verde" que el criterio quería evitar. Daría la sensación de que el cutover funcionó cuando en realidad no se probó nada.</p>
+
+<p>Esto también afecta al <strong>CA-B5</strong>: la evidencia de que el pipeline lee de la base no puede ser "listó los productos", porque no va a haber ninguno. Hay que elegir otra prueba.</p>
+
+<h3>3.2 El catálogo se guardaría en un lugar y se leería de otro <span class="tag block">bloquea CA-B5</span></h3>
+
+<p>Al rastrear cómo se poblaría la base aparecieron dos defectos encadenados:</p>
+
+<ol>
+  <li><strong>Falta pasar un dato obligatorio.</strong> La función que registra un producto exige saber a qué proyecto pertenece, y el flujo real de alta no se lo pasa. Con el flag encendido, un alta muere con "dato ausente".</li>
+  <li><strong>Escribe en una partición y lee de otra.</strong> El catálogo se guarda bajo el identificador del producto, pero el arranque del pipeline lo busca bajo un identificador distinto (<code>kernel-control-plane</code>). Un catálogo cargado desde un producto es <strong>invisible</strong> para el arranque.</li>
+</ol>
+
+<p>Ninguno se nota hoy porque el punto 3.1 impide llegar hasta ahí. Los dos aparecen al registrar el primer producto real. <strong>Esto es cambio de código</strong>, sobre una parte que ya se había cerrado y mergeado.</p>
+
+<h2>4. Lo que necesita tu decisión</h2>
+
+<div class="box decision">
+<h4>Decisión 1 &mdash; cómo arreglar la partición del catálogo <span class="tag dec">bloqueante</span></h4>
+<p>La opción que parece correcta: que al registrar un producto, el <em>producto</em> y el <em>catálogo</em> se guarden bajo <code>kernel-control-plane</code> (donde el arranque los busca), y sólo el <em>descriptor</em> quede en la partición del producto.</p>
+<p>Es cambio de código sobre el Bloque A ya mergeado, así que corresponde issue propio y su propio ciclo de QA. <strong>Sin esto, el CA-B5 no puede dar verde honestamente.</strong></p>
+</div>
+
+<div class="box decision">
+<h4>Decisión 2 &mdash; reformular los criterios CA-B4 y CA-B5 <span class="tag dec">bloqueante</span></h4>
+<p>Tal como están redactados piden una verificación que hoy daría falso verde. Hay que reescribirlos para que digan explícitamente que el conjunto a migrar es vacío y por qué, y para que la evidencia del encendido sea algo distinto de "listar productos".</p>
+<p>Esto es trabajo de definición (PO), no de código.</p>
+</div>
+
+<div class="box decision">
+<h4>Decisión 3 &mdash; CloudTrail <span class="tag dec">costo</span></h4>
+<p>No hay ningún registro de auditoría configurado en la región. El runbook lo pide para poder demostrar quién descifró qué durante la ventana de cutover. Necesita un bucket S3 y tiene costo mensual. Es el único control del cifrado que quedó incompleto.</p>
+</div>
+
+<div class="box decision">
+<h4>Decisión 4 &mdash; las credenciales de administrador son de la cuenta raíz <span class="tag dec">seguridad</span></h4>
+<p>El único perfil con permisos de administración en tu máquina es el perfil <code>default</code>, que son credenciales de la cuenta <strong>root</strong> de AWS. AWS recomienda explícitamente no tener claves de acceso de root. Conviene reemplazarlo por un usuario administrador dedicado.</p>
+<p>No es urgente ni bloquea nada, pero es la deuda de seguridad más grande que queda abierta.</p>
+</div>
+
+<h2>5. Cómo retomar desde cero</h2>
+
+<h3>Recursos que ya existen en AWS (región <code>us-east-2</code>)</h3>
+
+<table>
+<tr><th>Recurso</th><th>Nombre</th><th>Estado</th></tr>
+<tr><td>Usuario del pipeline</td><td><code>intrale-kernel-runtime</code></td><td class="ok">activo, permisos mínimos verificados</td></tr>
+<tr><td>Tabla de no-repudio</td><td><code>intrale-kernel-state</code></td><td class="ok">activa, protegida contra borrado, PITR y clave propia</td></tr>
+<tr><td>Tabla de coordinación</td><td><code>intrale-kernel-coordination</code></td><td class="ok">activa, protegida contra borrado, clave propia</td></tr>
+<tr><td>Clave de cifrado</td><td><code>alias/intrale-kernel-store</code></td><td class="ok">propia, rotación anual, sólo usable desde DynamoDB</td></tr>
+<tr><td>Permisos de datos</td><td><code>IntraleKernelStore</code></td><td class="ok">vigente, con la clave exceptuada del bloqueo</td></tr>
+<tr><td>Permisos de cifrado</td><td><code>IntraleKernelKms</code></td><td class="ok">política separada, aditiva</td></tr>
+<tr><td>Registro de auditoría</td><td>&mdash;</td><td class="no">no existe (decisión 3)</td></tr>
+</table>
+
+<h3>Dónde están las credenciales</h3>
+<p>En <code>~/.claude/secrets/credentials.json</code> bajo la clave <code>aws</code>, y como perfil <code>kernel-runtime</code> en <code>~/.aws/credentials</code>. Fuera del repo, en los dos casos. El perfil <code>intrale</code> de siempre quedó intacto.</p>
+
+<h3>Comandos útiles</h3>
+<pre><code># ver el estado de todo, sin modificar nada
+node .pipeline/lib/kernel-aws-bootstrap.js --admin-profile default
+node .pipeline/lib/kernel-cmk-provision.js --admin-profile default
+
+# rotar la clave del pipeline si hiciera falta
+node .pipeline/lib/kernel-aws-bootstrap.js --admin-profile default --rotate-key --apply
+
+# los tests de todo lo tocado
+node --test .pipeline/lib/__tests__/kernel-*.test.js .pipeline/lib/__tests__/credentials*.test.js</code></pre>
+
+<h3>Dónde está escrito el detalle técnico</h3>
+<ul>
+  <li><strong>PR #5203</strong> &mdash; el código, con el razonamiento en los mensajes de commit.</li>
+  <li><strong>Issue #5126</strong> &mdash; tres comentarios con la evidencia completa: el cumplimiento del prerrequisito, los hallazgos del CA-B4, y la clave de cifrado con el defecto que apareció.</li>
+  <li><strong><code>docs/pipeline/runbook-cutover-durable.md</code></strong> &mdash; el procedimiento de encendido y vuelta atrás. Se lee <em>antes</em> de tocar nada.</li>
+</ul>
+
+<h2>6. Resumen en una tabla</h2>
+
+<table>
+<tr><th>Criterio</th><th>Estado</th><th>Qué falta</th></tr>
+<tr><td>CA-0 &mdash; credenciales, tablas, permisos</td><td class="ok">HECHO</td><td>tu confirmación formal por comentario en el issue</td></tr>
+<tr><td>CA-B1 &mdash; postura de seguridad</td><td class="ok">HECHO</td><td>sólo CloudTrail (decisión 3)</td></tr>
+<tr><td>CA-B2 &mdash; permisos mínimos</td><td class="ok">HECHO</td><td>&mdash;</td></tr>
+<tr><td>CA-B3 &mdash; config cargada, flag apagado</td><td class="ok">HECHO</td><td>&mdash;</td></tr>
+<tr><td>CA-B4 &mdash; migrar y verificar</td><td class="no">BLOQUEADO</td><td>decisiones 1 y 2</td></tr>
+<tr><td>CA-B5 &mdash; encender el flag</td><td class="no">BLOQUEADO</td><td>depende de CA-B4</td></tr>
+<tr><td>CA-B6/B7 &mdash; ensayar la vuelta atrás</td><td class="no">BLOQUEADO</td><td>depende de CA-B5</td></tr>
+</table>
+
+<div class="box">
+<h4>Lo esencial, si te quedás con una sola cosa</h4>
+<p>La parte de infraestructura está <strong>terminada y verificada</strong>: credenciales mínimas, tablas protegidas, clave de cifrado propia y permisos probados contra AWS real. El flag sigue apagado, así que nada en producción cambió.</p>
+<p>El cutover <strong>no puede avanzar</strong> por un motivo que no era visible al planificarlo: el único producto registrado es el monorepo raíz, y está reservado por diseño. Sin productos, la verificación de paridad daría falso verde y el encendido no probaría nada. Eso pide un fix de código y una reescritura de dos criterios &mdash; no es algo que se resuelva empujando el cutover.</p>
+</div>
+
+</body>
+</html>

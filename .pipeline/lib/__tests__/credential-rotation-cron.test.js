@@ -23,7 +23,7 @@ function tmpDir() {
   return dir;
 }
 
-function makeInventory({ provider = 'anthropic', envVar = 'ANTHROPIC_API_KEY', owner = 'leo', lastRotated, expiresAt, runbookUrl = 'https://example.com/runbook' } = {}) {
+function makeInventory({ projectId = 'kernel', provider = 'anthropic', envVar = 'ANTHROPIC_API_KEY', owner = 'leo', lastRotated, expiresAt, runbookUrl = 'https://example.com/runbook' } = {}) {
   const lr = typeof lastRotated === 'string' ? lastRotated : lastRotated.toISOString().slice(0, 10);
   const er = expiresAt
     ? (typeof expiresAt === 'string' ? expiresAt : expiresAt.toISOString().slice(0, 10))
@@ -31,9 +31,9 @@ function makeInventory({ provider = 'anthropic', envVar = 'ANTHROPIC_API_KEY', o
   return [
     '# Inventario',
     '',
-    '| provider | env_var | owner | last_rotated | expires_at | account_id | rotation_runbook_url | revocation_endpoint |',
-    '|----------|---------|-------|--------------|------------|------------|----------------------|---------------------|',
-    `| ${provider} | \`${envVar}\` | ${owner} | ${lr} | ${er} | acct-1 | [runbook](${runbookUrl}) | https://x.com |`,
+    '| project_id | provider | env_var | owner | last_rotated | expires_at | account_id | rotation_runbook_url | revocation_endpoint |',
+    '|------------|----------|---------|-------|--------------|------------|------------|----------------------|---------------------|',
+    `| ${projectId} | ${provider} | \`${envVar}\` | ${owner} | ${lr} | ${er} | acct-1 | [runbook](${runbookUrl}) | https://x.com |`,
     '',
   ].join('\n');
 }
@@ -58,10 +58,10 @@ test('parseInventoryMarkdown · parsea fila básica con todos los campos', () =>
 
 test('parseInventoryMarkdown · ignora filas con last_rotated no parseable', () => {
   const md = [
-    '| provider | env_var | owner | last_rotated | expires_at |',
-    '|----------|---------|-------|--------------|------------|',
-    '| anthropic | `KEY` | leo | _no aplica todavía_ | _no aplica_ |',
-    '| openai | `OPENAI_API_KEY` | leo | 2026-04-01 | 2026-06-30 |',
+    '| project_id | provider | env_var | owner | last_rotated | expires_at |',
+    '|------------|----------|---------|-------|--------------|------------|',
+    '| kernel | anthropic | `KEY` | leo | _no aplica todavía_ | _no aplica_ |',
+    '| kernel | openai | `OPENAI_API_KEY` | leo | 2026-04-01 | 2026-06-30 |',
   ].join('\n');
   const rows = cron.parseInventoryMarkdown(md);
   assert.equal(rows.length, 1);
@@ -131,34 +131,35 @@ test('thresholdForEntry · post-vencimiento → T-0 con días negativos', () => 
 // ─── shouldNotifyEntry — idempotencia ────────────────────────────────────────
 
 test('shouldNotifyEntry · primer disparo de T-14 → notifica', () => {
-  const entry = { env_var: 'KEY', last_rotated: dateUTC('2026-04-01') };
+  const entry = { project_id: 'kernel', env_var: 'KEY', last_rotated: dateUTC('2026-04-01') };
   const threshold = { key: 'T-14', expired: false };
   const decision = cron.shouldNotifyEntry(entry, threshold, {});
   assert.equal(decision.shouldNotify, true);
 });
 
 test('shouldNotifyEntry · T-14 ya disparado → silencio', () => {
-  const entry = { env_var: 'KEY', last_rotated: dateUTC('2026-04-01') };
+  const entry = { project_id: 'kernel', env_var: 'KEY', last_rotated: dateUTC('2026-04-01') };
   const threshold = { key: 'T-14', expired: false };
-  const state = { KEY: { last_rotated: '2026-04-01', thresholds_sent: { 'T-14': '2026-06-16' } } };
+  // #5901 — el estado ahora es ANIDADO por (projectId, env_var).
+  const state = { kernel: { KEY: { last_rotated: '2026-04-01', thresholds_sent: { 'T-14': '2026-06-16' } } } };
   const decision = cron.shouldNotifyEntry(entry, threshold, state);
   assert.equal(decision.shouldNotify, false);
 });
 
 test('shouldNotifyEntry · last_rotated cambió → reset y notifica de nuevo', () => {
-  const entry = { env_var: 'KEY', last_rotated: dateUTC('2026-05-01') };
+  const entry = { project_id: 'kernel', env_var: 'KEY', last_rotated: dateUTC('2026-05-01') };
   const threshold = { key: 'T-14', expired: false };
-  const state = { KEY: { last_rotated: '2026-04-01', thresholds_sent: { 'T-14': '2026-06-16' } } };
+  const state = { kernel: { KEY: { last_rotated: '2026-04-01', thresholds_sent: { 'T-14': '2026-06-16' } } } };
   const decision = cron.shouldNotifyEntry(entry, threshold, state);
   assert.equal(decision.shouldNotify, true);
   assert.equal(decision.resetState, true);
 });
 
 test('shouldNotifyEntry · T-0 (expirada) notifica SIEMPRE — ruido sostenido G-5', () => {
-  const entry = { env_var: 'KEY', last_rotated: dateUTC('2026-04-01') };
+  const entry = { project_id: 'kernel', env_var: 'KEY', last_rotated: dateUTC('2026-04-01') };
   const threshold = { key: 'T-0', expired: true };
   // Aún si el state indica que T-0 ya se notificó, debe volver a notificar.
-  const state = { KEY: { last_rotated: '2026-04-01', thresholds_sent: { 'T-0': '2026-06-30' } } };
+  const state = { kernel: { KEY: { last_rotated: '2026-04-01', thresholds_sent: { 'T-0': '2026-06-30' } } } };
   const decision = cron.shouldNotifyEntry(entry, threshold, state);
   assert.equal(decision.shouldNotify, true);
 });
@@ -168,7 +169,7 @@ test('shouldNotifyEntry · T-0 (expirada) notifica SIEMPRE — ruido sostenido G
 test('evaluateRotationState · T-14 dispara una vez, T-13 no re-dispara', () => {
   const inventoryRows = [{
     provider: 'anthropic',
-    env_var: 'ANTHROPIC_API_KEY',
+    project_id: 'kernel', env_var: 'ANTHROPIC_API_KEY',
     owner: 'leo',
     last_rotated: dateUTC('2026-04-01'),
     expires_at: dateUTC('2026-06-30'),
@@ -183,7 +184,7 @@ test('evaluateRotationState · T-14 dispara una vez, T-13 no re-dispara', () => 
   });
   assert.equal(r1.alerts.length, 1);
   assert.equal(r1.alerts[0].threshold, 'T-14');
-  assert.equal(r1.nextState.ANTHROPIC_API_KEY.thresholds_sent['T-14'], '2026-06-16');
+  assert.equal(r1.nextState.kernel.ANTHROPIC_API_KEY.thresholds_sent['T-14'], '2026-06-16');
 
   // Segundo tick a T-13 (mismo threshold T-14): no re-dispara.
   const r2 = cron.evaluateRotationState({
@@ -197,7 +198,7 @@ test('evaluateRotationState · T-14 dispara una vez, T-13 no re-dispara', () => 
 test('evaluateRotationState · 4 thresholds disparan secuencialmente sin overlap', () => {
   const inventoryRows = [{
     provider: 'anthropic',
-    env_var: 'KEY',
+    project_id: 'kernel', env_var: 'KEY',
     owner: 'leo',
     last_rotated: dateUTC('2026-04-01'),
     expires_at: dateUTC('2026-06-30'),
@@ -220,7 +221,7 @@ test('evaluateRotationState · 4 thresholds disparan secuencialmente sin overlap
   assert.equal(r.alerts[0].threshold, 'T-1');
   state = r.nextState;
   // Verificar que el state acumula los 4 thresholds.
-  assert.deepEqual(Object.keys(state.KEY.thresholds_sent).sort(), ['T-1', 'T-14', 'T-3', 'T-7']);
+  assert.deepEqual(Object.keys(state.kernel.KEY.thresholds_sent).sort(), ['T-1', 'T-14', 'T-3', 'T-7']);
 });
 
 test('evaluateRotationState · si dos thresholds caen el mismo día, elige el MÁS URGENTE', () => {
@@ -229,7 +230,7 @@ test('evaluateRotationState · si dos thresholds caen el mismo día, elige el M�
   // se dispara como el primero de la cadena.
   const inventoryRows = [{
     provider: 'anthropic',
-    env_var: 'KEY',
+    project_id: 'kernel', env_var: 'KEY',
     owner: 'leo',
     last_rotated: dateUTC('2026-04-01'),
     expires_at: dateUTC('2026-06-30'),
@@ -247,7 +248,7 @@ test('evaluateRotationState · si dos thresholds caen el mismo día, elige el M�
 test('evaluateRotationState · T-0 (expirada) re-dispara en ticks consecutivos', () => {
   const inventoryRows = [{
     provider: 'anthropic',
-    env_var: 'KEY',
+    project_id: 'kernel', env_var: 'KEY',
     owner: 'leo',
     last_rotated: dateUTC('2026-04-01'),
     expires_at: dateUTC('2026-06-30'),
@@ -267,16 +268,18 @@ test('evaluateRotationState · T-0 (expirada) re-dispara en ticks consecutivos',
 test('evaluateRotationState · al rotar (last_rotated salta), reset del ciclo', () => {
   const inventoryRows = [{
     provider: 'anthropic',
-    env_var: 'KEY',
+    project_id: 'kernel', env_var: 'KEY',
     owner: 'leo',
     last_rotated: dateUTC('2026-07-15'),    // recién rotada
     expires_at: dateUTC('2026-10-13'),      // 90d después
   }];
   // Estado previo de un ciclo anterior con T-14 y T-7 ya disparados.
   const state = {
-    KEY: {
-      last_rotated: '2026-04-01',
-      thresholds_sent: { 'T-14': '2026-06-16', 'T-7': '2026-06-23' },
+    kernel: {
+      KEY: {
+        last_rotated: '2026-04-01',
+        thresholds_sent: { 'T-14': '2026-06-16', 'T-7': '2026-06-23' },
+      },
     },
   };
   const r = cron.evaluateRotationState({
@@ -294,9 +297,9 @@ test('evaluateRotationState · al rotar (last_rotated salta), reset del ciclo', 
 
 test('evaluateRotationState · múltiples env_vars, idempotencia independiente', () => {
   const inventoryRows = [
-    { provider: 'anthropic', env_var: 'KEY_A', owner: 'leo',
+    { provider: 'anthropic', project_id: 'kernel', env_var: 'KEY_A', owner: 'leo',
       last_rotated: dateUTC('2026-04-01'), expires_at: dateUTC('2026-06-30') },
-    { provider: 'openai', env_var: 'KEY_B', owner: 'leo',
+    { provider: 'openai', project_id: 'kernel', env_var: 'KEY_B', owner: 'leo',
       last_rotated: dateUTC('2026-04-01'), expires_at: dateUTC('2026-06-30') },
   ];
   let state = {};
@@ -314,7 +317,7 @@ test('evaluateRotationState · múltiples env_vars, idempotencia independiente',
 test('buildTelegramMessage · contiene provider, env_var, owner, días y runbook', () => {
   const entry = {
     provider: 'anthropic',
-    env_var: 'ANTHROPIC_API_KEY',
+    project_id: 'kernel', env_var: 'ANTHROPIC_API_KEY',
     owner: 'leo',
     runbook_url: 'https://example.com/runbook',
   };
@@ -329,7 +332,7 @@ test('buildTelegramMessage · contiene provider, env_var, owner, días y runbook
 });
 
 test('buildTelegramMessage · T-0 título y prioridad critical', () => {
-  const entry = { provider: 'anthropic', env_var: 'KEY', owner: 'leo' };
+  const entry = { provider: 'anthropic', project_id: 'kernel', env_var: 'KEY', owner: 'leo' };
   const threshold = { key: 'T-0', daysRemaining: -3, icon: '🔴', expired: true };
   const msg = cron.buildTelegramMessage(entry, threshold);
   assert.match(msg, /EXPIRADA — rotar AHORA/);
@@ -342,7 +345,7 @@ test('buildTelegramMessage · NO contiene valor ficticio del secret (anti-leak)'
   // Los entries no llevan valores; la función sólo recibe metadata.
   const entry = {
     provider: 'anthropic',
-    env_var: 'ANTHROPIC_API_KEY',
+    project_id: 'kernel', env_var: 'ANTHROPIC_API_KEY',
     owner: 'leo',
     runbook_url: 'https://example.com',
     // intentar contaminar — la función debería ignorar campos no esperados.
@@ -359,7 +362,7 @@ test('evaluateRotationState · alertas no contienen substring del valor de proce
   // entry con valor del secret accidental, el output no debe contenerlo.
   const inventoryRows = [{
     provider: 'anthropic',
-    env_var: 'ANTHROPIC_API_KEY',
+    project_id: 'kernel', env_var: 'ANTHROPIC_API_KEY',
     owner: 'leo',
     last_rotated: dateUTC('2026-04-01'),
     expires_at: dateUTC('2026-06-30'),
@@ -400,8 +403,9 @@ test('runRotationTick · feliz: lee inventario, envía alerta, persiste estado',
     assert.match(sentMessages[0], /próxima a expirar/);
     // Estado persistido.
     const savedState = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
-    assert.ok(savedState.ANTHROPIC_API_KEY);
-    assert.equal(savedState.ANTHROPIC_API_KEY.thresholds_sent['T-14'], '2026-06-16');
+    assert.ok(savedState.kernel, 'el estado se indexa por projectId (#5901)');
+    assert.ok(savedState.kernel.ANTHROPIC_API_KEY);
+    assert.equal(savedState.kernel.ANTHROPIC_API_KEY.thresholds_sent['T-14'], '2026-06-16');
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -476,10 +480,10 @@ test('runRotationTick · estado corrupto → reset silencioso, no crashea', () =
 
 test('parseInventoryMarkdown · reconoce sentinel OAuth → fila con applies:false', () => {
   const md = [
-    '| provider | env_var | owner | last_rotated | expires_at |',
-    '|----------|---------|-------|--------------|------------|',
-    '| anthropic | `ANTHROPIC_API_KEY` | leo | N/A (OAuth Max) | N/A (OAuth Max) |',
-    '| openai | `OPENAI_API_KEY` | leo | 2026-04-01 | 2026-06-30 |',
+    '| project_id | provider | env_var | owner | last_rotated | expires_at |',
+    '|------------|----------|---------|-------|--------------|------------|',
+    '| kernel | anthropic | `ANTHROPIC_API_KEY` | leo | N/A (OAuth Max) | N/A (OAuth Max) |',
+    '| kernel | openai | `OPENAI_API_KEY` | leo | 2026-04-01 | 2026-06-30 |',
   ].join('\n');
   const rows = cron.parseInventoryMarkdown(md);
   // NO la descarta: la emite marcada como no-aplicable.
@@ -495,9 +499,9 @@ test('parseInventoryMarkdown · reconoce sentinel OAuth → fila con applies:fal
 
 test('parseInventoryMarkdown · sentinel OAuth sólo en expires_at también marca applies:false', () => {
   const md = [
-    '| provider | env_var | owner | last_rotated | expires_at |',
-    '|----------|---------|-------|--------------|------------|',
-    '| anthropic | `ANTHROPIC_API_KEY` | leo | 2026-04-15 | oauth |',
+    '| project_id | provider | env_var | owner | last_rotated | expires_at |',
+    '|------------|----------|---------|-------|--------------|------------|',
+    '| kernel | anthropic | `ANTHROPIC_API_KEY` | leo | 2026-04-15 | oauth |',
   ].join('\n');
   const rows = cron.parseInventoryMarkdown(md);
   assert.equal(rows.length, 1);
@@ -506,8 +510,8 @@ test('parseInventoryMarkdown · sentinel OAuth sólo en expires_at también marc
 
 test('evaluateRotationState · excluye fila OAuth pero sigue evaluando reales (no-regresión)', () => {
   const inventoryRows = [
-    { provider: 'anthropic', env_var: 'ANTHROPIC_API_KEY', owner: 'leo', applies: false },
-    { provider: 'openai', env_var: 'OPENAI_API_KEY', owner: 'leo',
+    { provider: 'anthropic', project_id: 'kernel', env_var: 'ANTHROPIC_API_KEY', owner: 'leo', applies: false },
+    { provider: 'openai', project_id: 'kernel', env_var: 'OPENAI_API_KEY', owner: 'leo',
       last_rotated: dateUTC('2026-04-01'), expires_at: dateUTC('2026-06-30') },
   ];
   const r = cron.evaluateRotationState({
@@ -530,26 +534,26 @@ test('evaluateRotationState · excluye fila OAuth pero sigue evaluando reales (n
 // ─── Backoff diario de expiradas (#4834) ─────────────────────────────────────
 
 test('shouldNotifyEntry · expirada con last_expired_alert=hoy → no notifica (backoff)', () => {
-  const entry = { env_var: 'KEY', last_rotated: dateUTC('2026-04-01') };
+  const entry = { project_id: 'kernel', env_var: 'KEY', last_rotated: dateUTC('2026-04-01') };
   const threshold = { key: 'T-0', expired: true };
   const now = dateUTC('2026-07-21');
-  const state = { KEY: { last_rotated: '2026-04-01', last_expired_alert: '2026-07-21' } };
+  const state = { kernel: { KEY: { last_rotated: '2026-04-01', last_expired_alert: '2026-07-21' } } };
   const decision = cron.shouldNotifyEntry(entry, threshold, state, now);
   assert.equal(decision.shouldNotify, false);
   assert.match(decision.reason, /backoff/);
 });
 
 test('shouldNotifyEntry · expirada con last_expired_alert=ayer → notifica', () => {
-  const entry = { env_var: 'KEY', last_rotated: dateUTC('2026-04-01') };
+  const entry = { project_id: 'kernel', env_var: 'KEY', last_rotated: dateUTC('2026-04-01') };
   const threshold = { key: 'T-0', expired: true };
   const now = dateUTC('2026-07-21');
-  const state = { KEY: { last_rotated: '2026-04-01', last_expired_alert: '2026-07-20' } };
+  const state = { kernel: { KEY: { last_rotated: '2026-04-01', last_expired_alert: '2026-07-20' } } };
   const decision = cron.shouldNotifyEntry(entry, threshold, state, now);
   assert.equal(decision.shouldNotify, true);
 });
 
 test('shouldNotifyEntry · expirada sin estado previo → notifica (fail-safe)', () => {
-  const entry = { env_var: 'KEY', last_rotated: dateUTC('2026-04-01') };
+  const entry = { project_id: 'kernel', env_var: 'KEY', last_rotated: dateUTC('2026-04-01') };
   const threshold = { key: 'T-0', expired: true };
   const decision = cron.shouldNotifyEntry(entry, threshold, {}, dateUTC('2026-07-21'));
   assert.equal(decision.shouldNotify, true);
@@ -557,30 +561,30 @@ test('shouldNotifyEntry · expirada sin estado previo → notifica (fail-safe)',
 
 test('evaluateRotationState · backoff diario: expirada con last_expired_alert=hoy → 0 alertas', () => {
   const inventoryRows = [{
-    provider: 'openai', env_var: 'KEY', owner: 'leo',
+    provider: 'openai', project_id: 'kernel', env_var: 'KEY', owner: 'leo',
     last_rotated: dateUTC('2026-04-01'), expires_at: dateUTC('2026-06-30'),
   }];
-  const state = { KEY: { last_rotated: '2026-04-01', last_expired_alert: '2026-07-21' } };
+  const state = { kernel: { KEY: { last_rotated: '2026-04-01', last_expired_alert: '2026-07-21' } } };
   const r = cron.evaluateRotationState({ now: dateUTC('2026-07-21'), inventoryRows, state });
   assert.equal(r.alerts.length, 0, 'mismo día no re-notifica');
 });
 
 test('evaluateRotationState · backoff diario: expirada con last_expired_alert=ayer → 1 alerta y persiste hoy', () => {
   const inventoryRows = [{
-    provider: 'openai', env_var: 'KEY', owner: 'leo',
+    provider: 'openai', project_id: 'kernel', env_var: 'KEY', owner: 'leo',
     last_rotated: dateUTC('2026-04-01'), expires_at: dateUTC('2026-06-30'),
   }];
-  const state = { KEY: { last_rotated: '2026-04-01', last_expired_alert: '2026-07-20' } };
+  const state = { kernel: { KEY: { last_rotated: '2026-04-01', last_expired_alert: '2026-07-20' } } };
   const r = cron.evaluateRotationState({ now: dateUTC('2026-07-21'), inventoryRows, state });
   assert.equal(r.alerts.length, 1, 'nuevo día → exactamente 1 alerta (piso diario)');
   assert.equal(r.alerts[0].threshold, 'T-0');
   // Persiste la fecha de hoy para bloquear el próximo tick del mismo día.
-  assert.equal(r.nextState.KEY.last_expired_alert, '2026-07-21');
+  assert.equal(r.nextState.kernel.KEY.last_expired_alert, '2026-07-21');
 });
 
 test('evaluateRotationState · expirada: dos ticks el mismo día → sólo la primera notifica', () => {
   const inventoryRows = [{
-    provider: 'openai', env_var: 'KEY', owner: 'leo',
+    provider: 'openai', project_id: 'kernel', env_var: 'KEY', owner: 'leo',
     last_rotated: dateUTC('2026-04-01'), expires_at: dateUTC('2026-06-30'),
   }];
   // Primer tick del día: notifica.
@@ -593,8 +597,8 @@ test('evaluateRotationState · expirada: dos ticks el mismo día → sólo la pr
 
 test('evaluateRotationState · anti-leak: campos nuevos (applies/excluded/last_expired_alert) sin valor de secret', () => {
   const inventoryRows = [
-    { provider: 'anthropic', env_var: 'ANTHROPIC_API_KEY', owner: 'leo', applies: false },
-    { provider: 'openai', env_var: 'OPENAI_API_KEY', owner: 'leo',
+    { provider: 'anthropic', project_id: 'kernel', env_var: 'ANTHROPIC_API_KEY', owner: 'leo', applies: false },
+    { provider: 'openai', project_id: 'kernel', env_var: 'OPENAI_API_KEY', owner: 'leo',
       last_rotated: dateUTC('2026-04-01'), expires_at: dateUTC('2026-06-30') },
   ];
   const r = cron.evaluateRotationState({ now: dateUTC('2026-07-21'), inventoryRows, state: {} });
@@ -602,7 +606,7 @@ test('evaluateRotationState · anti-leak: campos nuevos (applies/excluded/last_e
   assert.doesNotMatch(allText, /sk-ant-[A-Za-z0-9_-]{6,}/);
   assert.doesNotMatch(allText, /sk-(?!ant-)[A-Za-z0-9_-]{6,}/);
   // El estado nuevo sólo lleva fechas/booleanos/env_vars.
-  assert.equal(r.nextState.OPENAI_API_KEY.last_expired_alert, '2026-07-21');
+  assert.equal(r.nextState.kernel.OPENAI_API_KEY.last_expired_alert, '2026-07-21');
 });
 
 test('runRotationTick · fila OAuth se loguea como skip y no envía alerta', () => {
@@ -611,9 +615,9 @@ test('runRotationTick · fila OAuth se loguea como skip y no envía alerta', () 
     const inventoryFile = path.join(dir, 'inv.md');
     const stateFile = path.join(dir, 'state.json');
     fs.writeFileSync(inventoryFile, [
-      '| provider | env_var | owner | last_rotated | expires_at | account_id | rotation_runbook_url | revocation_endpoint |',
-      '|----------|---------|-------|--------------|------------|------------|----------------------|---------------------|',
-      '| anthropic | `ANTHROPIC_API_KEY` | leo | N/A (OAuth Max) | N/A (OAuth Max) | acct | [runbook](https://x.com) | https://x.com |',
+      '| project_id | provider | env_var | owner | last_rotated | expires_at | account_id | rotation_runbook_url | revocation_endpoint |',
+      '|------------|----------|---------|-------|--------------|------------|------------|----------------------|---------------------|',
+      '| kernel | anthropic | `ANTHROPIC_API_KEY` | leo | N/A (OAuth Max) | N/A (OAuth Max) | acct | [runbook](https://x.com) | https://x.com |',
     ].join('\n'));
 
     const sent = [];
@@ -688,9 +692,9 @@ test('inventario real · ENV_MAPPING es subconjunto de lo inventariado y excluye
 
 test('metadata pendiente · recuerda una vez por día y no silencia la credencial', () => {
   const row = cron.parseInventoryMarkdown([
-    '| provider | env_var | owner | last_rotated | expires_at | account_id | rotation_runbook_url | revocation_endpoint |',
-    '|----------|---------|-------|--------------|------------|------------|----------------------|---------------------|',
-    '| telegram | `TELEGRAM_BOT_TOKEN` | leo | _pendiente registrar_ | _pendiente registrar_ | acct | [runbook](https://example.test) | N/A |',
+    '| project_id | provider | env_var | owner | last_rotated | expires_at | account_id | rotation_runbook_url | revocation_endpoint |',
+    '|------------|----------|---------|-------|--------------|------------|------------|----------------------|---------------------|',
+    '| kernel | telegram | `TELEGRAM_BOT_TOKEN` | leo | _pendiente registrar_ | _pendiente registrar_ | acct | [runbook](https://example.test) | N/A |',
   ].join('\n'))[0];
   assert.equal(row.metadata_missing, true);
   const first = cron.evaluateRotationState({ now: dateUTC('2026-08-03'), inventoryRows: [row], state: {} });
@@ -705,7 +709,7 @@ test('filas rotables nuevas · disparan T-14, T-7, T-3 y T-1', () => {
   for (let index = 0; index < envVars.length; index++) {
     const row = {
       provider: `provider-${index}`,
-      env_var: envVars[index],
+      project_id: 'kernel', env_var: envVars[index],
       owner: 'leo',
       last_rotated: dateUTC('2026-05-03'),
       expires_at: dateUTC('2026-08-01'),
@@ -721,9 +725,9 @@ test('filas rotables nuevas · disparan T-14, T-7, T-3 y T-1', () => {
 
 test('recordatorios del mismo threshold se consolidan en un solo mensaje', () => {
   const alerts = [
-    { provider: 'uno', env_var: 'SECRET_ONE', threshold: 'T-7', daysRemaining: 7, message: 'uno' },
-    { provider: 'dos', env_var: 'SECRET_TWO', threshold: 'T-7', daysRemaining: 7, message: 'dos' },
-    { provider: 'tres', env_var: 'SECRET_THREE', threshold: 'T-3', daysRemaining: 3, message: 'tres' },
+    { provider: 'uno', project_id: 'kernel', env_var: 'SECRET_ONE', threshold: 'T-7', daysRemaining: 7, message: 'uno' },
+    { provider: 'dos', project_id: 'kernel', env_var: 'SECRET_TWO', threshold: 'T-7', daysRemaining: 7, message: 'dos' },
+    { provider: 'tres', project_id: 'kernel', env_var: 'SECRET_THREE', threshold: 'T-3', daysRemaining: 3, message: 'tres' },
   ];
   const consolidated = cron.consolidateAlertsByThreshold(alerts);
   assert.equal(consolidated.length, 2);

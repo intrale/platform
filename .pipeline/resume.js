@@ -18,6 +18,7 @@ const path = require('path');
 
 const cb = require('./circuit-breaker-infra');
 const { redact } = require('./redact');
+const dropfileWriter = require('./lib/dropfile-writer');
 
 const PIPELINE = path.resolve(__dirname);
 const TELEGRAM_QUEUE = path.join(PIPELINE, 'servicios', 'telegram', 'pendiente');
@@ -25,12 +26,14 @@ const TELEGRAM_QUEUE = path.join(PIPELINE, 'servicios', 'telegram', 'pendiente')
 function encolarTelegram(text) {
   try {
     fs.mkdirSync(TELEGRAM_QUEUE, { recursive: true });
-    const filename = `${Date.now()}-resume.json`;
     const safeText = redact(text);
-    fs.writeFileSync(
-      path.join(TELEGRAM_QUEUE, filename),
-      JSON.stringify({ text: safeText, parse_mode: 'Markdown' })
-    );
+    // #6226 — nombre único + escritura `wx`: dos dropfiles del mismo
+    // milisegundo ya no se pisan entre sí ni pisan los de otro proceso.
+    dropfileWriter.writeDropfileSync({
+      dir: TELEGRAM_QUEUE,
+      suffix: 'resume.json',
+      data: JSON.stringify({ text: safeText, parse_mode: 'Markdown' }),
+    });
     return true;
   } catch (e) {
     console.error(`No se pudo encolar mensaje Telegram: ${e.message}`);

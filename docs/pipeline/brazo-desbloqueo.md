@@ -63,6 +63,49 @@ body del issue (además del marker canónico en comentarios del pulpo). Todos so
 Si varias fuentes declaran deps, la salida es la **unión** (deduplicada, ordenada
 ascendente, con cap de 20).
 
+### Sólo cuenta lo que está DECLARADO (#6902)
+
+Dentro del bloque del marker, una dependencia se declara como **item de lista con
+la referencia al inicio del item**. Todo lo demás se ignora, incluidas las
+menciones que aparecen dentro de la descripción de un bullet:
+
+```markdown
+## Dependencias detectadas por el pipeline
+
+- #6190 — descripción libre, puede citar #9999 sin consecuencias   → declara 6190
+- #100, #200 y #300 — referencias contiguas al inicio              → declara las tres
+1. #4242 — lista numerada                                          → declara 4242
+#4243 — referencia sin bullet, al inicio de línea                  → declara 4243
+| 1 de 3 | #5689 | celda de tabla que ES una referencia |          → declara 5689
+
+Esta historia espera a #6190 porque la madre #6173 lo pide.        → NO declara nada
+```
+
+Hasta #6902 el bloque se parseaba entero con un `matchAll(/#(\d+)/g)` y **toda
+mención narrativa se convertía en dependencia dura**. Como la madre de un split
+depende legítimamente de sus hijas, bastaba con que una hija citara a la madre
+en la prosa del marker para cerrar un ciclo irrompible:
+
+```
+#6173 → #6191 → #6173      #6199 → #6207 → #6199
+#6173 → #6192 → #6173      #6199 → #6209 → #6199
+```
+
+Seis issues de la ola 9.4 quedaron congelados de forma permanente, y un séptimo
+(#6240) esperaba a un issue que su propio marker declaraba explícitamente como
+**fuera de alcance**.
+
+Las referencias descartadas no se pierden en silencio: el brazo las loguea
+(`N referencia(s) mencionada(s) en prosa NO tomadas como dependencia`) y el
+reporte de markers históricos las lista.
+
+### Corregir un marker: repostearlo
+
+El parser ordena los comentarios con marker por fecha y **gana el más reciente**.
+Esa es la vía oficial para corregir un marker mal escrito: postear uno nuevo con
+los bullets correctos, dejando la prosa detrás de una línea `---` (el HR termina
+el bloque). No hace falta editar ni borrar el comentario viejo.
+
 ## Semántica fail-closed
 
 El default seguro es **no tocar labels / mantener bloqueado**:
@@ -131,8 +174,148 @@ un issue que la use queda cubierto por el flujo canónico. **Recomendación
 operativa:** declarar dependencias siempre con una sintaxis reconocida (sección
 canónica, `Depends on #N` o `depends_on: [N]`), nunca sólo en prosa.
 
+## Auto-cierre de paraguas de split (#6801)
+
+Un issue "paraguas" es el **padre** de un split: su scope queda cubierto por las
+sub-historias en las que se cortó, así que cuando todas cierran no requiere
+desarrollo propio y el brazo lo cierra como `completed` en vez de reingresarlo
+al pipeline.
+
+### El defecto que corrigió #6801
+
+La condición original era literalmente `labels.includes('split')`, y la lista
+que el brazo mostraba como "sus historias hijas" salía de `blockedBy[issue]`.
+Dos errores encadenados:
+
+1. **El label `split` lo llevan tanto el padre como cada hija `[Split de #N]`.**
+   Cualquier hija con `blocked:dependencies` se auto-cerraba en cuanto cerraba
+   su dependencia.
+2. **`blockedBy[issue]` son DEPENDENCIAS, no hijas.** El comentario de auditoría
+   las presentaba como "historias hijas": un mensaje falso por construcción.
+   Caso real: #2406 se cerró diciendo que su "hija" #2401 había cerrado — #2401
+   es su **padre**.
+
+Radio de impacto verificado: 49 issues cerrados con ese comentario; uno solo
+(#2406) resultó ser una pérdida real de trabajo y fue reabierto. Los demás eran
+paraguas legítimos, hijas re-partidas cuyas propias sub-historias sí cerraron, o
+cierres posteriores con PR real (#5797 ← PR #6806).
+
+### Regla vigente
+
+El orden de decisión vive puro en
+`brazo-desbloqueo-core.decideSplitUmbrellaClose`:
+
+| Condición | Acción | Motivo |
+|-----------|--------|--------|
+| Título matchea `[Split de #P]` | `unblock` | Es una **hija**: jamás se auto-cierra. Se le quita `blocked:dependencies` y reingresa al pipeline. |
+| Sin label `split` | `unblock` | Destrabe normal. |
+| Label `split` + hijas determinables + todas CLOSED | `close` | Paraguas verificado contra su relación real padre→hijas. |
+| Label `split` + hijas indeterminables | `skip` | **Fail-closed**: no cierra, avisa por Telegram y deja el issue como está. |
+| Label `split` + alguna hija abierta o de estado ilegible | `skip` | Sigue esperando. |
+
+La lista de hijas se descubre en la frontera (`_discoverSplitChildren` en
+`pulpo.js`) en dos pasos, por orden de confianza:
+
+1. **Registro del split** en el body del padre — la línea
+   `- **Sub-historias**: #a, #b` que ya escribía `renderSplitRegistro`, ahora
+   leída por `split-guard.parseSplitRegistroHijas`.
+2. **Fallback por títulos** — issues cuyo título es `[Split de #<padre>]`, para
+   los splits viejos que no tienen registro.
+
+> **Trampa conocida:** NO usar `split-guard.isSplitChild()` para esta decisión.
+> Su rama secundaria clasifica como hija a todo issue con `split` +
+> `blocked:dependencies`, que es exactamente el estado de un paraguas legítimo
+> bloqueado por sus hijas — produce la regresión inversa (ningún paraguas cierra
+> nunca). El discriminador correcto es `parseSplitParent(title)`.
+
+### Mensajes al operador
+
+Ninguna superficie llama "hijas" a las dependencias. El comentario de cierre
+lista las dos cosas por separado y dice **de dónde salió** la lista de
+sub-historias; el mensaje de Telegram replica esa distinción. El fail-closed no
+es silencioso: avisa por Telegram con el motivo y qué hacer, deduplicado por
+issue+causa con TTL de 24h (`desbloqueo-umbrella-avisos.json`) para no repetir
+el aviso en cada ciclo. Si un paraguas se cierra sin ningún PR propio asociado,
+el aviso lo señala explícitamente para revisión.
+
+El destrabe emite **un solo** mensaje: si el core armó un aviso específico (el
+caso de la hija de split) ese reemplaza al genérico de "destrabado
+automáticamente" en vez de sumarse. Y se manda **después** de que el
+`gh issue edit --remove-label` haya salido bien, para no anunciar un cambio de
+label que no llegó a aplicarse.
+
+`desbloqueo-umbrella-avisos.json` es **estado runtime, gitignoreado**, igual que
+`human-block-reminder-state.json` y `partial-pause-deps-mute.json`: vive en el
+`.pipeline/` del checkout donde corre el brazo y se escribe de forma atómica
+(tmp + `rename`). Versionarlo dejaría un `??` permanente en el repo principal y
+en cada worktree — el `reset --hard` del respawn no toca untracked.
+
+### Auditoría del radio de impacto
+
+`node .pipeline/bin/audit-paraguas-resuelto.js` (dry-run por default, `--apply`
+para reabrir). Reabre un issue sólo si cumple **las cuatro** condiciones: es una
+hija `[Split de #N]`, la cerró el brazo con el comentario espurio, no tiene
+ningún PR asociado, y no tiene sub-historias propias todas cerradas. Es
+idempotente: un issue ya reabierto queda descartado con `no-esta-cerrado`.
+
+## Ciclos de dependencias (#6902)
+
+Un ciclo en el grafo `blockedBy` es un deadlock permanente. Lo peligroso no es
+que exista: es que **era invisible**. Cada issue del ciclo, mirado de a uno,
+está "esperando una dependencia abierta", que es un estado perfectamente sano —
+así que ningún watchdog lo levanta y nadie se entera. Los seis issues de la ola
+9.4 estuvieron congelados días sin que ninguna alarma sonara.
+
+`brazoDesbloqueoImpl` construye el grafo `blockedBy` en cada ciclo y lo pasa por
+`brazoDesbloqueoCore.detectDependencyCycles()` antes de persistir
+`blocked-issues.json`. Por cada ciclo detectado emite un log y un aviso al
+operador con la **ruta completa** (`#6173 → #6191 → #6173`), no un genérico "hay
+un ciclo": el operador tiene que poder decidir cuál dependencia es la espuria
+sin abrir cuatro issues.
+
+- **No se rompe automáticamente.** Cuál de las dos dependencias sobra es juicio
+  humano; borrar la equivocada destruiría una dependencia real.
+- **Anti-spam.** El aviso se deduplica por la firma canónica del ciclo
+  (invariante ante rotaciones) con el TTL de `desbloqueo-umbrella-avisos.json`.
+  Un ciclo persiste hasta que un humano lo rompe: sin dedup, el brazo convertiría
+  un deadlock silencioso en un deadlock ruidoso, y un canal que spamea se ignora.
+- **Límite conocido.** El grafo sólo tiene los issues con `blocked:dependencies`
+  vivo. Un ciclo cuyo eslabón no tenga el label no se cierra en este grafo y no
+  se detecta — conservador por diseño: mejor no reportar que inventar un ciclo
+  con datos parciales.
+
+### Guardrail madre-hija
+
+Una hija de split (`[Split de #N] ...`) que declare a `#N` como dependencia es un
+ciclo **por construcción**, y para saberlo alcanza el título más la lista de
+deps. Por eso `detectMotherChildCycle()` corre en dos momentos:
+
+1. **Al escribir el marker** (brazo de barrido, antes de
+   `reportDependencyBlock`) — prevención: el operador se entera en el acto.
+2. **Al leerlo** (brazo de desbloqueo, sobre los markers ya existentes) —
+   forense: cubre los markers escritos antes de este guardrail.
+
+En ambos casos **avisa, no filtra**: el marker se escribe igual. El pipeline no
+borra dependencias por su cuenta.
+
+### Reporte de markers históricos
+
+```bash
+node .pipeline/scripts/report-prose-deps.js            # texto legible
+node .pipeline/scripts/report-prose-deps.js --json     # para procesar
+```
+
+Recorre los issues abiertos con `blocked:dependencies` y lista, por issue, cada
+referencia sospechosa **con la línea donde apareció**. Sólo lee: no edita
+issues, no toca labels, no repostea markers. La corrección es humana.
+
 ## Tests
 
+- `.pipeline/lib/__tests__/dep-comment-parser-prosa-6902.test.js` — regla de
+  declaración vs. prosa y regresión contra los markers reales de #6191, #6192,
+  #6207 y #6209.
+- `.pipeline/lib/__tests__/brazo-desbloqueo-ciclos-6902.test.js` — detección de
+  ciclos sobre el grafo real de la ola 9.4 y guardrail madre-hija.
 - `.pipeline/lib/__tests__/dep-resolver.test.js` — patrones B1–B4, fail-closed,
   code fences, bounds, negaciones, cap y dedup.
 - `.pipeline/lib/__tests__/brazo-desbloqueo-core.test.js` — decisión pura y los
@@ -141,3 +324,6 @@ canónica, `Depends on #N` o `depends_on: [N]`), nunca sólo en prosa.
 - `.pipeline/tests/brazo-desbloqueo-wedge.test.js` — end-to-end de la sintaxis
   `depends_on: [N]` (detección → decisión → reingreso a `pendiente/`) y
   regresión del wedge del watchdog.
+- `.pipeline/lib/__tests__/split-guard.test.js` — `parseSplitRegistroHijas`:
+  lectura de la relación padre→hijas del registro, fail-closed e inmunidad a
+  bloques de código.

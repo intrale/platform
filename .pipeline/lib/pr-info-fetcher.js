@@ -237,10 +237,314 @@ function fetchPrInfoForIssueAsync(issue, options) {
   });
 }
 
+// =============================================================================
+// #4966 — Extensión ADITIVA para el watcher de mergeabilidad de PRs.
+//
+// Todo lo de abajo es API nueva. NO se modifica `FIELDS`, `_buildArgs`,
+// `_parseResult`, `fetchPrInfoForIssue` ni `fetchPrInfoForIssueAsync`: tienen
+// consumidores en `dashboard.js`, `pulpo.js` y `pipeline-states.js`, y sus 21
+// tests corren sin editarse (CA-8).
+//
+// Por qué parsers nuevos y no reusar `_parseResult`: su
+// `candidates.sort(...); return candidates[0]` COLAPSA la ambigüedad eligiendo
+// el más reciente. Para el watcher la ambigüedad es justamente lo que hay que
+// detectar y tratar como no-op (CA-3), no algo que resolver por heurística.
+// =============================================================================
+
+// `owner/name` de GitHub: mismo charset que `rewind-merge-dedupe.REPO_RE`, para
+// que un repo que pasa acá pase también la validación del consumidor (#4967).
+const REPO_RE = /^[A-Za-z0-9._-]{1,100}\/[A-Za-z0-9._-]{1,100}$/;
+// `headRefOid`: SHA-1 (40 hex) hoy, SHA-256 (64) el día que GitHub migre.
+const OID_RE = /^[0-9a-f]{7,64}$/;
+
+const CANDIDATE_LIMIT_MIN = 1;
+const CANDIDATE_LIMIT_MAX = 100;
+const DEFAULT_CANDIDATE_LIMIT = 20;
+
+// Campos de mergeabilidad. `mergeable` y `mergeStateStatus` ya viven en FIELDS
+// desde #5337, pero `headRefOid` y `baseRefName` no: el contrato viejo no los
+// pide y agregarlos ahí cambiaría el payload de todos sus consumidores. Lista
+// propia, verificada válida tanto en `gh pr list` como en `gh pr view`.
+const MERGEABILITY_FIELDS = [
+  'number',
+  'state',
+  'mergeable',
+  'mergeStateStatus',
+  'headRefOid',
+  'headRefName',
+  'baseRefName',
+  'headRepositoryOwner',
+  'isCrossRepository',
+  'updatedAt',
+  'url',
+].join(',');
+
+// El stderr de `gh` es texto de origen remoto: lo redactamos antes de guardarlo
+// en un error tipado que después va a un JSONL de auditoría (CA-5).
+const SECRET_PATTERNS = [
+  /gh[pousr]_[A-Za-z0-9]{16,}/g, // tokens clásicos de GitHub
+  /github_pat_[A-Za-z0-9_]{20,}/g,
+  /\b(?:Bearer|token)\s+[A-Za-z0-9._-]{8,}/gi,
+  /\bAuthorization\s*:\s*\S+/gi,
+  /\b(?:GH_TOKEN|GITHUB_TOKEN|GH_BIN)\s*=\s*\S+/g,
+];
+
+/**
+ * Recorta y redacta un texto de origen externo antes de exponerlo como
+ * `message`/`stderr` de un error tipado.
+ */
+function _redact(text, max) {
+  let s = typeof text === 'string' ? text : '';
+  for (const re of SECRET_PATTERNS) s = s.replace(re, '[REDACTED]');
+  return s.slice(0, Number.isFinite(max) ? max : 200);
+}
+
+/**
+ * Clampea el `--limit` en CÓDIGO, no confiando en el YAML (CA-5/CA-7).
+ * Cualquier valor no numérico cae al default.
+ */
+function _clampCandidateLimit(value) {
+  const n = Math.trunc(Number(value));
+  if (!Number.isFinite(n)) return DEFAULT_CANDIDATE_LIMIT;
+  return Math.min(Math.max(n, CANDIDATE_LIMIT_MIN), CANDIDATE_LIMIT_MAX);
+}
+
+/** Valida `owner/name` contra charset ANTES de que llegue a un argv. */
+function _isValidRepo(repo) {
+  return typeof repo === 'string' && REPO_RE.test(repo);
+}
+
+/** Valida un identificador numérico de GitHub (PR o issue). */
+function _isValidId(value) {
+  const n = Number(value);
+  return Number.isInteger(n) && n > 0;
+}
+
+// argv de `gh pr list` para el universo de candidatos del watcher. Distinto de
+// `_buildArgs`: acá el estado es `open` (no `all`), no hay `--search` (barremos
+// todo el universo abierto) y el limit es configurable con clamp.
+function _buildOpenCandidatesArgs({ repo, limit }) {
+  return [
+    'pr',
+    'list',
+    '--repo',
+    repo,
+    '--state',
+    'open',
+    '--limit',
+    String(_clampCandidateLimit(limit)),
+    '--json',
+    MERGEABILITY_FIELDS,
+  ];
+}
+
+// argv de `gh pr view <N>`: la segunda pasada que resuelve el `mergeable`
+// diferido de GitHub (`pr list` devuelve UNKNOWN y ceba el cálculo).
+function _buildViewArgs({ repo, pr }) {
+  return ['pr', 'view', String(Number(pr)), '--repo', repo, '--json', MERGEABILITY_FIELDS];
+}
+
+/**
+ * Clasifica un resultado tipo-spawnSync en error tipado, o `null` si vino OK.
+ * Reusa los códigos ya establecidos del módulo y suma `gh_timeout` y
+ * `rate_limited`, que el contrato viejo no distinguía.
+ */
+function _classifyGhFailure(result) {
+  if (!result) return { ok: false, reason: 'no_result' };
+  if (result.error) {
+    const err = result.error;
+    if (err.code === 'ETIMEDOUT' || err.killed === true || result.signal === 'SIGTERM') {
+      return { ok: false, reason: 'gh_timeout' };
+    }
+    return { ok: false, reason: 'spawn_error', message: _redact(err.message) };
+  }
+  if (result.status !== 0) {
+    const stderr = _redact(result.stderr);
+    if (/rate limit|secondary rate|abuse detection/i.test(stderr)) {
+      return { ok: false, reason: 'rate_limited', stderr };
+    }
+    return { ok: false, reason: 'non_zero_exit', exit: result.status, stderr };
+  }
+  return null;
+}
+
+/**
+ * Valida el shape de un PR devuelto por `gh`. Fail-closed: una respuesta
+ * parcial (falta `headRefOid`) es `schema_invalid`, nunca un candidato con
+ * campos en `undefined`.
+ */
+function _isValidPrShape(pr) {
+  if (!pr || typeof pr !== 'object' || Array.isArray(pr)) return false;
+  if (!Number.isInteger(pr.number) || pr.number <= 0) return false;
+  if (typeof pr.state !== 'string' || pr.state.length === 0) return false;
+  if (typeof pr.headRefOid !== 'string' || !OID_RE.test(pr.headRefOid)) return false;
+  if (typeof pr.headRefName !== 'string' || pr.headRefName.length === 0) return false;
+  if (typeof pr.baseRefName !== 'string' || pr.baseRefName.length === 0) return false;
+  if (typeof pr.mergeable !== 'string') return false;
+  if (typeof pr.mergeStateStatus !== 'string') return false;
+  return true;
+}
+
+// Normaliza a un shape propio: sólo los campos que el watcher usa. Nada del
+// objeto crudo de GitHub viaja aguas abajo.
+function _normalizePr(pr) {
+  return {
+    number: pr.number,
+    state: pr.state,
+    mergeable: pr.mergeable,
+    mergeStateStatus: pr.mergeStateStatus,
+    headRefOid: pr.headRefOid,
+    headRefName: pr.headRefName,
+    baseRefName: pr.baseRefName,
+    headRepositoryOwner:
+      pr.headRepositoryOwner && typeof pr.headRepositoryOwner.login === 'string'
+        ? { login: pr.headRepositoryOwner.login }
+        : null,
+    isCrossRepository: pr.isCrossRepository === true,
+    updatedAt: typeof pr.updatedAt === 'string' ? pr.updatedAt : null,
+    url: typeof pr.url === 'string' ? pr.url : null,
+  };
+}
+
+/**
+ * Parser de `gh pr list --json ...` para el watcher.
+ *
+ * Devuelve la LISTA COMPLETA. A diferencia de `_parseResult`, no ordena ni
+ * elige: quién decide qué hacer con 0 o N candidatos es el watcher (CA-3).
+ */
+function _parseMergeabilityList(result) {
+  const failure = _classifyGhFailure(result);
+  if (failure) return failure;
+
+  let parsed;
+  try {
+    parsed = JSON.parse(result.stdout || '[]');
+  } catch (e) {
+    return { ok: false, reason: 'json_parse_failed', message: _redact(e.message) };
+  }
+  if (!Array.isArray(parsed)) {
+    return { ok: false, reason: 'schema_invalid', message: 'respuesta no-array' };
+  }
+  // Un elemento con shape inválido NO invalida el barrido entero: se descarta
+  // y se reporta aparte para que el watcher lo audite como no-op.
+  const candidates = [];
+  const invalid = [];
+  for (const pr of parsed) {
+    if (_isValidPrShape(pr)) candidates.push(_normalizePr(pr));
+    else invalid.push(pr && Number.isInteger(pr.number) ? pr.number : null);
+  }
+  return { ok: true, candidates, invalid };
+}
+
+/** Parser de `gh pr view <N> --json ...`: objeto único, no lista. */
+function _parseMergeabilityView(result) {
+  const failure = _classifyGhFailure(result);
+  if (failure) return failure;
+
+  let parsed;
+  try {
+    parsed = JSON.parse(result.stdout || 'null');
+  } catch (e) {
+    return { ok: false, reason: 'json_parse_failed', message: _redact(e.message) };
+  }
+  if (!_isValidPrShape(parsed)) {
+    return { ok: false, reason: 'schema_invalid', message: 'campos de mergeabilidad ausentes o invalidos' };
+  }
+  return { ok: true, pr: _normalizePr(parsed) };
+}
+
+// Ejecuta `gh` con argv estructurado. Sin `shell: true`, sin concatenar
+// strings. Mismo molde que `fetchPrInfoForIssueAsync` (execFile + timeout +
+// windowsHide + maxBuffer acotado), con `asyncRunner` inyectable para tests.
+function _runGhAsync(args, opts) {
+  const ghBin = opts.ghBin || process.env.GH_BIN || 'gh';
+  const cwd = opts.cwd || process.cwd();
+  const timeoutMs = Number.isFinite(opts.timeoutMs) ? opts.timeoutMs : DEFAULT_TIMEOUT_MS;
+  const asyncRunner = typeof opts.asyncRunner === 'function' ? opts.asyncRunner : null;
+
+  if (asyncRunner) {
+    return Promise.resolve()
+      .then(() => asyncRunner(ghBin, args, { timeoutMs, cwd }))
+      .catch((e) => ({ error: e instanceof Error ? e : new Error(String(e && e.message)) }));
+  }
+
+  return new Promise((resolve) => {
+    execFile(
+      ghBin,
+      args,
+      { encoding: 'utf8', timeout: timeoutMs, windowsHide: true, cwd, maxBuffer: 1024 * 1024 },
+      (err, stdout, stderr) => {
+        if (err) {
+          if (err.killed || err.code === 'ETIMEDOUT') {
+            resolve({ status: null, error: err, stderr, signal: err.signal });
+          } else if (typeof err.code === 'number') {
+            resolve({ status: err.code, stdout, stderr });
+          } else {
+            resolve({ status: null, error: err, stderr });
+          }
+          return;
+        }
+        resolve({ status: 0, stdout, stderr });
+      },
+    );
+  });
+}
+
+/**
+ * Trae los PRs ABIERTOS del repo con sus campos de mergeabilidad.
+ *
+ * @param {object} options
+ * @param {string} options.repo `owner/name`, validado contra charset antes de
+ *   llegar al argv. Un repo inválido corta ANTES de invocar `gh`.
+ * @param {number} [options.limit] clampeado a [1,100] en código.
+ * @returns {Promise<{ok:true, candidates:object[], invalid:Array}|{ok:false, reason:string}>}
+ */
+function fetchOpenPrCandidatesAsync(options) {
+  const opts = options || {};
+  if (!_isValidRepo(opts.repo)) return Promise.resolve({ ok: false, reason: 'invalid_repo' });
+  const args = _buildOpenCandidatesArgs({ repo: opts.repo, limit: opts.limit });
+  return _runGhAsync(args, opts)
+    .then((result) => _parseMergeabilityList(result))
+    .catch((e) => ({ ok: false, reason: 'spawn_failed', message: _redact(e && e.message) }));
+}
+
+/**
+ * Segunda pasada: confirma la mergeabilidad de UN PR con `gh pr view`.
+ *
+ * GitHub calcula `mergeable` de forma diferida — `pr list` casi siempre
+ * devuelve UNKNOWN y ceba el cálculo; `pr view` sobre el mismo PR lo resuelve.
+ *
+ * @returns {Promise<{ok:true, pr:object}|{ok:false, reason:string}>}
+ */
+function fetchPrMergeabilityAsync(prNumber, options) {
+  const opts = options || {};
+  if (!_isValidId(prNumber)) return Promise.resolve({ ok: false, reason: 'invalid_id' });
+  if (!_isValidRepo(opts.repo)) return Promise.resolve({ ok: false, reason: 'invalid_repo' });
+  const args = _buildViewArgs({ repo: opts.repo, pr: prNumber });
+  return _runGhAsync(args, opts)
+    .then((result) => _parseMergeabilityView(result))
+    .catch((e) => ({ ok: false, reason: 'spawn_failed', message: _redact(e && e.message) }));
+}
+
 module.exports = {
   fetchPrInfoForIssue,
   fetchPrInfoForIssueAsync,
   resolvePrForGateWrite,
   DEFAULT_TIMEOUT_MS,
   __FIELDS: FIELDS,
+
+  // #4966 — API nueva del watcher de mergeabilidad (estrictamente aditiva).
+  fetchOpenPrCandidatesAsync,
+  fetchPrMergeabilityAsync,
+  MERGEABILITY_FIELDS,
+  CANDIDATE_LIMIT_MIN,
+  CANDIDATE_LIMIT_MAX,
+  DEFAULT_CANDIDATE_LIMIT,
+  // Internos expuestos SOLO para tests (prefijo _ = no son contrato publico).
+  _buildOpenCandidatesArgs,
+  _buildViewArgs,
+  _parseMergeabilityList,
+  _parseMergeabilityView,
+  _clampCandidateLimit,
+  _redact,
 };

@@ -1,0 +1,168 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Mockup 01 - Canal Telegram: el aviso de respuesta perdida (#6440)
+  =============================================================================
+  Demuestra:
+    - EL EPISODIO (panel A): lo que el operador vivio el 2026-08-24. Su pedido
+      de las 09:26 se ejecuto entero - 19 acciones reales sobre el repo - y el
+      canal no dijo nada durante 70 minutos. El silencio no es la ausencia de
+      un mensaje: es un mensaje equivocado, porque el operador lee "no se hizo".
+    - EL AVISO (panel B): H1 renderizado LITERAL por render.js, con los cuatro
+      bloques en su orden fijo. La linea de consecuencia - "si lo repetis, se
+      hace de nuevo" - es la que evita el dano real del episodio.
+    - LAS VARIANTES (paneles C y D): H2 cuando la entrega no se puede verificar
+      (logs previos al registro estructurado) y H3 cuando una misma pasada
+      encuentra varias, que sale como UN mensaje y no como N.
+    - LO QUE NO SALE (panel E): los seis silencios normativos de copy.json. Son
+      la enorme mayoria del tiempo de vida del chequeo y ocupan la misma
+      jerarquia visual que los mensajes a proposito.
+    - EL VOCABULARIO PROHIBIDO (panel E, derecha): incluye la propia palabra
+      "huerfano", que es el enum interno y el vocabulario del dashboard, nunca
+      el del operador.
+
+  Copy normativo:  .pipeline/assets/copy/orphan-turn/copy.json
+  Renderer:        .pipeline/assets/copy/orphan-turn/render.js
+  Criterios:       .pipeline/assets/mockups/6440/ux-criterios-6440.md
+  Paleta:          .pipeline/assets/design-tokens.css
+
+  Asset estatico: sin codigo activo, sin manejadores de eventos, sin recursos externos.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="1010" viewBox="0 0 1280 1010" role="img"
+     aria-label="Mockup del aviso de respuesta perdida en Telegram para el issue 6440">
+  <title>#6440 - Aviso de respuesta perdida en Telegram</title>
+  <desc>Muestra el episodio original con 70 minutos de silencio, el aviso H1 que ahora se emite,
+        las variantes H2 y H3, los seis silencios normativos y el vocabulario prohibido.</desc>
+
+  <defs>
+    <style>
+      .sans  { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+      .mono  { font-family: "SF Mono", Consolas, "Liberation Mono", Menlo, Monaco, monospace; }
+      .h1    { font-size: 25px; font-weight: 700; fill: #E6EDF3; }
+      .sub   { font-size: 13px; fill: #7D8590; }
+      .panel-t { font-size: 12px; font-weight: 700; letter-spacing: 0.1em; }
+      .lbl   { font-size: 11px; fill: #7D8590; letter-spacing: 0.06em; }
+      .msg   { font-size: 13px; fill: #E6EDF3; }
+      .msg-dim { font-size: 13px; fill: #B1BAC4; }
+      .small { font-size: 11.5px; fill: #B1BAC4; }
+      .tiny  { font-size: 10.5px; fill: #7D8590; }
+      .note  { font-size: 11.5px; fill: #7D8590; font-style: italic; }
+    </style>
+  </defs>
+
+  <rect width="1280" height="1010" fill="#0D1117"/>
+
+  <!-- ================= HEADER ================= -->
+  <text class="sans h1" x="40" y="50">#6440 · El aviso que el operador sí recibe</text>
+  <text class="sans sub" x="40" y="74">Copy canónico: <tspan class="mono" fill="#B1BAC4">.pipeline/assets/copy/orphan-turn/copy.json</tspan> — todos los textos de abajo salen literales de <tspan class="mono" fill="#B1BAC4">render.js</tspan></text>
+  <rect x="40" y="88" width="1200" height="1" fill="#30363D"/>
+
+  <!-- ================= PANEL A · EL EPISODIO ================= -->
+  <rect x="40" y="110" width="590" height="300" rx="10" fill="#161B22" stroke="#30363D"/>
+  <text class="sans panel-t" x="64" y="140" fill="#7D8590">ANTES · EL EPISODIO DEL 24/08</text>
+
+  <!-- burbuja del operador (derecha) -->
+  <rect x="230" y="158" width="376" height="46" rx="12" fill="rgba(0,214,255,0.10)" stroke="rgba(0,214,255,0.30)"/>
+  <text class="sans msg" x="248" y="180">cerrá #5978 y #6116, y partí #6423 en dos</text>
+  <text class="sans tiny" x="556" y="197" text-anchor="end">09:26 ✓✓</text>
+
+  <!-- banda de silencio -->
+  <rect x="64" y="222" width="542" height="88" rx="8" fill="rgba(248,81,73,0.07)" stroke="#8B1A14" stroke-dasharray="5 4"/>
+  <text class="sans msg" x="84" y="248" fill="#F85149">70 minutos de silencio</text>
+  <text class="sans small" x="84" y="270">El pedido se ejecutó entero: 19 acciones reales sobre el repo</text>
+  <text class="sans small" x="84" y="288">(cierres, split, restart). El canal no dijo nada, y el operador</text>
+  <text class="sans small" x="84" y="306">leyó ese silencio como “no se hizo”.</text>
+
+  <text class="sans note" x="64" y="336">El silencio no es la ausencia de un mensaje.</text>
+  <text class="sans note" x="64" y="353">Es un mensaje equivocado: el operador toma decisiones con un estado del mundo que no existe.</text>
+  <text class="sans small" x="64" y="384" fill="#7D8590">Sesión del episodio: <tspan class="mono" fill="#B1BAC4">6529617704-1787574376808</tspan></text>
+
+  <!-- ================= PANEL B · H1 ================= -->
+  <rect x="40" y="430" width="590" height="322" rx="10" fill="#161B22" stroke="#30363D"/>
+  <text class="sans panel-t" x="64" y="460" fill="#FF6B8A">DESPUÉS · H1 respuesta perdida</text>
+  <text class="sans lbl" x="606" y="460" text-anchor="end">371 chars · 4 líneas</text>
+
+  <!-- burbuja del aviso -->
+  <rect x="64" y="478" width="542" height="182" rx="12" fill="rgba(255,107,138,0.08)" stroke="rgba(255,107,138,0.32)"/>
+
+  <text class="sans msg" x="84" y="504"><tspan fill="#FF6B8A">⚠️</tspan> Tu pedido de las 09:26 se ejecutó, pero la respuesta</text>
+  <text class="sans msg" x="84" y="522">se perdió antes de llegarte.</text>
+
+  <text class="sans msg" x="84" y="552">Lo que pediste ya está hecho. Antes de volver a mandarlo,</text>
+  <text class="sans msg" x="84" y="570">fijate cómo quedó: si lo repetís, se hace de nuevo.</text>
+
+  <text class="sans msg-dim" x="84" y="600">La conversación quedó guardada en el registro y la podés</text>
+  <text class="sans msg-dim" x="84" y="618">abrir desde el panel de conversaciones del dashboard.</text>
+
+  <text class="sans msg-dim" x="84" y="646">Sesión: <tspan class="mono" fill="#E6EDF3">6529617704-1787574376808</tspan> — 24/08 09:26 (hace 4 h 13 min).</text>
+
+  <!-- anatomia: llaves a la derecha -->
+  <rect x="612" y="486" width="3" height="44" rx="1.5" fill="#FF6B8A"/>
+  <rect x="612" y="538" width="3" height="44" rx="1.5" fill="#D29922"/>
+  <rect x="612" y="586" width="3" height="42" rx="1.5" fill="#58A6FF"/>
+  <rect x="612" y="634" width="3" height="20" rx="1.5" fill="#7D8590"/>
+
+  <text class="sans small" x="64" y="690" fill="#B1BAC4">Cuatro bloques, orden fijo, sin líneas en blanco:</text>
+  <text class="sans small" x="64" y="710"><tspan fill="#FF6B8A">qué pasó</tspan>  ·  <tspan fill="#D29922">qué significa para vos ahora</tspan>  ·  <tspan fill="#58A6FF">dónde mirar</tspan>  ·  <tspan fill="#7D8590">de qué pedido hablamos</tspan></text>
+  <text class="sans note" x="64" y="734">La línea ámbar es la que evita el daño real: el operador reenviando algo que ya se ejecutó.</text>
+
+  <!-- ================= PANEL C · H2 ================= -->
+  <rect x="650" y="110" width="590" height="300" rx="10" fill="#161B22" stroke="#30363D"/>
+  <text class="sans panel-t" x="674" y="140" fill="#7D8590">H2 · NO SE PUEDE VERIFICAR LA ENTREGA</text>
+  <text class="sans lbl" x="1216" y="140" text-anchor="end">293 chars</text>
+
+  <rect x="674" y="158" width="542" height="142" rx="12" fill="rgba(255,107,138,0.08)" stroke="rgba(255,107,138,0.32)"/>
+  <text class="sans msg" x="694" y="184"><tspan fill="#FF6B8A">⚠️</tspan> No puedo confirmar si te llegó la respuesta a tu</text>
+  <text class="sans msg" x="694" y="202">pedido de las 08:40.</text>
+  <text class="sans msg" x="694" y="230">El pedido se ejecutó igual. Puede que la respuesta te haya</text>
+  <text class="sans msg" x="694" y="248">llegado: revisá la conversación antes de volver a mandarlo,</text>
+  <text class="sans msg" x="694" y="266">porque si lo repetís se hace de nuevo.</text>
+  <text class="sans msg-dim" x="694" y="288" font-size="12">Sesión: <tspan class="mono">6529617704-1787574376808</tspan> — 22/08 08:40 (hace 2 d 5 h).</text>
+
+  <text class="sans small" x="674" y="328" fill="#B1BAC4">Sale cuando el pedido es anterior al registro estructurado.</text>
+  <text class="sans note" x="674" y="350">Fuente de baja confianza: escala a “revisá”, nunca suprime el aviso (CA-11).</text>
+  <text class="sans note" x="674" y="368">No afirma una pérdida que no puede probar — pero tampoco calla, que es el modo de falla del issue.</text>
+  <text class="sans small" x="674" y="394" fill="#7D8590">Mismo marcador que H1: la diferencia la lleva el titular, que es lo que se lee.</text>
+
+  <!-- ================= PANEL D · H3 ================= -->
+  <rect x="650" y="430" width="590" height="322" rx="10" fill="#161B22" stroke="#30363D"/>
+  <text class="sans panel-t" x="674" y="460" fill="#7D8590">H3 · VARIAS EN LA MISMA PASADA</text>
+  <text class="sans lbl" x="1216" y="460" text-anchor="end">467 chars</text>
+
+  <rect x="674" y="478" width="542" height="164" rx="12" fill="rgba(255,107,138,0.08)" stroke="rgba(255,107,138,0.32)"/>
+  <text class="sans msg" x="694" y="504"><tspan fill="#FF6B8A">⚠️</tspan> Hay 5 pedidos tuyos que se ejecutaron y cuya</text>
+  <text class="sans msg" x="694" y="522">respuesta se perdió antes de llegarte.</text>
+  <text class="sans msg" x="694" y="550">Todo eso ya está hecho. Antes de volver a mandar cualquiera</text>
+  <text class="sans msg" x="694" y="568">de ellos, fijate cómo quedó: si los repetís, se hacen de nuevo.</text>
+  <text class="sans msg-dim" x="694" y="596">Las conversaciones quedaron guardadas en el registro y las</text>
+  <text class="sans msg-dim" x="694" y="614">podés abrir desde el panel de conversaciones del dashboard.</text>
+  <text class="sans msg-dim" x="694" y="636" font-size="11.5">Sesiones: <tspan class="mono">…376808</tspan> (24/08 09:26), <tspan class="mono">…588947</tspan> (24/08 10:36), <tspan class="mono">…669699</tspan> (22/08 08:40) y 2 más.</text>
+
+  <text class="sans small" x="674" y="672" fill="#B1BAC4">Un solo mensaje, nunca N. Lista hasta 3 sesiones y resume el resto.</text>
+  <text class="sans note" x="674" y="694">Cinco avisos seguidos no se leen: se silencian. Y el canal silenciado es el bug original.</text>
+  <text class="sans small" x="674" y="722" fill="#7D8590">Con 2 o 3 pedidos se listan todos y no aparece el “y N más”.</text>
+
+  <!-- ================= PANEL E · SILENCIOS + VOCABULARIO ================= -->
+  <rect x="40" y="772" width="1200" height="200" rx="10" fill="#161B22" stroke="#30363D"/>
+
+  <text class="sans panel-t" x="64" y="802" fill="#3FB950">LO QUE NO SALE · los seis silencios normativos</text>
+  <text class="sans small" x="64" y="826">·  El pedido cerró con <tspan fill="#3FB950">entrega confirmada</tspan> — camino feliz, cero ruido (CA-15).</text>
+  <text class="sans small" x="64" y="846">·  El pedido se cerró solo, sin responder porque no correspondía responder.</text>
+  <text class="sans small" x="64" y="866">·  El pedido <tspan fill="#D29922">todavía puede contestar</tspan> — sigue vivo, o no pasó la antigüedad mínima.</text>
+  <text class="sans small" x="64" y="886">·  El pedido es anterior a la ventana de 48 h.</text>
+  <text class="sans small" x="64" y="906">·  Ya se avisó por esa sesión (marcador de idempotencia).</text>
+  <text class="sans small" x="64" y="926">·  No se pudo resolver a qué conversación pertenece: silencio afuera, registro adentro.</text>
+  <text class="sans note" x="64" y="952">6 de cada 7 pedidos de la ventana medida caen en el primero. El silencio es la regla.</text>
+
+  <rect x="700" y="796" width="1" height="150" fill="#30363D"/>
+
+  <text class="sans panel-t" x="728" y="802" fill="#F85149">LO QUE NUNCA APARECE EN EL TEXTO</text>
+  <text class="sans small mono" x="728" y="826" fill="#B1BAC4">eof_premature · empty_output · delivery_pending</text>
+  <text class="sans small mono" x="728" y="846" fill="#B1BAC4">delivered=false · stack · Error: · reqId · correlationId</text>
+  <text class="sans small mono" x="728" y="866" fill="#B1BAC4">fallback · proveedor · proceso · pid · cuota · etapa</text>
+  <text class="sans small" x="728" y="894" fill="#FF6B8A">…y la palabra “huérfano”.</text>
+  <text class="sans small" x="728" y="914">Es el valor del enum y el vocabulario del dashboard.</text>
+  <text class="sans small" x="728" y="932">Al operador se le dice que la respuesta se perdió,</text>
+  <text class="sans small" x="728" y="950">que es lo único que puede entender y accionar.</text>
+
+  <text class="sans tiny" x="40" y="996">UX · fase definicion/criterios · issue #6440 — el texto de este mockup es la salida literal de <tspan class="mono">validate-copy.js</tspan></text>
+</svg>

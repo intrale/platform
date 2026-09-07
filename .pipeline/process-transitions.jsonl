@@ -75,3 +75,17 @@
 {"ts":"2026-07-25T14:29:46.717Z","service":"svc-drive","from":"dead","to":"alive","reason":"recovered","lastError":""}
 {"ts":"2026-07-25T14:29:46.717Z","service":"svc-reconciler","from":"dead","to":"alive","reason":"recovered","lastError":""}
 {"ts":"2026-07-25T14:29:46.717Z","service":"dashboard","from":"dead","to":"alive","reason":"recovered","lastError":""}
+{"ts":"2026-08-26T08:20:36.165Z","service":"pulpo","from":"alive","to":"dead","reason":"WARN","lastError":"[2026-08-26T07:08:25.748Z] [pulpo] WARN permission gate boot — review: non_degradable — [FAIL-CLOSED] Skill 'review' no puede correr en provider 'kimi-moonshot' (mode 'bypassPermissions')."}
+{"ts":"2026-08-26T08:20:36.165Z","service":"listener","from":"alive","to":"dead","reason":"unknown","lastError":""}
+{"ts":"2026-08-26T08:20:36.165Z","service":"svc-telegram","from":"alive","to":"dead","reason":"unknown","lastError":""}
+{"ts":"2026-08-26T08:20:36.165Z","service":"svc-github","from":"alive","to":"dead","reason":"unknown","lastError":""}
+{"ts":"2026-08-26T08:20:36.165Z","service":"svc-drive","from":"alive","to":"dead","reason":"unknown","lastError":""}
+{"ts":"2026-08-26T08:20:36.165Z","service":"svc-reconciler","from":"alive","to":"dead","reason":"unknown","lastError":""}
+{"ts":"2026-08-26T08:20:36.165Z","service":"dashboard","from":"alive","to":"dead","reason":"unknown","lastError":"at process.processTicksAndRejections (node:internal/process/task_queues:89:21)"}
+{"ts":"2026-08-26T08:21:05.345Z","service":"pulpo","from":"dead","to":"alive","reason":"recovered","lastError":""}
+{"ts":"2026-08-26T08:21:05.345Z","service":"listener","from":"dead","to":"alive","reason":"recovered","lastError":""}
+{"ts":"2026-08-26T08:21:05.345Z","service":"svc-telegram","from":"dead","to":"alive","reason":"recovered","lastError":""}
+{"ts":"2026-08-26T08:21:05.345Z","service":"svc-github","from":"dead","to":"alive","reason":"recovered","lastError":""}
+{"ts":"2026-08-26T08:21:05.345Z","service":"svc-drive","from":"dead","to":"alive","reason":"recovered","lastError":""}
+{"ts":"2026-08-26T08:21:05.345Z","service":"svc-reconciler","from":"dead","to":"alive","reason":"recovered","lastError":""}
+{"ts":"2026-08-26T08:21:05.345Z","service":"dashboard","from":"dead","to":"alive","reason":"recovered","lastError":""}

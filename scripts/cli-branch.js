@@ -11,6 +11,11 @@ const path = require("path");
 const REPO_ROOT = path.resolve(__dirname, "..");
 const args = process.argv.slice(2);
 
+// #5220 (CA-2.c) — Allowlist deny-by-default para la copia de `.claude/`.
+// Defensa en profundidad: está verificado que esta rama NO se ejecuta (G1).
+// Ver el porqué y el productor real de la fuga en el módulo.
+const { claudeCopyFilter } = require("../.pipeline/lib/claude-copy-allowlist");
+
 if (args.length === 0 || args[0] === "--help") {
     console.log(`
 Uso: node scripts/cli-branch.js <issue-number> [slug]
@@ -78,7 +83,8 @@ if (useWorktree) {
     const claudeSrc = path.join(REPO_ROOT, ".claude");
     const claudeDst = path.join(wtPath, ".claude");
     if (!fs.existsSync(claudeDst)) {
-        fs.cpSync(claudeSrc, claudeDst, { recursive: true });
+        // #5220 CA-2.c — copia filtrada por allowlist (deny-by-default).
+        fs.cpSync(claudeSrc, claudeDst, { recursive: true, filter: claudeCopyFilter(claudeSrc) });
     }
     console.log(`✓ Worktree creado: ${wtPath}`);
     console.log(`✓ Rama: ${branchName}`);

@@ -311,6 +311,208 @@ function _enqueue(text) {
     }
 }
 
+// =============================================================================
+// #5460 — Ausencia del operador frente a una acción OPERACIONAL (no lifecycle).
+//
+// El corte del fallback del vault (`vault-cut-fallback`, #5458/#5459) es una
+// acción operacional irreversible: no atraviesa `applyTransition()`, no mueve
+// work-files y no tiene gate de lifecycle. Cuando el operador no responde —o el
+// canal para preguntarle no existe— la política NO es la escalera de
+// `resolveAbsenceDecision`: acá NO hay auto-proceed posible, ni con allowlist,
+// ni con índice de confianza, ni por configuración.
+//
+// Invariantes NO negociables:
+//   1. `resolveOperationalAbsence` devuelve SIEMPRE `fail-closed`. No existe
+//      rama que devuelva `auto-proceed`: el fallback se conserva. Un corte
+//      ejecutado sin confirmación explícita no tiene rollback barato (el último
+//      punto de retorno está documentado en el runbook).
+//   2. La causa se SANEA contra un enum cerrado. Una causa desconocida no se
+//      propaga como texto libre: colapsa a `causa_no_reconocida`. La señal local
+//      la lee un humano en una máquina sin Telegram, y el texto libre es la vía
+//      por la que se filtran chat ids, ARNs, hostnames y paths (OWASP A09).
+//   3. La señal local tiene EXACTAMENTE cuatro claves: `estado`, `timestamp`,
+//      `causa`, `runbook`. Ni una más. Agregar "contexto útil" es exactamente
+//      cómo se filtra infraestructura en un archivo que nadie vuelve a mirar.
+//   4. La referencia al runbook se valida como path relativo del repo. Un valor
+//      inválido NO rompe la señal: degrada al runbook default.
+// =============================================================================
+
+// Enum CERRADO de causas de ausencia operacional. Cada una corresponde a una
+// rama verificable del productor:
+//   - `timeout`               → se publicó la propuesta y venció sin confirmación.
+//   - `telegram_ausente`      → no hay canal para publicar/confirmar.
+//   - `allowlist_vacia`       → no hay ningún firmante autorizado que pueda confirmar.
+//   - `estado_indeterminado`  → no se pudo determinar el estado real (config
+//                               ilegible, evaluador que explota, `no_verificado`).
+const OPERATIONAL_ABSENCE_CAUSES = Object.freeze([
+    'timeout',
+    'telegram_ausente',
+    'allowlist_vacia',
+    'estado_indeterminado',
+]);
+
+// Causa a la que colapsa cualquier valor fuera del enum (fail-closed).
+const OPERATIONAL_ABSENCE_UNKNOWN_CAUSE = 'causa_no_reconocida';
+
+// Estado único de la señal local. Es un enum de UN valor a propósito: la señal
+// sólo existe cuando el fallback se conservó. Si algún día hubiera un segundo
+// estado, tiene que ser una decisión explícita y con test, no un string libre.
+const OPERATIONAL_ABSENCE_STATE = 'fallback_conservado';
+
+// Runbook default. Se usa cuando el configurado es inválido o falta.
+const OPERATIONAL_ABSENCE_RUNBOOK = 'docs/operacion-pipeline.md#corte-fallback-vault';
+
+// Path relativo del repo, con ancla opcional. Prohíbe absolutos (`/foo`, `C:\`),
+// traversal (`..`) y cualquier carácter fuera del set de path/ancla.
+const RUNBOOK_REF_RE = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,190}(#[A-Za-z0-9][A-Za-z0-9._-]{0,62})?$/;
+
+/**
+ * Normaliza una causa de ausencia operacional contra el enum cerrado.
+ * Cualquier valor no reconocido colapsa a `causa_no_reconocida` — nunca se
+ * propaga el valor original (podría traer un mensaje de error con paths).
+ * @param {*} causa
+ * @returns {string} un elemento de OPERATIONAL_ABSENCE_CAUSES, o la causa desconocida.
+ */
+function sanitizeOperationalCause(causa) {
+    if (typeof causa !== 'string') return OPERATIONAL_ABSENCE_UNKNOWN_CAUSE;
+    const norm = causa.trim().toLowerCase().replace(/[\s-]+/g, '_');
+    return OPERATIONAL_ABSENCE_CAUSES.includes(norm) ? norm : OPERATIONAL_ABSENCE_UNKNOWN_CAUSE;
+}
+
+/**
+ * Normaliza la referencia al runbook. Debe ser un path relativo del repo
+ * (opcionalmente con ancla). Absoluto, con `..`, vacío o con caracteres fuera
+ * del set ⇒ runbook default. No rompe: la señal SIEMPRE trae una referencia
+ * accionable.
+ * @param {*} runbook
+ * @returns {string}
+ */
+function sanitizeRunbookRef(runbook) {
+    if (typeof runbook !== 'string') return OPERATIONAL_ABSENCE_RUNBOOK;
+    const trimmed = runbook.trim();
+    if (!trimmed || trimmed.includes('..')) return OPERATIONAL_ABSENCE_RUNBOOK;
+    if (!RUNBOOK_REF_RE.test(trimmed)) return OPERATIONAL_ABSENCE_RUNBOOK;
+    return trimmed;
+}
+
+/**
+ * Decide qué hacer ante la ausencia del operador frente a una acción
+ * operacional. SIEMPRE `fail-closed`: no existe delegación posible.
+ *
+ * @param {object} params
+ * @param {string} params.causa     — causa cruda; se sanea contra el enum cerrado.
+ * @param {string} [params.runbook] — referencia al runbook (path relativo del repo).
+ * @returns {{decision:'fail-closed', causa:string, runbook:string,
+ *            conserva_fallback:true, needs_human:true}}
+ */
+function resolveOperationalAbsence({ causa, runbook } = {}) {
+    return Object.freeze({
+        decision: 'fail-closed',
+        causa: sanitizeOperationalCause(causa),
+        runbook: sanitizeRunbookRef(runbook),
+        // Redundantes a propósito: el consumidor no tiene que deducir que
+        // 'fail-closed' implica las dos cosas para hacer lo correcto.
+        conserva_fallback: true,
+        needs_human: true,
+    });
+}
+
+/**
+ * Construye la señal local observable. EXACTAMENTE cuatro claves — el test lo
+ * cementa con `deepStrictEqual` sobre `Object.keys`.
+ *
+ * @param {object} params
+ * @param {string} params.causa
+ * @param {string} [params.runbook]
+ * @param {Date|number|string} [params.now] — instante inyectable (tests).
+ * @returns {{estado:string, timestamp:string, causa:string, runbook:string}}
+ */
+function buildOperationalAbsenceSignal({ causa, runbook, now } = {}) {
+    let ts;
+    try {
+        const d = now == null ? new Date() : new Date(now);
+        ts = Number.isFinite(d.getTime()) ? d.toISOString() : new Date(0).toISOString();
+    } catch { ts = new Date(0).toISOString(); }
+    return {
+        estado: OPERATIONAL_ABSENCE_STATE,
+        timestamp: ts,
+        causa: sanitizeOperationalCause(causa),
+        runbook: sanitizeRunbookRef(runbook),
+    };
+}
+
+/**
+ * Persiste la señal local de forma atómica (temporal en el mismo directorio +
+ * rename). Nunca lanza: una señal que no se puede escribir no puede tumbar el
+ * pipeline, pero el caller se entera por `{ok:false}` y debe auditarlo.
+ *
+ * @param {object} params
+ * @param {string} params.signalPath — destino absoluto.
+ * @param {string} params.causa
+ * @param {string} [params.runbook]
+ * @param {Date|number|string} [params.now]
+ * @param {object} [params.fsImpl]
+ * @returns {{ok:boolean, path?:string, signal?:object, error?:string}}
+ */
+function writeOperationalAbsenceSignal({ signalPath, causa, runbook, now, fsImpl } = {}) {
+    const _fs = fsImpl || fs;
+    if (typeof signalPath !== 'string' || !signalPath.trim()) {
+        return { ok: false, error: 'signal_path_invalido' };
+    }
+    const signal = buildOperationalAbsenceSignal({ causa, runbook, now });
+    const dir = path.dirname(signalPath);
+    const temp = path.join(dir, `.${path.basename(signalPath)}.${process.pid}.tmp`);
+    try {
+        _fs.mkdirSync(dir, { recursive: true });
+        _fs.writeFileSync(temp, `${JSON.stringify(signal, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
+        _fs.renameSync(temp, signalPath);
+        return { ok: true, path: signalPath, signal };
+    } catch (e) {
+        try { _fs.unlinkSync(temp); } catch { /* best-effort */ }
+        // El mensaje del error puede traer el path completo: se descarta.
+        return { ok: false, error: 'signal_write_failed', signal };
+    }
+}
+
+/**
+ * Mensaje al operador para una ausencia OPERACIONAL. No reusa
+ * `buildFailClosedMessage`: ese habla de gates, firma y transiciones, y acá no
+ * hay ninguna de las tres. Copy sin datos de infraestructura.
+ * @param {object} p
+ * @returns {string}
+ */
+function buildOperationalAbsenceMessage(p = {}) {
+    const causa = sanitizeOperationalCause(p.causa);
+    const motivoHumano = {
+        timeout: 'la confirmacion vencio sin respuesta',
+        telegram_ausente: 'no hay canal de confirmacion disponible',
+        allowlist_vacia: 'no hay ningun operador autorizado para confirmar',
+        estado_indeterminado: 'no se pudo determinar el estado real del fallback',
+        [OPERATIONAL_ABSENCE_UNKNOWN_CAUSE]: 'la causa no se pudo clasificar',
+    }[causa];
+    return [
+        'VAULT · Corte del fallback NO ejecutado — el fallback se conserva',
+        `Motivo: ${motivoHumano}.`,
+        'Nada se corto. Esta conservacion es intencional, no es un error ni un fallo silencioso.',
+        `Runbook: ${sanitizeRunbookRef(p.runbook)}`,
+        'El issue queda en needs-human hasta que una persona lo revise.',
+    ].join('\n');
+}
+
+/**
+ * Encola la notificación de ausencia operacional. Si el canal no existe (que es
+ * una de las causas posibles), el `{ok:false}` NO es un fallo del pipeline: la
+ * señal local + `needs-human` son el canal de respaldo.
+ * @param {object} params
+ * @param {Function} [send]
+ * @returns {{ok:boolean, path?:string, error?:string}}
+ */
+function notifyOperationalAbsence(params = {}, send) {
+    const text = buildOperationalAbsenceMessage(params);
+    if (typeof send === 'function') return send({ text });
+    return _enqueue(text);
+}
+
 module.exports = {
     resolveAbsenceDecision,
     authorizeOperator,
@@ -319,6 +521,14 @@ module.exports = {
     buildFailClosedMessage,
     notifyDelegation,
     notifyFailClosed,
+    // #5460 — ausencia del operador en acciones OPERACIONALES (no lifecycle).
+    resolveOperationalAbsence,
+    buildOperationalAbsenceSignal,
+    writeOperationalAbsenceSignal,
+    buildOperationalAbsenceMessage,
+    notifyOperationalAbsence,
+    sanitizeOperationalCause,
+    sanitizeRunbookRef,
     // Helpers exportados para tests.
     normalizeGate,
     claseEnAllowlist,
@@ -327,4 +537,8 @@ module.exports = {
     DECISIONS,
     NON_DELEGABLE_GATES,
     REASONS,
+    OPERATIONAL_ABSENCE_CAUSES,
+    OPERATIONAL_ABSENCE_UNKNOWN_CAUSE,
+    OPERATIONAL_ABSENCE_STATE,
+    OPERATIONAL_ABSENCE_RUNBOOK,
 };

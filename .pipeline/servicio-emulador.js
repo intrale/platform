@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// #6812 — Windows: suprimir la ventana de consola de cada hijo (gh, git,
+// tasklist, powershell). Debe ir ANTES de cualquier require que spawnee.
+require('./lib/force-windows-hide').apply();
 // =============================================================================
 // Servicio Emulador — Gestión del emulador Android via cola con coalescencia
 //
@@ -13,6 +16,7 @@
 const { execSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
+const dropfileWriter = require('./lib/dropfile-writer');
 
 // Saneado global de JAVA_HOME — propaga un JDK válido a qa-environment y a
 // los builds QA que corren contra el emulador. Incidente 2026-04-21.
@@ -64,9 +68,14 @@ function sendTelegram(text) {
   const svcDir = path.join(PIPELINE, 'servicios', 'telegram', 'pendiente');
   try {
     fs.mkdirSync(svcDir, { recursive: true });
-    const filename = `${Date.now()}-emulador.json`;
-    fs.writeFileSync(path.join(svcDir, filename),
-      JSON.stringify({ text, parse_mode: 'Markdown' }));
+    // #6226 — nombre único + escritura `wx`: dos dropfiles del mismo
+    // milisegundo ya no se pisan entre sí ni pisan los de otro proceso.
+    dropfileWriter.writeDropfileSync({
+      dir: svcDir,
+      suffix: 'emulador.json',
+      data: JSON.stringify({ text, parse_mode: 'Markdown' }),
+      onCollision: (name) => log(`Colisión de nombre de dropfile (${name}) — se reintenta`),
+    });
   } catch (e) {
     log(`Error encolando Telegram: ${e.message}`);
   }

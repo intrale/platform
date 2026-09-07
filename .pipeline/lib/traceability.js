@@ -443,6 +443,8 @@ function emitSessionEnd(handle, metrics) {
         phase: pick(handle, 'phase', env.phase),
         model: model,
         provider: provider,
+        model_effective: pick(metrics, 'model_effective', null),
+        model_effective_source: pick(metrics, 'model_effective_source', 'not_observable'),
         tokens_in: tokens_in,
         tokens_out: tokens_out,
         cache_read: cache_read,

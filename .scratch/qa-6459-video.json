@@ -1,0 +1,11 @@
+{
+  "action": "upload",
+  "file": ".pipeline/logs/media/qa-6459.mp4",
+  "folder": "QA/evidence/6459",
+  "description": "QA visual estructural con relato narrado #6459",
+  "title": "[Split de #6440] Deteccion de turno huerfano: barrido de rescate, etapa resultado huerfano y badge en el dashboard",
+  "verdict": "aprobado",
+  "passed": 15,
+  "total": 15,
+  "mode": "structural"
+}

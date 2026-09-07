@@ -343,6 +343,15 @@ test('el conjunto nominal de consumer_status=resolved esta anclado', () => {
     'google_drive.oauth_client_id',
     'google_drive.oauth_client_secret',
     'google_drive.oauth_refresh_token',
+    // #5426 — `aws.profile` ENTRA al ancla en este tramo. Antes se declaraba
+    // `no_consumer` con la prosa «sin consumidor activo», y era cierto: nadie
+    // leia AWS_PROFILE. Al cerrar T2-1.1 el vault pasa a leerlo como senal
+    // positiva del modo `assume-role-chain` (`assertVaultAuthSignal`), asi que
+    // el candado generalizado de mas abajo lo detecta como lector real. Sigue
+    // `hydration: deferred` a proposito: el valor lo impone `vault.awsProfile`
+    // desde config, NO el store — hidratarlo seria inerte para el vault y
+    // peligroso fuera de el, porque AWS_PROFILE elige principal.
+    'aws.profile',
   ]);
 });
 
@@ -520,6 +529,9 @@ test('ninguna entrada con lector real en el repo puede declararse no_consumer', 
     findEnvVarReaders('TELEGRAM_LEO_OPERATOR_CHAT_ID', { files: sources }),
     [
       '.pipeline/delivery.js',
+      // #6206 — el canal unico de firma la lee para resolver la allowlist del
+      // gate `aceptacion` (semantica de delivery.resolveAuthorizedSigners).
+      '.pipeline/lib/approval-channel.js',
       '.pipeline/lib/notify-telegram.js',
       '.pipeline/lib/operator-gate.js',
       '.pipeline/lib/telegram-notifier.js',
@@ -576,6 +588,28 @@ test('los consumers declarados no omiten ningun lector que el barrido encuentra'
     }
   }
   assert.deepEqual(omisiones, []);
+});
+
+test('el barrido ignora qa/evidence pero sigue viendo qa/scripts', () => {
+  // Regresion #6226: `qa/evidence/<issue>/` es la SALIDA de evidencia por
+  // issue. Un repro ad-hoc que toca `process.env.TELEGRAM_BOT_TOKEN` para
+  // simular un envio no es un consumidor de produccion; contarlo obligaba al
+  // manifiesto publico a declarar rutas descartables como `consumers` y dejaba
+  // el candado en rojo segun que evidencia dejo el ultimo QA.
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'manifest-scan-roots-'));
+  const lector = 'const t = process.env.TELEGRAM_BOT_TOKEN;\n';
+  for (const rel of ['qa/evidence/6226', 'qa/scripts', '.pipeline/_tmp']) {
+    fs.mkdirSync(path.join(tmp, rel), { recursive: true });
+  }
+  fs.writeFileSync(path.join(tmp, 'qa/evidence/6226/repro-e2e.js'), lector);
+  fs.writeFileSync(path.join(tmp, 'qa/scripts/qa-video-share.js'), lector);
+  fs.writeFileSync(path.join(tmp, '.pipeline/_tmp/scratch.js'), lector);
+
+  const lectores = findEnvVarReaders('TELEGRAM_BOT_TOKEN', { repoRoot: tmp });
+
+  // Control positivo: sin esto el test pasaria por vacuidad si el barrido no
+  // encontrara NADA (p. ej. si se rompiera el recorrido de directorios).
+  assert.deepEqual(lectores, ['qa/scripts/qa-video-share.js']);
 });
 
 test('regresion nominal de las cuatro claves google_drive', () => {

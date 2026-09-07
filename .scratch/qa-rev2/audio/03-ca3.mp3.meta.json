@@ -1,0 +1,9 @@
+{
+  "profile": "qa",
+  "provider": "edge",
+  "voice": "",
+  "character_name": "",
+  "output": ".scratch/qa-rev2/audio/03-ca3.mp3",
+  "generated_at": "2026-08-25T10:18:54.175Z",
+  "source": "tts-generate.js"
+}

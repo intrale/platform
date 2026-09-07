@@ -273,16 +273,40 @@ que los evalúa.
 El rol de runtime del host se asume con **credenciales de vida corta**. Opciones
 aceptadas, en orden de preferencia según dónde corra el host:
 
-| Opción | Cuándo aplica | Qué entrega |
-|---|---|---|
-| **Instance profile** | el host corre sobre cómputo de AWS | credencial rotada por AWS, sin material persistido en el filesystem |
-| **IAM Roles Anywhere** | host fuera de AWS con certificado X.509 | sesión temporal a partir de un certificado con CA propia |
-| **SSO / identity center** | host operado por una persona | sesión temporal atada a la identidad del operador, con caducidad de sesión |
+| Opción | Cuándo aplica | Qué entrega | Riesgo residual |
+|---|---|---|---|
+| **Instance profile** | el host corre sobre cómputo de AWS | credencial rotada por AWS, sin material persistido en el filesystem | ninguno propio: quien tome el host toma la identidad, igual que con cualquier otro mecanismo |
+| **IAM Roles Anywhere** | host fuera de AWS con certificado X.509 | sesión temporal a partir de un certificado con CA propia | la clave privada del certificado vive en el filesystem del host |
+| **SSO / identity center** | host operado por una persona | sesión temporal atada a la identidad del operador, con caducidad de sesión | requiere habilitación administrativa en AWS; sin sesión iniciada el pipeline no arranca |
+| **Assume-role encadenado** (`role_arn` + `source_profile` + `duration_seconds`) — **la elegida, #5426 · D7** | host fuera de AWS, sin Identity Center habilitado | sesión temporal del rol de lectura del host, con `Expiration` propia (ventana de 1 h) | **la cadena TERMINA en una access key estática de larga vida** en el perfil `source_profile`. El salto que lee el vault es de vida corta; el primer salto de la cadena, no. Por eso **CA-9 de #5426 aplica y no es opcional**: sin sus cuatro condiciones, esa única llave abre todo el inventario y el resultado neto es **peor** blast radius que varios archivos sueltos |
 
 No es una elección teórica: el inventario ya registra `AWS_SESSION_TOKEN` entre
 las variables del scope del pipeline, o sea que **el host hoy ya opera con
 credenciales de sesión**. Lo que falta no es el mecanismo, es hacerlo el único
 camino y retirar la copia estática.
+
+**Por qué la cuarta fila y no una de las tres primeras** (#5426 · G-3): medido
+sobre el host real, `sso_start_url` y `credential_process` dan **0 y 0** — ni SSO
+ni proceso externo existen acá — mientras que el perfil de assume-role devuelve
+`Expiration` **presente y no vacía**. Un criterio que midiera la *sintaxis* del
+archivo (¿hay `sso_*`?) le daría **rojo al único mecanismo correcto que el host
+ya tiene andando**, y sólo aceptaría opciones que requieren habilitación
+administrativa del lado de AWS. Lo que se mide es la **propiedad** — que la
+credencial caduque sola — resolviendo `source_profile` **transitivamente** hasta
+el perfil terminal.
+
+**Alcance del conteo de claves estáticas** (D8): se cuenta **sólo la cadena del
+perfil del vault**. Los perfiles de QA remoto / deploy de Lambda y el de
+`kernel-runtime` (#5126) quedan **fuera** de este tramo: no se migran, no se
+cuentan y no se rompen. Migrarlos es decisión aparte, con dueño aparte.
+
+**Rotación de la key terminal de la cadena** (CA-9.b): la key estática del
+perfil `source_profile` se rota **cada 90 días**, y la rotación **no está
+completa hasta que la key reemplazada queda desactivada** (`aws iam
+update-access-key --status Inactive`) y verificada: la vieja debe pasar a
+responder `InvalidClientTokenId` / `AccessDenied`. Rotar sin revocar **duplica**
+la superficie en vez de moverla. Las condiciones de registro y caducidad son las
+de § Estado transitorio, abajo.
 
 **Descartadas, y por qué:**
 
@@ -311,10 +335,19 @@ inmediato, la access key estática se acepta como **riesgo aceptado** sólo con 
 3. **Con fecha de caducidad e issue de retiro** referenciado en la fila. Un
    "riesgo aceptado" sin fecha es una omisión con mejor redacción.
 
-> **Este diseño elige la opción de vida corta.** Por lo tanto **no** se agrega
-> ninguna fila a `docs/secrets-inventory.md` en esta entrega, y ese archivo no
-> aparece en el diff. Si en la aplicación (#5211) se activara el estado
-> transitorio, las tres patas son condición de la aplicación, no de este diseño.
+> **Este diseño elige la opción de vida corta**, y con la cuarta fila (#5426 ·
+> D7) la elección quedó firmada por el operador. Precisión que la elección
+> obliga a escribir: **el salto que lee el vault es de vida corta, pero la
+> cadena termina en una key estática** en el perfil `source_profile`. Esa key
+> **no** es un secreto del vault (es la raíz de confianza, categoría **(d)**),
+> pero sí es material de larga vida sobre el que aplican las tres patas de
+> arriba. Quién es su dueño, con qué periodicidad se rota y dónde se registra la
+> fila de inventario son condición de la **aplicación** (#5211) y del épico de
+> rotación, no de este diseño — y por eso `docs/secrets-inventory.md` no aparece
+> en el diff de #5426.
+>
+> Lo que sí queda cerrado acá es que el riesgo está **nombrado en la misma fila**
+> de la tabla de opciones (CA-9.d), y no perdido en un hilo de issue.
 
 ## La policy, restricción por restricción
 
@@ -731,32 +764,84 @@ módulo `secret-vault.js` ni siquiera se carga.
 Poner `vault.enabled: true` es una decisión de operación, y **no se aprueba sin
 esta lista completa**:
 
-0. ⛔ **BLOQUEANTE ABIERTO — de dónde saca el vault sus PROPIAS credenciales AWS.**
-   Hoy **no hay respuesta**, y encender el gate sin cerrarlo deja el pipeline con
-   **cero credenciales**. Es el huevo-y-la-gallina del vault: para leer el vault
-   hacen falta credenciales AWS, y hoy viven en el archivo que el vault viene a
-   reemplazar. Verificado sobre `HEAD c10524e4d`:
+0. ✅ **CERRADO (#5426) — de dónde saca el vault sus PROPIAS credenciales AWS.**
+   Era el huevo-y-la-gallina del vault: para leer el vault hacen falta
+   credenciales AWS, y vivían en el archivo que el vault viene a reemplazar. El
+   guard viejo (`createAwsCliVaultRunner`) exigía el par estático
+   `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY`, o sea que **rechazaba por
+   construcción el único mecanismo de auth que el host tiene** — y su propio
+   mensaje de error sugería una remediación (`aws login`) que **no** satisfacía
+   al guard que la emitía.
 
-   - `ENV_DESCRIPTORS` (`credentials.js`) **no tiene ni una entrada del scope
-     `aws`** ⇒ `loadIntoEnv()` nunca hidrata `AWS_ACCESS_KEY_ID` /
-     `AWS_SECRET_ACCESS_KEY` al ambiente.
-   - `createAwsCliVaultRunner` (`secret-vault.js`) hace fail-closed si esas dos
-     no están ⇒ con el gate abierto, `vault.error = VAULT_CONFIG_INVALID` y las
-     **13** variables salen en `missing`.
-   - No hay escape en runtime: la ventana de bootstrap se desactiva justamente
-     por haber error del vault (B1.2), así que ni encendiéndola se recupera. La
-     única salida es editar `config.yaml` a mano y reiniciar.
-   - Incoherencia adicional: `AWS_PROFILE` **sí** está en el allowlist de
-     `build-child-env.js`, y `~/.aws/{config,credentials,login}` muestra que la
-     autenticación real de este host es **por perfil (`aws login`)** — pero el
-     guard exige las dos variables de clave estática, así que rechaza el único
-     mecanismo de auth que el host tiene. El propio mensaje de error sugiere
-     «Remediación: `aws login`», que **no** satisface el guard que lo emitió.
+   Lo que lo cierra, y cómo se verifica el alta de un host nuevo:
 
-   Cerrar esto es una decisión de criterio (¿el vault se autentica por perfil?
-   ¿por rol de instancia? ¿las claves del vault son el único secreto que sigue
-   viviendo en archivo, y con qué blast radius?), del mismo rango que B1/B2/B3 y
-   **no la cierra el dev por su cuenta**. Seguimiento: #5393.
+   **0.1 · Elegir el mecanismo y declararlo.** `vault.authMode` en
+   `.pipeline/config.yaml`, enum cerrado (§ Raíz de confianza). La señal es
+   **POSITIVA y de config**: el guard nunca acepta ni rechaza mirando qué
+   variables hay en el ambiente. «Instance profile» no deja rastro en el env, así
+   que aceptarlo por ausencia de variables sería convertir el fail-closed en
+   fail-open. Un `authMode` vacío o fuera del enum falla nombrando la clave.
+
+   **0.2 · Crear el perfil de lectura del host** en `~/.aws/config`, con
+   `role_arn` + `source_profile` + `duration_seconds`, apuntando al rol de host
+   que aplica #5211. Declararlo en `vault.awsProfile`. Ese valor **no se
+   commitea**: es un nombre local y este repo es público.
+
+   **0.3 · Verificar la PROPIEDAD de la credencial, no la sintaxis del archivo:**
+
+   ```
+   aws configure export-credentials --profile <perfil del vault>
+   # rc=0 y campo `Expiration` PRESENTE y NO VACÍO.
+   # Nunca se pega el valor de AccessKeyId / SecretAccessKey / SessionToken.
+   ```
+
+   Y resolver `source_profile` **transitivamente**: si el perfil **terminal** de
+   la cadena tiene par estático, **CA-9 de #5426 aplica y es obligatorio** — no
+   se aprueba como «0 claves estáticas».
+
+   **0.4 · Resolver el `hostId` sin commitearlo.** `vault.hostId` se commitea
+   **VACÍO** y se queda vacío: `.pipeline/config.yaml` está trackeado en un repo
+   **público**, y publicar el hostname entrega gratis la estructura
+   `hosts/<hostId>/` que sostiene el aislamiento entre hosts. El alta lo resuelve
+   en **runtime** desde `os.hostname()`, habilitado por
+   `vault.hostIdFromHostname: true` — el mismo criterio de identidad que ya usan
+   `file-lock.js:145` y `notify-telegram.js:106`. Lo que se commitea es el
+   **mecanismo**; el **valor** nunca.
+
+   Verificación del alta, en este orden:
+
+   ```
+   git status --porcelain .pipeline/config.yaml   # SIN salida
+   git diff -- .pipeline/config.yaml              # SIN el hostname
+   ```
+
+   El hostname **no se normaliza ni se trunca**: un FQDN con puntos no se recorta
+   a su primera etiqueta, porque `a.uno.local` y `a.dos.local` colapsarían al
+   mismo namespace y el aislamiento por host se perdería en silencio. Si no
+   resuelve a un segmento válido, el gate falla nombrando `vault.hostId` — nunca
+   sigue contra un namespace colapsado (`hosts//`).
+
+   **0.5 · Verificar que la config que manda es la que se leyó:**
+   `result.vault.indeterminado === false`. «No se pudo leer la config» **no es**
+   «el vault está apagado»: en un host recién dado de alta, una config mal
+   ubicada se manifiesta como *«el operador perdió la firma»* y manda el
+   diagnóstico para el lado equivocado.
+
+   **0.6 · Verificar la separación lectura/escritura DENTRO del propio prefijo.**
+   Un `AccessDeniedException` sobre un path **ajeno** es trivial y no prueba nada.
+   La prueba útil es el par, sobre el **mismo** path de `hosts/<hostId>/`:
+
+   - lectura → `ParameterNotFound` (autorizada; el parámetro todavía no existe)
+     o el valor si ya se hizo el alta,
+   - `ssm put-parameter`, `put-parameter --overwrite`, `ssm delete-parameter`,
+     `secretsmanager put-secret-value` y `secretsmanager update-secret` →
+     `AccessDeniedException`.
+
+   El rol que lee no puede ser el mismo que provisiona: si lo fuera, quien
+   comprometa un agente reescribe secretos y ancla autorización a su gusto.
+
+   Seguimiento de la implementación táctica del guard: #5393, subordinado a
+   #5426 por D1 (el modelo lo decide este tramo, no #5393).
 1. **#5211 cerrado** — la policy IAM aplicada por host. Sin esto no hay nada que
    leer y todo secreto sale fail-closed.
 2. **#5212 cerrado** — auditoría CloudTrail de la CMK (G-5).
@@ -770,9 +855,10 @@ esta lista completa**:
    desde el vault, sin fallback. Encender sin poblarla deja al operador sin
    poder firmar nada. Verificación: `resolveOperatorAllowlist(env).size >= 1`
    tras el boot — se reporta **el tamaño**, jamás el contenido.
-5. **`vault.hostId` seteado** al `os.hostname()` de la máquina. Se commitea
-   vacío a propósito (CA-29); con el gate abierto, vacío o inválido falla
-   nombrando la clave.
+5. **`vault.hostId` resuelto** — ver **0.4**. Se commitea vacío a propósito
+   (CA-29 · #5426 · D9) y **se queda vacío**: lo resuelve `os.hostname()` en
+   runtime con `vault.hostIdFromHostname: true`. Con el gate abierto, un valor
+   vacío **y** no resoluble falla nombrando la clave.
 6. **`vault.required_scopes`** declara `telegram`, `providers` y `google_drive`,
    y `vault.shared_secrets` la membresía que corresponda. El vault sólo resuelve
    scopes declarados: uno faltante es fail-closed, no una lectura silenciosa.
@@ -889,3 +975,98 @@ El **runbook operativo** — invocación segura, estados, códigos de salida,
 recuperación y política de rotación en origen — vive en
 `docs/pipeline/vault-provisioning.md`. Lo que sigue acá es el diseño; lo que se
 ejecuta a mano está allá.
+
+## Capability del corte del fallback — `vault-cut-fallback`, #5458
+
+Apagar `vault.bootstrap_fallback` es la última acción del cutover y la más
+peligrosa de todo el flujo: hecha antes de tiempo deja al pipeline sin
+credenciales; hecha dos veces por una carrera, el estado queda ambiguo. Por eso
+el corte **no es un botón más** del canal de firma del operador.
+
+`vault-cut-fallback` es una **acción operacional**. Comparte con los gates de
+firma (#4579) la parte criptográfica —id opaco en `callback_data`, token HMAC
+firmado, binding resuelto server-side, nonce de un solo uso— y **no comparte
+nada del lifecycle**.
+
+### Las dos allowlists son distintas a propósito
+
+| Allowlist | Módulo | Qué autoriza | ¿Incluye `vault-cut-fallback`? |
+|---|---|---|---|
+| `ACTION_ALLOWLIST` | `action-token.js` | qué acciones se pueden **firmar** | **sí** |
+| `GATE_ACTIONS` | `operator-gate.js` | qué acciones transicionan un gate | no |
+| `OPERATIONAL_ACTIONS` | `operator-gate.js` | qué acciones van al ejecutor operacional | **sí** |
+| `HUMAN_BLOCK_ACTIONS` / `isQuickAction()` | `human-block.js` | botones de la alerta `needs-human` y endpoint local del dashboard | no |
+
+Unificarlas volvería el corte ejecutable desde el teclado de `needs-human` y
+desde el endpoint HTTP local del dashboard. Los tests de los cuatro módulos
+cementan la separación; si alguien la rompe, fallan.
+
+### Aislamiento del lifecycle
+
+- `applyTransition()` rechaza la acción (`invalid-action`) aunque la llamen
+  directo: no está en `GATE_ACTIONS`.
+- `handleSignature()` la rechaza con `not-a-gate-action` **sin consumir el
+  binding** — ahí abajo vive `applyTransition()`, que mueve work-files.
+- El listener clasifica el `callback_data` con `gate.classifyCallback()`
+  **antes** del dispatch de firma y deriva lo operacional a
+  `handleOperationalCallback()`. Un gate sin `classifyCallback` (versión vieja)
+  degrada al canal de firma sin romper.
+- El camino operacional no mueve ni un archivo: el test de integración siembra
+  un ítem en `waiting-operator/` y verifica que sigue exactamente donde estaba.
+
+### TTL corto con máximo explícito
+
+Las acciones operacionales llevan un cap propio (`OPERATIONAL_TTL_MS`,
+10 min para el corte) que **no se aplica sólo al firmar**: `sign()` guarda el
+instante de emisión `t` dentro del cuerpo firmado y `verify()` revalida
+`exp - t <= cap`. Un token operacional emitido con `exp` largo —por un bug
+futuro o un caller hostil— se rechaza como `invalid`. Un token operacional sin
+`t` también: la acción es nueva, no hay tokens legacy que proteger.
+
+### Consumo del nonce: exclusión cross-process
+
+El patrón anterior (`readUsedNonces()` → `appendFileSync`) sólo era atómico
+*dentro* de un proceso. El pipeline corre varios que verifican contra el mismo
+store (dashboard, listener y sus respawns), así que dos podían leer el nonce
+libre antes de que ninguno appendeara.
+
+El consumo ahora es un claim exclusivo: `open(<claims>/<nonce>.json, 'wx')`
+(`O_CREAT|O_EXCL`, `CREATE_NEW` en Windows). Gana exactamente un proceso; el
+resto recibe `EEXIST` → `replayed`. Si el claim **no se puede decidir** (error
+de disco), `verify()` devuelve `unavailable` y no se autoriza nada: fail-closed.
+El JSONL histórico se sigue leyendo —los nonces consumidos antes de la
+migración siguen muertos— y se sigue appendeando como traza de auditoría.
+
+El test `action-token-vault-cut-5458.test.js` lanza **cuatro procesos node
+reales** con barrera de arranque común y exige exactamente un consumo exitoso.
+Degradado al patrón viejo, ese test falla.
+
+Los claims se podan de forma oportunista (>500 entradas, corte de 7 días,
+best-effort). Podar no puede resucitar un token: `verify()` chequea la
+expiración **antes** del claim, y el corte de poda es varias veces el TTL máximo
+que emite el módulo.
+
+### Qué falla cerrado
+
+HMAC inválido, expiración, replay, acción o issue alterados respecto del token
+firmado (`binding-mismatch`), firmante removido entre la publicación del botón y
+el toque (la allowlist se **re-resuelve** al ejecutar, no se usa el snapshot del
+constructor), allowlist vacía, ejecutor ausente o que explota. En todos los
+casos el fallback se conserva y el toast es genérico: nunca expone token, firma,
+nonce, chat/operator ID, ARN, hostname ni paths.
+
+### Qué NO está acá
+
+El ejecutor del corte —revalidación de cobertura, escritura atómica de
+`vault.bootstrap_fallback: false`, relectura e idempotencia— es #5459 y se
+inyecta como `executor` / `operationalExecutor`. Sin él, el corte no ocurre y la
+respuesta es `executor-unavailable`.
+
+La **propuesta del botón**, la **política de ausencia del operador** y el
+**break-glass** son #5460 y viven en `lib/vault-cut-proposal.js`,
+`lib/operator-absence-policy.js` (superficie operacional) y
+`lib/vault-cut-breakglass.js`. Su runbook operativo —cuándo se propone, las
+cuatro causas de ausencia, la señal local, el procedimiento sin Telegram, el
+último punto de retorno y la invalidación de los action-tokens en vuelo al
+reprovisionar el bot token— está en
+[`docs/operacion-pipeline.md#corte-fallback-vault`](../operacion-pipeline.md#corte-fallback-vault).

@@ -1,0 +1,15 @@
+{
+  "issue": 6746,
+  "entries": [
+    {
+      "issue": 6746,
+      "fase": "verificacion",
+      "agente": "security",
+      "tipo": "document",
+      "path": ".pipeline/assets/docs/6746/security-verificacion-6746.md",
+      "bytes": 9026,
+      "sensible": true,
+      "timestamp": "2026-08-31T15:35:06.594Z"
+    }
+  ]
+}

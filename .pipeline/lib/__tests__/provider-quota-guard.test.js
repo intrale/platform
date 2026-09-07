@@ -622,3 +622,64 @@ test('CA-7: soft-gate NO altera el happy path cuando el provider no está degrad
     assert.equal(r.source, 'agent-models');
     assert.notEqual(r.softGatedPrimaryUsed, true);
 });
+
+// -----------------------------------------------------------------------------
+// CA-7 de #5924 — el emisor por defecto no contamina la cola REAL del repo
+//
+// Contexto: `evaluate()` cae a `enqueueTelegram` cuando el llamador no inyecta
+// `sendTelegram`, y resuelve el directorio con `pipelineDirDefault()`. Un test
+// que llegue al guard sin aislar el pipelineDir termina depositando un aviso con
+// datos de cuota REALES en `.pipeline/servicios/telegram/pendiente/`, que el
+// worker manda al operador como si fuera legítimo. Verificado el 18/08/2026: la
+// corrida del tester dejó un `<ts>-provider-quota-guard.json` en la cola del
+// worktree y `telegram-queue-no-contamina.test.js` falló por eso.
+// -----------------------------------------------------------------------------
+
+test('CA-7 #5924: bajo node --test el emisor NO escribe en la cola real del repo', () => {
+    assert.ok(process.env.NODE_TEST_CONTEXT, 'sanity: este test corre bajo el runner de Node');
+
+    // A proposito NO se usa `pipelineDirDefault()`: desde #6111 esta suite
+    // exporta `PIPELINE_DIR_OVERRIDE` apuntando a un tmp, asi que el default ya
+    // no devuelve el `.pipeline/` fisico del repo. El rail cubre exactamente esa
+    // ruta fisica -- la unica que puede terminar en la cola que lee el worker --
+    // y es contra ella que hay que ejercerlo. Los dos mecanismos son
+    // complementarios: el override aisla a las suites que se acuerdan de
+    // ponerlo, el rail ataja a las que no.
+    const real = path.resolve(__dirname, '..', '..');
+    assert.equal(path.basename(real), '.pipeline', 'sanity: `real` apunta al .pipeline fisico');
+    const colaReal = guard.telegramQueueDir(real);
+    const antes = fs.existsSync(colaReal)
+        ? fs.readdirSync(colaReal).filter((f) => f.endsWith('.json'))
+        : [];
+
+    const r = guard.enqueueTelegram(real, 'Openai-codex va al 99% (semanal).', 1787068223094);
+    assert.equal(r.ok, false, 'el encolado a la cola real debe quedar suprimido');
+    assert.equal(r.reason, 'suppressed_under_test');
+
+    const despues = fs.existsSync(colaReal)
+        ? fs.readdirSync(colaReal).filter((f) => f.endsWith('.json'))
+        : [];
+    assert.deepEqual(despues, antes, 'la cola real no cambió');
+});
+
+test('CA-7 #5924: con el pipelineDir aislado el encolado real sigue funcionando', () => {
+    const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'pqg-cola-'));
+    try {
+        const r = guard.enqueueTelegram(sandbox, 'Anthropic va al 91% (semanal).', 42);
+        assert.equal(r.ok, true, 'un sandbox no está alcanzado por el rail');
+
+        const dir = guard.telegramQueueDir(sandbox);
+        const files = fs.readdirSync(dir);
+        // #6226 cambio el nombre a `<ts>-<seq>-provider-quota-guard.json` para
+        // que dos avisos del mismo milisegundo no se pisen. Se asierta el
+        // formato, no el literal, para no volver a acoplar el test al ancho del
+        // contador.
+        assert.equal(files.length, 1, 'un aviso ⇒ un dropfile');
+        assert.match(files[0], /^42-\d+-provider-quota-guard\.json$/);
+        const drop = JSON.parse(fs.readFileSync(path.join(dir, files[0]), 'utf8'));
+        assert.equal(drop.parse_mode, 'Markdown');
+        assert.match(drop.text, /91%/);
+    } finally {
+        try { fs.rmSync(sandbox, { recursive: true, force: true }); } catch { /* best-effort */ }
+    }
+});

@@ -80,8 +80,18 @@ test('#6033 des-mapea missing y error antes de alertar en fail-closed', async ()
   assert.equal(ctx.secrets, null);
 });
 
-test('#6033 inherit deja traza y no altera el conjunto efectivo', async () => {
-  async function resolver(credentials, logs) {
+// #6034 — ACTUALIZADO, no borrado. La versión original de este test (#6033)
+// pinneaba el borde PROVISIONAL: `inherit` se leía, se anunciaba con un INFO
+// ("se ignora en este borde") y no alteraba nada. #6034 reemplaza ese borde por
+// la herencia real, así que la traza por log desaparece a propósito.
+//
+// Lo que el test sigue protegiendo, y ahora es CA-3 de #6034: mientras el scope
+// propio resuelva, `inherit` NO cambia el conjunto efectivo — la herencia ni
+// siquiera se consulta. Ésa era la garantía valiosa del test original y se
+// conserva; lo único que cambia es POR QUÉ es cierta (antes: se ignoraba
+// siempre; ahora: sólo se evalúa sobre lo que falta).
+test('#6034 (ex #6033) inherit no altera el conjunto efectivo mientras el scope propio resuelva', async () => {
+  async function resolver(credentials, logs, auditoria) {
     _resetVaultCache();
     const supervisor = createSupervisor();
     await supervisor.bootProducts();
@@ -93,29 +103,41 @@ test('#6033 inherit deja traza y no altera el conjunto efectivo', async () => {
         ['providers__anthropic', { apiKey: 'FAKE-INHERITED' }],
       ])),
       logger: (line) => logs.push(line),
+      auditImpl: { appendChained: (entrada) => auditoria.push(entrada) },
     });
     assert.equal(result.ok, true, JSON.stringify(result));
-    return Object.keys(ctx.secrets).sort();
+    return { scopes: Object.keys(ctx.secrets).sort(), meta: result.meta };
   }
 
   const logsSinInherit = [];
   const logsConInherit = [];
+  const auditSinInherit = [];
+  const auditConInherit = [];
   const sinInherit = await resolver(
     [{ ref: 'fake', scopes: ['github'] }],
     logsSinInherit,
+    auditSinInherit,
   );
   const conInherit = await resolver(
     [{ ref: 'fake', scopes: ['github'], inherit: ['providers:anthropic'] }],
     logsConInherit,
+    auditConInherit,
   );
 
-  assert.deepEqual(conInherit, sinInherit, 'inherit no cambia el conjunto efectivo');
-  assert.deepEqual(conInherit, ['github']);
-  assert.equal(logsSinInherit.some((line) => line.includes('inherit se ignora')), false);
-  assert.ok(logsConInherit.some((line) => (
-    line.includes('credentials[].inherit se ignora')
-    && line.includes('providers:anthropic')
-  )), JSON.stringify(logsConInherit));
+  assert.deepEqual(conInherit.scopes, sinInherit.scopes, 'inherit no cambia el conjunto efectivo');
+  assert.deepEqual(conInherit.scopes, ['github']);
+  // CA-10 — el origen queda marcado, y es `project`: nada se heredó.
+  assert.deepEqual({ ...conInherit.meta.sources }, { github: 'project' });
+  // El INFO "se ignora en este borde" ya no existe: era el marcador del borde
+  // provisional que este issue reemplaza.
+  assert.equal(
+    logsConInherit.some((line) => line.includes('inherit se ignora')), false,
+    JSON.stringify(logsConInherit),
+  );
+  // Sin scope faltante no hay DECISIÓN de herencia que auditar: pedir traza acá
+  // sería ruido que esconde las concesiones reales.
+  assert.deepEqual(auditConInherit, []);
+  assert.deepEqual(auditSinInherit, []);
 });
 
 test('#6033 no materializa claves extra del driver', async () => {

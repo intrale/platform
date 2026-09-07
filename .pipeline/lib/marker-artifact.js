@@ -34,6 +34,11 @@ function isMarkerArtifact(name) {
     if (name.split('.').length > 2) return true;
     return name.endsWith('.reason.json')
         || name.endsWith('.guidance.txt')
+        // #6296 SEC-A — canal de guidance de origen AGENTE. Ya cae por la regla
+        // de `> 2 segmentos`; se lista explícito para que el contrato quede
+        // escrito y un futuro cambio de la regla genérica no lo re-exponga como
+        // marker (el incidente 2026-05-11 fue exactamente eso con `.guidance.txt`).
+        || name.endsWith('.guidance.agent.txt')
         || name.endsWith('.comment.md');
 }
 

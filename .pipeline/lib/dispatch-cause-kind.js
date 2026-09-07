@@ -35,6 +35,7 @@ const DISPATCH_CAUSE_TO_WATCHDOG_KIND = Object.freeze({
     [dispatchCause.CAUSAS.DEADLOCK]: 'deadlock',
     [dispatchCause.CAUSAS.CB_INFRA]: 'cb-infra',
     [dispatchCause.CAUSAS.PRESION_RECURSOS]: 'resource-pressure',
+    [dispatchCause.CAUSAS.DISCO_LLENO]: 'disk-pressure',
 });
 
 /**

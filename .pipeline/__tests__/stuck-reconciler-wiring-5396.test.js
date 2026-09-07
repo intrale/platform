@@ -509,26 +509,55 @@ test('CA-3 e2e: el mismo issue fuera de la ola no escala ni notifica nunca', () 
 });
 
 // -----------------------------------------------------------------------------
-// CA-7 / CA-UX-3 / riesgo #2 — señal de vida del silencio
+// CA-7 / riesgo #2 — señal de vida del silencio
+//
+// #6150 MIGRÓ este bloque. #5396 gobernaba el envío a Telegram con la RACHA de
+// ciclos mudos y un criterio AGREGADO (`suprimidos_por_ola >= evaluados`). En
+// producción eso emitió un aviso con 177 decisiones y CERO tareas realmente
+// frenadas: comprensible sólo para el pipeline y, encima, falso.
+//
+// Qué cambia y por qué las dos aserciones viejas quedan superadas:
+//  - "emite en el 6º tick de la racha" → la racha ya NO gobierna el envío. Sigue
+//    contándose y persistiéndose (es lo que hace visible un reconciliador
+//    apagado, que es lo que CA-7 protegía), pero sólo para log/estado.
+//  - "una señal por racha" → ahora es una señal por EPISODIO, identificado por la
+//    huella `issue|fase|suppression`. Si el conjunto cambia, vuelve a avisar; si
+//    es idéntico, no, por larga que sea la racha.
 // -----------------------------------------------------------------------------
 
-test('CA-7: 6 ticks mudos consecutivos con evaluados > 0 emiten la señal de vida', () => {
-    let prev = null;
-    const agg = { evaluados: 4, escalados: 0, requeued: 0, suprimidos_por_ola: 1, suprimidos_por_cache: 3 };
-    const emitidos = [];
-    for (let i = 1; i <= 8; i++) {
-        const r = evaluateSilenceHealth(prev, agg);
-        if (r.emitSignal) emitidos.push(i);
-        prev = r.next;
-    }
-    assert.deepEqual(emitidos, [6], 'una sola señal, en el 6º tick de la racha');
+/** Decisión en riesgo real (fail-closed: había que actuar y no se pudo). */
+const riesgoReal = (issue) => ({
+    issue, pipeline: 'desarrollo', fase: 'validacion', action: 'none', suppression: 'cache',
 });
 
-test('CA-UX-3: silencio explicado 100% por el filtro de ola → NO se emite señal', () => {
+test('CA-7: la racha de ciclos mudos se sigue contando y persistiendo', () => {
+    let prev = null;
+    const agg = { evaluados: 4, escalados: 0, requeued: 0, suprimidos_por_ola: 1, suprimidos_por_cache: 3 };
+    for (let i = 1; i <= 8; i++) prev = evaluateSilenceHealth(prev, { agg, risks: [] }).next;
+    assert.equal(prev.ciclos_revisando_sin_actuar, 8, 'sin este contador, un reconciliador apagado es invisible');
+    assert.equal(prev.motivos.estado_no_confirmado, 3, 'y el desglose por motivo queda auditado (CA-2)');
+});
+
+test('#6150 CA-2: una racha larga SIN riesgo real no emite señal', () => {
+    // Éste es literalmente el estado de producción que disparó el aviso falso.
+    let prev = null;
+    const agg = { evaluados: 177, escalados: 0, requeued: 0, suprimidos_por_ola: 68, suprimidos_por_dedupe: 3, suprimidos_por_cache: 0 };
+    let emitidos = 0;
+    for (let i = 1; i <= 20; i++) {
+        const r = evaluateSilenceHealth(prev, { agg, risks: [] });
+        if (r.emitSignal) emitidos++;
+        prev = r.next;
+    }
+    assert.equal(emitidos, 0, 'la racha ya no puede disparar un aviso por sí sola');
+});
+
+test('CA-UX-3: silencio explicado por el filtro de ola → NO se emite señal', () => {
+    // Sigue valiendo, pero por otra razón: las tareas fuera de la ola no son
+    // riesgo real, así que ni siquiera entran al conjunto que se notifica.
     let prev = null;
     const agg = { evaluados: 3, escalados: 0, requeued: 0, suprimidos_por_ola: 3, suprimidos_por_cache: 0 };
     for (let i = 0; i < 20; i++) {
-        const r = evaluateSilenceHealth(prev, agg);
+        const r = evaluateSilenceHealth(prev, { agg, risks: [] });
         assert.equal(r.emitSignal, false, 'acotar a la ola es lo correcto, no una anomalía');
         prev = r.next;
     }
@@ -537,46 +566,46 @@ test('CA-UX-3: silencio explicado 100% por el filtro de ola → NO se emite señ
 test('CA-7: cualquier acción resetea la racha', () => {
     let prev = null;
     const mudo = { evaluados: 2, escalados: 0, requeued: 0, suprimidos_por_cache: 2 };
-    for (let i = 0; i < 5; i++) prev = evaluateSilenceHealth(prev, mudo).next;
-    assert.equal(prev.streak, 5);
+    for (let i = 0; i < 5; i++) prev = evaluateSilenceHealth(prev, { agg: mudo, risks: [] }).next;
+    assert.equal(prev.ciclos_revisando_sin_actuar, 5);
 
-    prev = evaluateSilenceHealth(prev, { evaluados: 2, escalados: 1, requeued: 0 }).next;
-    assert.equal(prev.streak, 0, 'escalar reinicia el contador');
-    assert.equal(prev.signaled, false);
+    prev = evaluateSilenceHealth(prev, { agg: { evaluados: 2, escalados: 1, requeued: 0 }, risks: [] }).next;
+    assert.equal(prev.ciclos_revisando_sin_actuar, 0, 'escalar reinicia el contador');
 });
 
-test('CA-7: un tick sin issues varados no cuenta como silencio sospechoso', () => {
-    const r = evaluateSilenceHealth({ streak: 5, signaled: false }, { evaluados: 0, escalados: 0, requeued: 0 });
+test('CA-7: un tick sin tareas que revisar no cuenta como silencio sospechoso', () => {
+    const r = evaluateSilenceHealth(
+        { streak: 5 },
+        { agg: { evaluados: 0, escalados: 0, requeued: 0 }, risks: [] },
+    );
     assert.equal(r.emitSignal, false);
-    assert.equal(r.next.streak, 0, 'no había nada que hacer: no es una anomalía');
+    assert.equal(r.next.ciclos_revisando_sin_actuar, 0, 'no había nada que hacer: no es una anomalía');
 });
 
-test('CA-UX-3: la señal se emite como máximo una vez por racha', () => {
+test('#6150 CA-5: con riesgo real se avisa UNA vez por episodio, y en el primer ciclo', () => {
+    const agg = { evaluados: 5, escalados: 0, requeued: 0, suprimidos_por_cache: 5 };
+    const risks = [riesgoReal(11), riesgoReal(22)];
     let prev = null;
-    const agg = { evaluados: 5, escalados: 0, requeued: 0, suprimidos_por_ola: 1, suprimidos_por_dedupe: 4 };
-    let count = 0;
-    for (let i = 0; i < 30; i++) {
-        const r = evaluateSilenceHealth(prev, agg);
-        if (r.emitSignal) count++;
+    const emitidos = [];
+    for (let i = 1; i <= 30; i++) {
+        const r = evaluateSilenceHealth(prev, { agg, risks });
+        if (r.emitSignal) emitidos.push(i);
         prev = r.next;
     }
-    assert.equal(count, 1);
+    assert.deepEqual(emitidos, [1], 'hay trabajo frenado: no se hace esperar 6 ciclos para avisar');
 });
 
-test('CA-7: la señal vuelve a estar disponible tras una racha nueva', () => {
-    let prev = null;
-    const mudo = { evaluados: 3, escalados: 0, requeued: 0, suprimidos_por_dedupe: 3 };
-    for (let i = 0; i < 6; i++) prev = evaluateSilenceHealth(prev, mudo).next;
-    assert.equal(prev.signaled, true);
-
-    prev = evaluateSilenceHealth(prev, { evaluados: 1, escalados: 1, requeued: 0 }).next;
-    let reEmit = false;
-    for (let i = 0; i < 6; i++) {
-        const r = evaluateSilenceHealth(prev, mudo);
-        if (r.emitSignal) reEmit = true;
-        prev = r.next;
-    }
-    assert.equal(reEmit, true, 'una racha nueva puede volver a avisar');
+test('#6150 CA-5: un episodio distinto vuelve a avisar', () => {
+    const agg = { evaluados: 3, escalados: 0, requeued: 0, suprimidos_por_cache: 3 };
+    const prev = evaluateSilenceHealth(null, { agg, risks: [riesgoReal(11)] }).next;
+    assert.equal(
+        evaluateSilenceHealth(prev, { agg, risks: [riesgoReal(11)] }).emitSignal, false,
+        'misma tarea, mismo motivo → no repite',
+    );
+    assert.equal(
+        evaluateSilenceHealth(prev, { agg, risks: [riesgoReal(11), riesgoReal(33)] }).emitSignal, true,
+        'entró una tarea nueva: el episodio empeoró y el operador tiene que enterarse',
+    );
 });
 
 // -----------------------------------------------------------------------------

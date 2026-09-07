@@ -1,0 +1,28 @@
+<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"><style>
+:root{--bg:#0d1117;--sf:#161b22;--bd:#30363d;--tx:#e6edf3;--dim:#8b949e;--ac:#58a6ff;--gn:#3fb950;--pk:#FF6B8A}
+*{box-sizing:border-box;margin:0;padding:0}
+body{width:1280px;height:720px;background:var(--bg);color:var(--tx);
+  font-family:'Segoe UI',system-ui,sans-serif;overflow:hidden;display:flex;flex-direction:column}
+header{padding:28px 44px 18px;border-bottom:1px solid var(--bd)}
+h1{font-size:29px;font-weight:650;letter-spacing:-0.3px;line-height:1.25}
+h1 .ca{color:var(--pk)}
+.sub{margin-top:8px;font-size:16px;color:var(--dim)}
+main{flex:1;padding:26px 44px;display:flex;flex-direction:column;justify-content:center;gap:14px}
+.row{display:flex;gap:16px;align-items:flex-start;background:var(--sf);border:1px solid var(--bd);
+  border-radius:10px;padding:14px 18px}
+.k{flex:0 0 168px;font-size:14px;font-weight:700;color:var(--ac);text-transform:uppercase;letter-spacing:1px;padding-top:2px}
+.v{flex:1;font-size:17px;line-height:1.45;font-family:'Cascadia Mono','Consolas',monospace;word-break:break-word}
+.row.okrow{border-color:#1f6f3f}
+.row.okrow .k{color:var(--gn)}
+.imgwrap{flex:1;display:flex;align-items:center;justify-content:center}
+.imgwrap img{max-width:100%;max-height:520px;border:1px solid var(--bd);border-radius:10px}
+footer{padding:12px 44px 18px;font-size:13px;color:var(--dim);
+  display:flex;justify-content:space-between;border-top:1px solid var(--bd)}
+</style></head><body>
+<header><h1><span class="ca">CA-1</span> · el turno ejecutado sin entrega queda marcado como huérfano</h1><div class="sub">etapa resultado con el valor huerfano, explícito</div></header>
+<main><div class="row"><div class="k">Test</div><div class="v">B-10 · huérfano real: transcripción, sin resultado, sin saliente, boot viejo (CA-1)</div></div>
+<div class="row"><div class="k">Clasificador</div><div class="v">request-classify: deliveryUnconfirmed true y sin error ⇒ huerfano</div></div>
+<div class="row"><div class="k">Enum</div><div class="v">RESULTADOS = ['ok','ajustada','fallback','error','huerfano']</div></div>
+<div class="row okrow"><div class="k">Observado</div><div class="v">ok · el veredicto sale HUERFANO, no vacío ni error</div></div></main>
+<footer><span>QA · Intrale · issue #6459 · PR #6538 @ decab5637</span><span>2 / 17</span></footer>
+</body></html>

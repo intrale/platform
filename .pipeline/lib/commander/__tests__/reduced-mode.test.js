@@ -27,6 +27,8 @@ const os = require('node:os');
 const path = require('node:path');
 
 const commanderMP = require('../../commander/multi-provider');
+// #6179 CA-8 — lista única de jerga/secretos compartida por los tests anti-jerga.
+const { assertCopyLimpio } = require('../../__tests__/helpers/forbidden-copy-patterns');
 
 // agent-models.json mínimo: telegram-commander con primario anthropic (paid),
 // fallback openai-codex (paid) y cerebras (free). auth_mode oauth/api_key sin
@@ -203,6 +205,10 @@ test('#4870 CA-3 · el canned NO filtra secrets, nombres de modelo, ni jerga int
     assert.doesNotMatch(text, /claude-|gpt-|gpt-oss|deepseek|zai-glm/i, 'sin nombres de modelo');
     assert.doesNotMatch(text, /API_KEY|CEREBRAS|NVIDIA_NIM|Bearer|sk-/i, 'sin secrets/credenciales');
     assert.doesNotMatch(text, /\bgated\b|providerBilling|\bchain\b/i, 'sin jerga interna');
+    // #6179 CA-8 — tercer test anti-jerga reapuntado a la lista CENTRALIZADA.
+    // Con tres listas propias alcanzaba con agregar un patrón nuevo en una sola
+    // para que las otras dos dieran verde sobre una fuga real.
+    assertCopyLimpio(assert, text, 'canned de modo reducido');
 });
 
 test('#4870 CA-3 · downProviders vacío/desconocido → copy genérico sin nombres crudos', () => {

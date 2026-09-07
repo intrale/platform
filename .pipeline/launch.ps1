@@ -22,6 +22,10 @@ $env:NODE_PATH = "$RepoRoot\node_modules"
 
 Write-Host '=== Pipeline V2 - Lanzamiento ===' -ForegroundColor Cyan
 
+# #6812 — TODOS los servicios van 'Hidden'. Con 'Minimized' la consola
+# existe y parpadea al arrancar; peor aun, `Set-ScheduledTask` de mas abajo
+# pisaba el Action del watchdog y le sacaba el `-WindowStyle Hidden` que se
+# habia agregado a mano al host, reintroduciendo el robo de foco cada 2 min.
 function Start-PipelineService($Script, $Style) {
     $scriptPath = "$PipelineDir\$Script"
     if (-not (Test-Path $scriptPath)) {
@@ -32,11 +36,11 @@ function Start-PipelineService($Script, $Style) {
 }
 
 Write-Host 'Lanzando Pulpo...' -ForegroundColor Yellow
-Start-PipelineService 'pulpo.js' 'Minimized'
+Start-PipelineService 'pulpo.js' 'Hidden'
 Start-Sleep -Seconds 2
 
 Write-Host 'Lanzando Listener Telegram...' -ForegroundColor Yellow
-Start-PipelineService 'listener-telegram.js' 'Minimized'
+Start-PipelineService 'listener-telegram.js' 'Hidden'
 Start-Sleep -Seconds 2
 
 Write-Host 'Lanzando servicios...' -ForegroundColor Yellow
@@ -64,7 +68,7 @@ $mainSettings = New-ScheduledTaskSettingsSet `
     -ExecutionTimeLimit (New-TimeSpan -Minutes 5)
 
 $watchdogAction = New-ScheduledTaskAction -Execute 'powershell.exe' `
-    -Argument "-NonInteractive -File $PipelineDir\watchdog.ps1"
+    -Argument "-NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File $PipelineDir\watchdog.ps1"
 $watchdogTrigger = New-ScheduledTaskTrigger -RepetitionInterval (New-TimeSpan -Minutes 2) -Once -At (Get-Date)
 
 $existingWatchdog = Get-ScheduledTask -TaskName $WatchdogTask -ErrorAction SilentlyContinue
@@ -89,7 +93,7 @@ $supSettings = New-ScheduledTaskSettingsSet `
     -WakeToRun `
     -ExecutionTimeLimit (New-TimeSpan -Minutes 4)
 $supAction = New-ScheduledTaskAction -Execute 'powershell.exe' `
-    -Argument "-NonInteractive -File $PipelineDir\watchdog-supervisor.ps1"
+    -Argument "-NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File $PipelineDir\watchdog-supervisor.ps1"
 $supTrigger = New-ScheduledTaskTrigger -RepetitionInterval (New-TimeSpan -Minutes 5) -Once -At (Get-Date)
 
 $existingSup = Get-ScheduledTask -TaskName $SupervisorTask -ErrorAction SilentlyContinue

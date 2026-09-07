@@ -59,14 +59,11 @@ if (Test-Path $LastRestartFile) {
 
 # Servicios críticos: nombre del componente → script file que lo identifica
 # en la command line del proceso node.exe.
-$Services = @(
-    @{ Name = 'pulpo';         Script = 'pulpo.js' },
-    @{ Name = 'listener';      Script = 'listener-telegram.js' },
-    @{ Name = 'svc-telegram';  Script = 'servicio-telegram.js' },
-    @{ Name = 'svc-github';    Script = 'servicio-github.js' },
-    @{ Name = 'svc-drive';     Script = 'servicio-drive.js' },
-    @{ Name = 'dashboard';     Script = 'dashboard.js' }
-)
+# #6441 - $Services se DERIVA del registro canonico ($ScriptMap de abajo)
+# filtrado por $Supervised. Antes era una lista hardcodeada de 6 entradas que
+# omitia svc-reconciler: el watchdog lo veia muerto y lo trataba como no-evento.
+# Esa es la causa dominante de los 6 dias de caida en silencio del 2026-08-18.
+# El bloque real se arma DESPUES de $ScriptMap (PowerShell evalua en orden).
 
 # #5646 (CA-4) — Registro CANONICO de componentes: union de `restart.js:COMPONENTS`
 # (8, con dashboard, sin outbox-drain) y `dashboard.js:COMPONENTS` (8, con
@@ -86,6 +83,40 @@ $ScriptMap = @{
     'svc-reconciler' = 'servicio-reconciler.js'
     'outbox-drain'   = 'outbox-drain.js'
     'dashboard'      = 'dashboard.js'
+}
+
+# #6441 - Componentes SUPERVISADOS: los que, si no estan, hay que relanzar y
+# avisar. Espejo de `SUPERVISED_COMPONENTS` en `lib/stale-services.js`; hay un
+# test que falla si divergen (`lib/stale-services.test.js`).
+#
+# Por que se replican los NOMBRES aca en vez de pedirselos a Node: si el
+# watchdog derivara $Services de una llamada a node y esa llamada fallara
+# (worktree sin node_modules, disco lleno), $Services quedaria VACIO y el
+# watchdog dejaria de relanzar TODO en silencio. Justo el fail-open que este
+# issue cierra. La lista es estatica y el test cubre la divergencia.
+#
+# Los dos ausentes no son olvidos:
+#   - outbox-drain  : se auto-mata si el Pulpo esta corriendo; muerto es su
+#                     estado correcto y relanzarlo seria un loop.
+#   - svc-emulador  : servicio de cola atado a la ventana QA; fuera de ella su
+#                     ausencia es esperada. Se registra, no se alerta.
+$Supervised = @(
+    'pulpo',
+    'listener',
+    'svc-telegram',
+    'svc-github',
+    'svc-drive',
+    'svc-reconciler',
+    'dashboard'
+)
+
+$Services = @()
+foreach ($svcName in $Supervised) {
+    if ($ScriptMap.ContainsKey($svcName)) {
+        $Services += @{ Name = $svcName; Script = $ScriptMap[$svcName] }
+    } else {
+        Write-Log ("ERROR de configuracion: '" + $svcName + "' esta supervisado pero no tiene script en el registro - no se puede vigilar")
+    }
 }
 
 # #5646 — Helper compartido y guard anti crash-loop del restart selectivo.
@@ -340,7 +371,46 @@ function Invoke-PulpoLivenessCheck {
     }
 }
 
+# #6441 - BARRIDO DE LIVENESS de los servicios declarados.
+#
+# Hasta este issue, el unico que computaba el flanco vivo<->muerto era el
+# dashboard. Si no snapshoteaba, o el componente no entraba en su lista, el
+# flanco no se computaba NUNCA: sin flanco no hay alerta, y svc-reconciler
+# estuvo seis dias muerto sin una sola linea. La deteccion se muda a este
+# script, que corre siempre, y lee del registro canonico.
+#
+# El runner SOLO observa, asienta la transicion en process-transitions.jsonl y
+# avisa (con dedup persistente). NO relanza: de eso se encarga el loop de
+# servicios caidos de mas abajo, que ya tiene el double-check anti-TOCTOU justo
+# antes de spawnear. Si ademas relanzara el runner, habria dos spawns del mismo
+# servicio en el mismo ciclo.
+function Invoke-ServiceLivenessSweep {
+    $runner = "$PipelineDir\service-liveness-run.js"
+    if (-not (Test-Path $runner)) { return }
+
+    $env:NODE_PATH = "$RepoRoot\node_modules"
+    try {
+        $out = & node $runner 2>$null
+        $action = ''
+        if ($out) {
+            $action = ($out | Select-String -Pattern '^ACTION:(.+)$' | ForEach-Object { $_.Matches[0].Groups[1].Value } | Select-Object -First 1)
+        }
+        if ($action -like 'down:*') {
+            Write-Log ("  liveness : supervisados caidos -> " + $action.Substring(5) + " (transicion y aviso registrados)")
+        } elseif ($action -eq 'ok') {
+            # Camino feliz: sin alerta. Se deja la linea en el log del watchdog
+            # para que "no aviso" sea distinguible de "no corrio".
+            Write-Log "  liveness : todos los servicios supervisados vivos"
+        } else {
+            Write-Log "  liveness : el barrido no devolvio una accion legible"
+        }
+    } catch {
+        Write-Log "  liveness : ERROR ejecutando el barrido - $_"
+    }
+}
+
 Invoke-PulpoLivenessCheck
+Invoke-ServiceLivenessSweep
 
 $dead = @()
 foreach ($svc in $Services) {

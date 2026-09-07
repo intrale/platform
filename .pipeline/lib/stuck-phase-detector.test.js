@@ -134,22 +134,29 @@ test('mixto: faltante + cancelado → ESCALATE (la ambigüedad gana sobre requeu
 });
 
 // ─── analyzeStuckIssue: escalate ────────────────────────────────────────────
-test('rechazo REAL → escalate (NO re-encolar, evita loop)', () => {
+// #6296 — REESCRITO CON INTENCIÓN. Antes esperaba `escalate`: un rechazo se
+// trataba como ambigüedad y frenaba el issue pidiendo humano. Ahora un rechazo es
+// una DECISIÓN y su carril es `rebote`. Lo que NO cambia (y por eso el test sigue
+// existiendo) es que jamás se re-encola a la MISMA fase: eso loopearía.
+test('#6296 rechazo REAL → rebote (nunca requeue a la misma fase: loopearía)', () => {
     const r = analyzeStuckIssue({
         requiredSkills: ['po', 'ux'],
         deliverables: [deliv('po', 'listo', APROB), deliv('ux', 'listo', RECHAZO)],
         nowMs: NOW,
     });
-    assert.equal(r.action, 'escalate');
-    assert.match(r.reason, /rechazo/);
+    assert.equal(r.action, 'rebote');
+    assert.notEqual(r.action, 'requeue', 'un rechazo NUNCA re-encola la misma fase');
+    assert.equal(r.rebote.severidadEfectiva, 'grave', 'sin `gravedad` declarada ⇒ grave (piso A)');
+    assert.match(r.reason, /ux:rejected\(grave\)/);
 });
-test('rechazo + faltante → escalate gana (el rechazo manda)', () => {
+test('#6296 rechazo + faltante → gana el rechazo (rebote, no requeue del faltante)', () => {
     const r = analyzeStuckIssue({
         requiredSkills: ['po', 'ux', 'guru'],
         deliverables: [deliv('po', 'listo', RECHAZO)],
         nowMs: NOW,
     });
-    assert.equal(r.action, 'escalate');
+    assert.equal(r.action, 'rebote');
+    assert.deepEqual(r.rebote.skills.map((x) => x.skill), ['po']);
 });
 
 // ─── boundaries ─────────────────────────────────────────────────────────────
@@ -341,35 +348,53 @@ test('infra + un skill que nunca corrió → ambos se re-encolan', () => {
 });
 
 // ─── CA-11 / CA-12 / CA-2: la línea roja del PO (fail-closed) ──────────────
-test('CA-11 no-regresión: rechazo de contenido real → escalate', () => {
+// #6296 — REESCRITOS, NO BORRADOS: son el candado del invariante de security y
+// del anti-spoof. Lo que cambia es el DESTINO (rebote a dev en vez de humano); lo
+// que NO cambia es que el rechazo sigue siendo una decisión de contenido, de
+// severidad `grave`, que jamás se auto-aprueba ni se re-encola a la misma fase.
+// RIESGO-1 de `convergence-detector.js` prohibe la AUTO-PROMOCIÓN, no el rebote:
+// devolver el defecto a desarrollo lo acciona antes que un humano que tarda días.
+test('CA-11 no-regresión: rechazo de contenido real → rebote grave (nunca aprobado)', () => {
     const y = { resultado: 'rechazado', motivo: 'CA-3 incumplido: el endpoint devuelve 500 con payload vacío' };
     const r = analyzeStuckIssue({
         requiredSkills: ['po', 'review'],
         deliverables: [deliv('po', 'listo', APROB), deliv('review', 'listo', y)],
         nowMs: NOW,
     });
-    assert.equal(r.action, 'escalate');
+    assert.equal(r.action, 'rebote');
+    assert.equal(r.rebote.severidadEfectiva, 'grave');
 });
-test('CA-12 invariante security: rechazo sin procedencia NUNCA se auto-reencola', () => {
+test('CA-12 invariante security: su rechazo es SIEMPRE grave y nunca se auto-reencola', () => {
     const y = { resultado: 'rechazado', motivo: 'SEC-2: token de Cognito logueado en claro en AuthService.kt:88' };
     const r = analyzeStuckIssue({
         requiredSkills: ['security', 'po'],
         deliverables: [deliv('security', 'listo', y), deliv('po', 'listo', APROB)],
         nowMs: NOW,
     });
-    assert.equal(r.action, 'escalate');
-    assert.match(r.reason, /security:rejected/);
+    assert.equal(r.action, 'rebote');
+    assert.notEqual(r.action, 'requeue');
+    assert.equal(r.rebote.severidadEfectiva, 'grave');
+    assert.match(r.reason, /security:rejected\(grave\)/);
 });
-test('CA-12: security rechazado convive con un infra-failed y sigue ganando el escalate', () => {
+test('CA-12 piso de security: aunque DECLARE `gravedad: leve`, la efectiva es grave', () => {
+    const y = { resultado: 'rechazado', gravedad: 'leve', motivo: 'SEC-2: credencial en claro' };
+    const r = analyzeStuckIssue({
+        requiredSkills: ['security', 'po'],
+        deliverables: [deliv('security', 'listo', y), deliv('po', 'listo', APROB)],
+        nowMs: NOW,
+    });
+    assert.equal(r.rebote.severidadEfectiva, 'grave', 'el gate de seguridad no se puede auto-degradar');
+});
+test('CA-12: security rechazado convive con un infra-failed y sigue ganando (precedencia)', () => {
     const y = { resultado: 'rechazado', motivo: 'SEC-2: credencial en claro' };
     const r = analyzeStuckIssue({
         requiredSkills: ['security', 'po'],
         deliverables: [deliv('security', 'listo', y), deliv('po', 'procesado', INFRA)],
         nowMs: NOW,
     });
-    assert.equal(r.action, 'escalate', 'un rechazo de contenido bloquea el carril de infra');
+    assert.equal(r.action, 'rebote', 'un rechazo de contenido bloquea el carril de infra');
 });
-test('CA-2 anti-spoof: tras el strip del Pulpo el rechazo de contenido → escalate', () => {
+test('CA-2 anti-spoof: tras el strip del Pulpo el rechazo de contenido → rebote (no infra)', () => {
     // El Pulpo borra `veredicto_sintetizado_por`/`agente_exit_code` del YAML del
     // agente ANTES de evaluarlos, así que lo que llega al detector es esto:
     const spoofeadoYaLimpiado = { resultado: 'rechazado', motivo: 'CA-4 incumplido: falta el test de borde' };
@@ -378,13 +403,22 @@ test('CA-2 anti-spoof: tras el strip del Pulpo el rechazo de contenido → escal
         deliverables: [deliv('review', 'listo', spoofeadoYaLimpiado)],
         nowMs: NOW,
     });
-    assert.equal(r.action, 'escalate');
+    assert.equal(r.action, 'rebote');
+    assert.equal(r.rebote.severidadEfectiva, 'grave');
+    // El anti-spoof por CAMPO ESTRUCTURADO se mantiene intacto: el carril de
+    // infra exige `veredicto_sintetizado_por`, jamás el texto del motivo.
+    assert.equal(r.rebote.skills[0].skill, 'review');
 });
 
 // ─── CA-8: pureza del detector ─────────────────────────────────────────────
 test('CA-8 pureza: el detector no requiere el clasificador de rebotes ni fs', () => {
     const src = require('fs').readFileSync(require('path').join(__dirname, 'stuck-phase-detector.js'), 'utf8');
     const requires = [...src.matchAll(/require\(['"]([^'"]+)['"]\)/g)].map((m) => m[1]);
-    assert.deepEqual(requires, ['./phase-completion'],
+    // #6296 — actualizado CON INTENCIÓN, no relajado: se suma UN require y es a
+    // otro módulo PURO (`rejection-severity`, cero requires propios, verificado en
+    // su propio test). Deliberadamente sigue siendo `deepEqual` y no `includes`:
+    // la aserción exacta es lo que impide que mañana entren `fs`, `path`, config
+    // o el clasificador de rebotes sin que nadie lo note.
+    assert.deepEqual(requires, ['./phase-completion', './rejection-severity'],
         'la fuente única compartida es el CAMPO estructurado, no el módulo clasificador');
 });

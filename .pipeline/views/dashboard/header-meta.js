@@ -46,6 +46,12 @@
 //   Devuelve el HTML del <div class="in-header-meta"> con orden estable:
 //     [mode?] → recursos → pulpo → reloj (guideline UX-3: mismo orden y gap en
 //     todas las vistas).
+// #6708 — El espacio libre en disco viaja en la MISMA pill que CPU/RAM
+// (#hdr-resources-disk). Va acá y no sólo en la system card del home porque esa
+// card vive en el sink de telemetría oculto (mz-telemetry-sink, display:none
+// desde #4227): existe en el DOM para mantener vivos los tickers, pero el
+// operador no la ve. Esta pill es la superficie que SÍ se ve, y la comparten
+// home y todos los satélites, así que el dato llega a cada pantalla.
 function renderHeaderMetaSsr(opts) {
     const withMode = !!(opts && opts.withMode);
     // Todos los atributos son literales hardcoded. NO concatenar con datos
@@ -58,11 +64,13 @@ function renderHeaderMetaSsr(opts) {
       <span class="in-pill in-build-status in-pill-info" id="bld-status"
             title="Estado del último build (marker local .pipeline/build-status.json, sin gh api)."
             aria-label="Build sin datos"><span class="in-status-dot" aria-hidden="true">○</span><span id="bld-status-label">Build sin datos</span></span>
-      ${modePill}<span class="in-pill" id="hdr-resources" title="CPU y RAM del sistema" aria-label="Recursos CPU y RAM">
+      ${modePill}<span class="in-pill" id="hdr-resources" title="CPU, RAM y disco del sistema" aria-label="Recursos CPU, RAM y disco">
         <span aria-hidden="true">🖥</span>
         <span id="hdr-resources-cpu">CPU …</span>
         <span class="in-header-divider" aria-hidden="true">·</span>
         <span id="hdr-resources-mem">RAM …</span>
+        <span class="in-header-divider" aria-hidden="true">·</span>
+        <span id="hdr-resources-disk">Disco …</span>
       </span>
       <span class="in-pill" id="hdr-pulpo" aria-label="Estado del pulpo">…</span>
       <span class="in-pill in-clock" id="hdr-clock" aria-label="Fecha y hora local">…</span>
@@ -105,6 +113,14 @@ if (typeof window !== 'undefined' && !window.__dispatchWindowLabel) {
         return parts.join(' · ');
     };
 }
+// #6708 — Emoji por nivel de disco. Espejo client-side de LEVEL_EMOJI de
+// lib/disk-guard.js: la severidad se comunica por forma además de por color.
+var __DISK_EMOJI = { green: '🟢', yellow: '🟡', orange: '🟠', red: '🔴', unknown: '⚪' };
+// #6708 (rebote rev-1) — Espejo client-side de LEVEL_LABELS de lib/disk-guard.js.
+// El escalón se muestra como TEXTO, no sólo como color/emoji: el operador tiene
+// que poder leer "ALERTA" sin pasar el mouse por encima (el tooltip no existe
+// en táctil y no lo anuncia un lector de pantalla).
+var __DISK_LABEL = { green: 'NORMAL', yellow: 'ATENCIÓN', orange: 'ALERTA', red: 'CRÍTICO', unknown: 'SIN DATO' };
 if (typeof window !== 'undefined' && !window.__hydrateHeaderPills) {
     // Formateo de uptime autocontenido (idéntico a fmtDur de home/satélites) para
     // que el helper sea portable a vistas que no definen fmtDur (providers, roadmap).
@@ -202,6 +218,57 @@ if (typeof window !== 'undefined' && !window.__hydrateHeaderPills) {
             resPill.title = 'CPU ' + cpu + '% (cap ' + maxCpu + '%) · RAM ' + mem + '% ('
                 + (res.memUsedGB || '?') + 'GB / ' + (res.memTotalGB || '?') + 'GB · cap ' + maxMem + '%) · '
                 + (res.cpuCores || '?') + ' cores';
+            // #6708 — Disco: GB LIBRES (no % usado) con el color del umbral
+            // vigente de disk_budget. El emoji del nivel va delante para que la
+            // severidad no dependa sólo del color (WCAG). El color se aplica
+            // sólo si es hex: el estado sale de un JSON en disco y un valor
+            // arbitrario no debe poder inyectar CSS.
+            var diskEl = document.getElementById('hdr-resources-disk');
+            var dsk = res.disk;
+            if (diskEl) {
+                if (dsk && typeof dsk.freeGB === 'number' && isFinite(dsk.freeGB)) {
+                    var emo = __DISK_EMOJI[dsk.level] || '⚪';
+                    // #6708 (rebote rev-1) — RÓTULO + VALOR + ESCALÓN, los tres
+                    // como texto visible: "🔴 Disco 8.0 GB · CRÍTICO".
+                    // Antes decía sólo "🟢 24.0 GB": sin la palabra "Disco"
+                    // el número quedaba sin rotular al lado de CPU/RAM (que sí
+                    // lo están), y el escalón vivía únicamente en el tooltip.
+                    // El servidor manda dsk.label; el mapa local es el fallback
+                    // para estados viejos persistidos sin ese campo.
+                    var lbl = (typeof dsk.label === 'string' && dsk.label)
+                        ? dsk.label
+                        : (__DISK_LABEL[dsk.level] || __DISK_LABEL.unknown);
+                    diskEl.textContent = emo + ' Disco ' + dsk.freeGB.toFixed(1) + ' GB · ' + lbl;
+                    diskEl.style.color = /^#[0-9a-fA-F]{3,8}$/.test(String(dsk.color)) ? dsk.color : '';
+                    var b = dsk.budget || {};
+                    var escala = (typeof b.green_gb === 'number')
+                        ? 'verde >' + b.green_gb + ' · amarillo >' + b.yellow_gb + ' · naranja >' + b.orange_gb + ' GB libres'
+                        : 'presupuesto sin configurar';
+                    resPill.title += ' · Disco ' + dsk.freeGB.toFixed(1) + ' GB libres'
+                        + ((typeof dsk.totalGB === 'number') ? ' de ' + dsk.totalGB + ' GB' : '')
+                        + ' · nivel ' + dsk.level + ' (disk_budget: ' + escala + ')'
+                        + (dsk.frozen ? ' · despacho de build y qa FRENADO por falta de disco' : '');
+                    // El nivel de disco también degrada la pill entera: si el
+                    // disco está en rojo, el header no puede seguir en verde.
+                    if (dsk.level === 'red') {
+                        resPill.classList.remove('in-pill-ok', 'in-pill-warn');
+                        resPill.classList.add('in-pill-bad');
+                        diskEl.classList.add('in-resource-alert');
+                    } else {
+                        diskEl.classList.remove('in-resource-alert');
+                        if (dsk.level === 'orange' && !resPill.classList.contains('in-pill-bad')) {
+                            resPill.classList.remove('in-pill-ok');
+                            resPill.classList.add('in-pill-warn');
+                        }
+                    }
+                } else {
+                    // Sin medición: rótulo + escalón igual, para que el hueco
+                    // se lea como "todavía no se midió" y no como "0 GB".
+                    diskEl.textContent = '⚪ Disco — · ' + __DISK_LABEL.unknown;
+                    diskEl.style.color = '';
+                    diskEl.classList.remove('in-resource-alert');
+                }
+            }
         }
         var clockPill = document.getElementById('hdr-clock');
         if (clockPill) {

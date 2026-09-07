@@ -77,11 +77,23 @@ function buildIssuesContext(deps) {
             // se distinga de un dedupe legítimo. Un dep legacy que devuelva boolean
             // sigue funcionando: `needsHumanSource` queda en null.
             const nh = deps.hasNeedsHuman(issue);
+            // #6150 CA-3 — "hace cuánto está frenada" es el único dato del copy
+            // nuevo que no llegaba al emisor. Se toma el entregable MÁS VIEJO:
+            // marca desde cuándo la fase dejó de avanzar. `null` si ningún
+            // deliverable trae `mtimeMs` (tests puros) — el copy omite la
+            // antigüedad en vez de imprimir `NaN`.
+            const mtimes = data.deliverables
+                .map((d) => d.mtimeMs)
+                // `> 0` y no sólo `isFinite`: `deps.buildIssuesContext` deja
+                // `mtimeMs = 0` cuando el statSync falla (carrera con un rename),
+                // y ese 0 daría "hace 20324 d" en el copy (#6150, obs. de qa).
+                .filter((v) => Number.isFinite(v) && v > 0);
             out.push({
                 issue: Number(issue),
                 pipeline, fase,
                 requiredSkills: required,
                 deliverables: data.deliverables,
+                stuckSinceMs: mtimes.length ? Math.min(...mtimes) : null,
                 liveSkills: data.liveSkills,
                 liveElsewhere: !!deps.issueLiveElsewhere(issue, pipeline, fase),
                 hasNeedsHuman: !!nh,
@@ -111,7 +123,7 @@ function runStuckPhaseReconciler(deps, opts = {}) {
         // caller loguea `evaluados: 0` y así se distingue "no había nada varado"
         // de "el reconciler está muerto".
         return {
-            requeued: 0, escalated: 0, skipped: 0, decisions: [],
+            requeued: 0, escalated: 0, rebotes: 0, skipped: 0, decisions: [],
             evaluados: 0,
             suppressed: { ola: 0, cache: 0, dedupe: 0, cerrado: 0, otro: 0 },
         };
@@ -124,11 +136,18 @@ function runStuckPhaseReconciler(deps, opts = {}) {
         maxRequeueAttempts: opts.maxRequeueAttempts,
         capPerTick: opts.capPerTick,
         staleThresholdMs: opts.staleThresholdMs,
+        // #6296 — resolutor del destino del rebote por severidad. Si el cableado
+        // no lo provee, el plan cae a `escalate` (fail-closed), nunca inventa fase.
+        resolveRebote: deps.resolveRebote,
     });
 
     const summary = executeDecisions(decisions, {
         requeueWorkItem: deps.requeueWorkItem,
         escalate: deps.escalate,
+        // #6296 — materialización del rebote grave y publicación de la
+        // observación del carril leve.
+        rebote: deps.rebote,
+        publicarObservacion: deps.publicarObservacion,
         notify: deps.notify,
         audit: deps.audit,
         workItemExists: deps.workItemExists,

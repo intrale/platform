@@ -23,6 +23,9 @@ const os = require('node:os');
 const { spawnSync } = require('node:child_process');
 
 const lint = require('../operational-state-lint');
+// #5986 · CA-3 / SEC-4: el MISMO parser que consume el gate de merge de
+// `delivery.js`. Prohibido reimplementar el parseo — dos parsers derivan.
+const codeowners = require('../../skills-deterministicos/lib/codeowners');
 const I = lint._internal;
 
 const BIN_NAME = 'operational-state-lint.js';
@@ -514,28 +517,59 @@ test('R7 · __tests__/ y *.test.js quedan fuera (sus fixtures tienen literales a
 test('CA-10 · SELF_EXEMPT: el sustrato del envoltorio y el propio guardrail no se autoauditan', () => {
     const root = makeTmpPipeline();
     const body = "const path=require('path');\nconst w = path.join(D, 'waves.json');\nconst p = path.join(D, '.partial-pause.json');";
-    for (const rel of ['lib/operational-state.js', 'lib/waves.js', 'lib/partial-pause.js', 'lib/operational-state-lint.js']) {
+    for (const rel of [
+        'lib/operational-state.js', 'lib/waves.js', 'lib/partial-pause.js', 'lib/operational-state-lint.js',
+        // #5110 — sustrato del namespaceo por projectId.
+        'lib/project-context.js', 'scripts/migrate-operational-state-namespace.js',
+    ]) {
         placeJs(root, rel, body);
     }
     const { violations } = lint.lint({ pipelineRoot: root, allowlist: emptyAllowlist() });
     assert.equal(violations.length, 0);
+    // El set se pinea a propósito: agrandar el scope del control es una decisión
+    // que tiene que pasar por este test (y por CODEOWNERS), no colarse en un
+    // refactor. #5110 suma dos entradas y ninguna es un consumidor:
+    //   - `lib/project-context.js` RESUELVE el namespace `.pipeline/projects/<id>/`.
+    //   - el migrador MUEVE el layout plano a ese namespace.
+    // Ambos manipulan los literales de estado por definición, igual que
+    // `waves.js`. Auditarlos sería tautológico.
     assert.deepEqual([...I.SELF_EXEMPT].sort(), [
         'lib/operational-state-lint.js',
         'lib/operational-state.js',
         'lib/partial-pause.js',
+        'lib/project-context.js',
         'lib/waves.js',
+        'scripts/migrate-operational-state-namespace.js',
     ]);
 });
 
 // ─── Allowlist (CA-5 / CA-5b / CA-5c / SEC-3 / SEC-4) ───────────────────────
 
-test('CA-5 · regla puntual {file,line,reason} skipea esa violation', () => {
+/**
+ * Arma una entry de `rules` con el ancla ya normalizada (#6106).
+ *
+ * Los tests NO escriben anclas a mano por la misma razon que el dev usa
+ * `--anchor`: un ancla tipeada a ojo se desincroniza del fixture en silencio y
+ * el test pasa a probar otra cosa (el camino de "excepcion obsoleta").
+ */
+function rule(file, source, needle, extra = {}) {
+    const line = lineOf(source, needle);
+    const anchor = I.normalizeAnchor(source.split('\n')[line - 1]);
+    return { file, anchor, anchorNormalized: anchor, line, where: `test rules[0]`, index: 0, reason: 'razon real de test', ...extra };
+}
+
+test('CA-5/#6106 · regla puntual {file,anchor,reason} skipea esa violation', () => {
     const root = makeTmpPipeline();
-    placeJs(root, 'lib/bad.js', "const path=require('path');\nconst w = path.join(D, 'waves.json');");
+    const src = "const path=require('path');\nconst w = path.join(D, 'waves.json');";
+    placeJs(root, 'lib/bad.js', src);
     const base = lint.lint({ pipelineRoot: root, allowlist: emptyAllowlist() });
     assert.equal(base.violations.length, 1);
-    const ruled = { files: new Set(), rules: [{ file: 'lib/bad.js', line: base.violations[0].line, reason: 'migrado en la parte 2, ver #5109' }] };
-    assert.equal(lint.lint({ pipelineRoot: root, allowlist: ruled }).violations.length, 0);
+    const ruled = { files: new Set(), rules: [rule('lib/bad.js', src, "path.join(D, 'waves.json')")] };
+    const r = lint.lint({ pipelineRoot: root, allowlist: ruled });
+    assert.equal(r.violations.length, 0);
+    assert.deepEqual(r.anchorIssues, [], 'un ancla que resuelve no genera diagnostico');
+    assert.equal(r.anchorResolutions[0].status, I.ANCHOR_OK);
+    assert.equal(r.anchorResolutions[0].covered, true, 'la entry suprime una violation real');
 });
 
 test('CA-5 · exencion de archivo entero skipea todas las violations del archivo', () => {
@@ -568,7 +602,10 @@ test('CA-5c · CLI: reason placeholder en la allowlist ⇒ exit 2 (no exit 0, no
     const root = makeTmpPipeline();
     installBin(root);
     placeJs(root, 'lib/bad.js', "const path=require('path');\nconst w = path.join(D, 'waves.json');");
-    writeAllowlistRaw(root, JSON.stringify({ files: [], rules: [{ file: 'lib/bad.js', line: 2, reason: 'TODO' }] }));
+    writeAllowlistRaw(root, JSON.stringify({
+        files: [],
+        rules: [{ file: 'lib/bad.js', anchor: "const w = path.join(D, 'waves.json');", line: 2, reason: 'TODO' }],
+    }));
     for (const mode of ['--report', '--report-only', '--check']) {
         const r = runCli(root, [mode]);
         assert.equal(r.code, 2, `${mode} debe salir 2 — el exit 2 NO esta subordinado al modo`);
@@ -602,10 +639,18 @@ test('CA-5b · shape invalido de la allowlist ⇒ exit 2, citando el entry ofens
         ['[]', /se esperaba un objeto \{ files: \[\], rules: \[\] \}/],
         ['{"files": {}}', /"files" debe ser un array/],
         ['{"rules": {}}', /"rules" debe ser un array/],
-        ['{"rules": [{"file": "lib/a.js", "reason": "ok real"}]}', /rules\[0\].*"line"/s],
-        ['{"rules": [{"line": 3, "reason": "ok real"}]}', /rules\[0\].*"file"/s],
-        ['{"rules": [{"file": "lib/a.js", "line": 0, "reason": "ok real"}]}', /rules\[0\].*entero >= 1/s],
-        ['{"rules": [{"file": "lib/a.js", "line": 3}]}', /rules\[0\].*reason/s],
+        ['{"rules": [{"anchor": "const x = 1;", "reason": "ok real"}]}', /rules\[0\].*"file"/s],
+        // #6106 — el shape viejo (sin `anchor`) se rechaza de una, no se acepta
+        // en transicion: aceptarlo mantendria vivo el falso negativo.
+        ['{"rules": [{"file": "lib/a.js", "line": 3, "reason": "ok real"}]}', /rules\[0\].*"anchor" es obligatorio/s],
+        ['{"rules": [{"file": "lib/a.js", "anchor": "   ", "reason": "ok real"}]}', /rules\[0\].*"anchor" es obligatorio/s],
+        ['{"rules": [{"file": "lib/a.js", "anchor": "a\\nb", "reason": "ok real"}]}', /rules\[0\].*UNA sola línea/s],
+        ['{"rules": [{"file": "lib/a.js", "anchor": "const x = 1;", "line": 0, "reason": "ok real"}]}', /rules\[0\].*"line".*entero >= 1/s],
+        ['{"rules": [{"file": "lib/a.js", "anchor": "const x = 1;", "occurrence": 0, "reason": "ok real"}]}', /rules\[0\].*"occurrence".*entero >= 1/s],
+        ['{"rules": [{"file": "lib/a.js", "anchor": "const x = 1;"}]}', /rules\[0\].*reason/s],
+        // Una clave desconocida DENTRO de la entry tambien sale por exit 2: un
+        // `ancla`/`linea` mal tipeado se comeria la excepcion en silencio.
+        ['{"rules": [{"file": "lib/a.js", "ancla": "const x = 1;", "reason": "ok real"}]}', /rules\[0\].*clave desconocida "ancla"/s],
         ['{"carpetas": ["lib/"]}', /clave desconocida/],
     ];
     for (const [raw, re] of casos) {
@@ -640,22 +685,36 @@ test('CA-10 · la allowlist REAL del repo carga sin errores, sin exenciones de a
     //
     // Lo que se fija acá es MAS fuerte que "cero entries": cada entry tiene que
     // estar VIVA. Una entry que ya no corresponde a ninguna violation (call
-    // site migrado, o drift de numero de linea tras un refactor) es una exencion
-    // que nadie revisa y que el guardrail aplica en silencio — justo el modo de
-    // falla que #5175 evito con el fail-loud de `loadAllowlist`.
-    const crudas = lint.lint({ pipelineRoot, allowlist: { files: new Set(), rules: [] } }).violations;
-    const vivas = new Set(crudas.map((v) => `${v.file}:${v.line}`));
-    const suprimidas = lint.lint({ pipelineRoot }).violations;
+    // site migrado, o codigo cambiado) es una exencion que nadie revisa y que el
+    // guardrail aplicaria en silencio — justo el modo de falla que #5175 evito
+    // con el fail-loud de `loadAllowlist`.
+    //
+    // #6106 — la liveness se mide contra la RESOLUCION DEL ANCLA, no contra el
+    // numero de linea. Medirla contra `r.line` reintroduciria exactamente el
+    // acoplamiento posicional que este issue elimina: el test rompería en cada
+    // drift del archivo y obligaría a mantener la coordenada a mano.
+    const res = lint.lint({ pipelineRoot });
+    assert.deepEqual(
+        res.anchorIssues.map((it) => `${it.entry.where}: ${it.status}`),
+        [],
+        'ninguna entry de la allowlist real puede quedar obsoleta, ambigua ni con ordinal fuera de rango',
+    );
+    assert.equal(res.anchorResolutions.length, al.rules.length, 'toda entry se resuelve contra un archivo escaneado');
+    for (const r of res.anchorResolutions) {
+        assert.equal(r.status, I.ANCHOR_OK, `${r.entry.where} (${r.entry.file}) debe resolver`);
+        assert.ok(Number.isInteger(r.line) && r.line >= 1);
+        assert.ok(
+            r.covered,
+            `${r.entry.where} (${r.entry.file}:${r.line}) no esta suprimiendo ninguna violation — la entry sobra, borrala`,
+        );
+    }
 
+    // `line` sigue siendo INDICATIVA: si esta, tiene que ser un entero valido,
+    // pero NO se exige que coincida con la linea resuelta. Que se desincronice
+    // es el comportamiento deseado — es lo que deja de romper el build.
     for (const r of al.rules) {
-        assert.ok(
-            vivas.has(`${r.file}:${r.line}`),
-            `entry stale en la allowlist: ${r.file}:${r.line} ya no es violation — borrala en vez de dejarla`,
-        );
-        assert.ok(
-            !suprimidas.some((v) => v.file === r.file && v.line === r.line),
-            `la entry ${r.file}:${r.line} no esta suprimiendo la violation que declara`,
-        );
+        if (r.line === undefined) continue;
+        assert.ok(Number.isInteger(r.line) && r.line >= 1, `${r.where}: "line" indicativa mal formada`);
     }
 });
 
@@ -664,6 +723,389 @@ test('CA-5b · allowlist AUSENTE si es allowlist vacia (la ausencia no es ambigu
     const al = I.loadAllowlist(root);
     assert.equal(al.files.size, 0);
     assert.equal(al.rules.length, 0);
+});
+
+// ─── Anclaje por contenido (#6106 · CA-1 a CA-8) ────────────────────────────
+//
+// El matcher era posicional (`r.file === rel && r.line === line`) y fallaba de
+// dos formas: falso positivo (insertar lineas arriba corria la coordenada y
+// rompia el build de un cambio inocente) y falso negativo (la coordenada pasaba
+// a apuntar a OTRO acceso, que quedaba exento sin review). Estos tests fijan las
+// dos correcciones y los tres diagnosticos nuevos.
+
+const ACCESO = "    const w = path.join(D, 'waves.json');";
+
+/** Fixture con `n` lineas de relleno arriba del acceso. */
+function fixtureConDrift(n) {
+    return [
+        "const path = require('path');",
+        ...Array.from({ length: n }, (_, i) => `// relleno ${i + 1}`),
+        'function f(D) {',
+        ACCESO,
+        '}',
+    ].join('\n');
+}
+
+test('CA-1 · insertar lineas arriba del acceso excusado NO cambia el veredicto (drift)', () => {
+    const src0 = fixtureConDrift(0);
+    const entry = rule('lib/drift.js', src0, "path.join(D, 'waves.json')");
+    const allowlist = { files: new Set(), rules: [entry] };
+    assert.equal(entry.line, 3, 'el fixture base ancla en la linea 3');
+
+    // La MISMA entry, sin tocar el JSON, contra el archivo corrido 40 lineas.
+    for (const n of [0, 1, 7, 40]) {
+        const root = makeTmpPipeline();
+        placeJs(root, 'lib/drift.js', fixtureConDrift(n));
+        const r = lint.lint({ pipelineRoot: root, allowlist });
+        assert.equal(r.violations.length, 0, `con ${n} lineas de drift la exencion tiene que seguir aplicando`);
+        assert.deepEqual(r.anchorIssues, [], `drift de ${n} lineas no es un diagnostico`);
+        assert.equal(r.anchorResolutions[0].line, 3 + n, 'la linea resuelta sigue al acceso');
+    }
+    // Y la `line` indicativa quedo desactualizada a proposito: no participa.
+    assert.equal(entry.line, 3);
+});
+
+test('CA-2 · la exencion NO se transfiere al acceso que cae en la coordenada vieja', () => {
+    const src0 = fixtureConDrift(0);
+    const entry = rule('lib/drift.js', src0, "path.join(D, 'waves.json')");
+
+    const root = makeTmpPipeline();
+    // El acceso autorizado se movio a la 5 y en la 3 hay un acceso DISTINTO.
+    placeJs(root, 'lib/drift.js', [
+        "const path = require('path');",
+        'function f(D) {',
+        "    const otro = path.join(D, '.paused');",   // linea 3 — NUNCA autorizado
+        '',
+        ACCESO,                                        // linea 5 — el autorizado
+        '}',
+    ].join('\n'));
+
+    const { violations, anchorResolutions } = lint.lint({ pipelineRoot: root, allowlist: { files: new Set(), rules: [entry] } });
+    assert.deepEqual(
+        violations.map(v => `${v.file}:${v.line}`),
+        ['lib/drift.js:3'],
+        'el acceso nuevo en la coordenada vieja se reporta; el autorizado sigue exento',
+    );
+    assert.equal(anchorResolutions[0].line, 5);
+});
+
+test('CA-3 · ancla ambigua ⇒ NADIE queda exento, y el mensaje dice cuantas y cuales', () => {
+    const src = [
+        "const path = require('path');",
+        ACCESO,
+        'function g(D) {',
+        ACCESO,
+        '}',
+    ].join('\n');
+    const root = makeTmpPipeline();
+    placeJs(root, 'lib/dup.js', src);
+    const entry = rule('lib/dup.js', src, "path.join(D, 'waves.json')");
+
+    const r = lint.lint({ pipelineRoot: root, allowlist: { files: new Set(), rules: [entry] } });
+    assert.equal(r.anchorIssues.length, 1);
+    assert.equal(r.anchorIssues[0].status, I.ANCHOR_AMBIGUOUS);
+    assert.deepEqual(r.anchorIssues[0].matches, [2, 4]);
+    // Lo critico: ninguno de los dos hereda la exencion.
+    assert.deepEqual(r.violations.map(v => v.line), [2, 4], 'ambiguedad NO exenta de mas');
+
+    const msg = I.formatAnchorIssue(r.anchorIssues[0]);
+    assert.match(msg, /ancla ambigua/);
+    assert.match(msg, /matchea 2 lineas/, 'UX-4: decir el numero, no solo "ambigua"');
+    assert.match(msg, /\(2, 4\)/, 'UX-4: decir cuales');
+    assert.match(msg, /occurrence/, 'la salida tiene que ser accionable');
+    assert.equal(msg.split('\n').length, 1, 'UX-4: una linea por hallazgo');
+});
+
+test('CA-3 · la desambiguacion es EXPLICITA: `occurrence` elige uno y solo uno', () => {
+    const src = [
+        "const path = require('path');",
+        ACCESO,
+        'function g(D) {',
+        ACCESO,
+        '}',
+    ].join('\n');
+    const root = makeTmpPipeline();
+    placeJs(root, 'lib/dup.js', src);
+    const base = rule('lib/dup.js', src, "path.join(D, 'waves.json')");
+
+    for (const [occurrence, exenta, reportada] of [[1, 2, 4], [2, 4, 2]]) {
+        const r = lint.lint({ pipelineRoot: root, allowlist: { files: new Set(), rules: [{ ...base, occurrence }] } });
+        assert.deepEqual(r.anchorIssues, [], `occurrence=${occurrence} resuelve`);
+        assert.equal(r.anchorResolutions[0].line, exenta);
+        assert.deepEqual(r.violations.map(v => v.line), [reportada], `occurrence=${occurrence} exenta SOLO una`);
+    }
+
+    // Ordinal fuera de rango: error de configuracion, no exencion silenciosa.
+    const fuera = lint.lint({ pipelineRoot: root, allowlist: { files: new Set(), rules: [{ ...base, occurrence: 3 }] } });
+    assert.equal(fuera.anchorIssues[0].status, I.ANCHOR_ORDINAL);
+    assert.deepEqual(fuera.violations.map(v => v.line), [2, 4], 'ordinal invalido no exenta nada');
+    assert.match(I.formatAnchorIssue(fuera.anchorIssues[0]), /fuera de rango/);
+});
+
+test('CA-4 · la normalizacion del ancla es estable entre CRLF (Windows) y LF (CI Linux)', () => {
+    const linea = "    const w = path.join(D, 'waves.json');";
+    assert.equal(I.normalizeAnchor(`${linea}\r\n`), I.normalizeAnchor(`${linea}\n`));
+    assert.equal(I.normalizeAnchor(`${linea}\r`), I.normalizeAnchor(linea));
+    // `src.split('\n')` deja el `\r` colgando: esa es la forma exacta en que
+    // llega la linea en un checkout Windows con core.autocrlf=true.
+    const crlf = `const a=1;\r\n${linea}\r\n`;
+    const lf = `const a=1;\n${linea}\n`;
+    assert.equal(
+        I.normalizeAnchor(crlf.split('\n')[1]),
+        I.normalizeAnchor(lf.split('\n')[1]),
+        'sin esto el guardrail pasa local y rompe en Actions (o al reves)',
+    );
+    // Whitespace horizontal: reindentar no cambia el acceso.
+    assert.equal(I.normalizeAnchor('\tconst  w =\tpath.join(D);'), I.normalizeAnchor('const w = path.join(D);'));
+    // Lo que SI cambia el acceso no se normaliza.
+    assert.notEqual(I.normalizeAnchor("path.join(D,'a')"), I.normalizeAnchor('path.join(D,"a")'));
+});
+
+test('CA-4 · el mismo fixture en CRLF y en LF da el mismo veredicto con la misma entry', () => {
+    const src = fixtureConDrift(2);
+    const entry = rule('lib/eol.js', src, "path.join(D, 'waves.json')");
+    const veredictos = ['\n', '\r\n'].map((eol) => {
+        const root = makeTmpPipeline();
+        placeJs(root, 'lib/eol.js', src.split('\n').join(eol));
+        const r = lint.lint({ pipelineRoot: root, allowlist: { files: new Set(), rules: [entry] } });
+        return { violations: r.violations.length, issues: r.anchorIssues.length, status: r.anchorResolutions[0].status };
+    });
+    assert.deepEqual(veredictos[0], veredictos[1], 'CRLF y LF tienen que dar identico');
+    assert.deepEqual(veredictos[0], { violations: 0, issues: 0, status: I.ANCHOR_OK });
+});
+
+test('CA-5 · ancla obsoleta se reporta (nunca queda muda) y distingue las dos causas', () => {
+    const src = fixtureConDrift(0);
+    const entry = rule('lib/drift.js', src, "path.join(D, 'waves.json')");
+
+    // (a) el acceso CAMBIO — hay que re-anclar Y volver a CODEOWNERS.
+    const root = makeTmpPipeline();
+    placeJs(root, 'lib/drift.js', src.replace(ACCESO, '    const w = ops.getActiveWave();'));
+    const r = lint.lint({ pipelineRoot: root, allowlist: { files: new Set(), rules: [entry] } });
+    assert.equal(r.anchorIssues.length, 1);
+    assert.equal(r.anchorIssues[0].status, I.ANCHOR_STALE);
+    const msg = I.formatAnchorIssue(r.anchorIssues[0]);
+    assert.match(msg, /excepcion obsoleta/);
+    assert.match(msg, /SE BORRO/, 'UX-4: la causa "el codigo se borro" (borrar la entry)');
+    assert.match(msg, /CAMBIO/, 'UX-4: la causa "el codigo cambio" (re-anclar + re-aprobar)');
+    assert.match(msg, /--anchor=/, 'accionable');
+    assert.equal(msg.split('\n').length, 1);
+
+    // (b) el ARCHIVO desaparecio del scan — la entry sobra.
+    const vacio = makeTmpPipeline();
+    const r2 = lint.lint({ pipelineRoot: vacio, allowlist: { files: new Set(), rules: [entry] } });
+    assert.equal(r2.anchorIssues.length, 1);
+    assert.equal(r2.anchorIssues[0].status, I.ANCHOR_UNSCANNED);
+    assert.match(I.formatAnchorIssue(r2.anchorIssues[0]), /no se escaneo/);
+});
+
+test('CA-5 · una entry redundante con `files[]` o con SELF_EXEMPT tampoco queda muda', () => {
+    const src = fixtureConDrift(0);
+    const root = makeTmpPipeline();
+    placeJs(root, 'lib/drift.js', src);
+    placeJs(root, 'lib/waves.js', src);
+
+    const porFiles = lint.lint({
+        pipelineRoot: root,
+        allowlist: { files: new Set(['lib/drift.js']), rules: [rule('lib/drift.js', src, "path.join(D, 'waves.json')")] },
+    });
+    assert.equal(porFiles.anchorIssues[0].status, I.ANCHOR_UNSCANNED);
+    assert.match(I.formatAnchorIssue(porFiles.anchorIssues[0]), /files\[\]/);
+
+    const porSelf = lint.lint({
+        pipelineRoot: root,
+        allowlist: { files: new Set(), rules: [rule('lib/waves.js', src, "path.join(D, 'waves.json')")] },
+    });
+    assert.equal(porSelf.anchorIssues[0].status, I.ANCHOR_UNSCANNED);
+    assert.match(I.formatAnchorIssue(porSelf.anchorIssues[0]), /SELF_EXEMPT/);
+});
+
+test('#6106 · una entry resuelta que no suprime nada se reporta pero NO rompe el build', () => {
+    // El acceso quedo comentado: el ancla sigue matcheando (mismo texto tras
+    // normalizar? no — el `//` lo cambia), asi que se ancla a un no-acceso.
+    const src = [
+        "const path = require('path');",
+        "const SOLO_DOMINIO = 'waves.json';",      // literal sin contexto de path
+        'const x = 1;',
+    ].join('\n');
+    const root = makeTmpPipeline();
+    placeJs(root, 'lib/tibio.js', src);
+    const entry = rule('lib/tibio.js', src, "const SOLO_DOMINIO");
+
+    const r = lint.lint({ pipelineRoot: root, allowlist: { files: new Set(), rules: [entry] } });
+    assert.deepEqual(r.anchorIssues, [], 'no es un diagnostico bloqueante');
+    assert.equal(r.anchorResolutions[0].status, I.ANCHOR_OK);
+    assert.equal(r.anchorResolutions[0].covered, false, 'la entry no protege nada — habilita #5167');
+});
+
+test('CA-3/CA-5 · CLI: --check ⇒ exit 2 (config), --report-only ⇒ AVISO + exit 0, --report ⇒ exit 0', () => {
+    const root = makeTmpPipeline();
+    installBin(root);
+    placeJs(root, 'lib/bad.js', "const path=require('path');\nconst w = path.join(D, 'waves.json');");
+    // Ancla que no matchea nada ⇒ excepcion obsoleta.
+    writeAllowlistRaw(root, JSON.stringify({
+        files: [],
+        rules: [{ file: 'lib/bad.js', anchor: 'const YA_NO_EXISTE = 1;', line: 2, reason: 'razon real de test' }],
+    }));
+
+    const check = runCli(root, ['--check']);
+    assert.equal(check.code, 2, 'ancla sin resolver es error de CONFIGURACION (2), no violation (1)');
+    assert.match(check.all, /^ERROR: .*excepcion obsoleta/m);
+    assert.match(check.all, /Remediacion - excepciones de la allowlist/);
+
+    const only = runCli(root, ['--report-only']);
+    assert.equal(only.code, 0, 'report-only NUNCA falla');
+    assert.match(only.all, /^AVISO: .*excepcion obsoleta/m);
+
+    const rep = runCli(root, ['--report']);
+    assert.equal(rep.code, 0, '--report es la salida de diagnostico: su contrato es exit 0 SIEMPRE');
+    assert.match(rep.stdout, /## Estado de las excepciones de la allowlist/);
+    assert.match(rep.stdout, /\| `rules\[0\]` \| `lib\/bad\.js` \| obsoleta \|/);
+});
+
+test('UX-5 · --only no bloquea a quien no toco el archivo de la entry rota', () => {
+    const root = makeTmpPipeline();
+    installBin(root);
+    placeJs(root, 'lib/bad.js', "const path=require('path');\nconst w = path.join(D, 'waves.json');");
+    placeJs(root, 'lib/otro.js', 'const x = 1;');
+    writeAllowlistRaw(root, JSON.stringify({
+        files: [],
+        rules: [{ file: 'lib/bad.js', anchor: 'const YA_NO_EXISTE = 1;', reason: 'razon real de test' }],
+    }));
+    // El dev stagea `lib/otro.js`, que no tiene nada que ver.
+    const ajeno = runCli(root, ['--check', '--only=.pipeline/lib/otro.js']);
+    assert.equal(ajeno.code, 0, 'una entry rota en un archivo ajeno no puede frenar el commit');
+    // CI corre SIN --only: ahi la foto completa no se pierde.
+    assert.equal(runCli(root, ['--check']).code, 2);
+    // Y si el dev SI stagea el archivo de la entry, bloquea.
+    assert.equal(runCli(root, ['--check', '--only=.pipeline/lib/bad.js']).code, 2);
+});
+
+test('UX-2 · --anchor emite la entry lista para pegar, valida y con reason que NO sale por exit 2', () => {
+    const root = makeTmpPipeline();
+    installBin(root);
+    const src = fixtureConDrift(3);
+    placeJs(root, 'lib/gen.js', src);
+    const linea = lineOf(src, "path.join(D, 'waves.json')");
+
+    const r = runCli(root, [`--anchor=lib/gen.js:${linea}`]);
+    assert.equal(r.code, 0);
+    const json = r.stdout.slice(r.stdout.indexOf('{'), r.stdout.lastIndexOf('}') + 1);
+    const entry = JSON.parse(json);
+    assert.deepEqual(Object.keys(entry), ['file', 'anchor', 'line', 'reason'], 'el reviewer lee QUE se autoriza antes que DONDE');
+    assert.equal(entry.file, 'lib/gen.js');
+    assert.equal(entry.anchor, I.normalizeAnchor(ACCESO));
+    assert.equal(entry.line, linea);
+
+    // La reason placeholder tiene que sobrevivir a `sanitizeReason` (UX-2): si
+    // el copy-paste de la remediacion sale por exit 2, el dev deja de usarla.
+    assert.doesNotThrow(() => I.sanitizeReason(entry.reason, 'test'));
+
+    // Y pegada tal cual en la allowlist, exenta el acceso.
+    writeAllowlistRaw(root, JSON.stringify({ files: [], rules: [entry] }));
+    const check = runCli(root, ['--check']);
+    assert.equal(check.code, 0, 'la entry generada tiene que funcionar sin edicion manual');
+});
+
+test('UX-2 · --anchor calcula el `occurrence` cuando el ancla es ambigua', () => {
+    const root = makeTmpPipeline();
+    installBin(root);
+    placeJs(root, 'lib/dup.js', ["const path = require('path');", ACCESO, 'function g(D) {', ACCESO, '}'].join('\n'));
+    const r = runCli(root, ['--anchor=lib/dup.js:4']);
+    assert.equal(r.code, 0);
+    const entry = JSON.parse(r.stdout.slice(r.stdout.indexOf('{'), r.stdout.lastIndexOf('}') + 1));
+    assert.equal(entry.occurrence, 2, 'el ordinal se emite ya calculado: a mano el dev lo cuenta mal');
+    assert.match(r.all, /matchea 2 lineas/, 'y se avisa que el ancla no es unica');
+
+    writeAllowlistRaw(root, JSON.stringify({ files: [], rules: [entry] }));
+    const { violations } = lint.lint({ pipelineRoot: root, allowlist: I.loadAllowlist(root) });
+    assert.deepEqual(violations.map(v => v.line), [2], 'exenta la 4, reporta la 2');
+});
+
+test('UX-2 · --anchor: usos invalidos ⇒ exit 2, y no combina con otros modos', () => {
+    const root = makeTmpPipeline();
+    installBin(root);
+    placeJs(root, 'lib/gen.js', 'const x = 1;\n\nconst y = 2;');
+    for (const [args, re] of [
+        [['--anchor=sin-linea'], /uso: node/],
+        [['--anchor=lib/no-existe.js:1'], /no se pudo leer/],
+        [['--anchor=lib/gen.js:999'], /tiene 3 lineas/],
+        [['--anchor=lib/gen.js:2'], /esta vacia o es solo whitespace/],
+        [['--check', '--anchor=lib/gen.js:1'], /mutuamente excluyentes/],
+        [['--anchor=lib/gen.js:1', '--only=lib/gen.js'], /--only no aplica a --anchor/],
+    ]) {
+        const r = runCli(root, args);
+        assert.equal(r.code, 2, `args=${JSON.stringify(args)} debe salir 2`);
+        assert.match(r.all, re);
+    }
+});
+
+test('SEC-2 · el anclaje no filtra codigo por los caminos que corren en CI ni en el hook', () => {
+    // Desvio 1 intacto: `--check` / `--report-only` / `--report` NO imprimen la
+    // linea de codigo. `--anchor` si, y por eso es un modo aparte, local y bajo
+    // demanda — no lo invoca ni el workflow ni el hook.
+    const root = makeTmpPipeline();
+    installBin(root);
+    const secreto = "const w = path.join(D, 'waves.json'); // MARCA_UNICA_DEL_FIXTURE";
+    placeJs(root, 'lib/bad.js', `const path=require('path');\n${secreto}`);
+    writeAllowlistRaw(root, JSON.stringify({
+        files: [],
+        rules: [{ file: 'lib/bad.js', anchor: 'const YA_NO_EXISTE = 1;', reason: 'razon real de test' }],
+    }));
+    for (const mode of ['--check', '--report-only', '--report']) {
+        const r = runCli(root, [mode]);
+        assert.ok(!r.all.includes('MARCA_UNICA_DEL_FIXTURE'), `${mode} no puede volcar codigo del repo`);
+    }
+    const wf = fs.readFileSync(path.join(__dirname, '..', '..', '..', '.github', 'workflows', 'operational-state-lint.yml'), 'utf8');
+    const hook = fs.readFileSync(path.join(__dirname, '..', '..', '..', '.husky', 'pre-commit'), 'utf8');
+    assert.ok(!/--anchor/.test(wf), 'el workflow no invoca --anchor');
+    assert.ok(!/--anchor/.test(hook), 'el hook no invoca --anchor');
+});
+
+test('UX-1 · ningun mensaje ni doc sigue instruyendo el shape viejo { file, line, reason }', () => {
+    // Un mensaje de error que ensena un shape que el propio guardrail rechaza
+    // con exit 2 es peor que no tener mensaje. Se mide sobre lo que el dev VE.
+    const remediacion = I.remediationLines(new Set(['path-level', 'internal-bypass'])).join('\n');
+    assert.ok(!/\{ file, line, reason \}/.test(remediacion), 'la remediacion no puede pedir el shape viejo');
+    assert.match(remediacion, /\{ file, anchor, reason \}/);
+    assert.match(remediacion, /--anchor=/, 'UX-2: el ancla tiene que ser copiable, no calculable a mano');
+
+    const bin = fs.readFileSync(REAL_BIN, 'utf8');
+    const alRaw = fs.readFileSync(path.join(__dirname, '..', ALLOWLIST_NAME), 'utf8');
+    // Se permite mencionarlo como shape VIEJO (el mensaje de rechazo lo cita);
+    // lo que no se permite es instruirlo como shape esperado.
+    for (const [txt, nombre] of [[bin, 'el binario'], [alRaw, 'la allowlist']]) {
+        for (const linea of txt.split('\n')) {
+            if (!linea.includes('{ file, line, reason }') && !linea.includes('{file, line, reason}')) continue;
+            assert.match(
+                linea,
+                /viejo|NO es|ya NO se acepta|Antes era/,
+                `${nombre}: "{ file, line, reason }" solo puede aparecer marcado como shape viejo — ${linea.trim().slice(0, 120)}`,
+            );
+        }
+    }
+    // El _shape_doc documenta el comportamiento ante stale (CA-5) y el destino
+    // del shape viejo (CA-6).
+    const doc = JSON.parse(alRaw)._shape_doc;
+    assert.match(doc.estado_de_las_anclas, /exit 2/);
+    assert.match(doc.estado_de_las_anclas, /OBSOLETA/);
+    assert.match(doc.shape_viejo, /RECHAZA con exit 2/);
+    assert.match(doc.occurrence, /EXPLICITA/);
+    assert.match(doc.line, /INDICATIVA/);
+});
+
+test('CA-6 · las 2 entries reales del repo estan migradas al shape nuevo', () => {
+    const raw = JSON.parse(fs.readFileSync(path.join(__dirname, '..', ALLOWLIST_NAME), 'utf8'));
+    assert.ok(raw.rules.length > 0, 'el test pierde sentido con la allowlist vacia');
+    for (const [i, e] of raw.rules.entries()) {
+        assert.equal(typeof e.anchor, 'string', `rules[${i}] tiene que tener "anchor"`);
+        assert.ok(e.anchor.trim().length > 0);
+        // UX-3 — el reviewer tiene que poder responder "que acceso autorizo"
+        // leyendo SOLO el JSON: el ancla va en claro, no hasheada.
+        assert.ok(!/^[a-f0-9]{32,}$/i.test(e.anchor.trim()), 'el ancla no puede ser un hash opaco');
+        assert.ok(!/^sha\d*[:-]/i.test(e.anchor.trim()), 'el ancla no puede ser un hash opaco');
+    }
+    // El estado real ya lo verifica el test CA-10 contra el codebase vivo.
 });
 
 // ─── Modos y exit codes (CA-9a / UX-3) ──────────────────────────────────────
@@ -809,16 +1251,243 @@ test('smoke · los casos de copy/dominio verificados del repo real NO se reporta
     }
 });
 
-test('smoke · el binario real y su allowlist estan en CODEOWNERS (CA-5 / SEC-1)', () => {
-    const co = fs.readFileSync(path.join(__dirname, '..', '..', '..', '.github', 'CODEOWNERS'), 'utf8');
-    for (const p of [
-        '/.pipeline/lib/operational-state-lint.js',
-        '/.pipeline/lib/operational-state-lint.allowlist.json',
-        '/.pipeline/lib/__tests__/operational-state-lint.test.js',
-    ]) {
-        assert.ok(co.includes(p), `CODEOWNERS debe cubrir ${p}`);
+// ─── #5986 · la asercion de CODEOWNERS PARSEA, no matchea texto ─────────────
+//
+// La version original de este bloque (#5202) hacia `co.includes('/.pipeline/
+// lib/operational-state-lint.js')` sobre el archivo CRUDO. Cuando #5175/#5975
+// reescribieron CODEOWNERS como archivo declarativo sin reglas activas, los 3
+// paths quedaron como COMENTARIOS y la asercion siguio pasando: verde sobre una
+// frontera desprotegida, que es peor que no tener control porque induce a no
+// mirar. #5986 la reconcilia contra el mecanismo real.
+
+/**
+ * SEC-1: el 4to path es el propio CODEOWNERS. Sin el, un PR que toca solo ese
+ * archivo borra las otras 3 reglas y auto-mergea (bypass de dos pasos); el PR
+ * siguiente ya edita la allowlist libre. Precedente real: #5975 toco unicamente
+ * `.github/CODEOWNERS` y mergeo con 14 checks verdes.
+ */
+const GUARDRAIL_PATHS = [
+    '.pipeline/lib/operational-state-lint.js',
+    '.pipeline/lib/operational-state-lint.allowlist.json',
+    '.pipeline/lib/__tests__/operational-state-lint.test.js',
+    '.github/CODEOWNERS',
+];
+
+/**
+ * Paths del guardrail SIN owner humano por una regla ACTIVA.
+ *
+ * Delega en el MISMO modulo que consume el gate de merge de `delivery.js`
+ * (`skills-deterministicos/lib/codeowners.js`) a proposito: dos parsers derivan,
+ * y el dia que difieran el test dice verde mientras el gate no bloquea — el
+ * mismo falso verde que #5986 cierra, reconstruido un nivel mas arriba.
+ *
+ * `getHumanOwners` y no `parseCodeowners` a secas: el parser ACEPTA owners tipo
+ * team/bot (`@intrale/bots`), asi que un assert sobre `rules.length`
+ * sobreviviria la mutacion (c).
+ */
+function uncoveredGuardrailPaths(codeownersContent) {
+    const rules = codeowners.parseCodeowners(codeownersContent);
+    return GUARDRAIL_PATHS.filter(p => codeowners.getHumanOwners(rules, [p]).length === 0);
+}
+
+const GATE_CODEOWNERS_ESPERADO = false;
+
+/** Clasificacion pura del contenido, independiente del filesystem. */
+function classifyGuardrailCodeowners(codeownersContent) {
+    const rules = codeowners.parseCodeowners(codeownersContent);
+    const active = codeowners.resolveOwners(rules, GUARDRAIL_PATHS).length;
+    const mentioned = GUARDRAIL_PATHS.filter(p => codeownersContent.includes(`/${p}`)).length;
+    if (active > 0) return 'regla-activa';
+    if (mentioned > 0) return 'solo-comentarios';
+    return 'sin-mencion';
+}
+
+function readRealCodeowners() {
+    return fs.readFileSync(path.join(__dirname, '..', '..', '..', '.github', 'CODEOWNERS'), 'utf8');
+}
+
+test('smoke · el CODEOWNERS real es coherente con la politica declarativa vigente', () => {
+    const mode = classifyGuardrailCodeowners(readRealCodeowners());
+    assert.equal(mode, GATE_CODEOWNERS_ESPERADO ? 'regla-activa' : 'solo-comentarios');
+});
+
+// ─── CA-4 · tabla de mutacion: la asercion tiene que MORIR ───────────────────
+//
+// Contenido sintetico, no se toca el archivo real. La asercion vieja
+// (`String.includes`) sobrevive (a) y (d) — ese es exactamente el defecto.
+
+const CO_OK = [
+    '/.pipeline/lib/operational-state-lint.js                 @leitolarreta',
+    '/.pipeline/lib/operational-state-lint.allowlist.json     @leitolarreta',
+    '/.pipeline/lib/__tests__/operational-state-lint.test.js  @leitolarreta',
+    '/.github/CODEOWNERS                                      @leitolarreta',
+].join('\n');
+
+const MODOS_CODEOWNERS = [
+    ['sin-mencion', '# responsables generales, sin paths del guardrail\n'],
+    ['solo-comentarios', CO_OK.split('\n').map(l => `# ${l}`).join('\n')],
+    ['regla-activa', CO_OK],
+];
+
+for (const [modo, contenido] of MODOS_CODEOWNERS) {
+    test(`#5986 · clasifica el modo ${modo} como funcion pura`, () => {
+        assert.equal(classifyGuardrailCodeowners(contenido), modo);
+    });
+}
+
+test('#5986 · un owner bot sigue siendo regla activa, pero no ownership humano', () => {
+    const contenido = CO_OK.replace(/@leitolarreta/g, '@intrale/bots');
+    assert.equal(classifyGuardrailCodeowners(contenido), 'regla-activa');
+    assert.equal(uncoveredGuardrailPaths(contenido).length, GUARDRAIL_PATHS.length);
+});
+
+test('CA-8/CA-UX-1 · el _doc de la allowlist describe la politica declarativa vigente', () => {
+    const doc = JSON.parse(fs.readFileSync(path.join(__dirname, '..', ALLOWLIST_NAME), 'utf8'))._doc;
+    assert.match(doc, /declarativ/i);
+    assert.match(doc, /sin reglas activas/i);
+    assert.equal(classifyGuardrailCodeowners(readRealCodeowners()), 'solo-comentarios');
+
+    // #5986 (rebote ux) · el _doc es la otra superficie que lee el operador
+    // justo cuando va a agregar una exencion. Prometer ahi un control requerido
+    // que no existe lo induce a NO revisar a mano — el mismo patron de
+    // afirmacion inerte que este issue vino a cerrar (CA-8 / CA-10 / R6).
+    assert.doesNotMatch(doc, /requerid/i, 'el _doc no puede prometer un control REQUERIDO inexistente');
+    assert.match(doc, /advisory/i, 'el _doc debe decir que el lint es advisory');
+    assert.match(doc, /#5183/, 'debe apuntar al issue que activaria el enforcement real');
+});
+
+// ─── CA-12 · assert de INVENTARIO sobre las superficies de copy ──────────────
+//
+// Por que INVENTARIO y no un `slice`: la version anterior de este assert hacia
+// `bin.slice(idx, idx + 1200)` arrancando en `indexOf('Si la excepcion es
+// legitima')`, o sea barria HACIA ADELANTE desde el bloque de
+// `remediationLines`. Las otras emisoras (`anchorRemediationLines` :1038,
+// `formatAnchorIssue` :1016, la `LintConfigError` de `sanitizeReason` :523, el
+// modo `--anchor` :1369) viven ANTES de ese offset: eran inalcanzables POR
+// CONSTRUCCION. La suite quedo 90/90 verde con 8 afirmaciones falsas vivas, tres
+// de ellas llegando al operador por el mismo GITHUB_STEP_SUMMARY. Un criterio de
+// inventario no puede tener como scope una lista cerrada de coordenadas dentro
+// de archivos que se editan: se barre el archivo ENTERO.
+
+// Toda atribucion del mecanismo de autorizacion a un review/aprobacion de
+// GitHub. La Opcion A (#5986) elimino ese mecanismo: `.github/CODEOWNERS` no
+// tiene reglas activas, `protect-main` corre con `require_code_owner_review:
+// false` y el lint es ADVISORY (fuera del rollup `pr-status`, ver #5183).
+//
+// Los `\s+` no son cosmetica: evitan que el literal de ESTE detector se cuente a
+// si mismo cuando el barrido de CA-12 se corre con `git grep` sobre el arbol.
+const ATRIBUCION_FALSA = new RegExp([
+    'review\\s+humano',
+    'reviewer\\b',
+    'review\\s+de\\s+@leitolarreta',
+    'pasa(?:r)?\\s+por\\s+el\\s+review',
+    'requiere\\s+review',
+    'el\\s+review\\s+es\\s+sobre',
+    'aprobacion\\s+de\\s+code\\s+owner',
+].join('|'), 'i');
+
+const REPO_ROOT_T = path.join(__dirname, '..', '..', '..');
+const SUPERFICIES_COPY = [
+    ['.pipeline/lib/operational-state-lint.js', REAL_BIN],
+    ['.pipeline/lib/' + ALLOWLIST_NAME, path.join(__dirname, '..', ALLOWLIST_NAME)],
+    ['.github/CODEOWNERS', path.join(REPO_ROOT_T, '.github', 'CODEOWNERS')],
+    ['docs/pipeline/contrato-estado-operativo.md', path.join(REPO_ROOT_T, 'docs', 'pipeline', 'contrato-estado-operativo.md')],
+];
+
+for (const [nombre, file] of SUPERFICIES_COPY) {
+    test(`CA-12 inventario · ${nombre}: cero atribuciones a un review de GitHub`, () => {
+        const src = fs.readFileSync(file, 'utf8');
+        const hits = src.split('\n')
+            .map((linea, i) => `${nombre}:${i + 1}: ${linea.trim()}`)
+            .filter(l => ATRIBUCION_FALSA.test(l));
+        assert.deepEqual(hits, [], 'CA-12 exige CERO ocurrencias en el archivo ENTERO');
+    });
+}
+
+test('CA-12 · las TRES emisoras que ve el operador coinciden entre si (misma corrida)', () => {
+    // `anchorRemediationLines` y `remediationLines` salen por el mismo `out()`
+    // del mismo `main()`, y ambas se publican en el GITHUB_STEP_SUMMARY del
+    // workflow (`:56`). Que una prometa un review y la otra lo niegue le llega
+    // al operador como una contradiccion dentro de una sola corrida. Se mide
+    // sobre la salida RENDERIZADA invocando al emisor real, no leyendo el fuente.
+    const anchorIssue = I.formatAnchorIssue({
+        status: I.ANCHOR_STALE,
+        entry: { where: `${ALLOWLIST_NAME} rules[0]`, file: 'pulpo.js', index: 0, line: 1 },
+        matches: [],
+    });
+    const renders = {
+        'remediationLines()': I.remediationLines(new Set(['path-level', 'internal-bypass'])).join('\n'),
+        'anchorRemediationLines()': I.anchorRemediationLines().join('\n'),
+        'formatAnchorIssue()': anchorIssue,
+    };
+    for (const [emisor, render] of Object.entries(renders)) {
+        assert.ok(render.length > 0, `${emisor} no emitio nada`);
+        assert.doesNotMatch(render, ATRIBUCION_FALSA, `${emisor} atribuye la autorizacion a un review de GitHub`);
+        assert.doesNotMatch(render, /requerid/i, `${emisor} no puede prometer un control REQUERIDO: el lint es advisory (#5183)`);
+        assert.doesNotMatch(render, /needs-human|owner humano|NO auto-mergea/i, `${emisor} promete un locus que no existe`);
     }
-    assert.match(co, /@leitolarreta/);
+    // Los dos bloques de remediacion (los que el operador lee entero) dicen
+    // ademas donde NO vive el enforcement.
+    for (const emisor of ['remediationLines()', 'anchorRemediationLines()']) {
+        assert.match(renders[emisor], /declarativ/i, `${emisor} debe encuadrar la politica vigente`);
+        assert.match(renders[emisor], /advisory/i, `${emisor} debe decir donde NO vive el enforcement`);
+        assert.match(renders[emisor], /#5183/, `${emisor} debe apuntar al issue que activaria el enforcement real`);
+    }
+});
+
+test('CA-12 · el doc que linkea el binario no desmiente al binario', () => {
+    // El copy ya corregido remite a `contrato-estado-operativo.md §7`: el
+    // operador sigue el link desde el mensaje honesto y tiene que aterrizar en
+    // el mismo encuadre, no en la promesa que este issue vino a borrar.
+    const doc = fs.readFileSync(path.join(REPO_ROOT_T, 'docs', 'pipeline', 'contrato-estado-operativo.md'), 'utf8');
+    assert.match(doc, /declarativ/i);
+    assert.match(doc, /advisory/i);
+    assert.match(doc, /#5183/);
+    assert.match(doc, /require_code_owner_review/);
+    assert.match(I.anchorRemediationLines().join('\n'), /contrato-estado-operativo\.md/,
+        'si el binario deja de linkear el doc, este assert deja de proteger nada');
+});
+
+test('CA-8/CA-12 · el _shape_doc.anchor de la allowlist no se contradice con el _doc', () => {
+    // Vivian a 4 lineas de distancia diciendo cosas opuestas: el `_doc` (:2)
+    // corregido y el `_shape_doc.anchor` (:6) con el texto viejo.
+    const json = JSON.parse(fs.readFileSync(path.join(__dirname, '..', ALLOWLIST_NAME), 'utf8'));
+    const anchorDoc = json._shape_doc.anchor;
+    assert.doesNotMatch(anchorDoc, ATRIBUCION_FALSA);
+    assert.doesNotMatch(anchorDoc, /requerid/i);
+    assert.match(anchorDoc, /declarativ/i);
+    assert.match(anchorDoc, /advisory/i);
+    assert.match(anchorDoc, /#5183/);
+});
+
+test('CA-10/CA-13/CA-UX-3 · el header fija la politica declarativa y su alcance real', () => {
+    const co = readRealCodeowners();
+    const lineasHeader = co.split('\n').filter(l => /^\s*#/.test(l));
+    const header = lineasHeader.join('\n');
+    assert.match(header, /NO declara reglas activas/);
+    assert.match(header, /GATE_CODEOWNERS_ESPERADO=false/);
+    assert.equal(classifyGuardrailCodeowners(co), 'solo-comentarios');
+
+    // CA-12 · el header es una superficie de copy mas, con el mismo par.
+    assert.doesNotMatch(header, ATRIBUCION_FALSA);
+    assert.doesNotMatch(header, /requerid/i, 'el header no puede presentar controles advisory como requeridos');
+    assert.match(header, /advisory/i, 'el header debe decir que los lints son advisory');
+    assert.match(header, /#5183/, 'debe apuntar al issue que activaria el enforcement real');
+
+    // CA-13 · ninguna linea que nombre a los dos lints puede presentarlos como
+    // algo que `main` exige. Se mide POR LINEA, que es la unidad de lectura del
+    // operador: en origin/main eran bullets separados y este PR los fundio en
+    // una enumeracion corrida con `pr-status`, que si es required check.
+    for (const l of lineasHeader) {
+        if (!/operational-state-lint|ghost-artifact-lint/.test(l)) continue;
+        assert.doesNotMatch(
+            l, /requerid|required|obligatori|\bexige\b|bloquea el merge/i,
+            `CA-13: el header presenta un lint ADVISORY como control de main -> ${l.trim()}`,
+        );
+    }
+    // Y dice explicito donde NO vive el enforcement (los 3 loci verificados).
+    assert.match(header, /pr-status/, 'debe nombrar el rollup del que los lints NO forman parte');
+    assert.match(header, /require_code_owner_review:\s*false/, 'GitHub no lee estas reglas');
 });
 
 test('CA-9b/#5179 · el hook pre-commit invoca --check y PROPAGA el exit code', () => {
@@ -872,6 +1541,18 @@ test('CA-4a/CA-4c/CA-9b · el workflow corre en enforce, con permissions read y 
     // `pull_request_target` esta prohibido, y esa prosa no debe hacer fallar el
     // assert.
     assert.ok(!/^\s*pull_request_target\s*:/m.test(wf), 'pull_request_target corre con el token del repo base sobre codigo de un fork');
+
+    // #5986 · CA-5: sin `.github/CODEOWNERS` en el `paths:`, un PR que toca solo
+    // ese archivo no dispara el job — o sea, la asercion de CA-3/CA-4 no corre
+    // en el unico PR donde importa (verificado en el PR #5975).
+    // CA-6: se mide el `paths:` de AMBOS triggers, sin tocar permissions ni el
+    // --report-only (los asserts de arriba los fijan).
+    const bloquesPaths = wf.split(/^\s*paths:\s*$/m).slice(1);
+    assert.ok(bloquesPaths.length >= 2, 'el workflow debe filtrar por paths en pull_request y en push');
+    for (const [i, bloque] of bloquesPaths.entries()) {
+        const lista = bloque.split(/\n(?=\s*(?:on|jobs|permissions|push|pull_request)\b)/)[0];
+        assert.match(lista, /-\s*'\.github\/CODEOWNERS'/, `el bloque paths #${i + 1} debe incluir .github/CODEOWNERS`);
+    }
 });
 
 // ─── Rebote rev-1 · la SALIDA no puede ser secuestrada (SEC-3) ───────────────

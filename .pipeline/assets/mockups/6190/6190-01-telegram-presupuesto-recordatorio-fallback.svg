@@ -1,0 +1,101 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1740" height="1264" viewBox="0 0 1740 1264" font-family="ui-sans-serif, Segoe UI, Roboto, sans-serif">
+<style>.h1{fill:#E6EDF3;font-size:24px;font-weight:700}.sub{fill:#8B949E;font-size:13px}.lbl{fill:#8B949E;font-size:11px;font-weight:700;letter-spacing:1.4px}.m{fill:#E6EDF3;font-size:13px;font-family:ui-monospace,Consolas,monospace}.md{fill:#B1BAC4;font-size:13px;font-family:ui-monospace,Consolas,monospace}.mdim{fill:#8B949E;font-size:13px;font-family:ui-monospace,Consolas,monospace}.mok{fill:#3FB950;font-size:13px;font-family:ui-monospace,Consolas,monospace}.mwarn{fill:#D29922;font-size:13px;font-family:ui-monospace,Consolas,monospace}.mbad{fill:#F85149;font-size:13px;font-family:ui-monospace,Consolas,monospace}.note{fill:#B1BAC4;font-size:12.5px}.notebad{fill:#F85149;font-size:12.5px}.noteok{fill:#3FB950;font-size:12.5px}.pill{fill:#8B949E;font-size:11px;font-weight:700;letter-spacing:.8px}</style>
+<rect x="0" y="0" width="1740" height="1264" rx="0" fill="#0D1117"/>
+<text x="40" y="44" class="h1" text-anchor="start">Telegram bajo presupuesto: el mensaje agrupado, el recordatorio y el fallback</text>
+<text x="40" y="70" class="sub" text-anchor="start">MOCKUP UX &#183; #6190 &#8212; cubre CA-16 (presupuesto), CA-15/CA-34 (recordatorio en texto plano) y CA-20/CA-21 (fallback redactado). La ficha individual est&#225; en el mockup de #6173.</text>
+<rect x="40" y="96" width="830" height="852" rx="10" fill="#161B22" stroke="#30363D" stroke-width="1"/>
+<rect x="40" y="96" width="4" height="852" rx="0" fill="#3FB950"/>
+<text x="62" y="126" class="lbl" text-anchor="start">A &#183; MENSAJE AGRUPADO CON 12 TRABAJOS FRENADOS</text>
+<text x="62" y="148" class="note" text-anchor="start">Presupuesto medido: 1548 de 3500 chars. Con 4 fichas completas ser&#237;an 3880 y se cortan en silencio.</text>
+<rect x="58" y="166" width="794" height="320" rx="8" fill="#0D1117" stroke="#21262D" stroke-width="1"/>
+<text x="836" y="186" class="pill" text-anchor="end">FICHA COMPLETA &#183; UNA SOLA</text>
+<text x="72" y="186" class="m" text-anchor="start">&#128678; 12 trabajos esperan una decisi&#243;n tuya</text>
+<text x="72" y="224" class="m" text-anchor="start">1 &#183; &#191;Esperamos que cierre #6110, o dejamos que #6173 avance sin eso?</text>
+<text x="72" y="243" class="md" text-anchor="start">Qu&#233; est&#225; frenado: #6173 &#171;Los avisos de issues que esperan una</text>
+<text x="72" y="262" class="md" text-anchor="start">decisi&#243;n humana no dicen qu&#233; hay que decidir&#187; &#8212; frenado hace 3 h 20 min.</text>
+<text x="72" y="281" class="md" text-anchor="start">Por qu&#233;: no puede avanzar hasta que se cierre otro trabajo del que depende.</text>
+<text x="72" y="300" class="m" text-anchor="start">Opciones:</text>
+<text x="72" y="319" class="mok" text-anchor="start"> 1. Esperar a que cierre #6110  &#8592; recomendada</text>
+<text x="72" y="338" class="md" text-anchor="start">    Qu&#233; pasa: #6173 queda en espera y arranca solo cuando #6110 cierre.</text>
+<text x="72" y="357" class="md" text-anchor="start">    Por qu&#233; la recomiendo: #6110 ya est&#225; en desarrollo y cierra en esta ola.</text>
+<text x="72" y="376" class="m" text-anchor="start"> 2. Avanzar igual, sin esperar</text>
+<text x="72" y="395" class="md" text-anchor="start">    Qu&#233; pasa: arranca ahora. Si lo de #6110 hac&#237;a falta, puede rehacerse.</text>
+<text x="72" y="414" class="m" text-anchor="start"> 3. Sacarlo del plan de esta ola</text>
+<text x="72" y="433" class="md" text-anchor="start">    Qu&#233; pasa: vuelve a la lista de pendientes. No se pierde nada de lo hecho.</text>
+<text x="72" y="452" class="md" text-anchor="start">Para saber m&#225;s: #6110 sigue abierto &#183; su &#250;ltima actividad fue hace 2 d&#237;as.</text>
+<text x="72" y="471" class="mwarn" text-anchor="start">Si no decid&#237;s: #6173 y los 2 trabajos que dependen de &#233;l no avanzan.</text>
+<text x="72" y="490" class="m" text-anchor="start">Para decidir, respond&#233;: /unblock 6173 esperar</text>
+<rect x="58" y="511" width="794" height="140" rx="8" fill="#0D1117" stroke="#21262D" stroke-width="1"/>
+<text x="836" y="531" class="pill" text-anchor="end">UNA L&#205;NEA CADA UNO</text>
+<text x="72" y="531" class="m" text-anchor="start">2 &#183; #6144 &#171;Reordenar la ventana de bloqueados por urgencia de la</text>
+<text x="72" y="550" class="m" text-anchor="start">    decisi&#243;n&#187; &#8212; hace 6 h. &#191;Aprob&#225;s el alcance?</text>
+<text x="72" y="569" class="mdim" text-anchor="start">    &#8594; /unblock 6144 aprobar</text>
+<text x="72" y="607" class="m" text-anchor="start">3 &#183; #6150 &#171;La alerta de autorreparaci&#243;n muda es indescifrable para el</text>
+<text x="72" y="626" class="m" text-anchor="start">    operador&#187; &#8212; hace 1 d 3 h. No s&#233; qu&#233; hay que decidir.</text>
+<text x="72" y="645" class="mdim" text-anchor="start">    &#8594; /unblock 6150 seguido de qu&#233; quer&#233;s que se haga</text>
+<rect x="58" y="670" width="794" height="62" rx="8" fill="#0D1117" stroke="#9E6A03" stroke-width="1"/>
+<text x="72" y="690" class="mwarn" text-anchor="start">Otros 9 trabajos esperan decisi&#243;n y no entraron en este mensaje.</text>
+<text x="72" y="709" class="mwarn" text-anchor="start">Est&#225;n todos en el tablero, ordenados por antig&#252;edad.</text>
+<text x="62" y="762" class="lbl" text-anchor="start">POR QU&#201; ESTA FORMA</text>
+<text x="62" y="786" class="note" text-anchor="start">&#183; La cuenta cierra para el operador: 1 destacado + 2 compactas + 9 afuera = 12 del encabezado.</text>
+<text x="62" y="808" class="note" text-anchor="start">&#183; El corte es por unidad entera. Ninguna ficha ni compacta sale partida a la mitad.</text>
+<text x="62" y="830" class="note" text-anchor="start">&#183; Cada compacta lleva su comando con el n&#250;mero real: con 12 frenados un pie &#250;nico es ambiguo.</text>
+<text x="62" y="852" class="note" text-anchor="start">&#183; La compacta no lleva opciones. Media opci&#243;n sugiere que esa es la &#250;nica.</text>
+<text x="62" y="874" class="note" text-anchor="start">&#183; Sin negritas ni monoespaciado: texto plano expl&#237;cito. Un mensaje mal balanceado se cae sin rastro.</text>
+<text x="62" y="896" class="note" text-anchor="start">&#183; El destacado es el que dispar&#243; el aviso; si no hay disparador, el m&#225;s antiguo.</text>
+<text x="62" y="918" class="note" text-anchor="start">&#183; Ning&#250;n molde en la salida: ni &lt;issue&gt; ni &lt;qu&#233; hacer&gt; ni &lt;orientaci&#243;n&gt;.</text>
+<rect x="900" y="96" width="800" height="272" rx="10" fill="#161B22" stroke="#30363D" stroke-width="1"/>
+<rect x="900" y="96" width="4" height="272" rx="0" fill="#F85149"/>
+<text x="922" y="126" class="lbl" text-anchor="start">B &#183; EL RECORDATORIO &#8212; LO QUE SALE HOY</text>
+<text x="922" y="148" class="note" text-anchor="start">Verificado en este ciclo: 23 metacaracteres de Markdown vivos, y sale sin texto plano expl&#237;cito.</text>
+<rect x="918" y="162" width="764" height="168" rx="8" fill="#0D1117" stroke="#21262D" stroke-width="1"/>
+<text x="932" y="182" class="mbad" text-anchor="start">&#128257; *Recordatorio: 3 bloqueos esperando tu respuesta*</text>
+<text x="932" y="201" class="mbad" text-anchor="start">&#8226; *#6150* &#8212; guru en analisis _(hace 27h &#183; aviso #3)_</text>
+<text x="932" y="220" class="mbad" text-anchor="start">&#8226; *#6144* &#8212; po en criterios _(hace 6h)_</text>
+<text x="932" y="239" class="md" text-anchor="start">   &#8627; Confirmar alcance?</text>
+<text x="932" y="258" class="mbad" text-anchor="start">&#8226; *#6173* &#8212; ux en criterios _(hace 3h &#183; aviso #2)_</text>
+<text x="932" y="277" class="mbad" text-anchor="start">   &#8627; dependency_block: espera #6110</text>
+<text x="932" y="296" class="mbad" text-anchor="start">_Siguen bloqueados: nada se aprueba solo por dejar pasar el tiempo._</text>
+<text x="932" y="315" class="mbad" text-anchor="start">_Us&#225;_ `/unblock &lt;issue&gt; &lt;orientaci&#243;n&gt;` _para destrabar._</text>
+<text x="922" y="348" class="notebad" text-anchor="start">&#183; &#171;guru en analisis&#187; vocabulario de m&#225;quina  &#183; &#171;dependency_block&#187; dato crudo  &#183; #6150 llega sin ninguna raz&#243;n  &#183; pie de molde</text>
+<rect x="900" y="388" width="800" height="336" rx="10" fill="#161B22" stroke="#30363D" stroke-width="1"/>
+<rect x="900" y="388" width="4" height="336" rx="0" fill="#3FB950"/>
+<text x="922" y="418" class="lbl" text-anchor="start">B &#183; EL RECORDATORIO &#8212; PROPUESTO</text>
+<text x="922" y="440" class="note" text-anchor="start">Mismo cuerpo que el mensaje agrupado. Lo &#250;nico propio son el encabezado y el cierre.</text>
+<rect x="918" y="454" width="764" height="226" rx="8" fill="#0D1117" stroke="#21262D" stroke-width="1"/>
+<text x="932" y="474" class="m" text-anchor="start">&#128257; Segundo aviso: 3 trabajos siguen esperando tu decisi&#243;n</text>
+<text x="932" y="493" class="m" text-anchor="start">1 &#183; &#191;Qu&#233; quer&#233;s hacer con #6150? No tengo el dato para proponer opciones.</text>
+<text x="932" y="512" class="md" text-anchor="start">Qu&#233; est&#225; frenado: #6150 &#171;La alerta de autorreparaci&#243;n muda es</text>
+<text x="932" y="531" class="md" text-anchor="start">indescifrable para el operador&#187; &#8212; frenado hace 1 d 3 h, 3&#186; aviso.</text>
+<text x="932" y="550" class="md" text-anchor="start">Qu&#233; me falta: el motivo del bloqueo. Quien lo fren&#243; no dej&#243; texto.</text>
+<text x="932" y="569" class="mwarn" text-anchor="start">Si no decid&#237;s: queda frenado por tiempo indefinido.</text>
+<text x="932" y="588" class="m" text-anchor="start">Para decidir, respond&#233;: /unblock 6150 seguido de qu&#233; quer&#233;s que se haga</text>
+<text x="932" y="626" class="m" text-anchor="start">2 &#183; #6144 &#171;Reordenar la ventana de bloqueados&#8230;&#187; &#8212; hace 6 h.</text>
+<text x="932" y="645" class="m" text-anchor="start">    &#191;Aprob&#225;s el alcance?  &#8594; /unblock 6144 aprobar</text>
+<text x="932" y="672" class="mwarn" text-anchor="start">Nada se destraba solo por dejar pasar el tiempo.</text>
+<text x="922" y="708" class="noteok" text-anchor="start">&#183; &#171;Segundo aviso&#187; en el encabezado: cu&#225;ntas veces ya se avis&#243; es lo que cambia el comportamiento, no la palabra &#171;recordatorio&#187;.</text>
+<rect x="900" y="744" width="800" height="274" rx="10" fill="#161B22" stroke="#30363D" stroke-width="1"/>
+<rect x="900" y="744" width="4" height="274" rx="0" fill="#D29922"/>
+<text x="922" y="774" class="lbl" text-anchor="start">C &#183; EL FALLBACK &#8212; CUANDO NO SE PUDO ARMAR LA FICHA</text>
+<text x="922" y="796" class="note" text-anchor="start">Fail-closed visto por el operador: el aviso sale igual, nada se destrab&#243;, y el secreto no se filtra.</text>
+<rect x="918" y="810" width="764" height="162" rx="8" fill="#0D1117" stroke="#9E6A03" stroke-width="1"/>
+<text x="932" y="830" class="m" text-anchor="start">&#9888; Hay 3 trabajos esperando tu decisi&#243;n y no pude armar el detalle.</text>
+<text x="932" y="849" class="md" text-anchor="start">1 &#183; #6173 &#171;Los avisos de issues que esperan una decisi&#243;n humana&#8230;&#187; &#8212; hace 3 h 20 min.</text>
+<text x="932" y="868" class="md" text-anchor="start">2 &#183; #6144 &#171;Reordenar la ventana de bloqueados por urgencia&#8230;&#187; &#8212; hace 6 h.</text>
+<text x="932" y="887" class="md" text-anchor="start">3 &#183; #6150 &#171;La alerta de autorreparaci&#243;n muda es indescifrable&#8230;&#187; &#8212; hace 1 d 3 h.</text>
+<text x="932" y="925" class="mwarn" text-anchor="start">No te muestro opciones porque no pude prepararlas. Siguen frenados: esto no</text>
+<text x="932" y="944" class="mwarn" text-anchor="start">destrab&#243; nada. Mir&#225; el tablero para decidir, o respond&#233; /unblock 6173</text>
+<text x="932" y="963" class="mwarn" text-anchor="start">seguido de qu&#233; quer&#233;s que se haga.</text>
+<text x="922" y="1000" class="note" text-anchor="start">&#183; T&#237;tulo y antig&#252;edad y nada m&#225;s: son los dos campos que no dependen del m&#243;dulo que acaba de fallar. El motivo crudo no se vuelca.</text>
+<rect x="900" y="1038" width="800" height="196" rx="10" fill="#161B22" stroke="#30363D" stroke-width="1"/>
+<rect x="900" y="1038" width="4" height="196" rx="0" fill="#8B949E"/>
+<text x="922" y="1068" class="lbl" text-anchor="start">D &#183; EL T&#205;TULO ES TEXTO DE UN TERCERO</text>
+<text x="922" y="1096" class="note" text-anchor="start">&#183; Va siempre entre &#171;&#8230;&#187; y en una sola l&#237;nea. Los saltos y los caracteres de control se</text>
+<text x="922" y="1117" class="note" text-anchor="start">  reemplazan por un espacio simple: eliminarlos pega palabras y lo vuelve ilegible.</text>
+<text x="922" y="1138" class="note" text-anchor="start">&#183; Si se recorta, los puntos suspensivos van adentro de las comillas: &#171;Reordenar la ventana de&#8230;&#187;.</text>
+<text x="922" y="1159" class="note" text-anchor="start">&#183; Nunca abre l&#237;nea: siempre lo precede el n&#250;mero y su r&#243;tulo. Un t&#237;tulo al principio de l&#237;nea es</text>
+<text x="922" y="1180" class="note" text-anchor="start">  justo lo que necesita para disfrazarse de estructura del mensaje.</text>
+<text x="922" y="1201" class="note" text-anchor="start">&#183; La regla anti-jerga aplica al texto que redacta la ficha, nunca al t&#237;tulo citado.</text>
+<text x="922" y="1222" class="note" text-anchor="start">&#183; Si queda vac&#237;o despu&#233;s de sanear: #6150 (sin t&#237;tulo). Nunca un par de comillas vac&#237;as.</text>
+</svg>

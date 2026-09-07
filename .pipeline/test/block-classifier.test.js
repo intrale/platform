@@ -81,9 +81,51 @@ test('CA-4 — mapeo explícito reductivo→mecanico / ambiguo→decision / otro
     assert.strictEqual(mapDesyncClassification(undefined), 'decision');
 });
 
-test('CA-5 — gate-reject por defecto → decision', () => {
+// #6296 — REESCRITO: hasta este issue `gate-reject` era `decision` INCONDICIONAL
+// "hasta la parte (b) de #4766". Esa parte llegó acá. Lo que se conserva del test
+// original es el caso fail-closed: sin veredicto verificable sigue siendo
+// `decision`, que es exactamente el shape del test viejo (`{ kind, reason }`).
+test('CA-5/#6296 — gate-reject SIN veredicto verificable → decision (SR-8)', () => {
     const out = bc.classifyBlock({ kind: 'gate-reject', reason: 'lo que sea' });
     assert.strictEqual(out.category, 'decision');
+    assert.strictEqual(out.delegateTo, 'gate-reject-sin-veredicto');
+});
+test('#6296 — veredicto no-objeto (null/array/string) → decision (fail-closed)', () => {
+    for (const verdict of [null, undefined, [], 'rechazado', 42, true]) {
+        const out = bc.classifyBlock({ kind: 'gate-reject', skill: 'review', verdict });
+        assert.strictEqual(out.category, 'decision', `verdict=${JSON.stringify(verdict)}`);
+    }
+});
+test('#6296 — gate-reject GRAVE → mecanico con destino dev', () => {
+    const out = bc.classifyBlock({ kind: 'gate-reject', skill: 'tester', verdict: { resultado: 'rechazado', gravedad: 'grave' } });
+    assert.strictEqual(out.category, 'mecanico');
+    assert.strictEqual(out.delegateTo, 'gate-reject-grave');
+    assert.strictEqual(out.evidence.severidad, 'grave');
+    assert.match(out.reason, /rebote a dev/);
+});
+test('#6296 — gate-reject LEVE → mecanico con observación al PR', () => {
+    const out = bc.classifyBlock({ kind: 'gate-reject', skill: 'review', verdict: { resultado: 'rechazado', gravedad: 'leve' } });
+    assert.strictEqual(out.category, 'mecanico');
+    assert.strictEqual(out.delegateTo, 'gate-reject-leve');
+    assert.match(out.reason, /observación al PR/);
+});
+test('#6296 — gate-reject sin `gravedad` declarada → grave (piso A, nunca leve)', () => {
+    const out = bc.classifyBlock({ kind: 'gate-reject', skill: 'qa', verdict: { resultado: 'rechazado' } });
+    assert.strictEqual(out.delegateTo, 'gate-reject-grave');
+});
+test('#6296 CA-21 — `severidad: leve` NO alcanza el carril leve del clasificador', () => {
+    // El campo del veredicto es `gravedad`. `severidad` es el nombre descartado
+    // (colisiona con escalas no binarias de ux/security/review/linter): si el
+    // clasificador lo aceptara, un `review` con su propio léxico abriría el
+    // carril leve creyendo declarar el veredicto.
+    const out = bc.classifyBlock({ kind: 'gate-reject', skill: 'review', verdict: { resultado: 'rechazado', severidad: 'leve' } });
+    assert.strictEqual(out.delegateTo, 'gate-reject-grave');
+    assert.strictEqual(out.evidence.severidad, 'grave');
+});
+test('#6296 — gate-reject de security declarando `leve` sigue siendo grave', () => {
+    const out = bc.classifyBlock({ kind: 'gate-reject', skill: 'security', verdict: { resultado: 'rechazado', gravedad: 'leve' } });
+    assert.strictEqual(out.delegateTo, 'gate-reject-grave',
+        'el gate de seguridad no se debilita: el piso está en rejection-severity.js');
 });
 
 // ---------------------------------------------------------------------------

@@ -17,7 +17,29 @@ const path = require('path');
 const https = require('https');
 
 const DOCS_QA_DIR = path.join(__dirname, '..', 'docs', 'qa');
-const TELEGRAM_CONFIG = path.join(__dirname, '..', '.claude', 'hooks', 'telegram-config.json');
+
+// Credenciales de Telegram por el helper oficial (#2859), NO leyendo el JSON del
+// repo a mano. Prioridad: env → `~/.claude/secrets/telegram-config.json` →
+// legacy del repo.
+//
+// El path legacy (`.claude/hooks/telegram-config.json`) se vació a propósito tras
+// la intrusión del 2026-04-29: hoy tiene `chat_id: "MOVED_TO_HOME_DOT_CLAUDE_SECRETS"`
+// y un `bot_token` placeholder de 32 chars. Leerlo directo hacía que el envío
+// fallara con `404 Not Found` de la API de Telegram — un error que parece "el
+// archivo no está" cuando en realidad el bot está sano y el token vive en otro
+// lado. El PDF se generaba igual, así que el fallo pasaba desapercibido.
+const LEGACY_TELEGRAM_CONFIG = path.join(__dirname, '..', '.claude', 'hooks', 'telegram-config.json');
+
+function loadTelegramCredentials() {
+    try {
+        const { loadTelegramSecrets } = require(path.join(__dirname, '..', '.pipeline', 'lib', 'telegram-secrets'));
+        const sec = loadTelegramSecrets({ legacyConfigPath: LEGACY_TELEGRAM_CONFIG });
+        if (sec && sec.bot_token && sec.chat_id) return sec;
+    } catch (e) {
+        console.error('No se pudieron cargar las credenciales de Telegram: ' + e.message);
+    }
+    return null;
+}
 
 // --- Args ---
 const args = process.argv.slice(2);
@@ -149,13 +171,12 @@ async function generatePdf(htmlPath) {
 
 function sendToTelegram(pdfPath, caption) {
   return new Promise((resolve, reject) => {
-    if (!fs.existsSync(TELEGRAM_CONFIG)) {
-      console.error('No se encontró telegram-config.json — PDF generado pero no enviado');
+    const config = loadTelegramCredentials();
+    if (!config) {
+      console.error('Sin credenciales de Telegram (revisá ~/.claude/secrets/telegram-config.json) — PDF generado pero no enviado');
       resolve(false);
       return;
     }
-
-    const config = JSON.parse(fs.readFileSync(TELEGRAM_CONFIG, 'utf8'));
     const pdfData = fs.readFileSync(pdfPath);
     const filename = path.basename(pdfPath);
     const boundary = 'boundary' + Date.now();

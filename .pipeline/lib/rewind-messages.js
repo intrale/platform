@@ -40,7 +40,15 @@ function buildSuccessMessage({ issue, target, fromPipeline, fromFase, rng }) {
         `Rewind hecho: #${issue} → \`${targetPath}\`. Ya está en cola del ${target.skill} con tu motivo adjunto.\n${link}`,
         `Volví #${issue} a \`${targetPath}\` (venía de ${fromPath}). Tu motivo quedó como input del próximo run.\n${link}`,
     ];
-    return pick(variants, rng);
+    const base = pick(variants, rng);
+
+    // CA-UX-2 (#6747) — cuando el skill no lo elegiste vos ni salió de un label
+    // explícito, sino del override por contenido del issue, el operador tiene
+    // que enterarse: puede terminar en `pipeline-dev`, que edita el orquestador.
+    if (target.skillSource === 'content-override') {
+        return base + `\n\nOjo: elegí \`${target.skill}\` porque el cuerpo de #${issue} menciona scope de pipeline, no lo pediste vos. Si no era la idea, rebobiná de nuevo con un alias explícito.`;
+    }
+    return base;
 }
 
 // -----------------------------------------------------------------------------
@@ -78,8 +86,13 @@ function buildInjectionBlockedMessage({ issue, matchedDescription, rng }) {
 
 function buildRateLimitWarning({ issue, recentCount, target, rng }) {
     const link = ghIssueLink(issue);
-    const tip = (target && target.skill)
-        ? `Si querés bajar a otra fase upstream, probá \`/rechazar ${issue} criterios-${target.skill}\` para forzar el de definición.`
+    // CA-UX-3 (#6747) — el tip sólo puede ofrecer aliases que existan de verdad.
+    // Antes concatenaba `criterios-${skill}` a ciegas y con un target de `dev`
+    // salía `criterios-pipeline-dev`, que no está en la whitelist: el operador
+    // lo tipeaba y comía un ALIAS_NOT_IN_WHITELIST.
+    const candidato = (target && target.skill) ? `criterios-${target.skill}` : null;
+    const tip = (candidato && phaseMapping.listAliases().includes(candidato))
+        ? `Si querés bajar a otra fase upstream, probá \`/rechazar ${issue} ${candidato}\` para forzar el de definición.`
         : `Probá un alias explícito (ej. \`criterios-ux\` o \`validacion-po\`) para bajar a otra fase upstream.`;
     const variants = [
         `Detecté ${recentCount} rebobinados de #${issue} en la última hora. ¿Posible que el agente no esté entendiendo el feedback? Mirá los últimos comentarios del issue para ver si hay un patrón. ${tip}\n${link}`,
@@ -138,6 +151,17 @@ const ERROR_BUILDERS = Object.freeze({
     ),
     AUDIT_FAILED: ({ issue }) => (
         `Audit log del rewind de #${issue} falló — aborté para no perder trazabilidad. Avisá en el canal así reviso.`
+    ),
+    // #6747 (D-5) — fallos de la resolución de skill del alias `dev`. Los tres
+    // abortan ANTES de tocar el filesystem, así que el copy lo dice explícito.
+    DEV_SKILL_UNRESOLVED: ({ issue }) => (
+        `No pude averiguar qué agente de \`dev\` corresponde para #${issue}, así que no toqué nada. Revisá los labels del issue y probá de nuevo.`
+    ),
+    DEV_SKILL_NOT_DECLARED: ({ skill }) => (
+        `El agente que salió (\`${skill || '?'}\`) no está declarado para \`desarrollo/dev\`. Aborté sin mover nada.`
+    ),
+    DEV_SKILL_DEFAULT_FORBIDDEN: () => (
+        `Por defecto me tocaba \`pipeline-dev\` (el que edita el pipeline mismo) y eso no lo hago sin que me lo pidas explícito.`
     ),
 });
 

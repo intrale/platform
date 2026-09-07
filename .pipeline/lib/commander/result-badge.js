@@ -26,6 +26,10 @@ const RESULT_BADGES = Object.freeze({
   ajustada: { glyph: '✎', label: 'ajustada', title: 'Sherlock reelaboró la respuesta del Commander' },
   fallback: { glyph: '↪', label: 'fallback', title: 'Respondió con un proveedor distinto al primario' },
   error:    { glyph: '✗', label: 'error',    title: 'Error / timeout / sin-provider / respuesta vacía' },
+  // #6459 — el turno se ejecutó entero pero su respuesta nunca se confirmó como
+  // entregada. R-7: la CLAVE va sin tilde (de acá sale la clase CSS, abajo);
+  // el label y el tooltip sí la llevan, porque son texto para el operador.
+  huerfano: { glyph: '∅', label: 'huérfano', title: 'Se ejecutó, pero su respuesta nunca se confirmó como entregada' },
 });
 
 // Escape mínimo por defecto. El caller (dashboard.js) DEBE inyectar su propio
@@ -75,7 +79,65 @@ function buildResultBadges(meta, escapeHtml) {
     }
   }
 
+  // #6460 — DEAD-LETTER VISIBLE. TRI-ESTADO, y la comparación es contra `false`
+  // ESTRICTO a propósito:
+  //   · `false`   ⇒ se intentó avisarle al operador que su respuesta se había
+  //                 perdido, y ese aviso TAMPOCO se pudo entregar. Es el único
+  //                 caso que merece tinta: el operador no se enteró por ningún
+  //                 canal y el panel es lo último que queda.
+  //   · `true`    ⇒ el aviso llegó. Sin chip: el camino feliz no es una novedad.
+  //   · ausente   ⇒ no hubo aviso (turno sano) o todavía no se sabe. Sin chip.
+  // Con `!meta.aviso_entregado` los tres sidecars sanos del mundo pintarían el
+  // chip, que es exactamente el ruido que CA-10 prohíbe.
+  if (meta.aviso_entregado === false) {
+    html += '<span class="cmd-aviso cmd-aviso-fallido"'
+      + ' title="No se pudo avisarle al operador que esta respuesta se perdió">'
+      + 'sin aviso</span>';
+  }
+
   return html;
 }
 
-module.exports = { RESULT_BADGES, buildResultBadges, defaultEscapeHtml };
+// =============================================================================
+// #6459 — CSS de los badges, FUENTE ÚNICA.
+//
+// Antes estas reglas vivían sólo en el template de `generateHTML()` de
+// `dashboard.js`, que el dispatch sirve ÚNICAMENTE para `/legacy`. El dashboard
+// que abre el operador (`/`, `/v3`, `/dashboard`) lo emite `views/dashboard/
+// home.js`, que nunca tuvo las reglas: el badge existía en el código y no se
+// veía en ninguna pantalla real — exactamente el escape #4531 y el motivo del
+// rebote de QA sobre este issue.
+//
+// Ahora ambas superficies interpolan esta misma constante: no hay dos copias
+// que puedan divergir, y agregar un sexto resultado alcanza con tocar
+// `RESULT_BADGES` + esta constante en el mismo archivo.
+//
+// UX-2 (bloqueante): el token va con FALLBACK HEX LITERAL, no
+// `var(--x, var(--legacy))`. `loadDesignTokens()` degrada a cadena vacía si no
+// puede leer `design-tokens.css`, y la paleta legacy inline de `dashboard.js`
+// NO tiene ningún rosa al que caer (--gn/--yl/--ac/--rd/--or/--pu). Sin el hex
+// el badge huérfano renderizaría MUDO. Los hex son los valores resueltos de
+// --alert-anomaly / -dim / -bg.
+// =============================================================================
+const RESULT_BADGE_CSS = [
+  '.cmd-result{display:inline-flex;align-items:center;gap:4px;padding:1px 7px;border-radius:5px;font-size:0.72em;font-weight:600;line-height:1.5;border:1px solid transparent;margin-left:6px}',
+  '.cmd-result-ok       {color:var(--success,var(--gn,#3FB950));background:var(--success-bg,rgba(63,185,80,0.14));border-color:var(--success-dim,var(--gn2,#196C2E))}',
+  '.cmd-result-ajustada {color:var(--warning,var(--yl,#D29922));background:var(--warning-bg,rgba(210,153,34,0.14));border-color:var(--warning-dim,var(--yl2,#9E6A03))}',
+  '.cmd-result-fallback {color:var(--info,var(--ac,#58A6FF));   background:var(--info-bg,rgba(88,166,255,0.14));   border-color:var(--info-dim,var(--ac2,#1F6FEB))}',
+  '.cmd-result-error    {color:var(--danger,var(--rd,#F85149)); background:var(--danger-bg,rgba(248,81,73,0.14));  border-color:var(--danger-dim,var(--rd2,#8B1A14))}',
+  '.cmd-result-huerfano {color:var(--result-huerfano,#FF6B8A);background:var(--result-huerfano-bg,rgba(255,107,138,0.16));border-color:var(--result-huerfano-dim,#B8254A)}',
+  '.cmd-provider{font-size:0.72em;color:var(--dim,var(--in-fg-dim,#7D8590));font-family:inherit;padding:1px 6px;border:1px solid var(--bd,var(--in-border,#30363D));border-radius:5px;margin-left:4px}',
+  '.cmd-verif{font-size:0.72em;padding:1px 6px;border:1px solid var(--bd,var(--in-border,#30363D));border-radius:5px;margin-left:4px}',
+  '.cmd-verif-cross{color:var(--info,var(--ac,#58A6FF));border-color:var(--info-dim,var(--ac2,#1F6FEB));background:var(--info-bg,rgba(88,166,255,0.14))}',
+  '.cmd-verif-same {color:var(--dim,var(--in-fg-dim,#7D8590));border-color:var(--bd,var(--in-border,#30363D))}',
+  // #6460 — chip de aviso no entregado. Comparte la familia de tokens del badge
+  // huérfano (`--result-huerfano*`) porque es el MISMO hecho contado más
+  // adentro: la respuesta se perdió y encima el aviso tampoco llegó. Un color
+  // propio lo leería como un tercer estado independiente. Mismo fallback hex
+  // literal que el badge, por el motivo de UX-2 documentado arriba: sin él, con
+  // `design-tokens.css` ilegible el chip renderiza mudo.
+  '.cmd-aviso{font-size:0.72em;padding:1px 6px;border:1px solid transparent;border-radius:5px;margin-left:4px}',
+  '.cmd-aviso-fallido{color:var(--result-huerfano,#FF6B8A);background:var(--result-huerfano-bg,rgba(255,107,138,0.16));border-color:var(--result-huerfano-dim,#B8254A)}',
+].join('\n');
+
+module.exports = { RESULT_BADGES, RESULT_BADGE_CSS, buildResultBadges, defaultEscapeHtml };

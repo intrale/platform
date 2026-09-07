@@ -346,6 +346,59 @@ ver R5). La fuente de verdad es `SKILL_SOURCES` en
 > una dependencia de Chromium adicional que choca con el endurecimiento del
 > sandbox de R-SEC2). No prometer "Mermaid" sin pipeline de render real.
 
+### Encolado de la evidencia QA a Drive: anclar el destino, nunca el CWD (#6145)
+
+El descriptor que el rol `qa` deja para el servicio Drive **no se escribe a
+mano**. Se encola con:
+
+```bash
+node "$PIPELINE_REPO_ROOT/.pipeline/scripts/qa-evidence-enqueue.js"   --issue <issue> --verdict aprobado --passed <N> --total <M>   --head "$(git rev-parse HEAD)"
+```
+
+**Por qué existe la regla.** El contrato viejo instruía
+`cat > .pipeline/servicios/drive/pendiente/qa-<issue>-structural.json`. Ese path
+es **relativo**, y el agente de `verificacion` corre con CWD = worktree del
+issue, así que el descriptor caía en
+`<worktree>/.pipeline/servicios/drive/pendiente/`. Esa cola:
+
+- no la lee nadie — `servicio-drive.js` resuelve la suya desde
+  `PIPELINE_STATE_DIR` (o su propio `__dirname`), o sea el repo principal; y
+- está en `.gitignore` (`.pipeline/servicios/*/pendiente/*`), así que el
+  descriptor tampoco viaja en el commit.
+
+Resultado: la evidencia se perdía en silencio al podar el worktree, y aguas
+abajo la fase de `aprobacion` veía en `listo/` el descriptor de una pasada vieja
+y rebotaba el issue. Al instrumentar el rescate se encontraron **7 descriptores
+varados** en worktrees de 5 issues distintos (#4807, #6145, #6208, #6239,
+#6274): no era un caso aislado.
+
+**Invariantes vigentes.**
+
+1. **Anclaje explícito.** `.pipeline/lib/qa-evidence-enqueue.js` resuelve el
+   destino por `PIPELINE_DIR_OVERRIDE` → `PIPELINE_STATE_DIR` →
+   `PIPELINE_REPO_ROOT`. `process.cwd()` **no participa**: es la fuente que
+   produjo el bug.
+2. **Un descriptor por pasada.** El nombre es
+   `qa-<issue>-<structural|video>-<ts>-NN.json`. El nombre fijo por issue era un
+   slot único: cada re-pasada pisaba a la anterior y se perdía la trazabilidad
+   entre la pasada rechazada y la aprobada (de ahí los `-current.json`
+   improvisados que aparecieron en `listo/`).
+3. **Veredicto obligatorio.** Sin `verdict` el encolado falla. `passed`, `total`
+   y `head` acompañan: un descriptor "aprobado" que no dice **sobre qué commit**
+   no es evidencia de nada.
+4. **Rescate automático.** `servicio-drive.js` barre en cada tick los worktrees
+   hermanos `<repo>.agent-<issue>-<skill>` y re-encola en la cola canónica lo que
+   encuentre varado, borrando el origen (idempotente). Es best-effort: no lanza
+   y no puede dejar el servicio fuera de línea. Corta en 25 rescates por tanda y
+   **loguea lo diferido** — nunca descarta en silencio.
+5. **El artefacto va al repo canónico.** El servicio resuelve `file` contra el
+   repo principal. Si el Markdown/MP4 quedó sólo en el worktree, el CLI avisa con
+   `evidenciaEnRepoCanonico: false`.
+
+Sólo `mode: structural` **+** `source: qa-structural` eximen el descriptor del
+uploader de video. Un descriptor `android`/`api` emite `source: qa-<mode>`
+justamente para **no** saltear el upload real.
+
 ### Procedimiento de cierre con `writeDeliverable`
 
 El helper compartido `.pipeline/lib/write-deliverable.js` centraliza

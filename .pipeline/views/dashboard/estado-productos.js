@@ -355,6 +355,38 @@ function estadoProductosStyle() {
 }
 
 /**
+ * #6208 rev3 — Producto efectivo de las filas de la bandeja GATE 2 que el kernel
+ * NO tipa por producto (hoy: TODAS las firmables del depósito, que salen con
+ * `productId: null`).
+ *
+ * Sin esto, `esperando-firma.js` las atribuía al literal legacy `'intrale'`, un
+ * projectId que NO está en el catálogo (`.pipeline/descriptors/` sólo tiene
+ * `intrale-platform`): el filtro por producto activo las descartaba TODAS y la
+ * bandeja embebida jamás mostraba una firma real, con cartel verde de "nada
+ * esperando tu firma". Falso éxito silencioso — justo lo que el issue mata.
+ *
+ * Resolución, en orden y sin adivinar:
+ *   1. el producto con `role === 'primary'` del catálogo vivo;
+ *   2. si el catálogo tiene un único producto, ese;
+ *   3. si no se puede resolver (multi-producto sin primario), el producto ACTIVO
+ *      ⇒ las filas sin tipar quedan VISIBLES en la bandeja que el operador está
+ *      mirando. Fail-open hacia la visibilidad a propósito: una firma sin
+ *      producto no puede "filtrarse" a otro producto (no pertenece a ninguno),
+ *      pero esconderla en silencio sí sería el bug que estamos matando.
+ *
+ * @param {Array}  list catálogo efectivo ya filtrado por id seguro.
+ * @param {?string} activeProductId producto activo (ya validado).
+ * @returns {?string} projectId al que pertenecen las filas sin tipar, o null.
+ */
+function untypedProductId(list, activeProductId) {
+    const rows = Array.isArray(list) ? list.filter(p => p && isSafeProductId(p.projectId)) : [];
+    const primary = rows.find(p => p.role === 'primary');
+    if (primary) return primary.projectId;
+    if (rows.length === 1) return rows[0].projectId;
+    return isSafeProductId(activeProductId) ? activeProductId : null;
+}
+
+/**
  * Fragmento SSR del grid "estado por producto". Escapa todo dato reflejado.
  *
  * @param {object} [opts]
@@ -362,6 +394,10 @@ function estadoProductosStyle() {
  * @param {object} [opts.productState] mapa `projectId → estado namespaceado`.
  * @param {string} [opts.activeProductId] producto activo (del switcher/URL).
  * @param {string} [opts.basePath]     base para los enlaces del switcher.
+ * @param {Array}  [opts.esperandoFirma] filas de la bandeja GATE 2 (read model).
+ * @param {object} [opts.esperandoFirmaInbox] #6208 rev3 · metadatos del read model
+ *   (`vacio`/`banda`/`degraded`). Sin ellos el componente de firma cae al vacío
+ *   VERDE aunque el depósito esté ilegible.
  * @returns {string} HTML del grid.
  */
 function renderEstadoProductosSsr(opts = {}) {
@@ -401,8 +437,27 @@ function renderEstadoProductosSsr(opts = {}) {
     let gateTray = '';
     if (activeProductId && esperandoFirmaView && typeof esperandoFirmaView.renderEsperandoFirmaSsr === 'function') {
         try {
-            const trayState = { esperandoFirma: Array.isArray(opts.esperandoFirma) ? opts.esperandoFirma : [] };
-            const trayHtml = esperandoFirmaView.renderEsperandoFirmaSsr(trayState, { productId: activeProductId });
+            const trayState = {
+                esperandoFirma: Array.isArray(opts.esperandoFirma) ? opts.esperandoFirma : [],
+                // #6208 rev3 — los metadatos del read model viajan también acá.
+                // Sin ellos el componente cae a `renderEmptyStateSsr(null)` ⇒
+                // vacío VERDE "leí la lista entera y estaba vacía" incluso con el
+                // depósito del kernel ilegible, y la banda de índice incompleto
+                // tampoco se repone. Es el falso éxito silencioso que mata #6208.
+                esperandoFirmaInbox: (opts.esperandoFirmaInbox && typeof opts.esperandoFirmaInbox === 'object')
+                    ? opts.esperandoFirmaInbox
+                    : null,
+            };
+            const trayHtml = esperandoFirmaView.renderEsperandoFirmaSsr(trayState, {
+                productId: activeProductId,
+                // #6208 rev3 — las filas FIRMABLES del depósito vienen con
+                // `productId: null` (el kernel todavía no las tipa por producto).
+                // El producto efectivo de esas filas es el producto PRIMARIO REAL
+                // del catálogo, no el literal legacy 'intrale' (que no existe en
+                // `.pipeline/descriptors/`): con el literal, el filtro las
+                // descartaba todas y la bandeja embebida nunca mostraba una firma.
+                untypedProductId: untypedProductId(list, activeProductId),
+            });
             gateTray = '<div class="ep-gate-tray">'
                 + '<h3 class="ep-subhead"><span aria-hidden="true">✍️</span> Firmas pendientes de este producto (GATE 2)</h3>'
                 + trayHtml + '</div>';
@@ -555,6 +610,7 @@ module.exports = {
     stateMeta,
     waveMeta,
     isSafeProductId,
+    untypedProductId,
     ACCENT_PALETTE,
     STATE_META,
 };

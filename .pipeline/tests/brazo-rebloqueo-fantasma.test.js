@@ -311,3 +311,81 @@ test('self-heal: listMarkers que tira excepción no rompe el ciclo (no bloqueant
   assert.deepEqual(res, { rescued: 0, maintained: 0 });
   assert.ok(cap.lines.some(l => l.includes('no se pudieron listar markers')), 'log de error no bloqueante');
 });
+
+// =============================================================================
+// #6901 — el barrido de auto-rescate también reconoce un PR mergeado
+// -----------------------------------------------------------------------------
+// CA-2 ampliado: esta comparación decide exactamente lo mismo que el brazo
+// principal (¿esta dep está cumplida?) sobre exactamente el mismo dato
+// (`gh issue view --json state`). Dejarla con el literal `CLOSED` reproducía el
+// síntoma original en otro camino de código: un issue cuyo label fue removido y
+// cuya dep es un PR mergeado nunca se auto-rescataba.
+// =============================================================================
+
+test('#6901 el self-heal destraba cuando la unica dep declarada es un PR mergeado', async () => {
+  let released = false;
+  const res = await _selfHealPhantomBlocks({
+    listMarkers: () => [{ issue: 5214, skill: 'pipeline-dev', phase: 'dev', pipeline: 'desarrollo' }],
+    ghCall: makeGhCall({ labels: [], state: 'OPEN', depStates: { '5203': 'MERGED' } }),
+    resolveDeps: () => ({ deps: [5203], source: 'body' }),
+    throttleFn: noopThrottle,
+    releaseFn: () => { released = true; return { moved: 1, pipeline: 'desarrollo', phase: 'dev' }; },
+    logFn: () => {},
+  });
+  assert.equal(released, true, 'MERGED es dependencia cumplida: el auto-rescate debe proceder');
+  assert.equal(res.rescued, 1);
+});
+
+test('#6901 el self-heal destraba con mezcla de dep mergeada y dep cerrada', async () => {
+  const res = await _selfHealPhantomBlocks({
+    listMarkers: () => [{ issue: 5214, skill: 'pipeline-dev', phase: 'dev', pipeline: 'desarrollo' }],
+    ghCall: makeGhCall({ labels: [], state: 'OPEN', depStates: { '5203': 'MERGED', '5204': 'CLOSED' } }),
+    resolveDeps: () => ({ deps: [5203, 5204], source: 'body' }),
+    throttleFn: noopThrottle,
+    releaseFn: () => ({ moved: 1, pipeline: 'desarrollo', phase: 'dev' }),
+    logFn: () => {},
+  });
+  assert.equal(res.rescued, 1);
+});
+
+test('#6901 el self-heal NO destraba si junto a la mergeada hay una abierta', async () => {
+  let released = false;
+  const res = await _selfHealPhantomBlocks({
+    listMarkers: () => [{ issue: 5214, skill: 'pipeline-dev', phase: 'dev', pipeline: 'desarrollo' }],
+    ghCall: makeGhCall({ labels: [], state: 'OPEN', depStates: { '5203': 'MERGED', '5208': 'OPEN' } }),
+    resolveDeps: () => ({ deps: [5203, 5208], source: 'body' }),
+    throttleFn: noopThrottle,
+    releaseFn: () => { released = true; return { moved: 1 }; },
+    logFn: () => {},
+  });
+  assert.equal(released, false, 'una dep abierta sigue frenando el rescate');
+  assert.equal(res.maintained, 1);
+});
+
+test('#6901 el self-heal NO destraba con un estado no reconocido (fail-closed intacto)', async () => {
+  let released = false;
+  const res = await _selfHealPhantomBlocks({
+    listMarkers: () => [{ issue: 5214, skill: 'pipeline-dev', phase: 'dev', pipeline: 'desarrollo' }],
+    ghCall: makeGhCall({ labels: [], state: 'OPEN', depStates: { '5203': 'MERGED', '9999': 'DRAFT' } }),
+    resolveDeps: () => ({ deps: [5203, 9999], source: 'body' }),
+    throttleFn: noopThrottle,
+    releaseFn: () => { released = true; return { moved: 1 }; },
+    logFn: () => {},
+  });
+  assert.equal(released, false, 'estado desconocido se asume abierto: allowlist, no denylist');
+  assert.equal(res.maintained, 1);
+});
+
+test('#6901 el self-heal NO destraba si el estado de la dep es ilegible', async () => {
+  let released = false;
+  const res = await _selfHealPhantomBlocks({
+    listMarkers: () => [{ issue: 5214, skill: 'pipeline-dev', phase: 'dev', pipeline: 'desarrollo' }],
+    ghCall: makeGhCall({ labels: [], state: 'OPEN', raw: { depCall: () => new Error('gh timeout') } }),
+    resolveDeps: () => ({ deps: [5203], source: 'body' }),
+    throttleFn: noopThrottle,
+    releaseFn: () => { released = true; return { moved: 1 }; },
+    logFn: () => {},
+  });
+  assert.equal(released, false, 'estado ilegible → fail-closed');
+  assert.equal(res.maintained, 1);
+});

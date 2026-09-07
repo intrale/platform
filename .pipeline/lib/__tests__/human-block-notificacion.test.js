@@ -662,9 +662,21 @@ test('CA-4/CA-5: los recordatorios se agrupan en UN mensaje distinguible del avi
     // Distinguible del aviso inicial (que usa 🚧 y "marcado como needs-human").
     assert.match(msg, /🔁/);
     assert.equal(msg.includes('🚧'), false);
-    // Antigüedad por ítem y garantía explícita de que nada se aprueba solo.
-    assert.match(msg, /30h/);
-    assert.match(msg, /nada se aprueba solo/i);
+    // #6190 (H-UX-8) — el encabezado dice el NÚMERO DE AVISO, no "recordatorio":
+    // el operador que ya vio dos lee "recordatorio" y archiva sin abrir.
+    assert.match(msg, /Tercer aviso:/, 'el número de aviso sube al encabezado');
+    // Antigüedad con la redacción unificada del contrato de copy (§5): "1 d 6 h",
+    // no "30h" — el operador no tiene que dividir por 24 para entenderlo.
+    assert.match(msg, /hace 1 d 6 h/);
+    // Garantía explícita de que el tiempo no aprueba nada: es la razón de ser
+    // del recordatorio y la única frase que no sale de la ficha.
+    assert.match(msg, /Nada se destraba solo por dejar pasar el tiempo./);
+    // #5421 — el recordatorio era el 7º camino, el único que salía con Markdown
+    // vivo y sin `plain`. Ahora es texto plano: cero metacaracteres.
+    assert.doesNotMatch(msg, /[*_`]/, `el recordatorio volvió a emitir markup: ${msg}`);
+    assert.doesNotMatch(msg, /<issue>|<orientación>/, 'el pie deja de ser un molde');
+    assert.match(msg, /\/unblock 5217 /, 'cada línea lleva su comando con el número real');
+    assert.match(msg, /\/unblock 5220 /);
 });
 
 test('CA-5: sin bloqueos vencidos no se manda nada', () => {
@@ -896,5 +908,297 @@ test('CA-5 fail-closed: el pulpo NO destraba por vencimiento de plazo', () => {
             !bloque.includes(prohibido),
             `el cron de recordatorio no puede tener acceso a ${prohibido}`
         );
+    }
+});
+
+// =============================================================================
+// #6612 UX-1 / UX-2 / UX-6 — Rótulos del mensaje al operador
+//
+// EL DEFECTO QUE CUBREN. #6612 agrega en `delivery.js` un gate (5c) que NO
+// mergea con un check de `SECURITY_BLOCKING_CONTEXTS` en rojo, y sin reintento.
+// El mensaje que el pulpo le manda al operador seguía rotulando ese mismo check
+// como "informativo", diciéndole que "no frena el merge" y que "aprobarlo
+// destraba el issue": el pipeline afirmando dos cosas opuestas sobre el mismo
+// check. El operador aprueba, el merge no avanza, y el texto no explica por qué.
+// Es el fail-open de #6602 corrido de la máquina al humano.
+//
+// El segundo defecto es textual y vive en la misma función: la rama de checks en
+// rojo pegaba el adjetivo "requerido(s)" aunque la lista de requeridos no se
+// hubiera podido leer — o sea, afirmando algo no verificado. La rama de review
+// pendiente ya lo condicionaba; ésta quedó afuera.
+// =============================================================================
+
+// Rollup del PR #6602 real, que es el merge que #6612 viene a impedir:
+// el único requerido en verde y el secret scan del diff en rojo.
+const ROLLUP_6602 = Object.freeze([
+    { name: 'pr-status', status: 'COMPLETED', conclusion: 'SUCCESS' },
+    { name: 'runtime-state-guard', status: 'COMPLETED', conclusion: 'FAILURE' },
+    { name: 'OWASP Dependency Check', status: 'COMPLETED', conclusion: 'SUCCESS' },
+]);
+
+const REQ_LEIDOS = { requiredContexts: ['pr-status'], requiredContextsRead: true };
+
+test('#6612 UX-1 — un check de la allowlist en rojo NO se rotula informativo', () => {
+    const v = triggers.detectMergeStateBlock({
+        prNumber: 6602,
+        mergeable: 'MERGEABLE',
+        mergeStateStatus: 'BLOCKED',
+        reviewDecision: 'REVIEW_REQUIRED',
+        statusCheckRollup: ROLLUP_6602.map((c) => ({ ...c })),
+        ...REQ_LEIDOS,
+    });
+
+    assert.equal(
+        v.trigger, triggers.TRIGGERS.SECURITY_CHECK_RED,
+        'antes caía en codeowners-review y le pedía la firma al operador'
+    );
+    assert.match(v.reason, /bloqueante/i, 'usa el rótulo propio de UX-1');
+    assert.match(v.reason, /runtime-state-guard/, 'nombra el check');
+
+    // El corazón del rebote: el texto NO puede decir lo contrario de lo que
+    // hace el gate (5c) de delivery.js sobre este mismo check.
+    const todo = `${v.reason}\n${v.question}\n${v.recommendation}`;
+    assert.doesNotMatch(
+        todo, /no frenan el merge/,
+        'el gate (5c) de delivery.js bloquea el merge por este check, sin reintento'
+    );
+    assert.doesNotMatch(
+        todo, /aprobarlo destraba el issue/,
+        'aprobar el PR no destraba nada: el pipeline lo bloquea igual'
+    );
+    assert.match(v.recommendation, /no lo destraba/i, 'y lo dice explícitamente');
+
+    // Segregado, nunca en la bolsa de los informativos (UX-4).
+    assert.deepEqual(v.securityBlocking.failing, ['runtime-state-guard']);
+    assert.deepEqual(v.informational.failing, [], 'no se cuela entre los decorativos');
+});
+
+test('#6612 UX-2 — la recomendación del check de seguridad es PROPIA, no la del test en rojo', () => {
+    const sec = triggers.detectMergeStateBlock({
+        prNumber: 6602,
+        mergeable: 'MERGEABLE',
+        mergeStateStatus: 'BLOCKED',
+        statusCheckRollup: ROLLUP_6602.map((c) => ({ ...c })),
+        ...REQ_LEIDOS,
+    });
+    const req = triggers.detectMergeStateBlock({
+        prNumber: 6603,
+        mergeable: 'MERGEABLE',
+        mergeStateStatus: 'BLOCKED',
+        statusCheckRollup: [{ name: 'pr-status', status: 'COMPLETED', conclusion: 'FAILURE' }],
+        ...REQ_LEIDOS,
+    });
+
+    assert.notEqual(sec.recommendation, req.recommendation, 'dos causas distintas, dos acciones distintas');
+    assert.notEqual(sec.question, req.question);
+    // "Devolver a desarrollo" es correcto para un test requerido en rojo y
+    // equivocado para un hallazgo de escáner: ahí lo que corresponde es mirar
+    // el hallazgo, no rehacer la feature.
+    assert.match(req.recommendation, /devolver el issue a desarrollo/i);
+    assert.doesNotMatch(sec.recommendation, /devolver el issue a desarrollo/i);
+    assert.match(sec.recommendation, /hallazgo/i);
+});
+
+test('#6612 UX-2 — sin lista de requeridos legible NO se pega el adjetivo "requerido"', () => {
+    // Ésta es la línea que el issue nombra: la rama (a) escribía
+    // "N check(s) requerido(s) en rojo" incondicionalmente. Con el filtro
+    // apagado `checks.failing` es el rollup ENTERO, así que ninguno de esos
+    // nombres está cotejado contra la protección de rama.
+    const v = triggers.detectMergeStateBlock({
+        prNumber: 6604,
+        mergeable: 'MERGEABLE',
+        mergeStateStatus: 'BLOCKED',
+        statusCheckRollup: [{ name: 'OWASP Dependency Check', status: 'COMPLETED', conclusion: 'FAILURE' }],
+        // sin requiredContexts: el ruleset no se pudo leer (403, rate limit...)
+    });
+
+    assert.equal(v.trigger, triggers.TRIGGERS.CHECKS_FAILING, 'sigue frenando: fail-closed');
+    assert.equal(v.requiredFilter.applied, false);
+    assert.doesNotMatch(
+        v.reason, /check\(s\)\s*requerido/i,
+        'afirmar "requerido" sin haber leído el ruleset manda al operador al lugar equivocado'
+    );
+    // UX-1: y si no se pudo leer, el mensaje lo DICE en vez de callarlo.
+    assert.match(v.reason, /No pude leer qué checks exige la protección de main/);
+    assert.match(v.reason, /requeridos-no-leidos/, 'con la causa, para poder diagnosticar');
+    // Ninguno de los otros dos rótulos se aplica por cuenta propia en ese caso.
+    assert.doesNotMatch(v.reason, /informativ/i);
+    assert.doesNotMatch(v.reason, /bloqueante por seguridad/i);
+});
+
+test('#6612 UX-2 — con la lista leída SÍ se pega el adjetivo, y concuerda en número', () => {
+    const uno = triggers.detectMergeStateBlock({
+        prNumber: 6605,
+        mergeable: 'MERGEABLE',
+        mergeStateStatus: 'BLOCKED',
+        statusCheckRollup: [{ name: 'pr-status', status: 'COMPLETED', conclusion: 'FAILURE' }],
+        ...REQ_LEIDOS,
+    });
+    assert.match(uno.reason, /1 check\(s\) requerido en rojo/);
+    assert.doesNotMatch(uno.reason, /No pude leer qué checks exige/);
+
+    const dos = triggers.detectMergeStateBlock({
+        prNumber: 6606,
+        mergeable: 'MERGEABLE',
+        mergeStateStatus: 'BLOCKED',
+        statusCheckRollup: [
+            { name: 'pr-status', status: 'COMPLETED', conclusion: 'FAILURE' },
+            { name: 'build', status: 'COMPLETED', conclusion: 'FAILURE' },
+        ],
+        requiredContexts: ['pr-status', 'build'],
+        requiredContextsRead: true,
+    });
+    assert.match(dos.reason, /2 check\(s\) requeridos en rojo/);
+});
+
+test('#6612 UX-4 — caso mixto: los tres grupos se listan POR GRUPO, no en bolsa única', () => {
+    const v = triggers.detectMergeStateBlock({
+        prNumber: 6607,
+        mergeable: 'MERGEABLE',
+        mergeStateStatus: 'BLOCKED',
+        statusCheckRollup: [
+            { name: 'pr-status', status: 'COMPLETED', conclusion: 'FAILURE' },
+            { name: 'runtime-state-guard', status: 'COMPLETED', conclusion: 'FAILURE' },
+            { name: 'OWASP Dependency Check', status: 'IN_PROGRESS', conclusion: '' },
+        ],
+        ...REQ_LEIDOS,
+    });
+
+    assert.equal(v.trigger, triggers.TRIGGERS.CHECKS_FAILING, 'el requerido en rojo manda');
+    assert.deepEqual(v.checks.failing, ['pr-status']);
+    assert.deepEqual(v.securityBlocking.failing, ['runtime-state-guard']);
+    assert.deepEqual(v.informational.pending, ['OWASP Dependency Check']);
+
+    // Cada grupo en su propia línea, con su propio encuadre.
+    const lineas = v.reason.split('\n');
+    const lSec = lineas.find((l) => /bloqueantes por seguridad/i.test(l));
+    const lInfo = lineas.find((l) => /Checks informativos/i.test(l));
+    assert.ok(lSec, 'la allowlist tiene línea propia');
+    assert.ok(lInfo, 'los informativos tienen línea propia');
+    assert.notEqual(lSec, lInfo, 'nunca fusionados en la misma oración');
+    assert.match(lSec, /runtime-state-guard/);
+    assert.doesNotMatch(lSec, /OWASP/, 'un decorativo no se disfraza de bloqueante');
+    assert.match(lInfo, /OWASP Dependency Check/);
+    assert.doesNotMatch(lInfo, /runtime-state-guard/, 'y un bloqueante no se disfraza de decorativo');
+});
+
+test('#6612 UX-1 — un check de la allowlist EN CURSO no bloquea, pero se dice que puede', () => {
+    // SEC-B: la allowlist mira `failure`, no `pending`. El texto no puede frenar
+    // por él — pero tampoco puede meterlo entre los decorativos, porque si
+    // termina en rojo el gate (5c) sí frena y la firma no lo destraba.
+    const v = triggers.detectMergeStateBlock({
+        prNumber: 6608,
+        mergeable: 'MERGEABLE',
+        mergeStateStatus: 'BLOCKED',
+        reviewDecision: 'REVIEW_REQUIRED',
+        statusCheckRollup: [
+            { name: 'pr-status', status: 'COMPLETED', conclusion: 'SUCCESS' },
+            { name: 'runtime-state-guard', status: 'IN_PROGRESS', conclusion: '' },
+        ],
+        ...REQ_LEIDOS,
+    });
+    assert.equal(v.trigger, triggers.TRIGGERS.CODEOWNERS_REVIEW, 'en curso no es rojo');
+    assert.deepEqual(v.securityBlocking.pending, ['runtime-state-guard']);
+    assert.match(v.reason, /bloqueantes por seguridad/i);
+    assert.deepEqual(v.informational.pending, [], 'no cae en la bolsa de los decorativos');
+});
+
+test('#6612 — regresión: un informativo en rojo SIGUE sin frenar y sin cambiar de rótulo', () => {
+    // Contraparte del anterior: lo que NO está en la allowlist se comporta
+    // exactamente como antes (#6599 CA-3). Sin esto, el fix de UX-1 podría
+    // haberse llevado puesto el comportamiento correcto que ya existía.
+    const v = triggers.detectMergeStateBlock({
+        prNumber: 6609,
+        mergeable: 'MERGEABLE',
+        mergeStateStatus: 'BLOCKED',
+        reviewDecision: 'REVIEW_REQUIRED',
+        statusCheckRollup: [
+            { name: 'pr-status', status: 'COMPLETED', conclusion: 'SUCCESS' },
+            { name: 'OWASP Dependency Check', status: 'COMPLETED', conclusion: 'FAILURE' },
+        ],
+        ...REQ_LEIDOS,
+    });
+    assert.equal(v.trigger, triggers.TRIGGERS.CODEOWNERS_REVIEW);
+    assert.deepEqual(v.informational.failing, ['OWASP Dependency Check']);
+    assert.deepEqual(v.securityBlocking.failing, []);
+    assert.match(v.reason, /no los exige, así que no frenan el merge/);
+    assert.match(v.recommendation, /aprobarlo destraba el issue/);
+});
+
+test('#6612 anti-código-muerto — el rótulo sale de la allowlist REAL, sin inyectarle nada', () => {
+    // `isSecurityBlockingContext` estaba exportado y sólo se usaba para filtrar
+    // en `delivery.js`: nunca para rotular. Este test falla si alguien vuelve a
+    // desconectar el predicado por default de `detectMergeStateBlock`.
+    const { SECURITY_BLOCKING_CONTEXTS } = require('../security-blocking-checks');
+    assert.ok(SECURITY_BLOCKING_CONTEXTS.length > 0, 'la allowlist no puede estar vacía');
+
+    for (const ctx of SECURITY_BLOCKING_CONTEXTS) {
+        const v = triggers.detectPrHumanBlock({
+            number: 6610,
+            headRefName: 'agent/6610-x',
+            mergeable: 'MERGEABLE',
+            mergeStateStatus: 'BLOCKED',
+            reviewDecision: 'REVIEW_REQUIRED',
+            statusCheckRollup: [
+                { name: 'pr-status', status: 'COMPLETED', conclusion: 'SUCCESS' },
+                { name: ctx, status: 'COMPLETED', conclusion: 'FAILURE' },
+            ],
+        }, { securityAlerts: [], ...REQ_LEIDOS });
+
+        assert.equal(v.trigger, triggers.TRIGGERS.SECURITY_CHECK_RED, `${ctx} debe rotularse bloqueante`);
+        const todo = `${v.reason}\n${v.question}\n${v.recommendation}`;
+        assert.doesNotMatch(todo, /no frenan el merge/, `${ctx}: contradice al gate (5c)`);
+        assert.doesNotMatch(todo, /aprobarlo destraba el issue/, `${ctx}: la firma no lo destraba`);
+    }
+});
+
+test('#6612 — groupChecksByLabel reparte en tres y no pierde ni duplica nombres', () => {
+    const checks = {
+        failing: ['pr-status'],
+        pending: ['build'],
+        informational: { failing: ['OWASP Dependency Check', 'runtime-state-guard'], pending: ['docs'] },
+    };
+    const g = triggers.groupChecksByLabel(checks, (n) => n === 'runtime-state-guard');
+    assert.deepEqual(g.required, { failing: ['pr-status'], pending: ['build'] });
+    assert.deepEqual(g.securityBlocking, { failing: ['runtime-state-guard'], pending: [] });
+    assert.deepEqual(g.informational, { failing: ['OWASP Dependency Check'], pending: ['docs'] });
+
+    // Conservación: nada se pierde ni se duplica en el reparto.
+    const entra = ['pr-status', 'build', 'OWASP Dependency Check', 'runtime-state-guard', 'docs'].sort();
+    const sale = [g.required, g.securityBlocking, g.informational]
+        .flatMap((x) => [...x.failing, ...x.pending]).sort();
+    assert.deepEqual(sale, entra);
+
+    // Forma inesperada => grupos vacíos, nunca una excepción que tumbe el barrido.
+    assert.deepEqual(
+        triggers.groupChecksByLabel(null, () => false),
+        {
+            required: { failing: [], pending: [] },
+            securityBlocking: { failing: [], pending: [] },
+            informational: { failing: [], pending: [] },
+        }
+    );
+});
+
+test('#6612 — el rótulo NO cierra el ciclo de require con security-blocking-checks', () => {
+    // `security-blocking-checks.js` importa los enums de `human-block-triggers`
+    // en su top-level (CA-23 de #6431). Un require top-level en esta dirección
+    // dejaría a uno de los dos leyendo un `exports` a medio poblar, y el síntoma
+    // sería un `isSecurityBlockingContext is not a function` intermitente según
+    // qué módulo se cargue primero.
+    const SRC = fs.readFileSync(path.join(__dirname, '..', 'human-block-triggers.js'), 'utf8');
+    const topLevel = SRC.split('\n').filter((l) => /^const .*require\(/.test(l)).join('\n');
+    assert.doesNotMatch(topLevel, /security-blocking-checks/, 'el require tiene que ser diferido');
+    assert.match(SRC, /require\('\.\/security-blocking-checks'\)/, 'y tiene que existir: si no, no rotula nada');
+
+    // Y carga en cualquier orden.
+    const ordenes = [
+        ['../security-blocking-checks', '../human-block-triggers'],
+        ['../human-block-triggers', '../security-blocking-checks'],
+    ];
+    for (const orden of ordenes) {
+        for (const m of orden) delete require.cache[require.resolve(m)];
+        const cargados = orden.map((m) => require(m));
+        assert.ok(cargados.every(Boolean), `carga OK en el orden ${orden.join(' -> ')}`);
     }
 });

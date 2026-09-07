@@ -46,6 +46,8 @@ const {
     filenameHasSecret,
 } = require('./sanitize-payload');
 const { redactSensitive, redactSecretValue } = require('./redact');
+// #6226 - nombres unicos + escritura fail-closed para los dropfiles de la cola.
+const dropfileWriter = require('./dropfile-writer');
 const { narrativeSanitizePreview } = require('./narrative-sanitize');
 const {
     mimeForPath,
@@ -1145,6 +1147,25 @@ function buildPreview(args) {
     const sensibleBlocked = rejected.filter(
         (r) => r.sensible === true && DRIVE_QUEUEABLE_REJECT_REASONS.has(r.reject_reason),
     );
+    // R-5 (#6497) — DECISIÓN: este es el SEGUNDO productor de jobs de Drive, y
+    // NO sella. El `sha256`/`bytes` del registro los deriva EXCLUSIVAMENTE
+    // `servicio-drive.js`, al procesar el job y después de confinar el path
+    // (CA-6: "lo deriva el pipeline"). Dos derivaciones del hash sobre el mismo
+    // artefacto — una acá y otra allá — reproducirían exactamente la
+    // desincronización entre sello y artefacto que el épico #6475 busca cerrar.
+    //
+    // Lo que SÍ tiene que cumplir este productor es emitir `file` dentro de
+    // `UPLOAD_ALLOWED_DIRS` (`servicio-drive.js`): estos jobs no llevan `mode`
+    // ni `source: qa-structural`, así que caen en la vía de UPLOAD, la que
+    // termina en un link público de Drive.
+    //
+    // SEC-2 (#6497, rebote 1) — ese allowlist YA NO incluye `.pipeline/logs/
+    // media` (spool del bot de Telegram, ~95% narración de voz privada del
+    // operador). Un derivado de QA que todavía viva ahí sigue funcionando: el
+    // consumidor lo promueve a `qa/evidence/<issue>/` antes de confinar, pero
+    // sólo si el basename es `qa-<issue>…` con extensión de evidencia. Si se
+    // agrega un destino nuevo hay que agregarlo también allá o el job va a
+    // `fallido/`.
     const driveJobs = driveQueued.map((r) => {
         const relativeVideoPath = typeof r.relative === 'string' ? r.relative : '';
         const rawBasename = relativeVideoPath ? path.basename(relativeVideoPath) : '';
@@ -1851,9 +1872,22 @@ function notify(args) {
         const now = (deps && typeof deps.now === 'function') ? deps.now() : Date.now();
         const writer = (deps && typeof deps.writeQueueFile === 'function')
             ? deps.writeQueueFile
+            // #6226 - escritura fail-closed. El `ts = now + i` desempata SOLO
+            // dentro de una misma llamada: dos `notify()` del mismo issue+skill
+            // en el mismo milisegundo (o uno cuyo `now+i` alcanza al `now` de
+            // otro que arranco i ms despues) resolvian al mismo path y el
+            // segundo pisaba al primero, perdiendo un entregable sin error.
+            // Devuelve el path REALMENTE escrito.
             : (p, payload) => {
                 fs.mkdirSync(path.dirname(p), { recursive: true });
-                fs.writeFileSync(p, JSON.stringify(payload), 'utf8');
+                return dropfileWriter.writeUniqueFileSync({
+                    dir: path.dirname(p),
+                    filename: path.basename(p),
+                    data: JSON.stringify(payload),
+                    onCollision: (name, attempt) => console.warn(
+                        `[deliverable-notify] colision de nombre de dropfile (${name}, intento ${attempt + 1}) - se reintenta, no se sobreescribe`
+                    ),
+                }).filePath;
             };
 
         // #4586 (Palanca 2a) — topic/hilo separado para el firehose de
@@ -1878,8 +1912,13 @@ function notify(args) {
             const dropPayload = threadId != null
                 ? { ...allDropfiles[i], message_thread_id: threadId }
                 : allDropfiles[i];
-            writer(dropfilePath, dropPayload);
-            dropfileNames.push(path.basename(dropfilePath));
+            // Solo el writer default devuelve el path realmente escrito (que
+            // difiere del pedido si hubo colision). Un writer inyectado puede
+            // devolver cualquier cosa —`Array.push` devuelve un numero, no un
+            // path— asi que unicamente aceptamos un string; si no, caemos al
+            // path pedido, que es el que ese writer uso.
+            const escrito = writer(dropfilePath, dropPayload);
+            dropfileNames.push(path.basename(typeof escrito === 'string' ? escrito : dropfilePath));
         }
         const firstDropfileName = dropfileNames[0];
 
@@ -1901,8 +1940,10 @@ function notify(args) {
                 const jobName = `drive-${issue}-${ts}-${String(i).padStart(2, '0')}.json`;
                 const jobPath = path.join(driveQueueDir, jobName);
                 try {
-                    writer(jobPath, driveJobs[i].payload);
-                    driveJobNames.push(jobName);
+                    const escritoDrive = writer(jobPath, driveJobs[i].payload);
+                    driveJobNames.push(path.basename(
+                        typeof escritoDrive === 'string' ? escritoDrive : jobPath,
+                    ));
                 } catch (err) {
                     // No propagamos: una falla al encolar no debe romper el envío
                     // del texto ya escrito. Queda registro en el audit.
@@ -2867,9 +2908,17 @@ function notifyCua(args) {
         const dropfilePath = path.join(telegramQueueDir, dropfileName);
         const writer = (deps && typeof deps.writeQueueFile === 'function')
             ? deps.writeQueueFile
+            // #6226 - escritura fail-closed (ver el writer de `notify`).
             : (p, payload) => {
                 fs.mkdirSync(path.dirname(p), { recursive: true });
-                fs.writeFileSync(p, JSON.stringify(payload), 'utf8');
+                return dropfileWriter.writeUniqueFileSync({
+                    dir: path.dirname(p),
+                    filename: path.basename(p),
+                    data: JSON.stringify(payload),
+                    onCollision: (name, attempt) => console.warn(
+                        `[deliverable-notify] colision de nombre de dropfile (${name}, intento ${attempt + 1}) - se reintenta, no se sobreescribe`
+                    ),
+                }).filePath;
             };
         writer(dropfilePath, built.payload);
 

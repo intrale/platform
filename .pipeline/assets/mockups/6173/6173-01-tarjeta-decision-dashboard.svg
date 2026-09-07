@@ -1,0 +1,169 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="1600" viewBox="0 0 1280 1600" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">
+  <!--
+    Mockup UX #6173 — Ventana de bloqueados: tarjeta de decision
+    Tokens: .pipeline/assets/design-tokens.css (surface-0/1/2, border, text-*,
+    success/warning/danger/info/purple, radius-md, space-*)
+    Contrato: la tarjeta consume `card` de decision-card.js. Cero copy propio.
+  -->
+  <defs>
+    <linearGradient id="hdr" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#0D274D"/>
+      <stop offset="1" stop-color="#0D1117"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1280" height="1600" fill="#0D1117"/>
+
+  <!-- ================= cabecera ================= -->
+  <rect x="0" y="0" width="1280" height="88" fill="url(#hdr)"/>
+  <rect x="0" y="87" width="1280" height="1" fill="#30363D"/>
+  <text x="32" y="38" font-size="19" font-weight="700" fill="#E6EDF3">Bloqueados &#183; tarjeta de decisi&#243;n</text>
+  <text x="32" y="62" font-size="12.5" fill="#B1BAC4">La pregunta es el encabezado. Las opciones se ven sin abrir nada. El detalle t&#233;cnico queda colapsado.</text>
+  <rect x="1084" y="24" width="164" height="24" rx="12" fill="rgba(0,214,255,0.14)" stroke="#1890FF"/>
+  <text x="1166" y="40" font-size="11" font-weight="600" fill="#00D6FF" text-anchor="middle">MOCKUP UX &#183; #6173</text>
+  <text x="1248" y="66" font-size="11" fill="#8B949E" text-anchor="end">4 tipos de ficha &#183; misma estructura de 6 campos</text>
+
+  <!-- ============================================================ -->
+  <!-- CARD A — dependencia abierta (rail warning)                  -->
+  <!-- ============================================================ -->
+  <rect x="32" y="132" width="1216" height="400" rx="10" fill="#161B22" stroke="#30363D"/>
+  <path d="M32 142 a10 10 0 0 1 10 -10 h0 v400 h0 a10 10 0 0 1 -10 -10 Z" fill="#D29922"/>
+  <rect x="36" y="132" width="4" height="400" fill="#D29922"/>
+
+  <!-- header -->
+  <circle cx="82" cy="172" r="15" fill="rgba(210,153,34,0.14)" stroke="#9E6A03"/>
+  <text x="82" y="178" font-size="15" text-anchor="middle">&#128279;</text>
+  <text x="110" y="168" font-size="17" font-weight="600" fill="#E6EDF3">&#191;Esperamos que cierre #6110, o dejamos que #6173 avance sin eso?</text>
+  <text x="110" y="192" font-size="12" fill="#8B949E">#6173 &#183; Los avisos de issues que esperan una decisi&#243;n humana no dicen qu&#233; hay que decidir</text>
+  <rect x="1020" y="156" width="204" height="24" rx="12" fill="rgba(210,153,34,0.14)" stroke="#9E6A03"/>
+  <text x="1122" y="172" font-size="11.5" font-weight="600" fill="#D29922" text-anchor="middle">&#9201; frenado hace 3 h 20 min</text>
+
+  <!-- por que -->
+  <text x="68" y="228" font-size="13" fill="#B1BAC4"><tspan font-weight="700" fill="#E6EDF3">Por qu&#233;:</tspan> no puede avanzar hasta que se cierre otro trabajo del que depende.</text>
+
+  <!-- opcion 1 (recomendada) -->
+  <rect x="68" y="244" width="1156" height="80" rx="8" fill="rgba(63,185,80,0.10)" stroke="#196C2E" stroke-width="1.5"/>
+  <rect x="84" y="256" width="132" height="19" rx="9.5" fill="#196C2E"/>
+  <text x="150" y="269.5" font-size="10" font-weight="700" fill="#E6EDF3" text-anchor="middle" letter-spacing="0.6">&#10003; RECOMENDADA</text>
+  <text x="228" y="270" font-size="14.5" font-weight="600" fill="#E6EDF3">1 &#183; Esperar a que cierre #6110</text>
+  <text x="84" y="293" font-size="12.5" fill="#B1BAC4"><tspan font-weight="600" fill="#E6EDF3">Qu&#233; pasa:</tspan> #6173 queda en espera y arranca solo cuando #6110 cierre. No hay que hacer nada m&#225;s.</text>
+  <text x="84" y="313" font-size="12" fill="#3FB950"><tspan font-weight="600">Por qu&#233; la recomiendo:</tspan> #6110 ya est&#225; en desarrollo y cierra en esta misma ola.</text>
+
+  <!-- opcion 2 -->
+  <rect x="68" y="332" width="1156" height="56" rx="8" fill="#1C2128" stroke="#30363D"/>
+  <text x="84" y="354" font-size="14" font-weight="600" fill="#E6EDF3">2 &#183; Avanzar igual, sin esperar</text>
+  <text x="84" y="374" font-size="12.5" fill="#B1BAC4"><tspan font-weight="600" fill="#E6EDF3">Qu&#233; pasa:</tspan> arranca ahora. Si lo de #6110 hac&#237;a falta, este trabajo puede rehacerse despu&#233;s.</text>
+
+  <!-- opcion 3 -->
+  <rect x="68" y="396" width="1156" height="56" rx="8" fill="#1C2128" stroke="#30363D"/>
+  <text x="84" y="418" font-size="14" font-weight="600" fill="#E6EDF3">3 &#183; Sacarlo del plan de esta ola</text>
+  <text x="84" y="438" font-size="12.5" fill="#B1BAC4"><tspan font-weight="600" fill="#E6EDF3">Qu&#233; pasa:</tspan> vuelve a la lista de pendientes y deja de ocupar lugar en la ola. No se pierde nada de lo hecho.</text>
+
+  <!-- costo de no decidir -->
+  <text x="68" y="478" font-size="12.5" fill="#D29922"><tspan font-weight="600">Si no decid&#237;s:</tspan> #6173 y los 2 trabajos que dependen de &#233;l no avanzan.</text>
+
+  <!-- detalle tecnico colapsado -->
+  <rect x="68" y="492" width="1156" height="1" fill="#21262D"/>
+  <text x="68" y="515" font-size="12" fill="#8B949E">&#9656; Detalle t&#233;cnico &#8212; motivo interno, actividad reciente, resumen funcional, ver issue, ver logs</text>
+  <text x="1224" y="515" font-size="11" fill="#6E7681" text-anchor="end">cerrado por default</text>
+
+  <!-- ============================================================ -->
+  <!-- CARD B — rebotes agotados (rail danger)                      -->
+  <!-- ============================================================ -->
+  <rect x="32" y="556" width="1216" height="400" rx="10" fill="#161B22" stroke="#30363D"/>
+  <rect x="36" y="556" width="4" height="400" fill="#F85149"/>
+
+  <circle cx="82" cy="596" r="15" fill="rgba(248,81,73,0.14)" stroke="#8B1A14"/>
+  <text x="82" y="602" font-size="15" text-anchor="middle">&#128721;</text>
+  <text x="110" y="592" font-size="17" font-weight="600" fill="#E6EDF3">&#191;Le damos otra vuelta con una indicaci&#243;n tuya, o lo damos de baja?</text>
+  <text x="110" y="616" font-size="12" fill="#8B949E">#5798 &#183; Migrar los lectores de olas y allowlist al envoltorio de configuraci&#243;n</text>
+  <rect x="1032" y="580" width="192" height="24" rx="12" fill="rgba(248,81,73,0.14)" stroke="#8B1A14"/>
+  <text x="1128" y="596" font-size="11.5" font-weight="600" fill="#F85149" text-anchor="middle">&#9201; frenado hace 1 d 4 h</text>
+
+  <text x="68" y="652" font-size="13" fill="#B1BAC4"><tspan font-weight="700" fill="#E6EDF3">Por qu&#233;:</tspan> se intent&#243; tres veces y las tres volvi&#243; rechazado por el mismo control de calidad.</text>
+
+  <rect x="68" y="668" width="1156" height="80" rx="8" fill="rgba(63,185,80,0.10)" stroke="#196C2E" stroke-width="1.5"/>
+  <rect x="84" y="680" width="132" height="19" rx="9.5" fill="#196C2E"/>
+  <text x="150" y="693.5" font-size="10" font-weight="700" fill="#E6EDF3" text-anchor="middle" letter-spacing="0.6">&#10003; RECOMENDADA</text>
+  <text x="228" y="694" font-size="14.5" font-weight="600" fill="#E6EDF3">1 &#183; Reintentar con una indicaci&#243;n tuya</text>
+  <text x="84" y="717" font-size="12.5" fill="#B1BAC4"><tspan font-weight="600" fill="#E6EDF3">Qu&#233; pasa:</tspan> vuelve a la cola con tu texto como gu&#237;a y el contador de intentos arranca de nuevo.</text>
+  <text x="84" y="737" font-size="12" fill="#3FB950"><tspan font-weight="600">Por qu&#233; la recomiendo:</tspan> las tres vueltas fallaron por lo mismo, as&#237; que alcanza una indicaci&#243;n puntual.</text>
+
+  <rect x="68" y="756" width="1156" height="56" rx="8" fill="#1C2128" stroke="#30363D"/>
+  <text x="84" y="778" font-size="14" font-weight="600" fill="#E6EDF3">2 &#183; Devolverlo a definici&#243;n</text>
+  <text x="84" y="798" font-size="12.5" fill="#B1BAC4"><tspan font-weight="600" fill="#E6EDF3">Qu&#233; pasa:</tspan> se descarta el desarrollo hecho y se vuelve a analizar desde cero. Es la opci&#243;n m&#225;s costosa.</text>
+
+  <rect x="68" y="820" width="1156" height="56" rx="8" fill="#1C2128" stroke="#30363D"/>
+  <text x="84" y="842" font-size="14" font-weight="600" fill="#E6EDF3">3 &#183; Darlo de baja</text>
+  <text x="84" y="862" font-size="12.5" fill="#B1BAC4"><tspan font-weight="600" fill="#E6EDF3">Qu&#233; pasa:</tspan> se cierra sin hacer y lo desarrollado se descarta.</text>
+
+  <text x="68" y="902" font-size="12.5" fill="#D29922"><tspan font-weight="600">Si no decid&#237;s:</tspan> sigue ocupando uno de los tres lugares de trabajo simult&#225;neo.</text>
+  <rect x="68" y="916" width="1156" height="1" fill="#21262D"/>
+  <text x="68" y="939" font-size="12" fill="#8B949E">&#9656; Detalle t&#233;cnico &#8212; motivo interno, actividad reciente, resumen funcional, ver issue, ver logs</text>
+  <text x="1224" y="939" font-size="11" fill="#6E7681" text-anchor="end">cerrado por default</text>
+
+  <!-- ============================================================ -->
+  <!-- CARD C — falta de firma (rail info) — SIN recomendacion      -->
+  <!-- ============================================================ -->
+  <rect x="32" y="980" width="1216" height="300" rx="10" fill="#161B22" stroke="#30363D"/>
+  <rect x="36" y="980" width="4" height="300" fill="#58A6FF"/>
+
+  <circle cx="82" cy="1020" r="15" fill="rgba(88,166,255,0.14)" stroke="#1F6FEB"/>
+  <text x="82" y="1026" font-size="14" text-anchor="middle">&#9997;</text>
+  <text x="110" y="1016" font-size="17" font-weight="600" fill="#E6EDF3">&#191;Aprob&#225;s el alcance de este trabajo para que arranque el desarrollo?</text>
+  <text x="110" y="1040" font-size="12" fill="#8B949E">#6144 &#183; Reordenar la ventana de bloqueados por urgencia de la decisi&#243;n</text>
+  <rect x="1020" y="1004" width="204" height="24" rx="12" fill="rgba(88,166,255,0.14)" stroke="#1F6FEB"/>
+  <text x="1122" y="1020" font-size="11.5" font-weight="600" fill="#58A6FF" text-anchor="middle">&#9201; retenido hace 6 h 12 min</text>
+
+  <text x="68" y="1076" font-size="13" fill="#B1BAC4"><tspan font-weight="700" fill="#E6EDF3">Por qu&#233;:</tspan> est&#225; listo para arrancar, pero el alcance necesita tu visto bueno antes.</text>
+  <rect x="68" y="1088" width="252" height="20" rx="10" fill="#1C2128" stroke="#484F58" stroke-dasharray="3 2"/>
+  <text x="194" y="1102" font-size="10.5" font-weight="600" fill="#B1BAC4" text-anchor="middle">SIN RECOMENDACI&#211;N &#183; LA DECISI&#211;N ES TUYA</text>
+
+  <!-- 3 opciones en fila = 3 botones reales -->
+  <rect x="68" y="1120" width="376" height="68" rx="8" fill="rgba(63,185,80,0.10)" stroke="#196C2E"/>
+  <text x="84" y="1143" font-size="14" font-weight="600" fill="#E6EDF3">&#9989; Aprobar el alcance</text>
+  <text x="84" y="1162" font-size="11.5" fill="#B1BAC4">Arranca el desarrollo con los criterios</text>
+  <text x="84" y="1178" font-size="11.5" fill="#B1BAC4">tal como est&#225;n.</text>
+
+  <rect x="458" y="1120" width="376" height="68" rx="8" fill="rgba(248,81,73,0.10)" stroke="#8B1A14"/>
+  <text x="474" y="1143" font-size="14" font-weight="600" fill="#E6EDF3">&#10060; Rechazar</text>
+  <text x="474" y="1162" font-size="11.5" fill="#B1BAC4">No arranca. Vuelve a replantearse</text>
+  <text x="474" y="1178" font-size="11.5" fill="#B1BAC4">el alcance desde el principio.</text>
+
+  <rect x="848" y="1120" width="376" height="68" rx="8" fill="rgba(188,140,255,0.10)" stroke="#8957E5"/>
+  <text x="864" y="1143" font-size="14" font-weight="600" fill="#E6EDF3">&#9999; Ajustar los criterios</text>
+  <text x="864" y="1162" font-size="11.5" fill="#B1BAC4">No arranca todav&#237;a. Edit&#225;s y el pedido</text>
+  <text x="864" y="1178" font-size="11.5" fill="#B1BAC4">vuelve con el texto nuevo.</text>
+
+  <text x="68" y="1216" font-size="12.5" fill="#D29922"><tspan font-weight="600">Si no decid&#237;s:</tspan> nada arranca. El trabajo queda listo pero parado, y no se te vuelve a avisar hasta que cambie lo que hay que firmar.</text>
+  <rect x="68" y="1240" width="1156" height="1" fill="#21262D"/>
+  <text x="68" y="1263" font-size="12" fill="#8B949E">&#9656; Detalle t&#233;cnico &#8212; criterios a firmar, motivo interno de la retenci&#243;n, ver issue</text>
+  <text x="1224" y="1263" font-size="11" fill="#6E7681" text-anchor="end">cerrado por default</text>
+
+  <!-- ============================================================ -->
+  <!-- CARD D — indeterminado (rail gris, prohibido el falso verde) -->
+  <!-- ============================================================ -->
+  <rect x="32" y="1304" width="1216" height="248" rx="10" fill="#161B22" stroke="#30363D"/>
+  <rect x="36" y="1304" width="4" height="248" fill="#6E7681"/>
+
+  <circle cx="82" cy="1344" r="15" fill="#1C2128" stroke="#484F58"/>
+  <text x="82" y="1350" font-size="15" text-anchor="middle">&#10067;</text>
+  <text x="110" y="1340" font-size="17" font-weight="600" fill="#E6EDF3">&#191;Qu&#233; quer&#233;s hacer con este trabajo? No tengo el dato para proponerte opciones.</text>
+  <text x="110" y="1364" font-size="12" fill="#8B949E">#5516 &#183; Hijos de split hu&#233;rfanos: el descubrimiento arranca en la allowlist, no en GitHub</text>
+  <rect x="1032" y="1328" width="192" height="24" rx="12" fill="#1C2128" stroke="#484F58"/>
+  <text x="1128" y="1344" font-size="11.5" font-weight="600" fill="#B1BAC4" text-anchor="middle">&#9201; frenado hace 2 d 4 h</text>
+
+  <text x="68" y="1400" font-size="13" fill="#B1BAC4"><tspan font-weight="700" fill="#E6EDF3">Por qu&#233;:</tspan> qued&#243; frenado por algo que no supe clasificar.</text>
+
+  <rect x="68" y="1414" width="1156" height="56" rx="8" fill="rgba(210,153,34,0.10)" stroke="#9E6A03" stroke-dasharray="5 3"/>
+  <text x="84" y="1436" font-size="13.5" font-weight="600" fill="#D29922">Qu&#233; me falta para poder ayudarte</text>
+  <text x="84" y="1456" font-size="12.5" fill="#B1BAC4">El motivo del bloqueo: quien lo fren&#243; no dej&#243; texto. El dato est&#225; en la actividad reciente del issue.</text>
+
+  <text x="68" y="1494" font-size="12.5" fill="#8B949E" font-style="italic">No te propongo opciones porque no las puedo justificar. Cero opciones es mejor que tres inventadas.</text>
+  <text x="68" y="1520" font-size="12.5" fill="#D29922"><tspan font-weight="600">Si no decid&#237;s:</tspan> queda frenado por tiempo indefinido; nada lo va a mover solo.</text>
+  <rect x="68" y="1532" width="1156" height="1" fill="#21262D"/>
+  <text x="68" y="1548" font-size="11" fill="#6E7681">&#9656; Detalle t&#233;cnico &#8212; motivo crudo, actividad reciente, ver issue, ver logs</text>
+
+  <!-- ================= nota de sistema ================= -->
+  <text x="32" y="1580" font-size="11" fill="#6E7681">Un solo origen de copy (decision-card.js) &#183; el mismo texto en Telegram, dashboard, audio y recordatorio &#183; sin color como &#250;nico portador de significado (icono + r&#243;tulo + texto en cada estado)</text>
+</svg>

@@ -39,6 +39,56 @@ El script ya tiene toda la lógica. Vos sos un wrapper delgado que lo ejecuta y 
 14. **Entorno** (solo reporte) — `JAVA_HOME`, `gh` CLI, espacio en disco C:.
 15. **Branches stale `agent/*`** (`--branches`, issue #2398) — refs locales que cumplen TODAS estas condiciones: (a) sin worktree asociado, (b) tip ya integrado en `origin/main` (verificado con `git merge-base --is-ancestor`), (c) nombre matchea `agent/<n>-<skill>` (no toca feature/*, bugfix/*, session-*). Antes de cada borrado se crea un tag de backup `backup/orphan-<branch>-<ts>` con TTL convencional de 30 días, y la salida del comando se hace con `git branch -D`. Cero pérdida de trabajo posible: el ancestor-check garantiza que el contenido del branch ya está en main.
 
+16. **Secretos filtrados** (`--secrets`, issue #5220) — credenciales replicadas en copias de `.claude/` fuera del repo principal. **No entra en la corrida default** (~1 s: 68 raíces, ~3.260 archivos): sin flags se hace sólo un chequeo barato (~34 ms) que cuenta copias anidadas `.claude/.claude` y avisa. Ver la sección dedicada más abajo.
+
+## Secretos filtrados (`--secrets`)
+
+Barre las copias de `.claude/` bajo `platform.session-*`, `platform.agent-*`, `.claude/worktrees/*` y `.pipeline/_tmp/*` (enumeradas **por existencia de `.claude`**, no por glob de nombre) buscando valores con forma de credencial.
+
+**El reporte nunca puede filtrar un valor, por construcción.** El hallazgo se arma desde el origen con `path` + nombre de clave + `sha256[0:8]` + longitud; el tipo no tiene campo `value`, así que no hay nada que redactar aguas abajo. Redactar al final no sería un control: `redactSecretValue()` exige un string sin espacios, o sea que nunca se aplica sobre una línea de reporte.
+
+Clasifica en **tres** categorías, con conteo separado y sin total agregado que las mezcle:
+
+| Categoría | Qué es | Qué hace el barrido |
+|---|---|---|
+| `● PURGAR` (`purgable`) | archivo **untracked** | lo elimina con `--run` (archivo por archivo, jamás directorios ni worktrees) |
+| `● ROTAR` (`historial`) | archivo **trackeado** | **no lo toca**: borrarlo no remedia (un `checkout` lo re-materializa) y ensuciaría `git status` con `D`, volviendo inmortal un worktree hoy reciclable. Se reporta con su estado de rotación |
+| `● REVISAR` (`no-verificable`) | no se pudo leer/parsear | fail-closed: **nunca** cuenta como limpio |
+
+**Rotar es prerequisito de purgar.** Purgar antes destruye la evidencia de qué hay que rotar. El registro de rotaciones vive en `.pipeline/secret-rotations.json`:
+
+```json
+{ "rotations": [
+  { "hash8": "760e3f4b", "kind": "telegram_bot_token",
+    "rotated_at": "2026-07-30", "revoked": true, "verified_at": "2026-07-30",
+    "note": "revocada en BotFather" }
+]}
+```
+
+Sin entrada, o con `revoked`/`verified_at` faltantes, la credencial figura como `rotación PENDIENTE`. **Ausencia de archivos no es evidencia**: «cero secretos» exige `purgables == 0` **y** `no verificables == 0` **y** toda credencial que persista por historial rotada y revocada con verificación registrada.
+
+### Exit codes
+
+Sólo aplican a corridas con `--secrets`; la corrida default sigue saliendo `0` como siempre. Gana el número más alto:
+
+| Código | Significado |
+|---|---|
+| `0` | sin hallazgos de secretos |
+| `1` | error del propio comando (reservado) |
+| `2` | purgables pendientes (dry-run con hallazgos untracked) |
+| `3` | no-verificables presentes → fail-closed |
+| `4` | credencial persistente por historial **sin rotación registrada** |
+
+El `2` es *pendientes*, no *fallidos*: tras un `--run` que elimina todo, el comando sale `0`. Si algún untracked no se pudo borrar, sigue en `2` y el reporte lo detalla bajo **Purgas omitidas** con el motivo (un skip nunca queda mudo).
+
+⚠️ **El chequeo barato no mueve el exit code.** La corrida default (sin `--secrets`) puede imprimir `POSIBLE EXPOSICIÓN` por copias anidadas `.claude/.claude` y aun así salir `0`: `computeExitCode` sólo mira el barrido completo. Es deliberado — el chequeo barato no clasifica ni verifica, sólo avisa. Para un código accionable hay que correr `--secrets`.
+
+### Prevención en el origen — dónde NO está
+
+El productor de las copias con credenciales es `C:\Workspaces\bin\claude-session` (alias `cs`), que hace `cp -r` de `.claude` **sin `rm -rf` previo del destino**: como `.claude` es un árbol trackeado, el destino ya existe tras el `git worktree add` y `cp -r` **anida en vez de fusionar**. Ese archivo vive **fuera del repo y sin versionar**, así que esta superficie entrega **detección garantizada**, no prevención por construcción. La prevención en el origen se trata en **#5264** y **#5226**.
+
+Dentro del repo sí se aplica allowlist deny-by-default al copiar `.claude/` (`.pipeline/lib/claude-copy-allowlist.js`, usada por `scripts/cli-branch.js` y espejada en `scripts/dev-functions.sh`).
+
 ## Whitelist absoluta — NUNCA toca
 
 - **Watchdogs**: `powershell.exe` corriendo `*\watchdog.ps1` o `*-watchdog.ps1` (Intrale, Alina, Diego/club25).
@@ -65,6 +115,7 @@ El script ya tiene toda la lógica. Vos sos un wrapper delgado que lo ejecuta y 
 | `--agents` | Solo consistencia agentes (siempre reporte) |
 | `--env` | Solo entorno (siempre reporte) |
 | `--branches` | Solo branches `agent/*` stale (dry-run salvo `--run`); fetcha `origin/main` antes para evitar falsos negativos |
+| `--secrets` | Solo barrido de credenciales filtradas (dry-run salvo `--run`). **No corre sin este flag**: ver sección «Secretos filtrados». Sale con código ≠ 0 ante hallazgos |
 
 ## Paso 1: Ejecutar
 

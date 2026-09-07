@@ -1,0 +1,62 @@
+{"ts":"2026-08-25T19:38:34.887Z","service":"pulpo","from":"alive","to":"dead","reason":"unknown","lastError":""}
+{"ts":"2026-08-25T19:38:34.886Z","service":"pulpo","from":"alive","to":"dead","reason":"unknown","lastError":""}
+{"ts":"2026-08-25T19:38:34.886Z","service":"pulpo","from":"alive","to":"dead","reason":"unknown","lastError":""}
+{"ts":"2026-08-25T19:38:34.886Z","service":"listener","from":"alive","to":"dead","reason":"unknown","lastError":""}
+{"ts":"2026-08-25T19:38:34.887Z","service":"listener","from":"alive","to":"dead","reason":"unknown","lastError":""}
+{"ts":"2026-08-25T19:38:34.886Z","service":"listener","from":"alive","to":"dead","reason":"unknown","lastError":""}
+{"ts":"2026-08-25T19:38:34.886Z","service":"svc-telegram","from":"alive","to":"dead","reason":"unknown","lastError":""}
+{"ts":"2026-08-25T19:38:34.887Z","service":"svc-telegram","from":"alive","to":"dead","reason":"unknown","lastError":""}
+{"ts":"2026-08-25T19:38:34.886Z","service":"svc-telegram","from":"alive","to":"dead","reason":"unknown","lastError":""}
+{"ts":"2026-08-25T19:38:34.886Z","service":"svc-github","from":"alive","to":"dead","reason":"unknown","lastError":""}
+{"ts":"2026-08-25T19:38:34.887Z","service":"svc-github","from":"alive","to":"dead","reason":"unknown","lastError":""}
+{"ts":"2026-08-25T19:38:34.886Z","service":"svc-drive","from":"alive","to":"dead","reason":"unknown","lastError":""}
+{"ts":"2026-08-25T19:38:34.887Z","service":"svc-drive","from":"alive","to":"dead","reason":"unknown","lastError":""}
+{"ts":"2026-08-25T19:38:34.886Z","service":"svc-drive","from":"alive","to":"dead","reason":"unknown","lastError":""}
+{"ts":"2026-08-25T19:38:34.886Z","service":"svc-reconciler","from":"alive","to":"dead","reason":"unknown","lastError":""}
+{"ts":"2026-08-25T19:38:34.887Z","service":"svc-reconciler","from":"alive","to":"dead","reason":"unknown","lastError":""}
+{"ts":"2026-08-25T19:38:34.886Z","service":"dashboard","from":"alive","to":"dead","reason":"unknown","lastError":"at process.processTicksAndRejections (node:internal/process/task_queues:89:21)"}
+{"ts":"2026-08-25T19:38:34.886Z","service":"dashboard","from":"alive","to":"dead","reason":"unknown","lastError":"at process.processTicksAndRejections (node:internal/process/task_queues:89:21)"}
+{"ts":"2026-08-25T19:38:47.274Z","service":"pulpo","from":"dead","to":"alive","reason":"recovered","lastError":""}
+{"ts":"2026-08-25T19:38:47.274Z","service":"listener","from":"dead","to":"alive","reason":"recovered","lastError":""}
+{"ts":"2026-08-25T19:38:47.274Z","service":"svc-telegram","from":"dead","to":"alive","reason":"recovered","lastError":""}
+{"ts":"2026-08-25T19:38:47.274Z","service":"svc-github","from":"dead","to":"alive","reason":"recovered","lastError":""}
+{"ts":"2026-08-25T19:38:47.274Z","service":"svc-drive","from":"dead","to":"alive","reason":"recovered","lastError":""}
+{"ts":"2026-08-25T19:38:47.274Z","service":"svc-reconciler","from":"dead","to":"alive","reason":"recovered","lastError":""}
+{"ts":"2026-08-25T19:38:47.274Z","service":"dashboard","from":"dead","to":"alive","reason":"recovered","lastError":""}
+{"ts":"2026-08-25T21:06:29.591Z","service":"pulpo","from":"alive","to":"dead","reason":"unknown","lastError":""}
+{"ts":"2026-08-25T21:06:29.591Z","service":"listener","from":"alive","to":"dead","reason":"unknown","lastError":""}
+{"ts":"2026-08-25T21:06:29.591Z","service":"svc-telegram","from":"alive","to":"dead","reason":"unknown","lastError":""}
+{"ts":"2026-08-25T21:06:29.591Z","service":"svc-github","from":"alive","to":"dead","reason":"unknown","lastError":""}
+{"ts":"2026-08-25T21:06:29.591Z","service":"svc-drive","from":"alive","to":"dead","reason":"unknown","lastError":""}
+{"ts":"2026-08-25T21:06:29.591Z","service":"svc-reconciler","from":"alive","to":"dead","reason":"unknown","lastError":""}
+{"ts":"2026-08-25T21:06:29.591Z","service":"dashboard","from":"alive","to":"dead","reason":"unknown","lastError":"at process.processTicksAndRejections (node:internal/process/task_queues:89:21)"}
+{"ts":"2026-08-25T21:06:41.886Z","service":"pulpo","from":"dead","to":"alive","reason":"recovered","lastError":""}
+{"ts":"2026-08-25T21:06:41.886Z","service":"listener","from":"dead","to":"alive","reason":"recovered","lastError":""}
+{"ts":"2026-08-25T21:06:41.886Z","service":"svc-telegram","from":"dead","to":"alive","reason":"recovered","lastError":""}
+{"ts":"2026-08-25T21:06:41.886Z","service":"svc-github","from":"dead","to":"alive","reason":"recovered","lastError":""}
+{"ts":"2026-08-25T21:06:41.886Z","service":"svc-drive","from":"dead","to":"alive","reason":"recovered","lastError":""}
+{"ts":"2026-08-25T21:06:41.886Z","service":"svc-reconciler","from":"dead","to":"alive","reason":"recovered","lastError":""}
+{"ts":"2026-08-25T21:06:41.886Z","service":"dashboard","from":"dead","to":"alive","reason":"recovered","lastError":""}
+{"ts":"2026-08-26T08:20:51.474Z","service":"pulpo","from":"alive","to":"dead","reason":"unknown","lastError":""}
+{"ts":"2026-08-26T08:20:51.486Z","service":"pulpo","from":"alive","to":"dead","reason":"unknown","lastError":""}
+{"ts":"2026-08-26T08:20:51.484Z","service":"pulpo","from":"alive","to":"dead","reason":"unknown","lastError":""}
+{"ts":"2026-08-26T08:20:51.486Z","service":"listener","from":"alive","to":"dead","reason":"unknown","lastError":""}
+{"ts":"2026-08-26T08:20:51.486Z","service":"svc-telegram","from":"alive","to":"dead","reason":"unknown","lastError":""}
+{"ts":"2026-08-26T08:20:51.486Z","service":"svc-github","from":"alive","to":"dead","reason":"unknown","lastError":""}
+{"ts":"2026-08-26T08:20:51.486Z","service":"svc-drive","from":"alive","to":"dead","reason":"unknown","lastError":""}
+{"ts":"2026-08-26T08:20:51.486Z","service":"svc-reconciler","from":"alive","to":"dead","reason":"unknown","lastError":""}
+{"ts":"2026-08-26T08:20:51.486Z","service":"dashboard","from":"alive","to":"dead","reason":"unknown","lastError":"at process.processTicksAndRejections (node:internal/process/task_queues:89:21)"}
+{"ts":"2026-08-26T08:20:51.484Z","service":"dashboard","from":"alive","to":"dead","reason":"unknown","lastError":"at process.processTicksAndRejections (node:internal/process/task_queues:89:21)"}
+{"ts":"2026-08-26T08:20:51.474Z","service":"listener","from":"alive","to":"dead","reason":"unknown","lastError":""}
+{"ts":"2026-08-26T08:21:05.348Z","service":"pulpo","from":"dead","to":"alive","reason":"recovered","lastError":""}
+{"ts":"2026-08-26T08:21:05.353Z","service":"pulpo","from":"dead","to":"alive","reason":"recovered","lastError":""}
+{"ts":"2026-08-26T08:21:05.348Z","service":"listener","from":"dead","to":"alive","reason":"recovered","lastError":""}
+{"ts":"2026-08-26T08:21:05.348Z","service":"svc-telegram","from":"dead","to":"alive","reason":"recovered","lastError":""}
+{"ts":"2026-08-26T08:21:05.353Z","service":"listener","from":"dead","to":"alive","reason":"recovered","lastError":""}
+{"ts":"2026-08-26T08:21:05.348Z","service":"svc-github","from":"dead","to":"alive","reason":"recovered","lastError":""}
+{"ts":"2026-08-26T08:21:05.348Z","service":"svc-drive","from":"dead","to":"alive","reason":"recovered","lastError":""}
+{"ts":"2026-08-26T08:21:05.353Z","service":"svc-drive","from":"dead","to":"alive","reason":"recovered","lastError":""}
+{"ts":"2026-08-26T08:21:05.353Z","service":"svc-reconciler","from":"dead","to":"alive","reason":"recovered","lastError":""}
+{"ts":"2026-08-26T08:21:05.348Z","service":"svc-reconciler","from":"dead","to":"alive","reason":"recovered","lastError":""}
+{"ts":"2026-08-26T08:21:05.353Z","service":"dashboard","from":"dead","to":"alive","reason":"recovered","lastError":""}
+{"ts":"2026-08-26T08:21:05.348Z","service":"dashboard","from":"dead","to":"alive","reason":"recovered","lastError":""}

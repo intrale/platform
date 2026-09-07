@@ -56,6 +56,10 @@ const { detectInjection } = require('./handoff');
 // `RESERVED_STORE_NAMESPACES` se IMPORTA, no se copia (#5898 · CA-3): una
 // segunda lista literal en este archivo se desincronizaría del store.
 const { parseSecretRef, RESERVED_STORE_NAMESPACES } = require('./credentials');
+// #5214 — Única fuente de verdad de "qué es un tableName inválido" y del texto
+// del diagnóstico. Se IMPORTA, no se copia: el guard del boot y esta validación
+// lazy deben rechazar exactamente el mismo conjunto de valores.
+const { classifyTableName, DURABLE_CONFIG_ABORT_MESSAGE } = require('./kernel-durable-config-guard');
 
 // -----------------------------------------------------------------------------
 // Constantes
@@ -96,6 +100,22 @@ const SK = Object.freeze({
   signature: (ulid) => `signature#${ulid}`,
   audit: (ulid) => `audit#${ulid}`,
 });
+
+// Prefijos de sort key de las entidades APPEND-ONLY. Son la unidad de lectura de
+// la reconciliación de #5209: se listan por `begins_with(SK, <prefijo>)`. Se
+// derivan del MISMO builder que las escribe para que un cambio de gramática no
+// pueda desincronizar escritura y lectura (y dejar registros invisibles al
+// export, que es el falso verde por conjunto parcial).
+const SK_PREFIX = Object.freeze({
+  [ENTITY.SIGNATURE]: 'signature#',
+  [ENTITY.AUDIT]: 'audit#',
+});
+
+// Techos de la paginación (A04 / anti-loop). `pageSize` acota cada round-trip;
+// `maxPages` es un fusible duro: si el driver devolviera `lastEvaluatedKey` sin
+// avanzar nunca, la lectura corta con error en vez de girar para siempre.
+const DEFAULT_LIST_PAGE_SIZE = 100;
+const MAX_LIST_PAGES = 10000;
 
 // -----------------------------------------------------------------------------
 // Errores tipados
@@ -165,14 +185,22 @@ function normalizeConfig(cfg, driver) {
   const c = cfg && typeof cfg === 'object' ? cfg : {};
   const kernel = c.kernel && typeof c.kernel === 'object' ? c.kernel : c;
   const isInMemory = driver && driver.kind === 'in-memory';
-  const tableName = typeof kernel.tableName === 'string' && kernel.tableName
-    ? kernel.tableName
+  // #5214 · CA-1 — La clasificación se DELEGA en el guard, no se re-implementa:
+  // dos criterios distintos de "tableName inválido" (uno acá, otro en el boot)
+  // se desincronizan, y el que se desincronice de menos es el que deja pasar el
+  // valor al driver real. Antes esta línea era `typeof x === 'string' && x`, que
+  // acepta `"   "` por truthy: whitespace llegaba a DynamoDB como nombre de tabla.
+  const verdict = classifyTableName(kernel.tableName);
+  const tableName = verdict.status === 'ok'
+    ? verdict.value
     : (isInMemory ? DEFAULT_INMEMORY_TABLE : null);
   if (!tableName) {
-    throw new KernelStoreError(
-      'config.tableName requerido para el driver real: la tabla/naming/región del kernel se define por config, nunca hardcode (A05/CA-9)',
-      {},
-    );
+    // El driver real NO tiene default: sin nombre de tabla válido, fail-closed.
+    // El texto es la CONSTANTE del guard (CA-3): nombra `.pipeline/config.yaml`,
+    // `kernel.tableName` y el runbook, y no interpola el valor recibido (A02).
+    // La variante (missing/empty/whitespace) va en el campo estructurado, no en
+    // el mensaje — las tres comparten remedio.
+    throw new KernelStoreError(DURABLE_CONFIG_ABORT_MESSAGE, { configReason: verdict.reason });
   }
   return {
     tableName,
@@ -627,6 +655,116 @@ function createKernelStore(deps = {}) {
     return { ok: true, sk: item.SK, auditId: ulid };
   }
 
+  // ---- lectura paginada de las entidades append-only (#5209) ---------------
+  //
+  // `getSignature` sólo sabe traer un id conocido. La reconciliación
+  // DynamoDB → filesystem necesita el CONJUNTO COMPLETO, y "completo" acá es
+  // literal: una página perdida es una firma perdida, y una firma perdida que
+  // igual da paridad es el falso verde que #5209 existe para impedir.
+  //
+  // Garantías:
+  //   - Aislamiento (A01): la Query condiciona por `PK = contextProjectId`. Nunca
+  //     hay `Scan`, así que no existe camino por el que un ítem de otra partición
+  //     entre al resultado; igual se revalida ítem por ítem.
+  //   - Fail-closed (CA-3): un solo ítem que no valide ⇒ alerta + throw. NO se
+  //     devuelve "lo que se pudo leer": un export parcial que se presenta como
+  //     total es peor que no exportar.
+  //   - Append-only: sólo lee. Este módulo no tiene `DeleteItem` y esta ruta no
+  //     lo reintroduce.
+  async function listAppendOnly(entityType, opts = {}) {
+    const prefix = SK_PREFIX[entityType];
+    if (!prefix) {
+      throw new KernelStoreError(
+        `listAppendOnly no soporta entityType "${entityType}" — sólo signature/audit son append-only en este store`,
+        { entityType: entityType == null ? null : String(entityType) },
+      );
+    }
+    if (typeof driver.query !== 'function') {
+      // Fail-closed: sin Query no hay forma de saber si leímos todo. Devolver []
+      // sería indistinguible de "no había nada" — justo la confusión que rompe
+      // la paridad. Mejor un error con remedio que un conjunto vacío mentiroso.
+      throw new KernelStoreError(
+        'el driver del store no expone `query`: no se puede listar el conjunto completo de ' +
+        'entidades append-only sin arriesgar una lectura parcial (fail-closed). ' +
+        'Usá un driver con soporte de Query (in-memory o aws-cli de provisioner-infra.js).',
+        { entityType, driverKind: driver && driver.kind },
+      );
+    }
+    await ensureTable();
+
+    const pageSize = Number.isFinite(opts.pageSize) && opts.pageSize > 0
+      ? Math.floor(opts.pageSize)
+      : DEFAULT_LIST_PAGE_SIZE;
+
+    const out = [];
+    const seen = new Set();
+    let exclusiveStartKey = null;
+    let pages = 0;
+
+    do {
+      pages += 1;
+      if (pages > MAX_LIST_PAGES) {
+        throw new KernelStoreError(
+          `paginación de ${entityType} superó el tope de ${MAX_LIST_PAGES} páginas — se aborta sin devolver un conjunto parcial`,
+          { entityType, pages, read: out.length },
+        );
+      }
+      const res = await driver.query(spec, {
+        partitionKey: contextProjectId,
+        skPrefix: prefix,
+        limit: pageSize,
+        exclusiveStartKey,
+      });
+      const items = (res && Array.isArray(res.items)) ? res.items : [];
+      for (const raw of items) {
+        const v = validateItemOnRead(raw, { entityType });
+        if (!v.valid) {
+          onAlert(v.alert);
+          throw new KernelStoreValidationError(
+            `ítem ${entityType} rechazado durante el listado (fail-closed): ${v.stage}`,
+            { stage: v.stage, errors: v.errors, sk: raw && raw.SK, entityType },
+          );
+        }
+        // El prefijo también se verifica sobre el dato leído: el filtro lo aplica
+        // el driver (dato externo), así que no alcanza con confiar en que lo hizo.
+        if (!String(v.item.SK).startsWith(prefix)) {
+          const errors = [{ path: 'SK', keyword: 'prefix', detail: `SK fuera del prefijo esperado "${prefix}"` }];
+          onAlert(alertPayload(raw, 'prefix', errors));
+          throw new KernelStoreValidationError(
+            `ítem con SK fuera del prefijo de ${entityType} (fail-closed)`,
+            { stage: 'prefix', errors, sk: v.item.SK, entityType },
+          );
+        }
+        // Un SK repetido entre páginas significa que la paginación no avanzó bien.
+        // Silenciarlo duplicaría registros en el export y rompería el conteo.
+        if (seen.has(v.item.SK)) {
+          throw new KernelStoreError(
+            `paginación inconsistente: SK repetido entre páginas (${v.item.SK}) — se aborta la lectura`,
+            { entityType, sk: v.item.SK, pages },
+          );
+        }
+        seen.add(v.item.SK);
+        out.push(v.item);
+      }
+      exclusiveStartKey = (res && res.lastEvaluatedKey) || null;
+    } while (exclusiveStartKey);
+
+    // Orden determinístico por SK (ULID ⇒ orden temporal). El export y la
+    // comparación de paridad dependen de un orden estable.
+    out.sort((a, b) => (a.SK < b.SK ? -1 : a.SK > b.SK ? 1 : 0));
+    return out;
+  }
+
+  /** Lista TODAS las firmas de la partición de esta instancia (paginado, fail-closed). */
+  async function listSignatures(opts = {}) {
+    return listAppendOnly(ENTITY.SIGNATURE, opts);
+  }
+
+  /** Lista TODAS las entradas de audit de la partición de esta instancia (paginado, fail-closed). */
+  async function listAuditEntries(opts = {}) {
+    return listAppendOnly(ENTITY.AUDIT, opts);
+  }
+
   // #5124 (Opción B′-1) — `claim()` fue RETIRADO de este módulo a propósito.
   //
   // Este store es la partición de **no-repudio** (firmas + audit). Mientras los
@@ -666,6 +804,9 @@ function createKernelStore(deps = {}) {
     putSignature,
     getSignature,
     appendAuditEntry,
+    // #5209 — lectura completa y paginada del append-only (reconciliación).
+    listSignatures,
+    listAuditEntries,
     // validación (expuesta para reuso/tests)
     validateItemOnRead,
   };
@@ -678,6 +819,9 @@ module.exports = {
   SCHEMA_PATH,
   SCHEMA_VERSION,
   ENTITY,
+  // #5209 — prefijos de SK del append-only (los usa la reconciliación para
+  // nombrar tipos sin re-derivar la gramática de claves).
+  SK_PREFIX,
   // #5204 — re-export por ergonomía: los callers del store (boot, alta durable,
   // drainer) necesitan la MISMA constante de partición del control-plane. La
   // autoridad sigue siendo `project-descriptor.js` (donde vive la política de

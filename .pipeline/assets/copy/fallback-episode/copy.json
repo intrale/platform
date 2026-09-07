@@ -1,0 +1,79 @@
+{
+  "_comment": "UX #6179 — copy canónico del aviso por EPISODIO de motor de respaldo. Fuente única del texto que ve el operador en Telegram (formatEpisodeNotice). NO editar sin pasar por UX. Renderer de referencia: render.js. Validador: validate-copy.js.",
+
+  "reglas": {
+    "canal": "Telegram con parse_mode nulo (dropfile con plain:true). El copy NO usa Markdown: sin *, _, ` ni []. Si alguien reactivara Markdown, el texto se sigue leyendo igual.",
+    "texto_max_chars": 600,
+    "vocabulario_prohibido": "skill=, primary=, fallback=, gated, índice, ids de modelo o de proveedor, errorCode crudo, raw_excerpt, texto de error del proveedor.",
+    "palabra_motor": "Al operador se le habla de MOTOR y de ESCALÓN de capacidad, nunca del id del proveedor (CA-5). Un nombre propio sólo puede aparecer si publicProviderLabel lo devuelve desde la allowlist pública.",
+    "cuatro_preguntas": "Todo aviso de degradación responde, en este orden: qué cambió (titular) · por qué (motivo) · desde cuándo (desde) · qué consecuencia práctica tiene (consecuencia). El quinto bloque es el cierre, y sólo pide acción si existe una (CA-7).",
+    "pureza": "formatEpisodeNotice(episode, { now }) es pura: el reloj entra por parámetro, no se llama Date.now() adentro."
+  },
+
+  "marcadores": {
+    "degradacion": "⚠️",
+    "destacado": "🚨",
+    "normalidad": "✅",
+    "sostenido": "⏳"
+  },
+
+  "titulares": {
+    "entra_respaldo": {
+      "respaldo_pago": "El pipeline pasó a trabajar con un motor de respaldo.",
+      "gratuito_con_herramientas": "El pipeline pasó a trabajar con un motor de respaldo gratuito.",
+      "gratuito_sin_herramientas": "El pipeline pasó a un motor de respaldo que no puede ejecutar comandos."
+    },
+    "baja_escalon": {
+      "respaldo_pago": "El pipeline bajó a otro motor de respaldo.",
+      "gratuito_con_herramientas": "El pipeline bajó a un motor de respaldo gratuito.",
+      "gratuito_sin_herramientas": "El pipeline bajó a un motor de respaldo que no puede ejecutar comandos."
+    },
+    "vuelve_principal": "El pipeline volvió al motor principal.",
+    "sostenido": {
+      "respaldo_pago": "Seguimos con motor de respaldo.",
+      "gratuito_con_herramientas": "Seguimos con un motor de respaldo gratuito.",
+      "gratuito_sin_herramientas": "Seguimos con un motor que no puede ejecutar comandos."
+    }
+  },
+
+  "motivos": {
+    "reposo": "el motor principal está fuera de su franja horaria.",
+    "cuota": "se agotó el cupo disponible.",
+    "transitoria": "una caída temporal del servicio en uso.",
+    "auth": "el acceso al motor principal fue rechazado (credenciales).",
+    "desconocida": "no se pudo determinar."
+  },
+
+  "consecuencias": {
+    "respaldo_pago": "Los agentes conservan todas sus capacidades: siguen ejecutando comandos, editando archivos y corriendo tests. Puede cambiar el estilo de las respuestas.",
+    "gratuito_con_herramientas": "Los agentes siguen ejecutando comandos y editando archivos, pero el resultado puede salir de menor calidad y necesitar más vueltas.",
+    "gratuito_sin_herramientas": "Modo conversacional: los agentes pueden redactar, pero no editan archivos ni corren tests o builds. El trabajo que dependa de eso queda parado hasta que suba un escalón."
+  },
+
+  "cierres": {
+    "sin_accion": "Se vuelve solo al motor principal en cuanto esté disponible. No hace falta que hagas nada.",
+    "auth": "Esto no se resuelve solo: hace falta que revises el acceso del motor principal. Mientras siga así te aviso en cada despacho; no es un error del avisador.",
+    "desconocida": "Conviene que lo mires: sin motivo confirmado no puedo anticipar si se recupera solo. Mientras siga así te aviso en cada despacho; no es un error del avisador.",
+    "sostenido": "Te vuelvo a avisar cada {VENTANA} mientras siga así, para que el silencio no se confunda con normalidad.",
+    "normalidad": "Vuelve la capacidad completa: los agentes ejecutan comandos y corren tests con normalidad otra vez."
+  },
+
+  "plantillas": {
+    "degradacion": "{MARCADOR} {TITULAR}\nMotivo: {MOTIVO}\nDesde las {HORA} ({ANTIGUEDAD}).\n{CONSECUENCIA}\n{CIERRE}",
+    "normalidad": "{MARCADOR} {TITULAR}\nEstuvo {DURACION} con motor de respaldo.\n{CIERRE}"
+  },
+
+  "antiguedad": {
+    "_comment": "Un lapso redondo NO se dice '6 h 0 min': se dice '6 h'. Suena a reloj de máquina y le resta credibilidad al aviso.",
+    "menos_de_un_minuto": "hace menos de un minuto",
+    "minutos": "hace {N} min",
+    "horas": "hace {H} h {M} min",
+    "horas_exactas": "hace {H} h",
+    "dias": "hace {D} d {H} h",
+    "duracion_menos_de_un_minuto": "menos de un minuto",
+    "duracion_minutos": "{N} min",
+    "duracion_horas": "{H} h {M} min",
+    "duracion_horas_exactas": "{H} h",
+    "duracion_dias": "{D} d {H} h"
+  }
+}

@@ -1,0 +1,9 @@
+<!doctype html><meta charset="utf-8"><body style="margin:0;width:1280px;height:720px;background:#0d1117;color:#e6edf3;font:15px/1.55 system-ui;padding:44px 56px;box-sizing:border-box;overflow:hidden"><div style="font:700 30px/1.3 system-ui;margin-bottom:6px">QA #6459 · pasada 5 — turnos huérfanos del Commander</div><div style="color:#8b949e;font-size:16px;margin-bottom:24px">Modo <b>structural</b> con preflight visual bloqueante · HEAD <code>a34be276d</code> · PR #6538</div>
+<div style="font:14px/1.9 ui-monospace,Consolas,monospace;background:#161b22;border:1px solid #30363d;border-radius:10px;padding:18px 22px">
+$ git log --oneline -1<br><span style="color:#3FB950">a34be276d fix(pipeline): el barrido emite el evento terminal en LOS DOS desenlaces (#6459)</span><br>
+$ git diff --stat origin/main...HEAD | tail -1<br><span style="color:#8b949e">18 files changed, 2714 insertions(+), 25 deletions(-)</span>
+</div>
+<div style="margin-top:22px;font-size:16px;color:#8b949e">Pasada nueva sobre un HEAD nuevo: el commit responde al <b style="color:#FF6B8A">rechazo de <code>aprobacion</code> (rev-1)</b> —
+el barrido emitía el evento terminal sólo para los huérfanos, así que un turno con entrega confirmada no cerraba nunca su ciclo.<br>
+El diff toca <code>.pipeline/dashboard.js</code> y el issue referencia el mockup versionado <code>mockups/6440/02-dashboard-badge-huerfano.svg</code>
+⇒ <b style="color:#FF6B8A">structural no significa "sin render"</b>. Todo lo que sigue se ejecutó y se observó en <b>esta</b> pasada.</div>

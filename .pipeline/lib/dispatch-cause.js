@@ -46,6 +46,11 @@ const CAUSAS = Object.freeze({
     HALT_HUMANO: 'halt_humano',
     CB_INFRA: 'cb_infra',
     PRESION_RECURSOS: 'presion_recursos',
+    // #6708 — Guardián de disco en umbral rojo: el despacho de las fases
+    // pesadas (`build`, `verificacion`) queda frenado hasta recuperar margen.
+    // Es ALERTABLE: un disco en rojo hace fallar builds y tests por razones
+    // que el pipeline reporta como defectos del issue, no como falta de disco.
+    DISCO_LLENO: 'disco_lleno',
     VENTANA_HORARIA: 'ventana_horaria',
     REST_MODE: 'rest_mode',
     COOLDOWN: 'cooldown',
@@ -69,6 +74,10 @@ const PRECEDENCIA = Object.freeze([
     CAUSAS.HALT_HUMANO,
     CAUSAS.CB_INFRA,
     CAUSAS.PRESION_RECURSOS,
+    // #6708 — Justo debajo de la presión de CPU/RAM y por encima de las
+    // causas esperadas: si el disco está en rojo, eso explica el no-despacho
+    // mejor que una ventana horaria, y hay que decirlo.
+    CAUSAS.DISCO_LLENO,
     CAUSAS.VENTANA_HORARIA,
     CAUSAS.REST_MODE,
     CAUSAS.COOLDOWN,
@@ -88,6 +97,7 @@ const LABELS = Object.freeze({
     [CAUSAS.HALT_HUMANO]: 'Detenido por humano',
     [CAUSAS.CB_INFRA]: 'Circuit breaker de infraestructura',
     [CAUSAS.PRESION_RECURSOS]: 'Presión de recursos',
+    [CAUSAS.DISCO_LLENO]: 'Sin espacio en disco',
     [CAUSAS.VENTANA_HORARIA]: 'Fuera de ventana horaria',
     [CAUSAS.REST_MODE]: 'Modo descanso',
     [CAUSAS.COOLDOWN]: 'En cooldown',
@@ -110,6 +120,7 @@ const CAUSAS_ALERTABLES = Object.freeze(new Set([
     CAUSAS.HALT_HUMANO,        // pausa/desync/needs-human real → requiere intervención
     CAUSAS.CB_INFRA,           // circuit breaker de infra abierto
     CAUSAS.PRESION_RECURSOS,   // saturación → "hace rato sin ejecución por recursos"
+    CAUSAS.DISCO_LLENO,        // #6708 — disco en rojo: build/QA frenados
     CAUSAS.BLOQUEO_DEPENDENCIA,
     CAUSAS.DEADLOCK,
 ]));

@@ -188,7 +188,41 @@ function waitForRes(res, timeoutMs = 1000) {
     });
 }
 
-const TMP_LOG_DIR = pathMod.join(os.tmpdir(), 'chat-handler-it-' + Date.now());
+// -----------------------------------------------------------------------------
+// #5796 · Aislamiento cross-proceso de los temporales de esta batería.
+//
+// `os.tmpdir()` es un directorio GLOBAL de la máquina y `Date.now()` tiene
+// resolución de milisegundos. Dos corridas concurrentes de la batería —dos
+// agentes del pipeline, dos worktrees, el tester de dos issues a la vez— que
+// llegan al mismo test dentro del mismo milisegundo derivan EXACTAMENTE la
+// misma ruta y se pisan los archivos entre sí: una corrida rota su archivo y la
+// otra lo vuelve a crear en el medio, o el `finally` de una borra el temporal
+// que la otra todavía está usando.
+//
+// El síntoma no señala al código bajo prueba: aparece como un `existsSync` que
+// devuelve lo contrario de lo esperado, o un `readFileSync` sobre un archivo
+// que "debería" existir. Se lee como un bug de rotación/append y no lo es.
+//
+// `mkdtempSync` delega la unicidad al sistema operativo: cada proceso recibe su
+// propio directorio, sin coordinación ni suerte de por medio.
+// -----------------------------------------------------------------------------
+const TMP_DIRS_TO_CLEAN = [];
+
+function uniqueTmpPath(prefix, basename = 'chat.jsonl') {
+    const dir = fs.mkdtempSync(pathMod.join(os.tmpdir(), prefix));
+    TMP_DIRS_TO_CLEAN.push(dir);
+    return pathMod.join(dir, basename);
+}
+
+// Red de seguridad: los `finally` de cada test siguen borrando sus archivos;
+// esto sólo se lleva los directorios contenedores al terminar el proceso.
+process.on('exit', () => {
+    for (const dir of TMP_DIRS_TO_CLEAN) {
+        try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_) { /* best-effort */ }
+    }
+});
+
+const TMP_LOG_DIR = uniqueTmpPath('chat-handler-it-', 'logs');
 
 test('handle POST: params inválidos (path traversal en issue) → 400 con field=issue', async () => {
     __resetSingletonForTesting();
@@ -298,14 +332,14 @@ test('handle POST: cleanup del TMP_LOG_DIR', () => {
 
 // -----------------------------------------------------------------------------
 test('readChatHistory: archivo no existe → entries vacío', () => {
-    const tmp = path.join(os.tmpdir(), 'chat-' + Date.now() + '.jsonl');
+    const tmp = uniqueTmpPath('chat-');
     const result = handler.readChatHistory(tmp);
     assert.equal(result.entries.length, 0);
     assert.equal(result.truncated, false);
 });
 
 test('readChatHistory: archivo válido devuelve entries', () => {
-    const tmp = path.join(os.tmpdir(), 'chat-' + Date.now() + '.jsonl');
+    const tmp = uniqueTmpPath('chat-');
     const lines = [
         JSON.stringify({ timestamp: '2026-05-29T12:00:00Z', type: 'operator_message', message_id: 'm1', message: 'hola', author: 'operator', remoteAddress: '127.0.0.1' }),
         JSON.stringify({ timestamp: '2026-05-29T12:00:05Z', type: 'agent_response', message_id: 'r1', message: 'ok', author: 'agent' }),
@@ -325,7 +359,7 @@ test('readChatHistory: archivo válido devuelve entries', () => {
 });
 
 test('readChatHistory: skip-ea líneas corruptas con conteo', () => {
-    const tmp = path.join(os.tmpdir(), 'chat-' + Date.now() + '.jsonl');
+    const tmp = uniqueTmpPath('chat-');
     const lines = [
         JSON.stringify({ timestamp: '2026-05-29T12:00:00Z', type: 'operator_message', message_id: 'm1', message: 'hola' }),
         '{this is not valid json',
@@ -343,14 +377,14 @@ test('readChatHistory: skip-ea líneas corruptas con conteo', () => {
 
 // -----------------------------------------------------------------------------
 test('maybeRotateChatFile: noop si no existe', () => {
-    const tmp = path.join(os.tmpdir(), 'chat-' + Date.now() + '.jsonl');
+    const tmp = uniqueTmpPath('chat-');
     // Solo debe no crashear
     handler.maybeRotateChatFile(tmp, () => {});
     assert.equal(fs.existsSync(tmp), false);
 });
 
 test('maybeRotateChatFile: noop si bajo el cap', () => {
-    const tmp = path.join(os.tmpdir(), 'chat-rot-' + Date.now() + '.jsonl');
+    const tmp = uniqueTmpPath('chat-rot-');
     fs.writeFileSync(tmp, 'pequeño contenido\n', 'utf8');
     try {
         handler.maybeRotateChatFile(tmp, () => {});
@@ -363,7 +397,7 @@ test('maybeRotateChatFile: noop si bajo el cap', () => {
 });
 
 test('maybeRotateChatFile: rota cuando supera el cap', () => {
-    const tmp = path.join(os.tmpdir(), 'chat-rot2-' + Date.now() + '.jsonl');
+    const tmp = uniqueTmpPath('chat-rot2-');
     // Generar contenido > cap (5MB)
     const big = Buffer.alloc(handler.CHAT_FILE_ROTATE_BYTES + 1024, 'x').toString('utf8');
     fs.writeFileSync(tmp, big, 'utf8');
@@ -379,7 +413,7 @@ test('maybeRotateChatFile: rota cuando supera el cap', () => {
 });
 
 test('maybeRotateChatFile: reintenta EBUSY transitorio al rotar en Windows', () => {
-    const tmp = path.join(os.tmpdir(), 'chat-rot-ebusy-' + Date.now() + '.jsonl');
+    const tmp = uniqueTmpPath('chat-rot-ebusy-');
     fs.writeFileSync(tmp, Buffer.alloc(handler.CHAT_FILE_ROTATE_BYTES + 1, 'x'));
     const originalRename = fs.renameSync;
     let attempts = 0;
@@ -447,7 +481,7 @@ test('hasValidOrigin: Referer válido ok', () => {
 
 // -----------------------------------------------------------------------------
 test('appendChatEntry: escribe línea JSONL en el archivo', async () => {
-    const tmp = path.join(os.tmpdir(), 'chat-append-' + Date.now() + '.jsonl');
+    const tmp = uniqueTmpPath('chat-append-');
     const entry = {
         timestamp: '2026-05-29T12:00:00Z',
         type: 'operator_message',

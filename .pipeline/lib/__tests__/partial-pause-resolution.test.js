@@ -106,12 +106,19 @@ function makeDeps(mode = 'partial_pause', overrides = {}) {
     };
 }
 
+// #6118 — Las dos acciones nuevas operan sobre UN issue, así que sin ese
+// parámetro el request es inválido y muere en 400 antes de leer nada. Para
+// ejercitar el anti-replay (que es lo que estos tests miden) hay que mandarles
+// un issue válido; si no, se estaría midiendo la validación de entrada.
+const NEEDS_ISSUE = new Set(['include-deps-for-issue', 'mute-alert']);
+const issueFor = (action) => (NEEDS_ISSUE.has(action) ? 6033 : undefined);
+
 test('#5923 con mode !== partial_pause ⇒ 409 y CERO mutación (anti-replay)', () => {
     // `null` explícito NO dispara el default del helper: cubre el modo ilegible.
     for (const mode of ['running', 'paused', 'rest', null]) {
         const h = makeDeps(mode);
         for (const action of RESOLUTIONS) {
-            const out = applyResolution({ action, authorizedBy: BY, deps: h.deps });
+            const out = applyResolution({ action, authorizedBy: BY, issue: issueFor(action), deps: h.deps });
             assert.equal(out.status, 409, `${action} en modo ${mode} debe dar 409`);
             assert.match(out.body.msg, /no en partial_pause/);
         }
@@ -122,9 +129,24 @@ test('#5923 con mode !== partial_pause ⇒ 409 y CERO mutación (anti-replay)', 
 
 test('#5923 si el estado del pipeline no se puede leer ⇒ 409, nunca mutación a ciegas', () => {
     const deps = { getPipelineMode: () => undefined, markDepRiskAccepted: () => { throw new Error('no debe llamarse'); },
-                   clearPartialPause: () => { throw new Error('no debe llamarse'); } };
+                   clearPartialPause: () => { throw new Error('no debe llamarse'); },
+                   setPartialPause: () => { throw new Error('no debe llamarse'); },
+                   mute: () => { throw new Error('no debe llamarse'); } };
     for (const action of RESOLUTIONS) {
-        assert.equal(applyResolution({ action, authorizedBy: BY, deps }).status, 409);
+        assert.equal(applyResolution({ action, authorizedBy: BY, issue: issueFor(action), deps }).status, 409);
+    }
+});
+
+test('#6118 las acciones por issue rechazan con 400 un issue que no es `^\\d{1,7}$`', () => {
+    // El entero viene del cliente. Se valida ANTES de leer estado y antes de
+    // cualquier mutación: un `../` o un `1e9` no llega a tocar nada.
+    for (const action of NEEDS_ISSUE) {
+        for (const malo of [undefined, '', 'abc', '12a', '../6033', '6033;rm', '12345678', '-5', '1.5', null]) {
+            const h = makeDeps();
+            const out = applyResolution({ action, authorizedBy: BY, issue: malo, deps: h.deps });
+            assert.equal(out.status, 400, `${action} con issue=${JSON.stringify(malo)} debe dar 400`);
+            assert.equal(h.calls.mark.length + h.calls.clear.length, 0, 'cero mutación');
+        }
     }
 });
 
@@ -284,7 +306,9 @@ test('#5923 B3 un authorizedBy fuera del enum ⇒ 403 y CERO mutación', () => {
             writeMarker({ allowed_issues: [5923], allowed_skills: ['qa'], created_at: 'x', source: 'wave-promote' });
             const calls = { depsState: 0 };
             for (const action of RESOLUTIONS) {
-                const out = applyResolution({ action, authorizedBy: by, deps: realDeps(pp, calls) });
+                const out = applyResolution({
+                    action, authorizedBy: by, issue: issueFor(action), deps: realDeps(pp, calls),
+                });
                 assert.equal(out.status, 403, `${JSON.stringify(by)} no está en el enum ⇒ 403`);
             }
             assert.ok(readMarker(), 'ninguna mutación se aplicó');
@@ -322,14 +346,279 @@ test('#5923 markDepRiskAccepted es fail-closed si no hay pausa parcial vigente',
     });
 });
 
-test('#5923 RESOLUTIONS coincide con los paths que rutea el callback-handler', () => {
+test('#6118 cada acción ruteada desde Telegram existe en RESOLUTIONS (nada de botones muertos)', () => {
     const path = require('path');
     const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
     const handler = require(path.join(REPO_ROOT, '.claude', 'hooks', 'commander', 'callback-handler.js'));
-    for (const action of RESOLUTIONS) {
-        assert.equal(handler.PP_ROUTES[action], `/api/partial-pause/${action}`,
-            `${action} tiene que estar ruteado o el botón queda muerto`);
+    // La dirección del chequeo se invierte respecto de #5923: ahora RESOLUTIONS
+    // es un SUPERCONJUNTO de lo ruteado desde Telegram, porque
+    // `cancel-partial-pause` sigue siendo una resolución válida (la usa el
+    // dashboard) pero ya no tiene botón. Lo que no puede pasar es lo inverso:
+    // una ruta de Telegram sin implementación del otro lado.
+    for (const [action, route] of Object.entries(handler.PP_ROUTES)) {
+        assert.ok(RESOLUTIONS.includes(action) || action === 'include-deps',
+            `${action} se rutea pero no está implementado ⇒ botón muerto`);
+        assert.equal(route, `/api/partial-pause/${action}`);
     }
-    // `include-deps` ya existía y sigue ruteado.
-    assert.equal(handler.PP_ROUTES['include-deps'], '/api/partial-pause/include-deps');
+});
+
+test('#6118 CA-6 `cancel-partial-pause` sigue implementado pero YA NO se rutea desde Telegram', () => {
+    const path = require('path');
+    const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
+    const handler = require(path.join(REPO_ROOT, '.claude', 'hooks', 'commander', 'callback-handler.js'));
+    // Sigue siendo una resolución legítima: el dashboard la ofrece, y ahí el
+    // alcance global es lo que el operador está mirando.
+    assert.ok(RESOLUTIONS.includes('cancel-partial-pause'));
+    // Pero no tiene ruta: un tap sobre un mensaje viejo del chat muere en el
+    // lookup, sin request saliente. Ese es el corazón del CA-6.
+    assert.equal(handler.PP_ROUTES['cancel-partial-pause'], undefined,
+        'con ruta, un callback_data histórico o forjado seguiría liberando todo el backlog');
+    assert.equal(handler.PP_META['cancel-partial-pause'], undefined,
+        'sin meta tampoco puede pedir confirmación ni rearmar el teclado');
+});
+
+// =============================================================================
+// #6118 — Las dos resoluciones nuevas de la alerta de dependencias faltantes.
+//
+// `mute-alert` silencia sin tocar nada; `include-deps-for-issue` habilita SÓLO
+// las dependencias del issue que titula esa alerta. Las dos derivan el conjunto
+// de dependencias del state del SERVIDOR: el tap sólo trae el número de issue,
+// porque el set no entra en los 64 bytes del `callback_data`.
+// =============================================================================
+
+const copy6118 = require('../partial-pause-deps-copy');
+
+/**
+ * Deps con el state de dependencias cargado y spies que EXPLOTAN si se invoca
+ * una primitiva de mutación. No devuelven `false`: tiran, así que el test falla
+ * con el stack del culpable y no con un assert genérico al final.
+ */
+function depsCon6118(stateMissing, overrides = {}) {
+    const calls = { mutes: [], sets: [], mark: [], clear: [], dropped: [], depsState: 0 };
+    return {
+        calls,
+        deps: {
+            getPipelineMode: () => ({
+                mode: 'partial_pause',
+                allowedIssues: [6033, 6040],
+                allowedSkills: ['qa'],
+                depSources: { 6040: 'auto-deps' },
+            }),
+            readDepsState: () => ({ missing: stateMissing }),
+            alertSignature: require('../partial-pause-deps').alertSignature,
+            mute: (sig, meta) => {
+                calls.mutes.push({ sig, meta });
+                return { ok: true, signature: sig, expiresAt: 1700086400000, ttlMs: 24 * 3600 * 1000 };
+            },
+            setPartialPause: (list, opts) => {
+                calls.sets.push({ list, opts });
+                return { ok: true, allowedIssues: list };
+            },
+            markDepRiskAccepted: (o) => {
+                calls.mark.push(o);
+                return { ok: true, allowedIssues: [6033, 6040], allowedSkills: ['qa'] };
+            },
+            clearPartialPause: () => { throw new Error('clearPartialPause NO puede invocarse desde estas ramas'); },
+            dropIssueFromDepsState: (n) => { calls.dropped.push(n); },
+            clearDepsState: () => { calls.depsState++; },
+            muteTtlMs: 24 * 3600 * 1000,
+            ...overrides,
+        },
+    };
+}
+
+// ─── CA-9 · silenciar no muta la selección ───────────────────────────────────
+
+test('#6118 CA-9 mute-alert no toca NINGUNA primitiva que cambie los issues habilitados', () => {
+    const h = depsCon6118({ 6033: [6032] }, {
+        setPartialPause: () => { throw new Error('mute-alert no puede escribir el marker'); },
+        markDepRiskAccepted: () => { throw new Error('mute-alert no puede marcar riesgo asumido'); },
+    });
+    const out = applyResolution({
+        action: 'mute-alert', authorizedBy: BY, issue: 6033, operatorRef: '111222333', deps: h.deps,
+    });
+
+    assert.equal(out.status, 200);
+    assert.equal(out.body.ok, true);
+    assert.equal(h.calls.mutes.length, 1, 'lo único que hace es persistir el silencio');
+    assert.equal(h.calls.depsState, 0, 'ni siquiera limpia el state: el issue SIGUE frenado');
+});
+
+test('#6118 mute-alert usa la firma VIGENTE del state, no la que traía el mensaje', () => {
+    // El operador aprieta un botón emitido cuando faltaba sólo #6032, pero desde
+    // entonces apareció #6031. Se silencia la situación de AHORA.
+    const h = depsCon6118({ 6033: [6032, 6031] });
+    const out = applyResolution({ action: 'mute-alert', authorizedBy: BY, issue: 6033, deps: h.deps });
+
+    assert.deepEqual(h.calls.mutes[0].meta.deps, [6032, 6031]);
+    assert.equal(h.calls.mutes[0].sig, '6033:6031,6032', 'firma derivada del state, normalizada');
+    assert.equal(out.body.signature, '6033:6031,6032');
+});
+
+test('#6118 mute-alert propaga el operador y el TTL configurado al store', () => {
+    const h = depsCon6118({ 6033: [6032] });
+    applyResolution({ action: 'mute-alert', authorizedBy: BY, issue: 6033, operatorRef: '111222333', deps: h.deps });
+    assert.equal(h.calls.mutes[0].meta.operatorRef, '111222333', 'CA-12: queda quién lo pidió');
+    assert.equal(h.calls.mutes[0].meta.ttlMs, 24 * 3600 * 1000, 'CA-13: la ventana sale de config');
+    assert.equal(h.calls.mutes[0].meta.issue, 6033);
+});
+
+test('#6118 mute-alert sobre un issue que ya no está frenado ⇒ 409 y cero escritura', () => {
+    // Anti-replay natural: el tap llegó tarde, la situación ya se resolvió.
+    for (const state of [{}, { 6040: [6041] }, { 6033: [] }]) {
+        const h = depsCon6118(state, { mute: () => { throw new Error('no hay nada que silenciar'); } });
+        const out = applyResolution({ action: 'mute-alert', authorizedBy: BY, issue: 6033, deps: h.deps });
+        assert.equal(out.status, 409);
+        assert.match(out.body.operatorMsg, /#6033 ya no está esperando dependencias/);
+    }
+});
+
+test('#6118 mute-alert con el state ilegible ⇒ 409, nunca un silencio a ciegas', () => {
+    const h = depsCon6118({}, {
+        readDepsState: () => { throw new Error('archivo corrupto'); },
+        mute: () => { throw new Error('no puede silenciar sin saber qué'); },
+    });
+    assert.equal(applyResolution({ action: 'mute-alert', authorizedBy: BY, issue: 6033, deps: h.deps }).status, 409);
+});
+
+// ─── CA-5 · el include queda acotado al issue de la alerta ───────────────────
+
+test('#6118 CA-5 include-deps-for-issue agrega SÓLO las deps del issue del request', () => {
+    // Escenario Gherkin: #6033 depende de #6032 y #6040 de #6041. El tap sobre
+    // la alerta de #6033 no puede arrastrar a #6041.
+    const h = depsCon6118({ 6033: [6032], 6040: [6041] });
+    const out = applyResolution({ action: 'include-deps-for-issue', authorizedBy: BY, issue: 6033, deps: h.deps });
+
+    assert.equal(out.status, 200);
+    assert.equal(h.calls.sets.length, 1);
+    assert.deepEqual(h.calls.sets[0].list, [6032, 6033, 6040], 'suma #6032 a lo que ya estaba habilitado');
+    assert.ok(!h.calls.sets[0].list.includes(6041), 'la dependencia del OTRO issue alertado no se toca');
+    assert.deepEqual(out.body.addedDeps, [6032]);
+});
+
+test('#6118 include-deps-for-issue saca del state sólo al issue resuelto', () => {
+    const h = depsCon6118({ 6033: [6032], 6040: [6041] });
+    applyResolution({ action: 'include-deps-for-issue', authorizedBy: BY, issue: 6033, deps: h.deps });
+    assert.deepEqual(h.calls.dropped, [6033]);
+    assert.equal(h.calls.depsState, 0, 'borrar el state entero volvería invisible a #6040');
+});
+
+test('#6118 include-deps-for-issue preserva skills, dep_sources y metadata de la ola', () => {
+    // `setPartialPause` reescribe el marker desde sus argumentos: lo que no se
+    // le pasa, se pierde. Habilitar una dependencia no puede borrar la identidad
+    // de la ola activa como daño colateral.
+    const h = depsCon6118({ 6033: [6032] }, {
+        readWaveMeta: () => ({ waveNumber: 9, waveName: 'Ola Puente', waveGoal: 'kernel multiproducto' }),
+    });
+    applyResolution({ action: 'include-deps-for-issue', authorizedBy: BY, issue: 6033, deps: h.deps });
+
+    const opts = h.calls.sets[0].opts;
+    assert.deepEqual(opts.allowedSkills, ['qa']);
+    assert.equal(opts.waveNumber, 9);
+    assert.equal(opts.waveName, 'Ola Puente');
+    assert.equal(opts.waveGoal, 'kernel multiproducto');
+    assert.equal(opts.depSources['6032'], 'auto-deps', 'la dep nueva queda trazada como automática');
+    assert.equal(opts.depSources['6040'], 'auto-deps', 'las previas se preservan');
+    assert.equal(opts.acceptedDepRisk, false, 'ya no hay riesgo asumido: se incluyeron las deps');
+    assert.equal(opts.authorizedBy, BY);
+});
+
+test('#6118 include-deps-for-issue sobre un issue que ya no está frenado ⇒ 409 sin escribir', () => {
+    const h = depsCon6118({ 6040: [6041] }, {
+        setPartialPause: () => { throw new Error('no hay nada que incluir'); },
+    });
+    const out = applyResolution({ action: 'include-deps-for-issue', authorizedBy: BY, issue: 6033, deps: h.deps });
+    assert.equal(out.status, 409);
+    assert.equal(h.calls.sets.length, 0);
+});
+
+// ─── CA-1 / CA-7 · frontera del copy ─────────────────────────────────────────
+
+test('#6118 CA-1 todo `operatorMsg` va sin jerga; el `msg` del dashboard la conserva', () => {
+    const escenarios = [
+        ['mute-alert', 6033, { 6033: [6032] }, 200],
+        ['include-deps-for-issue', 6033, { 6033: [6032, 6031, 6030] }, 200],
+        ['keep-original', 6033, { 6033: [6032] }, 200],
+        ['mute-alert', 6033, {}, 409],
+        ['include-deps-for-issue', 6033, {}, 409],
+    ];
+    for (const [action, issue, state, esperado] of escenarios) {
+        const h = depsCon6118(state);
+        const out = applyResolution({ action, authorizedBy: BY, issue, deps: h.deps });
+        assert.equal(out.status, esperado, `${action} → ${esperado}`);
+        assert.ok(out.body.operatorMsg, `${action} tiene que redactar el texto del operador`);
+        assert.deepEqual(copy6118.findForbiddenTerms(out.body.operatorMsg), [],
+            `${action}: jerga filtrada a Telegram en "${out.body.operatorMsg}"`);
+    }
+});
+
+test('#6118 CA-14 el `msg` interno del dashboard NO se empobrece', () => {
+    // La prohibición de jerga es de la superficie de Telegram. Acá "allowlist"
+    // es el término correcto y el operador del dashboard lo entiende.
+    const h = depsCon6118({ 6033: [6032] });
+    const out = applyResolution({ action: 'keep-original', authorizedBy: BY, issue: 6033, deps: h.deps });
+    assert.match(out.body.msg, /allowlist/, 'el dashboard mantiene su vocabulario');
+    assert.doesNotMatch(out.body.operatorMsg, /allowlist/i, 'Telegram no lo ve');
+});
+
+test('#6118 include-deps-for-issue con primitivas REALES preserva la ola y suma sólo la dep', () => {
+    // Los tests de arriba usan fakes para aislar la lógica; éste corre contra el
+    // `partial-pause` de verdad y un marker en disco. Es el que atrapa un
+    // desacople entre lo que `readWaveMetaFromMarker` devuelve y lo que
+    // `setPartialPause` espera por `opts` — el seam donde se perdía la ola.
+    withRealPipelineDir(({ pp, writeMarker, readMarker }) => {
+        writeMarker({
+            allowed_issues: [6033, 6040],
+            allowed_skills: ['qa', 'tester'],
+            wave_number: 9,
+            wave_name: 'Ola Puente',
+            wave_goal: 'kernel multiproducto',
+            dep_sources: { 6040: 'auto-deps' },
+            created_at: '2026-08-01T00:00:00.000Z',
+            source: 'wave-promote',
+        });
+        const dropped = [];
+        const out = applyResolution({
+            action: 'include-deps-for-issue',
+            authorizedBy: BY,
+            issue: 6033,
+            deps: {
+                getPipelineMode: pp.getPipelineMode,
+                setPartialPause: pp.setPartialPause,
+                readWaveMeta: pp.readWaveMetaFromMarker,
+                readDepsState: () => ({ missing: { 6033: [6032], 6040: [6041] } }),
+                dropIssueFromDepsState: (n) => dropped.push(n),
+            },
+        });
+
+        assert.equal(out.status, 200, out.body.msg);
+        const marker = readMarker();
+        assert.deepEqual(marker.allowed_issues, [6032, 6033, 6040], 'suma #6032 y nada más');
+        assert.ok(!marker.allowed_issues.includes(6041), 'la dep del otro issue alertado no entra');
+        assert.deepEqual(marker.allowed_skills, ['qa', 'tester'], 'los skills sobreviven (#3680)');
+        assert.equal(marker.wave_number, 9, 'la identidad de la ola sobrevive (#4030)');
+        assert.equal(marker.wave_name, 'Ola Puente');
+        assert.equal(marker.wave_goal, 'kernel multiproducto');
+        assert.equal(marker.dep_sources['6032'], 'auto-deps');
+        assert.deepEqual(dropped, [6033]);
+    });
+});
+
+test('#6118 readWaveMetaFromMarker degrada a {} sin marker o con marker ilegible', () => {
+    withRealPipelineDir(({ pp, marker }) => {
+        assert.deepEqual(pp.readWaveMetaFromMarker(), {}, 'sin marker no inventa una ola');
+        fs.writeFileSync(marker, '{ no es json');
+        assert.deepEqual(pp.readWaveMetaFromMarker(), {}, 'marker corrupto no tira');
+        fs.writeFileSync(marker, JSON.stringify({ allowed_issues: [1] }));
+        assert.deepEqual(pp.readWaveMetaFromMarker(), {}, 'sin metadata de ola devuelve vacío');
+    });
+});
+
+test('#6118 CA-7 el 403 de autorización también habla en criollo para Telegram', () => {
+    const h = depsCon6118({ 6033: [6032] });
+    const out = applyResolution({ action: 'mute-alert', authorizedBy: 'inventado:x', issue: 6033, deps: h.deps });
+    assert.equal(out.status, 403);
+    assert.match(out.body.msg, /enum|autorización|registrado/i, 'el detalle técnico queda del lado del dashboard');
+    assert.equal(out.body.operatorMsg, 'No pude aplicar el cambio: la autorización fue rechazada.');
+    assert.equal(h.calls.mutes.length, 0, 'sin autorización no se silencia nada');
 });

@@ -630,29 +630,80 @@ function isPrivilegedNamespace(data) {
 // Mapa CONGELADO acción → path. El `action` viene del cliente, así que jamás se
 // interpola en la URL: se busca en el mapa y sin match no sale ningún request
 // (`pp:../kill-agent:1` muere en el lookup).
+// #6118 — `cancel-partial-pause` YA NO ESTÁ. No alcanzaba con sacarlo del
+// teclado del Pulpo: el `callback_data` no tiene nonce ni TTL y los mensajes
+// viven para siempre en el chat, así que un tap sobre un aviso viejo (o un
+// callback forjado) seguía liberando TODO el backlog. Sacándolo del mapa, el
+// lookup no matchea y no sale ningún request (CA-6 / REQ-SEC-5). La acción
+// sigue existiendo en el dashboard, que es donde el alcance global se ve y se
+// entiende.
+//
+// `include-deps-for-issue` apunta al endpoint ACOTADO: suma sólo las
+// dependencias del issue que titula la alerta. El viejo `/include-deps`
+// recalcula sobre todo lo habilitado y queda sirviendo al banner del dashboard,
+// donde el alcance global sí es el correcto.
 const PP_ROUTES = Object.freeze({
-    'include-deps':         '/api/partial-pause/include-deps',
-    'keep-original':        '/api/partial-pause/keep-original',
-    'cancel-partial-pause': '/api/partial-pause/cancel-partial-pause',
+    'include-deps-for-issue': '/api/partial-pause/include-deps-for-issue',
+    'keep-original':          '/api/partial-pause/keep-original',
+    'mute-alert':             '/api/partial-pause/mute-alert',
 });
 
+// Alias de compatibilidad: los mensajes emitidos ANTES de #6118 siguen en el
+// chat con `pp:include-deps:<issue>`. Se normalizan a la acción nueva para que
+// esos botones no queden muertos — y de paso quedan acotados al issue, que es
+// el comportamiento correcto. `cancel-partial-pause` NO tiene alias: se retira
+// a propósito.
+const PP_ALIASES = Object.freeze({
+    'include-deps': 'include-deps-for-issue',
+});
+
+// #6118 — Los `consequence` son TEXTO VISIBLE en Telegram (van al toast modal y
+// quedan escritos en el mensaje editado), así que les aplica la misma
+// prohibición de jerga que al resto. Los tres de antes concentraban los tres
+// términos prohibidos.
+//
+// `PP_META` es estático y congelado: no tiene `issue` ni `deps` a mano. Por eso
+// se usa el FALLBACK GENÉRICO del módulo de copy, que habla del issue en
+// abstracto pero sigue libre de vocabulario interno. Está prohibido caer al
+// consequence viejo como fallback.
 const PP_META = Object.freeze({
-    'include-deps': {
-        text: '✅ Sí, incluir las deps',
+    'include-deps-for-issue': {
+        text: '✅ Habilitar las dependencias y continuar',
         highImpact: false,
-        consequence: 'Vas a sumar las issues de las que depende al allowlist de la pausa parcial.',
+        consequence: 'Vas a habilitar las dependencias que faltan para que el issue pueda avanzar.',
     },
     'keep-original': {
-        text: '🎯 Seguir sólo con el issue original',
+        text: '🎯 Seguir sin las dependencias',
         highImpact: false,
-        consequence: 'Vas a dejar el allowlist como está; las deps abiertas quedan asumidas como riesgo.',
+        consequence: 'Vas a dejar que el issue avance sin esperar a sus dependencias, asumiendo el riesgo.',
     },
-    'cancel-partial-pause': {
-        text: '🔓 Levantar la pausa parcial',
-        highImpact: true,
-        consequence: 'Vas a levantar la pausa parcial: el pipeline vuelve a tomar TODO el backlog, no sólo el allowlist actual.',
+    'mute-alert': {
+        // Silenciar no muta nada, así que no exige doble tap. Su texto declara
+        // la ventana, que se deriva de la configuración en `_ppCopy()`.
+        text: '🔕 No avisarme por un rato',
+        highImpact: false,
+        consequence: 'Vas a dejar de recibir este aviso por un rato. El issue sigue frenado igual.',
     },
 });
+
+/**
+ * Copy vivo de la superficie `pp:`. Se resuelve en runtime (no en require-time)
+ * porque la ventana del silencio sale de la configuración: hardcodearla acá
+ * haría que cambiar el valor en `config.yaml` deje el texto mintiendo.
+ *
+ * Nunca tira: si el módulo no se puede cargar, el caller usa `PP_META` tal cual,
+ * que ya está libre de jerga. Un hook que explota deja al operador sin botones.
+ */
+function _ppCopy() {
+    try {
+        const copy = require(path.join(_repoRoot, ".pipeline", "lib", "partial-pause-deps-copy.js"));
+        const muteStore = require(path.join(_repoRoot, ".pipeline", "lib", "partial-pause-deps-mute.js"));
+        return { copy, muteTtlMs: muteStore.resolveTtlMsFromDisk() };
+    } catch (e) {
+        _log("#6118 no se pudo cargar el copy de la alerta: " + e.message);
+        return null;
+    }
+}
 
 // Separador determinístico entre el texto original del mensaje y el bloque de
 // confirmación. Lo escribimos y lo leemos nosotros, así que cancelar puede
@@ -732,12 +783,20 @@ function _degradedOriginalKeyboard(ns, issue) {
     try {
         const btnUrl = _btnUrl();
         if (ns === "pp") {
+            // #6118 — Tres filas de un botón (UX-D-3): dos labels de ~30 chars
+            // en la misma fila se truncan con "…" en Telegram móvil. Sin el
+            // botón de alcance global (CA-6). Los labels salen del copy vivo
+            // para que la ventana del silencio sea la configurada; si el módulo
+            // no carga, `PP_META` ya trae textos limpios de jerga.
+            const live = _ppCopy();
+            const labels = live
+                ? live.copy.buildButtonLabels({ issue, deps: [], muteTtlMs: live.muteTtlMs })
+                : null;
+            const textOf = (a) => (labels && labels[a]) || PP_META[a].text;
             return _rowsOf(btnUrl.buildActionKeyboard([
-                [
-                    { action: "include-deps",  text: PP_META["include-deps"].text,  issue },
-                    { action: "keep-original", text: PP_META["keep-original"].text, issue },
-                ],
-                [{ action: "cancel-partial-pause", text: PP_META["cancel-partial-pause"].text }],
+                [{ action: "include-deps-for-issue", text: textOf("include-deps-for-issue"), issue }],
+                [{ action: "keep-original",          text: textOf("keep-original"),          issue }],
+                [{ action: "mute-alert",             text: textOf("mute-alert"),             issue }],
             ], { callbackPrefix: "pp" }));
         }
         const hb = require(path.join(_repoRoot, ".pipeline", "lib", "human-block.js"));
@@ -764,8 +823,26 @@ function _rowsOf(built) {
 }
 
 /** Metadata de la acción (label + consequence + highImpact) por namespace. */
-function _degradedMeta(ns, action) {
-    if (ns === "pp") return PP_META[action] || null;
+function _degradedMeta(ns, action, issue) {
+    if (ns === "pp") {
+        const base = PP_META[action];
+        if (!base) return null;
+        // #6118 — Se enriquece con el copy vivo: el `issue` sí está a mano acá
+        // (viene del `callback_data`), así que la consecuencia puede nombrarlo.
+        // Las `deps` NO viajan en el tap —no entran en los 64 bytes del
+        // `callback_data`— así que el texto cae al fallback genérico del módulo,
+        // que igual está libre de jerga. La ventana del silencio sale de config.
+        const live = _ppCopy();
+        if (!live) return base;
+        try {
+            const labels = live.copy.buildButtonLabels({ issue, deps: [], muteTtlMs: live.muteTtlMs });
+            return {
+                text: labels[action] || base.text,
+                highImpact: base.highImpact,
+                consequence: live.copy.buildConsequence({ action, issue, muteTtlMs: live.muteTtlMs }),
+            };
+        } catch { return base; }
+    }
     try {
         const hb = require(path.join(_repoRoot, ".pipeline", "lib", "human-block.js"));
         const m = hb.ACTION_META[action];
@@ -835,7 +912,7 @@ function _execHumanBlock(action, issue, operator, chatId, messageId) {
  * `operator` es el `from.id` REAL, ya validado como no vacío por el guard
  * fail-closed del caller: acá no hay ningún fallback a literal (R-SEC-9.a).
  */
-async function _execPartialPause(action, operator) {
+async function _execPartialPause(action, operator, issue) {
     const route = PP_ROUTES[action];
     if (!route) return { ok: false, msg: "Acción no reconocida." };
     // Loopback explícito: el dashboard corre en esta misma máquina. No se usa
@@ -853,24 +930,37 @@ async function _execPartialPause(action, operator) {
             // y con el gate estricto activo el botón habría dado 403 para siempre.
             //
             // R-SEC-9.a — sin fallback a literal: un `operatorRef: "desconocido"`
-            // sobre `cancel-partial-pause` (la acción que libera TODO el backlog)
-            // es peor que no registrar nada, porque el log AFIRMA algo falso. Si
-            // la identidad no llega, no se llega hasta acá.
+            // sobre una acción que muta la selección de la ola es peor que no
+            // registrar nada, porque el log AFIRMA algo falso. Si la identidad no
+            // llega, no se llega hasta acá.
+            //
+            // #6118 — El `issue` viaja en el body. Antes se parseaba del
+            // `callback_data` y se DESCARTABA, así que el servidor no tenía cómo
+            // saber sobre cuál de los issues alertados se apretó el botón y las
+            // acciones sólo podían ser de alcance global. Es el mismo dato que
+            // habilita acotar el include a este issue y derivar la firma del
+            // silencio server-side.
             body: JSON.stringify({
                 authorizedBy: "telegram:operator",
                 operatorRef: operator,
+                issue: issue ? String(issue) : undefined,
             }),
             signal: AbortSignal.timeout(10000),
         });
         let data = null;
         try { data = await resp.json(); } catch { /* body no-JSON */ }
+        // #6118 — `operatorMsg` es el texto redactado para el operador de
+        // Telegram; `msg` es el interno del dashboard, donde "allowlist" es
+        // vocabulario legítimo (CA-14). Se prefiere el primero y se cae al
+        // segundo sólo si el endpoint no lo emitió.
+        const forOperator = (data && (data.operatorMsg || data.msg)) || null;
         if (resp.status === 409) {
-            return { ok: false, msg: (data && data.msg) || "Esa decisión ya no aplica: el pipeline cambió de modo." };
+            return { ok: false, msg: forOperator || "Esa decisión perdió sentido: la selección de la ola cambió." };
         }
         if (!resp.ok || !data || data.ok !== true) {
-            return { ok: false, msg: (data && data.msg) || ("El dashboard respondió " + resp.status + ".") };
+            return { ok: false, msg: forOperator || ("El dashboard respondió " + resp.status + ".") };
         }
-        return { ok: true, msg: data.msg || "Listo." };
+        return { ok: true, msg: forOperator || "Listo." };
     } catch (e) {
         return { ok: false, msg: "No se pudo contactar al dashboard: " + e.message };
     }
@@ -965,7 +1055,13 @@ async function handleDegradedActionCallback(cbData, callbackQueryId, message, fr
         return true;
     }
 
-    const meta = _degradedMeta(ns, action);
+    // #6118 — Normalización de acciones históricas. Los mensajes emitidos antes
+    // de este cambio siguen en el chat con la acción vieja; se remapean a la
+    // nueva para que no queden muertos. `cancel-partial-pause` NO tiene alias:
+    // se retiró a propósito y su tap tiene que morir acá (CA-6).
+    if (ns === "pp" && PP_ALIASES[action]) action = PP_ALIASES[action];
+
+    const meta = _degradedMeta(ns, action, issue);
     if (!meta) {
         _log("#5923 callback con acción desconocida: " + cbData);
         await _degradedToast(callbackQueryId, "⚠️ Acción no reconocida o ya no disponible.");
@@ -997,7 +1093,7 @@ async function handleDegradedActionCallback(cbData, callbackQueryId, message, fr
     let result;
     try {
         result = ns === "pp"
-            ? await _execPartialPause(action, operator)
+            ? await _execPartialPause(action, operator, issue)
             : _execHumanBlock(action, issue, operator, chatId, messageId);
     } catch (e) {
         _log("#5923 error ejecutando " + cbData + ": " + e.message);

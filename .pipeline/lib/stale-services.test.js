@@ -585,13 +585,22 @@ test('CA-3: restart.js conserva el contrato killAll -> syncWithMain -> reexec ->
     assert.ok(m, 'killAll seguido de syncWithMain intacto');
     const iKill = m.index;
     assert.ok(src.indexOf('reexecIfSelfChanged();', iKill) > iKill);
-    assert.ok(src.indexOf('limpiarPendientesRelanzados(launchAll());', iKill) > iKill);
+    // #6441 — el paso de arranque pasó de `limpiarPendientesRelanzados(launchAll())`
+    // a `launchAllVerificado()`, que lanza, VERIFICA servicio por servicio,
+    // reintenta y recién ahí limpia. El contrato que este test protege (que el
+    // arranque venga después de killAll/sync/reexec) no cambió.
+    assert.ok(src.indexOf('launchAllVerificado();', iKill) > iKill);
 });
 
 test('CA-3: restart.js deriva la limpieza de lo efectivamente lanzado, no de una constante', () => {
     const src = fs.readFileSync(path.join(PIPELINE_DIR, 'restart.js'), 'utf8');
-    assert.ok(src.includes('limpiarPendientesRelanzados(launchAll())'),
-        'la lista sale del retorno de launchAll()');
+    // #6441 — la garantía se REFORZÓ: antes se bajaban del registro los
+    // SPAWNEADOS; ahora sólo los verificados VIVOS. Bajar un servicio que no
+    // arrancó lo dejaba con código viejo para siempre y en silencio.
+    assert.ok(src.includes('limpiarPendientesRelanzados(res.vivos)'),
+        'la lista sale de la verificación post-arranque, no de launchAll()');
+    assert.ok(!src.includes('limpiarPendientesRelanzados(launchAll())'),
+        'launchAll() devuelve los spawneados: usarlos sería el fail-open que #6441 cierra');
     assert.ok(!/clearComponents\(\s*COMPONENTS/.test(src), 'nunca se limpia el registro entero');
     assert.ok(/return lanzados;/.test(src), 'launchAll devuelve lo que realmente lanzó');
 });

@@ -33,7 +33,7 @@ test('safeProductId acepta ids válidos y descarta inseguros', () => {
 
 test('CA-2.2: la decisión encolada lleva el productId atado (no repudio)', () => {
     const d = deps();
-    const res = gsr.enqueueDecision({ issue: 1732, decision: 'aprobar', productId: 'acme-store', actor: 'leo' }, d);
+    const res = gsr.enqueueDecision({ issue: 1732, gate: 'definicion', decision: 'aprobar', productId: 'acme-store', actor: 'leo' }, d);
     assert.equal(res.ok, true);
     assert.equal(res.productId, 'acme-store');
     assert.equal(d.auditImpl.entries[0].productId, 'acme-store');
@@ -43,7 +43,7 @@ test('CA-2.2: la decisión encolada lleva el productId atado (no repudio)', () =
 
 test('retro-compat: sin productId la decisión queda con productId null', () => {
     const d = deps();
-    const res = gsr.enqueueDecision({ issue: 1732, decision: 'rechazar' }, d);
+    const res = gsr.enqueueDecision({ issue: 1732, gate: 'definicion', decision: 'rechazar' }, d);
     assert.equal(res.ok, true);
     assert.equal(res.productId, null);
     assert.equal(d.auditImpl.entries[0].productId, null);
@@ -51,7 +51,7 @@ test('retro-compat: sin productId la decisión queda con productId null', () => 
 
 test('A03: un productId inseguro se descarta (no se propaga al audit)', () => {
     const d = deps();
-    const res = gsr.enqueueDecision({ issue: 1732, decision: 'aprobar', productId: '../evil' }, d);
+    const res = gsr.enqueueDecision({ issue: 1732, gate: 'definicion', decision: 'aprobar', productId: '../evil' }, d);
     assert.equal(res.ok, true);
     assert.equal(res.productId, null);
     assert.equal(d.auditImpl.entries[0].productId, null);

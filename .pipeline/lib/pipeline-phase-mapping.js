@@ -72,6 +72,18 @@ const PHASE_MAPPING = Object.freeze({
     'aprobacion-po':   { pipeline: 'desarrollo', fase: 'aprobacion', skill: 'po', explicit: true },
     'aprobacion-ux':   { pipeline: 'desarrollo', fase: 'aprobacion', skill: 'ux', explicit: true },
     review:            { pipeline: 'desarrollo', fase: 'aprobacion', skill: 'review', explicit: true },
+
+    // #6747 — Rescate manual a `desarrollo/dev`. Variante nueva del contrato,
+    // NO copy-paste de las 23 de arriba: `dev` es una fase mono-skill cuyo skill
+    // se resuelve por los labels del issue (`determinarDevSkill`), así que el
+    // enum NO puede fijar `skill` acá. Marcamos `deferredSkill: 'labels'` y el
+    // caller resuelve con el resolver existente (CA-2).
+    //
+    // SEC-6b — deny-by-default: esta es la ÚNICA clave que llega a `dev`. NO
+    // agregar `desarrollo`, `codear`, `codeo`, `implementar` ni nombres de skill
+    // (`android-dev`, `backend-dev`, `pipeline-dev`): esos últimos serían un
+    // selector directo de agente privilegiado que saltea `determinarDevSkill`.
+    dev:               { pipeline: 'desarrollo', fase: 'dev', skill: null, deferredSkill: 'labels', explicit: true },
 });
 
 /**
@@ -170,6 +182,11 @@ function resolveAlias(alias, currentPosition, config) {
     }
 
     // Caso explícito: ya trae pipeline + fase + skill cerrados.
+    //
+    // #6747 — excepción: si la entrada declara `deferredSkill`, el `skill` viaja
+    // en `null` a propósito y el caller lo resuelve (hoy sólo `dev`, por labels).
+    // Las 23 entradas previas no lo declaran y salen con `deferredSkill: null`,
+    // así que su comportamiento no cambia.
     if (entry.explicit) {
         return {
             ok: true,
@@ -178,6 +195,7 @@ function resolveAlias(alias, currentPosition, config) {
                 pipeline: entry.pipeline,
                 fase: entry.fase,
                 skill: entry.skill,
+                deferredSkill: entry.deferredSkill || null,
                 explicit: true,
             },
         };
@@ -219,6 +237,9 @@ function resolveAlias(alias, currentPosition, config) {
                     pipeline: candidate.pipeline,
                     fase: candidate.fase,
                     skill: entry.skill,
+                    // Los aliases ambiguos siempre traen skill concreto: nunca
+                    // difieren la resolución (#6747).
+                    deferredSkill: null,
                     explicit: false,
                 },
             };

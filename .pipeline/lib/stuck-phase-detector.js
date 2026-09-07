@@ -12,8 +12,11 @@
 // decide una acción SEGURA:
 //   - `requeue`  → re-encolar los skills requeridos faltantes/cancelados
 //                  (acción segura: re-corre el agente, NO fabrica aprobaciones).
-//   - `escalate` → marcar `needs-human` cuando hay un RECHAZO real (no re-encolar
-//                  para no loopear) o estado indeterminado.
+//   - `rebote`   → un validador RECHAZÓ (#6296): decisión válida, no ambigüedad.
+//                  El detector emite la severidad efectiva; el reconciler resuelve
+//                  la fase destino (`dev` para el carril grave).
+//   - `escalate` → marcar `needs-human` cuando hay cancelado/corrupto y NINGÚN
+//                  rechazo que respetar, o estado indeterminado.
 //   - `none`     → fase completa, hay trabajo vivo, o el deliverable es muy
 //                  reciente (aún puede avanzar solo).
 //
@@ -28,6 +31,11 @@
 'use strict';
 
 const { isApprovedArtifact } = require('./phase-completion');
+// #6296 — FUENTE ÚNICA de la severidad de un rechazo. Módulo PURO (sin fs, sin
+// path, sin config): agregarlo NO rompe la pureza que CA-8 protege. Resolver la
+// severidad acá adentro "a mano" abriría la segunda fuente de verdad que #5641
+// vino a cerrar.
+const { resolveSeverity } = require('./rejection-severity');
 
 const DEFAULT_STALE_THRESHOLD_MS = 15 * 60 * 1000; // 15 min sin avance
 
@@ -97,7 +105,11 @@ function classifySkill(skill, deliverables, liveSkills) {
     }
 
     if (y.cancelado_por != null && y.cancelado_por !== '') return { skill, status: 'cancelled', state: st };
-    if (y.resultado === 'rechazado') return { skill, status: 'rejected', state: st };
+    // #6296 — el YAML viaja SÓLO en la rama `rejected`: es el único consumidor
+    // (`resolveSeverity` necesita el campo `severidad` del veredicto). Volver a
+    // resolver el deliverable dentro de `analyzeStuckIssue` sería una segunda
+    // fuente de verdad sobre cuál artefacto manda.
+    if (y.resultado === 'rechazado') return { skill, status: 'rejected', state: st, yaml: y, motivo: y.motivo || y.motivo_rechazo || null };
     return { skill, status: 'corrupt', state: st }; // presente pero indeterminado
 }
 
@@ -161,7 +173,7 @@ function classifyPhase(requiredSkills, deliverables, liveSkills) {
  * @param {Set<string>|string[]} [args.liveSkills]
  * @param {number} args.nowMs
  * @param {number} [args.staleThresholdMs]
- * @returns {{stuck:boolean, action:'requeue'|'escalate'|'none', requeueSkills?:string[], reason:string}}
+ * @returns {{stuck:boolean, action:'requeue'|'escalate'|'rebote'|'none', requeueSkills?:string[], rebote?:object, reason:string}}
  */
 function analyzeStuckIssue(args = {}) {
     const requiredSkills = Array.isArray(args.requiredSkills) ? args.requiredSkills : [];
@@ -202,8 +214,48 @@ function analyzeStuckIssue(args = {}) {
     const age = nowMs - Math.max(...mtimes);
     if (age < staleThresholdMs) return { stuck: false, action: 'none', reason: 'reciente' };
 
+    // #6296 — CARRIL DE RECHAZO. PRECEDENCIA: un rechazo real gana sobre
+    // `cancelled`/`corrupt`/`infra-failed`.
+    //
+    // Hasta este issue, `rejected` entraba al balde `ambiguous` y escalaba a
+    // `needs-human`. El propio comentario admitía que un rechazo "es una decisión
+    // válida"; el problema nunca fue la ambigüedad sino que re-encolar a la MISMA
+    // fase loopearía. La respuesta correcta no es un humano: es el DESTINO
+    // correcto (rebote a `dev`), que el reconciler resuelve vía `rebote-destino`.
+    //
+    // El detector es puro y NO conoce `fase_rechazo` ni `skills_por_fase`: por eso
+    // emite `action: 'rebote'` con la severidad efectiva y deja que el reconciler
+    // —que sí ve la config— resuelva la fase destino.
+    //
+    // Los `cancelled`/`corrupt` que acompañan al rechazo NO son aprobación: viajan
+    // como `arrastrados` para que la fase se re-corra completa si el carril leve
+    // aplica, y para que el operador vea el cuadro entero en el `reason`.
+    if (rejected.length > 0) {
+        const sev = rejected.map((c) => ({
+            skill: c.skill,
+            severidad: resolveSeverity({ skill: c.skill, yaml: c.yaml }),
+            motivo: c.motivo || null,
+        }));
+        // Un solo GRAVE gana sobre N leves. Nunca se promedia (fail-closed).
+        const graves = sev.filter((s) => s.severidad === 'grave');
+        const detalle = sev.map((s) => `${s.skill}:rejected(${s.severidad})`).join(',');
+        const arrastrados = [...cancelled, ...corrupt].map((c) => `${c.skill}:${c.status}`);
+        return {
+            stuck: true,
+            action: 'rebote',
+            rebote: {
+                skills: sev,
+                severidadEfectiva: graves.length > 0 ? 'grave' : 'leve',
+                arrastrados,
+            },
+            // CA-UX: el `reason` nombra QUIÉN rechazó y con QUÉ severidad. La fase
+            // destino la agrega el reconciler, que es quien la conoce.
+            reason: `rechazo de validador (${detalle})`
+                + (arrastrados.length ? ` — arrastrados: ${arrastrados.join(',')}` : ''),
+        };
+    }
+
     // AMBIGÜEDAD → escalar a humano, NUNCA re-encolar a ciegas (review PO+arquitecto):
-    //   - `rejected`: decisión válida, no es limbo; re-encolar loopearía.
     //   - `cancelled`: un cancelado implica que hubo un rechazo en la fase; puede
     //     estar en doble-track (el caller ya filtró los vivos cross-fase). Solo/humano.
     //   - `corrupt`: verdict ilegible → indeterminado, no re-correr sobre trabajo
@@ -211,12 +263,22 @@ function analyzeStuckIssue(args = {}) {
     // La línea roja del PO: jamás auto-completar; ante duda, humano.
     //
     // #5641 — `infra-failed` NO entra acá: no es un veredicto ambiguo, es la
-    // ausencia de veredicto. `rejected` (contenido real, incluido cualquier
-    // rechazo de `security`) sigue escalando exactamente igual que antes.
-    const ambiguous = [...rejected, ...cancelled, ...corrupt];
+    // ausencia de veredicto.
+    //
+    // #6296 — `rejected` TAMPOCO entra: tiene carril propio arriba. Acá sólo queda
+    // el caso en que NO hay ninguna decisión de validador que respetar, que es
+    // cuando el humano efectivamente aporta algo.
+    const ambiguous = [...cancelled, ...corrupt];
     if (ambiguous.length > 0) {
         const detail = ambiguous.map((c) => `${c.skill}:${c.status}`).join(',');
-        return { stuck: true, action: 'escalate', reason: `ambigüedad (rechazo/cancelado/corrupto): ${detail}` };
+        // #6296 — el texto ya no dice "rechazo": acá no hay ninguno (tiene carril
+        // propio). Declarar POR QUÉ se pide humano es lo que hace accionable la
+        // escalación: no hay decisión de validador que respetar.
+        return {
+            stuck: true,
+            action: 'escalate',
+            reason: `ambigüedad sin decisión de validador (cancelado/corrupto): ${detail}`,
+        };
     }
 
     // #5641 CA-10 — CARRIL DE INFRA: al agente se le cayó el proceso y arrastró

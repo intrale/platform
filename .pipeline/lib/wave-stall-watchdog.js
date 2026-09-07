@@ -110,6 +110,7 @@ const CAUSE_LABELS = Object.freeze({
   'concurrency-limit': 'límite de concurrencia (todos los slots ocupados)',
   quota: 'cuota de proveedor agotada',
   'resource-pressure': 'presión de recursos',
+  'disk-pressure': 'disco sin espacio (fases pesadas frenadas)',
   'waiting-operator': 'ola retenida esperando al operador',
   cooldown: 'cooldown entre lanzamientos',
   'blocked-dependencies': 'issues bloqueados por dependencia',

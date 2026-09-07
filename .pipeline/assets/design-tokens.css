@@ -293,6 +293,22 @@
   --chat-status-pending:       var(--warning);               /* reloj amarillo */
   --chat-status-failed:        var(--danger);                /* cruz roja (timeout 5s) */
 
+  /* RESULTADO DEL PEDIDO SIN ENTREGA CONFIRMADA (#6440, enum `huerfano`).
+   * Quinto valor del badge de resultado del Commander, junto a ok / ajustada /
+   * fallback / error (result-badge.js). NO reusa --danger a proposito: el
+   * pedido NO fallo, se ejecuto entero; lo que se perdio fue la respuesta.
+   * Pintarlo del mismo rojo que `error` le haria leer al operador "fallo"
+   * donde dice "se hizo y no te enteraste" — el malentendido exactamente
+   * opuesto al que el issue viene a cerrar.
+   * Rosa-rojo de --alert-anomaly, ya declarado en la paleta como distinguible
+   * del danger puro. Contraste medido: #FF6B8A sobre surface-0 (#0D1117) =
+   * 6.96:1 y sobre el fondo del propio badge (#341F29, alpha 0.16 compuesto)
+   * = 5.62:1 — ambos AA normal. De referencia, el `error` vigente (#F85149)
+   * rinde 5.65:1 sobre surface-0: el nuevo estado no baja el piso existente. */
+  --result-huerfano:           var(--alert-anomaly);         /* glifo + label del badge */
+  --result-huerfano-dim:       var(--alert-anomaly-dim);     /* borde del badge */
+  --result-huerfano-bg:        var(--alert-anomaly-bg);      /* fondo del badge */
+
   /* AGENTE TERMINADO — cartel "sin agente activo" */
   --chat-disabled:             var(--danger);                /* borde + icono del cartel */
   --chat-disabled-bg:          rgba(248, 81, 73, 0.10);      /* fondo del cartel */

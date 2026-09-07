@@ -60,23 +60,24 @@ test('CA-5.1: sin productId (default) se muestran TODOS (retro-compat)', () => {
     assert.ok(html.includes('#100') && html.includes('#200') && html.includes('#300'));
 });
 
-test('CA-2.2: la firma se ata al productId (3er arg del handler + data-product)', () => {
+test('CA-2.2: el productId queda atado a la fila (data-product), sin interpolarse en JS', () => {
     const html = renderEsperandoFirmaSsr(fixture(), { productId: 'acme-store' });
-    assert.ok(html.includes("gateSignatureDecide(100, 'aprobar', 'acme-store')"));
-    assert.ok(html.includes("gateSignatureDecide(100, 'rechazar', 'acme-store')"));
     assert.ok(html.includes('data-product="acme-store"'));
+    // #6208 · REQ-SEC-6208-4 — ya no hay `onclick` con argumentos interpolados:
+    // `escapeHtmlAttr` NO protege adentro de la cadena JS de un onclick.
+    assert.ok(!/onclick="gateSignatureDecide/.test(html));
 });
 
-test('CA-2.2: ítem sin productId conserva el handler legacy (2 args) — retro-compat', () => {
-    const html = renderEsperandoFirmaSsr({ esperandoFirma: [{ issue: 300, origen: 'waiting-operator-def', age_hours: 1 }] });
-    assert.ok(html.includes("gateSignatureDecide(300, 'aprobar')"));
-    assert.ok(!html.includes("gateSignatureDecide(300, 'aprobar', "));
+test('#6208 · UX §7: los markers NO ofrecen botones de firma en ninguna vista de producto', () => {
+    const html = renderEsperandoFirmaSsr(fixture());
+    assert.ok(!html.includes('ef-btn-decide'));
+    assert.ok(html.includes('Abrir #100 en GitHub'));
 });
 
-test('A03/A08: un productId inseguro en el ítem no se propaga al handler ni al DOM', () => {
+test('A03/A08: un productId inseguro en el ítem no se propaga al DOM', () => {
     const html = renderEsperandoFirmaSsr({ esperandoFirma: [{ issue: 400, origen: 'gate3', age_hours: 1, productId: "a'); alert(1);//" }] });
-    // El ítem se muestra (cae a Intrale) pero SIN 3er arg inyectado.
-    assert.ok(html.includes("gateSignatureDecide(400, 'aprobar')"));
+    // El ítem se muestra (cae a Intrale) pero el id inseguro NO se propaga.
+    assert.ok(html.includes('#400'));
     assert.ok(!html.includes('alert(1)'));
     assert.ok(!html.includes('data-product='));
 });

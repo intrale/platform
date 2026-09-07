@@ -1,0 +1,21 @@
+Hola, soy el QA del pipeline. Esta es la pasada cinco de verificación del issue seis mil cuatrocientos cincuenta y nueve: la detección de turnos huérfanos del Commander. Corro en modo estructural con preflight visual bloqueante, porque el diff toca el dashboard y el issue referencia un mockup versionado. Estructural significa sin emulador, sin APK y sin backend; no significa sin render.
+
+Arranco por el estado del árbol. El HEAD que verifico es a treinta y cuatro be dos siete seis d, con el commit nuevo que responde al rechazo de la fase de aprobación. Ese rechazo era concreto: el barrido emitía el evento terminal solamente para los huérfanos, así que un turno con entrega confirmada se clasificaba sano y no cerraba nunca su ciclo de vida. Todo lo que sigue lo ejecuté y lo observé en esta misma pasada; no cito nada de pasadas anteriores.
+
+Primero, las suites obligatorias. Corrí las cinco: barrido de huérfanos, clasificador de resultados, badge de resultado, fallback en vuelo y file lock. Ciento cincuenta y nueve tests, ciento cincuenta y nueve pasando, cero fallando.
+
+Después no me quedé con los tests del repo: armé mi propio probe punta a punta, con filesystem real, el appender real del audit encadenado, y la función real de estado de saliente extraída del fuente de pulpo punto js. Sembré siete turnos en un sandbox: dos huérfanos, uno con entrega confirmada, uno del boot actual, uno que cerró solo, uno con correlación directa y uno fuera de la ventana de cuarenta y ocho horas. Le sumé un nombre con recorrido de directorios y un directorio disfrazado de archivo de etapas.
+
+Voy criterio por criterio. El criterio uno pide que un turno que ejecutó y cerró sin entrega confirmada quede marcado como huérfano. El clasificador real acepta la señal de entrega no confirmada y devuelve huérfano, y el enum de resultados ya tiene su quinto valor. Cumple.
+
+El criterio dos pide que la entrega no confirmada cierre con código de error entrega falso, distinguible de respuesta vacía. En mi probe, los dos huérfanos asentaron entrada con estado de entrega fallida, éxito en falso y código entrega igual a falso. Cumple.
+
+El criterio tres es justamente el que había rebotado. Pide que la entrega confirmada cierre con evento exitoso. En esta pasada, el turno con entrega confirmada emitió su evento terminal con estado de entrega observada y éxito en verdadero, por el camino real del barrido, no llamando al appender de prueba. El defecto que reportó la revisión está corregido y verificado. Cumple.
+
+El criterio cuatro pide que nada ya asentado se reescriba y que la cadena de hashes siga verificando. Verifiqué la cadena sobre el archivo real que dejó el barrido: tres entradas, cadena válida. Después appendeé a mano una entrada vieja, sin los campos nuevos, y otra entrada nueva encima: cinco entradas, cadena válida. Los campos son aditivos al final y no rompen las entradas previas. Cumple.
+
+El criterio cinco pide que un turno del boot actual nunca se evalúe. El turno del boot vivo salió no evaluable por boot actual, sin emitir nada. Cumple.
+
+El criterio seis pide que un early return con etapa resultado y sin etapa envío no sea huérfano. Ese turno salió sano por cerró solo, y no emitió evento: lo cerró su propio finally. Cumple.
+
+El criterio siete pide que el veredicto de entrega salga siempre de la función de estado de saliente. Verifiqué que la etapa envío solamente aporta el identificador de correlación, y que el veredicto lo emite la función real, que devolvió enviado para la correlación buena y fallido para la mala. Además, la correlación directa salió no verificable y no emitió evento, que es la lectura honesta. Cumple.

@@ -227,7 +227,7 @@ test('4 · la allowlist rechaza `ssm put-parameter` antes de spawnear', () => {
     let spawns = 0;
     const runner = createAwsCliVaultRunner(
         { AWS_ACCESS_KEY_ID: 'k', AWS_SECRET_ACCESS_KEY: 's' },
-        'us-east-2',
+        { region: 'us-east-2', authMode: 'static-key' },
         { execFileSync: () => { spawns += 1; return '{}'; } },
     );
 
@@ -256,7 +256,7 @@ test('5 · el spawn va sin shell, con args como array, timeout y maxBuffer expl�
     let visto = null;
     const runner = createAwsCliVaultRunner(
         { AWS_ACCESS_KEY_ID: 'k', AWS_SECRET_ACCESS_KEY: 's' },
-        'us-east-2',
+        { region: 'us-east-2', authMode: 'static-key' },
         { execFileSync: (bin, args, opts) => { visto = { bin, args, opts }; return '{}'; } },
     );
     runner.run('ssm', ['get-parameters-by-path', '--path', '/intrale/intrale/shared/', '--recursive']);
@@ -303,7 +303,7 @@ test('6 · segmentos y prefix inválidos se rechazan antes de construir el path'
     let spawns = 0;
     const runner = createAwsCliVaultRunner(
         { AWS_ACCESS_KEY_ID: 'k', AWS_SECRET_ACCESS_KEY: 's' },
-        'us-east-2',
+        { region: 'us-east-2', authMode: 'static-key' },
         { execFileSync: () => { spawns += 1; return '{}'; } },
     );
     assert.throws(() => runner.run('ssm', ['get-parameter', '--secret-id', 'file:///etc/passwd']),
@@ -418,7 +418,7 @@ test('9 · el stdout de la CLI nunca sobrevive al error (SEC-1) y el stderr acci
     // (a) exit ≠ 0 con stdout parcial ya descifrado.
     const runnerExit = createAwsCliVaultRunner(
         { AWS_ACCESS_KEY_ID: 'k', AWS_SECRET_ACCESS_KEY: 's' },
-        'us-east-2',
+        { region: 'us-east-2', authMode: 'static-key' },
         {
             execFileSync: () => {
                 const err = new Error(`Command failed: aws ssm get-parameter ${CANARIO}`);
@@ -462,7 +462,7 @@ test('9 · el stdout de la CLI nunca sobrevive al error (SEC-1) y el stderr acci
     // (b) kill por timeout — también deja stdout parcial adjunto.
     const runnerTimeout = createAwsCliVaultRunner(
         { AWS_ACCESS_KEY_ID: 'k', AWS_SECRET_ACCESS_KEY: 's' },
-        'us-east-2',
+        { region: 'us-east-2', authMode: 'static-key' },
         {
             execFileSync: () => {
                 const err = new Error('Command failed: aws ssm get-parameters-by-path');
@@ -488,7 +488,7 @@ test('9 · el stdout de la CLI nunca sobrevive al error (SEC-1) y el stderr acci
     // (c) CA-31 — la remediación textual del stderr se preserva tal cual.
     const runnerSesion = createAwsCliVaultRunner(
         { AWS_ACCESS_KEY_ID: 'k', AWS_SECRET_ACCESS_KEY: 's' },
-        'us-east-2',
+        { region: 'us-east-2', authMode: 'static-key' },
         {
             execFileSync: () => {
                 const err = new Error('Command failed');
@@ -523,7 +523,7 @@ test('10 · el env del spawn se arma por allowlist: AWS_ENDPOINT_URL/AWS_CONFIG_
         PATH: '/evil/bin',
         TELEGRAM_BOT_TOKEN: 'CANARIO-TELEGRAM',
     };
-    const runner = createAwsCliVaultRunner(entrada, 'us-east-2', {
+    const runner = createAwsCliVaultRunner(entrada, { region: 'us-east-2', authMode: 'session-token' }, {
         execFileSync: (bin, args, opts) => { envVisto = opts.env; return '{}'; },
     });
     runner.run('ssm', ['get-parameters-by-path', '--path', '/intrale/intrale/shared/', '--recursive']);
@@ -539,7 +539,7 @@ test('10 · el env del spawn se arma por allowlist: AWS_ENDPOINT_URL/AWS_CONFIG_
 
     // Fail-closed: sin credenciales no se spawnea.
     assert.throws(
-        () => createAwsCliVaultRunner({ AWS_REGION: 'us-east-2' }, 'us-east-2', {
+        () => createAwsCliVaultRunner({ AWS_REGION: 'us-east-2' }, { region: 'us-east-2', authMode: 'static-key' }, {
             execFileSync: () => { throw new Error('no debería spawnear'); },
         }),
         /credenciales AWS/,
@@ -564,7 +564,7 @@ test('10b · los greps del pre-checklist dan sin hits sobre el propio módulo (C
     let spawns = 0;
     const runner = createAwsCliVaultRunner(
         { AWS_ACCESS_KEY_ID: 'k', AWS_SECRET_ACCESS_KEY: 's' },
-        'us-east-2',
+        { region: 'us-east-2', authMode: 'static-key' },
         { execFileSync: () => { spawns += 1; return '{}'; } },
     );
     for (const flag of ['--no-paginate', '--max-items', '--query', '--debug', '--endpoint-url']) {
@@ -639,7 +639,7 @@ test('11 · el driver aws-cli consume NextToken hasta agotarlo y nunca devuelve 
     // maxBuffer desbordado ⇒ truncación, no «CLI rota» ni «secreto ausente».
     const runnerENOBUFS = createAwsCliVaultRunner(
         { AWS_ACCESS_KEY_ID: 'k', AWS_SECRET_ACCESS_KEY: 's' },
-        'us-east-2',
+        { region: 'us-east-2', authMode: 'static-key' },
         {
             execFileSync: () => {
                 const err = new Error('spawnSync aws ENOBUFS');
@@ -1040,7 +1040,7 @@ test('5464-2 · prefijos, segmentos y nombres fuera del proyecto se rechazan ant
     let spawns = 0;
     const runner = createAwsCliVaultRunner(
         { AWS_ACCESS_KEY_ID: 'k', AWS_SECRET_ACCESS_KEY: 's' },
-        'us-east-2',
+        { region: 'us-east-2', authMode: 'static-key' },
         { execFileSync: () => { spawns += 1; return '{}'; } },
     );
 
@@ -1137,7 +1137,7 @@ test('5464-4 · exportar el validador no agregó verbos de escritura al runtime'
     let spawns = 0;
     const runner = createAwsCliVaultRunner(
         { AWS_ACCESS_KEY_ID: 'k', AWS_SECRET_ACCESS_KEY: 's' },
-        'us-east-2',
+        { region: 'us-east-2', authMode: 'static-key' },
         { execFileSync: () => { spawns += 1; return '{}'; } },
     );
     for (const verbo of escrituras) {

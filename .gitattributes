@@ -6,3 +6,10 @@
 # transformación del gate de publicación del kernel (#4695 · CRITICAL-1)
 *.yml text eol=lf
 *.yaml text eol=lf
+
+# CA-7 (#6497) — la evidencia de QA se sella con sha256 sobre sus BYTES. Si git
+# normaliza CRLF al hacer checkout en otra plataforma, el hash sellado deja de
+# matchear los bytes en disco y la evidencia aprobada se vuelve inverificable.
+# No es defensa teorica: `git ls-files qa/evidence | wc -l` -> 950+ archivos
+# trackeados, incluidos los `.md` estructurales que este sello hashea.
+qa/evidence/** -text

@@ -212,6 +212,19 @@ test('CA-F4 — recoverIncompletePromote con marker stale restaura ambos archivo
 test('CA-F3 — recoverIncompletePromote con marker fresco no actúa', () => {
     const { dir, waves } = setupTmp();
     try {
+        // El TTL de 50ms que fija setupTmp existe para que los tests de marker
+        // STALE (CA-F2/F4/F6) no tengan que esperar los 30s de producción.
+        // Para el camino FRESCO es exactamente al revés: la aserción depende de
+        // que el hueco de wall-clock entre `writeMarkerFsync` y el `statSync`
+        // que hace `recoverIncompletePromote` se mantenga por debajo del TTL.
+        // Medido bajo carga fsync-heavy ese hueco llega a p50≈96ms y max≈195ms
+        // (289/300 muestras > 50ms), así que con TTL=50ms el marker recién
+        // escrito se ve STALE y el test devuelve 'recovered' en vez de
+        // 'in_progress' — falso rojo que no reporta ningún defecto del código.
+        // Usamos el TTL de producción (30s): la semántica bajo test ("age < TTL
+        // ⇒ in_progress") es la misma, pero deja de depender del scheduler.
+        process.env.WAVE_PROMOTE_RECOVERY_TTL_MS = String(30 * 1000);
+
         seedWaves(dir, sampleWaves());
         seedPartial(dir, [3451]);
         const snap = waves._internal.snapshotForTransaction('2026-05-26T10-00-00-001Z');
@@ -229,7 +242,11 @@ test('CA-F3 — recoverIncompletePromote con marker fresco no actúa', () => {
 
         // Llamamos recovery INMEDIATAMENTE — marker es fresco.
         const recovery = waves.recoverIncompletePromote();
-        assert.equal(recovery.action, 'in_progress');
+        assert.equal(
+            recovery.action,
+            'in_progress',
+            `esperaba 'in_progress', vino '${recovery.action}' (${recovery.reason || ''})`,
+        );
         assert.ok(/fresco/.test(recovery.reason));
 
         // Marker debe seguir en su lugar (sin renombrar a recovering).

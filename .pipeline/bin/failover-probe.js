@@ -125,6 +125,7 @@ function main() {
         healthReader: () => null,            // sin health-gate en el test
         notify: () => {},                    // sin telegram
         auditLog: { appendChained: () => {} }, // sin escritura de audit
+        recordEpisode: false,                // #6179 — la sonda no abre episodios
         onLog: () => {},
         processEnv: process.env,
         now: Date.now(),

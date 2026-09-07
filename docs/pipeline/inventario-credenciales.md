@@ -27,6 +27,8 @@ Los dos documentos son complementarios y **no se solapan**. División de alcance
 Si una credencial se da de alta, se agrega a **ambos**: acá para planificar su
 migración, allá para programar su rotación.
 
+El eje `project_id` que `secrets-inventory.md` declara desde #5901 se corresponde con la columna «Dueño» (kernel/producto) de este archivo, que ya distingue ambos: las credenciales de plataforma llevan el slug reservado `kernel`.
+
 ## Método del relevamiento
 
 El barrido se hizo **por evidencia, no por memoria**. Cada credencial listada

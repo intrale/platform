@@ -620,6 +620,63 @@ function upsertSplitRegistro(body, data) {
     return out.join('\n').replace(/\n{3,}/g, '\n\n').trimEnd() + '\n';
 }
 
+// -----------------------------------------------------------------------------
+// SG-6 (#6801) — Lectura del registro: lista EXPLÍCITA de sub-historias
+// -----------------------------------------------------------------------------
+//
+// `renderSplitRegistro` YA escribe la relación padre→hijas en el body del padre
+// (`- **Sub-historias**: #1, #2`), pero hasta #6801 nadie la leía: el brazo de
+// desbloqueo del pulpo decidía "esto es un paraguas" con `labels.includes('split')`
+// —label que llevan TANTO el padre COMO cada hija— y cerraba usando la lista de
+// DEPENDENCIAS como si fueran hijas. Resultado: hijas de split sin implementar
+// cerradas como `completed` (#5791, #5797, #5798, #5799).
+//
+// Este parser expone la fuente de verdad que ya se escribía. Devuelve `null`
+// (indeterminable) en vez de `[]` a propósito: el consumidor es fail-closed y
+// "no sé qué hijas tiene" NUNCA puede colapsar con "no tiene hijas".
+
+// Línea del registro que declara las hijas. Tolerante al bullet (`-`/`*`/`+`),
+// a la negrita opcional y a la escritura del compuesto (`Sub-historias`,
+// `Sub historias`, `subhistorias`).
+const SUBHISTORIAS_LINE_RE =
+    /^ {0,3}[-*+]\s+(?:\*\*|__)?\s*sub[-\s]?historias\s*(?:\*\*|__)?\s*:\s*(.+)$/i;
+
+/**
+ * Extrae la lista de sub-historias declarada en el `## Registro del split` del
+ * body de un issue padre.
+ *
+ * Respeta bloques de código (reusa `findRegistroBlocks`): un registro de ejemplo
+ * dentro de un fence es documentación, no la relación real.
+ *
+ * @param {string} body — body del issue padre
+ * @returns {number[]|null} números de las hijas, o `null` si no se puede determinar
+ */
+function parseSplitRegistroHijas(body) {
+    const text = typeof body === 'string' ? body : '';
+    if (!text.trim()) return null;
+
+    const lines = text.split('\n');
+    const blocks = findRegistroBlocks(lines);
+    if (!blocks.length) return null;
+
+    for (const block of blocks) {
+        for (let i = block.start; i < block.end; i += 1) {
+            const m = SUBHISTORIAS_LINE_RE.exec(lines[i]);
+            if (!m) continue;
+            const ids = [];
+            const refRe = /#(\d+)/g;
+            let ref;
+            while ((ref = refRe.exec(m[1])) !== null) {
+                const n = toPositiveInt(ref[1]);
+                if (n && !ids.includes(n)) ids.push(n);
+            }
+            // Línea presente pero sin ningún `#N` legible → indeterminable, no vacío.
+            return ids.length ? ids : null;
+        }
+    }
+    return null;
+}
+
 module.exports = {
     // Catálogo
     CUT_CRITERIA,
@@ -641,4 +698,6 @@ module.exports = {
     // SG-5 — registro idempotente
     renderSplitRegistro,
     upsertSplitRegistro,
+    // SG-6 (#6801) — lectura de la relación explícita padre→hijas
+    parseSplitRegistroHijas,
 };

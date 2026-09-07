@@ -88,10 +88,10 @@ test('sign rechaza action fuera de allowlist e issue inválido', () => {
     assert.throws(() => t.sign({ issue: 'x', action: 'unblock' }), /issue inválido/);
 });
 
-test('ACTION_ALLOWLIST contiene las acciones needs-human + las de firma #4579', () => {
+test('ACTION_ALLOWLIST contiene needs-human + firma #4579 + operacional #5458', () => {
     assert.deepEqual([...ACTION_ALLOWLIST].sort(),
         ['adjust-definicion', 'approve', 'devolver-definicion', 'mas-contexto',
-         'priorizar', 'reject', 'unblock']);
+         'priorizar', 'reject', 'unblock', 'vault-cut-fallback']);
     assert.equal(isValidIssue(999999), true);
     assert.equal(isValidIssue(1000000), false);
 });

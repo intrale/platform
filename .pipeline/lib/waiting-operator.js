@@ -55,7 +55,11 @@ const ISSUE_ID_RE = /^\d+$/;
 // Los tres orígenes de firma. `origen` es el identificador estable que consume la
 // bandeja; `gate`/`label` son metadata de presentación (dual-encoding en la UI).
 const SOURCES = Object.freeze([
-    { subdir: 'waiting-operator', origen: 'waiting-operator-def', gate: 'GATE 0' },
+    // #6208 · CA-16 — GATE 1 se llama GATE 1 en todas las superficies. La doc
+    // canónica (`docs/pipeline/gates-firma-operador.md:167`) y la vista
+    // (`views/dashboard/esperando-firma.js:70`) ya decían GATE 1; sólo esta
+    // tabla decía GATE 0 (H-UX-6199-2).
+    { subdir: 'waiting-operator', origen: 'waiting-operator-def', gate: 'GATE 1' },
     { subdir: 'esperando-firma', origen: 'waiting-operator-acc', gate: 'GATE 2' },
     { subdir: 'waiting-operator-autonomo', origen: 'gate3', gate: 'GATE 3' },
 ]);

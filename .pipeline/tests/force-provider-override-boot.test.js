@@ -76,13 +76,28 @@ process.exit(0);
 `;
 }
 
+// #6145 — El timeout del spawn era 5000ms y volaba dentro de la suite completa:
+// standalone cada guard tarda ~75ms, pero con ~375 archivos de test forkeando en
+// paralelo el arranque de un Node child llega a superar los 5s y `spawnSync`
+// devuelve `status: null` (síntoma: "esperaba exit 2 …, fue null"). El test no
+// mide performance de boot, mide la semántica del guard: el presupuesto se
+// amplía y, si igual se agota, el mensaje lo dice explícitamente en vez de
+// disfrazarse de "el guard no abortó".
+const GUARD_SPAWN_TIMEOUT_MS = 60000;
+
 function runGuardWithEnv(env) {
     const res = spawnSync(process.execPath, ['-e', makeGuardScript()], {
         env: { ...process.env, ...env },
         encoding: 'utf8',
-        timeout: 5000,
+        timeout: GUARD_SPAWN_TIMEOUT_MS,
         windowsHide: true,
     });
+    assert.notEqual(
+        res.status,
+        null,
+        `el guard no terminó dentro de ${GUARD_SPAWN_TIMEOUT_MS}ms (spawn matado por timeout, `
+        + `signal=${res.signal}) — es saturación del host, no un fallo de la semántica del guard`,
+    );
     return res;
 }
 

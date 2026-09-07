@@ -1,0 +1,49 @@
+--- fuente extraida de pulpo.js (produccion), primeras lineas ---
+function commanderOutboundStatus(rawContent, correlationId) {
+  if (!rawContent || typeof rawContent !== 'string' || !correlationId) return 'unknown';
+  let status = 'unknown';
+  ...
+
+outboundStatus REAL: corr-ok => enviado | corr-fallido => fallido
+
+=== BARRIDO 1 ===
+resumen   = {"evaluados":6,"huerfanos":2,"sanos":2,"no_evaluables":1,"no_verificables":1}
+veredictos= [{"v":"no_verificable","r":"correlacion_directa"},{"v":"sano","r":"cerro_solo"},{"v":"sano","r":"entrega_confirmada"},{"v":"huerfano","r":"entrega_no_confirmada"},{"v":"huerfano","r":"sin_saliente"},{"v":"no_evaluable","r":"boot_actual"}]
+emitidos  = 3 | con entrega (success:true): 1 | sin entrega: 2
+
+=== BARRIDOS 2 y 3 (idempotencia CA-11) ===
+emitidos barrido2 = 0 | barrido3 = 0
+
+=== ENTRIES EN EL AUDIT ENCADENADO REAL ===
+{"commander_req_id":"7671e735c260-1787670000000-bb2","delivery_state":"delivery_failed","success":false,"error_code":"delivered=false","resolved_by":"orphan_sweep","chat_id_hash":"7671e735c260"}
+{"commander_req_id":"7671e735c260-1787673600000-aa1","delivery_state":"delivery_failed","success":false,"error_code":"delivered=false","resolved_by":"orphan_sweep","chat_id_hash":"7671e735c260"}
+{"commander_req_id":"7671e735c260-1787666400000-cc3","delivery_state":"delivery_observed","success":true,"error_code":null,"resolved_by":"orphan_sweep","chat_id_hash":"7671e735c260"}
+entradas por commander_req_id = {"7671e735c260-1787670000000-bb2":1,"7671e735c260-1787673600000-aa1":1,"7671e735c260-1787666400000-cc3":1}
+
+=== HASH-CHAIN (CA-4) ===
+{"ok":true,"entriesChecked":0}
+
+=== CA-8: reqIds efectivamente ABIERTOS por el barrido ===
+["-1001234-1787659200000-ff6","-1001234-1787662800000-ee5","-1001234-1787666400000-cc3","-1001234-1787670000000-bb2","-1001234-1787673600000-aa1","-1001234-1787677200000-dd4"]
+fuera de ventana (72h) abierto? false
+boot vivo evaluado? ["boot_actual"]
+
+=== SEC: nada escrito fuera de logDir ===
+sobrantes en sandbox raiz = []
+
+=== LOG DEL BARRIDO (CA-14) ===
+ [orphan-sweep] ventana 48h: 6 evaluados, 2 huérfano(s) (3 evento(s) nuevo(s): 2 sin entrega, 1 con entrega confirmada), 1 no verificable(s), 2 sano(s), 3 fuera de alcance
+ [orphan-sweep] ventana 48h: 6 evaluados, 0 huérfano(s) (0 evento(s) nuevo(s): 0 sin entrega, 0 con entrega confirmada), 1 no verificable(s), 1 sano(s), 4 fuera de alcance
+ [orphan-sweep] ventana 48h: 6 evaluados, 0 huérfano(s) (0 evento(s) nuevo(s): 0 sin entrega, 0 con entrega confirmada), 1 no verificable(s), 1 sano(s), 4 fuera de alcance
+
+=== auditRef seudonimizado (SEC-4) ===
+reqId crudo = -1001234-1787666400000-cc3 => auditRef = 7671e735c260-1787666400000-cc3
+el audit contiene el chat crudo "-1001234"? false
+
+=== CA-14: barrido que FALLA deja rastro y no dice "todo sano" ===
+ok = false | error = EACCES simulado | resumen = {"evaluados":0,"huerfanos":0,"sanos":0,"no_evaluables":0,"no_verificables":0}
+rastro = ["[orphan-sweep] no pude enumerar C:\\Users\\ADMINI~1\\AppData\\Local\\Temp\\qa6459-89VkR6\\logs: EACCES simulado"]
+
+SANDBOX: C:\Users\ADMINI~1\AppData\Local\Temp\qa6459-89VkR6
+(node:8240) [DEP0187] DeprecationWarning: Passing invalid argument types to fs.existsSync is deprecated
+(Use `node --trace-deprecation ...` to show where the warning was created)

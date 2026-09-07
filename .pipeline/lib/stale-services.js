@@ -64,19 +64,34 @@ const LOG_PATH_MAX = 120;
 // El orden ES el orden de relanzamiento del watchdog: primero el motor, después
 // los adaptadores, y el dashboard al final (es la ventana del operador).
 // ---------------------------------------------------------------------------
+//
+// #6441 — `supervisado` clasifica QUE significa "muerto" para cada componente.
+// El barrido de liveness registra la transicion de TODOS, pero solo alerta y
+// relanza los supervisados. Los dos `false` no son olvidos:
+//   - `outbox-drain` se AUTO-MATA si el Pulpo esta corriendo (outbox-drain.js:3):
+//     con el Pulpo vivo su estado correcto es *muerto*. Alertarlo seria un falso
+//     positivo diario, o sea el ruido que entrena al operador a ignorar avisos.
+//   - `svc-emulador` es un servicio de cola atado a la ventana QA: fuera de esa
+//     ventana su ausencia es esperada. Se registra, no se alerta.
 const COMPONENT_REGISTRY = [
-    { name: 'pulpo', script: 'pulpo.js' },
-    { name: 'listener', script: 'listener-telegram.js' },
-    { name: 'svc-telegram', script: 'servicio-telegram.js' },
-    { name: 'svc-github', script: 'servicio-github.js' },
-    { name: 'svc-drive', script: 'servicio-drive.js' },
-    { name: 'svc-emulador', script: 'servicio-emulador.js' },
-    { name: 'svc-reconciler', script: 'servicio-reconciler.js' },
-    { name: 'outbox-drain', script: 'outbox-drain.js' },
-    { name: 'dashboard', script: 'dashboard.js' },
+    { name: 'pulpo', script: 'pulpo.js', supervisado: true },
+    { name: 'listener', script: 'listener-telegram.js', supervisado: true },
+    { name: 'svc-telegram', script: 'servicio-telegram.js', supervisado: true },
+    { name: 'svc-github', script: 'servicio-github.js', supervisado: true },
+    { name: 'svc-drive', script: 'servicio-drive.js', supervisado: true },
+    { name: 'svc-emulador', script: 'servicio-emulador.js', supervisado: false },
+    { name: 'svc-reconciler', script: 'servicio-reconciler.js', supervisado: true },
+    { name: 'outbox-drain', script: 'outbox-drain.js', supervisado: false },
+    { name: 'dashboard', script: 'dashboard.js', supervisado: true },
 ];
 
 const ALL_COMPONENTS = COMPONENT_REGISTRY.map(c => c.name);
+
+// Componentes cuya ausencia es un INCIDENTE: se alerta y se relanza.
+// Fuente de verdad de `$Services` en `watchdog.ps1` (hay un test que falla si
+// divergen: hasta #6441 el .ps1 tenia 6 entradas y omitia `svc-reconciler`,
+// que es exactamente por lo que estuvo 6 dias caido sin que nadie se enterara).
+const SUPERVISED_COMPONENTS = COMPONENT_REGISTRY.filter(c => c.supervisado).map(c => c.name);
 
 // Paths (relativos al root del repo, separador `/` como los emite git) que
 // afectan a TODOS los componentes.
@@ -455,6 +470,7 @@ function _msg(e) {
 module.exports = {
     COMPONENT_REGISTRY,
     ALL_COMPONENTS,
+    SUPERVISED_COMPONENTS,
     STATE_FILENAME,
     LOG_PATH_MAX,
     sanitizePathForLog,

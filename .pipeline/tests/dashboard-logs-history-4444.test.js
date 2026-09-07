@@ -18,7 +18,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const http = require('http');
-const { spawn } = require('child_process');
+const { spawnDashboard, waitForDashboardBoot } = require('./helpers/dashboard-boot');
 const { getFreePort } = require('./helpers/free-port');
 const { seedConfig } = require('./helpers/sandbox-config');
 
@@ -70,7 +70,8 @@ before(async () => {
   fs.writeFileSync(path.join(logsDir, '999-guru.log'), 'log legacy\n');
 
   port = await getFreePort();
-  child = spawn(process.execPath, [dashboardPath], {
+  child = spawnDashboard({
+    dashboardPath,
     env: {
       ...process.env,
       PIPELINE_STATE_DIR: tmpDir,
@@ -79,19 +80,13 @@ before(async () => {
       DASHBOARD_HOST: '127.0.0.1',
       GH_BIN: 'gh-noop-nonexistent',
     },
-    stdio: 'ignore',
   });
 
-  await new Promise((resolve, reject) => {
-    let tries = 0;
-    const tick = () => {
-      getJson(port, '/api/health', 3000, (err, r) => {
-        if (!err && r && r.status === 200) return resolve();
-        if (++tries > 60) return reject(new Error('dashboard no levantó'));
-        setTimeout(tick, 250);
-      });
-    };
-    setTimeout(tick, 400);
+  await waitForDashboardBoot({
+    child,
+    probe: () => new Promise((resolve, reject) => {
+      getJson(port, '/api/health', 3000, (err, r) => (err ? reject(err) : resolve(r && r.status === 200)));
+    }),
   });
 });
 

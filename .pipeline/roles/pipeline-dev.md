@@ -76,8 +76,9 @@ El QA E2E del producto (video + emulador) **no aplica** a cambios que solo tocan
 
 Esta exención **no aplica** si el cambio toca una superficie visible del dashboard
 (`area:dashboard`, `dashboard.js`, `mission-ola-eta.js`, `views/dashboard/`,
-banner/card/copy visible). En esos casos la verificación debe incluir evidencia
-visual con audio narrado y no corresponde pedir `qa:skipped`.
+banner/card/copy visible) ni si modifica mensajes, botones, comandos o audio que
+recibe el operador por Telegram. En esos casos la verificación debe incluir evidencia
+E2E visual con audio narrado y no corresponde pedir `qa:skipped`.
 
 ### Testing
 

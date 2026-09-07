@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// #6812 — Windows: suprimir la ventana de consola de cada hijo (gh, git,
+// tasklist, powershell). Debe ir ANTES de cualquier require que spawnee.
+require('./lib/force-windows-hide').apply();
 // =============================================================================
 // Dashboard — Visualización completa del pipeline.
 //
@@ -88,6 +91,13 @@ try { etaMarkersLib = require('./lib/eta-markers'); } catch { /* opcional */ }
 // #3951 EP7-H4 — Render puro de los badges de resultado del Commander.
 let commanderResultBadge = null;
 try { commanderResultBadge = require('./lib/commander/result-badge'); } catch { /* opcional */ }
+
+// #6459 — Fuente ÚNICA del listado de peticiones del Commander (enumeración de
+// logs + sidecar de metadata). Compartida con el panel del home V3
+// (`views/dashboard/commander-activity.js`) para que las dos superficies
+// muestren exactamente las mismas filas.
+let commanderRecentRequests = null;
+try { commanderRecentRequests = require('./lib/commander/recent-requests'); } catch { /* opcional */ }
 
 // #2892 PR-C — Estado del banner de alerta de consumo anómalo + cap de snooze.
 let restModeState = null;
@@ -228,6 +238,15 @@ let _architectStateResolver = null;
 try { _architectStateResolver = require('./lib/architect-state-resolver'); } catch { /* opcional */ }
 let _architectSlices = null;
 try { _architectSlices = require('./lib/dashboard-slices'); } catch { /* opcional */ }
+
+// #6498 — Resolver puro del estado del sello de evidencia de QA (4 estados) +
+// el modulo emisor de #6495/#6496, del que salen el contador de re-encolados y
+// la cola de re-verificacion. Requires defensivos: si cualquiera falta, el
+// badge simplemente no se pinta y el dashboard queda identico a hoy.
+let _selloEvidenciaState = null;
+try { _selloEvidenciaState = require('./lib/sello-evidencia-state'); } catch { /* opcional */ }
+let _qaEvidenceSeal = null;
+try { _qaEvidenceSeal = require('./lib/qa-evidence-seal'); } catch { /* opcional */ }
 
 // #3625 CA-5 — Renderer del widget de Audit trail · Allowlist mutations.
 // Wrapper alrededor de lib/audit-trail-renderer.js para mantener el dashboard
@@ -1552,6 +1571,21 @@ function* _genPipelineState() {
           // rama de merge confirmado. Lo exponemos crudo: la validación de
           // formato y la regla de "entregado" viven en `lib/delivery-status.js`.
           entry.delivery_merge_sha = yamlData.delivery_merge_sha || null;
+          // #6498 CA-1/CA-10/SEC-3 — Bloque `sello:` de #6495 expuesto como
+          // campos DERIVADOS, nunca el objeto crudo. El bloque real trae
+          // `head`, rutas y hashes: jerga que el tooltip no puede mostrar
+          // (UX-3) e informacion que la capa secundaria no puede filtrar. Aca
+          // solo salen dos booleanos/contadores, asi CA-10 se cumple por
+          // construccion: no hay dato sensible que se pueda escapar.
+          const _sello = yamlData && yamlData.sello;
+          if (_sello && typeof _sello === 'object' && !Array.isArray(_sello)) {
+            entry.sello = {
+              presente: true,
+              // SEC-1: el hash declarado por el agente no coincidia con los
+              // bytes reales y se descarto. Es la senal anti-falsificacion.
+              descartes: Array.isArray(_sello.descartes) ? _sello.descartes.length : 0,
+            };
+          }
         }
 
         // #2801 — Si el archivo en pendiente/trabajando tiene contexto de
@@ -1651,6 +1685,64 @@ function* _genPipelineState() {
     catch { return {}; }
   })();
   state.retrying = retryingMap;
+
+  // #6498 — Estado TRANSITORIO del sello de evidencia (caduco / re-sellando /
+  // escalado). No hay dropfile que lo represente mientras ocurre: la fuente
+  // real que dejo #6496 es un contador FS-first con API publica
+  // (`readSealRetries`) mas la cola `verificacion-requeue/`.
+  //
+  // Costo: DOS readdir por refresco de estado (no un readFileSync por tarjeta).
+  // El readFile del contador solo se paga para los issues que efectivamente
+  // tienen uno, que en el camino feliz son cero.
+  //
+  // Mismo patron defensivo que `retryingState`: si el modulo emisor no esta o
+  // el FS falla, el mapa queda vacio, el resolver devuelve null y el dashboard
+  // queda identico a hoy. Cero regresion.
+  state.selloEvidencia = (() => {
+    const mapa = {};
+    if (!_qaEvidenceSeal || typeof _qaEvidenceSeal.readSealRetries !== 'function') return mapa;
+    const max = Number.isInteger(_qaEvidenceSeal.MAX_SEAL_REQUEUES) && _qaEvidenceSeal.MAX_SEAL_REQUEUES > 0
+      ? _qaEvidenceSeal.MAX_SEAL_REQUEUES
+      : 2;
+    try {
+      // 1) Ordenes de re-verificacion abiertas: pendiente/ + trabajando/.
+      const abiertos = new Set();
+      for (const sub of ['pendiente', 'trabajando']) {
+        let files;
+        try { files = fs.readdirSync(path.join(PIPELINE, 'verificacion-requeue', sub)); }
+        catch { continue; }
+        for (const nombre of files) {
+          const m = /^(\d+)-.*\.json$/.exec(nombre);
+          if (m) abiertos.add(m[1]);
+        }
+      }
+      // 2) Contadores `.<issue>.seal-retries` de la fase de verificacion.
+      const faseDir = typeof _qaEvidenceSeal.verificacionFasePath === 'function'
+        ? _qaEvidenceSeal.verificacionFasePath(PIPELINE)
+        : path.join(PIPELINE, 'desarrollo', 'verificacion');
+      let contadores = [];
+      try { contadores = fs.readdirSync(faseDir); } catch { contadores = []; }
+      for (const nombre of contadores) {
+        const m = /^\.(\d+)\.seal-retries$/.exec(nombre);
+        if (!m) continue;
+        const issue = m[1];
+        let r;
+        try { r = _qaEvidenceSeal.readSealRetries({ pipelineDir: PIPELINE, issue }); }
+        catch { continue; }
+        mapa[issue] = {
+          intentos: Number.isInteger(r && r.intentos) ? r.intentos : 0,
+          requeueAbierto: abiertos.has(issue),
+          maxIntentos: max,
+        };
+      }
+      // 3) Orden abierta sin contador legible: igual es una reparacion en curso.
+      for (const issue of abiertos) {
+        if (mapa[issue]) continue;
+        mapa[issue] = { intentos: 1, requeueAbierto: true, maxIntentos: max };
+      }
+    } catch { /* defensa: el badge es opcional, el board no */ }
+    return mapa;
+  })();
 
   for (const [id, data] of Object.entries(state.issueMatrix)) {
     data.pipelines = [...data.pipelines];
@@ -1812,15 +1904,52 @@ function* _genPipelineState() {
     state.bloqueadosStats = computeBloqueadosStats({});
   } catch {}
 
-  // #4580 — Bandeja "Esperando tu firma": los tres orígenes de firma del
-  // operador (waiting-operator/ · esperando-firma/ · GATE 3) unificados por
-  // lib/waiting-operator. Read-only: el lector valida el id (^\d+$, REQ-SEC-
-  // 4580-3) y redacta la evidencia (REQ-SEC-4580-5) antes de exponerla.
+  // #4580 / #6208 — Bandeja "Esperando tu firma". La fuente pasa a ser el read
+  // model `lib/gate-signature-inbox`, que UNE los pendientes REALES del depósito
+  // del kernel (firmables, con ficha + ancla server-derived + opciones) con los
+  // markers de `waiting-operator` (GATE 3 y compañía, no firmables desde acá).
+  // Antes leía SÓLO los markers, así que la bandeja estaba siempre vacía de
+  // firmas reales (CA-1). Read-only: no muta ningún archivo del pipeline.
+  //
+  // `esperandoFirmaInbox` lleva los metadatos del read model (`vacio`, `banda`,
+  // `degraded`) que la vista necesita para pintar los TRES vacíos: sin ellos un
+  // depósito ilegible se vería con el mismo cartel verde de "está todo firmado"
+  // (H-UX-6208-1).
   state.esperandoFirma = [];
+  state.esperandoFirmaInbox = null;
   try {
-    const waitingOperator = require('./lib/waiting-operator');
-    state.esperandoFirma = waitingOperator.listWaitingOperator();
-  } catch {}
+    const gateSignatureInbox = require('./lib/gate-signature-inbox');
+    const inbox = gateSignatureInbox.listInbox({ nowMs: Date.now() });
+    state.esperandoFirma = inbox.items;
+    state.esperandoFirmaInbox = {
+      degraded: inbox.degraded,
+      alert: inbox.alert,
+      corruptCount: inbox.corruptCount,
+      visibleCount: inbox.visibleCount,
+      firmables: inbox.firmables,
+      vacio: inbox.vacio,
+      banda: inbox.banda,
+    };
+  } catch (e) {
+    // Fail-closed hacia la visibilidad: si el read model no cargó NO se pinta el
+    // vacío verde. La bandeja dice que no pudo leer la lista (UX §5).
+    log(`gate-signature-inbox unavailable: ${e.message}`);
+    state.esperandoFirmaInbox = {
+      degraded: true,
+      alert: 'No pude leer la lista de firmas pendientes. Retengo y aviso.',
+      corruptCount: 0,
+      visibleCount: 0,
+      firmables: 0,
+      vacio: {
+        tono: 'warn',
+        icono: '\u26A0',
+        titulo: 'No pude leer la lista de firmas pendientes',
+        lineas: ['Esto no quiere decir que esté todo firmado.', 'Freno lo que dependa de una firma y te aviso.'],
+        chip: 'RETENIDO · REVISAR EL DEPÓSITO',
+      },
+      banda: null,
+    };
+  }
 
   // #3957 (CA-3) — username PÚBLICO del bot de Telegram para el deep-link de
   // cada fila. Validado contra el charset de Telegram antes de exponerlo; si
@@ -1993,6 +2122,34 @@ function* _genPipelineState() {
     cpuHistory: resourceHistory.cpu.slice(),
     memHistory: resourceHistory.mem.slice()
   };
+
+  // #6708 — Espacio libre en disco con el color del umbral vigente. El Pulpo lo
+  // mide en cada tick y lo persiste en `disk-guard-state.json`; acá sólo se lee
+  // (leer es barato, medir con `fsutil` en cada refresh de la página no).
+  //
+  // `null` cuando el archivo todavía no existe (Pulpo recién arrancado, o
+  // `disk_budget.enabled: false`): el render omite la celda en vez de mostrar
+  // ceros, que se leerían como "disco lleno".
+  state.disk = null;
+  try {
+    const dg = require('./lib/disk-guard');
+    const st = dg.readState({ pipelineDir: PIPELINE });
+    if (st && st.measured_at) {
+      state.disk = {
+        level: st.level,
+        // #6708 (rebote rev-1) — Rótulo textual del escalón, resuelto en el
+        // servidor por el módulo dueño del mapa. Viaja en el slice para que la
+        // pill no dependa sólo de su espejo client-side.
+        label: dg.levelLabel(st.level),
+        color: dg.LEVEL_COLORS[st.level] || dg.LEVEL_COLORS.unknown,
+        freeGB: st.free_gb,
+        totalGB: st.total_gb,
+        frozen: !!st.frozen,
+        budget: st.budget || null,
+        measuredAt: st.measured_at,
+      };
+    }
+  } catch { state.disk = null; }
 
   // #3492 — ETA agregada por ola (probabilística, p50/p75/p90). Refresh async
   // fire-and-forget contra cache TTL 30s para no bloquear el render sync.
@@ -2673,6 +2830,14 @@ function renderCommanderResultBadges(meta) {
   catch { return ''; }
 }
 
+// #6459 — CSS de los badges desde su fuente única. Si el require opcional del
+// módulo falló, el legacy queda sin las reglas (igual que ya quedaba sin los
+// badges): degradar, nunca romper el render de toda la página.
+function badgeCss() {
+  if (!commanderResultBadge || typeof commanderResultBadge.RESULT_BADGE_CSS !== 'string') return '';
+  return commanderResultBadge.RESULT_BADGE_CSS;
+}
+
 // #3949 EP7-H2 — Render de los logs recientes del Commander (un log por
 // petición atendida) dentro de la card de Commander Routing. Reutiliza el
 // patrón `<a class="log-link">` (G1) y un label legible HH:MM:SS + chat (G3),
@@ -2680,22 +2845,18 @@ function renderCommanderResultBadges(meta) {
 // epochms es el último segmento `-` del id.
 // #3951 EP7-H4 — enriquece cada item con el badge de resultado leyendo su
 // sidecar `commander-<id>.meta.json` (lectura defensiva: sin sidecar → sin badge).
+// #6459 — La enumeración de logs + lectura del sidecar se movió a
+// `lib/commander/recent-requests.js`, que es la MISMA fuente que consume el
+// panel del home V3. Antes esta función era el único lugar del repo que sabía
+// leer las peticiones del Commander, y como sólo se sirve en `/legacy`, el dato
+// no llegaba nunca al dashboard que abre el operador.
 function renderCommanderRequestLogs(logDir, limit) {
   const MAX = limit || 8;
   let files = [];
   try {
-    files = fs.readdirSync(logDir)
-      .filter(f => /^commander-.+\.log$/.test(f))
-      .map(f => {
-        // id = nombre sin prefijo `commander-` ni sufijo `.log`.
-        const id = f.replace(/^commander-/, '').replace(/\.log$/, '');
-        const parts = id.split('-');
-        const epochms = Number(parts[parts.length - 1]);
-        const chat = parts.slice(0, -1).join('-') || '?';
-        return { f, id, epochms: Number.isFinite(epochms) ? epochms : 0, chat };
-      })
-      .sort((a, b) => b.epochms - a.epochms)
-      .slice(0, MAX);
+    files = commanderRecentRequests
+      ? commanderRecentRequests.listRecentRequests(logDir, MAX)
+      : [];
   } catch { /* dir inexistente → estado vacío */ }
 
   if (files.length === 0) {
@@ -2709,17 +2870,10 @@ function renderCommanderRequestLogs(logDir, limit) {
   const items = files.map(it => {
     const hora = it.epochms ? new Date(it.epochms).toTimeString().slice(0, 8) : '??:??:??';
     const label = `${hora} · chat ${escapeHtml(it.chat)}`;
-    // #3951 EP7-H4 — lectura defensiva del sidecar de metadata. Si no existe
-    // (peticiones previas al cambio) o está corrupto → sin badge, sin error.
-    let badges = '';
-    try {
-      const metaPath = path.join(logDir, `commander-${it.id}.meta.json`);
-      if (fs.existsSync(metaPath)) {
-        const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
-        badges = renderCommanderResultBadges(meta);
-      }
-    } catch { /* sidecar ausente/corrupto → render sin badge */ }
-    return `<a class="log-link" href="/logs/view/${encodeURIComponent(it.f)}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()" title="${escapeHtml(it.id)}" style="display:block;font-size:0.8em;padding:1px 0;color:var(--ac)">📄 ${label}${badges}</a>`;
+    // #3951 EP7-H4 — el sidecar ya viene leído (defensivamente) por
+    // `listRecentRequests`: sin sidecar / corrupto ⇒ `meta === null` ⇒ sin badge.
+    const badges = renderCommanderResultBadges(it.meta);
+    return `<a class="log-link" href="/logs/view/${encodeURIComponent(it.file)}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()" title="${escapeHtml(it.id)}" style="display:block;font-size:0.8em;padding:1px 0;color:var(--ac)">📄 ${label}${badges}</a>`;
   }).join('');
 
   return `
@@ -3571,6 +3725,26 @@ function generateHTML(state) {
         }
       } catch { /* defensa: no romper la tarjeta si el resolver/renderer falla */ }
     }
+    // #6498 CA-2/CA-3 — Badge del sello de evidencia de QA. Insertar
+    // SEMANTICAMENTE entre architect y stale; el orden final de la fila es:
+    // crossphase -> rebote -> needshuman -> architect -> sello -> stale.
+    //
+    // El estado sale de dos fuentes con ciclos de vida distintos: el bloque
+    // `sello:` del dropfile (lo PERSISTIDO) y el contador FS-first de #6496
+    // (lo TRANSITORIO). El resolver las mergea con prioridad
+    // escalado > re-sellando > caduco > sellado > null.
+    //
+    // Sin dato => null => CERO badge: un issue sin sello queda como hoy.
+    if (_selloEvidenciaState && _architectSlices && typeof _architectSlices.selloEvidenciaBadgeHTML === 'function') {
+      try {
+        const selloState = (state.selloEvidencia || {})[String(issueNum)];
+        const selloInfo = _selloEvidenciaState.resolveSelloEvidenciaState(data.fases, selloState);
+        if (selloInfo) {
+          const badgeHTML = _architectSlices.selloEvidenciaBadgeHTML(selloInfo, { esc, ic });
+          if (badgeHTML) stateBadges.push(badgeHTML);
+        }
+      } catch { /* defensa: no romper la tarjeta si el resolver/renderer falla */ }
+    }
     if (isStale && !isRetrying) {
       stateBadges.push(`<span class="lc-state-badge lc-state-stale" title="Sin actividad reciente: ${data.staleMin}m" aria-label="stale ${data.staleMin} minutos">${ic('estado-stale')} ${data.staleMin}m</span>`);
     }
@@ -3942,8 +4116,17 @@ function generateHTML(state) {
     ? esperandoFirmaView.renderEsperandoFirmaSsr(state)
     : '';
 
+  // #6208 · R1 — client script de la bandeja, del MISMO módulo que inyecta
+  // `estado-productos.js:541-542`. Antes la home legacy tenía su propia copia
+  // inline de los handlers y las dos divergían. Sin él la bandeja se ve pero sus
+  // botones no operan; con él hay UNA sola definición de `gateSignatureDecide`.
+  const esperandoFirmaJS = (esperandoFirmaView && typeof esperandoFirmaView.renderEsperandoFirmaClientScript === 'function')
+    ? '<script>' + esperandoFirmaView.renderEsperandoFirmaClientScript() + '</script>'
+    : '';
+
   const matrixHTML = `
     ${esperandoFirmaHTML}
+    ${esperandoFirmaJS}
     ${bloqueadosHTML}
     <a id="board-kanban" class="board-kanban-anchor" aria-hidden="true"></a>
     <div class="matrix-section section-collapsible board-kanban-centerpiece" id="issue-tracker" data-section="issue-tracker">
@@ -4273,6 +4456,15 @@ function generateHTML(state) {
   const healthLabel = healthScore > 60 ? 'Óptimo' : healthScore > 30 ? 'Presionado' : healthScore > 10 ? 'Crítico' : 'Saturado';
   const healthColor = healthScore > 60 ? '#3fb950' : healthScore > 30 ? '#d29922' : '#f85149';
   const blocked = res.cpuPercent >= res.maxCpu || res.memPercent >= res.maxMem;
+
+  // #6708 — El indicador de disco NO se pinta acá. `resourcesHTML` (abajo) es
+  // código muerto: se asigna y nunca se interpola en el HTML de salida, así
+  // que un gauge colgado de ese bloque no llega a ninguna pantalla servida.
+  // El espacio libre con el color de su umbral se renderiza en la system card
+  // del home V3 (`views/dashboard/home.js` → renderSystemCard), que es la
+  // pantalla que abre el operador. `state.disk` se sigue calculando arriba
+  // porque lo consume `headerSlice()` → /api/dash/header, la fuente del dato.
+
   const resourcesHTML = `
     <div class="sys-health">
       <div class="sys-health-score" style="--hcolor:${healthColor}">
@@ -4790,6 +4982,20 @@ ${loadDesignTokens()}
 .lc-state-architect-running{background:var(--warning-bg,rgba(210,153,34,0.14));color:var(--warning,var(--yl));border-color:rgba(210,153,34,0.4)}
 .lc-state-architect-approved{background:var(--success-bg,rgba(63,185,80,0.14));color:var(--success,var(--gr));border-color:rgba(63,185,80,0.4)}
 .lc-state-architect-rejected{background:var(--danger-bg,rgba(248,81,73,0.14));color:var(--danger,var(--rd));border-color:rgba(248,81,73,0.5)}
+/* #6498 CA-7 — Badge del sello de evidencia. Tokens PELADOS, sin fallback
+   literal: CA-7 prohibe colores literales en el codigo nuevo. Si
+   loadDesignTokens() degrada a vacio el badge pierde el fondo pero NO la
+   legibilidad — icono + etiqueta siguen ahi, que es la garantia de CA-5.
+   UX-G1 (vinculante): el borde de 'escalado' usa var(--danger), NO
+   var(--danger-dim): #8B1A14 sobre la tarjeta da 1.86:1 y no llega al 3:1 de
+   WCAG 1.4.11 para no-texto.
+   UX-G2 (vinculante): ninguna lleva animation — dos pulsos desfasados en la
+   misma fila que .lc-state-needshuman anulan la jerarquia visual.
+   R-1: clases NUEVAS. .lc-state-stale (gris, badge de inactividad) no se toca. */
+.lc-state-sello-sellado{background:var(--info-bg);color:var(--info);border-color:var(--info-dim)}
+.lc-state-sello-caduco{background:var(--retry-bg);color:var(--retry);border-color:var(--retry-dim)}
+.lc-state-sello-resellando{background:var(--retry-bg);color:var(--retry);border-color:var(--retry-dim)}
+.lc-state-sello-escalado{background:var(--danger-bg);color:var(--danger);border-color:var(--danger)}
 .lc-state-row{display:flex;flex-wrap:wrap;gap:5px;padding:0 var(--space-3,10px) var(--space-2,6px);margin-top:-2px}
 /* ── Cola detallada (#3356) — 5ta sub-seccion del large board principal ─── */
 /* Las 5 sub-secciones del header son: (1) brand bar / hdr-bar-v3,            */
@@ -5468,19 +5674,18 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
 .log-link:hover .chip{text-decoration:underline;filter:brightness(1.15)}
 
 /* ── #3951 EP7-H4 — Badge de resultado de la petición del Commander.
- *    Mapea el enum cerrado (ok/ajustada/fallback/error) a los 4 tokens
+ *    Mapea el enum cerrado (ok/ajustada/fallback/error/huerfano) a los 5 tokens
  *    semánticos del design system. Glyph + label SIEMPRE (CA-4: no depender
- *    sólo del color). Tokens con fallback legacy por si design-tokens.css no
- *    está cargado. */
-.cmd-result{display:inline-flex;align-items:center;gap:4px;padding:1px 7px;border-radius:5px;font-size:0.72em;font-weight:600;line-height:1.5;border:1px solid transparent;margin-left:6px}
-.cmd-result-ok       {color:var(--success,var(--gn));background:var(--success-bg,rgba(63,185,80,0.14));border-color:var(--success-dim,var(--gn2))}
-.cmd-result-ajustada {color:var(--warning,var(--yl));background:var(--warning-bg,rgba(210,153,34,0.14));border-color:var(--warning-dim,var(--yl2))}
-.cmd-result-fallback {color:var(--info,var(--ac));   background:var(--info-bg,rgba(88,166,255,0.14));   border-color:var(--info-dim,var(--ac2))}
-.cmd-result-error    {color:var(--danger,var(--rd)); background:var(--danger-bg,rgba(248,81,73,0.14));  border-color:var(--danger-dim,var(--rd2))}
-.cmd-provider{font-size:0.72em;color:var(--dim);font-family:inherit;padding:1px 6px;border:1px solid var(--bd);border-radius:5px;margin-left:4px}
-.cmd-verif{font-size:0.72em;padding:1px 6px;border:1px solid var(--bd);border-radius:5px;margin-left:4px}
-.cmd-verif-cross{color:var(--info,var(--ac));border-color:var(--info-dim,var(--ac2));background:var(--info-bg,rgba(88,166,255,0.14))}
-.cmd-verif-same {color:var(--dim);border-color:var(--bd)}
+ *    sólo del color).
+ *
+ *    #6459 — las reglas ya NO viven acá: se interpolan desde
+ *    lib/commander/result-badge.js (RESULT_BADGE_CSS), que es la MISMA
+ *    constante que consume el home V3 (views/dashboard/commander-activity.js).
+ *    Antes esta copia era la única del repo y generateHTML() sólo se sirve
+ *    en /legacy: el badge existía y no se veía en el dashboard que abre el
+ *    operador. Con una sola fuente, agregar un resultado no puede dejar una
+ *    de las dos superficies muda otra vez. */
+${badgeCss()}
 
 /* ── Log Viewer Panel ──────────────────────────────────────────────────── */
 .log-overlay{
@@ -7215,7 +7420,24 @@ body.standalone .section-collapsed .section-body{display:block !important}
 
   ${state.rechazos.length > 0 ? `<details class="collapse-section"><summary>🚫 Rechazos recientes<span>${state.rechazos.length}</span></summary><div class="collapse-body">${rechazosHTML}</div></details>` : ''}
 
-  <details class="collapse-section"><summary>💬 Actividad Commander</summary><div class="collapse-body" style="max-height:300px;overflow-y:auto">${actHTML}</div></details>
+  ${/* #6459 — El listado "Logs recientes" (una fila por petición atendida, con
+        su badge de resultado) lo construye `renderCommanderRequestLogs` desde
+        #3949/#3951, pero su ÚNICO caller estaba dentro de `doraMinHTML`, que el
+        rediseño kiosk V3 (#2801/#2804) dejó de emitir: la variable se arma y no
+        se usa en ningún lado. Verificado sobre el dashboard vivo — `curl :3200`
+        y `:3299/`, `/v3`, `/multi-provider` ⇒ cero ocurrencias de "Logs
+        recientes" y cero de `cmd-result`.
+
+        Consecuencia: el badge de resultado NO se renderiza en ninguna parte, y
+        el estado `huerfano` nacería mudo — exactamente el escape #4531 que
+        CA-13 viene a cerrar.
+
+        La reparación es de RENDER PATH, no de layout: el listado se cuelga de la
+        sección de Commander que la página YA emite, sin card nueva, sin mover
+        nada y sin resucitar la card de DORA (que sigue muerta, fuera del alcance
+        de este issue). La anatomía de la fila es la del mockup acordado
+        `assets/mockups/6440/02-dashboard-badge-huerfano.svg`. */''}
+  <details class="collapse-section"><summary>💬 Actividad Commander</summary><div class="collapse-body" style="max-height:300px;overflow-y:auto">${renderCommanderRequestLogs(LOG_DIR)}${actHTML}</div></details>
 
   <div class="footer" id="dash-footer">🟢 Live · Refresh on-demand &nbsp;|&nbsp; ${new Date().toLocaleString('es-AR')}</div>
 
@@ -9948,48 +10170,18 @@ function toggleInfraHealth() {
   } catch (e) {}
 })();
 
-// #4580 — Bandeja "Esperando tu firma". Handlers del panel de firma del operador.
-// REQ-SEC-4580-1: la acción es POST-only + X-CSRF-Token same-origin (GET token →
-// POST decide). El dashboard NO muta estado: reenvía la decisión al backend de
-// firma (#4579) que delega la transición al kernel.
-function toggleEsperandoFirmaPanel() {
-  var p = document.getElementById('esperando-firma-panel');
-  if (!p) return;
-  var collapse = !p.classList.contains('ef-collapsed');
-  p.classList.toggle('ef-collapsed');
-  try { localStorage.setItem('ef-panel-collapsed', collapse ? '1' : '0'); } catch (e) {}
-}
-(function restoreEsperandoFirmaPanel() {
-  try {
-    if (localStorage.getItem('ef-panel-collapsed') === '1') {
-      var p = document.getElementById('esperando-firma-panel');
-      if (p) p.classList.add('ef-collapsed');
-    }
-  } catch (e) {}
-})();
-function efDisableRow(issueNum) {
-  var row = document.getElementById('esperando-firma-row-' + issueNum);
-  if (row) { row.querySelectorAll('button').forEach(function (b) { b.disabled = true; }); }
-}
-async function gateSignatureDecide(issueNum, decision) {
-  var verbo = decision === 'aprobar' ? 'Aprobar' : 'Rechazar';
-  if (!window.confirm(verbo + ' la firma del issue #' + issueNum + '?')) return;
-  efDisableRow(issueNum);
-  try {
-    var t = await fetch('/api/gate-signature/csrf-token', { cache: 'no-store' });
-    var tj = await t.json();
-    var token = tj && tj.csrf_token;
-    if (!token) { alert('No pude obtener el token CSRF; recargá y reintentá.'); location.reload(); return; }
-    var r = await fetch('/api/gate-signature/decide', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': token },
-      body: JSON.stringify({ issue: issueNum, decision: decision })
-    });
-    var j = await r.json();
-    if (j && j.ok) { location.reload(); }
-    else { alert('Error firmando #' + issueNum + ': ' + ((j && j.msg) || 'desconocido')); location.reload(); }
-  } catch (e) { alert('Error firmando #' + issueNum + ': ' + e.message); location.reload(); }
-}
+// #6208 · R1 — Aca vivia una SEGUNDA copia de los handlers de la bandeja
+// "Esperando tu firma", con un handler de decision de 2 argumentos que ya habia
+// perdido el productId de #4778 y que nunca supo del gate multi-gate. Las filas
+// las pinta el mismo renderEsperandoFirmaSsr en las dos superficies, pero el
+// script cliente salia de fuentes distintas: arreglar una sola dejaba la otra
+// mandando pedidos que el backend rechaza.
+//
+// Ahora la UNICA definicion vive en views/dashboard/esperando-firma.js
+// (renderEsperandoFirmaClientScript) y la home legacy la inyecta igual que hace
+// estado-productos.js:541-542. Hay un test que grepea que el handler este
+// definido una sola vez en todo .pipeline/.
+// (Este bloque esta DENTRO de un template literal: sin backticks a proposito.)
 
 // Toggle del panel "Necesitan intervención humana" — colapsable + persistente
 function toggleNeedsHumanPanel(scrollOnExpand) {
@@ -12479,13 +12671,19 @@ function handleRequest(req, res) {
         const parsed = body ? JSON.parse(body) : {};
         const out = gateSignatureRequest.enqueueDecision({
           issue: parsed.issue,
+          // #6208 · CA-13 / CA-14 — `gate` viaja en el MISMO contrato (no hay
+          // ruta nueva). Lo valida `approval-channel.resolveGate` fail-closed,
+          // ANTES de tocar el filesystem: acá se reenvía crudo a propósito.
+          gate: parsed.gate,
           decision: parsed.decision,
           origen: parsed.origen,
           productId: parsed.productId, // #4778 · CA-2.2 — firma atada al producto (no repudio).
+          // REQ-SEC-6208-2 — `actor` es una identidad DECLARADA por el cliente:
+          // va al audit y a ningún otro lado. Nunca alimenta `authorizedSigners`.
           actor: parsed.actor,
           remoteAddress: (req.socket && req.socket.remoteAddress) || '',
         });
-        log(`Action: gate-signature decide #${parsed.issue} → ${out.decision || parsed.decision} (${out.status}) ${out.msg}`);
+        log(`Action: gate-signature decide #${parsed.issue} gate=${out.gate || parsed.gate} -> ${out.verdict || parsed.decision} (${out.status}) ${out.msg}`);
         res.writeHead(out.status || (out.ok ? 202 : 400), { 'Content-Type': 'application/json' });
         return res.end(JSON.stringify(out));
       } catch (e) {
@@ -13027,8 +13225,16 @@ function handleRequest(req, res) {
   // el `callback_data` no tiene nonce ni TTL y el mensaje vive para siempre en
   // el chat, así que el segundo tap tiene que morir server-side.
   // ===========================================================================
+  //
+  // #6118 — Se suman `include-deps-for-issue` (include ACOTADO al issue de la
+  // alerta) y `mute-alert` (silencio del aviso). Entran a ESTE bloque y no al de
+  // `/include-deps` de más arriba a propósito: aquél no tiene ningún control de
+  // request (CSRF preexistente, #5929, fuera de alcance). Colgar rutas nuevas de
+  // ese molde propagaría el defecto; el molde bueno es éste.
   if ((req.url === '/api/partial-pause/keep-original'
-       || req.url === '/api/partial-pause/cancel-partial-pause')
+       || req.url === '/api/partial-pause/cancel-partial-pause'
+       || req.url === '/api/partial-pause/include-deps-for-issue'
+       || req.url === '/api/partial-pause/mute-alert')
       && req.method === 'POST') {
     const ppGate = require('./lib/dashboard-request-gate');
     const ppResolution = require('./lib/partial-pause-resolution');
@@ -13044,7 +13250,10 @@ function handleRequest(req, res) {
       return;
     }
 
-    const ppAction = req.url.endsWith('/keep-original') ? 'keep-original' : 'cancel-partial-pause';
+    // La acción sale del path, no del body: el enum de rutas de arriba es el
+    // único set posible, así que no hay forma de que el cliente nombre una
+    // acción que no esté en esta lista.
+    const ppAction = req.url.slice('/api/partial-pause/'.length);
     let ppBody = '';
     let ppAborted = false;
     req.on('data', (chunk) => {
@@ -13064,16 +13273,53 @@ function handleRequest(req, res) {
         // como authorizedBy dejaba el valor FUERA del enum: pasaba sólo por el
         // grace period y con `PARTIAL_PAUSE_STRICT_AUTH=1` daba 403 para siempre.
         const authorizedBy = ppGate.sanitizeAuthorizedBy(payload.authorizedBy);
+        // #6118 — El state de deps es la fuente de verdad del servidor sobre QUÉ
+        // dependencias frenan a cada issue. El tap sólo trae el número de issue
+        // (no entra más en 64 bytes de `callback_data`), así que el conjunto se
+        // deriva acá y nunca se toma del cliente.
+        const ppDepsStateFile = path.join(PIPELINE, 'partial-pause-deps-state.json');
+        const ppDepsRead = () => {
+          try { return JSON.parse(fs.readFileSync(ppDepsStateFile, 'utf8')); }
+          catch { return null; }
+        };
         const out = ppResolution.applyResolution({
           action: ppAction,
           authorizedBy,
           operatorRef: ppGate.sanitizeAuthorizedBy(payload.operatorRef, ''),
+          // Entero del cliente. `applyResolution` lo valida con `^\d{1,7}$` y lo
+          // contrasta contra el state antes de usarlo; nunca se concatena a un
+          // path ni a una URL.
+          issue: payload.issue,
           deps: {
             getPipelineMode: pp.getPipelineMode,
             markDepRiskAccepted: pp.markDepRiskAccepted,
             clearPartialPause: pp.clearPartialPause,
+            setPartialPause: pp.setPartialPause,
+            readDepsState: ppDepsRead,
+            // Metadata de la ola: `getPipelineMode()` no la expone y
+            // `setPartialPause` reescribe el marker desde sus argumentos, así que
+            // sin esto habilitar una dependencia borraría la identidad de la ola.
+            // La lectura la hace `partial-pause`, que es el dueño del marker: el
+            // path de estado no se reconstruye acá (#5109).
+            readWaveMeta: pp.readWaveMetaFromMarker,
+            alertSignature: require('./lib/partial-pause-deps').alertSignature,
+            mute: require('./lib/partial-pause-deps-mute').mute,
+            muteTtlMs: require('./lib/partial-pause-deps-mute').resolveTtlMsFromDisk(),
+            // Saca del state SÓLO al issue resuelto. Borrar el archivo entero
+            // volvería invisibles a los otros issues alertados.
+            dropIssueFromDepsState: (issueNum) => {
+              try {
+                const st = ppDepsRead();
+                if (!st || !st.missing) return;
+                delete st.missing[String(issueNum)];
+                if (Object.keys(st.missing).length === 0) { fs.unlinkSync(ppDepsStateFile); return; }
+                const tmp = `${ppDepsStateFile}.tmp.${process.pid}.${Date.now()}`;
+                fs.writeFileSync(tmp, JSON.stringify(st, null, 2));
+                fs.renameSync(tmp, ppDepsStateFile);
+              } catch {}
+            },
             clearDepsState: () => {
-              try { fs.unlinkSync(path.join(PIPELINE, 'partial-pause-deps-state.json')); } catch {}
+              try { fs.unlinkSync(ppDepsStateFile); } catch {}
             },
           },
         });

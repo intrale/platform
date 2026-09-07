@@ -189,10 +189,27 @@ test('CA-3 . createAwsCliRunner con credenciales completas no lanza', () => {
 test('CA-2 . normalizeConfig rechaza el driver real sin tableName', () => {
     // driver "real" = kind != in-memory (simulamos el aws-cli).
     const realDriver = { kind: 'aws-cli' };
+    // #5214 - el mensaje pasó a ser el diagnóstico accionable del guard
+    // (dónde editar + qué clave + runbook). Lo que este test custodia sigue
+    // siendo lo mismo: el driver real no tiene nombre de tabla por defecto.
     assert.throws(
         () => normalizeConfig({ kernel: {} }, realDriver),
-        (e) => e instanceof KernelStoreError && /tableName requerido/.test(e.message),
+        (e) => e instanceof KernelStoreError && /kernel\.tableName/.test(e.message),
     );
+});
+
+// #5214 - whitespace: el caso que el guard previo dejaba pasar. `"   "` es
+// truthy, así que la validación por falsiness lo aceptaba y viajaba al driver
+// real como nombre de tabla.
+test('CA-2 . normalizeConfig rechaza el driver real con tableName de solo whitespace (#5214)', () => {
+    const realDriver = { kind: 'aws-cli' };
+    for (const valor of ['   ', '\t', '\n', ' \t\r\n ']) {
+        assert.throws(
+            () => normalizeConfig({ kernel: { tableName: valor } }, realDriver),
+            (e) => e instanceof KernelStoreError && e.configReason === 'whitespace',
+            `whitespace ${JSON.stringify(valor)} debe rechazarse`,
+        );
+    }
 });
 
 test('CA-2 . normalizeConfig lee tableName/region desde la seccion kernel', () => {

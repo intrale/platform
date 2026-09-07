@@ -105,16 +105,118 @@ test('atomicCreateLock trata EBUSY transitorio como contención recuperable', (t
 
 // ─── Stale detection ────────────────────────────────────────────────────────
 
-test('isStale: PID no existe → stale', () => {
-    const fake = { pid: 9999999, startTime: '2026-01-01T00:00:00.000Z' };
-    // PID muy alto — improbable que exista.
-    const stale = lock._internal.isStale(fake, '/nope/inexistent.lock');
-    assert.equal(stale, true);
+test('isStale: PID no existe (lock viejo) → stale', () => {
+    const target = mkTmpFile();
+    try {
+        // PID muy alto — improbable que exista.
+        const fake = { pid: 9999999, startTime: '2026-01-01T00:00:00.000Z' };
+        fs.writeFileSync(target + '.lock', JSON.stringify(fake));
+        // #6459 — el lock tiene que ser VIEJO: un lock joven no se roba ni con
+        // el PID muerto (un falso negativo de isPidAlive causaría dual-hold).
+        const old = (Date.now() - 90 * 1000) / 1000;
+        fs.utimesSync(target + '.lock', old, old);
+        assert.equal(lock._internal.isStale(fake, target + '.lock'), true);
+    } finally { rmrf(target); }
 });
 
-test('isStale: lock corrupto → stale', () => {
-    const stale = lock._internal.isStale({ _corrupt: true }, '/nope/inexistent.lock');
-    assert.equal(stale, true);
+// #6459 — El lock JOVEN de un PID reportado muerto NO se roba. `isPidAlive` es
+// fail-closed pero no infalible; exigir antigüedad hace que un único falso
+// "muerto" no alcance para el dual-hold.
+test('#6459 isStale: PID no existe pero lock JOVEN → NO stale', () => {
+    const target = mkTmpFile();
+    try {
+        const fake = { pid: 9999999, startTime: '2026-01-01T00:00:00.000Z' };
+        fs.writeFileSync(target + '.lock', JSON.stringify(fake));
+        assert.equal(lock._internal.isStale(fake, target + '.lock'), false,
+            'un lock de segundos no se roba ni con el PID muerto');
+    } finally { rmrf(target); }
+});
+
+// #6459 — "el lock desapareció" NO es "el lock está stale". Antes devolvía
+// true y el caller hacía un unlink a ciegas que se llevaba puesto el lock que
+// otro proceso acababa de crear → dual-hold → lost-update silencioso.
+test('#6459 isStale: lock inexistente → NO stale (no hay nada que robar)', () => {
+    const meta = { pid: process.ppid, startTime: '2026-01-01T00:00:00.000Z' };
+    assert.equal(lock._internal.isStale(meta, '/nope/inexistent.lock'), false);
+});
+
+test('#6459 isPidAlive: error no concluyente (UNKNOWN) → VIVO (fail-closed)', (t) => {
+    t.mock.method(process, 'kill', () => {
+        throw Object.assign(new Error('unknown'), { code: 'UNKNOWN' });
+    });
+    try {
+        assert.equal(lock._internal.isPidAlive(4242), true,
+            'ante un error no concluyente hay que asumir VIVO, nunca robar el lock');
+    } finally { t.mock.restoreAll(); }
+});
+
+test('#6459 isPidAlive: ESRCH → MUERTO (única prueba positiva de muerte)', (t) => {
+    t.mock.method(process, 'kill', () => {
+        throw Object.assign(new Error('esrch'), { code: 'ESRCH' });
+    });
+    try {
+        assert.equal(lock._internal.isPidAlive(4242), false);
+    } finally { t.mock.restoreAll(); }
+});
+
+// #6459 — remoción VERIFICADA: el unlink sólo procede si el lock sigue siendo
+// el mismo que juzgamos stale.
+test('#6459 removeStaleLock: NO borra si el lock cambió de dueño (TOCTOU)', () => {
+    const target = mkTmpFile();
+    try {
+        const judged = { pid: 9999999, startTime: 'x', nonce: 'aaaaaaaaaaaaaaaa' };
+        // En el disco ya hay OTRO lock: el holder liberó y un tercero lo tomó.
+        const fresh = { pid: process.pid, startTime: 'y', nonce: 'bbbbbbbbbbbbbbbb' };
+        fs.writeFileSync(target + '.lock', JSON.stringify(fresh));
+
+        assert.equal(lock._internal.removeStaleLock(target + '.lock', judged), false,
+            'no debe borrar el lock de otro holder');
+        const after = JSON.parse(fs.readFileSync(target + '.lock', 'utf8'));
+        assert.equal(after.nonce, 'bbbbbbbbbbbbbbbb', 'el lock fresco debe seguir intacto');
+    } finally { rmrf(target); }
+});
+
+test('#6459 removeStaleLock: SÍ borra si la identidad coincide', () => {
+    const target = mkTmpFile();
+    try {
+        const judged = { pid: 9999999, startTime: 'x', nonce: 'cccccccccccccccc' };
+        fs.writeFileSync(target + '.lock', JSON.stringify(judged));
+        assert.equal(lock._internal.removeStaleLock(target + '.lock', judged), true);
+        assert.equal(fs.existsSync(target + '.lock'), false, 'el lock stale debe removerse');
+    } finally { rmrf(target); }
+});
+
+test('#6459 removeStaleLock: lock ya desaparecido → false, sin tirar', () => {
+    const judged = { pid: 1, startTime: 'x', nonce: 'dddddddddddddddd' };
+    assert.equal(lock._internal.removeStaleLock('/nope/inexistent.lock', judged), false);
+});
+
+test('#6459 el lock lleva nonce único por adquisición', () => {
+    const a = mkTmpFile();
+    const b = mkTmpFile();
+    try {
+        let na, nb;
+        lock.withLockSync(a, () => {
+            na = JSON.parse(fs.readFileSync(a + '.lock', 'utf8')).nonce;
+        });
+        lock.withLockSync(b, () => {
+            nb = JSON.parse(fs.readFileSync(b + '.lock', 'utf8')).nonce;
+        });
+        assert.ok(na && nb, 'ambos locks deben traer nonce');
+        assert.notEqual(na, nb, 'el nonce debe ser único por adquisición');
+    } finally { rmrf(a); rmrf(b); }
+});
+
+test('isStale: lock corrupto viejo → stale', () => {
+    const target = mkTmpFile();
+    try {
+        fs.writeFileSync(target + '.lock', '');
+        // #6459 — sobre un lock REAL y viejo (el path inexistente ya no
+        // devuelve stale: "desapareció" != "stale").
+        const old = (Date.now() - 90 * 1000) / 1000;
+        fs.utimesSync(target + '.lock', old, old);
+        assert.equal(lock._internal.isStale({ _corrupt: true }, target + '.lock'), true);
+    } finally { rmrf(target); }
 });
 
 test('isStale: PID vivo + lock reciente → NO stale (conservador)', () => {
@@ -279,5 +381,380 @@ test('releaseLock: limpia locks corruptos', () => {
         const ok = lock.releaseLock(target);
         assert.equal(ok, true);
         assert.equal(fs.existsSync(target + '.lock'), false);
+    } finally { rmrf(target); }
+});
+
+// =============================================================================
+// #6145 — Lost-update silencioso por robo de lock a un holder VIVO.
+//
+// Rebote del tester: `waves-concurrency.test.js` CA-8 falló con
+// `issues=5, exitosos=10` — 10 workers salieron con código 0 pero sólo 5
+// escrituras sobrevivieron. Causa raíz: `isPidAlive()` tenía un catch-all
+// `return false`, así que cualquier código de error distinto de ESRCH/EPERM se
+// leía como "el holder está muerto". `isStale()` reclamaba entonces el lock sin
+// mirar la antigüedad, un contendiente unlinkeaba el lock de un holder vivo y
+// los dos procesos escribían sobre la misma base.
+//
+// Bajo fork-storm de la suite completa (~375 archivos, batches de `node --test`)
+// `process.kill(pid, 0)` → `OpenProcess()` falla de forma transitoria con
+// EACCES/ENOMEM/EMFILE/EINVAL según presión de handles. Todos caían en el
+// catch-all. Por eso el test pasa aislado y falla dentro de la suite.
+//
+// Tres capas: (1) sonda fail-closed, (2) gracia + segunda sonda en el reclamo
+// por PID muerto, (3) verificación de propiedad al salir de la sección crítica.
+// =============================================================================
+
+/** Reemplaza `process.kill` para que la sonda (señal 0) tire `code`. */
+function withKillProbeFailing(code, fn) {
+    const orig = process.kill.bind(process);
+    process.kill = (pid, sig) => {
+        if (sig === 0) {
+            const e = new Error(`sonda simulada: ${code}`);
+            e.code = code;
+            throw e;
+        }
+        return orig(pid, sig);
+    };
+    try { return fn(); } finally { process.kill = orig; }
+}
+
+// Códigos que Windows produce de forma transitoria bajo presión de handles y
+// que ANTES se leían como "proceso muerto".
+const CODIGOS_SONDA_NO_CONCLUYENTES = ['EACCES', 'ENOMEM', 'EMFILE', 'EINVAL', 'UNKNOWN'];
+
+for (const code of CODIGOS_SONDA_NO_CONCLUYENTES) {
+    test(`isPidAlive: la sonda que falla con ${code} NO prueba que el proceso murió (fail-closed)`, () => {
+        withKillProbeFailing(code, () => {
+            assert.equal(
+                lock._internal.isPidAlive(process.pid), true,
+                `${code} no es ESRCH: la sonda no pudo responder, el proceso se asume VIVO`,
+            );
+        });
+    });
+}
+
+test('isPidAlive: sólo ESRCH prueba que el proceso no existe', () => {
+    withKillProbeFailing('ESRCH', () => {
+        assert.equal(lock._internal.isPidAlive(process.pid), false);
+    });
+});
+
+test('isPidAlive: EPERM sigue significando vivo (existe, no podemos firmarlo)', () => {
+    withKillProbeFailing('EPERM', () => {
+        assert.equal(lock._internal.isPidAlive(process.pid), true);
+    });
+});
+
+for (const code of CODIGOS_SONDA_NO_CONCLUYENTES) {
+    test(`isStale: una sonda que falla con ${code} NO le roba el lock a un holder vivo`, () => {
+        const target = mkTmpFile();
+        try {
+            lock.acquireLockSync(target, { timeoutMs: 1000 });
+            const lockPath = target + '.lock';
+            const meta = lock._internal.readLockMeta(lockPath);
+            withKillProbeFailing(code, () => {
+                assert.equal(
+                    lock._internal.isStale(meta, lockPath), false,
+                    'robar este lock produce dual-hold → lost-update silencioso',
+                );
+            });
+            lock.releaseLock(target);
+        } finally { rmrf(target); }
+    });
+}
+
+test('isStale: PID muerto + lock recién creado → NO stale (gracia contra sonda transitoria)', () => {
+    const target = mkTmpFile();
+    try {
+        lock.acquireLockSync(target, { timeoutMs: 1000 });
+        const lockPath = target + '.lock';
+        const meta = lock._internal.readLockMeta(lockPath);
+        // Lock de edad ~0ms: aunque la sonda diga ESRCH, no se reclama.
+        withKillProbeFailing('ESRCH', () => {
+            assert.equal(lock._internal.isStale(meta, lockPath), false);
+        });
+        lock.releaseLock(target);
+    } finally { rmrf(target); }
+});
+
+test('isStale: PID muerto + lock más viejo que la gracia → stale (recuperación tras crash preservada)', () => {
+    const target = mkTmpFile();
+    try {
+        lock.acquireLockSync(target, { timeoutMs: 1000 });
+        const lockPath = target + '.lock';
+        const meta = lock._internal.readLockMeta(lockPath);
+        // Envejecer el lock por encima de la gracia: un crash real SÍ se recupera.
+        const viejo = (Date.now() - lock._internal.DEAD_PID_GRACE_MS - 1000) / 1000;
+        fs.utimesSync(lockPath, viejo, viejo);
+        withKillProbeFailing('ESRCH', () => {
+            assert.equal(lock._internal.isStale(meta, lockPath), true);
+        });
+        lock.releaseLock(target);
+    } finally { rmrf(target); }
+});
+
+test('isStale: la segunda sonda contradice a la primera → el lock se respeta', () => {
+    const target = mkTmpFile();
+    try {
+        lock.acquireLockSync(target, { timeoutMs: 1000 });
+        const lockPath = target + '.lock';
+        const meta = lock._internal.readLockMeta(lockPath);
+        const viejo = (Date.now() - lock._internal.DEAD_PID_GRACE_MS - 1000) / 1000;
+        fs.utimesSync(lockPath, viejo, viejo);
+
+        // Primera sonda: ESRCH (lectura transitoria). Segunda: responde normal.
+        const orig = process.kill.bind(process);
+        let llamadas = 0;
+        process.kill = (pid, sig) => {
+            if (sig === 0) {
+                llamadas++;
+                if (llamadas === 1) {
+                    const e = new Error('lectura transitoria');
+                    e.code = 'ESRCH';
+                    throw e;
+                }
+            }
+            return orig(pid, sig);
+        };
+        try {
+            assert.equal(lock._internal.isStale(meta, lockPath), false);
+            assert.equal(llamadas >= 2, true, 'debe re-confirmar con una segunda sonda');
+        } finally { process.kill = orig; }
+        lock.releaseLock(target);
+    } finally { rmrf(target); }
+});
+
+// ─── Capa 3: verificación de propiedad al salir de la sección crítica ────────
+
+test('withLockSync: si le roban el lock durante la sección crítica tira ELOCK_STOLEN', () => {
+    const target = mkTmpFile();
+    try {
+        assert.throws(() => {
+            lock.withLockSync(target, () => {
+                // Simular el robo: otro proceso lo declaró stale y entró.
+                fs.unlinkSync(target + '.lock');
+                fs.writeFileSync(target + '.lock', JSON.stringify({
+                    pid: 424242,
+                    startTime: '2026-01-01T00:00:00.000Z',
+                    hostname: 'ladron',
+                    version: '1.0',
+                }));
+                return 'escritura que pudo haberse pisado';
+            }, { timeoutMs: 1000 });
+        }, (err) => {
+            assert.equal(err.code, 'ELOCK_STOLEN');
+            assert.equal(err.holder.pid, 424242);
+            assert.match(err.message, /exclusión mutua violada/);
+            return true;
+        });
+        try { fs.unlinkSync(target + '.lock'); } catch {}
+    } finally { rmrf(target); }
+});
+
+test('withLockSync: si el lock desaparece durante la sección crítica tira ELOCK_STOLEN', () => {
+    const target = mkTmpFile();
+    try {
+        assert.throws(
+            () => lock.withLockSync(target, () => { fs.unlinkSync(target + '.lock'); }, { timeoutMs: 1000 }),
+            (err) => err.code === 'ELOCK_STOLEN',
+        );
+    } finally { rmrf(target); }
+});
+
+test('withLockSync: el robo dispara notify con payload estructurado', () => {
+    const target = mkTmpFile();
+    try {
+        let notificado = null;
+        try {
+            lock.withLockSync(target, () => { fs.unlinkSync(target + '.lock'); }, {
+                timeoutMs: 1000,
+                component: 'waves-lock',
+                notify: (p) => { notificado = p; },
+            });
+        } catch { /* esperado */ }
+        assert.ok(notificado, 'notify debe haberse llamado');
+        assert.equal(notificado.level, 'error');
+        assert.equal(notificado.component, 'waves-lock');
+        assert.match(notificado.message, /robado/);
+    } finally { rmrf(target); }
+});
+
+test('withLockSync: verifyOwnership=false conserva la semántica vieja (no tira)', () => {
+    const target = mkTmpFile();
+    try {
+        const r = lock.withLockSync(target, () => {
+            fs.unlinkSync(target + '.lock');
+            return 7;
+        }, { timeoutMs: 1000, verifyOwnership: false });
+        assert.equal(r, 7);
+    } finally { rmrf(target); }
+});
+
+test('withLockSync: el camino feliz devuelve el valor de fn y libera el lock', () => {
+    const target = mkTmpFile();
+    try {
+        const r = lock.withLockSync(target, () => 'ok', { timeoutMs: 1000 });
+        assert.equal(r, 'ok');
+        assert.equal(fs.existsSync(target + '.lock'), false);
+    } finally { rmrf(target); }
+});
+
+test('withLockSync: en reentrancia no verifica propiedad (el dueño es el frame externo)', () => {
+    const target = mkTmpFile();
+    try {
+        const r = lock.withLockSync(
+            target,
+            () => lock.withLockSync(target, () => 'anidado', { timeoutMs: 1000 }),
+            { timeoutMs: 1000 },
+        );
+        assert.equal(r, 'anidado');
+        assert.equal(fs.existsSync(target + '.lock'), false, 'el frame externo libera');
+    } finally { rmrf(target); }
+});
+
+test('withLock (async): si le roban el lock durante la sección crítica tira ELOCK_STOLEN', async () => {
+    const target = mkTmpFile();
+    try {
+        await assert.rejects(
+            () => lock.withLock(target, async () => { fs.unlinkSync(target + '.lock'); }, { timeoutMs: 1000 }),
+            (err) => err.code === 'ELOCK_STOLEN',
+        );
+    } finally { rmrf(target); }
+});
+
+test('withLock (async): el camino feliz devuelve el valor de fn y libera el lock', async () => {
+    const target = mkTmpFile();
+    try {
+        const r = await lock.withLock(target, async () => 'async-ok', { timeoutMs: 1000 });
+        assert.equal(r, 'async-ok');
+        assert.equal(fs.existsSync(target + '.lock'), false);
+    } finally { rmrf(target); }
+});
+
+test('checkStillOwned: reconoce nuestro propio lock y detecta cuando ya no lo tenemos', () => {
+    const target = mkTmpFile();
+    try {
+        lock.acquireLockSync(target, { timeoutMs: 1000 });
+        assert.equal(lock._internal.checkStillOwned(target).owned, true);
+        lock.releaseLock(target);
+        assert.equal(lock._internal.checkStillOwned(target).owned, false);
+    } finally { rmrf(target); }
+});
+
+// ─── #6145 (2da vuelta) — "no pude leer el lock" NO es "me lo robaron" ───────
+//
+// Rebote del tester: `toctou-claim-slot.test.js` falló dentro de la suite
+// completa con `perdedor con razón inesperada: THROW:ELOCK_STOLEN`. Causa raíz:
+// `readLockMeta` colapsaba "archivo ausente" y "lectura fallida por I/O
+// transitorio" en el mismo `null`, y `checkStillOwned` leía ese `null` como
+// prueba de robo. Bajo fork-storm (~375 archivos de test) `readFileSync` sobre
+// el lock falla de formas transitorias en Windows igual que `process.kill`.
+
+// Fuerza a `readFileSync` a fallar con `code` para el path de lock indicado.
+function conLecturaFallando(lockPath, code, veces, fn) {
+    const orig = fs.readFileSync;
+    let restantes = veces;
+    fs.readFileSync = (p, ...rest) => {
+        if (String(p) === lockPath && restantes > 0) {
+            restantes--;
+            const e = new Error(`lectura transitoria simulada (${code})`);
+            e.code = code;
+            throw e;
+        }
+        return orig(p, ...rest);
+    };
+    try { return fn(); } finally { fs.readFileSync = orig; }
+}
+
+test('readLockMeta distingue lock ausente (null) de lock ilegible (_unreadable)', () => {
+    const target = mkTmpFile();
+    const lockPath = target + '.lock';
+    try {
+        assert.equal(lock._internal.readLockMeta(lockPath), null, 'ausente ⇒ null');
+        lock.acquireLockSync(target, { timeoutMs: 1000 });
+        const meta = conLecturaFallando(lockPath, 'EBUSY', 1, () => lock._internal.readLockMeta(lockPath));
+        assert.ok(meta && meta._unreadable === true, 'error transitorio ⇒ _unreadable');
+        assert.equal(meta.code, 'EBUSY');
+        lock.releaseLock(target);
+    } finally { rmrf(target); }
+});
+
+test('checkStillOwned: una lectura transitoria fallida NO se reporta como robo', () => {
+    const target = mkTmpFile();
+    const lockPath = target + '.lock';
+    try {
+        lock.acquireLockSync(target, { timeoutMs: 1000 });
+        // Falla la primera sonda; la segunda lee bien ⇒ propiedad confirmada.
+        const st = conLecturaFallando(lockPath, 'EPERM', 1, () => lock._internal.checkStillOwned(target));
+        assert.equal(st.owned, true);
+        assert.notEqual(st.unverified, true, 'debe confirmarse con la re-sonda, no quedar sin verificar');
+        lock.releaseLock(target);
+    } finally { rmrf(target); }
+});
+
+test('checkStillOwned: si TODAS las sondas fallan, asume conservado y marca unverified', () => {
+    const target = mkTmpFile();
+    const lockPath = target + '.lock';
+    try {
+        lock.acquireLockSync(target, { timeoutMs: 1000 });
+        const st = conLecturaFallando(lockPath, 'UNKNOWN', 99, () => lock._internal.checkStillOwned(target));
+        assert.equal(st.owned, true, 'no verificable ⇒ NO es robo');
+        assert.equal(st.unverified, true);
+        lock.releaseLock(target);
+    } finally { rmrf(target); }
+});
+
+test('withLockSync: un fallo transitorio de lectura al salir NO tira ELOCK_STOLEN', () => {
+    const target = mkTmpFile();
+    const lockPath = target + '.lock';
+    try {
+        let notificado = null;
+        const r = conLecturaFallando(lockPath, 'EACCES', 99, () => lock.withLockSync(
+            target,
+            () => 'trabajo-ok',
+            { timeoutMs: 1000, notify: (p) => { notificado = p; } },
+        ));
+        assert.equal(r, 'trabajo-ok');
+        assert.equal(notificado, null, 'no debe alertar robo por una sonda que no pudo leer');
+        // El lock se libera igual (no queda colgado bloqueando el control plane).
+        assert.equal(fs.existsSync(lockPath), false, 'el lock debe liberarse aunque la sonda falle');
+    } finally { rmrf(target); }
+});
+
+test('withLockSync: el robo PROBADO sigue tirando ELOCK_STOLEN (no se relajó la capa 3)', () => {
+    const target = mkTmpFile();
+    try {
+        assert.throws(() => lock.withLockSync(target, () => {
+            fs.unlinkSync(target + '.lock');
+            fs.writeFileSync(target + '.lock', JSON.stringify({
+                pid: 515151, startTime: '2026-01-01T00:00:00.000Z', hostname: 'ladron', version: '1.0',
+            }));
+        }, { timeoutMs: 1000 }), (err) => err.code === 'ELOCK_STOLEN' && err.holder.pid === 515151);
+        try { fs.unlinkSync(target + '.lock'); } catch {}
+    } finally { rmrf(target); }
+});
+
+test('isStale: un lock ilegible por I/O transitorio NUNCA se declara stale', () => {
+    const target = mkTmpFile();
+    const lockPath = target + '.lock';
+    try {
+        lock.acquireLockSync(target, { timeoutMs: 1000 });
+        const meta = { _unreadable: true, code: 'EBUSY' };
+        assert.equal(lock._internal.isStale(meta, lockPath), false);
+        // Y el lock sobrevive a un acquire de un contendiente que lee mal:
+        // sin la guarda, `pid` indefinido caía en la rama de "PID muerto".
+        assert.equal(fs.existsSync(lockPath), true);
+        lock.releaseLock(target);
+    } finally { rmrf(target); }
+});
+
+test('releaseLock: reintenta la sonda y libera aunque la primera lectura falle', () => {
+    const target = mkTmpFile();
+    const lockPath = target + '.lock';
+    try {
+        lock.acquireLockSync(target, { timeoutMs: 1000 });
+        const liberado = conLecturaFallando(lockPath, 'EBUSY', 1, () => lock.releaseLock(target));
+        assert.equal(liberado, true);
+        assert.equal(fs.existsSync(lockPath), false);
     } finally { rmrf(target); }
 });
