@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { readJsonSafe, writeJsonAtomic } = require('./atomic-json');
+const providerDisabled = require('./provider-disabled');
 
 const CREDENTIALS_PATH = path.join(os.homedir(), '.claude', '.credentials.json');
 const UNAVAILABLE_ALERT_TICKS = 3;
@@ -36,6 +37,30 @@ function getOAuthSessionExpiry(now = Date.now()) {
     };
 }
 
+/**
+ * CE-2 (REVISIÓN 2 de los criterios, cerrada por PO el 2026-09-06) — única
+ * fuente de encendido.
+ *
+ * La evidencia de que la credencial fue rechazada NO se infiere del archivo de
+ * credenciales: es la señal tipada que produce #6238, la entrada de
+ * `provider-disabled` con `source: 'credential-death'` que el Pulpo escribe
+ * sólo cuando el CLI devolvió la firma tipada de rechazo (TTL 60 min; con el
+ * tick de 5 min hay 12 oportunidades de observarla). `getDisabledEntry` ya
+ * drena las entradas vencidas: si devuelve la entrada, el apagado por
+ * credencial rechazada está vigente ahora.
+ *
+ * Sólo lectura: este módulo nunca escribe sobre `provider-disabled`. Cualquier
+ * excepción se trata como `false` (fail-open del chequeo, coherente con CA-7).
+ */
+function readCredentialDeathActive(disabledModule, now) {
+    try {
+        const entry = disabledModule.getDisabledEntry('anthropic', { now });
+        return !!(entry && entry.source === 'credential-death');
+    } catch (_) {
+        return false;
+    }
+}
+
 function emptyState() {
     return {
         expires_at_epoch: null,
@@ -66,7 +91,7 @@ function save(statePath, state) {
     }
 }
 
-function evaluate({ now = Date.now(), statePath }) {
+function evaluate({ now = Date.now(), statePath, disabledModule = providerDisabled }) {
     const existed = fs.existsSync(statePath);
     const prev = normalizeState(readJsonSafe(statePath, null));
     const fields = readExpiryFields();
@@ -89,23 +114,28 @@ function evaluate({ now = Date.now(), statePath }) {
 
     const epoch = fields.expiresAt;
     const minutesLeft = Math.floor((epoch - now) / 60000);
+
+    // CA-4: cualquier salto de vigencia hacia adelante cuenta como renovación,
+    // se observe antes o después del vencimiento anterior. Condicionarlo a que
+    // ocurriera antes del vencimiento es lo que producía el latch permanente.
+    // CA-14: esta comparación de `expiresAt` entre evaluaciones vale SÓLO para
+    // el reset de umbrales y el apagado de CE-2 — nunca para encenderla.
     const renewed = prev.expires_at_epoch !== null && epoch > prev.expires_at_epoch;
-    const renewedBeforeExpiry = renewed && prev.expires_at_epoch > now;
-    const crossedWithoutRenewal = prev.expires_at_epoch !== null
-        && prev.expires_at_epoch <= now && epoch <= prev.expires_at_epoch;
+    const credentialDeathActive = readCredentialDeathActive(disabledModule, now);
+
     const next = { ...prev };
     next.expires_at_epoch = epoch;
     next.refresh_expires_at_epoch = fields.refreshTokenExpiresAt;
     next.unavailable_streak = 0;
     next.unavailable_since_epoch = null;
-    if (crossedWithoutRenewal) next.renewal_unhealthy = true;
     if (renewed) {
         next.t30_sent = false;
         next.t10_sent = false;
+        next.renewal_unhealthy = false; // CA-4 / CA-15: el salto apaga CE-2.
     }
-    if (renewedBeforeExpiry) {
-        next.renewal_unhealthy = false;
-    }
+    // Fail-closed: si el encendido y el apagado coinciden en la misma
+    // evaluación gana el encendido — ante evidencia de rechazo se avisa.
+    if (credentialDeathActive) next.renewal_unhealthy = true;
 
     if (prev.health_alert_open) {
         save(statePath, next);
@@ -115,7 +145,9 @@ function evaluate({ now = Date.now(), statePath }) {
         save(statePath, next);
         return { shouldEmit: false, minutesLeft, reason: 'first_reading' };
     }
-    if (renewed && prev.expiry_alert_open) {
+    // CA-9 / CA-15: el episodio abierto se cierra solo cuando la vigencia saltó
+    // hacia adelante y ya no queda evidencia de rechazo vigente.
+    if (renewed && prev.expiry_alert_open && !next.renewal_unhealthy) {
         save(statePath, next);
         return { shouldEmit: true, alert: 'renewed', minutesLeft, reason: 'session_renewed' };
     }
@@ -140,7 +172,13 @@ function evaluate({ now = Date.now(), statePath }) {
         return { shouldEmit: false, minutesLeft, reason: 'threshold_not_crossed_or_sent' };
     }
     save(statePath, next);
-    return { shouldEmit: true, alert: 'expiry', threshold, minutesLeft, reason: refreshCannotCoverNextCycle ? 'refresh_insufficient' : 'renewal_unhealthy' };
+    return {
+        shouldEmit: true,
+        alert: 'expiry',
+        threshold,
+        minutesLeft,
+        reason: refreshCannotCoverNextCycle ? 'refresh_insufficient' : 'credential_death',
+    };
 }
 
 function recordEmitted({ statePath, alert, threshold }) {
