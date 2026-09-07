@@ -57,8 +57,14 @@ const { renderHeaderMetaSsr, headerPillsClientScript, headerPillsPollClientScrip
 // #4296 — Accessor compartido del banner de ola (avance %, velocidad %/h, ETA)
 // desde la fuente determinística viva /api/dash/ola-eta (no conteos done/total).
 const { missionOlaEtaClientScript } = require('../../lib/mission-ola-eta.js');
-const oauthSessionExpiry = require('../../lib/oauth-session-expiry.js');
-const oauthSessionCopy = require('../../assets/copy/oauth-session-expiry/render.js');
+// #6239 — Vigencia de la sesión de Claude Code. Requires DEFENSIVOS (CA-A3 /
+// patrón #3177, el mismo que usa `home` más abajo): si el módulo o su copy no
+// cargan, la línea de sesión simplemente no se dibuja y el resto de la pantalla
+// sigue renderizando. Un require pelado acá tumbaba el panel entero.
+let oauthSessionExpiry = null;
+try { oauthSessionExpiry = require('../../lib/oauth-session-expiry.js'); } catch (_) { /* sin línea de sesión */ }
+let oauthSessionCopy = null;
+try { oauthSessionCopy = require('../../assets/copy/oauth-session-expiry/render.js'); } catch (_) { /* sin línea de sesión */ }
 
 // Fuentes de datos (libs puras — sin req/res). Cada require va con guarda en el
 // colector correspondiente: si una lib falla, la pantalla degrada con "sin
@@ -402,7 +408,7 @@ function buildProvidersModel() {
     const agents = collectAgentConfig();
     const disabled = collectDisabled();
     let oauthSession = { expiresAt: null, minutesLeft: null, available: false };
-    try { oauthSession = oauthSessionExpiry.getOAuthSessionExpiry(); } catch (_) { /* degradación visible */ }
+    try { if (oauthSessionExpiry) oauthSession = oauthSessionExpiry.getOAuthSessionExpiry(); } catch (_) { /* degradación visible */ }
     // #6180 - estado del episodio de respaldo (parte 2 del split de #6151).
     const episode = collectFallbackEpisode();
 
@@ -701,9 +707,14 @@ function renderProviderRow(p, now) {
     const sev = HEALTH_SEVERITY[p.healthState] || 'info';
     const healthLabel = HEALTH_LABEL[p.healthState] || 'SIN DATOS';
     const reasonTxt = reasonHuman(p.healthReason);
-    const session = p.key === 'anthropic'
-        ? oauthSessionCopy.renderDashboard(p.session || { available: false, minutesLeft: null })
-        : null;
+    // El renderer del copy es fail-closed (tira ante un estado que no conoce):
+    // acá eso no puede costar la fila entera, así que degrada a "sin línea".
+    let session = null;
+    if (p.key === 'anthropic' && oauthSessionCopy) {
+        try {
+            session = oauthSessionCopy.renderDashboard(p.session || { available: false, minutesLeft: null });
+        } catch (_) { session = null; /* sin línea de sesión */ }
+    }
     return `<article class="prov-row" data-provider="${escapeHtmlAttr(p.key)}" style="--row-accent:${p.accent};">
   <div class="prov-id">
     <span class="prov-dot" aria-hidden="true"></span>

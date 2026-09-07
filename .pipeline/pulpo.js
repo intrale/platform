@@ -229,8 +229,14 @@ const modelPropagationRollout = require('./lib/model-propagation-rollout'); // #
 // Expone isWorkaroundEnabled, recordHit, checkTtlAlert, formatStartupLogLine,
 // formatHitExtension, formatTtlAlertMessage, sanitizeHitLog.
 const oneMWorkaround = require('./lib/commander/anthropic-1m-workaround');
-const oauthSessionExpiry = require('./lib/oauth-session-expiry');
-const oauthSessionCopy = require('./assets/copy/oauth-session-expiry/render');
+// #6239 — Chequeo de vigencia de la sesión de Claude Code. Requires
+// DEFENSIVOS: es un aviso best-effort, jamás una razón para que el Pulpo no
+// arranque. Si alguno no carga, el cron no se enciende (se loguea) y todo lo
+// demás sigue igual.
+let oauthSessionExpiry = null;
+try { oauthSessionExpiry = require('./lib/oauth-session-expiry'); } catch (_) { /* sin chequeo de sesión */ }
+let oauthSessionCopy = null;
+try { oauthSessionCopy = require('./assets/copy/oauth-session-expiry/render'); } catch (_) { /* sin chequeo de sesión */ }
 // #3950 (EP7-H3) — política PURA de auto-retry del glitch 1M del CLI Anthropic.
 // Decide retry_same | retry_standard | give_up, backoff acotado, validación del
 // modelo (whitelist SR-A) y formato del log por intento. Sin side effects.
@@ -26312,6 +26318,7 @@ async function mainLoop() {
   const OAUTH_EXPIRY_CHECK_INTERVAL_MIN = 5;
   const OAUTH_EXPIRY_STATE_FILE = path.join(PIPELINE, 'oauth-session-expiry-state.json');
   try {
+    if (!oauthSessionExpiry || !oauthSessionCopy) throw new Error('oauth_expiry_modules_unavailable');
     const tickOAuthExpiry = () => {
       try {
         const decision = oauthSessionExpiry.evaluate({ statePath: OAUTH_EXPIRY_STATE_FILE });
