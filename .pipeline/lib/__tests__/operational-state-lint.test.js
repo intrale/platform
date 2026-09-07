@@ -1356,39 +1356,138 @@ test('CA-8/CA-UX-1 · el _doc de la allowlist describe la politica declarativa v
     assert.match(doc, /#5183/, 'debe apuntar al issue que activaria el enforcement real');
 });
 
-test('CA-UX-1/CA-UX-2 · el bloque de remediacion no promete un gate CODEOWNERS inexistente', () => {
-    // Esta salida se publica en el GITHUB_STEP_SUMMARY del workflow (`:56`): es
-    // lo que lee el operador cuando el lint reporta violaciones.
-    const bin = fs.readFileSync(REAL_BIN, 'utf8');
-    const idx = bin.indexOf('Si la excepcion es legitima');
-    assert.ok(idx > 0, 'el binario debe emitir el bloque de remediacion de la allowlist');
-    const bloque = bin.slice(idx, idx + 1200);
-    assert.match(bloque, /declarativ/i);
-    assert.match(bloque, /no activa/i);
-    assert.doesNotMatch(bloque, /needs-human|owner humano|NO auto-mergea/i);
+// ─── CA-12 · assert de INVENTARIO sobre las superficies de copy ──────────────
+//
+// Por que INVENTARIO y no un `slice`: la version anterior de este assert hacia
+// `bin.slice(idx, idx + 1200)` arrancando en `indexOf('Si la excepcion es
+// legitima')`, o sea barria HACIA ADELANTE desde el bloque de
+// `remediationLines`. Las otras emisoras (`anchorRemediationLines` :1038,
+// `formatAnchorIssue` :1016, la `LintConfigError` de `sanitizeReason` :523, el
+// modo `--anchor` :1369) viven ANTES de ese offset: eran inalcanzables POR
+// CONSTRUCCION. La suite quedo 90/90 verde con 8 afirmaciones falsas vivas, tres
+// de ellas llegando al operador por el mismo GITHUB_STEP_SUMMARY. Un criterio de
+// inventario no puede tener como scope una lista cerrada de coordenadas dentro
+// de archivos que se editan: se barre el archivo ENTERO.
 
-    // #5986 (rebote ux) · la promesa falsa de CODEOWNERS no puede reemplazarse por
-    // una promesa falsa NUEVA. Verificado contra la API de GitHub: el unico
-    // required check de `main` (ruleset main-required-checks) es el rollup
-    // `pr-status`, y `operational-state-lint` NO esta entre sus `needs` en
-    // pr-checks.yml — corre en su propio workflow, o sea ADVISORY. Se mide sobre
-    // la SALIDA RENDERIZADA, que es lo que el operador lee en el STEP_SUMMARY.
-    const render = I.remediationLines(new Set(['path-level', 'internal-bypass'])).join('\n');
-    assert.doesNotMatch(
-        render,
-        /requerid/i,
-        'no se puede prometer un control REQUERIDO: el lint es advisory (ver #5183)',
-    );
-    assert.match(render, /advisory/i, 'el bloque debe decir donde NO vive el enforcement');
-    assert.match(render, /#5183/, 'debe apuntar al issue que activaria el enforcement real');
+// Toda atribucion del mecanismo de autorizacion a un review/aprobacion de
+// GitHub. La Opcion A (#5986) elimino ese mecanismo: `.github/CODEOWNERS` no
+// tiene reglas activas, `protect-main` corre con `require_code_owner_review:
+// false` y el lint es ADVISORY (fuera del rollup `pr-status`, ver #5183).
+//
+// Los `\s+` no son cosmetica: evitan que el literal de ESTE detector se cuente a
+// si mismo cuando el barrido de CA-12 se corre con `git grep` sobre el arbol.
+const ATRIBUCION_FALSA = new RegExp([
+    'review\\s+humano',
+    'reviewer\\b',
+    'review\\s+de\\s+@leitolarreta',
+    'pasa(?:r)?\\s+por\\s+el\\s+review',
+    'requiere\\s+review',
+    'el\\s+review\\s+es\\s+sobre',
+    'aprobacion\\s+de\\s+code\\s+owner',
+].join('|'), 'i');
+
+const REPO_ROOT_T = path.join(__dirname, '..', '..', '..');
+const SUPERFICIES_COPY = [
+    ['.pipeline/lib/operational-state-lint.js', REAL_BIN],
+    ['.pipeline/lib/' + ALLOWLIST_NAME, path.join(__dirname, '..', ALLOWLIST_NAME)],
+    ['.github/CODEOWNERS', path.join(REPO_ROOT_T, '.github', 'CODEOWNERS')],
+    ['docs/pipeline/contrato-estado-operativo.md', path.join(REPO_ROOT_T, 'docs', 'pipeline', 'contrato-estado-operativo.md')],
+];
+
+for (const [nombre, file] of SUPERFICIES_COPY) {
+    test(`CA-12 inventario · ${nombre}: cero atribuciones a un review de GitHub`, () => {
+        const src = fs.readFileSync(file, 'utf8');
+        const hits = src.split('\n')
+            .map((linea, i) => `${nombre}:${i + 1}: ${linea.trim()}`)
+            .filter(l => ATRIBUCION_FALSA.test(l));
+        assert.deepEqual(hits, [], 'CA-12 exige CERO ocurrencias en el archivo ENTERO');
+    });
+}
+
+test('CA-12 · las TRES emisoras que ve el operador coinciden entre si (misma corrida)', () => {
+    // `anchorRemediationLines` y `remediationLines` salen por el mismo `out()`
+    // del mismo `main()`, y ambas se publican en el GITHUB_STEP_SUMMARY del
+    // workflow (`:56`). Que una prometa un review y la otra lo niegue le llega
+    // al operador como una contradiccion dentro de una sola corrida. Se mide
+    // sobre la salida RENDERIZADA invocando al emisor real, no leyendo el fuente.
+    const anchorIssue = I.formatAnchorIssue({
+        status: I.ANCHOR_STALE,
+        entry: { where: `${ALLOWLIST_NAME} rules[0]`, file: 'pulpo.js', index: 0, line: 1 },
+        matches: [],
+    });
+    const renders = {
+        'remediationLines()': I.remediationLines(new Set(['path-level', 'internal-bypass'])).join('\n'),
+        'anchorRemediationLines()': I.anchorRemediationLines().join('\n'),
+        'formatAnchorIssue()': anchorIssue,
+    };
+    for (const [emisor, render] of Object.entries(renders)) {
+        assert.ok(render.length > 0, `${emisor} no emitio nada`);
+        assert.doesNotMatch(render, ATRIBUCION_FALSA, `${emisor} atribuye la autorizacion a un review de GitHub`);
+        assert.doesNotMatch(render, /requerid/i, `${emisor} no puede prometer un control REQUERIDO: el lint es advisory (#5183)`);
+        assert.doesNotMatch(render, /needs-human|owner humano|NO auto-mergea/i, `${emisor} promete un locus que no existe`);
+    }
+    // Los dos bloques de remediacion (los que el operador lee entero) dicen
+    // ademas donde NO vive el enforcement.
+    for (const emisor of ['remediationLines()', 'anchorRemediationLines()']) {
+        assert.match(renders[emisor], /declarativ/i, `${emisor} debe encuadrar la politica vigente`);
+        assert.match(renders[emisor], /advisory/i, `${emisor} debe decir donde NO vive el enforcement`);
+        assert.match(renders[emisor], /#5183/, `${emisor} debe apuntar al issue que activaria el enforcement real`);
+    }
 });
 
-test('CA-10/CA-UX-3 · el header fija la politica declarativa sin reglas activas', () => {
+test('CA-12 · el doc que linkea el binario no desmiente al binario', () => {
+    // El copy ya corregido remite a `contrato-estado-operativo.md §7`: el
+    // operador sigue el link desde el mensaje honesto y tiene que aterrizar en
+    // el mismo encuadre, no en la promesa que este issue vino a borrar.
+    const doc = fs.readFileSync(path.join(REPO_ROOT_T, 'docs', 'pipeline', 'contrato-estado-operativo.md'), 'utf8');
+    assert.match(doc, /declarativ/i);
+    assert.match(doc, /advisory/i);
+    assert.match(doc, /#5183/);
+    assert.match(doc, /require_code_owner_review/);
+    assert.match(I.anchorRemediationLines().join('\n'), /contrato-estado-operativo\.md/,
+        'si el binario deja de linkear el doc, este assert deja de proteger nada');
+});
+
+test('CA-8/CA-12 · el _shape_doc.anchor de la allowlist no se contradice con el _doc', () => {
+    // Vivian a 4 lineas de distancia diciendo cosas opuestas: el `_doc` (:2)
+    // corregido y el `_shape_doc.anchor` (:6) con el texto viejo.
+    const json = JSON.parse(fs.readFileSync(path.join(__dirname, '..', ALLOWLIST_NAME), 'utf8'));
+    const anchorDoc = json._shape_doc.anchor;
+    assert.doesNotMatch(anchorDoc, ATRIBUCION_FALSA);
+    assert.doesNotMatch(anchorDoc, /requerid/i);
+    assert.match(anchorDoc, /declarativ/i);
+    assert.match(anchorDoc, /advisory/i);
+    assert.match(anchorDoc, /#5183/);
+});
+
+test('CA-10/CA-13/CA-UX-3 · el header fija la politica declarativa y su alcance real', () => {
     const co = readRealCodeowners();
-    const header = co.split('\n').filter(l => /^\s*#/.test(l)).join('\n');
+    const lineasHeader = co.split('\n').filter(l => /^\s*#/.test(l));
+    const header = lineasHeader.join('\n');
     assert.match(header, /NO declara reglas activas/);
     assert.match(header, /GATE_CODEOWNERS_ESPERADO=false/);
     assert.equal(classifyGuardrailCodeowners(co), 'solo-comentarios');
+
+    // CA-12 · el header es una superficie de copy mas, con el mismo par.
+    assert.doesNotMatch(header, ATRIBUCION_FALSA);
+    assert.doesNotMatch(header, /requerid/i, 'el header no puede presentar controles advisory como requeridos');
+    assert.match(header, /advisory/i, 'el header debe decir que los lints son advisory');
+    assert.match(header, /#5183/, 'debe apuntar al issue que activaria el enforcement real');
+
+    // CA-13 · ninguna linea que nombre a los dos lints puede presentarlos como
+    // algo que `main` exige. Se mide POR LINEA, que es la unidad de lectura del
+    // operador: en origin/main eran bullets separados y este PR los fundio en
+    // una enumeracion corrida con `pr-status`, que si es required check.
+    for (const l of lineasHeader) {
+        if (!/operational-state-lint|ghost-artifact-lint/.test(l)) continue;
+        assert.doesNotMatch(
+            l, /requerid|required|obligatori|\bexige\b|bloquea el merge/i,
+            `CA-13: el header presenta un lint ADVISORY como control de main -> ${l.trim()}`,
+        );
+    }
+    // Y dice explicito donde NO vive el enforcement (los 3 loci verificados).
+    assert.match(header, /pr-status/, 'debe nombrar el rollup del que los lints NO forman parte');
+    assert.match(header, /require_code_owner_review:\s*false/, 'GitHub no lee estas reglas');
 });
 
 test('CA-9b/#5179 · el hook pre-commit invoca --check y PROPAGA el exit code', () => {

@@ -8,9 +8,21 @@
 # obligatoria resultaba inaplicable: el pipeline abre los PRs con la misma
 # cuenta que era code owner y GitHub no permite auto-aprobarse.
 #
-# La proteccion se apoya en controles automaticos verificables sobre main:
-# PR obligatorio, hilos resueltos, review automatico, pr-status requerido,
-# SAST, Actions fijadas por SHA, ghost-artifact-lint y operational-state-lint.
+# La proteccion se apoya en los controles que main SI enforza: PR obligatorio,
+# hilos resueltos, SAST, Actions fijadas por SHA y el rollup `pr-status`, que es
+# el unico status check que main exige (ruleset main-required-checks).
+#
+# Donde NO vive el enforcement (#5986, CA-13 — decirlo evita leer estas lineas
+# como una garantia mas fuerte de la que son):
+#   - `operational-state-lint` y `ghost-artifact-lint` son ADVISORY. Corren en
+#     su propio workflow, NO estan entre los `needs` del rollup `pr-status`
+#     (pr-checks.yml:562) y no aparecen en pr-checks.yml: pueden quedar rojos
+#     sin frenar el merge. Sumarlos al rollup es #5183, todavia pendiente.
+#   - GitHub no lee estas declaraciones: `protect-main` corre con
+#     `require_code_owner_review: false`, asi que no pide ni exige aprobacion de
+#     code owner. No hay revisor asignado ni boton que destrabe.
+#   - Corolario operativo: agregar una entry a la allowlist del guardrail NO
+#     dispara ninguna aprobacion automatica. Se revisa a mano.
 #
 # Responsabilidad declarada (informativa, no bloqueante):
 #   /.github/       responsable: @leitolarreta
