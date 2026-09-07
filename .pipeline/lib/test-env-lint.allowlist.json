@@ -5241,6 +5241,12 @@
             "line": 14,
             "kind": "deuda",
             "reason": "PULPO_NO_AUTOSTART escrita en el sentido seguro (apagar)"
+        },
+        {
+            "file": "lib/__tests__/gh-exec-maxbuffer-7013.test.js",
+            "line": 19,
+            "kind": "deuda",
+            "reason": "PULPO_NO_AUTOSTART escrita en el sentido seguro (apagar)"
         }
     ]
 }
