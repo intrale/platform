@@ -26316,9 +26316,18 @@ async function mainLoop() {
   // #6239 — Vigencia de la sesión Claude. Best-effort y sin datos sensibles:
   // el módulo sólo devuelve fechas derivadas y el copy visible es el asset UX.
   const OAUTH_EXPIRY_CHECK_INTERVAL_MIN = 5;
-  const OAUTH_EXPIRY_STATE_FILE = path.join(PIPELINE, 'oauth-session-expiry-state.json');
+  // El marker vive FUERA del arbol del repo (~/.claude/pipeline-state/), igual
+  // que el del cron de rotacion: el calendario de vencimiento de la credencial
+  // del operador no se publica en un repo PUBLICO (#5901 REQ-SEC-1).
+  const OAUTH_EXPIRY_STATE_FILE = oauthSessionExpiry
+    ? oauthSessionExpiry.defaultStateFilePath()
+    : null;
   try {
     if (!oauthSessionExpiry || !oauthSessionCopy) throw new Error('oauth_expiry_modules_unavailable');
+    // Barrido del marker que haya dejado una corrida anterior al fix.
+    if (oauthSessionExpiry.purgeLegacyStateFile(PIPELINE)) {
+      log('commander', '[oauth-expiry] marker legacy dentro del repo eliminado');
+    }
     const tickOAuthExpiry = () => {
       try {
         const decision = oauthSessionExpiry.evaluate({ statePath: OAUTH_EXPIRY_STATE_FILE });

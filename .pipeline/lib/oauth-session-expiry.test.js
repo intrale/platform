@@ -261,3 +261,54 @@ test('el módulo nunca escribe sobre provider-disabled', () => {
     assert.equal(fuente.includes('crossedWithoutRenewal'), false);
     assert.equal(fuente.includes('renewedBeforeExpiry'), false);
 });
+
+// ---------------------------------------------------------------------------
+// Contención del marker (rebote de `security`, OWASP A05 / CWE-538).
+//
+// El marker persiste el calendario de vencimiento de la credencial del
+// operador. El repo es PÚBLICO, así que el estado canónico vive fuera del árbol
+// y, como red, el nombre legacy está ignorado y dado de alta en el inventario
+// de paths sensibles (#5463).
+// ---------------------------------------------------------------------------
+
+test('el marker canónico vive fuera del árbol del repo', () => {
+    const canonico = oauth.defaultStateFilePath();
+    assert.equal(path.isAbsolute(canonico), true);
+    assert.equal(canonico, path.join(os.homedir(), '.claude', 'pipeline-state', oauth.STATE_FILENAME));
+    // El repo nunca puede ser prefijo del path del marker.
+    const repoRoot = path.resolve(__dirname, '..', '..');
+    assert.equal(path.relative(repoRoot, canonico).startsWith('..'), true,
+        `el marker no puede quedar dentro de ${repoRoot}`);
+    // La forma lógica que se muestra al operador no filtra el home del host.
+    assert.equal(oauth.EXTERNAL_STATE_FILE_LOGICO.includes(os.homedir()), false);
+});
+
+test('el barrido borra el marker legacy dentro del árbol y es idempotente', (t) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'oauth-expiry-legacy-'));
+    t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+    const legacy = oauth.legacyStateFilePath(dir);
+    fs.writeFileSync(legacy, JSON.stringify({ expires_at_epoch: 1_800_000_000_000 }));
+
+    assert.equal(oauth.purgeLegacyStateFile(dir), true);
+    assert.equal(fs.existsSync(legacy), false);
+    // Segunda pasada: no hay legacy, no lanza y no reporta borrado.
+    assert.equal(oauth.purgeLegacyStateFile(dir), false);
+    // Directorio inexistente tampoco rompe el tick.
+    assert.equal(oauth.purgeLegacyStateFile(path.join(dir, 'no-existe')), false);
+});
+
+test('el marker legacy está cubierto por el inventario de paths sensibles', () => {
+    const { clasificarPath } = require('./sensitive-paths');
+    const entrada = clasificarPath(`.pipeline/${oauth.STATE_FILENAME}`);
+    assert.notEqual(entrada, null, 'el scanner de pre-commit debe reconocer el marker');
+    assert.equal(entrada.clase, 'estado');
+    assert.equal(entrada.requiereIgnore, true);
+    assert.equal(entrada.escaneaContenido, true);
+});
+
+test('el Pulpo apunta el marker al path externo, no al árbol del repo', () => {
+    const pulpo = originalRead(path.join(__dirname, '..', 'pulpo.js'), 'utf8');
+    assert.equal(pulpo.includes("path.join(PIPELINE, 'oauth-session-expiry-state.json')"), false,
+        'el marker no puede resolverse contra PIPELINE');
+    assert.equal(pulpo.includes('oauthSessionExpiry.defaultStateFilePath()'), true);
+});

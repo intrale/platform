@@ -10,6 +10,78 @@ const CREDENTIALS_PATH = path.join(os.homedir(), '.claude', '.credentials.json')
 const UNAVAILABLE_ALERT_TICKS = 3;
 const NEXT_CYCLE_MS = 8 * 60 * 60 * 1000;
 
+// ---------------------------------------------------------------------------
+// Marker de estado — FUERA del árbol del repo.
+//
+// El marker persiste el calendario de vencimiento de la credencial del operador
+// (`expires_at_epoch`, `refresh_expires_at_epoch`). Aunque no contiene el token
+// (CA-11), es la misma clase de dato que #5901 · REQ-SEC-1 ya sacó del árbol
+// para `credential-reminder-state.json`: publicado en un repo PÚBLICO revela la
+// ventana exacta en la que la infra se queda sin poder lanzar agentes, sin que
+// el tercero tenga que probar nada ni dejar rastro.
+//
+// Se espeja `EXTERNAL_STATE_DIR` de `lib/credential-rotation-cron.js:80` por las
+// dos razones de siempre: lo que vive dentro del árbol se publica, y además se
+// pierde en cada respawn (`reset --hard`).
+//
+// Defensa en profundidad: además de este path externo, el nombre legacy está en
+// `.gitignore` y dado de alta en `SENSITIVE_PATHS` (`lib/sensitive-paths.js`),
+// para que un marker dejado por una corrida vieja no pueda entrar por un
+// `git add .`.
+// ---------------------------------------------------------------------------
+const EXTERNAL_STATE_DIR = path.join(os.homedir(), '.claude', 'pipeline-state');
+const STATE_FILENAME = 'oauth-session-expiry-state.json';
+
+// Forma lógica para los mensajes al operador: nombrar el path resuelto expone
+// el home del host y no le sirve a nadie.
+const EXTERNAL_STATE_FILE_LOGICO = `~/.claude/pipeline-state/${STATE_FILENAME}`;
+
+/**
+ * Path canónico del marker. `writeJsonAtomic` ya crea el directorio
+ * (`atomic-json.js`: `mkdirSync(..., { recursive: true })`), así que no hace
+ * falta prepararlo acá.
+ *
+ * @returns {string} path absoluto, fuera del árbol del repo.
+ */
+function defaultStateFilePath() {
+    return path.join(EXTERNAL_STATE_DIR, STATE_FILENAME);
+}
+
+/**
+ * Path LEGACY dentro del árbol del repo. Se conserva SÓLO para poder borrar el
+ * marker que haya dejado una corrida anterior al fix. Nunca se escribe.
+ *
+ * @param {string} pipelineDir
+ * @returns {string}
+ */
+function legacyStateFilePath(pipelineDir) {
+    return path.join(pipelineDir || '.', STATE_FILENAME);
+}
+
+/**
+ * Borra el marker legacy dentro del árbol si quedó de una corrida vieja.
+ * No migra contenido: el estado son flags de umbral de un ciclo de horas, se
+ * regenera solo en la evaluación siguiente y CA-6 ya cubre el arranque sin
+ * lectura previa (no se emite nada hasta tener una).
+ *
+ * Best-effort y silencioso: nunca lanza, nunca mata el tick.
+ *
+ * @param {string} pipelineDir
+ * @returns {boolean} true si había un legacy y se pudo borrar.
+ */
+function purgeLegacyStateFile(pipelineDir) {
+    try {
+        const legacy = legacyStateFilePath(pipelineDir);
+        if (!fs.existsSync(legacy)) return false;
+        fs.unlinkSync(legacy);
+        return true;
+    } catch (_) {
+        // El marker no es crítico: si no se puede borrar, .gitignore y
+        // SENSITIVE_PATHS siguen impidiendo que entre al índice.
+        return false;
+    }
+}
+
 function readExpiryFields() {
     try {
         const parsed = JSON.parse(fs.readFileSync(CREDENTIALS_PATH, 'utf8'));
@@ -201,7 +273,13 @@ module.exports = {
     getOAuthSessionExpiry,
     evaluate,
     recordEmitted,
+    defaultStateFilePath,
+    legacyStateFilePath,
+    purgeLegacyStateFile,
     CREDENTIALS_PATH,
+    EXTERNAL_STATE_DIR,
+    EXTERNAL_STATE_FILE_LOGICO,
+    STATE_FILENAME,
     UNAVAILABLE_ALERT_TICKS,
     NEXT_CYCLE_MS,
 };
