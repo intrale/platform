@@ -236,6 +236,8 @@ const oneMWorkaround = require('./lib/commander/anthropic-1m-workaround');
 let oauthSessionExpiry = null;
 try { oauthSessionExpiry = require('./lib/oauth-session-expiry'); } catch (_) { /* sin chequeo de sesión */ }
 let oauthSessionCopy = null;
+let runOAuthExpiryTick = null;
+try { ({ runOAuthExpiryTick } = require('./lib/oauth-session-expiry-tick')); } catch (_) { /* sin coordinador */ }
 try { oauthSessionCopy = require('./assets/copy/oauth-session-expiry/render'); } catch (_) { /* sin chequeo de sesión */ }
 // #3950 (EP7-H3) — política PURA de auto-retry del glitch 1M del CLI Anthropic.
 // Decide retry_same | retry_standard | give_up, backoff acotado, validación del
@@ -26323,30 +26325,19 @@ async function mainLoop() {
     ? oauthSessionExpiry.defaultStateFilePath()
     : null;
   try {
-    if (!oauthSessionExpiry || !oauthSessionCopy) throw new Error('oauth_expiry_modules_unavailable');
+    if (!oauthSessionExpiry || !oauthSessionCopy || !runOAuthExpiryTick) throw new Error('oauth_expiry_modules_unavailable');
     // Barrido del marker que haya dejado una corrida anterior al fix.
     if (oauthSessionExpiry.purgeLegacyStateFile(PIPELINE)) {
       log('commander', '[oauth-expiry] marker legacy dentro del repo eliminado');
     }
     const tickOAuthExpiry = () => {
       try {
-        const decision = oauthSessionExpiry.evaluate({ statePath: OAUTH_EXPIRY_STATE_FILE });
-        if (!decision.shouldEmit) return;
-        const aviso = decision.alert === 'expiry'
-          ? (decision.threshold === 't10' ? 'A2_urgente' : 'A1_por_vencer')
-          : decision.alert === 'health_unavailable'
-            ? 'A3_chequeo_sin_datos'
-            : decision.alert === 'health_recovered'
-              ? 'A4_chequeo_recuperado'
-              : 'A5_renovada';
-        notifyTelegramFn(oauthSessionCopy.renderTelegram(aviso, {
-          minutesLeft: decision.minutesLeft,
-          ageMinutes: decision.ageMinutes,
-        }));
-        oauthSessionExpiry.recordEmitted({
+        runOAuthExpiryTick({
+          evaluate: oauthSessionExpiry.evaluate,
+          notify: notifyTelegramFn,
+          render: oauthSessionCopy.renderTelegram,
+          recordEmitted: oauthSessionExpiry.recordEmitted,
           statePath: OAUTH_EXPIRY_STATE_FILE,
-          alert: decision.alert,
-          threshold: decision.threshold,
         });
       } catch (_) {
         // No interpolar el error: podría originarse al leer la credencial.
