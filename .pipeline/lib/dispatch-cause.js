@@ -122,7 +122,7 @@ const LABELS = Object.freeze({
     // paso (volver a filesystem). Prohibido el mensaje que solo describe el
     // error tecnico.
     [CAUSAS.ESTADO_REMOTO_DEGRADADO]:
-        'Despacho frenado: el estado operativo remoto no responde — volvé a filesystem con `operational_state.durable: false`',
+        'Despacho frenado: el estado operativo remoto no responde — volvé a filesystem con operational_state.durable: false',
     [CAUSAS.SIN_AGENTES]: 'Sin agentes disponibles',
     [CAUSAS.ANOMALIA]: '⚠ Anomalía: causa no determinable',
 });

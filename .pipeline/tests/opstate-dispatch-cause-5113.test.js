@@ -369,3 +369,33 @@ test('CA-UX2 (control positivo): el store SANO no deja rastro de degradación', 
             'el flag encendido NO es un síntoma: sin degradación no se declara causa');
     });
 });
+
+// ─── 4 · El copy llega LITERAL al operador ───────────────────────────────────
+//
+// El banner del tablero escapa su texto (`dispatch-cause-render.js` usa
+// `escapeHtmlText`) y no interpreta markdown: un backtick del label sale como
+// backtick EN PANTALLA. El operador que está mirando por qué no despacha lee un
+// adorno de código fuente en medio de la instrucción de rollback.
+//
+// Por eso los labels se escriben en texto plano. El QA marcó el caso concreto
+// (la causa de #5113 nombraba el rollback entre backticks); el test lo fija
+// para TODAS las causas, que es donde el defecto se vuelve a colar.
+//
+// El guion bajo NO entra en la lista: `operational_state.durable` es un
+// identificador del config y tiene que leerse tal cual se escribe.
+
+test('CA-UX5: ningún label de causa lleva adornos de markdown', () => {
+    for (const [causa, label] of Object.entries(dc.LABELS)) {
+        assert.equal(typeof label, 'string', `el label de ${causa} debe ser string`);
+        assert.doesNotMatch(label, /[`*]/,
+            `el label de "${causa}" trae adornos de markdown (${JSON.stringify(label)}): `
+            + 'el banner escapa el texto y los renderiza literales');
+    }
+});
+
+test('CA-UX5: el rollback se lee tal cual hay que escribirlo en el YAML', () => {
+    const label = dc.LABELS[dc.CAUSAS.ESTADO_REMOTO_DEGRADADO];
+    assert.match(label, /operational_state\.durable: false/,
+        'el próximo paso tiene que aparecer con la sintaxis exacta del config');
+    assert.doesNotMatch(label, /`/, 'sin backticks: el banner no interpreta markdown');
+});

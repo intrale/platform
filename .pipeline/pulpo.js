@@ -9288,7 +9288,7 @@ function opstateDispatchGate(desc) {
     blocked: true,
     detalle: `Estado operativo en el store remoto y el store no responde (${causa}) — `
       + 'dispatch DENEGADO por fail-closed, no se degrada a filesystem. '
-      + 'Rollback: `operational_state.durable: false` + reinicio.',
+      + 'Rollback: operational_state.durable: false + reinicio.',
   };
 }
 
