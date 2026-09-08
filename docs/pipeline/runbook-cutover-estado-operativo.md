@@ -65,6 +65,7 @@ es peor que no tenerlo.
 | **Bloque A** — backend + guardrails | `lib/operational-state-backend.js`, CAS con `expectedVersion`, cotas de payload, redacción, gate `boolean` estricto, regla `async-gate` del lint, `partial-pause` en `SOURCES` y en `DEFAULT_KNOWN_KEYS`, driver Dynamo síncrono | ✅ **Implementado, con el flag APAGADO.** Sin impacto operativo: con `durable: false` no se construye driver ni se hace una sola llamada a AWS |
 | **Bloque B** — precondiciones (CA-B1…CA-B5) | strict auth, `atomicUpdate` por sonda, identidad del runtime, audit trail multi-instancia, namespaceado ON | ⏳ **PENDIENTE de ejecución real.** Los comandos de §4 están verificados contra el código; **no fueron corridos contra AWS** |
 | **Bloque C** — cutover, sondas y rollback | migración, sonda positiva no-vacía, ensayo de rollback, ensayo de aborto, multi-instancia | ⏳ **PENDIENTE.** Nada de §2, §5, §8 y §9 fue ejecutado todavía |
+| **CA-UX1…CA-UX5** — lo que ve el operador | chip de procedencia en el header, causa propia en el enum de no-despacho, canal único de alerta, rollback en la primera pantalla, copy que nombra la acción | ✅ **Implementado y verificado en el render real**, con el flag apagado. El chip muestra `filesystem local` hoy; los otros tres estados se capturaron hidratando la bandeja del header contra el dashboard servido |
 
 > **Ningún tramo de este documento afirma haber sido ensayado.** Donde hay
 > evidencia, es del cutover del kernel (#5208/#5209) y está marcada como tal.
@@ -723,6 +724,7 @@ pipeline**: el gate deniega y el hecho se publica. Tres piezas, un solo hecho:
 | `readKey()` ⇒ `null` | `getPipelineMode()` cae en `mode: 'running'` e `isIssueAllowedInState` **deniega** (fail-closed post-#5060) |
 | Causa de no-despacho `estado_remoto_degradado` | Entrada propia del enum de `dispatch-cause.js`, alertable y por encima de `modo_ola` en la precedencia. Sin ella, la degradación se le presenta al operador como `anomalia_no_determinable` — un misterio |
 | `kernel-degradation-alert.js` | **Único** canal de aviso del hecho: template fijo, correlation id y rate-limit por causa. No se emite un `sendTelegram` nuevo para esto (CA-UX3) |
+| Chip de procedencia en el header (CA-UX1) | `#hdr-opstate`, en la bandeja compartida por el home y los 10 satélites. Cuatro estados, símbolo + etiqueta: `#` filesystem local · `✓` externo · en línea · `~` cutover en curso · `!` externo · sin respuesta. Sale del flag **efectivo del runtime**, así que un override por `PIPELINE_OPSTATE_DURABLE` se muestra como `(forzado por env)` |
 
 Diagnóstico rápido cuando el tablero muestra la causa:
 
@@ -736,9 +738,13 @@ console.log(JSON.stringify(b.getLastDegradation()));
 
 `degraded: true` con `lastError` poblado ⇒ el store no responde o rechazó el
 payload. **La acción correcta casi nunca es "reintentar el dispatch"**: es
-decidir entre esperar al store o hacer el rollback de §1. Un pipeline frenado a
-propósito se ve, en el tablero, exactamente igual que un pipeline frenado por un
-bug; la diferencia la da este comando.
+decidir entre esperar al store o hacer el rollback de §1.
+
+Antes de CA-UX1, un pipeline frenado a propósito se veía en el tablero
+exactamente igual que uno frenado por un bug, y la única forma de distinguirlos
+era este comando. Hoy el chip del header lo dice primero y el comando queda para
+el detalle (`lastError`, `stage`, `at`): el operador no tiene que abrir una
+terminal para saber **de dónde sale el estado que está mirando**.
 
 ---
 

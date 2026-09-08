@@ -172,6 +172,11 @@ const fileLock = require('./lib/file-lock');
 const dispatchCause = require('./lib/dispatch-cause');
 // #5400 — traducción enum de causa → `kind` del watchdog (pura, testeable).
 const dispatchCauseKind = require('./lib/dispatch-cause-kind');
+// #5113 CA-UX2 — sustrato del estado operativo (registro de olas + allowlist).
+// El pulpo lo usa SÓLO para introspección (`describeMode`): quién lee y escribe
+// el estado sigue siendo `waves.js` / `partial-pause.js`. Con el flag apagado
+// (default) `describeMode()` devuelve `{mode:'fs'}` y no toca red ni driver.
+const opstateBackend = require('./lib/operational-state-backend');
 // #5400 rev-3 — brazo de RECOLECCIÓN de hechos del watchdog de despacho.
 // Vive en lib/ y con dependencias inyectadas porque era el único tramo del
 // circuito sin test, y ahí se colaron los tres bloqueantes de la review rev-2
@@ -9258,11 +9263,72 @@ function brazoLanzamiento(config) {
   }
 }
 
+/**
+ * #5113 CA-UX2 — Decisión PURA: ¿el sustrato del estado operativo explica el
+ * no-despacho de este ciclo?
+ *
+ * Sólo bloquea cuando se dan las DOS condiciones a la vez: el estado vive en el
+ * store remoto **y** el store degradó. En modo filesystem nunca bloquea, aunque
+ * haya un rastro viejo de degradación: en `fs` el estado se lee del disco local
+ * y una falla del store no frena nada (sería nombrar una causa falsa, que es el
+ * error opuesto y igual de caro).
+ *
+ * @param {{mode?:string, degraded?:boolean, lastError?:string|null}} desc
+ *        salida de `operational-state-backend.describeMode()`.
+ * @returns {{blocked:boolean, detalle:string}}
+ */
+function opstateDispatchGate(desc) {
+  const d = desc && typeof desc === 'object' ? desc : {};
+  if (d.mode !== 'remote' || d.degraded !== true) return { blocked: false, detalle: '' };
+  // CA-UX5 — qué está frenado, por qué, y cuál es el próximo paso. El label del
+  // enum (`dispatch-cause.js`) ya trae la acción de rollback; acá va la causa
+  // técnica concreta que el operador necesita para decidir si reintenta o vuelve.
+  const causa = typeof d.lastError === 'string' && d.lastError ? d.lastError : 'sin detalle';
+  return {
+    blocked: true,
+    detalle: `Estado operativo en el store remoto y el store no responde (${causa}) — `
+      + 'dispatch DENEGADO por fail-closed, no se degrada a filesystem. '
+      + 'Rollback: `operational_state.durable: false` + reinicio.',
+  };
+}
+
+/**
+ * `describeMode()` envuelto: la introspección del sustrato JAMÁS puede tumbar el
+ * brazo de lanzamiento. Ante cualquier error se devuelve el modo conocido y sin
+ * degradación, que es el que NO bloquea (fail-open de la CAUSA, no del gate: el
+ * gate real sigue siendo `isIssueAllowed`, que deniega por su cuenta).
+ */
+function safeDescribeOpstateMode() {
+  try {
+    return opstateBackend.describeMode();
+  } catch (e) {
+    log('lanzamiento', `[WARN] no se pudo describir el modo del estado operativo: ${e.message}`);
+    return { mode: 'fs', source: 'config', degraded: false, lastError: null };
+  }
+}
+
 function brazoLanzamientoImpl(config, _dcMark, _dcState) {
   // Circuit breaker de infra (#2305): si está abierto, no tomar nuevos issues.
   // Se reabre manualmente con `node .pipeline/resume.js` una vez validada la red.
   if (cbInfra.isOpen()) {
     _dcMark(dispatchCause.CAUSAS.CB_INFRA, 'Circuit breaker de infra abierto — dispatch suspendido hasta validar red');
+    _dcState.hayPendientes = countPendientesGlobal(config) > 0;
+    return;
+  }
+
+  // #5113 CA-UX2 — El estado operativo vive en el store remoto y el store no
+  // responde. El gate YA deniega solo (fail-closed de CA-A7: `isIssueAllowed`
+  // devuelve `false` cuando no puede leer la allowlist, y tiene prohibido
+  // degradar a filesystem). Lo que falta sin esto es el NOMBRE: la cola queda
+  // ociosa, ninguna causa conocida aplica y `resolveCause` cae en
+  // `anomalia_no_determinable` — "no sé por qué no despacho" justo en el
+  // momento en que la causa se conoce con precisión absoluta.
+  //
+  // Es introspección pura: no lee estado, no toca red. Con el flag apagado
+  // (default) `describeMode()` corta en `mode: 'fs'` y esto es un no-op.
+  const _opstate = opstateDispatchGate(safeDescribeOpstateMode());
+  if (_opstate.blocked) {
+    _dcMark(dispatchCause.CAUSAS.ESTADO_REMOTO_DEGRADADO, _opstate.detalle);
     _dcState.hayPendientes = countPendientesGlobal(config) > 0;
     return;
   }
@@ -26718,6 +26784,8 @@ if (process.env.PULPO_NO_AUTOSTART === '1') {
     resolveIntakeRepo,
     setMultiInstanceRouter,
     getMultiInstanceRouter,
+    // #5113 CA-UX2 — decisión pura del gate de sustrato del estado operativo.
+    opstateDispatchGate,
     // #4136 — brazo de archivado (frontera activo/histórico).
     brazoArchivado,
     makeIsClosedFromTitleCache,
