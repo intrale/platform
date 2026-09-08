@@ -18,7 +18,7 @@
   <!-- Encabezado -->
   <rect x="0" y="0" width="1440" height="6" fill="url(#marca)"/>
   <text x="48" y="62" fill="#E6EDF3" font-size="26" font-weight="700">#6192 · El aviso del gate de firma en Telegram</text>
-  <text x="48" y="90" fill="#8B949E" font-size="15">Izquierda: salida real de pulpo.js:6946 sobre HEAD 177ab2bf6. Derecha: ficha de tipo firma renderizada por decision-card.js + botonera de operator-gate.js:684.</text>
+  <text x="48" y="90" fill="#8B949E" font-size="15">Izquierda: salida real de pulpo.js:6946 sobre HEAD 0c1875873. Derecha: ficha de tipo firma renderizada por decision-card.js + botonera de operator-gate.js:684.</text>
 
   <!-- ============================== ANTES ============================== -->
   <g>

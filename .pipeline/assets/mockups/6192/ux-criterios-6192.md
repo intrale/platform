@@ -7,7 +7,9 @@
 > corresponde a cada motivo del gate**, **cuál de los tres avisos lleva botones**
 > y **qué cuenta como "cambió" para el dedupe**.
 >
-> Verificado empíricamente sobre HEAD `177ab2bf6`.
+> Verificado empíricamente sobre HEAD `177ab2bf6` (rev-1).
+> **rev-3 (08/09, `desarrollo/validacion`): re-medido íntegro sobre HEAD `0c1875873`.**
+> Las seis filas de §1 y CA-UX-1..8 dan 0 divergencias contra esa medición.
 
 ---
 
@@ -246,7 +248,7 @@ Tres condiciones de experiencia sobre el degradado:
   está **fuera de alcance**:
 
   ```
-  $ sed -n '787p' .pipeline/lib/decision-card.js
+  $ sed -n '788p' .pipeline/lib/decision-card.js   # rev-3: era 787, corregido
       if (n.tipo) return n.tipo;     <- el tipo forzado hace bypass de clasificar()
                                         ENTERO, incluido el guard CA-A3 de :813
   $ buildDecisionCard({reason:'sin firma…', tipo:'firma', firmantes_autorizados:0})
