@@ -95,3 +95,24 @@ de mutación).
 4. **Iconografía del sprite propio** (`.pipeline/assets/icons/sprite.svg`) cuando
    haya símbolo equivalente. Sin emojis del sistema operativo mezclados.
 5. **Contraste AA** sobre `--surface-0` en los cuatro estados.
+
+## Contraste verificado (regla 5) — validación de desarrollo, 2026-09-08
+
+La regla 5 exige AA sobre `--surface-0`. Se auditó el mockup 60 color por color
+contra los cuatro fondos del sistema (`#0D1117`, `#161B22`, `#1C2128`, `#21262D`)
+y se corrigió el único color que no llegaba: `#6E7681` (3.77:1 sobre `#161B22`,
+por debajo del 4.5:1 de AA para texto de 11.5–12 px) fue reemplazado por
+`--text-dim` `#8B949E`, que es el mismo token que ya usaban las otras tres
+tarjetas de estado. Peor ratio de cada color de texto del mockup, ya corregido:
+
+| Color | Token | Peor ratio (vs los 4 fondos) | AA |
+|---|---|---|---|
+| `#E6EDF3` | `--text-primary` | 12.88 | sí |
+| `#B1BAC4` | `--text-secondary` | 7.75 | sí |
+| `#8B949E` | `--text-dim` | 4.95 | sí |
+| `#3FB950` | `--success` | 5.99 | sí |
+| `#D29922` | `--warning` | 6.03 | sí |
+| `#F85149` | `--danger` | 4.54 | sí |
+
+Ninguno de los cuatro estados del chip depende de un color por debajo de AA:
+el dev puede tomar los valores del mockup tal cual, sin re-verificar contraste.

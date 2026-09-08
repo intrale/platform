@@ -37,7 +37,7 @@
       <text x="14" y="20" fill="#8B949E" font-size="13" font-family="'SF Mono', Consolas, monospace">#</text>
       <text x="32" y="20" fill="#B1BAC4" font-size="13" font-weight="600">Estado: filesystem local</text>
     </g>
-    <text x="16" y="72" fill="#6E7681" font-size="11.5" font-family="'SF Mono', Consolas, monospace">flag OFF - .pipeline/*.json</text>
+    <text x="16" y="72" fill="#8B949E" font-size="11.5" font-family="'SF Mono', Consolas, monospace">flag OFF - .pipeline/*.json</text>
   </g>
 
   <g transform="translate(326,156)">
@@ -127,12 +127,12 @@
 
     <text x="20"  y="68" fill="#B1BAC4" font-size="12" font-family="'SF Mono', Consolas, monospace">flag de cutover OFF</text>
     <text x="470" y="68" fill="#B1BAC4" font-size="12"># filesystem local</text>
-    <text x="820" y="68" fill="#6E7681" font-size="12">no (estado esperado)</text>
+    <text x="820" y="68" fill="#8B949E" font-size="12">no (estado esperado)</text>
     <line x1="0" y1="82" x2="1160" y2="82" stroke="#21262D"/>
 
     <text x="20"  y="108" fill="#B1BAC4" font-size="12" font-family="'SF Mono', Consolas, monospace">flag ON + sonda en verde</text>
     <text x="470" y="108" fill="#3FB950" font-size="12">OK externo - en linea</text>
-    <text x="820" y="108" fill="#6E7681" font-size="12">no (estado esperado)</text>
+    <text x="820" y="108" fill="#8B949E" font-size="12">no (estado esperado)</text>
     <line x1="0" y1="122" x2="1160" y2="122" stroke="#21262D"/>
 
     <text x="20"  y="148" fill="#B1BAC4" font-size="12" font-family="'SF Mono', Consolas, monospace">cutover_window == true</text>
