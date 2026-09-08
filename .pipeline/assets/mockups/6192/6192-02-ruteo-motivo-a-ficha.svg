@@ -13,7 +13,7 @@
   <rect x="0" y="0" width="1440" height="6" fill="url(#marca2)"/>
 
   <text x="48" y="62" fill="#E6EDF3" font-size="26" font-weight="700">#6192 · De qué frenó el gate a qué ve el operador</text>
-  <text x="48" y="90" fill="#8B949E" font-size="15">El tipo de ficha lo resuelve quien llama, a partir del resultado del gate. Nunca el clasificador por texto: medido sobre HEAD 177ab2bf6, se equivoca en cinco de seis motivos.</text>
+  <text x="48" y="90" fill="#8B949E" font-size="15">El tipo de ficha lo resuelve quien llama, a partir del resultado del gate. Nunca el clasificador por texto: medido sobre HEAD 0c1875873, se equivoca en cuatro de seis motivos.</text>
 
   <!-- Cabecera de columnas -->
   <text x="64" y="146" fill="#6E7681" font-size="12" font-weight="700" letter-spacing="1">MOTIVO QUE DEVUELVE EL GATE</text>
@@ -75,11 +75,11 @@
 
     <rect x="604" y="412" width="180" height="30" rx="15" fill="rgba(210,153,34,0.14)" stroke="#D29922"/>
     <text x="694" y="432" text-anchor="middle" fill="#D29922" font-size="12.5" font-weight="700">indeterminado</text>
-    <text x="604" y="462" fill="#8B949E" font-size="11.5">firmantes_autorizados: 0, sin tipo forzado</text>
+    <text x="604" y="462" fill="#8B949E" font-size="11.5">tipo:'indeterminado' + firmantes_autorizados: 0</text>
 
-    <rect x="892" y="412" width="132" height="30" rx="15" fill="rgba(248,81,73,0.14)" stroke="#F85149"/>
-    <text x="958" y="432" text-anchor="middle" fill="#F85149" font-size="12.5" font-weight="700">firma</text>
-    <text x="892" y="462" fill="#F85149" font-size="11.5">3 botones — es el único que hoy los da, y es el que no debe</text>
+    <rect x="892" y="412" width="180" height="30" rx="15" fill="rgba(63,185,80,0.14)" stroke="#3FB950"/>
+    <text x="982" y="432" text-anchor="middle" fill="#3FB950" font-size="12.5" font-weight="700">indeterminado ✓</text>
+    <text x="892" y="462" fill="#8B949E" font-size="11.5">acierta, pero por el guard de f_aut=0, no por el ruteo</text>
 
     <rect x="1206" y="416" width="64" height="26" rx="13" fill="rgba(248,81,73,0.14)" stroke="#F85149"/>
     <text x="1238" y="434" text-anchor="middle" fill="#F85149" font-size="12" font-weight="700">0</text>
@@ -98,6 +98,7 @@
 
     <rect x="892" y="518" width="132" height="30" rx="15" fill="rgba(248,81,73,0.14)" stroke="#F85149"/>
     <text x="958" y="538" text-anchor="middle" fill="#F85149" font-size="12.5" font-weight="700">firma</text>
+    <text x="892" y="568" fill="#F85149" font-size="11.5">3 botones — el único que hoy los da, y es el que no debe</text>
 
     <rect x="1206" y="522" width="64" height="26" rx="13" fill="rgba(248,81,73,0.14)" stroke="#F85149"/>
     <text x="1238" y="540" text-anchor="middle" fill="#F85149" font-size="12" font-weight="700">0</text>

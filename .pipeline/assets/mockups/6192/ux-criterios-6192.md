@@ -60,9 +60,9 @@ crudo (`opGateResult.reason`) sigue viajando como dato, pero no decide nada.
 |---|---|---|---|---|
 | A | `sin firma del operador para la definición` | `firma` | `tipo:'firma'`, `firmantes_autorizados:<n>` | **Sí (3)** |
 | B | `firma stale (anti-TOCTOU A08)…` | `firma` variante vencida | `tipo:'firma'`, `firma_vencida:true`, `firmantes_autorizados:<n>` | **Sí (3)** |
-| C | `firmante no verificable (sin authorizedSigners configurado…)` | `indeterminado` | `firmantes_autorizados:0` y **sin** `tipo` forzado | **No** |
-| D | `firmante '<x>' no autorizado (A01…)` | `indeterminado` | `firmantes_autorizados:<n>`, sin `tipo` forzado | **No** |
-| E | `verdict inválido '<x>'` | `indeterminado` | sin `tipo` forzado | **No** |
+| C | `firmante no verificable (sin authorizedSigners configurado…)` | `indeterminado` | `tipo:'indeterminado'`, `firmantes_autorizados:0` | **No** |
+| D | `firmante '<x>' no autorizado (A01…)` | `indeterminado` | `tipo:'indeterminado'`, `firmantes_autorizados:<n>` | **No** |
+| E | `verdict inválido '<x>'` | `indeterminado` | `tipo:'indeterminado'` | **No** |
 | F | `operador marcó re-definición…` / `operador rechazó la definición…` | **ninguna ficha** | — | **No** |
 
 Notas de cada fila:
@@ -87,6 +87,47 @@ Notas de cada fila:
 **`firmantes_autorizados` se pasa SIEMPRE**, en las seis filas, incluso donde el
 tipo va forzado. Es el dato que impide que C y D degraden a `firma` si alguien
 toca el ruteo más adelante.
+
+### rev-2 (fase `desarrollo/validacion`, 08/09) — el tipo se fuerza en las SEIS filas
+
+La versión anterior de esta tabla decía *"sin `tipo` forzado"* en C, D y E, y
+delegaba el ruteo de esas tres filas al clasificador por texto de
+`decision-card.js`. **Medido, eso rutea mal la fila D**:
+
+```
+$ node -e "buildDecisionCard({reason:\"firmante 'x' no autorizado (A01) — firma
+           rechazada\", firmantes_autorizados:2})"
+  tipo=firma  ops=3        <- ofrece los TRES BOTONES DE FIRMA
+```
+
+`RE_FIRMA` (`decision-card.js:770`) matchea la palabra *firmante* del motivo, y
+como `firmantesAutorizados !== 0` el guard `CA-A3` (`:813`) no dispara. Resultado:
+el operador recibe *"¿Aprobás el alcance?"* con tres botones **sobre un caso en
+el que su firma acaba de ser rechazada por no estar autorizado**. Es exactamente
+la opción inejecutable que CA-6 del issue prohíbe, entrando por la puerta de
+atrás del ruteo por texto.
+
+Corrección: **C, D y E fuerzan `tipo:'indeterminado'`**. Verificado que la
+salida es la correcta:
+
+```
+D con tipo:'indeterminado' forzado  ->  tipo=indeterminado  ops=0
+C con tipo:'indeterminado' forzado  ->  tipo=indeterminado  ops=0
+                                        falta="No hay ningún firmante autorizado
+                                        configurado: sin eso ninguna firma vale."
+```
+
+Esto además alinea el contrato con **CA-9 del `po`**, que ya exigía que el tipo
+lo resuelva el llamador desde el resultado estructurado del gate y **nunca** el
+clasificador por texto. Que C y E salieran bien "sin tipo" era una coincidencia
+del guard de `firmantes_autorizados: 0`, no un ruteo.
+
+**Nota de copy conocida y aceptada (no bloqueante):** en la fila D el campo
+`falta` de la ficha sale genérico (*"El motivo del bloqueo. Quien lo frenó no
+dejó texto…"*) en lugar de nombrar que el firmante no está autorizado. El copy
+de `indeterminado` vive en `decision-card.js` (#6190, cerrado) y **está fuera
+del alcance de esta historia**: el dev no debe editarlo. Se prefiere un copy
+genérico honesto antes que tres botones inejecutables.
 
 ---
 
@@ -192,9 +233,32 @@ Tres condiciones de experiencia sobre el degradado:
   notificación con ese motivo y afirmar `tipo === 'firma'` y
   `opciones.length === 3`. (Hoy, sin `tipo` explícito, sale `indeterminado`: el
   test falla y debe fallar.)
-- **CA-UX-2** · Con `firmantes_autorizados: 0`, **ningún** motivo produce
-  `tipo: 'firma'`, ni siquiera con `tipo:'firma'` pasado explícitamente. El
-  llamador decide `indeterminado` antes de construir la ficha.
+- **CA-UX-2** *(reformulado en rev-2 — la redacción anterior era incumplible
+  dentro del alcance)* · **El llamador nunca pasa `tipo:'firma'` cuando
+  `firmantes_autorizados === 0`**: decide `indeterminado` *antes* de construir
+  la ficha. Test: para los seis motivos de §1 con `firmantes_autorizados: 0`, el
+  aviso emitido por el camino real de `pulpo.js` tiene `tipo === 'indeterminado'`
+  y `opciones.length === 0`.
+
+  Por qué se reformuló: la versión anterior exigía que la ficha saliera
+  `indeterminado` *"ni siquiera con `tipo:'firma'` pasado explícitamente"*. Eso
+  no se puede cumplir sin tocar `decision-card.js`, que es de #6190 (cerrado) y
+  está **fuera de alcance**:
+
+  ```
+  $ sed -n '787p' .pipeline/lib/decision-card.js
+      if (n.tipo) return n.tipo;     <- el tipo forzado hace bypass de clasificar()
+                                        ENTERO, incluido el guard CA-A3 de :813
+  $ buildDecisionCard({reason:'sin firma…', tipo:'firma', firmantes_autorizados:0})
+      tipo=firma  ops=3
+  ```
+
+  El criterio se cumple entonces **en el llamador**, que es donde esta historia
+  tiene alcance, y donde CA-9 del `po` ya puso la decisión de tipo. El invariante
+  observable para el operador —con cero firmantes autorizados nunca ve botones de
+  firma— **no cambia**; cambia dónde se verifica. Endurecer el guard dentro del
+  módulo para que el `tipo` forzado no pueda saltearlo es deseable, pero es
+  trabajo de #6190 y **no bloquea esta historia**.
 - **CA-UX-3** · La ficha de firma cumple
   `opciones.filter(o => o.es_recomendada).length === 0` y
   `sin_recomendacion_porque` no vacío.
