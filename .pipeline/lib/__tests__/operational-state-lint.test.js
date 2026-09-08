@@ -1213,6 +1213,92 @@ test('CA-1a · --report separa produccion de tests y emite fila de total', () =>
     assert.match(out, /`lib\/prod\.js` \| produccion \| 1 \| 0 \| 0 \| 1/);
 });
 
+// -----------------------------------------------------------------------------
+// #5113 CA-A3 · regla `async-gate` — casos NEGATIVOS
+//
+// El criterio exige evidencia de que el guardrail FALLA al introducir el
+// patron, no solo de que pasa cuando no esta. Un lint que nunca se vio en rojo
+// es indistinguible de un lint roto: estos tests son esa evidencia.
+//
+// Lo que se protege: `if (ops.isIssueAllowed(n))` sobre una Promise es SIEMPRE
+// `true`. Convertir el gate a async lo vuelve fail-OPEN sin poner en rojo
+// ningun test de dominio — es el incidente #5060 reproducido por un refactor
+// que parece inocente.
+// -----------------------------------------------------------------------------
+
+test('CA-A3 · el gate consumido con `await` es una violation y el CLI sale != 0', () => {
+    const root = makeTmpPipeline();
+    installBin(root);
+    // El `await` solo tiene sentido si el gate es thenable: escribirlo YA
+    // significa que alguien lo convirtio, o cree que lo es.
+    placeJs(root, 'lib/consumidor.js',
+        "const ops = require('./operational-state');\n"
+        + 'async function despachar(n) {\n'
+        + '    if (await ops.isIssueAllowed(n)) return true;\n'
+        + '    return false;\n'
+        + '}\n'
+        + 'module.exports = { despachar };');
+    const r = runCli(root, ['--check']);
+    assert.notEqual(r.code, 0, 'el guardrail DEBE romper el build ante un gate awaiteado');
+    assert.match(r.all, /async-gate/);
+});
+
+test('CA-A3 · declarar el gate como `async` es una violation en sus tres formas', () => {
+    for (const forma of [
+        'async function isIssueAllowed(n) { return true; }',
+        'module.exports = { isSkillAllowed: async (s) => true };',
+        'const isIssueAllowedInState = async (n, st) => true;',
+    ]) {
+        const root = makeTmpPipeline();
+        installBin(root);
+        placeJs(root, 'lib/gate.js', forma);
+        const r = runCli(root, ['--check']);
+        assert.notEqual(r.code, 0, `declaracion async no detectada: ${forma}`);
+        assert.match(r.all, /async-gate/);
+    }
+});
+
+test('CA-A3 · las cuatro funciones del gate estan cubiertas, no solo las dos principales', () => {
+    // `...InState` es la variante que consume el Pulpo por tick para N issues:
+    // dejarla afuera del control seria dejar afuera el path caliente.
+    for (const nombre of ['isIssueAllowed', 'isIssueAllowedInState', 'isSkillAllowed', 'isSkillAllowedInState']) {
+        const root = makeTmpPipeline();
+        installBin(root);
+        placeJs(root, 'lib/c.js', `async function f(x) { return await ops.${nombre}(x); }`);
+        const r = runCli(root, ['--check']);
+        assert.notEqual(r.code, 0, `${nombre} no esta cubierta por la regla async-gate`);
+    }
+});
+
+test('CA-A3 · el consumo SINCRONICO correcto del gate NO es violation (sin falsos positivos)', () => {
+    const root = makeTmpPipeline();
+    installBin(root);
+    // Esta es la forma correcta y es la que escribe todo el pipeline hoy: si la
+    // regla la marcara, el guardrail seria inusable y terminaria desactivado.
+    placeJs(root, 'lib/consumidor-ok.js',
+        "const ops = require('./operational-state');\n"
+        + 'function despachar(n) {\n'
+        + '    if (!ops.isIssueAllowed(n)) return false;\n'
+        + '    return ops.isSkillAllowedInState("pipeline-dev", st);\n'
+        + '}\n'
+        + 'module.exports = { despachar };');
+    const r = runCli(root, ['--check']);
+    assert.equal(r.code, 0, `el uso sincronico correcto no puede ser violation:\n${r.all}`);
+});
+
+test('CA-A3 · el anti-patron NOMBRADO EN PROSA no se auto-reporta (linea comentada)', () => {
+    const root = makeTmpPipeline();
+    installBin(root);
+    // El propio contrato documenta el anti-patron; si la regla marcara los
+    // comentarios, documentar el peligro seria imposible.
+    placeJs(root, 'lib/doc.js',
+        '// Prohibido: `await ops.isIssueAllowed(n)` convierte el gate en fail-open.\n'
+        + '// async function isSkillAllowed(s) { ... }  <- tampoco\n'
+        + 'module.exports = {};');
+    const r = runCli(root, ['--check']);
+    assert.equal(r.code, 0, `una mencion en comentario no puede ser violation:\n${r.all}`);
+});
+
 test('CA-1a · classifyScope distingue produccion de tests', () => {
     assert.equal(I.classifyScope('lib/foo.js'), 'produccion');
     assert.equal(I.classifyScope('pulpo.js'), 'produccion');
