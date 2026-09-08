@@ -1168,6 +1168,52 @@ function ghThrottle() {
 }
 
 /**
+ * #7086 — GUARD DE EFECTOS SOBRE EL PIPELINE PRODUCTIVO DESDE UNA CORRIDA DE PRUEBA.
+ *
+ * Hermano de `ghWritesBloqueadas` (#6496): la misma direccion de riesgo, aplicada
+ * a los dos canales que quedaban abiertos — la cola de Telegram y el marker de
+ * pausa/log del halt por config corrupta.
+ *
+ * El problema medido (08/09/2026): un test que requiere `pulpo.js` sin
+ * `PIPELINE_DIR_OVERRIDE` —o que lo setea DESPUES del require, cuando las const
+ * de modulo ya capturaron el directorio real— encola salientes en la cola de
+ * Telegram REAL (180 avisos de auto-incorporacion al chat del operador en un solo
+ * dia) y escribe `CONFIG INVALIDA — dispatch pausado` en el `pulpo.log`
+ * productivo, contaminando con corridas de prueba la unica via de diagnostico.
+ *
+ * El predicado NO bloquea toda corrida de prueba: bloquea solo cuando el DESTINO
+ * del efecto cae dentro del `.pipeline` productivo (`__dirname`). Un test bien
+ * aislado (override a un tmpdir) sigue ejercitando el camino completo, dropfile
+ * incluido; lo que se corta es exactamente el derrame.
+ *
+ * Escape hatch explicito para el operador: `PIPELINE_ALLOW_PROD_SIDE_EFFECTS=1`.
+ *
+ * @returns {string|null} motivo de la corrida de prueba, o `null`.
+ */
+function corridaDePrueba() {
+  if (process.env.PIPELINE_ALLOW_PROD_SIDE_EFFECTS === '1') return null;
+  if (process.env.NODE_TEST_CONTEXT) return 'node --test';
+  if (process.env.PULPO_NO_AUTOSTART === '1') return 'PULPO_NO_AUTOSTART=1';
+  if (process.env.NODE_ENV === 'test') return 'NODE_ENV=test';
+  return null;
+}
+
+/**
+ * @param {string} destino ruta del efecto (archivo o directorio).
+ * @returns {string|null} motivo del bloqueo, o `null` si el efecto puede salir.
+ */
+function efectoProductivoBloqueado(destino) {
+  const motivo = corridaDePrueba();
+  if (!motivo) return null;
+  try {
+    const prod = path.resolve(__dirname);
+    const d = path.resolve(String(destino || ''));
+    if (d === prod || d.startsWith(prod + path.sep)) return motivo;
+  } catch { /* destino no resoluble: no bloqueamos */ }
+  return null;
+}
+
+/**
  * #6496 (rebote security · OWASP A05/A08) — GUARD DE ESCRITURA A GITHUB.
  *
  * Un `require('pulpo.js')` desde la suite de tests deja TODOS los brazos del
@@ -1793,6 +1839,14 @@ const CONFIG_CORRUPTION_ALERT_THROTTLE_MS = 5 * 60 * 1000;
  *        `ConfigSchemaViolation`), del que sale la tríada de copy.
  */
 function haltOnConfigCorruption(reason, redactedDetail, err) {
+  // #7086 — un config de prueba corrupto NO pausa el dispatch productivo ni
+  // ensucia su log de diagnostico. Con el test bien aislado (PAUSE_FILE dentro
+  // de su propio tmpdir) el halt sigue corriendo entero.
+  const bloqueoPrueba = efectoProductivoBloqueado(PAUSE_FILE);
+  if (bloqueoPrueba) {
+    console.error(`[${new Date().toISOString()}] [pulpo] halt SUPRIMIDO (entorno de prueba: ${bloqueoPrueba}) — el marker de pausa apunta al pipeline productivo | causa: ${reason}`);
+    return;
+  }
   // ¿La pausa que va a quedar activa la generó ESTA corrupción, o ya había otra?
   // Se decide ANTES de escribir, leyendo el marker: es lo que elige la variante
   // de copy (CA-UX-3).
@@ -1845,7 +1899,7 @@ function haltOnConfigCorruption(reason, redactedDetail, err) {
   // línea y un bloque multilínea rompe el filtrado.
   const safeMsg = `[${new Date().toISOString()}] [pulpo] `
     + configSchema.formatConfigFailureLog(copia, { titulo: 'CONFIG INVÁLIDA — dispatch pausado' });
-  try { fs.appendFileSync(path.join(__dirname, 'logs', 'pulpo.log'), safeMsg + '\n'); } catch {}
+  try { fs.appendFileSync(path.join(LOG_DIR, 'pulpo.log'), safeMsg + '\n'); } catch {}
   console.error(safeMsg);
   // Alerta Telegram throttleada y redactada.
   const now = Date.now();
@@ -19841,6 +19895,13 @@ function sendTelegramPlain(text) {
 // El servicio-telegram hace passthrough del campo reply_markup al API.
 // #2975 — Tercer arg `opts.plain=true` desactiva `parse_mode: 'Markdown'`.
 function sendTelegramWithMarkup(text, replyMarkup, opts) {
+  // #7086 — un saliente encolado desde una corrida de prueba en la cola REAL
+  // llega al telefono del operador como si fuera un aviso legitimo del pipeline.
+  const bloqueoPrueba = efectoProductivoBloqueado(telegramPendienteDir());
+  if (bloqueoPrueba) {
+    log('telegram', `⛔ saliente SUPRIMIDO (entorno de prueba: ${bloqueoPrueba}) — la cola de destino es la productiva, no se encola`);
+    return null;
+  }
   const token = getTelegramToken();
   const chatId = getTelegramChatId();
   if (!token || !chatId) { log('telegram', 'Sin token/chatId'); return null; }
@@ -26904,6 +26965,12 @@ if (process.env.PULPO_NO_AUTOSTART === '1') {
     // persiste, jamás se auto-levanta).
     loadConfig,
     haltOnConfigCorruption,
+    // #7086 — seam del guard de efectos productivos desde una corrida de prueba.
+    // Se expone el predicado (no sólo el wiring) porque la decisión que importa
+    // aseverar es la del DESTINO: mismo entorno de test, bloquea si la ruta cae
+    // en el `.pipeline` real y deja pasar si cae en el tmpdir aislado.
+    corridaDePrueba,
+    efectoProductivoBloqueado,
     CONFIG_PATH,
     _getPaused: () => paused,
     _resetConfigCorruptionState: () => {
