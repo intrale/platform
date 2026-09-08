@@ -417,8 +417,11 @@ despachando con el sistema "pausado" y el operador creería que frenó todo. Que
 en la raíz física, con precedencia máxima. Una eventual pausa por proyecto es
 **aditiva**: `pausaEfectiva = globalPaused || projectPaused`.
 
-Tampoco entran los ~30 JSON de `.pipeline/state/` (quedan para **#5113**) ni
+Tampoco entran los ~30 JSON de `.pipeline/state/` ni
 `waves.json.template`, que es un artefacto versionado del repo.
+
+> #5113 tampoco los mueve: su alcance son el registro de olas y la allowlist
+> (ver §13). Los JSON de `.pipeline/state/` siguen sin dueño declarado.
 
 ### 12.3 Precedencia de resolución del contexto
 
@@ -536,3 +539,148 @@ para inspeccionar el plan **antes** de pausar el pipeline.
   emite binding; dashboard, hooks y skills caen a `single-project`/`host-fallback`.
   Lo que #5110 sí deja listo es el **interruptor** que vuelve eso un error
   (`strict_context`, §12.3) — default OFF hasta que #5164 complete el cableado.
+
+---
+
+## 13. Sustrato de persistencia: filesystem o store durable (#5113, Ola 9.4 · E2)
+
+La §12 resolvió **cómo se particiona** el estado operativo (por `projectId`).
+Esta sección resuelve la dimensión ortogonal: **dónde vive físicamente**.
+
+Hasta #5113 la respuesta era única — archivos locales. Eso alcanza mientras el
+pipeline corre en un solo host, y deja de alcanzar en el momento en que dos
+instancias tienen que compartir el registro de olas y la allowlist. La
+coordinación por leases ya existía (`lib/kernel-coordination-store.js`); lo que
+faltaba era que el estado que se disputa estuviera afuera.
+
+La dimensión de sustrato es **`operational_state.durable`**, y es **ortogonal** a
+`namespaced`: el namespaceado decide la clave, el sustrato decide el medio.
+
+### 13.1 Quién conoce el flag
+
+**Un solo archivo: `lib/operational-state-backend.js`.** Es la capa de storage y
+la única que sabe si está hablando con un archivo o con DynamoDB.
+
+```
+setPartialPauseAtomic() / saveState()      <- dominio: autoria, auditoria, validacion
+  |- evaluateAndAudit()                    <- gate de #3625 (D-5)
+       |- backend.writeKey(k, v, expectedVersion)   <- UNICO punto que conoce el flag
+            |- modo fs      -> atomicWriteFile(...)
+            |- modo remoto  -> putItem(..., ConditionExpression)
+```
+
+El orden importa y no es negociable: **el store es sustrato de persistencia, no
+API de mutación**. Llamar `compareAndSet` directo saltearía el gate de autoría de
+#3625 y lo dejaría decorativo. Toda escritura de allowlist entra por
+`setPartialPauseAtomic`.
+
+### 13.2 Layout
+
+```
+durable: false (DEFAULT)              durable: true
+──────────────────────────            ──────────────────────────────────────────
+<stateDir>/waves.json                 tabla intrale-kernel-coordination, key `waves`
+<stateDir>/.partial-pause.json        tabla intrale-kernel-coordination, key `partial-pause`
+
+.pipeline/.paused                     .pipeline/.paused      <- FILESYSTEM en ambos
+```
+
+`<stateDir>` sale de la §12: la ruta local ya viene namespaceada cuando
+`namespaced.enabled` está en `true`. Las dos dimensiones se componen sin
+conocerse.
+
+### 13.3 Qué queda en filesystem, y por qué
+
+`.pipeline/.paused` **nunca** migra (D-3 / SEC-7). Es el halt de último recurso y
+además el mecanismo de aborto del propio cutover: si viviera en el store, una
+degradación dejaría al operador sin freno justo en el peor momento. El criterio
+es el mismo por el que la §12.2 lo dejó global — un control de seguridad no puede
+depender del subsistema que está fallando.
+
+Hay un test negativo que se pone en rojo si alguien lo suma a `SOURCES` o a
+`knownKeys` "por consistencia".
+
+### 13.4 El flag es único, y gatea lectura y escritura juntas
+
+No hay un flag de lectura y otro de escritura. Es deliberado: dos flags permiten
+un estado intermedio donde se lee de un lado y se escribe del otro, que es
+exactamente la coexistencia de dos fuentes de verdad que este trabajo existe para
+prohibir.
+
+Fail-closed con `=== true` exacto, mismo criterio que `namespaced.enabled` y
+`kernel.durable`: `"true"`, `1` o `"1"` **no encienden nada**. Un flag que mueve
+dónde vive el registro de olas no se prende por coerción accidental.
+
+`PIPELINE_OPSTATE_DURABLE=1|0` lo fuerza en caliente sin tocar el archivo —
+override pensado para el ensayo de rollback y para los tests.
+
+### 13.5 La exclusión mutua cambia de primitiva
+
+| Régimen | Primitiva de exclusión | Alcance real |
+|---------|------------------------|--------------|
+| `durable: false` | `withLockSync` (archivo + PID) | Un host |
+| `durable: true` | **CAS con `expectedVersion`** | Todos los hosts |
+
+`withLockSync` resuelve locks stale preguntando si el PID sigue vivo **en el SO
+local**. Entre dos hosts eso no excluye nada. Dejarlo como única garantía en
+régimen remoto sería peor que no tener ninguna: simula una protección
+inexistente.
+
+El lock local **se conserva** en modo remoto, pero como optimización intra-host
+(evita que dos procesos del mismo host se peleen y gasten reintentos de CAS), no
+como la garantía. La garantía es la escritura condicional.
+
+El token de versión del registro de olas es `meta.updated_at` (ISO) y se mapea
+bidireccionalmente al entero incremental del coordination store. En modo remoto
+**el entero es el autoritativo**; el ISO se preserva en el envelope para no
+romper a los callers que lo devuelven en `version`.
+
+### 13.6 Degradación: denegar, nunca leer el archivo local
+
+Ante error de red o store caído, `readKey` devuelve `null`, `getPipelineMode()`
+cae en `mode: 'running'` y el gate **deniega** (fail-closed post-#5060).
+
+**Está prohibido el fallback silencioso a filesystem.** Una allowlist local stale
+no es "un dato viejo": es una autorización revocada que vuelve a estar vigente.
+Leerla reabriría la ola con los permisos de ayer, en silencio, justo cuando el
+sistema está degradado.
+
+La contracara de un buen fail-closed es un mal síntoma, así que la degradación
+tiene causa de dispatch propia (`estado_remoto_degradado`) y es **alertable**: sin
+eso el operador leería "causa no determinable" en el momento en que la causa se
+conoce con precisión absoluta.
+
+Durante la ventana de cutover, además, el aborto se hace **escribiendo
+`.pipeline/.paused`** — nunca `process.exit`, nunca `throw`, nunca degradar a FS.
+
+### 13.7 El gate no cambia de tipo. Nunca.
+
+`isIssueAllowed()`, `isSkillAllowed()` y sus variantes `...InState` devuelven
+**`boolean` estricto** en los dos regímenes. Por eso el backend es **síncrono de
+punta a punta** (`spawnSync`), y no por gusto: convertir la cadena a `async`
+obligaría a `await` en todos los consumidores, y `if (unaPromesa)` es **siempre
+`true`**. Un solo caller que se olvide convierte el gate en fail-**open**
+silencioso — el incidente #5060 reproducido por un refactor que parece inocente.
+
+El control es mecánico, no de code review: test de contrato (`typeof === 'boolean'`,
+incluso con el store caído) **más** la regla `async-gate` de
+`lib/operational-state-lint.js` en modo enforce.
+
+El costo del `spawnSync` (~1 s) ya está absorbido por el caché de 2 s de
+`waves.js` y por `isIssueAllowedInState(issue, state)`, que lee el estado una vez
+por tick y lo reusa para N issues.
+
+### 13.8 Reversibilidad (R8)
+
+Bajar `operational_state.durable` a `false` + `/restart` devuelve el pipeline a
+filesystem en **minutos**. Lo escrito en el store no se borra: simplemente deja de
+leerse.
+
+El orden de encendido, en cambio, **no es negociable** (D-4): namespaceado ON y
+verificado → `kernel.durable` ON → migración con backup y paridad SHA-256 en verde
+→ sonda positiva no-vacía por dos caminos disjuntos → ensayo de rollback → recién
+ahí `durable: true`. Migrar con el namespaceado apagado deja el estado en el store
+con layout plano y obliga a re-migrar.
+
+Procedimiento completo, con comandos y criterio de aborto:
+[`runbook-cutover-estado-operativo.md`](runbook-cutover-estado-operativo.md).
