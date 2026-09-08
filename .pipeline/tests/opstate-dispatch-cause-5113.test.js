@@ -255,3 +255,117 @@ test('CA-UX5 (caso negativo): sin la entrada en CAUSE_LABELS el aviso degrada a 
     );
     assert.equal(stallWatchdog.describeCause(null), 'sin causa declarada');
 });
+
+// ─── 4 · El eslabón que faltaba: la FUENTE del descriptor (CA-UX2 / CA-C1) ───
+//
+// Rebote rev-1, segunda pasada. Los 14 casos de arriba entran por
+// `opstateDispatchGate(descriptor)` con el descriptor ESCRITO A MANO
+// (`{ mode: 'remote', degraded: true }`). Eso prueba la decisión, no la cadena:
+// nadie verifica que `describeMode()` REALMENTE devuelva `degraded: true`
+// cuando el store no responde.
+//
+// El hueco importa porque es el mismo modo de falla que produjo este rebote,
+// corrido un eslabón: antes fue "enum sin productor" (la causa existía y nadie
+// la marcaba); acá sería "productor sin fuente" — el gate marca, pero sobre un
+// `degraded` que ya no se enciende. Alcanza con que alguien limpie
+// `lastDegradation` en el catch, renombre el campo, o mueva la clasificación
+// del error: los 14 tests siguen en verde y el operador vuelve a leer
+// "anomalía: causa no determinable" en la degradación real.
+//
+// Estos dos casos arrancan donde arranca el hecho — una operación real contra
+// un store caído — y bajan hasta el texto de las dos superficies. El control
+// positivo (store sano) es el que impide el falso verde simétrico: un
+// `degraded` clavado en `true` bloquearía el despacho para siempre, que es peor
+// que no nombrar la causa.
+
+const { createFakeSyncDynamoDriver } = require('../lib/__tests__/fixtures/fake-sync-dynamo-driver');
+const { withEnv } = require('../lib/test-helpers/with-env');
+const backend = require('../lib/operational-state-backend');
+
+/**
+ * Corre `fn` con el flag de cutover encendido y el sustrato apuntando a un
+ * driver en memoria. Devuelve el driver para poder tumbarlo.
+ */
+function conStoreRemoto(fn) {
+    return withEnv({ PIPELINE_OPSTATE_DURABLE: '1' }, () => {
+        const driver = createFakeSyncDynamoDriver({});
+        backend.invalidateConfigCache();
+        backend.clearDegradation();
+        // El sink se silencia a propósito: acá se verifica el SÍNTOMA que ve el
+        // operador en el tablero, no el canal de Telegram (eso es CA-UX3).
+        backend.setDegradationSink({ onDegraded() {} });
+        backend._setDriverForTests({
+            driver,
+            spec: { type: 'dynamodb_table', tableName: 't', keys: [] },
+            projectId: 'intrale-platform',
+            instanceId: 'intrale-platform',
+            atomicUpdate: true,
+        });
+        try {
+            return fn(driver);
+        } finally {
+            backend._setDriverForTests(null);
+            backend.clearDegradation();
+            backend.setDegradationSink(null);
+            backend.invalidateConfigCache();
+        }
+    });
+}
+
+test('CA-UX2: el store caído DE VERDAD enciende la causa, sin descriptor fabricado', () => enTmp((dir) => {
+    const resuelta = conStoreRemoto((driver) => {
+        // El hecho real: una lectura del estado operativo contra un store mudo.
+        driver._setFailure(new Error('ProvisionedThroughputExceededException'));
+        const leido = backend.readKey('waves');
+        assert.equal(leido, null, 'con el store caído la lectura NO puede devolver estado');
+
+        // La fuente, no una constante de test.
+        const desc = backend.describeMode();
+        assert.equal(desc.mode, 'remote');
+        assert.equal(desc.degraded, true,
+            'el sustrato no reporta degradación: el gate de CA-UX2 quedaría ciego y '
+            + 'el ciclo volvería a caer en `anomalia_no_determinable`');
+
+        const gate = opstateDispatchGate(desc);
+        assert.equal(gate.blocked, true);
+
+        const causa = dc.resolveCause(
+            cicloOcioso([dc.CAUSAS.ESTADO_REMOTO_DEGRADADO], {
+                [dc.CAUSAS.ESTADO_REMOTO_DEGRADADO]: gate.detalle,
+            }),
+            Date.now(),
+        );
+        dc.writeArtifact(dir, causa);
+        return causa;
+    });
+
+    assert.equal(resuelta.causa, dc.CAUSAS.ESTADO_REMOTO_DEGRADADO);
+    assert.equal(resuelta.anomalia, false);
+
+    // Las dos superficies, desde el artifact que quedó en disco.
+    const html = dcRender.renderDispatchCauseBanner(slices.dispatchCauseSlice({}, { PIPELINE: dir }));
+    assert.doesNotMatch(html, /no determinable/i);
+
+    const msg = stallWatchdog.buildAlertMessage({
+        waveKey: null,
+        stallMinutes: 45,
+        enabledCount: 3,
+        causeKind: dcKind.causeFromArtifact(dc.readArtifact(dir)).kind,
+    });
+    assert.doesNotMatch(msg, /sin causa declarada/);
+    assert.match(msg, /estado operativo remoto no responde/i);
+}));
+
+test('CA-UX2 (control positivo): el store SANO no deja rastro de degradación', () => {
+    conStoreRemoto(() => {
+        // Sin fallas: la misma lectura, mismo flag, mismo driver.
+        backend.readKey('waves');
+        const desc = backend.describeMode();
+        assert.equal(desc.mode, 'remote', 'el flag encendido tiene que dar modo remoto');
+        assert.equal(desc.degraded, false,
+            'un `degraded` clavado en true frenaría el despacho para siempre — '
+            + 'el falso verde simétrico del caso de arriba');
+        assert.equal(opstateDispatchGate(desc).blocked, false,
+            'el flag encendido NO es un síntoma: sin degradación no se declara causa');
+    });
+});
