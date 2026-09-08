@@ -424,3 +424,66 @@ test('CA-B2: `atomicUpdate` se exige ESTRICTO — un truthy cualquiera no alcanz
             `atomicUpdate=${JSON.stringify(valor)} NO puede habilitar la escritura remota`);
     }
 }));
+
+// -----------------------------------------------------------------------------
+// CA-B5 · el estado remoto queda aislado por `projectId`
+//
+// Es la composicion de las dos dimensiones ortogonales: la §12 del contrato
+// (#5110) decide COMO se particiona el estado; la §13 (#5113) decide DONDE vive.
+// En modo remoto la particion es la PK del item, y tiene que aislar igual de
+// fuerte que las carpetas separadas del modo filesystem.
+//
+// Si no aislara, dos proyectos compartirian registro de olas y allowlist: el
+// dispatch de uno decidiria sobre el backlog del otro.
+// -----------------------------------------------------------------------------
+
+test('CA-B5: dos proyectos escriben el mismo key sin pisarse (aislados por PK)', () => enTmp({ PIPELINE_OPSTATE_DURABLE: '1' }, () => {
+    // Un solo store fisico compartido: es el escenario real del multi-instancia.
+    const driver = createFakeSyncDynamoDriver();
+    const spec = { type: 'dynamodb_table', tableName: 'tabla-fake', keys: [] };
+
+    const montar = (projectId) => {
+        const backend = freshBackend();
+        backend._setDriverForTests({ driver, spec, projectId, instanceId: projectId, atomicUpdate: true });
+        return backend;
+    };
+
+    const alfa = montar('proyecto-alfa');
+    assert.equal(alfa.writeKey(alfa.KEYS.PARTIAL_PAUSE, { allowed_issues: [111] }).ok, true);
+
+    const beta = montar('proyecto-beta');
+    // Beta no ve nada: su particion esta vacia aunque el store ya tenga datos.
+    assert.equal(beta.readKey(beta.KEYS.PARTIAL_PAUSE), null,
+        'un proyecto no puede leer la allowlist de otro');
+    assert.equal(beta.writeKey(beta.KEYS.PARTIAL_PAUSE, { allowed_issues: [222] }).ok, true);
+
+    // Y la escritura de beta no piso la de alfa.
+    const alfa2 = montar('proyecto-alfa');
+    assert.deepEqual(alfa2.readKey(alfa2.KEYS.PARTIAL_PAUSE), { allowed_issues: [111] },
+        'la allowlist de alfa sobrevive intacta a la escritura de beta');
+
+    const beta2 = montar('proyecto-beta');
+    assert.deepEqual(beta2.readKey(beta2.KEYS.PARTIAL_PAUSE), { allowed_issues: [222] });
+}));
+
+test('CA-B5: el aislamiento vale tambien para el registro de olas', () => enTmp({ PIPELINE_OPSTATE_DURABLE: '1' }, () => {
+    const driver = createFakeSyncDynamoDriver();
+    const spec = { type: 'dynamodb_table', tableName: 'tabla-fake', keys: [] };
+    const montar = (projectId) => {
+        const backend = freshBackend();
+        backend._setDriverForTests({ driver, spec, projectId, instanceId: projectId, atomicUpdate: true });
+        return backend;
+    };
+
+    const alfa = montar('proyecto-alfa');
+    alfa.writeKey(alfa.KEYS.WAVES, stateWithIso('2026-09-08T10:00:00.000Z'));
+
+    const beta = montar('proyecto-beta');
+    assert.equal(beta.readKey(beta.KEYS.WAVES), null, 'beta arranca sin olas propias');
+
+    // La version es POR PARTICION: beta arranca en 1, no continua la de alfa.
+    const res = beta.writeKey(beta.KEYS.WAVES, stateWithIso('2026-09-08T11:00:00.000Z'));
+    assert.equal(res.ok, true);
+    assert.equal(res.version, 1,
+        'el contador de version no puede ser global: seria un canal entre proyectos');
+}));
