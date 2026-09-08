@@ -55,6 +55,16 @@ const SOURCES = Object.freeze([
   { file: 'blocked-issues.json', key: 'blocked' },
   { file: 'blocked-by-infra.json', key: 'blocked-by-infra' },
   { file: 'infra-health.json', key: 'health' },
+  // #5113 CA-A8 — la allowlist de ejecución entra al alcance de la migración.
+  // Es la otra mitad del estado operativo (junto con el registro de olas) y sin
+  // ella el cutover dejaría el gate de dispatch leyendo filesystem mientras el
+  // resto del estado ya vive en el store: exactamente las dos fuentes de verdad
+  // que CA-C1 prohíbe.
+  //
+  // `.paused` NO está ni puede estar acá (D-3 / SEC-7): es el halt de último
+  // recurso y el mecanismo de aborto del propio cutover. Hay un test negativo
+  // que falla si aparece en `SOURCES` o en `MIGRATION_KNOWN_KEYS`.
+  { file: '.partial-pause.json', key: 'partial-pause' },
 ]);
 
 // Allowlist de claves que el store de coordinación debe aceptar para esta

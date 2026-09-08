@@ -452,6 +452,80 @@ function buildTableDescription(spec, status) {
 // Runner de producción AWS CLI (adapter real del puerto `run`)
 // -----------------------------------------------------------------------------
 
+// -----------------------------------------------------------------------------
+// #5113 - Armado de args de DynamoDB: FUENTE UNICA compartida async/sync
+// -----------------------------------------------------------------------------
+//
+// El driver async (`createAwsCliDynamoDriver`) y el sincrono (`...Sync`, que
+// consume `operational-state-backend.js`) comparten ESTAS funciones. Es
+// deliberado: dos implementaciones del mismo `ConditionExpression` derivan con
+// el tiempo y una de las dos termina perdiendo la garantia anti-inyeccion. La
+// garantia vive aca, una sola vez:
+//   - cada flag y cada valor viaja como ELEMENTO SEPARADO del array -> `spawn`
+//     con `shell: false`; jamas se interpola en un shell string (A03).
+//   - las expresiones son CONSTANTES de codigo con placeholders (`#pk`, `:ev`);
+//     los valores se serializan con `toAttrValues` (formato AttributeValue).
+// Un test compara los args de los dos caminos: si divergen, falla.
+
+function appendConditionArgs(args, opts) {
+    if (!opts || !opts.conditionExpression) return args;
+    args.push('--condition-expression', opts.conditionExpression);
+    if (opts.expressionAttributeValues) {
+        args.push('--expression-attribute-values',
+            JSON.stringify(toAttrValues(opts.expressionAttributeValues)));
+    }
+    if (opts.expressionAttributeNames) {
+        args.push('--expression-attribute-names',
+            JSON.stringify(opts.expressionAttributeNames));
+    }
+    return args;
+}
+
+/** Args de `aws dynamodb put-item` (con escritura condicional opcional). */
+function buildPutItemArgs(spec, item, opts = {}) {
+    const args = ['put-item', '--table-name', spec.tableName,
+        '--item', JSON.stringify(toAttrValues(item))];
+    return appendConditionArgs(args, opts);
+}
+
+/** Args de `aws dynamodb get-item` (siempre `--consistent-read`). */
+function buildGetItemArgs(spec, key) {
+    return ['get-item', '--table-name', spec.tableName,
+        '--key', JSON.stringify(toAttrValues(key)), '--consistent-read'];
+}
+
+/** Args de `aws dynamodb delete-item` (con delete condicional opcional). */
+function buildDeleteItemArgs(spec, key, opts = {}) {
+    const args = ['delete-item', '--table-name', spec.tableName,
+        '--key', JSON.stringify(toAttrValues(key))];
+    return appendConditionArgs(args, opts);
+}
+
+/**
+ * Traduce el resultado crudo de la CLI (`{code, stdout, stderr}`) al contrato
+ * del driver. Compartido async/sync para que el mapeo fail-closed de
+ * `ConditionalCheckFailedException` (#4743 REQ-4) tenga UNA definicion.
+ */
+function parseCliResult(res, args) {
+    const code = res && typeof res.code === 'number' ? res.code : 0;
+    if (code !== 0) {
+        const err = (res && res.stderr) || `aws dynamodb ${args[0]} exit ${code}`;
+        const raw = String(err).trim();
+        // Mapeo fail-closed (#4743 REQ-4): solo un match preciso con
+        // word-boundary de `ConditionalCheckFailedException` se degrada al
+        // error tipado. Cualquier otro stderr (AccessDenied, throttling,
+        // ResourceInUse) se re-lanza como Error generico preservando el stderr
+        // original: nunca se confunde un fallo real de infra con una condicion
+        // fallida.
+        if (/\bConditionalCheckFailedException\b/.test(raw)) {
+            throw new ConditionalCheckFailedError(raw);
+        }
+        throw new Error(raw);
+    }
+    const out = (res && res.stdout) || '';
+    return out.trim() ? JSON.parse(out) : {};
+}
+
 /**
  * Runner de producción que materializa el puerto `run(args)` que consume
  * `createAwsCliDynamoDriver({ run })`. Hace `spawn('aws', ['dynamodb', ...args])`
@@ -537,25 +611,10 @@ function createAwsCliDynamoDriver({ run } = {}) {
         throw new Error('createAwsCliDynamoDriver requiere un runner `run(args)`');
     }
 
+    // #5113 - el mapeo fail-closed de `ConditionalCheckFailedException` vive
+    // en `parseCliResult`, compartido con el driver sincrono.
     async function cli(args) {
-        const res = await run(args);
-        const code = res && typeof res.code === 'number' ? res.code : 0;
-        if (code !== 0) {
-            const err = (res && res.stderr) || `aws dynamodb ${args[0]} exit ${code}`;
-            const raw = String(err).trim();
-            // Mapeo fail-closed (#4743 REQ-4): sólo un match preciso con
-            // word-boundary de `ConditionalCheckFailedException` se degrada al
-            // error tipado. Cualquier otro stderr (AccessDenied, throttling,
-            // ResourceInUse…) se re-lanza como Error genérico preservando el
-            // stderr original — nunca se confunde un fallo real de infra con
-            // una condición fallida.
-            if (/\bConditionalCheckFailedException\b/.test(raw)) {
-                throw new ConditionalCheckFailedError(raw);
-            }
-            throw new Error(raw);
-        }
-        const out = (res && res.stdout) || '';
-        return out.trim() ? JSON.parse(out) : {};
+        return parseCliResult(await run(args), args);
     }
 
     return {
@@ -578,35 +637,14 @@ function createAwsCliDynamoDriver({ run } = {}) {
             return cli(['describe-table', '--table-name', spec.tableName]);
         },
 
+        // #5113 - args armados por la funcion pura compartida con el driver sync.
         async putItem(spec, item, opts = {}) {
-            const args = ['put-item', '--table-name', spec.tableName,
-                '--item', JSON.stringify(toAttrValues(item))];
-            // Escritura condicional (concurrencia optimista). Cada flag va como
-            // ELEMENTO SEPARADO del array `args` que consume `run(args)` →
-            // `spawn` — cero interpolación en shell string (#4743 REQ-1, A03).
-            // El `conditionExpression` es constante de código con placeholders
-            // (`#pk`, `:v`); los valores se serializan con `toAttrValues`
-            // (formato AttributeValue), nunca como string plano (REQ-2).
-            if (opts.conditionExpression) {
-                args.push('--condition-expression', opts.conditionExpression);
-                if (opts.expressionAttributeValues) {
-                    args.push('--expression-attribute-values',
-                        JSON.stringify(toAttrValues(opts.expressionAttributeValues)));
-                }
-                if (opts.expressionAttributeNames) {
-                    args.push('--expression-attribute-names',
-                        JSON.stringify(opts.expressionAttributeNames));
-                }
-            }
-            await cli(args);
+            await cli(buildPutItemArgs(spec, item, opts));
             return { ok: true };
         },
 
         async getItem(spec, key) {
-            const res = await cli([
-                'get-item', '--table-name', spec.tableName,
-                '--key', JSON.stringify(toAttrValues(key)), '--consistent-read',
-            ]);
+            const res = await cli(buildGetItemArgs(spec, key));
             return { item: res && res.Item ? fromAttrValues(res.Item) : null };
         },
 
@@ -640,24 +678,108 @@ function createAwsCliDynamoDriver({ run } = {}) {
             return { items, lastEvaluatedKey: lek };
         },
 
+        // #5113 - delete condicional (ownership atomico del release, #4777 CA-3)
+        // con los mismos args puros que usa el camino sincrono.
         async deleteItem(spec, key, opts = {}) {
-            const args = ['delete-item', '--table-name', spec.tableName,
-                '--key', JSON.stringify(toAttrValues(key))];
-            // Delete condicional (ownership atómico del release, #4777 CA-3).
-            // Mismo contrato que putItem: flags como elementos separados del
-            // array → `spawn`, sin interpolación en shell string (A03).
-            if (opts.conditionExpression) {
-                args.push('--condition-expression', opts.conditionExpression);
-                if (opts.expressionAttributeValues) {
-                    args.push('--expression-attribute-values',
-                        JSON.stringify(toAttrValues(opts.expressionAttributeValues)));
-                }
-                if (opts.expressionAttributeNames) {
-                    args.push('--expression-attribute-names',
-                        JSON.stringify(opts.expressionAttributeNames));
-                }
+            await cli(buildDeleteItemArgs(spec, key, opts));
+            return { ok: true };
+        },
+    };
+}
+
+// -----------------------------------------------------------------------------
+// #5113 - Espejos SINCRONOS del runner y del driver
+// -----------------------------------------------------------------------------
+//
+// Por que sincrono: el gate de dispatch (`isIssueAllowed`) tiene que seguir
+// devolviendo `boolean` estricto con el estado operativo viviendo en DynamoDB.
+// Convertir la cadena a `async` obligaria a `await` en los consumidores y
+// CUALQUIER olvido es fail-OPEN silencioso (`if (promise)` es siempre `true`):
+// el incidente #5060 reproducido por un cambio de tipo de retorno.
+//
+// El patron `spawnSync` ya esta vigente en el repo (`kernel-aws-bootstrap.js`,
+// `kernel-cmk-provision.js`). El costo lo absorben el cache de 2 s de
+// `waves.js` y `isIssueAllowedInState(issue, state)`, que lee el estado UNA vez
+// por tick y lo reusa para N issues.
+
+/**
+ * Espejo sincrono de `createAwsCliRunner`. Mismo fail-closed de credenciales,
+ * mismo `shell: false`, mismos args como elementos separados del array.
+ *
+ * @param {object} env  Env del scope `aws`; NO `process.env`.
+ * @param {object} [deps] { spawnSync, timeoutMs } inyectables para tests.
+ * @returns {{ runSync: (args: string[]) => {code:number,stdout:string,stderr:string} }}
+ */
+function createAwsCliRunnerSync(env, deps = {}) {
+    // Fail-closed de credenciales ANTES de spawnear (SEC-A02 / CA-3): identico
+    // al runner async, a proposito.
+    if (!env || !env.AWS_ACCESS_KEY_ID || !env.AWS_SECRET_ACCESS_KEY) {
+        throw new Error(
+            'createAwsCliRunnerSync: faltan credenciales AWS (scope `aws` del ambiente hijo, '
+            + 'build-child-env.js: AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY). Fail-closed: '
+            + 'no se invoca la AWS CLI con credenciales vacias.',
+        );
+    }
+    const spawnSyncImpl = typeof deps.spawnSync === 'function'
+        ? deps.spawnSync
+        : require('child_process').spawnSync;
+    const timeoutMs = Number.isFinite(deps.timeoutMs) ? deps.timeoutMs : 20000;
+
+    return {
+        runSync(args) {
+            const res = spawnSyncImpl('aws', ['dynamodb', ...args], {
+                env,           // SOLO el scope `aws`; nunca merge con process.env crudo.
+                shell: false,  // PROHIBIDO shell:true (evita inyeccion de comandos).
+                encoding: 'utf8',
+                windowsHide: true,
+                maxBuffer: 16 * 1024 * 1024,
+                timeout: timeoutMs,
+            });
+            // `spawnSync` reporta el fallo de spawn en `res.error` (ENOENT del
+            // binario, timeout). Se propaga como stderr para que
+            // `classifyDegradation` lo clasifique igual que en el camino async.
+            if (res && res.error) {
+                return { code: 127, stdout: '', stderr: String(res.error.message || res.error) };
             }
-            await cli(args);
+            return {
+                code: typeof (res && res.status) === 'number' ? res.status : 0,
+                stdout: (res && res.stdout) || '',
+                stderr: (res && res.stderr) || '',
+            };
+        },
+    };
+}
+
+/**
+ * Espejo sincrono de `createAwsCliDynamoDriver`. Comparte EXACTAMENTE las
+ * mismas funciones de armado de args (`buildPutItemArgs` / `buildGetItemArgs` /
+ * `buildDeleteItemArgs`) y el mismo `parseCliResult`.
+ *
+ * Superficie acotada a lo que necesita el estado operativo: get/put/delete. No
+ * expone `createTable` ni `query`: la tabla la aprovisiona el bootstrap y el
+ * backend del estado operativo nunca escanea.
+ *
+ * @param {object} deps { runSync }
+ */
+function createAwsCliDynamoDriverSync({ runSync } = {}) {
+    if (typeof runSync !== 'function') {
+        throw new Error('createAwsCliDynamoDriverSync requiere un runner `runSync(args)`');
+    }
+    function cliSync(args) {
+        return parseCliResult(runSync(args), args);
+    }
+    return {
+        kind: 'aws-cli-sync',
+        putItem(spec, item, opts = {}) {
+            cliSync(buildPutItemArgs(spec, item, opts));
+            return { ok: true };
+        },
+        getItem(spec, key) {
+            const res = cliSync(buildGetItemArgs(spec, key));
+            return { item: res && res.Item ? fromAttrValues(res.Item) : null };
+        },
+        deleteItem(spec, key, opts = {}) {
+            cliSync(buildDeleteItemArgs(spec, key, opts));
             return { ok: true };
         },
     };
@@ -972,6 +1094,13 @@ module.exports = {
     createInMemoryDynamoDriver,
     createAwsCliRunner,
     createAwsCliDynamoDriver,
+    // #5113 - espejos sincronos + armado de args puro compartido por ambos caminos.
+    createAwsCliRunnerSync,
+    createAwsCliDynamoDriverSync,
+    buildPutItemArgs,
+    buildGetItemArgs,
+    buildDeleteItemArgs,
+    parseCliResult,
     buildTableDescription,
     toAttrValues,
     fromAttrValues,

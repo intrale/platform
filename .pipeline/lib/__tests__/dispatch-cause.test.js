@@ -70,8 +70,9 @@ for (const [causa, labelEsperado] of TABLA_GATES) {
     });
 }
 
-test('los 11 gates conocidos están cubiertos por la precedencia', () => {
-    assert.strictEqual(dc.PRECEDENCIA.length, 11);
+test('los 12 gates conocidos están cubiertos por la precedencia', () => {
+    // #5113 CA-UX2 suma `estado_remoto_degradado`: 11 -> 12.
+    assert.strictEqual(dc.PRECEDENCIA.length, 12);
     for (const [causa] of TABLA_GATES) {
         assert.ok(dc.PRECEDENCIA.includes(causa), `PRECEDENCIA debe incluir ${causa}`);
     }

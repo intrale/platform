@@ -1,0 +1,748 @@
+'use strict';
+
+// =============================================================================
+// operational-state-backend.js — capa de storage ÚNICA del estado operativo
+// (#5113 · Ola 9.4 · E2 — último eslabón de #5108 → #5109 → #5110 → #5113)
+// =============================================================================
+//
+// QUÉ ES
+// ------
+// El sustrato donde vive el estado operativo del pipeline: el registro de olas
+// (`waves.json`) y la allowlist de ejecución (`.partial-pause.json`). Resuelve
+// contra filesystem o contra la tabla de coordinación del kernel
+// (`intrale-kernel-coordination`) según UN flag único, y es el ÚNICO archivo
+// que conoce ese flag.
+//
+// DÓNDE SE INSERTA (D-1 del PO)
+// -----------------------------
+// En la capa de STORAGE de `waves.js` / `partial-pause.js`, NO detrás de la
+// fachada `operational-state.js`. Los archivos de producción que requieren esos
+// módulos directo heredan el cambio sin tocarse ni una línea (CA-C7). Meterlo
+// en la fachada dejaría a esos lectores contra filesystem, que son exactamente
+// las dos fuentes de verdad que el issue prohíbe (CA-C1).
+//
+// POR QUÉ TODA LA API ES SÍNCRONA
+// -------------------------------
+// Es la decisión de diseño que sostiene CA-A1, CA-A2 y CA-C7 a la vez.
+// `isIssueAllowed()` debe seguir devolviendo `boolean` ESTRICTO: convertir la
+// cadena a `async` obligaría a `await` en los ~35 consumidores y cualquier
+// olvido es fail-OPEN silencioso, porque `if (unaPromesa)` es siempre `true`.
+// Eso es el incidente #5060 (~320 agentes despachados) reproducido por un
+// cambio de tipo de retorno. El costo del `spawnSync` lo absorben el caché de
+// 2 s de `waves.js` y `isIssueAllowedInState(issue, state)`, que lee el estado
+// UNA vez por tick y lo reusa para N issues.
+//
+// DEGRADACIÓN = DENEGAR, NUNCA LEER FILESYSTEM (CA-A7 / SEC-6)
+// ------------------------------------------------------------
+// Ante error de red, credenciales o schema, `readKey()` devuelve `null`. En la
+// allowlist eso hace caer `getPipelineMode()` en `mode: 'running'` y
+// `isIssueAllowedInState` DENIEGA (fail-closed post-#5060). El fallback a
+// filesystem está PROHIBIDO: una allowlist local stale no es un dato viejo, es
+// una autorización revocada que vuelve a estar vigente.
+//
+// LO QUE NO ESTÁ ACÁ (D-3 / SEC-7)
+// --------------------------------
+// `.paused` — el halt total. Es FS SIEMPRE, con el flag encendido o apagado.
+// Es el freno de último recurso y el mecanismo de aborto del propio cutover: si
+// viviera en el store, una degradación dejaría al operador sin freno justo en
+// el peor momento. `pauseFile()` no pasa por este módulo, y hay un test
+// negativo que falla si la clave aparece en `KEYS` o en `SOURCES` del migrador.
+//
+// EL STORE ES SUSTRATO, NO API DE MUTACIÓN (D-5)
+// ----------------------------------------------
+// Las capas, de arriba hacia abajo:
+//     setPartialPauseAtomic()      <- autoría + justificación (#3625)
+//       |- evaluateAndAudit()      <- audit trail; rechaza removals sin authorizedBy
+//            |- backend.writeKey() <- ESTE módulo: CAS con expectedVersion
+//                 |- driverSync.putItem(..., ConditionExpression)
+// Invertir el orden (llamar `compareAndSet` directo) deja el gate de #3625
+// decorativo. Este módulo no valida autoría a propósito: no es su capa.
+// =============================================================================
+
+const fs = require('node:fs');
+const path = require('node:path');
+
+// Los helpers del store de coordinación se requieren LAZY a propósito: cargarlo
+// arrastra Ajv + la compilación del schema del kernel, y con el flag apagado
+// (régimen normal hoy) ese costo no se paga ni una vez. `waves.js` requiere este
+// módulo en su top-level, así que ese costo lo pagaría todo el pipeline.
+function coord() {
+    // eslint-disable-next-line global-require
+    return require('./kernel-coordination-store');
+}
+
+// ─── Claves y mapeo a archivo ───────────────────────────────────────────────
+
+/**
+ * Claves del estado operativo. El mapeo clave ↔ archivo es LITERAL y cerrado:
+ * nunca se deriva de input. `.paused` NO está y no puede estar (D-3).
+ */
+const KEYS = Object.freeze({
+    WAVES: 'waves',
+    PARTIAL_PAUSE: 'partial-pause',
+});
+
+const FILE_FOR_KEY = Object.freeze({
+    [KEYS.WAVES]: 'waves.json',
+    [KEYS.PARTIAL_PAUSE]: '.partial-pause.json',
+});
+
+// ─── Cotas del payload remoto (CA-A5) ───────────────────────────────────────
+//
+// La cota de bytes se aplica sobre el stdout CRUDO del CLI, ANTES del
+// `JSON.parse`: un ítem sobredimensionado se rechaza sin llegar a parsearse.
+// La de la allowlist mantiene paridad con `MAX_PAUSE_MARKER_BYTES` (64 KB,
+// #5399); la del registro de olas es más holgada porque el archivo real ronda
+// los 31 KB y crece con la historia de olas, pero queda MUY por debajo del
+// límite de 400 KB por ítem de DynamoDB — que reventaría el write, no la
+// lectura.
+const MAX_BYTES_FOR_KEY = Object.freeze({
+    [KEYS.WAVES]: 300 * 1024,
+    [KEYS.PARTIAL_PAUSE]: 64 * 1024,
+});
+
+// Sobre el envelope completo devuelto por la CLI (ítem + metadata del store).
+const RESPONSE_BYTES_MARGIN = 32 * 1024;
+
+// Cotas de cardinalidad de la allowlist. Un `allowed_issues` con 50k entradas
+// no es un estado válido: es una allowlist envenenada o un ítem de otro origen.
+const MAX_ALLOWED_ISSUES = 500;
+const MAX_ALLOWED_SKILLS = 100;
+
+// Cotas del registro de olas (mismo criterio, aplicado a sus colecciones).
+const MAX_WAVES_PER_BUCKET = 500;
+
+// ─── Flag ÚNICO de cutover (CA-C1) ──────────────────────────────────────────
+//
+// `operational_state.durable`. Gatea LECTURA y ESCRITURA a la vez: no hay un
+// flag de lectura y otro de escritura, justamente para que no puedan coexistir
+// dos fuentes de verdad ni un instante.
+//
+// Estricto con `=== true`, mismo criterio que `project-context.js:222-224`:
+// `"true"`, `1` o `"1"` en el YAML NO encienden nada. Un flag que mueve dónde
+// vive el registro de olas no se prende por coerción accidental.
+//
+// `PIPELINE_OPSTATE_DURABLE` (1/0) fuerza el valor sin tocar config — lo usan
+// los tests y sirve para el ensayo de rollback en caliente (R8: bajar el flag
+// y reiniciar toma minutos).
+
+let configCache = null;
+
+function readConfig() {
+    if (configCache) return configCache;
+    let cfg = null;
+    try {
+        // Lazy-require deliberado y caché por proceso: el resolver arrastra
+        // js-yaml + ajv y este módulo se consulta en el camino caliente de
+        // resolución del estado. Mismo patrón que `project-context.js`.
+        // eslint-disable-next-line global-require
+        cfg = require('./config-resolver').resolve({ pipelineDir: pipelineDir() });
+    } catch {
+        cfg = null; // config ilegible ⇒ modo filesystem (comportamiento conocido).
+    }
+    configCache = { cfg };
+    return configCache;
+}
+
+function pipelineDir() {
+    if (process.env.PIPELINE_DIR_OVERRIDE) return process.env.PIPELINE_DIR_OVERRIDE;
+    return path.join(__dirname, '..');
+}
+
+/** Invalida el caché de config (tests / recarga en caliente). */
+function invalidateConfigCache() {
+    configCache = null;
+    versionIndex.clear();
+    driverCache = null;
+}
+
+/**
+ * ¿El estado operativo vive en el store remoto? PURA respecto del store: sólo
+ * mira el flag. Fail-closed hacia el comportamiento CONOCIDO (filesystem).
+ * @returns {boolean}
+ */
+function isRemote() {
+    const env = process.env.PIPELINE_OPSTATE_DURABLE;
+    if (env === '1') return true;
+    if (env === '0') return false;
+    const { cfg } = readConfig();
+    const os = cfg && cfg.operational_state;
+    return !!(os && os.durable === true);
+}
+
+/**
+ * Descripción del modo vigente, para el operador y para el dashboard (CA-UX1).
+ * NUNCA lee el YAML por su cuenta: expone el flag EFECTIVO del runtime, que es
+ * distinto del valor del archivo cuando hay override por env.
+ * @returns {{mode:'remote'|'fs', source:'env'|'config', degraded:boolean, lastError:string|null}}
+ */
+function describeMode() {
+    const env = process.env.PIPELINE_OPSTATE_DURABLE;
+    const source = (env === '1' || env === '0') ? 'env' : 'config';
+    return {
+        mode: isRemote() ? 'remote' : 'fs',
+        source,
+        degraded: lastDegradation !== null,
+        lastError: lastDegradation ? lastDegradation.cause : null,
+    };
+}
+
+// ─── Resolución de paths (modo filesystem) ──────────────────────────────────
+
+function stateDir() { return require('./project-context').stateDir(); }
+
+function fileFor(key) {
+    const name = FILE_FOR_KEY[key];
+    if (!name) {
+        throw new Error(`operational-state-backend: clave de estado desconocida: ${JSON.stringify(key)}`);
+    }
+    return path.join(stateDir(), name);
+}
+
+// ─── Degradación (CA-A7 / CA-C5 / CA-UX3 / CA-UX5) ──────────────────────────
+//
+// El canal de aviso YA EXISTE (`kernel-degradation-alert.js`: template fijo,
+// correlation id, rate-limit por causa y aborto-con-`.paused` cuando la ventana
+// de cutover está abierta). Se reusa; NO se emite un `sendTelegram` nuevo para
+// este hecho (CA-UX3).
+
+let lastDegradation = null;
+let degradationSink = null;
+
+/** Inyecta el sink (tests / cableado del pulpo). */
+function setDegradationSink(sink) { degradationSink = sink; }
+
+/** Último evento de degradación observado (null si nunca degradó). */
+function getLastDegradation() { return lastDegradation; }
+
+/** Limpia el rastro de degradación (tests / tras una lectura exitosa). */
+function clearDegradation() { lastDegradation = null; }
+
+function resolveSink() {
+    if (degradationSink) return degradationSink;
+    try {
+        const { createDegradationSink } = require('./kernel-degradation-alert');
+        const { cfg } = readConfig();
+        degradationSink = createDegradationSink({
+            config: cfg || {},
+            sendTelegram: (() => {
+                try { return require('./notify-telegram').notifyTelegram; } catch { return null; }
+            })(),
+        });
+    } catch {
+        degradationSink = { onDegraded: () => {} };
+    }
+    return degradationSink;
+}
+
+function reportDegradation(err, stage) {
+    let cause = 'desconocido';
+    try {
+        cause = require('./kernel-degradation-alert').classifyDegradation(err);
+    } catch { /* la clasificación no puede tumbar el gate */ }
+    lastDegradation = { cause, stage, at: Date.now() };
+    try {
+        const sink = resolveSink();
+        if (sink && typeof sink.onDegraded === 'function') {
+            sink.onDegraded(err, { stage: `opstate:${stage}` });
+        }
+    } catch { /* el sink NUNCA propaga: un fallo del canal no frena el pipeline */ }
+}
+
+// ─── Driver síncrono ────────────────────────────────────────────────────────
+
+let driverCache = null;
+
+/**
+ * Construye (LAZY, una vez por proceso) el driver síncrono contra la tabla de
+ * coordinación. Con el flag apagado NUNCA se llega acá: cero llamadas a AWS.
+ */
+function resolveDriver() {
+    if (driverCache) return driverCache;
+    const { cfg } = readConfig();
+    const kernel = (cfg && cfg.kernel) || {};
+    const tableName = kernel.coordinationTableName;
+    if (typeof tableName !== 'string' || !tableName) {
+        throw new Error(
+            'operational-state-backend: falta `kernel.coordinationTableName` en '
+            + '.pipeline/config.yaml. Es requerido para el driver real (fail-closed): '
+            + 'sin esa clave el estado operativo remoto no tiene destino.',
+        );
+    }
+    const {
+        createAwsCliRunnerSync,
+        createAwsCliDynamoDriverSync,
+    } = require('./provisioner-infra');
+
+    const env = resolveAwsEnv();
+    const { runSync } = createAwsCliRunnerSync(env);
+
+    // CA-A5 · La cota de bytes se aplica ANTES del `JSON.parse`: el guard
+    // envuelve al runner, así que un stdout sobredimensionado nunca llega al
+    // parser. Es la diferencia entre rechazar un ítem y parsearlo para después
+    // decidir que era muy grande.
+    const guardedRunSync = (args) => {
+        const res = runSync(args);
+        const stdout = (res && res.stdout) || '';
+        const cap = maxResponseBytes();
+        if (stdout.length > cap) {
+            return {
+                code: 1,
+                stdout: '',
+                stderr: `operational-state-backend: respuesta de ${stdout.length} bytes supera la cota `
+                    + `de ${cap} (CA-A5, fail-closed): NO se parsea.`,
+            };
+        }
+        return res;
+    };
+
+    driverCache = {
+        driver: createAwsCliDynamoDriverSync({ runSync: guardedRunSync }),
+        spec: {
+            type: 'dynamodb_table',
+            tableName,
+            keys: [
+                { name: 'PK', attributeType: 'S', keyType: 'HASH' },
+                { name: 'SK', attributeType: 'S', keyType: 'RANGE' },
+            ],
+        },
+        projectId: resolveProjectId(),
+        instanceId: resolveProjectId(),
+        // CA-B2 · el CAS atómico por `ConditionExpression` sólo vale con el
+        // driver real. Se afirma explícito, no se deriva de `!isInMemory`: sin
+        // él, `compareAndSet` se apoya en la lectura previa monohilo y entre
+        // hosts no excluye nada.
+        atomicUpdate: true,
+    };
+    return driverCache;
+}
+
+/**
+ * Env del scope `aws` para el runner. NUNCA `process.env` crudo: se delega en
+ * `kernel-runtime-credentials`, que es el dueño de la resolución (env estático
+ * o perfil declarado en `kernel.runtimeProfile`) y su fail-closed. Si no
+ * resuelve, se propaga el error accionable tal cual — el runner lo rechazaría
+ * igual, pero con un mensaje menos útil para el operador.
+ */
+function resolveAwsEnv() {
+    const { cfg } = readConfig();
+    const kernel = (cfg && cfg.kernel) || {};
+    // eslint-disable-next-line global-require
+    const res = require('./kernel-runtime-credentials').resolveRuntimeAwsEnv({ kernel });
+    if (!res || !res.ok) {
+        throw new Error(
+            `operational-state-backend: credenciales AWS del runtime no resueltas (${(res && res.code) || 'desconocido'}). `
+            + `${(res && res.error) || ''}`.trim(),
+        );
+    }
+    return res.env;
+}
+
+/**
+ * Partición del estado remoto. Es el `projectId` del contexto (#5110): el
+ * estado remoto queda namespaceado por proyecto igual que el local (CA-B5).
+ * Fail-closed: sin contexto resuelto no se escribe en una partición adivinada.
+ */
+function resolveProjectId() {
+    // eslint-disable-next-line global-require
+    const projectId = require('./project-context').currentProjectIdOrNull();
+    if (!projectId) {
+        throw new Error(
+            'operational-state-backend: no hay contexto de proyecto resuelto. El estado remoto '
+            + 'se particiona por `projectId` (#5110 / CA-B5) y NO se escribe en una partición '
+            + 'adivinada. Revisá `operational_state.namespaced` y el binding de spawn.',
+        );
+    }
+    return projectId;
+}
+
+function maxResponseBytes() {
+    return Math.max(...Object.values(MAX_BYTES_FOR_KEY)) + RESPONSE_BYTES_MARGIN;
+}
+
+/** Inyección del driver para tests (evita spawnear la CLI). */
+function _setDriverForTests(fake) {
+    driverCache = fake;
+}
+
+// ─── Validación del payload remoto (CA-A5) ──────────────────────────────────
+
+/**
+ * Valida el VALOR leído del store contra las cotas de la clave. PURA.
+ * Fail-closed: cualquier violación devuelve `{ ok:false, reason }` y el valor
+ * se descarta — nunca se acepta "la parte buena".
+ *
+ * @param {string} key
+ * @param {*} value
+ * @returns {{ok:boolean, reason?:string}}
+ */
+function validateRemoteValue(key, value) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+        return { ok: false, reason: 'el valor remoto no es un objeto' };
+    }
+    const bytes = Buffer.byteLength(JSON.stringify(value), 'utf8');
+    const cap = MAX_BYTES_FOR_KEY[key];
+    if (cap && bytes > cap) {
+        return { ok: false, reason: `payload de ${bytes} bytes supera la cota de ${cap} para \`${key}\`` };
+    }
+    if (key === KEYS.PARTIAL_PAUSE) {
+        if (value.allowed_issues !== undefined && !Array.isArray(value.allowed_issues)) {
+            return { ok: false, reason: 'allowed_issues no es un array' };
+        }
+        if (Array.isArray(value.allowed_issues) && value.allowed_issues.length > MAX_ALLOWED_ISSUES) {
+            return { ok: false, reason: `allowed_issues con ${value.allowed_issues.length} entradas supera la cota de ${MAX_ALLOWED_ISSUES}` };
+        }
+        if (value.allowed_skills !== undefined && !Array.isArray(value.allowed_skills)) {
+            return { ok: false, reason: 'allowed_skills no es un array' };
+        }
+        if (Array.isArray(value.allowed_skills) && value.allowed_skills.length > MAX_ALLOWED_SKILLS) {
+            return { ok: false, reason: `allowed_skills con ${value.allowed_skills.length} entradas supera la cota de ${MAX_ALLOWED_SKILLS}` };
+        }
+    }
+    if (key === KEYS.WAVES) {
+        for (const bucket of ['planned_waves', 'archived_waves', 'dependencies']) {
+            const v = value[bucket];
+            if (v !== undefined && !Array.isArray(v)) {
+                return { ok: false, reason: `${bucket} no es un array` };
+            }
+            if (Array.isArray(v) && v.length > MAX_WAVES_PER_BUCKET) {
+                return { ok: false, reason: `${bucket} con ${v.length} entradas supera la cota de ${MAX_WAVES_PER_BUCKET}` };
+            }
+        }
+    }
+    return { ok: true };
+}
+
+// ─── Redacción antes de escribir (CA-A9) ────────────────────────────────────
+//
+// `justification` y `source` son campos de TEXTO LIBRE que llegan desde
+// Telegram. `redactSecretValue` sólo toca lo que parece secreto (regex por
+// proveedor + alta entropía): "add issue #123 → wave 5" queda intacto. Es la
+// misma redacción que `waves.js:2110-2111` ya aplica sobre `meta.source` /
+// `meta.note` en el camino de filesystem — acá se replica para que el sustrato
+// remoto no quede con menos garantía que el local.
+
+const REDACTED_FIELDS = new Set(['justification', 'source', 'note', 'reason', 'detail']);
+
+function redactBeforeWrite(value) {
+    let redactSecretValue;
+    try {
+        ({ redactSecretValue } = require('./redact'));
+    } catch {
+        return value; // sin el módulo, se escribe tal cual (no se pierde el write).
+    }
+    if (typeof redactSecretValue !== 'function') return value;
+
+    const seen = new WeakSet();
+    const walk = (node) => {
+        if (Array.isArray(node)) return node.map(walk);
+        if (!node || typeof node !== 'object') return node;
+        if (seen.has(node)) return node;
+        seen.add(node);
+        const out = {};
+        for (const [k, v] of Object.entries(node)) {
+            if (typeof v === 'string' && REDACTED_FIELDS.has(k)) {
+                out[k] = redactSecretValue(v);
+            } else {
+                out[k] = walk(v);
+            }
+        }
+        return out;
+    };
+    return walk(value);
+}
+
+// ─── Mapeo de versión ISO ↔ entero (CA-A6) ──────────────────────────────────
+//
+// El registro de olas versiona con `meta.updated_at` (string ISO) y ~20 callers
+// lo devuelven tal cual en `version` / `If-Match`. El coordination store
+// versiona con un entero incremental, que en modo remoto es el AUTORITATIVO.
+//
+// El índice mantiene el par vigente por clave; el ISO se preserva DENTRO del
+// value (no se pierde), y el entero es el que va al `ConditionExpression`.
+// Traducir un ISO que ya no es el vigente devuelve `null` ⇒ el CAS falla por
+// conflicto, que es exactamente lo que un If-Match stale tiene que producir.
+
+const versionIndex = new Map(); // key -> { intVersion, isoVersion }
+
+/** ISO de versión que transporta un value de estado. PURA. */
+function isoVersionOf(value) {
+    return (value && value.meta && typeof value.meta.updated_at === 'string')
+        ? value.meta.updated_at
+        : null;
+}
+
+function rememberVersion(key, intVersion, value) {
+    versionIndex.set(key, { intVersion, isoVersion: isoVersionOf(value) });
+}
+
+/** Par de versión vigente conocido para la clave (o null). PURA sobre el índice. */
+function versionPairOf(key) {
+    return versionIndex.get(key) || null;
+}
+
+/**
+ * Traduce el `expectedVersion` que trae el caller al entero del store.
+ *
+ *   - `null`/`undefined` → `undefined` (el caller no pidió If-Match: se usa la
+ *     versión leída en el mismo read-modify-write).
+ *   - número            → tal cual.
+ *   - string ISO        → el entero del par vigente si coincide; `null` (=
+ *                         conflicto) si no.
+ *
+ * @returns {number|undefined|null}
+ */
+function toRemoteExpectedVersion(key, expectedVersion) {
+    if (expectedVersion === null || expectedVersion === undefined) return undefined;
+    if (Number.isInteger(expectedVersion)) return expectedVersion;
+    const pair = versionPairOf(key);
+    if (!pair) return null;
+    return String(pair.isoVersion) === String(expectedVersion) ? pair.intVersion : null;
+}
+
+// ─── Lectura ────────────────────────────────────────────────────────────────
+
+/**
+ * Lectura de filesystem. El `kind` del error distingue "no se pudo leer" de
+ * "no parsea": los callers ya mapean esa diferencia a códigos de dominio
+ * distintos (`EWAVES_READ` vs `EWAVES_JSON`) y colapsarlos le daría al operador
+ * la acción equivocada (permisos/disco vs restaurar desde `archived/`).
+ */
+function readFromDisk(file) {
+    let raw;
+    try {
+        raw = fs.readFileSync(file, 'utf8');
+    } catch (err) {
+        if (err && err.code !== 'ENOENT') {
+            err.opstateKind = 'read';
+            return { value: null, error: err };
+        }
+        return { value: null, error: null };
+    }
+    try {
+        const parsed = JSON.parse(raw);
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+            const err = new Error('schema inválido: no es objeto');
+            err.opstateKind = 'parse';
+            return { value: null, error: err };
+        }
+        return { value: parsed, error: null };
+    } catch (err) {
+        err.opstateKind = 'parse';
+        return { value: null, error: err };
+    }
+}
+
+/**
+ * Lee una clave del estado operativo con su versión.
+ *
+ * @param {string} key
+ * @returns {{value: object|null, version: number|string|null, remote: boolean,
+ *            degraded: boolean, error: Error|null}}
+ */
+function readKeyWithVersion(key) {
+    if (!isRemote()) {
+        const { value, error } = readFromDisk(fileFor(key));
+        return { value, version: isoVersionOf(value), remote: false, degraded: false, error };
+    }
+    try {
+        const { driver, spec, projectId } = resolveDriver();
+        const res = driver.getItem(spec, { PK: projectId, SK: coord().skFor(key) });
+        const raw = coord().validateCoordinationRawItem(res && res.item, projectId);
+        if (!raw) {
+            // Ausencia legítima (todavía no migrado / recién borrado): NO es
+            // degradación. Es el equivalente remoto de ENOENT.
+            versionIndex.delete(key);
+            return { value: null, version: null, remote: true, degraded: false, error: null };
+        }
+        const value = raw.body.value;
+        const check = validateRemoteValue(key, value);
+        if (!check.ok) {
+            const err = new Error(`payload remoto rechazado (CA-A5): ${check.reason}`);
+            reportDegradation(err, `read:${key}`);
+            return { value: null, version: null, remote: true, degraded: true, error: err };
+        }
+        rememberVersion(key, raw.body.version, value);
+        clearDegradation();
+        return { value, version: raw.body.version, remote: true, degraded: false, error: null };
+    } catch (err) {
+        // CA-A7 — PROHIBIDO el fallback silencioso a filesystem. Se devuelve
+        // `null` y el gate deniega. Una allowlist local stale no es un dato
+        // viejo: es una autorización revocada que vuelve a estar vigente.
+        reportDegradation(err, `read:${key}`);
+        return { value: null, version: null, remote: true, degraded: true, error: err };
+    }
+}
+
+/**
+ * Azúcar sobre `readKeyWithVersion`: devuelve el valor o `null`.
+ * @param {string} key
+ * @returns {object|null}
+ */
+function readKey(key) {
+    return readKeyWithVersion(key).value;
+}
+
+/**
+ * Token de versión vigente de la clave. Entero en modo remoto (autoritativo),
+ * ISO en modo filesystem.
+ * @param {string} key
+ * @returns {number|string|null}
+ */
+function versionOf(key) {
+    return readKeyWithVersion(key).version;
+}
+
+// ─── Escritura ──────────────────────────────────────────────────────────────
+
+/**
+ * Persiste una clave del estado operativo.
+ *
+ * En modo filesystem delega en el write atómico de siempre (tmp + fsync +
+ * rename con retry en Windows). En modo remoto hace CAS con `expectedVersion`:
+ * `withLockSync` deja de ser la primitiva de exclusión — es local por PID y
+ * entre hosts no excluye NADA, así que simular esa garantía sería peor que no
+ * tenerla (CA-A4).
+ *
+ * @param {string} key
+ * @param {object} value
+ * @param {number|string|null} [expectedVersion]  entero del store o ISO del caller.
+ * @returns {{ok:boolean, conflict?:boolean, version?:number|string|null, error?:Error}}
+ */
+function writeKey(key, value, expectedVersion) {
+    if (!isRemote()) {
+        const { atomicWriteFile } = require('./waves');
+        atomicWriteFile(fileFor(key), JSON.stringify(value, null, 2));
+        return { ok: true, version: isoVersionOf(value) };
+    }
+    const payload = redactBeforeWrite(value);
+    const check = validateRemoteValue(key, payload);
+    if (!check.ok) {
+        // Fail-closed también en el write: no se escribe un ítem que después no
+        // se podría leer (la cota de lectura lo rechazaría y el estado quedaría
+        // ilegible para todas las instancias).
+        const err = new Error(`escritura remota rechazada (CA-A5): ${check.reason}`);
+        reportDegradation(err, `write:${key}`);
+        return { ok: false, error: err };
+    }
+    try {
+        const { driver, spec, projectId, instanceId, atomicUpdate } = resolveDriver();
+
+        // Read-modify-write: la versión actual sale del store, no de un caché.
+        const res = driver.getItem(spec, { PK: projectId, SK: coord().skFor(key) });
+        const cur = coord().validateCoordinationRawItem(res && res.item, projectId);
+        const currentVersion = cur ? cur.body.version : 0;
+
+        const mapped = toRemoteExpectedVersion(key, expectedVersion);
+        if (mapped === null) {
+            // If-Match stale: el ISO que trae el caller no es el vigente.
+            return { ok: false, conflict: true, version: currentVersion };
+        }
+        const expected = mapped === undefined ? currentVersion : mapped;
+        if (expected !== currentVersion) {
+            return { ok: false, conflict: true, version: currentVersion };
+        }
+
+        const nextVersion = currentVersion + 1;
+        const item = coord().buildCoordinationEnvelope({
+            projectId, key, value: payload, version: nextVersion, instanceId, updatedAt: Date.now(),
+        });
+        coord().assertCoordinationWritable(item);
+
+        // El CAS es la exclusión real entre hosts. `currentVersion === 0`
+        // significa "no existe": la condición es `attribute_not_exists(PK)`,
+        // que da un único ganador en la creación.
+        const opts = currentVersion === 0
+            ? { conditionExpression: 'attribute_not_exists(#pk)', expressionAttributeNames: { '#pk': 'PK' } }
+            : coord().buildCasWriteOptions(currentVersion, atomicUpdate);
+
+        driver.putItem(spec, item, opts);
+        rememberVersion(key, nextVersion, payload);
+        clearDegradation();
+        return { ok: true, version: nextVersion };
+    } catch (err) {
+        if (err && err.name === 'ConditionalCheckFailedError') {
+            return { ok: false, conflict: true, version: versionPairOf(key) ? versionPairOf(key).intVersion : null };
+        }
+        reportDegradation(err, `write:${key}`);
+        return { ok: false, error: err };
+    }
+}
+
+/**
+ * Borra una clave del estado operativo (equivalente a `unlink` del marker).
+ *
+ * @param {string} key
+ * @param {number|string|null} [expectedVersion]
+ * @returns {{ok:boolean, existed:boolean, conflict?:boolean, error?:Error}}
+ */
+function deleteKey(key, expectedVersion) {
+    if (!isRemote()) {
+        const file = fileFor(key);
+        const existed = fs.existsSync(file);
+        if (existed) {
+            try { fs.unlinkSync(file); } catch { /* best-effort, igual que antes */ }
+        }
+        return { ok: true, existed };
+    }
+    try {
+        const { driver, spec, projectId, atomicUpdate } = resolveDriver();
+        const res = driver.getItem(spec, { PK: projectId, SK: coord().skFor(key) });
+        const cur = coord().validateCoordinationRawItem(res && res.item, projectId);
+        if (!cur) {
+            versionIndex.delete(key);
+            return { ok: true, existed: false };
+        }
+        const currentVersion = cur.body.version;
+        const mapped = toRemoteExpectedVersion(key, expectedVersion);
+        if (mapped === null || (mapped !== undefined && mapped !== currentVersion)) {
+            return { ok: false, existed: true, conflict: true };
+        }
+        driver.deleteItem(spec, { PK: projectId, SK: coord().skFor(key) },
+            coord().buildCasWriteOptions(currentVersion, atomicUpdate));
+        versionIndex.delete(key);
+        clearDegradation();
+        return { ok: true, existed: true };
+    } catch (err) {
+        if (err && err.name === 'ConditionalCheckFailedError') {
+            return { ok: false, existed: true, conflict: true };
+        }
+        reportDegradation(err, `delete:${key}`);
+        return { ok: false, existed: false, error: err };
+    }
+}
+
+/** ¿Existe la clave? Equivalente de `fs.existsSync` en los dos modos. */
+function existsKey(key) {
+    if (!isRemote()) return fs.existsSync(fileFor(key));
+    return readKeyWithVersion(key).value !== null;
+}
+
+module.exports = {
+    KEYS,
+    FILE_FOR_KEY,
+    MAX_BYTES_FOR_KEY,
+    MAX_ALLOWED_ISSUES,
+    MAX_ALLOWED_SKILLS,
+    isRemote,
+    describeMode,
+    fileFor,
+    readKey,
+    readKeyWithVersion,
+    writeKey,
+    deleteKey,
+    existsKey,
+    versionOf,
+    // Puras, exportadas para test de contrato:
+    validateRemoteValue,
+    redactBeforeWrite,
+    isoVersionOf,
+    versionPairOf,
+    toRemoteExpectedVersion,
+    // Degradación / cableado:
+    setDegradationSink,
+    getLastDegradation,
+    clearDegradation,
+    invalidateConfigCache,
+    _setDriverForTests,
+};

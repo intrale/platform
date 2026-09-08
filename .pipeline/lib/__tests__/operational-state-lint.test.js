@@ -519,6 +519,8 @@ test('CA-10 · SELF_EXEMPT: el sustrato del envoltorio y el propio guardrail no 
     const body = "const path=require('path');\nconst w = path.join(D, 'waves.json');\nconst p = path.join(D, '.partial-pause.json');";
     for (const rel of [
         'lib/operational-state.js', 'lib/waves.js', 'lib/partial-pause.js', 'lib/operational-state-lint.js',
+        // #5113 — capa de storage del estado operativo (filesystem vs store remoto).
+        'lib/operational-state-backend.js',
         // #5110 — sustrato del namespaceo por projectId.
         'lib/project-context.js', 'scripts/migrate-operational-state-namespace.js',
     ]) {
@@ -533,7 +535,13 @@ test('CA-10 · SELF_EXEMPT: el sustrato del envoltorio y el propio guardrail no 
     //   - el migrador MUEVE el layout plano a ese namespace.
     // Ambos manipulan los literales de estado por definición, igual que
     // `waves.js`. Auditarlos sería tautológico.
+    // #5113 suma una tercera entrada de SUSTRATO (no de consumidor):
+    //   - `lib/operational-state-backend.js` es la capa de storage que resuelve
+    //     entre filesystem y store remoto, y construye esos paths por
+    //     definicion. Sin la exencion, el guardrail bloquea en pre-commit al
+    //     propio modulo que implementa el control.
     assert.deepEqual([...I.SELF_EXEMPT].sort(), [
+        'lib/operational-state-backend.js',
         'lib/operational-state-lint.js',
         'lib/operational-state.js',
         'lib/partial-pause.js',
@@ -1198,11 +1206,11 @@ test('CA-1a · --report separa produccion de tests y emite fila de total', () =>
     installBin(root);
     placeJs(root, 'lib/prod.js', "const path=require('path');\nconst w = path.join(D, 'waves.json');");
     const out = runCli(root, ['--report']).stdout;
-    assert.match(out, /\| archivo \| scope \| path-level \| internal-bypass \| total \|/);
+    assert.match(out, /\| archivo \| scope \| path-level \| internal-bypass \| async-gate \| total \|/);
     assert.match(out, /subtotal produccion/);
     assert.match(out, /subtotal tests/);
     assert.match(out, /\*\*TOTAL\*\*/);
-    assert.match(out, /`lib\/prod\.js` \| produccion \| 1 \| 0 \| 1/);
+    assert.match(out, /`lib\/prod\.js` \| produccion \| 1 \| 0 \| 0 \| 1/);
 });
 
 test('CA-1a · classifyScope distingue produccion de tests', () => {

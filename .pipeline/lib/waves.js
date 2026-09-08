@@ -38,6 +38,10 @@ const crypto = require('crypto');
 const { withLockSync } = require('./file-lock');
 const { notifyTelegram } = require('./notify-telegram');
 const { redactSecretValue } = require('./redact');
+// #5113 (D-1) — capa de storage del estado operativo. Resuelve contra
+// filesystem o contra el store de coordinación según el flag ÚNICO de cutover.
+// Es el único módulo que conoce ese flag; acá sólo se le pide leer/escribir.
+const stateBackend = require('./operational-state-backend');
 
 const SCHEMA_VERSION = '1.0';
 const CACHE_TTL_MS = 2000;
@@ -324,27 +328,32 @@ function setCached(pipelineRoot, state) {
     cache.set(pipelineRoot, { state: deepClone(state), ts: Date.now() });
 }
 
+// #5113 (D-1) — ÚNICO lector físico del registro de olas. Pasa a delegar en la
+// capa de storage (`operational-state-backend.js`), que resuelve contra
+// filesystem o contra el store de coordinación según el flag ÚNICO de cutover.
+//
+// La normalización y el TTL de 2 s de `loadWaves()` NO se tocan: siguen exactos.
+// Lo único que cambia es DÓNDE sale el JSON.
+//
+// El argumento `file` se conserva por compatibilidad de firma (dos callers
+// internos lo pasan) y se usa sólo para el mensaje de log: en modo remoto el
+// path no es la fuente, es la etiqueta.
+//
+// Degradación (CA-A7): el backend devuelve `null` y acá se cae a `emptyState()`,
+// exactamente igual que ante un `waves.json` corrupto. NUNCA se lee filesystem
+// como alternativa — eso sería la segunda fuente de verdad que CA-C1 prohíbe.
 function readWavesFromDisk(file) {
-    let raw;
-    try {
-        raw = fs.readFileSync(file, 'utf8');
-    } catch (err) {
-        if (err && err.code !== 'ENOENT') {
-            logWarn(`No se pudo leer ${file}: ${err.message}`);
-        }
+    const res = stateBackend.readKeyWithVersion(stateBackend.KEYS.WAVES);
+    if (res.error) {
+        logWarn(`No se pudo leer el registro de olas (${res.remote ? 'store remoto' : file}): ${res.error.message}`);
         return null;
     }
-    try {
-        const parsed = JSON.parse(raw);
-        if (!parsed || typeof parsed !== 'object') {
-            logWarn(`Schema inválido en ${file}: no es objeto. Cayendo a estado vacío.`);
-            return null;
-        }
-        return parsed;
-    } catch (err) {
-        logWarn(`JSON corrupto en ${file}: ${err.message}. Cayendo a estado vacío.`);
+    if (!res.value) return null;
+    if (typeof res.value !== 'object' || Array.isArray(res.value)) {
+        logWarn(`Schema inválido en el registro de olas (${res.remote ? 'store remoto' : file}): no es objeto. Cayendo a estado vacío.`);
         return null;
     }
+    return res.value;
 }
 
 // #4532 — Bootstrap del archivo de runtime desde el template versionado.
@@ -2155,16 +2164,19 @@ function saveStateLocked(state, metadata = {}) {
         logWarn(`assertArchivedDirSafe falló: ${err.message}. Continuando sin backup.`);
     }
 
-    // Backup ANTES de sobreescribir (si existe waves.json previo).
+    // Backup ANTES de sobreescribir (si hay estado previo).
+    // #5113 — el contenido sale de la capa de storage (así el backup existe
+    // también en modo remoto); el archivo de backup se escribe siempre local.
     try {
-        if (fs.existsSync(wavesFile())) {
+        const previousState = stateBackend.readKey(stateBackend.KEYS.WAVES);
+        if (previousState) {
             ensureDir(archivedDir());
             // ts viene exclusivamente de state.meta.updated_at (derivado de
             // Date.now() vía nowIso) — security req: nunca de input externo.
             const ts = state.meta.updated_at.replace(/[:.]/g, '-');
             const backup = path.join(archivedDir(), `waves.${ts}.json`);
             try {
-                fs.copyFileSync(wavesFile(), backup);
+                atomicWriteFile(backup, JSON.stringify(previousState, null, 2));
             } catch (err) {
                 logWarn(`No se pudo crear backup ${backup}: ${err.message}`);
             }
@@ -2179,11 +2191,42 @@ function saveStateLocked(state, metadata = {}) {
     // queda sellado en este primer save.
     state[INTEGRITY_FIELD] = computeIntegrityHash(state);
 
-    // Write atómico vía helper compartido (CA-1: tmp + fsync + rename + retry).
+    // #5113 (CA-A4) — el write pasa por la capa de storage.
+    //
+    // En modo filesystem es el mismo write atómico de siempre (tmp + fsync +
+    // rename con retry). En modo remoto es un CAS con `expectedVersion`, y ahí
+    // `withLockSync` DEJA de ser la primitiva de exclusión: `file-lock.js`
+    // resuelve locks stale por PID vivo en el SO local, así que entre dos hosts
+    // no excluye nada. Dejarlo como única garantía sería peor que no tenerlo —
+    // simularía una exclusión inexistente. La exclusión real la da el CAS; el
+    // lock local se conserva porque sigue serializando los writes DEL MISMO
+    // host, que es exactamente lo que siempre hizo.
+    //
+    // `metadata.expectedVersion` es el If-Match opcional del dominio (#4372):
+    // llega como token ISO y el backend lo mapea al entero del store (CA-A6).
+    // Un conflicto NO se escribe: se propaga como EWAVES_VERSION_CONFLICT, el
+    // mismo error que los callers HTTP ya traducen a 409.
+    let writeRes;
     try {
-        atomicWriteFile(wavesFile(), JSON.stringify(state, null, 2));
+        writeRes = stateBackend.writeKey(
+            stateBackend.KEYS.WAVES, state, metadata.expectedVersion,
+        );
     } catch (err) {
-        logWarn(`Error escribiendo waves.json: ${err.message}`);
+        logWarn(`Error escribiendo el registro de olas: ${err.message}`);
+        throw err;
+    }
+    if (writeRes && writeRes.conflict) {
+        const e = mkWavesError(
+            `Conflicto de versión al persistir el registro de olas: otro escritor ganó la carrera `
+            + `(versión vigente ${writeRes.version}). Ninguna de las dos altas se pierde: releé y reintentá.`,
+            'EWAVES_VERSION_CONFLICT',
+        );
+        e.currentVersion = writeRes.version;
+        throw e;
+    }
+    if (writeRes && writeRes.ok === false) {
+        const err = writeRes.error || new Error('write rechazado por la capa de storage');
+        logWarn(`Error escribiendo el registro de olas: ${err.message}`);
         throw err;
     }
 
@@ -2383,49 +2426,46 @@ function validateStateStrict(raw, opts = {}) {
  */
 function loadStateStrict() {
     const file = wavesFile();
-    if (!fs.existsSync(file)) {
-        // Sin archivo → estado vacío válido. NO alertar (caso normal en startup
-        // fresco, no es corrupción).
+    // #5113 — segundo lector físico del registro de olas: también pasa por la
+    // capa de storage. Un lector suelto contra filesystem con el flag encendido
+    // son dos fuentes de verdad y CA-C1 falla.
+    const res = stateBackend.readKeyWithVersion(stateBackend.KEYS.WAVES);
+    if (res.error) {
+        // El `opstateKind` preserva la distinción histórica entre "no se pudo
+        // leer" (permisos/disco → EWAVES_READ) y "no parsea" (corrupción →
+        // EWAVES_JSON): son dos acciones distintas para el operador. Un fallo
+        // del store remoto es un tercer caso y tiene su propio código.
+        const parseErr = res.error.opstateKind === 'parse';
+        const msg = parseErr
+            ? `waves.json: JSON inválido (${res.error.message})`
+            : `waves.json: no se pudo leer (${res.error.message})`;
+        try {
+            notifyTelegram({
+                level: 'error',
+                component: 'waves-schema',
+                message: parseErr ? 'JSON corrupto en el registro de olas' : 'read falló sobre el registro de olas',
+                detail: res.error.message,
+                action: res.remote
+                    ? 'Store remoto degradado. Verificá credenciales/red o bajá `operational_state.durable` (runbook §1).'
+                    : (parseErr
+                        ? 'Pipeline en modo human-block. Revisá el archivo o restaurá desde archived/.'
+                        : 'Verificá permisos/espacio en disco. Pipeline en modo human-block.'),
+                diag: res.remote
+                    ? 'node .pipeline/lib/kernel-cutover-probe.js'
+                    : (parseErr ? `cat ${file}` : `ls -la ${file} && df -h`),
+            });
+        } catch {}
+        const e = new Error(msg);
+        if (res.remote) e.code = 'EWAVES_STORE';
+        else e.code = parseErr ? 'EWAVES_JSON' : 'EWAVES_READ';
+        throw e;
+    }
+    if (!res.value) {
+        // Sin estado → estado vacío válido. NO alertar (caso normal en startup
+        // fresco o en una partición recién creada; no es corrupción).
         return emptyState();
     }
-    let raw;
-    try {
-        raw = fs.readFileSync(file, 'utf8');
-    } catch (err) {
-        const msg = `waves.json: no se pudo leer (${err.message})`;
-        try {
-            notifyTelegram({
-                level: 'error',
-                component: 'waves-schema',
-                message: 'read falló sobre waves.json',
-                detail: err.message,
-                action: 'Verificá permisos/espacio en disco. Pipeline en modo human-block.',
-                diag: `ls -la ${file} && df -h`,
-            });
-        } catch {}
-        const e = new Error(msg);
-        e.code = 'EWAVES_READ';
-        throw e;
-    }
-    let parsed;
-    try {
-        parsed = JSON.parse(raw);
-    } catch (err) {
-        const msg = `waves.json: JSON inválido (${err.message})`;
-        try {
-            notifyTelegram({
-                level: 'error',
-                component: 'waves-schema',
-                message: 'JSON corrupto en waves.json',
-                detail: err.message,
-                action: 'Pipeline en modo human-block. Revisá el archivo o restaurá desde archived/.',
-                diag: `cat ${file}`,
-            });
-        } catch {}
-        const e = new Error(msg);
-        e.code = 'EWAVES_JSON';
-        throw e;
-    }
+    const parsed = res.value;
     const errors = validateStateStrict(parsed, { source: 'post-load' });
     if (errors.length > 0) {
         try {
@@ -2577,14 +2617,13 @@ function verifyIntegrityHash(state) {
  *             error?: string, errors?: string[], expected?: string, actual?: string }}
  */
 function checkStateIntegrity() {
-    const file = wavesFile();
-    if (!fs.existsSync(file)) return { status: 'absent' };
-    let parsed;
-    try {
-        parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
-    } catch (e) {
-        return { status: 'unreadable', error: e.message };
-    }
+    // #5113 — tercer lector físico del registro de olas, también por la capa de
+    // storage. En modo remoto `absent` significa "sin ítem en la partición",
+    // que es el equivalente exacto de "sin archivo".
+    const res = stateBackend.readKeyWithVersion(stateBackend.KEYS.WAVES);
+    if (res.error) return { status: 'unreadable', error: res.error.message };
+    if (!res.value) return { status: 'absent' };
+    const parsed = res.value;
     const schemaErrors = validateStateStrict(parsed, { source: 'boot' });
     if (schemaErrors.length > 0) return { status: 'schema_invalid', errors: schemaErrors };
     return verifyIntegrityHash(parsed);
@@ -2748,18 +2787,24 @@ function snapshotForTransaction(ts) {
         partialBakPath: null, partialBakSha: null, partialExisted: false,
     };
 
-    // waves.json
-    if (fs.existsSync(wavesFile())) {
+    // #5113 — el CONTENIDO se lee por la capa de storage (filesystem o store
+    // remoto); el BACKUP se escribe siempre en `archived/` local. Es deliberado:
+    // el backup de una transacción es evidencia local de recuperación, no una
+    // segunda fuente de verdad — nadie lo lee como estado vigente. Sin esto,
+    // `/wave promote` en modo remoto se quedaría sin rollback: el snapshot
+    // saldría vacío porque el archivo local ya no existe.
+    const wavesValue = stateBackend.readKey(stateBackend.KEYS.WAVES);
+    if (wavesValue) {
         const bak = path.join(archivedDir(), `waves-rollback.${ts}.json`);
-        fs.copyFileSync(wavesFile(), bak);
+        atomicWriteFile(bak, JSON.stringify(wavesValue, null, 2));
         result.wavesBakPath = bak;
         result.wavesBakSha = sha256File(bak);
         result.wavesExisted = true;
     }
-    // .partial-pause.json
-    if (fs.existsSync(partialFile())) {
+    const partialValue = stateBackend.readKey(stateBackend.KEYS.PARTIAL_PAUSE);
+    if (partialValue) {
         const bak = path.join(archivedDir(), `partial-pause-rollback.${ts}.json`);
-        fs.copyFileSync(partialFile(), bak);
+        atomicWriteFile(bak, JSON.stringify(partialValue, null, 2));
         result.partialBakPath = bak;
         result.partialBakSha = sha256File(bak);
         result.partialExisted = true;
@@ -2848,49 +2893,55 @@ function restoreFromSnapshots(marker) {
         marker.partial_bak_path = safePath;
     }
 
-    // Restaurar waves.json
-    if (marker.waves_bak_path) {
-        const tmp = wavesFile() + '.recover.tmp';
-        try {
-            fs.copyFileSync(marker.waves_bak_path, tmp);
-            fs.renameSync(tmp, wavesFile());
-            out.wavesRestored = true;
-        } catch (err) {
-            try { fs.unlinkSync(tmp); } catch {}
-            out.reason = `Error restaurando waves.json: ${err.message}`;
-            return out;
+    // #5113 — la restauración escribe por la capa de storage: el backup vive en
+    // `archived/` (FS siempre) pero el DESTINO es el sustrato vigente. Sin esto,
+    // en modo remoto el rollback dejaría el archivo local restaurado y el store
+    // con el estado a medio promover: dos fuentes de verdad, justo en el peor
+    // momento posible.
+    const restoreKey = (bakPath, existedBefore, key, label) => {
+        if (bakPath) {
+            let payload;
+            try {
+                payload = JSON.parse(fs.readFileSync(bakPath, 'utf8'));
+            } catch (err) {
+                return `Error leyendo el backup de ${label}: ${err.message}`;
+            }
+            const res = stateBackend.writeKey(key, payload);
+            if (!res || res.ok === false) {
+                return `Error restaurando ${label}: ${(res && res.error && res.error.message) || 'write rechazado'}`;
+            }
+            return null;
         }
-    } else if (marker.waves_existed === false) {
-        // No existía antes — si por algún motivo existe ahora, borrarlo.
-        try {
-            if (fs.existsSync(wavesFile())) fs.unlinkSync(wavesFile());
-            out.wavesRestored = true;
-        } catch (err) {
-            out.reason = `Error eliminando waves.json (rollback a pre-existencia): ${err.message}`;
-            return out;
+        if (existedBefore === false) {
+            // No existía antes — si por algún motivo existe ahora, borrarlo.
+            const res = stateBackend.deleteKey(key);
+            if (!res || res.ok === false) {
+                return `Error eliminando ${label} (rollback a pre-existencia): `
+                    + `${(res && res.error && res.error.message) || 'delete rechazado'}`;
+            }
+            return null;
         }
+        return null;
+    };
+
+    // Restaurar el registro de olas.
+    if (marker.waves_bak_path || marker.waves_existed === false) {
+        const reason = restoreKey(
+            marker.waves_bak_path, marker.waves_existed, stateBackend.KEYS.WAVES, 'waves.json',
+        );
+        if (reason) { out.reason = reason; return out; }
+        out.wavesRestored = true;
+        invalidateCache();
     }
 
-    // Restaurar .partial-pause.json
-    if (marker.partial_bak_path) {
-        const tmp = partialFile() + '.recover.tmp';
-        try {
-            fs.copyFileSync(marker.partial_bak_path, tmp);
-            fs.renameSync(tmp, partialFile());
-            out.partialRestored = true;
-        } catch (err) {
-            try { fs.unlinkSync(tmp); } catch {}
-            out.reason = `Error restaurando .partial-pause.json: ${err.message}`;
-            return out;
-        }
-    } else if (marker.partial_existed === false) {
-        try {
-            if (fs.existsSync(partialFile())) fs.unlinkSync(partialFile());
-            out.partialRestored = true;
-        } catch (err) {
-            out.reason = `Error eliminando .partial-pause.json (rollback a pre-existencia): ${err.message}`;
-            return out;
-        }
+    // Restaurar la allowlist de ejecución.
+    if (marker.partial_bak_path || marker.partial_existed === false) {
+        const reason = restoreKey(
+            marker.partial_bak_path, marker.partial_existed,
+            stateBackend.KEYS.PARTIAL_PAUSE, '.partial-pause.json',
+        );
+        if (reason) { out.reason = reason; return out; }
+        out.partialRestored = true;
     }
 
     out.ok = true;
@@ -2967,15 +3018,15 @@ function promoteWaveAtomic(waveNumber, metadata = {}) {
     const newWaveName = newWave.name || `Ola ${waveNumber}`;
 
     // Snapshot allowlist previa (para diff added/removed en CA-D1).
+    // #5113 — cuarto lector físico de la allowlist: también por la capa de
+    // storage (era el olvido clásico que dejaría dos fuentes de verdad).
     let prevAllowlist = [];
     try {
-        if (fs.existsSync(partialFile())) {
-            const parsed = JSON.parse(fs.readFileSync(partialFile(), 'utf8'));
-            prevAllowlist = Array.isArray(parsed.allowed_issues)
-                ? parsed.allowed_issues.map(normalizeIssue).filter(Boolean)
-                : [];
+        const parsed = stateBackend.readKey(stateBackend.KEYS.PARTIAL_PAUSE);
+        if (parsed && Array.isArray(parsed.allowed_issues)) {
+            prevAllowlist = parsed.allowed_issues.map(normalizeIssue).filter(Boolean);
         }
-    } catch { /* defensivo: si no parsea, prev queda vacío */ }
+    } catch { /* defensivo: si no resuelve, prev queda vacío */ }
 
     // 1. Snapshot atómico de ambos archivos.
     const ts = new Date().toISOString().replace(/[:.]/g, '-');
@@ -3395,9 +3446,11 @@ function archiveWave(waveNumber, metadata = {}) {
         let wavesBakPath = null;
         let wavesBakSha = null;
         let wavesExisted = false;
-        if (fs.existsSync(wavesFile())) {
+        // #5113 — contenido por la capa de storage, backup en `archived/` local.
+        const prevForArchive = stateBackend.readKey(stateBackend.KEYS.WAVES);
+        if (prevForArchive) {
             const bak = path.join(archivedDir(), `waves-archive-rollback.${ts}.json`);
-            fs.copyFileSync(wavesFile(), bak);
+            atomicWriteFile(bak, JSON.stringify(prevForArchive, null, 2));
             wavesBakPath = bak;
             wavesBakSha = sha256File(bak);
             wavesExisted = true;

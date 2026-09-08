@@ -62,6 +62,19 @@ const { withLockSync } = require('./file-lock');
 const { notifyTelegram } = require('./notify-telegram');
 const { atomicWriteFile } = require('./waves');
 const audit = require('./partial-pause-audit');
+// #5113 (D-1) — capa de storage de la allowlist. El marker deja de leerse y
+// escribirse con `fs` directo: pasa por el backend, que resuelve contra
+// filesystem o contra el store de coordinación según el flag ÚNICO de cutover.
+//
+// El ORDEN de las capas NO cambia (D-5): `setPartialPauseAtomic` →
+// `evaluateAndAudit` (autoría + audit trail de #3625) → `backend.writeKey`.
+// El store es SUSTRATO, jamás API de mutación: llamar `compareAndSet` directo
+// dejaría el gate de autoría decorativo.
+//
+// `.paused` NO pasa por acá NUNCA (D-3 / SEC-7): `pauseFile()` sigue siendo
+// filesystem con el flag encendido o apagado. Es el halt de último recurso y el
+// mecanismo de aborto del propio cutover.
+const stateBackend = require('./operational-state-backend');
 
 const LOCK_TIMEOUT_MS = 5000;
 const LOCK_MAX_RETRIES = 3;
@@ -131,10 +144,21 @@ function sanitizeWaveMetaForWrite(opts) {
     return { wave_number: num, wave_name: name, wave_goal: goal };
 }
 
+// #5113 — PRIMER lector físico de la allowlist. Delega en la capa de storage.
+//
+// CA-A5: las cotas del payload remoto (bytes ANTES del parse, cardinalidad de
+// `allowed_issues`/`allowed_skills`, schema estricto) las aplica el backend y
+// son fail-closed: un ítem sobredimensionado o con cardinalidad excesiva
+// devuelve `null` acá, no una allowlist a medias.
+//
+// CA-A7: si el store degrada, esto devuelve `null` → `getPipelineMode()` cae en
+// `mode: 'running'` → `isIssueAllowedInState` DENIEGA. NUNCA se lee el archivo
+// local como alternativa: una allowlist local stale no es un dato viejo, es una
+// autorización revocada que vuelve a estar vigente.
 function readPartialFile() {
     try {
-        const raw = fs.readFileSync(partialFile(), 'utf8');
-        const parsed = JSON.parse(raw);
+        const parsed = stateBackend.readKey(stateBackend.KEYS.PARTIAL_PAUSE);
+        if (!parsed) return null;
         const arr = Array.isArray(parsed.allowed_issues) ? parsed.allowed_issues : [];
         const allowed = arr.map(normalizeIssue).filter(Boolean);
         // #2893: campos opcionales aditivos.
@@ -189,9 +213,13 @@ function readPartialFile() {
  * @returns {{waveNumber?:number, waveName?:string, waveGoal?:string}} vacío si
  *          el marker no existe, es ilegible o no tiene metadata de ola.
  */
+// #5113 — SEGUNDO lector físico del mismo marker. Es el olvido clásico: si
+// quedara leyendo filesystem con el flag encendido habría dos fuentes de verdad
+// y CA-C1 fallaría. También pasa por la capa de storage.
 function readWaveMetaFromMarker() {
     try {
-        const parsed = JSON.parse(fs.readFileSync(partialFile(), 'utf8'));
+        const parsed = stateBackend.readKey(stateBackend.KEYS.PARTIAL_PAUSE);
+        if (!parsed) return {};
         const out = {};
         if (Number.isInteger(parsed.wave_number)) out.waveNumber = parsed.wave_number;
         if (typeof parsed.wave_name === 'string') out.waveName = parsed.wave_name;
@@ -584,8 +612,24 @@ function setPartialPause(issues, opts = {}) {
     // writeFileSync directo — si dos /wave promote llegaban a la vez, el
     // segundo podía pisar al primero o dejar un JSON truncado si moría
     // a mitad del write.
+    //
+    // #5113 (CA-A4): en modo remoto el write es un CAS y la exclusión REAL entre
+    // hosts la da esa condición, no el lock. `withLockSync` se conserva porque
+    // sigue serializando los writes del mismo host, pero deja de ser la
+    // primitiva de exclusión: resuelve locks stale por PID vivo en el SO local
+    // y entre dos máquinas no excluye nada.
     return withLockSync(partialFile(), () => {
-        atomicWriteFile(partialFile(), JSON.stringify(data, null, 2));
+        const res = stateBackend.writeKey(stateBackend.KEYS.PARTIAL_PAUSE, data);
+        if (!res || res.ok === false) {
+            return {
+                ok: false,
+                conflict: !!(res && res.conflict),
+                allowedIssues: previous,
+                msg: res && res.conflict
+                    ? 'Escritura rechazada: otro escritor cambió la allowlist (conflicto de versión). Releé y reintentá.'
+                    : `Escritura de la allowlist rechazada por el sustrato: ${(res && res.error && res.error.message) || 'motivo desconocido'}`,
+            };
+        }
         return {
             ok: true,
             allowedIssues: unique,
@@ -665,12 +709,13 @@ function markDepRiskAccepted(opts = {}) {
     return withLockSync(partialFile(), () => {
         // Re-lectura BAJO lock: entre el snapshot de arriba y el write pudo
         // entrar otro writer. El merge se hace sobre lo más fresco.
-        let fresh;
-        try {
-            fresh = JSON.parse(fs.readFileSync(partialFile(), 'utf8'));
-        } catch {
-            return { ok: false, reason: 'no_partial_pause', allowedIssues: [] };
-        }
+        //
+        // #5113 — TERCER lector físico del marker. También por la capa de
+        // storage. El `expectedVersion` de la relectura viaja al write: es lo
+        // que convierte este read-modify-write en un CAS real entre hosts, no
+        // sólo en una relectura bajo un lock que es local por PID (CA-A4).
+        const readRes = stateBackend.readKeyWithVersion(stateBackend.KEYS.PARTIAL_PAUSE);
+        const fresh = readRes.value;
         if (!fresh || typeof fresh !== 'object' || Array.isArray(fresh)) {
             return { ok: false, reason: 'no_partial_pause', allowedIssues: [] };
         }
@@ -681,7 +726,17 @@ function markDepRiskAccepted(opts = {}) {
             accepted_dep_risk_at: new Date().toISOString(),
         };
         if (opts.authorizedBy) merged.accepted_dep_risk_by = String(opts.authorizedBy);
-        atomicWriteFile(partialFile(), JSON.stringify(merged, null, 2));
+        const writeRes = stateBackend.writeKey(
+            stateBackend.KEYS.PARTIAL_PAUSE, merged, readRes.version,
+        );
+        if (!writeRes || writeRes.ok === false) {
+            return {
+                ok: false,
+                conflict: !!(writeRes && writeRes.conflict),
+                reason: writeRes && writeRes.conflict ? 'version_conflict' : 'write_rejected',
+                allowedIssues,
+            };
+        }
 
         const finalIssues = (Array.isArray(fresh.allowed_issues) ? fresh.allowed_issues : [])
             .map(normalizeIssue).filter(Boolean);
@@ -737,15 +792,18 @@ function markDepRiskAccepted(opts = {}) {
  */
 function setPartialPauseAtomic(issues, opts = {}) {
     // 1) Snapshot del estado previo (para rollback del caller).
+    // #5113 — CUARTO lector físico del marker. El snapshot se toma por la capa
+    // de storage y se serializa con el MISMO formato con el que se persiste
+    // (`JSON.stringify(x, null, 2)`), para que el `prevSha` que el caller usa
+    // como testigo de rollback siga comparando lo mismo en los dos modos.
     let prevBuffer = null;
     let prevSha = null;
     let existedBefore = false;
-    try {
-        prevBuffer = fs.readFileSync(partialFile());
+    const prevValue = stateBackend.readKey(stateBackend.KEYS.PARTIAL_PAUSE);
+    if (prevValue) {
+        prevBuffer = Buffer.from(JSON.stringify(prevValue, null, 2), 'utf8');
         prevSha = require('crypto').createHash('sha256').update(prevBuffer).digest('hex');
         existedBefore = true;
-    } catch (err) {
-        if (err && err.code !== 'ENOENT') throw err;
     }
 
     // 2) Normalización y escritura (misma semántica que setPartialPause salvo
@@ -815,7 +873,24 @@ function setPartialPauseAtomic(issues, opts = {}) {
         }
         if (Object.keys(filtered).length > 0) data.dep_sources = filtered;
     }
-    writeAtomic(partialFile(), JSON.stringify(data, null, 2));
+    // #5113 (D-5) — el ORDEN no cambia: `readPreviousAllowlist()` →
+    // `evaluateAndAudit()` → escritura. Lo único que se reemplaza es el sink:
+    // `writeAtomic` deja de invocarse directo y pasa a ser la implementación
+    // del modo `fs` del backend. El store es sustrato, no API de mutación.
+    const writeRes = stateBackend.writeKey(stateBackend.KEYS.PARTIAL_PAUSE, data);
+    if (!writeRes || writeRes.ok === false) {
+        return {
+            ok: false,
+            conflict: !!(writeRes && writeRes.conflict),
+            allowedIssues: previous,
+            msg: writeRes && writeRes.conflict
+                ? 'Escritura rechazada: otro escritor cambió la allowlist (conflicto de versión). Releé y reintentá.'
+                : `Escritura de la allowlist rechazada por el sustrato: ${(writeRes && writeRes.error && writeRes.error.message) || 'motivo desconocido'}`,
+            prevBuffer,
+            prevSha,
+            existedBefore,
+        };
+    }
 
     return {
         ok: true,
@@ -831,7 +906,11 @@ function setPartialPauseAtomic(issues, opts = {}) {
 
 /**
  * Helper interno: write atómico con tmp + renameSync.
- * No expuesto — uso interno de `setPartialPause` / `setPartialPauseAtomic`.
+ *
+ * #5113 — pasó a ser la implementación del modo `fs`: los mutadores ya no lo
+ * invocan directo, van por `stateBackend.writeKey()`. Se conserva porque sigue
+ * siendo el write atómico local del marker en los caminos que escriben archivos
+ * auxiliares y porque los tests de regresión lo ejercitan.
  *
  * @param {string} targetPath
  * @param {string} content
@@ -875,16 +954,19 @@ function clearPartialPause(opts = {}) {
         return {
             ok: false,
             rejected: true,
-            existed: fs.existsSync(partialFile()),
+            existed: stateBackend.existsKey(stateBackend.KEYS.PARTIAL_PAUSE),
         };
     }
 
+    // #5113 — el `unlink` pasa a ser `deleteKey` (delete condicional en modo
+    // remoto). El gate de autoría de #3625 ya corrió ARRIBA de esta línea: el
+    // orden se conserva intacto.
     return withLockSync(partialFile(), () => {
-        const existed = fs.existsSync(partialFile());
-        if (existed) {
-            try { fs.unlinkSync(partialFile()); } catch {}
+        const res = stateBackend.deleteKey(stateBackend.KEYS.PARTIAL_PAUSE);
+        if (!res || res.ok === false) {
+            return { ok: false, existed: !!(res && res.existed), conflict: !!(res && res.conflict) };
         }
-        return { ok: true, existed };
+        return { ok: true, existed: res.existed };
     }, {
         component: 'partial-pause-lock',
         timeoutMs: LOCK_TIMEOUT_MS,
@@ -922,12 +1004,15 @@ function resumeAll(opts = {}) {
 
     let removedFull = false;
     let removedPartial = false;
+    // #5113 (D-3 / SEC-7) — `.paused` NO pasa por el backend. Es filesystem
+    // SIEMPRE, con el flag encendido o apagado: es el halt de último recurso y
+    // el mecanismo de aborto del propio cutover. Esta línea NO cambia.
     if (fs.existsSync(pauseFile())) {
         try { fs.unlinkSync(pauseFile()); removedFull = true; } catch {}
     }
-    if (fs.existsSync(partialFile())) {
-        try { fs.unlinkSync(partialFile()); removedPartial = true; } catch {}
-    }
+    // La allowlist sí: `deleteKey` resuelve contra el sustrato vigente.
+    const res = stateBackend.deleteKey(stateBackend.KEYS.PARTIAL_PAUSE);
+    removedPartial = !!(res && res.ok && res.existed);
     return { removedFull, removedPartial };
 }
 

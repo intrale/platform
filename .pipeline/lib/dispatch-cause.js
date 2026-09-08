@@ -61,6 +61,14 @@ const CAUSAS = Object.freeze({
     // la ola activa. Se publica en el banner pero NO alerta a Telegram (causa
     // silenciosa). Antes reusaba HALT_HUMANO, lo que generaba ruido recurrente.
     MODO_OLA: 'modo_ola',
+    // #5113 CA-UX2 — El estado operativo vive en el store remoto y el store no
+    // responde, asi que el gate de dispatch DENIEGA (fail-closed, CA-A7). La
+    // contracara de un buen fail-closed es un mal sintoma: sin esta causa, el
+    // operador lee "Anomalia: causa no determinable" justo cuando la causa se
+    // conoce con precision absoluta. Mapearla a MODO_OLA seria peor todavia:
+    // esa causa es SILENCIOSA y pintaria un fail-closed real como estado
+    // esperado.
+    ESTADO_REMOTO_DEGRADADO: 'estado_remoto_degradado',
     SIN_AGENTES: 'sin_agentes',
     ANOMALIA: 'anomalia_no_determinable',
 });
@@ -83,6 +91,11 @@ const PRECEDENCIA = Object.freeze([
     CAUSAS.COOLDOWN,
     CAUSAS.BLOQUEO_DEPENDENCIA,
     CAUSAS.DEADLOCK,
+    // #5113 CA-UX2 — POR ENCIMA de MODO_OLA: si el store del estado operativo
+    // degrada, el pipeline no esta "respetando la ola", esta frenado por una
+    // falla de infraestructura y hay que decirlo con ese nombre. Queda debajo de
+    // DEADLOCK porque un deadlock real explica mejor el no-despacho.
+    CAUSAS.ESTADO_REMOTO_DEGRADADO,
     // #4751 — MODO_OLA estrictamente POR DEBAJO de PRESION_RECURSOS/DEADLOCK (R4):
     // si coexisten modo ola + saturación, gana la causa alertable y la alerta se
     // emite. Un orden invertido escondería el problema real.
@@ -104,6 +117,12 @@ const LABELS = Object.freeze({
     [CAUSAS.BLOQUEO_DEPENDENCIA]: 'Bloqueado por dependencia',
     [CAUSAS.DEADLOCK]: 'Deadlock detectado',
     [CAUSAS.MODO_OLA]: 'Modo de ejecución en olas',
+    // CA-UX5 — el sintoma nombra la accion: QUE esta frenado (el despacho),
+    // POR QUE (el estado operativo remoto no responde) y CUAL es el proximo
+    // paso (volver a filesystem). Prohibido el mensaje que solo describe el
+    // error tecnico.
+    [CAUSAS.ESTADO_REMOTO_DEGRADADO]:
+        'Despacho frenado: el estado operativo remoto no responde — volvé a filesystem con `operational_state.durable: false`',
     [CAUSAS.SIN_AGENTES]: 'Sin agentes disponibles',
     [CAUSAS.ANOMALIA]: '⚠ Anomalía: causa no determinable',
 });
@@ -123,6 +142,11 @@ const CAUSAS_ALERTABLES = Object.freeze(new Set([
     CAUSAS.DISCO_LLENO,        // #6708 — disco en rojo: build/QA frenados
     CAUSAS.BLOQUEO_DEPENDENCIA,
     CAUSAS.DEADLOCK,
+    // #5113 CA-UX2 — ALERTABLE: un fail-closed del estado operativo frena TODO
+    // el dispatch y el operador tiene que enterarse, no descubrirlo mirando el
+    // tablero. La alerta la emite `kernel-degradation-alert.js` (CA-UX3): aca
+    // solo se declara que la causa amerita aviso.
+    CAUSAS.ESTADO_REMOTO_DEGRADADO,
 ]));
 
 // Conjunto de valores válidos del enum (para validación O(1)).

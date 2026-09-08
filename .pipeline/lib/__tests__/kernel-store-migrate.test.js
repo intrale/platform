@@ -78,11 +78,19 @@ function writeSources(dir) {
   const blocked = { blockedBy: { 4688: ['4745'] }, blocks: { 4745: ['4688'] } };
   const blockedInfra = { version: 1, issues: [], lastEvent: { type: 'connectivity_restored' } };
   const health = { dns: { ok: true }, retries: 0, circuitBreaker: { open: false } };
+  // #5113 CA-A8 — la allowlist de ejecución es la 5ª fuente del alcance.
+  const partialPause = {
+    allowed_issues: [5113, 5126],
+    allowed_skills: ['pipeline-dev'],
+    created_at: '2026-09-08T00:00:00.000Z',
+    source: 'telegram',
+  };
   fs.writeFileSync(path.join(dir, 'waves.json'), JSON.stringify(waves, null, 2));
   fs.writeFileSync(path.join(dir, 'blocked-issues.json'), JSON.stringify(blocked, null, 2));
   fs.writeFileSync(path.join(dir, 'blocked-by-infra.json'), JSON.stringify(blockedInfra, null, 2));
   fs.writeFileSync(path.join(dir, 'infra-health.json'), JSON.stringify(health, null, 2));
-  return { waves, blocked, blockedInfra, health };
+  fs.writeFileSync(path.join(dir, '.partial-pause.json'), JSON.stringify(partialPause, null, 2));
+  return { waves, blocked, blockedInfra, health, partialPause };
 }
 
 function makeStore(driver) {

@@ -720,6 +720,12 @@ const SCHEMA = {
             type: 'object',
             additionalProperties: true,
             properties: {
+                // #5113 CA-C1 — flag ÚNICO de cutover del estado operativo al
+                // store durable. Gatea lectura Y escritura a la vez: nunca
+                // coexisten dos fuentes de verdad. Lo lee un solo archivo
+                // (`lib/operational-state-backend.js`), con el mismo criterio
+                // fail-closed `=== true` que `namespaced.enabled`.
+                durable: { type: 'boolean' },
                 namespaced: {
                     type: 'object',
                     additionalProperties: true,

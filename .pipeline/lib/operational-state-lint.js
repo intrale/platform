@@ -223,10 +223,17 @@ const SKIP_DIRS = new Set([
 // usa `operational-state-lint.allowlist.json` para esto — esa allowlist es por
 // LÍNEA y su propósito es documentar excepciones de consumidores, no declarar
 // scope del control.
+// #5113 — `lib/operational-state-backend.js` es la CAPA DE STORAGE del estado
+// operativo: construye los paths de `waves.json` / `.partial-pause.json` por
+// definicion, igual que `lib/waves.js` y `lib/project-context.js`. Sin esta
+// entrada el guardrail bloquea el propio modulo que implementa el control.
+// NO se usa `operational-state-lint.allowlist.json`: esa allowlist es por LINEA
+// y documenta excepciones de CONSUMIDORES, no declara scope del control.
 const SELF_EXEMPT = new Set([
     'lib/operational-state.js',
     'lib/waves.js',
     'lib/partial-pause.js',
+    'lib/operational-state-backend.js',
     'lib/operational-state-lint.js',
     'lib/project-context.js',
     'scripts/migrate-operational-state-namespace.js',
@@ -380,7 +387,51 @@ const DEST_INTERNAL_RE = /\b_internal\b\s*(?::\s*([A-Za-z_$][\w$]*))?/;
 // interpolar el binding en `new RegExp` (R4).
 const ID_RE = /^[A-Za-z_$][\w$]*$/;
 
-const RULES = ['path-level', 'internal-bypass'];
+// ─── Regla 3 · async-gate (#5113 CA-A3) ─────────────────────────────────────
+//
+// El gate de dispatch (`isIssueAllowed` / `isSkillAllowed` y sus variantes
+// `...InState`) DEBE devolver `boolean` estricto y consumirse como tal. Esta
+// regla marca los dos patrones que lo convierten en fail-OPEN silencioso:
+//
+//   1. `await ops.isIssueAllowed(n)`  → el `await` sólo tiene sentido si el
+//      gate es thenable. Que alguien lo escriba significa que ya lo convirtió
+//      (o cree que lo es), y basta UN caller que lo olvide para que el gate
+//      quede roto: `if (unaPromesa)` es SIEMPRE `true`.
+//   2. `async function isIssueAllowed(` / `isIssueAllowed: async (` → la
+//      declaración async del propio gate. Es la raíz del problema.
+//
+// Por qué esto es una regla de lint y no una revisión de código: el incidente
+// #5060 (~320 agentes despachados sobre el backlog histórico) se reproduce
+// EXACTO con un cambio de tipo de retorno, sin que ningún test de dominio se
+// ponga rojo — la aserción `assert.ok(allowed)` pasa igual con una Promise.
+// El control tiene que ser mecánico.
+//
+// Nombres del gate, cerrados. No se derivan de nada: son literales.
+const GATE_FN_NAMES = Object.freeze([
+    'isIssueAllowed',
+    'isIssueAllowedInState',
+    'isSkillAllowed',
+    'isSkillAllowedInState',
+]);
+
+const GATE_NAMES_ALT = GATE_FN_NAMES.join('|');
+
+// `await <algo?>isIssueAllowed(` — con o sin receptor (`ops.`, `partialPause.`).
+const AWAITED_GATE_RE = new RegExp(
+    `\\bawait\\s+(?:[A-Za-z_$][\\w$]*\\s*\\.\\s*)?(?:${GATE_NAMES_ALT})\\s*\\(`, 'g',
+);
+
+// Declaración `async` del gate, en sus tres formas de declaración usuales:
+//   `async function isIssueAllowed(`      (declaración)
+//   `isIssueAllowed: async (`             (propiedad de objeto)
+//   `const isIssueAllowed = async (`      (asignación)
+const ASYNC_GATE_DECL_RE = new RegExp(
+    `(?:\\basync\\s+function\\s+(?:${GATE_NAMES_ALT})\\s*\\()`
+    + `|(?:\\b(?:${GATE_NAMES_ALT})\\s*:\\s*async\\b)`
+    + `|(?:\\b(?:${GATE_NAMES_ALT})\\s*=\\s*async\\b)`, 'g',
+);
+
+const RULES = ['path-level', 'internal-bypass', 'async-gate'];
 
 // ─── Errores ────────────────────────────────────────────────────────────────
 
@@ -856,6 +907,25 @@ function lintSource(rel, src, allowlist) {
         }
     }
 
+    // ── Regla 3 — async-gate (#5113 CA-A3) ──────────────────────────────────
+    //
+    // Se salta las líneas comentadas por el mismo motivo que la regla 1: el
+    // propio contrato documenta el anti-patrón en prosa y no puede
+    // auto-reportarse.
+    AWAITED_GATE_RE.lastIndex = 0;
+    let g;
+    while ((g = AWAITED_GATE_RE.exec(src)) !== null) {
+        const line = lineOfOffset(src, g.index);
+        if (isCommentOnlyLine(src, srcLines, line)) continue;
+        push(line, 'async-gate');
+    }
+    ASYNC_GATE_DECL_RE.lastIndex = 0;
+    while ((g = ASYNC_GATE_DECL_RE.exec(src)) !== null) {
+        const line = lineOfOffset(src, g.index);
+        if (isCommentOnlyLine(src, srcLines, line)) continue;
+        push(line, 'async-gate');
+    }
+
     // Una entry resuelta que NO suprimió ninguna violation es una exención que
     // no protege nada. Es informativo (viaja en la tabla de `--report`) y NO
     // rompe el build a propósito: si el matcher deja de marcar un acceso por un
@@ -1089,6 +1159,19 @@ function remediationLines(rules) {
         out.push('  Si la superficie publica no cubre tu caso, PEDI EXTENDERLA en vez de');
         out.push(`  saltearla — lo que la fachada no expone y por que: ${CONTRACT_DOC} §7`);
     }
+    if (rules.has('async-gate')) {
+        out.push('');
+        out.push('Remediacion - regla `async-gate` (#5113 CA-A3):');
+        out.push('  El gate de dispatch devuelve `boolean` ESTRICTO y se consume como tal, en');
+        out.push('  modo filesystem y con el estado en el store remoto por igual. Prohibido');
+        out.push('  declararlo `async` y prohibido consumirlo con `await`.');
+        out.push('  Por que: `if (unaPromesa)` es SIEMPRE true. Un solo caller que olvide el');
+        out.push('  `await` convierte el gate en fail-OPEN silencioso — es el incidente #5060');
+        out.push('  (~320 agentes despachados) reproducido por un cambio de tipo de retorno,');
+        out.push('  y ningun test de dominio se pone rojo (assert.ok(promesa) pasa igual).');
+        out.push('  Si necesitas I/O detras del gate, hacelo SINCRONO: la capa de storage');
+        out.push('  (`lib/operational-state-backend.js`) es sincrona de punta a punta.');
+    }
     if (out.length) {
         out.push('');
         out.push('  Si la excepcion es legitima: entry { file, anchor, reason } en');
@@ -1111,7 +1194,12 @@ function aggregateByFile(violations) {
     const byFile = new Map();
     for (const v of violations) {
         if (!byFile.has(v.file)) {
-            byFile.set(v.file, { file: v.file, scope: classifyScope(v.file), 'path-level': 0, 'internal-bypass': 0, total: 0 });
+            byFile.set(v.file, {
+                file: v.file, scope: classifyScope(v.file),
+                'path-level': 0, 'internal-bypass': 0,
+                'async-gate': 0,   // #5113 CA-A3
+                total: 0,
+            });
         }
         const row = byFile.get(v.file);
         row[v.rule] += 1;
@@ -1155,12 +1243,12 @@ function formatReport(result) {
     L.push('matcher roto. Relajar la confirmacion de contexto para "llegar" al numero bruto');
     L.push('reintroduce los falsos positivos de copy del operador (UX-6 / CA-6c).');
     L.push('');
-    L.push('| archivo | scope | path-level | internal-bypass | total |');
-    L.push('|---|---|---:|---:|---:|');
+    L.push('| archivo | scope | path-level | internal-bypass | async-gate | total |');
+    L.push('|---|---|---:|---:|---:|---:|');
     for (const r of rows) {
         // El path va aplanado por la misma puerta: `--report` alimenta
         // GITHUB_STEP_SUMMARY (markdown), donde un `\n` rompe la tabla.
-        L.push(`| \`${sanitizeForLog(r.file)}\` | ${r.scope} | ${r['path-level']} | ${r['internal-bypass']} | ${r.total} |`);
+        L.push(`| \`${sanitizeForLog(r.file)}\` | ${r.scope} | ${r['path-level']} | ${r['internal-bypass']} | ${r['async-gate']} | ${r.total} |`);
     }
 
     const sub = (scope) => {
@@ -1169,14 +1257,15 @@ function formatReport(result) {
             files: s.length,
             'path-level': s.reduce((a, r) => a + r['path-level'], 0),
             'internal-bypass': s.reduce((a, r) => a + r['internal-bypass'], 0),
+            'async-gate': s.reduce((a, r) => a + r['async-gate'], 0),
             total: s.reduce((a, r) => a + r.total, 0),
         };
     };
     const prod = sub('produccion');
     const tst = sub('tests');
-    L.push(`| **subtotal produccion** (${prod.files} archivos) | produccion | **${prod['path-level']}** | **${prod['internal-bypass']}** | **${prod.total}** |`);
-    L.push(`| **subtotal tests** (${tst.files} archivos) | tests | **${tst['path-level']}** | **${tst['internal-bypass']}** | **${tst.total}** |`);
-    L.push(`| **TOTAL** (${rows.length} archivos) | | **${prod['path-level'] + tst['path-level']}** | **${prod['internal-bypass'] + tst['internal-bypass']}** | **${result.violations.length}** |`);
+    L.push(`| **subtotal produccion** (${prod.files} archivos) | produccion | **${prod['path-level']}** | **${prod['internal-bypass']}** | **${prod['async-gate']}** | **${prod.total}** |`);
+    L.push(`| **subtotal tests** (${tst.files} archivos) | tests | **${tst['path-level']}** | **${tst['internal-bypass']}** | **${tst['async-gate']}** | **${tst.total}** |`);
+    L.push(`| **TOTAL** (${rows.length} archivos) | | **${prod['path-level'] + tst['path-level']}** | **${prod['internal-bypass'] + tst['internal-bypass']}** | **${prod['async-gate'] + tst['async-gate']}** | **${result.violations.length}** |`);
     L.push('');
     L.push('> El subtotal `tests` es 0 por construccion, no por casualidad: `walkJs` excluye');
     L.push('> `*.test.js`, `__tests__/` y la convencion `test-*.js` de la raiz de `.pipeline/`');
