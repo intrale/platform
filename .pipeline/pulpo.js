@@ -23118,6 +23118,22 @@ const _ghBreaker = createGhCircuitBreaker({
 // crudo en el hot-path del intake: si el circuito está abierto, tira rápido SIN
 // spawnear gh (evita bloquear el event loop 30s por llamada durante un outage).
 // El caller ya envuelve en try/catch y degrada — el throw se maneja igual.
+//
+// #7013 (regresión) — `maxBuffer` EXPLÍCITO. El default de `execSync` es 1 MiB.
+// Al subir `INTAKE_GH_LIST_LIMIT` de 50 a 500, la respuesta del intake de
+// definición (`--json number,title,labels,body` sobre ~193 issues admisibles)
+// pasó a ~1,06 MB y cada llamada empezó a morir con `ENOBUFS` ANTES de devolver
+// una sola línea. El `catch` del caller lo degradaba a `issues.length === 0`, así
+// que el brazo quedaba silenciosamente inerte: ningún issue de la ola volvía a
+// entrar a definición aunque la búsqueda de GitHub sí los devolviera.
+//
+// ENOBUFS NO matchea `CONN_ERROR_PATTERNS`, así que el breaker no lo contaba
+// como outage y tampoco había señal por ese lado: fallo mudo, ciclo tras ciclo.
+//
+// El piso es el mismo que ya usa la ruta REST de `_ghCallWithTimeout` (32 MiB) y
+// va ANTES del spread para que un caller pueda seguir ajustándolo.
+const GH_EXEC_MAX_BUFFER = 32 * 1024 * 1024;
+
 function _ghExecSyncGuarded(command, opts = {}) {
   if (_ghBreaker.shouldShortCircuit(Date.now())) {
     const err = new Error('gh-circuit-open: GitHub inalcanzable, execSync cortocircuitado');
@@ -23125,7 +23141,7 @@ function _ghExecSyncGuarded(command, opts = {}) {
     throw err;
   }
   try {
-    const out = execSync(command, { timeout: 15000, ...opts });
+    const out = execSync(command, { timeout: 15000, maxBuffer: GH_EXEC_MAX_BUFFER, ...opts });
     _ghBreaker.record({ ok: true }, Date.now());
     return out;
   } catch (err) {
@@ -26693,6 +26709,9 @@ if (process.env.PULPO_NO_AUTOSTART === '1') {
     buildIntakeSearchQueries,
     INTAKE_SEARCH_EXCLUDED_LABELS,
     INTAKE_GH_LIST_LIMIT,
+    // #7013 (regresión) — piso de buffer de las llamadas `gh` por execSync.
+    GH_EXEC_MAX_BUFFER,
+    _ghExecSyncGuarded,
     // #5689 (SEC-1/SEC-2) — gate autoritativo de recomendaciones del intake.
     isPendingRecommendationIssue,
     // #4763 (Ola Puente P4) — ruteo product-aware por instancia (fallback single-product).
