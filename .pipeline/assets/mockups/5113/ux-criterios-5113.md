@@ -94,25 +94,57 @@ de mutación).
    flag de cutover desde la UI.
 4. **Iconografía del sprite propio** (`.pipeline/assets/icons/sprite.svg`) cuando
    haya símbolo equivalente. Sin emojis del sistema operativo mezclados.
-5. **Contraste AA** sobre `--surface-0` en los cuatro estados.
+5. **Contraste AA sobre el fondo REAL**, no sobre `--surface-0` por defecto: los
+   fondos `--X-bg` son `rgba(…, 0.14)` compuestos sobre `--surface-1`. Ver la
+   seccion de contraste al final, con los ratios ya medidos por par.
 
 ## Contraste verificado (regla 5) — validación de desarrollo, 2026-09-08
 
-La regla 5 exige AA sobre `--surface-0`. Se auditó el mockup 60 color por color
-contra los cuatro fondos del sistema (`#0D1117`, `#161B22`, `#1C2128`, `#21262D`)
-y se corrigió el único color que no llegaba: `#6E7681` (3.77:1 sobre `#161B22`,
-por debajo del 4.5:1 de AA para texto de 11.5–12 px) fue reemplazado por
-`--text-dim` `#8B949E`, que es el mismo token que ya usaban las otras tres
-tarjetas de estado. Peor ratio de cada color de texto del mockup, ya corregido:
+La regla 5 exige AA. La auditoría se hizo sobre **los pares texto/fondo que el
+mockup usa realmente**, incluyendo el compositing de los fondos semitransparentes:
+`--success-bg` / `--warning-bg` / `--danger-bg` son `rgba(…, 0.14)` sobre
+`--surface-1`, no colores opacos. Medir sólo contra fondos sólidos sobreestima el
+ratio y es el error que hay que evitar al re-verificar esto.
 
-| Color | Token | Peor ratio (vs los 4 fondos) | AA |
-|---|---|---|---|
-| `#E6EDF3` | `--text-primary` | 12.88 | sí |
-| `#B1BAC4` | `--text-secondary` | 7.75 | sí |
-| `#8B949E` | `--text-dim` | 4.95 | sí |
-| `#3FB950` | `--success` | 5.99 | sí |
-| `#D29922` | `--warning` | 6.03 | sí |
-| `#F85149` | `--danger` | 4.54 | sí |
+### Corregido en el mockup
 
-Ninguno de los cuatro estados del chip depende de un color por debajo de AA:
-el dev puede tomar los valores del mockup tal cual, sin re-verificar contraste.
+`#6E7681` (`--text-disabled`, 3,77:1 sobre `#161B22`) se usaba en el subtítulo del
+chip "filesystem local" y en dos celdas de la tabla de mapeo — por debajo del
+4,5:1 de AA para texto de 11,5–12 px, y además inconsistente con las otras tres
+tarjetas, que ya usaban `--text-dim` en esa misma línea. Reemplazado por
+`--text-dim` `#8B949E`.
+
+### Ratios reales, peor caso por color
+
+| Color | Token | peor vs fondo opaco | peor vs `--X-bg` compuesto | AA |
+|---|---|---|---|---|
+| `#E6EDF3` | `--text-primary`   | 13,70 | 11,68 | sí |
+| `#B1BAC4` | `--text-secondary` |  8,24 |  7,03 | sí |
+| `#8B949E` | `--text-dim`       |  5,26 |  n/a¹ | sí |
+| `#3FB950` | `--success`        |  6,37 |  5,43 | sí |
+| `#D29922` | `--warning`        |  6,41 |  5,47 | sí |
+| `#F85149` | `--danger`         |  4,83 |  **4,41** | **no** ² |
+
+¹ `--text-dim` no se apoya sobre ningún fondo tintado en este mockup.
+
+² **Deuda del sistema de tokens, no de este issue.** `--danger` sobre
+`--danger-bg` queda en 4,41:1 en los tres lugares donde el mockup lo usa (el
+símbolo `!` del chip "sin respuesta" y los dos titulares de los paneles de la
+sección 2). No se corrigió acá **a propósito**: el par es el patrón vigente del
+dashboard — 12 usos en `.pipeline/dashboard.js` hoy (`.lc-state-needshuman`,
+`.lc-state-architect-rejected`, `.ppa-banner-critical`, `.dss-danger`, …) — y
+divergir sólo en este chip produciría un badge de peligro que se ve distinto a
+todos los demás del tablero. La recalibración de la familia corresponde a
+**#6523**, que ya mide exactamente este par (4,39:1) y está abierta.
+
+### Qué hace el dev con esto
+
+1. **No re-derivar colores.** Usar `var(--danger)` sobre `var(--danger-bg)` como
+   el resto del dashboard. Cuando #6523 recalibre la familia, el chip mejora solo.
+2. **La legibilidad del estado no puede depender del rojo.** Es la razón por la
+   que la regla 1 es no negociable: en el chip "externo — sin respuesta" la
+   etiqueta va en `--text-primary` (12,52:1 sobre el fondo tintado) y el rojo
+   queda como refuerzo del símbolo `!` y del borde. Un operador que no distingue
+   ese rojo del fondo sigue leyendo el estado completo.
+3. **Verificar el compositing, no el token.** Si se agrega un texto nuevo sobre
+   un fondo `--X-bg`, medirlo contra el color compuesto sobre `--surface-1`.

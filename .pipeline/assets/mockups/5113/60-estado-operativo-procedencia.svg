@@ -14,7 +14,9 @@
 
   Regla rectora (heredada del mockup 49):
     ningun estado se codifica SOLO por color. Cada chip lleva simbolo + etiqueta
-    textual + procedencia literal. Contraste AA sobre #0D1117.
+    textual + procedencia literal. Contraste AA medido contra el fondo REAL de cada
+    texto (los -bg son rgba 0.14 compuestos sobre #161B22, no colores opacos):
+    tabla de ratios en ux-criterios-5113.md.
 
   Design system: tokens de .pipeline/assets/design-tokens.css. Sin colores fuera
   del sistema. Target 1240x920.
