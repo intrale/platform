@@ -44,9 +44,6 @@ const TTS_INSTRUCTIONS = "Narrás un video de prueba de software. Tu tono es cla
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
-const HOOKS_DIR = path.resolve(__dirname, "../../.claude/hooks");
-const CONFIG_PATH = path.join(HOOKS_DIR, "telegram-config.json");
-
 const BACKUP_PATH = path.join(os.homedir(), ".intrale-api-keys.json");
 
 // #4907: mismo patron que qa-video-share.js — el store unificado
@@ -58,6 +55,12 @@ try {
 } catch (e) {
     credentialsLib = null;
 }
+
+// #5215 (CA-1): el fallback legacy vive FUERA del arbol del repo, igual que en
+// qa-video-share.js. Un secreto guardado dentro del repo no sobrevive a un
+// `reset --hard` + `clean` ni a un respawn del worktree.
+const CONFIG_PATH = (credentialsLib && credentialsLib.LEGACY_PATH)
+    || path.join(os.homedir(), ".claude", "secrets", "telegram-config.json");
 
 const LOCAL_PLACEHOLDER_RE = /(REVOKED|PLACEHOLDER|MOVED|EXAMPLE|REPLACE|CHANGE_ME)/i;
 function isPlaceholderOrEmpty(value) {
