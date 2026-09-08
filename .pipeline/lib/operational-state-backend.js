@@ -257,6 +257,33 @@ let driverCache = null;
  * Construye (LAZY, una vez por proceso) el driver síncrono contra la tabla de
  * coordinación. Con el flag apagado NUNCA se llega acá: cero llamadas a AWS.
  */
+/**
+ * CA-B2 / CA-A4 — En regimen remoto la exclusion mutua la da el CAS, y el CAS
+ * SOLO existe si el driver soporta escrituras condicionales.
+ * `buildCasWriteOptions()` devuelve `{}` cuando `atomicUpdate` es falso: la
+ * escritura sale SIN condicion, o sea a ciegas, apoyada nada mas que en la
+ * lectura previa — que entre hosts no excluye nada.
+ *
+ * Eso es peor que no tener garantia: SIMULA una que no existe, y el lost update
+ * vuelve en silencio. Por eso se verifica en el punto de uso y no se asume por
+ * como quedo armado el driver: hoy `resolveDriver()` lo afirma explicito, pero
+ * `kernel-coordination-store.js` lo DERIVA de `!isInMemory`, y un driver futuro
+ * que repita esa derivacion degradaria el CAS sin que nadie se entere.
+ *
+ * Fail-closed: se rechaza la escritura. No se escribe a ciegas.
+ *
+ * @returns {Error|null} el error a devolver, o `null` si hay garantia.
+ */
+function casGuard(atomicUpdate, op) {
+    if (atomicUpdate === true) return null;
+    return new Error(
+        `operational-state-backend: ${op} rechazada (CA-B2, fail-closed). El driver no `
+        + 'declara `atomicUpdate: true`, asi que la escritura saldria SIN ConditionExpression: '
+        + 'un write ciego que simula una exclusion inexistente y reabre el lost update entre '
+        + 'instancias. Verificar el soporte de escritura condicional antes del cutover.',
+    );
+}
+
 function resolveDriver() {
     if (driverCache) return driverCache;
     const { cfg } = readConfig();
@@ -628,6 +655,12 @@ function writeKey(key, value, expectedVersion) {
     try {
         const { driver, spec, projectId, instanceId, atomicUpdate } = resolveDriver();
 
+        const sinCas = casGuard(atomicUpdate, 'escritura remota');
+        if (sinCas) {
+            reportDegradation(sinCas, `write:${key}`);
+            return { ok: false, error: sinCas };
+        }
+
         // Read-modify-write: la versión actual sale del store, no de un caché.
         const res = driver.getItem(spec, { PK: projectId, SK: coord().skFor(key) });
         const cur = coord().validateCoordinationRawItem(res && res.item, projectId);
@@ -687,6 +720,13 @@ function deleteKey(key, expectedVersion) {
     }
     try {
         const { driver, spec, projectId, atomicUpdate } = resolveDriver();
+
+        const sinCas = casGuard(atomicUpdate, 'baja remota');
+        if (sinCas) {
+            reportDegradation(sinCas, `delete:${key}`);
+            return { ok: false, existed: false, error: sinCas };
+        }
+
         const res = driver.getItem(spec, { PK: projectId, SK: coord().skFor(key) });
         const cur = coord().validateCoordinationRawItem(res && res.item, projectId);
         if (!cur) {

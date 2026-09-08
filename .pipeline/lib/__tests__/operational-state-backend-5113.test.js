@@ -343,3 +343,84 @@ test('CA-C1: el flag es estricto — sólo el booleano `true` exacto enciende el
         });
     }
 }));
+
+// -----------------------------------------------------------------------------
+// CA-B2 · sin escritura condicional NO se escribe
+//
+// `buildCasWriteOptions()` devuelve `{}` cuando `atomicUpdate` es falso: la
+// escritura saldria sin `ConditionExpression`, o sea a ciegas. En regimen
+// remoto el CAS ES la exclusion mutua (`withLockSync` es local por PID y entre
+// hosts no excluye nada), asi que escribir sin condicion no es "un poco menos
+// seguro": es simular una garantia inexistente y reabrir el lost update en
+// silencio.
+//
+// El driver real afirma `atomicUpdate: true` explicito, pero
+// `kernel-coordination-store.js` lo DERIVA de `!isInMemory`. Un driver futuro
+// que repita esa derivacion degradaria el CAS sin que nadie se entere, y por eso
+// la garantia se verifica en el PUNTO DE USO en vez de asumirse.
+// -----------------------------------------------------------------------------
+
+test('CA-B2: con `atomicUpdate` falso la escritura remota se RECHAZA, no sale a ciegas', () => enTmp({ PIPELINE_OPSTATE_DURABLE: '1' }, () => {
+    const backend = freshBackend();
+    const driver = createFakeSyncDynamoDriver();
+    backend._setDriverForTests({
+        driver,
+        spec: { type: 'dynamodb_table', tableName: 'tabla-fake', keys: [] },
+        projectId: PROJECT_ID,
+        instanceId: PROJECT_ID,
+        atomicUpdate: false,   // <- el driver NO garantiza escritura condicional
+    });
+
+    const res = backend.writeKey(backend.KEYS.PARTIAL_PAUSE, { allowed_issues: [5113] });
+    assert.equal(res.ok, false, 'sin CAS la escritura no puede prosperar');
+    assert.ok(res.error instanceof Error);
+    assert.match(res.error.message, /CA-B2|atomicUpdate|condicional/i,
+        'el error tiene que nombrar la garantia que falta, no ser un fallo generico');
+
+    // Y lo que importa de verdad: NO se escribio nada en el store.
+    assert.equal(backend.readKey(backend.KEYS.PARTIAL_PAUSE), null,
+        'una escritura rechazada no puede haber dejado el item igual');
+}));
+
+test('CA-B2: la baja remota tambien exige CAS — un delete ciego borra lo que otro escribio', () => enTmp({ PIPELINE_OPSTATE_DURABLE: '1' }, () => {
+    // Primero se escribe CON garantia, para tener algo que borrar.
+    const backend = freshBackend();
+    const driver = createFakeSyncDynamoDriver();
+    const montar = (atomicUpdate) => backend._setDriverForTests({
+        driver,
+        spec: { type: 'dynamodb_table', tableName: 'tabla-fake', keys: [] },
+        projectId: PROJECT_ID,
+        instanceId: PROJECT_ID,
+        atomicUpdate,
+    });
+
+    montar(true);
+    assert.equal(backend.writeKey(backend.KEYS.PARTIAL_PAUSE, { allowed_issues: [5113] }).ok, true);
+
+    // Ahora degrada la garantia: el delete tiene que negarse.
+    montar(false);
+    const res = backend.deleteKey(backend.KEYS.PARTIAL_PAUSE);
+    assert.equal(res.ok, false, 'sin CAS no se borra: podria pisar la baja de otra instancia');
+
+    montar(true);
+    assert.deepEqual(backend.readKey(backend.KEYS.PARTIAL_PAUSE), { allowed_issues: [5113] },
+        'el item sigue vivo: el delete rechazado no borro nada');
+}));
+
+test('CA-B2: `atomicUpdate` se exige ESTRICTO — un truthy cualquiera no alcanza', () => enTmp({ PIPELINE_OPSTATE_DURABLE: '1' }, () => {
+    // Mismo criterio fail-closed que el flag de cutover: la garantia se declara
+    // con el booleano exacto. `'true'`, `1` o `{}` son formas de "creo que si".
+    for (const valor of ['true', 1, {}, 'si', undefined, null]) {
+        const backend = freshBackend();
+        backend._setDriverForTests({
+            driver: createFakeSyncDynamoDriver(),
+            spec: { type: 'dynamodb_table', tableName: 'tabla-fake', keys: [] },
+            projectId: PROJECT_ID,
+            instanceId: PROJECT_ID,
+            atomicUpdate: valor,
+        });
+        const res = backend.writeKey(backend.KEYS.WAVES, stateWithIso('2026-09-08T12:00:00.000Z'));
+        assert.equal(res.ok, false,
+            `atomicUpdate=${JSON.stringify(valor)} NO puede habilitar la escritura remota`);
+    }
+}));
