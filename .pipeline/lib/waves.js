@@ -367,31 +367,70 @@ function readWavesFromDisk(file) {
 // real. Best-effort: nunca tira (el pipeline no puede morir por esto); si el
 // template no es legible, cae a `emptyState()` en disco.
 //
+// #5113 CA-C1 (rebote rev-1) — El bootstrap TAMBIÉN pasa por la capa de
+// storage. Antes sondeaba y escribía `waves.json` con `fs` directo, así que con
+// el flag de cutover encendido creaba un registro de olas LOCAL mientras el
+// pipeline leía el remoto: dos fuentes de verdad simultáneas en el propio boot
+// del pulpo, que es justo lo que el issue prohíbe. El template sigue saliendo
+// del filesystem (es un artefacto VERSIONADO en git, no estado operativo: no
+// migra y no tiene por qué migrar); lo que cambia de sustrato es el DESTINO.
+//
+// Degradación (CA-A7): si el store no responde, `existsKey` no puede afirmar
+// "no existe" — devolvería `false` por no poder leer, y sembrar sobre esa
+// respuesta pisaría estado remoto vivo con un template vacío. Por eso el camino
+// remoto distingue ausencia legítima de degradación y ante degradación NO
+// escribe nada.
+//
 // @returns {{ created: boolean, reason: string }}
 function ensureWavesFile() {
     const file = wavesFile();
-    if (fs.existsSync(file)) {
+    const remoto = stateBackend.isRemote();
+
+    if (remoto) {
+        const actual = stateBackend.readKeyWithVersion(stateBackend.KEYS.WAVES);
+        if (actual.degraded || actual.error) {
+            logWarn('ensureWavesFile: el store del estado operativo no respondió — '
+                + 'NO se siembra el registro de olas (fail-closed CA-A7): sembrar sobre una '
+                + 'lectura fallida pisaría estado remoto vivo con el template vacío.');
+            return { created: false, reason: 'remote-degraded' };
+        }
+        if (actual.value) return { created: false, reason: 'exists' };
+    } else if (fs.existsSync(file)) {
         return { created: false, reason: 'exists' };
     }
-    let content = null;
+
+    let seed = null;
     let fromTemplate = false;
     try {
         const raw = fs.readFileSync(wavesTemplateFile(), 'utf8');
         const parsed = JSON.parse(raw); // validar que el template parsea
-        if (parsed && typeof parsed === 'object') { content = raw; fromTemplate = true; }
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+            seed = parsed; fromTemplate = true;
+        }
     } catch {
-        content = null; // template ausente/ilegible → fallback a estado vacío.
+        seed = null; // template ausente/ilegible → fallback a estado vacío.
     }
-    if (content === null) {
-        content = JSON.stringify(emptyState(), null, 2);
-    }
+    if (seed === null) seed = emptyState();
+
     try {
-        atomicWriteFile(file, content);
+        // `expectedVersion: null` en modo remoto ⇒ `attribute_not_exists(PK)`:
+        // si dos instancias bootean a la vez, gana una sola y la otra recibe
+        // `conflict` sin pisar nada (CA-A4).
+        const res = stateBackend.writeKey(stateBackend.KEYS.WAVES, seed, null);
+        if (res && res.conflict) {
+            return { created: false, reason: 'exists' };
+        }
+        if (res && res.ok === false) {
+            const msg = res.error ? res.error.message : 'escritura rechazada';
+            logWarn(`ensureWavesFile: no se pudo sembrar el registro de olas: ${msg}`);
+            return { created: false, reason: `error: ${msg}` };
+        }
         invalidateCache();
-        logInfo(`ensureWavesFile: waves.json creado desde ${fromTemplate ? 'template' : 'emptyState'}.`);
+        logInfo(`ensureWavesFile: registro de olas creado en ${remoto ? 'el store remoto' : 'waves.json'} `
+            + `desde ${fromTemplate ? 'template' : 'emptyState'}.`);
         return { created: true, reason: fromTemplate ? 'from-template' : 'from-empty-state' };
     } catch (err) {
-        logWarn(`ensureWavesFile: no se pudo crear waves.json: ${err.message}`);
+        logWarn(`ensureWavesFile: no se pudo crear el registro de olas: ${err.message}`);
         return { created: false, reason: `error: ${err.message}` };
     }
 }

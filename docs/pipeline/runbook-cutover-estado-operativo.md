@@ -769,12 +769,45 @@ git diff --stat origin/main -- .pipeline/lib/kernel-parity.js .pipeline/lib/kern
 ```
 
 Y el chequeo que sí es de este cutover — **ningún lector físico suelto** fuera
-del backend (CA-C1: un lector olvidado son dos fuentes de verdad):
+del backend (CA-C1: un lector olvidado son dos fuentes de verdad).
+
+> ⚠️ **Este grep tuvo dos agujeros y los dos dejaron pasar el defecto real del
+> rebote rev-1.** Están cerrados; se documentan porque el próximo que audite
+> esto va a escribir el grep de memoria y le va a salir el que fallaba.
+>
+> 1. **El alcance era `.pipeline/lib/*.js`.** Los lectores vivían en
+>    `.pipeline/scripts/`. Corré sobre `.pipeline/` entero, recursivo.
+> 2. **El path no siempre viene de un literal.** `scripts/init-waves-from-partial.js`
+>    lo pedía con `require('../lib/waves')._paths().WAVES_FILE`: no hay ningún
+>    `'waves.json'` que grepear, así que el control salía limpio mientras el
+>    script leía **y escribía** el registro de olas en disco con el flag
+>    encendido. Esa forma la cubre ahora la regla `paths-indirect` del guardrail
+>    — el grep solo NO alcanza.
 
 ```bash
-grep -rn "readFileSync(partialFile()\|readFileSync(wavesFile()" .pipeline/lib/*.js
-# Salida esperada: sólo líneas dentro de operational-state-backend.js
+# 1 · lectores/escritores físicos por path del sustrato, TODO .pipeline/
+FUERA_DE_SCOPE='__tests__|\.test\.js|/tests/|/test-|/tmp'   # tests + scratch: mismo scope que walkJs
+
+grep -rnE "(readFileSync|writeFileSync|existsSync|unlinkSync)\(\s*(wavesFile|partialFile)\(\)"   .pipeline --include=*.js | grep -vE "$FUERA_DE_SCOPE"
+# Salida esperada: sólo la línea de EJEMPLO comentada dentro de
+# `lib/operational-state-lint.js` (documenta el anti-patrón). Cualquier línea de
+# código real ⇒ hay una segunda fuente de verdad: no encender el flag.
+
+# 2 · literales de estado dentro de una construcción de path
+grep -rnE "['\"](waves\.json|\.partial-pause\.json)['\"]" .pipeline --include=*.js   | grep -vE "$FUERA_DE_SCOPE" | grep -E "path\.join|readFileSync|writeFileSync|existsSync"
+# Salida esperada: SÓLO los dueños del path (lib/waves.js, lib/partial-pause.js).
+
+# 3 · el control mecánico, que cubre lo que el grep no puede ver
 node .pipeline/lib/operational-state-lint.js      # enforce: exit 0
+```
+
+Y la prueba que no depende de que el grep esté bien escrito — el boot completo
+con el flag encendido, espiando `fs`:
+
+```bash
+node --test .pipeline/lib/__tests__/operational-state-boot-no-fs-5113.test.js
+# `ensureWavesFile` + `initWavesFromPartial` + el alcance de ola del
+# desync-detector: CERO contacto con waves.json / .partial-pause.json.
 ```
 
 ---

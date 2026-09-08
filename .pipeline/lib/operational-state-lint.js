@@ -25,8 +25,8 @@
 // existiendo — `--report` / `--report-only` son útiles para auditar sin
 // bloquear.
 //
-// Las dos reglas del matcher
-// --------------------------
+// Las cuatro reglas del matcher
+// ----------------------------
 //   1. `path-level`      — literal de estado (`waves.json`, `.partial-pause.json`,
 //                          `.paused`) DENTRO de una construcción de path. El
 //                          literal solo NO alcanza: se exige confirmación por
@@ -48,6 +48,22 @@
 //                          (`const { _internal } = require(...)`, con o sin
 //                          alias) — un regex sobre `._internal` se evade con
 //                          destructuring, comprobado en `dashboard-slices.js`.
+//
+//   3. `async-gate`      — (#5113 CA-A3) el gate de dispatch declarado `async`
+//                          o consumido con `await`. `if (unaPromesa)` es
+//                          SIEMPRE true: un solo caller que olvide el `await`
+//                          reproduce el incidente #5060 (~320 agentes
+//                          despachados) sin que ningun test se ponga rojo.
+//
+//   4. `paths-indirect`  — (#5113 CA-C1) el path fisico del estado pedido via
+//                          `_paths()` desde fuera del sustrato. Es el falso
+//                          negativo estructural de la regla 1: sin literal que
+//                          matchear, un lector/escritor fisico queda invisible
+//                          para el grep de control. Paso de verdad:
+//                          `scripts/init-waves-from-partial.js` sembraba una
+//                          ola en el `waves.json` local con el flag de cutover
+//                          encendido, mientras el pipeline leia el store
+//                          remoto — dos fuentes de verdad y control en verde.
 //
 // Cinco desvíos DELIBERADOS del template `ghost-artifact-lint.js`
 // --------------------------------------------------------------
@@ -431,7 +447,32 @@ const ASYNC_GATE_DECL_RE = new RegExp(
     + `|(?:\\b(?:${GATE_NAMES_ALT})\\s*=\\s*async\\b)`, 'g',
 );
 
-const RULES = ['path-level', 'internal-bypass', 'async-gate'];
+// ─── Regla 4 · paths-indirect (#5113 CA-C1, rebote rev-1) ───────────────────
+//
+// El falso negativo que dejo pasar el defecto del rebote. `_paths()` es la
+// introspeccion que los duenos del estado (`waves.js`, `partial-pause.js`)
+// exponen para que nadie construya los paths a mano. Es correcta como
+// introspeccion — y es un BYPASS COMPLETO del sustrato en cuanto el path que
+// devuelve se le pasa a `fs`:
+//
+//     const wavesFile = () => require('../lib/waves')._paths().WAVES_FILE;
+//     fs.readFileSync(wavesFile(), 'utf8');       // <- lector fisico invisible
+//
+// Ningun literal `'waves.json'` aparece en ese archivo, asi que la regla 1 no
+// lo ve: `scripts/init-waves-from-partial.js` leia Y ESCRIBIA el registro de
+// olas con el flag de cutover encendido, mientras el pipeline leia el store
+// remoto, y el grep de control salia limpio. Dos fuentes de verdad, cero
+// senal — que es exactamente el modo de falla que este guardrail existe para
+// no tener.
+//
+// La regla marca el ACCESO A `_paths()` desde fuera del sustrato, no el uso de
+// `fs` (que es indecidible sin analisis de flujo). Es deliberadamente amplia:
+// pedir el path fisico del estado ya es la decision que hay que justificar.
+// Consumirlo solo para un mensaje al operador es legitimo y va por allowlist
+// con su razon — el punto es que quede ESCRITO.
+const STATE_PATHS_RE = /require\(\s*['"][^'"]*(?:waves|partial-pause)['"]\s*\)\s*\.\s*_paths\b|\b(?:waves|partialPause)\s*\.\s*_paths\s*\(/g;
+
+const RULES = ['path-level', 'internal-bypass', 'async-gate', 'paths-indirect'];
 
 // ─── Errores ────────────────────────────────────────────────────────────────
 
@@ -926,6 +967,15 @@ function lintSource(rel, src, allowlist) {
         push(line, 'async-gate');
     }
 
+    // ── Regla 4 — paths-indirect (#5113 CA-C1) ──────────────────────────────
+    STATE_PATHS_RE.lastIndex = 0;
+    let ip;
+    while ((ip = STATE_PATHS_RE.exec(src)) !== null) {
+        const line = lineOfOffset(src, ip.index);
+        if (isCommentOnlyLine(src, srcLines, line)) continue;
+        push(line, 'paths-indirect');
+    }
+
     // Una entry resuelta que NO suprimió ninguna violation es una exención que
     // no protege nada. Es informativo (viaja en la tabla de `--report`) y NO
     // rompe el build a propósito: si el matcher deja de marcar un acceso por un
@@ -1064,9 +1114,13 @@ function lint(opts = {}) {
  * `defaultLogger`.
  */
 function formatViolation(v, prefix) {
-    const what = v.rule === 'path-level'
-        ? 'literal de estado en construccion de path'
-        : 'uso de `_internal` (superficie de tests, no API)';
+    const WHAT = {
+        'path-level': 'literal de estado en construccion de path',
+        'internal-bypass': 'uso de `_internal` (superficie de tests, no API)',
+        'async-gate': 'gate de dispatch declarado o consumido como async',
+        'paths-indirect': 'path fisico del estado pedido via `_paths()` (bypass del sustrato)',
+    };
+    const what = WHAT[v.rule] || 'acceso al estado operativo fuera de la superficie publica';
     return `${prefix} ${sanitizeForLog(v.file)}:${sanitizeForLog(v.line)} - regla ${sanitizeForLog(v.rule)} (${what})`;
 }
 
@@ -1172,6 +1226,21 @@ function remediationLines(rules) {
         out.push('  Si necesitas I/O detras del gate, hacelo SINCRONO: la capa de storage');
         out.push('  (`lib/operational-state-backend.js`) es sincrona de punta a punta.');
     }
+    if (rules.has('paths-indirect')) {
+        out.push('');
+        out.push('Remediacion - regla `paths-indirect` (#5113 CA-C1):');
+        out.push('  `_paths()` devuelve el path FISICO de `waves.json` / `.partial-pause.json`.');
+        out.push('  Pedirlo desde fuera del sustrato es un lector/escritor fisico invisible para');
+        out.push('  la regla `path-level`: no hay ningun literal que matchear, asi que el grep de');
+        out.push('  control sale limpio mientras el acceso sigue vivo.');
+        out.push('  Con el estado en el store remoto eso son DOS FUENTES DE VERDAD simultaneas —');
+        out.push('  el defecto real de #5113 (`scripts/init-waves-from-partial.js` sembraba una ola');
+        out.push('  en el disco local que el pipeline nunca veia).');
+        out.push('  Que usar: `lib/operational-state-backend.js` (readKeyWithVersion / writeKey /');
+        out.push('  deleteKey / existsKey) resuelve contra el sustrato VIGENTE, sea cual sea.');
+        out.push('  Si solo necesitas el path para un MENSAJE al operador, `backend.fileFor(key)`');
+        out.push('  ya lo da sin abrir la puerta de la introspeccion del sustrato.');
+    }
     if (out.length) {
         out.push('');
         out.push('  Si la excepcion es legitima: entry { file, anchor, reason } en');
@@ -1197,7 +1266,8 @@ function aggregateByFile(violations) {
             byFile.set(v.file, {
                 file: v.file, scope: classifyScope(v.file),
                 'path-level': 0, 'internal-bypass': 0,
-                'async-gate': 0,   // #5113 CA-A3
+                'async-gate': 0,       // #5113 CA-A3
+                'paths-indirect': 0,   // #5113 CA-C1
                 total: 0,
             });
         }
@@ -1243,12 +1313,12 @@ function formatReport(result) {
     L.push('matcher roto. Relajar la confirmacion de contexto para "llegar" al numero bruto');
     L.push('reintroduce los falsos positivos de copy del operador (UX-6 / CA-6c).');
     L.push('');
-    L.push('| archivo | scope | path-level | internal-bypass | async-gate | total |');
-    L.push('|---|---|---:|---:|---:|---:|');
+    L.push('| archivo | scope | path-level | internal-bypass | async-gate | paths-indirect | total |');
+    L.push('|---|---|---:|---:|---:|---:|---:|');
     for (const r of rows) {
         // El path va aplanado por la misma puerta: `--report` alimenta
         // GITHUB_STEP_SUMMARY (markdown), donde un `\n` rompe la tabla.
-        L.push(`| \`${sanitizeForLog(r.file)}\` | ${r.scope} | ${r['path-level']} | ${r['internal-bypass']} | ${r['async-gate']} | ${r.total} |`);
+        L.push(`| \`${sanitizeForLog(r.file)}\` | ${r.scope} | ${r['path-level']} | ${r['internal-bypass']} | ${r['async-gate']} | ${r['paths-indirect']} | ${r.total} |`);
     }
 
     const sub = (scope) => {
@@ -1258,14 +1328,15 @@ function formatReport(result) {
             'path-level': s.reduce((a, r) => a + r['path-level'], 0),
             'internal-bypass': s.reduce((a, r) => a + r['internal-bypass'], 0),
             'async-gate': s.reduce((a, r) => a + r['async-gate'], 0),
+            'paths-indirect': s.reduce((a, r) => a + r['paths-indirect'], 0),
             total: s.reduce((a, r) => a + r.total, 0),
         };
     };
     const prod = sub('produccion');
     const tst = sub('tests');
-    L.push(`| **subtotal produccion** (${prod.files} archivos) | produccion | **${prod['path-level']}** | **${prod['internal-bypass']}** | **${prod['async-gate']}** | **${prod.total}** |`);
-    L.push(`| **subtotal tests** (${tst.files} archivos) | tests | **${tst['path-level']}** | **${tst['internal-bypass']}** | **${tst['async-gate']}** | **${tst.total}** |`);
-    L.push(`| **TOTAL** (${rows.length} archivos) | | **${prod['path-level'] + tst['path-level']}** | **${prod['internal-bypass'] + tst['internal-bypass']}** | **${prod['async-gate'] + tst['async-gate']}** | **${result.violations.length}** |`);
+    L.push(`| **subtotal produccion** (${prod.files} archivos) | produccion | **${prod['path-level']}** | **${prod['internal-bypass']}** | **${prod['async-gate']}** | **${prod['paths-indirect']}** | **${prod.total}** |`);
+    L.push(`| **subtotal tests** (${tst.files} archivos) | tests | **${tst['path-level']}** | **${tst['internal-bypass']}** | **${tst['async-gate']}** | **${tst['paths-indirect']}** | **${tst.total}** |`);
+    L.push(`| **TOTAL** (${rows.length} archivos) | | **${prod['path-level'] + tst['path-level']}** | **${prod['internal-bypass'] + tst['internal-bypass']}** | **${prod['async-gate'] + tst['async-gate']}** | **${prod['paths-indirect'] + tst['paths-indirect']}** | **${result.violations.length}** |`);
     L.push('');
     L.push('> El subtotal `tests` es 0 por construccion, no por casualidad: `walkJs` excluye');
     L.push('> `*.test.js`, `__tests__/` y la convencion `test-*.js` de la raiz de `.pipeline/`');
@@ -1494,6 +1565,7 @@ function main(argv = process.argv.slice(2)) {
                 confirmedHits: result.confirmedHits,
                 totals: {
                     violations: result.violations.length,
+                    'paths-indirect': result.violations.filter(v => v.rule === 'paths-indirect').length,
                     'path-level': result.violations.filter(v => v.rule === 'path-level').length,
                     'internal-bypass': result.violations.filter(v => v.rule === 'internal-bypass').length,
                 },

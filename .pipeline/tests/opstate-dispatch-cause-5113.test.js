@@ -161,3 +161,97 @@ test('CA-UX2: un deadlock real sigue explicando mejor el no-despacho', () => {
     );
     assert.equal(causa.causa, dc.CAUSAS.DEADLOCK);
 });
+
+// ─── 3 · Las DOS superficies que ve el operador (CA-UX5) ─────────────────────
+//
+// Rebote rev-1: el QA rechazó "enum sin productor" — la causa estaba declarada
+// en `CAUSAS`, `PRECEDENCIA`, `LABELS` y `CAUSAS_ALERTABLES`, y nadie la emitía.
+// El productor ya existe (`_dcMark` en el brazo de lanzamiento del Pulpo, sobre
+// `describeMode().degraded`), pero eso solo no basta como control: una causa que
+// se marca y no llega al tablero ni a Telegram es indistinguible de una que no
+// se marca. Las aserciones de arriba paran en `resolveCause`; estas dos recorren
+// el camino REAL hasta el texto que el operador lee, que es exactamente lo que
+// el QA verificó a mano.
+//
+// Por qué son dos superficies y no una: el banner sale de `dispatch-cause`
+// (label del enum) y el aviso de Telegram sale de `wave-stall-watchdog`
+// (`CAUSE_LABELS`, indexado por el `kind` que traduce `dispatch-cause-kind`).
+// Son tres tablas distintas y agregar la causa a una sola es el modo de falla
+// natural: el tablero explica y Telegram sigue diciendo "sin causa declarada".
+
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+
+const dcKind = require('../lib/dispatch-cause-kind');
+const dcRender = require('../lib/dispatch-cause-render');
+const slices = require('../lib/dashboard-slices');
+const stallWatchdog = require('../lib/wave-stall-watchdog');
+
+/** Causa publicada por el camino real, tal como la deja el Pulpo en disco. */
+function publicarCausaDelSustrato(dir) {
+    const gate = opstateDispatchGate({
+        mode: 'remote', source: 'config', degraded: true, lastError: 'ETIMEDOUT',
+    });
+    const resolved = dc.resolveCause(
+        cicloOcioso([dc.CAUSAS.ESTADO_REMOTO_DEGRADADO], {
+            [dc.CAUSAS.ESTADO_REMOTO_DEGRADADO]: gate.detalle,
+        }),
+        Date.now(),
+    );
+    dc.writeArtifact(dir, resolved);
+    return resolved;
+}
+
+function enTmp(fn) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'opstate-ux5-5113-'));
+    try { return fn(dir); } finally {
+        try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* best-effort */ }
+    }
+}
+
+test('CA-UX5: el TABLERO explica el sustrato — no "causa no determinable"', () => enTmp((dir) => {
+    publicarCausaDelSustrato(dir);
+
+    const slice = slices.dispatchCauseSlice({}, { PIPELINE: dir });
+    assert.equal(slice.active, true, 'el banner no se activó: el operador no ve nada');
+    assert.equal(slice.causa, dc.CAUSAS.ESTADO_REMOTO_DEGRADADO);
+    assert.equal(slice.anomalia, false);
+
+    const html = dcRender.renderDispatchCauseBanner(slice);
+    assert.doesNotMatch(html, /no determinable/i,
+        'el tablero sigue mostrando la anomalía en el momento en que la causa se conoce exacto');
+    assert.match(html, /remoto/i);
+    // CA-UX5: el cartel trae el PRÓXIMO PASO, no sólo el diagnóstico.
+    assert.match(html, /durable/i);
+}));
+
+test('CA-UX5: TELEGRAM nombra la causa — no "sin causa declarada"', () => enTmp((dir) => {
+    publicarCausaDelSustrato(dir);
+
+    // Camino real del watchdog: artifact en disco → `kind` → mensaje.
+    const leido = dc.readArtifact(dir);
+    const cause = dcKind.causeFromArtifact(leido);
+    assert.notEqual(cause, null,
+        'el enum quedó sin mapear a `kind`: el watchdog avisaría "no sé por qué no despacho"');
+    assert.equal(cause.kind, 'opstate-remote-degraded');
+
+    const msg = stallWatchdog.buildAlertMessage({
+        waveKey: 10, stallMinutes: 45, enabledCount: 3, causeKind: cause.kind,
+    });
+    assert.doesNotMatch(msg, /sin causa declarada/,
+        'el aviso de Telegram no nombra la causa: es el defecto del rebote rev-1');
+    assert.match(msg, /estado operativo remoto no responde/i);
+    assert.match(msg, /fail-closed/i);
+}));
+
+test('CA-UX5 (caso negativo): sin la entrada en CAUSE_LABELS el aviso degrada a slug crudo', () => {
+    // Fija que la cobertura de Telegram NO es incidental. Si alguien saca la
+    // causa de `CAUSE_LABELS`, `describeCause` devuelve el slug pelado y el
+    // operador pierde la explicación — el test avisa antes que el incidente.
+    assert.equal(
+        stallWatchdog.describeCause('opstate-remote-degraded'),
+        'estado operativo remoto no responde (dispatch denegado, fail-closed)',
+    );
+    assert.equal(stallWatchdog.describeCause(null), 'sin causa declarada');
+});

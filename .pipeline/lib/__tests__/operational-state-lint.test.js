@@ -1206,11 +1206,11 @@ test('CA-1a · --report separa produccion de tests y emite fila de total', () =>
     installBin(root);
     placeJs(root, 'lib/prod.js', "const path=require('path');\nconst w = path.join(D, 'waves.json');");
     const out = runCli(root, ['--report']).stdout;
-    assert.match(out, /\| archivo \| scope \| path-level \| internal-bypass \| async-gate \| total \|/);
+    assert.match(out, /\| archivo \| scope \| path-level \| internal-bypass \| async-gate \| paths-indirect \| total \|/);
     assert.match(out, /subtotal produccion/);
     assert.match(out, /subtotal tests/);
     assert.match(out, /\*\*TOTAL\*\*/);
-    assert.match(out, /`lib\/prod\.js` \| produccion \| 1 \| 0 \| 0 \| 1/);
+    assert.match(out, /`lib\/prod\.js` \| produccion \| 1 \| 0 \| 0 \| 0 \| 1/);
 });
 
 // -----------------------------------------------------------------------------
@@ -1763,4 +1763,81 @@ test('rebote rev-1 · el eco del fragmento de JSON.parse queda acotado (CA-3b: n
     assert.equal(r.code, 2);
     const linea = r.all.split('\n').find(l => l.includes('JSON inválido')) || '';
     assert.ok(linea.length < 400, `el mensaje no debe volcar el archivo (largo: ${linea.length})`);
+});
+
+// -----------------------------------------------------------------------------
+// #5113 CA-C1 · regla `paths-indirect` — casos NEGATIVOS
+//
+// El falso negativo que costo el rebote rev-1. La regla `path-level` matchea el
+// LITERAL de estado; pedirle el path al dueno con `_paths()` no deja ningun
+// literal en el archivo, asi que un lector/escritor fisico entero quedaba
+// invisible para el control y el grep salia limpio:
+//
+//     function wavesFile() { return require('../lib/waves')._paths().WAVES_FILE; }
+//     fs.readFileSync(wavesFile(), 'utf8');
+//
+// Eso es exactamente lo que hacia `scripts/init-waves-from-partial.js`: con el
+// flag de cutover encendido sembraba una ola en el disco local mientras el
+// pipeline leia el store remoto — dos fuentes de verdad, control en verde.
+// -----------------------------------------------------------------------------
+
+test('CA-C1 · pedir el path fisico con `_paths()` desde el require es una violation', () => {
+    const root = makeTmpPipeline();
+    installBin(root);
+    placeJs(root, 'scripts/seeder.js',
+        "const fs = require('fs');\n"
+        + "function wavesFile() { return require('../lib/waves')._paths().WAVES_FILE; }\n"
+        + "module.exports = () => JSON.parse(fs.readFileSync(wavesFile(), 'utf8'));");
+    const r = runCli(root, ['--check']);
+    assert.notEqual(r.code, 0, 'el bypass por `_paths()` DEBE romper el build');
+    assert.match(r.all, /paths-indirect/);
+});
+
+test('CA-C1 · `_paths()` sobre un binding del sustrato tambien es violation', () => {
+    for (const forma of [
+        "const marker = partialPause._paths().PARTIAL_FILE;",
+        "const f = waves._paths().WAVES_FILE;",
+        "function partialFile() { return require('./partial-pause')._paths().PARTIAL_FILE; }",
+    ]) {
+        const root = makeTmpPipeline();
+        installBin(root);
+        placeJs(root, 'lib/consumidor.js', forma);
+        const r = runCli(root, ['--check']);
+        assert.notEqual(r.code, 0, `bypass no detectado: ${forma}`);
+        assert.match(r.all, /paths-indirect/);
+    }
+});
+
+test('CA-C1 · la remediacion nombra la capa de storage, no la fachada', () => {
+    // Si el mensaje mandara a `operational-state.js`, el proximo dev migraria a
+    // la FACHADA — que es justo lo que el seeder no puede usar (necesita el
+    // payload crudo y la nocion de "ausente"). El destino correcto es el
+    // sustrato, y el mensaje tiene que decirlo.
+    const root = makeTmpPipeline();
+    installBin(root);
+    placeJs(root, 'lib/c.js', "const f = waves._paths().WAVES_FILE;");
+    const r = runCli(root, ['--check']);
+    assert.match(r.all, /operational-state-backend/);
+});
+
+test('CA-C1 · usar la capa de storage NO es violation (sin falsos positivos)', () => {
+    const root = makeTmpPipeline();
+    installBin(root);
+    // Esta es la forma correcta post-#5113 y es la que escribe el seeder hoy.
+    placeJs(root, 'scripts/seeder-ok.js',
+        "const backend = require('../lib/operational-state-backend');\n"
+        + 'module.exports = () => backend.readKeyWithVersion(backend.KEYS.WAVES);');
+    const r = runCli(root, ['--check']);
+    assert.equal(r.code, 0, `el uso del sustrato no puede ser violation:\n${r.all}`);
+});
+
+test('CA-C1 · `_paths()` nombrado en PROSA no se auto-reporta', () => {
+    const root = makeTmpPipeline();
+    installBin(root);
+    placeJs(root, 'lib/doc.js',
+        '// Prohibido: `waves._paths().WAVES_FILE` para leer el estado con fs.\n'
+        + "// Tampoco `require('./partial-pause')._paths()`.\n"
+        + 'module.exports = {};');
+    const r = runCli(root, ['--check']);
+    assert.equal(r.code, 0, `una mencion en comentario no puede ser violation:\n${r.all}`);
 });

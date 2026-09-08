@@ -574,6 +574,41 @@ API de mutación**. Llamar `compareAndSet` directo saltearía el gate de autorí
 #3625 y lo dejaría decorativo. Toda escritura de allowlist entra por
 `setPartialPauseAtomic`.
 
+**"Un solo archivo conoce el flag" implica que ningún otro toca el disco.** No es
+lo mismo que "ningún otro lee `config.yaml`": lo que rompe CA-C1 no es conocer el
+flag, es acceder al sustrato sin pasar por el backend. La lista de accesos que se
+migraron en #5113 incluye tres que **no aparecían en ningún grep de literales**:
+
+| acceso | dónde vivía | por qué era invisible |
+|---|---|---|
+| `ensureWavesFile()` | `lib/waves.js` (bootstrap del boot) | usaba `wavesFile()`, no el literal |
+| `initWavesFromPartial()` | `scripts/init-waves-from-partial.js` | pedía el path con `_paths()`, y el grep de control corría sólo sobre `lib/*.js` |
+| `readWavesAllowlist()` | `lib/desync-detector.js` | estaba **allowlisteado** (#5176) por razones que eran razones para no usar la FACHADA, no para hablarle al disco |
+
+Los tres leían y/o escribían `waves.json` local con el flag encendido, mientras
+el resto del pipeline leía el store. El bootstrap además lo hacía en el **boot
+del Pulpo**, así que el pipeline arrancaba con dos fuentes de verdad y logueaba
+"waves.json sembrado" sobre una ola que nadie iba a ver.
+
+Dos controles cierran la clase entera, y hacen falta los dos:
+
+- **`paths-indirect`** (regla 4 del guardrail): pedir `_paths()` desde fuera del
+  sustrato es violation. Un `grep` de literales no puede ver esa forma — no hay
+  literal.
+- **`operational-state-boot-no-fs-5113.test.js`**: corre el camino de boot
+  completo con el flag en `1` **espiando `fs`** y exige cero contacto con los dos
+  archivos. Es la prueba que no depende de que el grep esté bien escrito.
+
+Si el caso legítimo es sólo mostrarle un path al operador, `backend.fileFor(key)`
+lo da sin abrir la introspección del sustrato.
+
+**Corolario para quien agregue una clave nueva:** el bootstrap de esa clave
+también es acceso al sustrato. Un `ensureXFile()` que cree el archivo "porque
+todavía no existe" es, en régimen remoto, un escritor que pisa estado migrado con
+un template vacío — y `existsSync` no puede distinguir "no existe" de "no pude
+leer". Por eso `ensureWavesFile()` corta contra `readKeyWithVersion` y **no
+siembra nada** cuando el store degradó.
+
 ### 13.2 Layout
 
 ```
