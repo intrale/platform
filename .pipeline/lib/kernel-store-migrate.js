@@ -89,7 +89,7 @@ const DESCRIPTOR_NAME_RE = /^[A-Za-z0-9._-]+\.json$/;
 //
 // Estas son las entidades que el cutover realmente tiene que dejar en el store
 // durable. NINGUNA tiene ruta de migración en este módulo (D-4 / #5136): el
-// migrador sólo sabe mover las 4 fuentes de coordinación, que son justo las que
+// migrador sólo sabe mover las fuentes de coordinación de `SOURCES`, que son justo las que
 // #5112 PROHÍBE migrar. Por eso `migrated_count` es 0 por CONSTRUCCIÓN y no por
 // "no había nada": es un diagnóstico con causa, nunca evidencia de paridad.
 //
@@ -128,18 +128,25 @@ function errSourcesInvalidas(received) {
 // ve, porque `--apply` corta antes con `alcance_no_implementado`. Por eso el
 // mensaje NO menciona ningún flag `--sources` (no existe) ni manda a reintentar
 // `--apply` de otra forma: no hay tal camino.
+// #5113 — La enumeracion de las fuentes se DERIVA de `SOURCES`, nunca se
+// escribe a mano. Estaba hardcodeada como "las 4 fuentes (waves, blocked,
+// blocked-by-infra, health)" y al sumar la allowlist quedo mintiendole al
+// operador en el mensaje de error, que es justo donde mas caro sale.
+const SOURCE_KEYS_TXT = SOURCES.map((x) => x.key).join(', ');
+const SOURCE_COUNT_TXT = `${SOURCES.length} fuentes`;
+
 const ERR_SOURCES_NO_EXPLICITAS =
   "sources_no_explicitas: migrateState({ apply: true }) requiere declarar 'sources' " +
-  'explícitamente. No pases SOURCES: son las 4 fuentes operativas (waves, blocked, ' +
-  'blocked-by-infra, health) que #5112 prohíbe migrar. Para ver el reporte sin mutar ' +
+  `explícitamente. No pases SOURCES: son las ${SOURCE_COUNT_TXT} operativas (${SOURCE_KEYS_TXT}) ` +
+  'que #5112 prohíbe migrar. Para ver el reporte sin mutar ' +
   'nada, invocá con apply: false.';
 
 const ERR_ALCANCE_NO_IMPLEMENTADO =
   'alcance_no_implementado: --apply no puede migrar nada todavía, así que no toca nada.\n' +
   '\n' +
   'Qué pasó: el alcance real del cutover (descriptor#self, product#<id>, catalog#index, ' +
-  'signature#, audit#, claim#) todavía NO tiene ruta de migración en este módulo. Las 4 ' +
-  'fuentes que este migrador sí sabe mover (waves, blocked, blocked-by-infra, health) son ' +
+  `signature#, audit#, claim#) todavía NO tiene ruta de migración en este módulo. Las ${SOURCE_COUNT_TXT} ` +
+  `que este migrador sí sabe mover (${SOURCE_KEYS_TXT}) son ` +
   'justo las que #5112 prohíbe migrar.\n' +
   '\n' +
   'Qué hacer ahora: los descriptores y el catálogo se pueblan por durableRegisterProduct ' +
@@ -147,7 +154,7 @@ const ERR_ALCANCE_NO_IMPLEMENTADO =
   'del estado de coordinación sin mutar nada, corré este mismo comando SIN flags (dry-run).\n' +
   '\n' +
   'La trampa: no "destrabes" esto pasando SOURCES al migrador. Eso migraría exactamente las ' +
-  '4 fuentes operativas prohibidas, que es el falso verde que #5136 existe para evitar.';
+  `${SOURCE_COUNT_TXT} operativas prohibidas, que es el falso verde que #5136 existe para evitar.`;
 
 // -----------------------------------------------------------------------------
 // Utilidades puras
@@ -221,7 +228,7 @@ function assertWithin(rootDir, candidate) {
 // Lectura de las fuentes JSON
 // -----------------------------------------------------------------------------
 
-// Lee y parsea las 4 fuentes desde `sourceDir`. Errores como dato. Una fuente
+// Lee y parsea las fuentes de `SOURCES` desde `sourceDir`. Errores como dato. Una fuente
 // ausente NO es fatal por sí sola (estado que aún no existe): se reporta como
 // `present:false` y se excluye de la migración, pero se registra para el
 // reporte del operador.
@@ -434,7 +441,7 @@ function buildScopeDiagnostic(opts = {}) {
     causes.push('no hay ningún descriptor legible en .pipeline/descriptors/, así que no hay alcance que migrar.');
   }
   causes.push(
-    'las 4 fuentes de coordinación (waves, blocked, blocked-by-infra, health) están EXCLUIDAS del cutover por #5112: '
+    `las ${SOURCE_COUNT_TXT} de coordinación (${SOURCE_KEYS_TXT}) están EXCLUIDAS del cutover por #5112: `
     + 'este módulo sabe moverlas, pero no pertenecen al alcance del cutover y no cuentan para `migrated_count`.',
   );
 
@@ -560,7 +567,7 @@ function buildReport({ mode, items, before, after, actions, backupDir, integrity
     // #5208 · GAP-UX-2 — El texto viejo mandaba a `--apply`, que hoy corta
     // SIEMPRE con `alcance_no_implementado`. Decírselo al operador en plena
     // ventana lo manda a un comando que no puede funcionar.
-    lines.push('           `--apply` está bloqueado a propósito (alcance_no_implementado): las 4 fuentes que');
+    lines.push(`           \`--apply\` está bloqueado a propósito (alcance_no_implementado): las ${SOURCE_COUNT_TXT} que`);
     lines.push('           este módulo sabe mover son las que #5112 prohíbe migrar en el cutover.');
   } else if (integrity && !integrity.ok) {
     lines.push('[FALLA] verificación de integridad detectó discrepancias:');
@@ -615,7 +622,7 @@ function buildReport({ mode, items, before, after, actions, backupDir, integrity
  * `descriptor#self` sigue siendo uno solo por partición. Por eso el backup del
  * alcance real es `backupDescriptors()` (CA-13′) y no `createBackup()`.
  *
- * `SOURCES` (arriba, la constante) son las 4 fuentes OPERATIVAS de coordinación
+ * `SOURCES` (arriba, la constante) son las fuentes OPERATIVAS de coordinación
  * —waves, blocked, blocked-by-infra, health— que #5112 **prohíbe migrar** en el
  * cutover. Son justamente lo que esta función sabe mover, y por eso el CLI
  * `--apply` está bloqueado con `alcance_no_implementado` (D-4).
@@ -624,7 +631,7 @@ function buildReport({ mode, items, before, after, actions, backupDir, integrity
  * @param {object}  opts.store        instancia de `createCoordinationStore` (#4744). REQUERIDA para --apply.
  * @param {boolean} [opts.apply=false] false = dry-run (no escribe); true = persiste.
  * @param {string}  [opts.projectId]   identidad del descriptor (default 'intrale-platform').
- * @param {string}  [opts.sourceDir]   dir de las 4 fuentes JSON (default `.pipeline/`).
+ * @param {string}  [opts.sourceDir]   dir de las fuentes JSON de `SOURCES` (default `.pipeline/`).
  * @param {string}  [opts.backupRoot]  raíz de backups (default `.pipeline/backup/`).
  * @param {number}  [opts.now]         epoch ms para el <timestamp> del backup (default Date.now()).
  * @param {Array}   [opts.sources]     DECLARACIÓN DE ALCANCE (ya no es un "override para tests").
@@ -652,7 +659,7 @@ async function migrateState(opts = {}) {
   }
   // ⚠️ NO reintroducir `&& opts.sources.length`: ésa es exactamente la trampa de
   // CA-11′ — un array vacío es falsy por `.length` y caía al default, migrando
-  // las 4 fuentes que #5112 prohíbe migrar. Un `[]` llega tal cual a
+  // las fuentes de `SOURCES` que #5112 prohíbe migrar. Un `[]` llega tal cual a
   // `readSources`, que devuelve `items = []` ⇒ `no_sources`, que es la semántica
   // correcta de "no migres nada".
   const sources = opts.sources !== undefined ? opts.sources : SOURCES;
@@ -822,7 +829,7 @@ function rollbackState(opts = {}) {
 // -----------------------------------------------------------------------------
 // Backup / restore de DESCRIPTORES (CA-13′ / CA-13b · #5136)
 //
-// `createBackup` respalda las 4 fuentes OPERATIVAS de coordinación, que son
+// `createBackup` respalda las fuentes OPERATIVAS de coordinación de `SOURCES`, que son
 // justo las que #5112 prohíbe migrar. El origen del ALCANCE REAL del cutover es
 // `.pipeline/descriptors/` (1:N con `product#<id>`), que NO está en `SOURCES` —
 // o sea que hoy el alcance real no tiene ni backup ni ruta de restauración.
@@ -1168,7 +1175,7 @@ async function main() {
   //
   // El alcance real del cutover (descriptor#self / product#<id> / catalog#index /
   // signature# / audit# / claim#) todavía NO tiene ruta de migración en este
-  // módulo, y `SOURCES` son justo las 4 fuentes operativas que #5112 prohíbe
+  // módulo, y `SOURCES` son justo las fuentes operativas que #5112 prohíbe
   // migrar. Hasta que esa ruta exista, `--apply` dice la verdad y no toca nada.
   //
   // Va ACÁ, y no más abajo, por dos motivos duros (AD-2):

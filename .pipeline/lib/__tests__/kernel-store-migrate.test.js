@@ -965,3 +965,79 @@ test('CA-2: un directorio de descriptores inexistente no produce un cero silenci
   assert.equal(diag.migratedCount, 0);
   assert.match(diag.causes.join('\n'), /no hay ningún descriptor legible/);
 });
+
+// -----------------------------------------------------------------------------
+// #5113 CA-A8 — la allowlist de ejecucion entra al alcance del migrador
+//
+// Y D-3 / SEC-7 — `.paused` NO entra, por diseño. Ese test es NEGATIVO y es el
+// que el comentario de `SOURCES` promete: `.paused` es el halt de ultimo
+// recurso y el mecanismo de aborto del propio cutover. Si viviera en el store,
+// una degradacion dejaria al operador sin freno justo en el peor momento.
+// -----------------------------------------------------------------------------
+
+test('CA-A8: `.partial-pause.json` esta entre las fuentes y su clave en MIGRATION_KNOWN_KEYS', () => {
+  const src = SOURCES.find((x) => x.file === '.partial-pause.json');
+  assert.ok(src, 'la allowlist de ejecucion DEBE ser una fuente del migrador');
+  assert.equal(src.key, 'partial-pause');
+  assert.ok(MIGRATION_KNOWN_KEYS.includes('partial-pause'),
+    'sin la clave en knownKeys el store rechaza el item al migrarlo');
+});
+
+test('CA-A8: el dry-run LISTA la allowlist entre las fuentes que reporta', async () => {
+  const sourceDir = freshTmp('a8-src');
+  const backupRoot = freshTmp('a8-bak');
+  writeSources(sourceDir);
+  const store = makeStore();
+  const res = await migrateState({ apply: false, sources: SOURCES, store, sourceDir, backupRoot, now: FIXED_NOW });
+
+  assert.equal(res.dryRun, true, 'el dry-run no puede mutar nada');
+  const serializado = JSON.stringify(res);
+  assert.ok(serializado.includes('partial-pause') || serializado.includes('.partial-pause.json'),
+    'la allowlist tiene que aparecer en el reporte: es la evidencia que pide CA-A8');
+});
+
+test('D-3 / SEC-7: `.paused` NO es fuente del migrador ni clave conocida del store', () => {
+  // El test es negativo a proposito. Si alguien suma `.paused` "por
+  // consistencia", esto se pone en rojo antes de que el operador se quede sin
+  // freno de emergencia durante una degradacion del store.
+  for (const s2 of SOURCES) {
+    assert.notEqual(s2.file, '.paused', '`.paused` NUNCA puede migrar al store (D-3)');
+    assert.notEqual(s2.key, 'paused', '`.paused` NUNCA puede migrar al store (D-3)');
+    assert.notEqual(s2.key, 'full-pause', '`.paused` NUNCA puede migrar al store (D-3)');
+  }
+  for (const k of MIGRATION_KNOWN_KEYS) {
+    assert.notEqual(k, 'paused');
+    assert.notEqual(k, 'full-pause');
+  }
+});
+
+test('D-3 / SEC-7: migrar las fuentes declaradas no toca el archivo `.paused` local', async () => {
+  const sourceDir = freshTmp('a8-paused-src');
+  const backupRoot = freshTmp('a8-paused-bak');
+  writeSources(sourceDir);
+  // El halt total esta activo mientras se migra: tiene que seguir intacto y
+  // legible desde el filesystem al terminar.
+  const pausedPath = path.join(sourceDir, '.paused');
+  fs.writeFileSync(pausedPath, '2026-09-08T00:00:00.000Z');
+
+  const store = makeStore();
+  await migrateState({ apply: false, sources: SOURCES, store, sourceDir, backupRoot, now: FIXED_NOW });
+
+  assert.equal(fs.existsSync(pausedPath), true, 'el freno de emergencia no se mueve ni se borra');
+  assert.equal(fs.readFileSync(pausedPath, 'utf8'), '2026-09-08T00:00:00.000Z');
+});
+
+test('#5113: los mensajes al operador DERIVAN la enumeracion de fuentes, no la hardcodean', async () => {
+  // Estaban escritos a mano ("las 4 fuentes (waves, blocked, blocked-by-infra,
+  // health)") y al sumar la allowlist quedaron mintiendo. Un mensaje de error
+  // que enumera mal el alcance es peor que uno generico: el operador decide en
+  // base a el.
+  const res = await migrateState({ apply: true, store: {}, sourceDir: '.pipeline', backupRoot: '/tmp/x' });
+  assert.equal(res.code, 'sources_no_explicitas');
+  assert.ok(res.error.includes('partial-pause'),
+    'el mensaje tiene que nombrar TODAS las fuentes vigentes, incluida la allowlist');
+  assert.ok(res.error.includes(SOURCES.length + ' fuentes'),
+    'el conteo tiene que salir de SOURCES, no de un literal que se desactualiza');
+  assert.equal(/\b4 fuentes\b/.test(res.error), false,
+    'el conteo viejo hardcodeado no puede sobrevivir');
+});
