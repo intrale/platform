@@ -99,16 +99,23 @@ class ActiveProcessRegistry extends Map {
      * Carga el registro del disco y descarta las corridas cuyo PID ya no vive.
      * Idempotente. Devuelve el detalle para que el caller pueda loguearlo.
      *
-     * @returns {{ rehidratadas: number, descartadas: number, error: string|null }}
+     * `confiable` dice si el registro resultante describe la realidad. Es false
+     * cuando no había archivo (primer arranque tras el deploy) o cuando estaba
+     * corrupto: en esos casos el vacío NO significa "nadie está corriendo", y
+     * quien consuma el registro tiene que tratarlo como desconocimiento, no como
+     * evidencia de muerte.
+     *
+     * @returns {{ rehidratadas: number, descartadas: number, error: string|null, confiable: boolean }}
      */
     rehidratar() {
-        if (!this._file) return { rehidratadas: 0, descartadas: 0, error: null };
+        if (!this._file) return { rehidratadas: 0, descartadas: 0, error: null, confiable: false };
         let crudo;
         try {
             crudo = this._fs.readFileSync(this._file, 'utf8');
         } catch {
-            // No existe todavía: primer arranque. No es un error.
-            return { rehidratadas: 0, descartadas: 0, error: null };
+            // No existe todavía: primer arranque. No es un error, pero tampoco
+            // podemos afirmar que no haya corridas en vuelo.
+            return { rehidratadas: 0, descartadas: 0, error: null, confiable: false };
         }
 
         let datos;
@@ -116,7 +123,7 @@ class ActiveProcessRegistry extends Map {
             datos = JSON.parse(crudo);
         } catch (e) {
             this._log(`registro de corridas ilegible, arranco vacío: ${e.message}`);
-            return { rehidratadas: 0, descartadas: 0, error: e.message };
+            return { rehidratadas: 0, descartadas: 0, error: e.message, confiable: false };
         }
 
         const entradas = (datos && typeof datos === 'object' && datos.corridas) || {};
@@ -140,7 +147,7 @@ class ActiveProcessRegistry extends Map {
         }
 
         this._persistir();
-        return { rehidratadas, descartadas, error: null };
+        return { rehidratadas, descartadas, error: null, confiable: true };
     }
 
     _persistir() {

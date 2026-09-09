@@ -48,7 +48,12 @@ withEnv(
         motivo: 'cargar pulpo.js como módulo para ejercitar brazoHuerfanos sin arrancar el loop',
     },
 );
-const { brazoHuerfanos, activeProcesses, _setBootTsForTesting } = pulpo;
+const {
+    brazoHuerfanos,
+    activeProcesses,
+    rehidratarRegistroDeCorridas,
+    _setBootTsForTesting,
+} = pulpo;
 
 const CONFIG = {
     timeouts: { orphan_timeout_minutes: 10 },
@@ -63,6 +68,9 @@ function sembrarCorridaConMtimeHeredado(minutosDeAntiguedad) {
         for (const f of fs.readdirSync(d)) fs.rmSync(path.join(d, f), { force: true });
     }
     activeProcesses.clear();
+    // `clear()` persiste, así que deja el archivo de estado creado. Lo borramos
+    // para partir del escenario real: un Pulpo que arranca SIN registro previo.
+    try { fs.rmSync(path.join(RAIZ, 'state', 'active-processes.json'), { force: true }); } catch { /* ok */ }
     const destino = path.join(TRABAJANDO, DROPFILE);
     fs.writeFileSync(destino, 'issue: 5801\nskill: pipeline-dev\n', 'utf8');
     const viejo = new Date(Date.now() - minutosDeAntiguedad * 60000);
@@ -72,8 +80,11 @@ function sembrarCorridaConMtimeHeredado(minutosDeAntiguedad) {
 
 test('registro frío tras el reinicio: el barrido NO rebota la corrida', () => {
     sembrarCorridaConMtimeHeredado(592);
-    // El Pulpo acaba de bootear, igual que a las 10:09:23 del incidente.
+    // El Pulpo acaba de bootear, igual que a las 10:09:23 del incidente, y sin
+    // registro previo en disco: su vacío no prueba que la corrida haya muerto.
     _setBootTsForTesting(Date.now() - 20 * 1000);
+    const rehidratacion = rehidratarRegistroDeCorridas();
+    assert.equal(rehidratacion.confiable, false, 'sin archivo previo el registro no es confiable');
 
     brazoHuerfanos(CONFIG);
 
@@ -101,6 +112,30 @@ test('pasada la ventana de gracia, una corrida sin proceso sí se recupera', () 
     assert.equal(
         fs.existsSync(path.join(PENDIENTE, DROPFILE)), true,
         'y volver a pendiente/ para reintentarse',
+    );
+});
+
+test('con el registro rehidratado la gracia no aplica: lo que no figura, no vive', () => {
+    // La gracia es la red para cuando el registro NO es confiable. Si el archivo
+    // estaba y se rehidrató, su ausencia SÍ es evidencia de muerte y el barrido
+    // debe hacer su trabajo aunque el Pulpo acabe de arrancar.
+    sembrarCorridaConMtimeHeredado(592);
+    fs.mkdirSync(path.join(RAIZ, 'state'), { recursive: true });
+    fs.writeFileSync(
+        path.join(RAIZ, 'state', 'active-processes.json'),
+        JSON.stringify({ version: 1, corridas: {} }),
+        'utf8',
+    );
+
+    _setBootTsForTesting(Date.now() - 20 * 1000);
+    const rehidratacion = rehidratarRegistroDeCorridas();
+    assert.equal(rehidratacion.confiable, true);
+
+    brazoHuerfanos(CONFIG);
+
+    assert.equal(
+        fs.existsSync(path.join(PENDIENTE, DROPFILE)), true,
+        'con registro confiable la corrida colgada se recupera sin esperar la gracia',
     );
 });
 

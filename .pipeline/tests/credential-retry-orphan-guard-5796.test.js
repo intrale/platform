@@ -141,6 +141,15 @@ function bancoDeBarrido({ registroDeSettlements } = {}) {
         fileAgeMinutes: () => 58612,
         activeProcesses,
         isProcessAlive: () => false,
+        // Incidente 2026-09-08 — el brazo pasó a consultar la guarda antes de
+        // declarar huérfana una corrida. Se inyecta la REAL para que este banco
+        // siga midiendo el comportamiento de producción.
+        orphanGuard: require('../lib/orphan-guard'),
+        // Pulpo con vida de sobra y sin ventana de gracia: es el escenario que
+        // estos tests validan (registro confiable, muerte confirmada), así que
+        // el barrido debe ejecutar sus efectos como siempre.
+        PULPO_BOOT_TS: Date.now() - 24 * 60 * 60 * 1000,
+        graciaPostBootMinutos: 0,
         orphanRetries,
         MAX_ORPHAN_RETRIES: 3,
         credentialRetrySettlement: settlementInyectado,

@@ -191,6 +191,7 @@
     padding: 3px 8px; border-radius: 2px; white-space: nowrap;
   }
   .tag.p1 { background: var(--alert); color: var(--surface); }
+  .tag.ok { background: var(--ok-soft); color: var(--ok); border: 1px solid var(--ok); }
   .tag.p2 { background: var(--warn-soft); color: var(--warn); border: 1px solid var(--warn); }
   .tag.p3 { background: var(--sunken); color: var(--ink-soft); border: 1px solid var(--rule); }
   .fault h3 { flex: 1 1 auto; min-width: 240px; }
@@ -274,7 +275,7 @@
   </header>
 
   <div class="verdict col">
-    <p><strong>No hubo una falla del modelo ni de los agentes.</strong> El pipeline pasó ~10 horas intentando lanzar agentes con la cadena de providers completamente apagada, a razón de un intento cada 21 segundos, sin lograr lanzar ni uno. Ese giro en vacío hizo que el brazo de huérfanos contara esas horas como “el agente murió”, devolviera las fases a la cola y quemara sus 3 reintentos hasta rechazarlas. Todo lo que se hizo de día fue rehacer lo que la noche había tirado.</p>
+    <p><strong>No hubo una falla del modelo ni de los agentes.</strong> Fueron dos defectos de infraestructura que se combinaron: el barrido de huérfanos rebota trabajo sano después de cada reinicio del Pulpo, y el dispatch reintenta cada 30 segundos aunque no haya ningún provider capaz de atender. Uno produjo el retrabajo; el otro, el giro en vacío. Los dos están corregidos, con la verificación descrita al final.</p>
   </div>
 
   <section>
@@ -343,23 +344,28 @@
         <p>Al agotarse la cadena no hay backoff ni espera hasta la próxima ventana activa: vuelve a intentar de inmediato. ~170 <code>chain_exhausted</code> por hora, diez horas seguidas.</p>
       </li>
       <li>
-        <h3>El marcador de fase queda en <code>trabajando/</code> sin proceso detrás</h3>
-        <p>El brazo de huérfanos mide “minutos sin proceso”, no “minutos sin provider disponible”. Contó las horas de apagón como si el agente se hubiera muerto.</p>
+        <h3>El dropfile entra a <code>trabajando/</code> ya vencido</h3>
+        <p><code>moveFile</code> es <code>fs.renameSync</code>, que <strong>preserva el mtime</strong>. Y el barrido mide la edad de la corrida con ese mtime. Un archivo que esperó horas en <code>pendiente/</code> nace por encima del timeout, aunque su agente tenga segundos de vida.</p>
       </li>
       <li>
-        <h3>Devuelve la fase a la cola y quema los reintentos</h3>
-        <p>Tres pasadas y la fase queda rechazada. Les pasó a las dos piezas centrales de la ola, por una causa que no tiene nada que ver con su código.</p>
+        <h3>El reinicio del Pulpo borra el registro de quién está corriendo</h3>
+        <p><code>activeProcesses</code> era un <code>Map</code> en memoria sin rehidratación. Tras un boot está vacío: <em>ninguna</em> corrida figura como viva, ni siquiera las que están corriendo bien.</p>
+      </li>
+      <li>
+        <h3>Las dos señales fallan juntas y el barrido rebota trabajo sano</h3>
+        <p>Edad vencida más registro vacío es exactamente la firma de “el agente murió”. El Pulpo reinició a las <strong>10:09:23</strong> y a las <strong>10:09:43</strong> empezó a rebotar fases. Tres pasadas y quedan rechazadas.</p>
       </li>
       <li>
         <h3>De día se rehace desde cero</h3>
         <p>De ahí los <code>attempt-2</code> en guru, po, ux y pipeline-dev sobre los mismos 7 issues, y los ~113 M de tokens (40% del día) gastados en repetir trabajo ya hecho.</p>
       </li>
     </ol>
-    <div class="evidence col" style="margin-top:22px">[huerfanos] 5801.pipeline-dev lleva 638min sin proceso → pendiente/ (intento 3/3)
-[huerfanos] 5801.pipeline-dev excedió 3 reintentos → rechazado
-[huerfanos] 6239.pipeline-dev lleva 629min sin proceso → pendiente/ (intento 3/3)
-[huerfanos] 6239.pipeline-dev excedió 3 reintentos → rechazado</div>
-    <p class="where col">638 minutos = 10 h 38 min. Exactamente la ventana de reposo más el arranque.</p>
+    <div class="evidence col" style="margin-top:22px">10:09:23  [pulpo] reinicio
+10:09:43  [huerfanos] 5801.pipeline-dev lleva 592min sin proceso → pendiente/ (intento 1/3)
+10:35:00  [huerfanos] 5801.pipeline-dev lleva 617min sin proceso → pendiente/ (intento 2/3)
+10:56:29  [huerfanos] 5801.pipeline-dev lleva 638min sin proceso → pendiente/ (intento 3/3)
+11:09:55  [huerfanos] 5801.pipeline-dev excedió 3 reintentos → rechazado</div>
+    <p class="where col">Los tres reintentos se consumieron en una hora de la mañana, no durante la noche — y la edad crece 592 → 617 → 638 porque el mtime nunca se refresca. Le pasó lo mismo a #6239, con <code>qa:passed</code> puesto.</p>
   </section>
 
   <section>
@@ -367,22 +373,25 @@
     <h2>Las seis cosas que hay que arreglar</h2>
 
     <div class="fault">
-      <div class="fault-head"><span class="tag p1">Bloqueante</span><h3>El dispatch no frena cuando no hay a quién despachar</h3></div>
-      <p class="col">Con toda la cadena apagada, el Pulpo reintenta en bucle cerrado en lugar de dormir hasta la próxima ventana activa. Es el generador del 95% del ruido del día y el disparador de todo lo que sigue.</p>
+      <div class="fault-head"><span class="tag ok">Corregido</span><h3>El barrido de huérfanos rebotaba trabajo sano tras cada reinicio</h3></div>
+      <p class="col">Las dos señales con las que decide fallan juntas después de un boot. Ahora el registro de corridas se persiste y se rehidrata revalidando cada PID contra el sistema operativo; la entrada a <code>trabajando/</code> marca el mtime, así la edad mide la corrida y no el dropfile; y mientras el registro esté frío el barrido se abstiene, porque no puede distinguir “murió” de “no lo lancé yo”.</p>
+      <div class="evidence">registro frío tras el reinicio: el barrido NO rebota la corrida        ✔
+pasada la ventana de gracia, una corrida sin proceso sí se recupera   ✔
+la entrada a trabajando/ refresca el mtime                            ✔</div>
+      <p class="where">.pipeline/lib/orphan-guard.js · .pipeline/lib/active-process-registry.js</p>
+    </div>
+
+    <div class="fault">
+      <div class="fault-head"><span class="tag ok">Corregido</span><h3>El dispatch no esperaba cuando no había a quién despachar</h3></div>
+      <p class="col">Con toda la cadena apagada, el Pulpo reintentaba cada 30 segundos. Ahora cada agotamiento programa una espera exponencial de 1 a 15 minutos para ese <code>(skill, issue)</code>, consultada <em>antes</em> de mover el dropfile — así tampoco rebota entre carpetas en cada vuelta. Medido sobre la noche real: <strong>1200 intentos pasan a 44, un 96,3% menos</strong>.</p>
       <div class="evidence">chain_exhausted: 2143   reason: "all_gated"
 fallback_also_gated: 2672   primary_inactive_by_schedule: 2133
 fallback_selected: 51</div>
-      <p class="where">.pipeline/lib/agent-launcher/dispatch-with-fallback.js — emisión de <code>chain_exhausted</code></p>
+      <p class="where">.pipeline/lib/dispatch-backoff.js</p>
     </div>
 
     <div class="fault">
-      <div class="fault-head"><span class="tag p1">Bloqueante</span><h3>El brazo de huérfanos castiga al issue por una falla del proveedor</h3></div>
-      <p class="col">Ya existe el precedente correcto: cuando el spawn falla por el provider se registra un marker y <em>no</em> se penaliza el retry del issue. Falta extender ese mismo criterio al caso “nunca se intentó porque no había provider”. Sin esto, cada noche de apagón se come tres reintentos de cada fase en vuelo.</p>
-      <p class="where">.pipeline/lib/agent-launcher/spawn-failure-state.js — el mecanismo a extender</p>
-    </div>
-
-    <div class="fault">
-      <div class="fault-head"><span class="tag p1">Bloqueante</span><h3>Un provider bloqueado por cuota no puede desbloquearse solo</h3></div>
+      <div class="fault-head"><span class="tag p1">Pendiente</span><h3>Un provider bloqueado por cuota no puede desbloquearse solo</h3></div>
       <p class="col">El flag de cuota se limpia únicamente cuando ese provider tiene un spawn exitoso — pero mientras el flag está puesto, el provider no puede spawnear. Es un candado circular: OpenAI/Codex bloqueó 2190 dispatches con el flag puesto, y hoy su cuota real marca 0% de uso. Cerebras está marcado agotado hasta mañana a las 23:00Z por una detección de las 20:00.</p>
       <div class="evidence">quota-exhausted.json → cerebras: exhausted:true, resets_at 2026-09-09T23:00:29Z
 multi-provider-health → openai: quota pct 10, state green</div>
@@ -423,43 +432,30 @@ multi-provider-health → openai: quota pct 10, state green</div>
     <h2>Qué hacer, en este orden</h2>
 
     <div class="phase">
-      <div class="phase-head"><h3>Fase 0 · Frenar el sangrado</h3><span class="phase-when">esta noche</span></div>
+      <div class="phase-head"><h3>Hecho · PR sobre #7103</h3><span class="phase-when">con tests</span></div>
       <ol class="steps">
-        <li><div><strong>Parar el pipeline hasta las 07:00.</strong>
-          <p>El ciclo de las 20:00 ya empezó: 2338 intentos en una hora. No hay ningún provider capaz de trabajar de noche, así que cada hora que siga corriendo sólo quema reintentos de fases sanas. Halt total con <code>.paused</code>.</p></div></li>
-        <li><div><strong>Rescatar los tres marcadores en vuelo antes de que respawnee.</strong>
-          <p><code>5113.pipeline-dev</code>, <code>5691.ux</code> y <code>6239.guru</code> están en <code>trabajando/</code> sin proceso detrás. Si el Pulpo levanta con el brazo de huérfanos activo, se los come igual que anoche.</p></div></li>
-        <li><div><strong>Levantar el Pulpo, que está caído.</strong>
-          <p>Fue matado por el watchdog a las 21:45 y el respawn no prendió; el pid 21116 ya no existe. Desde PowerShell, nunca desde Git Bash.</p>
-          <span class="cmd">node .pipeline/restart.js</span></div></li>
-        <li><div><strong>Devolver #5801 y #6239 a la cola sin penalización.</strong>
-          <p>Fueron rechazados por infraestructura, no por su código. Reponer sus contadores de reintento en cero.</p></div></li>
+        <li><div><strong>El registro de corridas sobrevive al reinicio.</strong>
+          <p>Se persiste en cada cambio y se rehidrata al arrancar, revalidando cada PID contra el sistema operativo: lo que ya murió no vuelve. Extiende <code>Map</code>, así que ningún call-site existente cambió.</p></div></li>
+        <li><div><strong>La entrada a <code>trabajando/</code> marca el mtime.</strong>
+          <p>La edad pasa a medir la corrida y no la antigüedad heredada del dropfile. Va dentro de <code>moveFile</code>, el único lugar por el que pasan todos los movimientos, para que ningún call-site futuro tenga que acordarse.</p></div></li>
+        <li><div><strong>El barrido se abstiene mientras no pueda saber.</strong>
+          <p>Si el registro no es confiable —primer arranque tras el deploy, o archivo corrupto— su vacío no prueba que nadie esté corriendo, y el barrido espera en vez de rebotar. Con un registro rehidratado la espera no aplica: lo que no figura, no vive.</p></div></li>
+        <li><div><strong>Backoff exponencial ante cadena agotada.</strong>
+          <p>De 1 a 15 minutos por <code>(skill, issue)</code>, consultado antes de mover el dropfile. Se reinicia en cuanto hay un despacho efectivo.</p></div></li>
       </ol>
     </div>
 
     <div class="phase">
-      <div class="phase-head"><h3>Fase 1 · Cortar la causa raíz</h3><span class="phase-when">mañana, antes de reabrir la ola</span></div>
-      <ol class="steps">
-        <li><div><strong>Backoff en el dispatch cuando la cadena se agota.</strong>
-          <p>Ante <code>all_gated</code>, dormir hasta la próxima ventana en que algún provider vuelva a estar activo, en lugar de reintentar cada 21 segundos. Solo esto elimina ~5000 eventos por noche.</p></div></li>
-        <li><div><strong>El tiempo sin provider no cuenta como tiempo sin proceso.</strong>
-          <p>El brazo de huérfanos debe descontar los minutos en los que ningún provider estuvo disponible. Una fase que nunca pudo lanzarse no es huérfana y no debe gastar reintentos.</p></div></li>
-        <li><div><strong>Expiración real del flag de cuota por provider.</strong>
-          <p>Que el flag caduque por <code>resets_at</code> y se revalide contra el adaptador de cuota, sin depender de un spawn exitoso que el propio flag impide.</p></div></li>
-      </ol>
-    </div>
-
-    <div class="phase">
-      <div class="phase-head"><h3>Fase 2 · Recuperar la capacidad de diagnosticar</h3><span class="phase-when">esta semana</span></div>
+      <div class="phase-head"><h3>Queda pendiente</h3><span class="phase-when">issues aparte</span></div>
       <ol class="steps">
         <li><div><strong>Decidir qué pasa de noche, explícitamente.</strong>
-          <p>Hoy hay una contradicción de política: se apaga Anthropic 11 horas y se deja al pipeline intentando igual, con una cadena de respaldo que en la práctica no existe. Las dos salidas honestas son conseguir un respaldo nocturno que funcione de verdad, o declarar la noche como parada del pipeline. La mezcla actual es la que produce el daño.</p></div></li>
+          <p>Hay una contradicción de política: se apaga Anthropic 11 horas y se deja al pipeline intentando igual, con una cadena de respaldo que en la práctica no existe. Las dos salidas honestas son conseguir un respaldo nocturno que funcione de verdad, o declarar la noche como parada. El backoff contiene el daño, no resuelve la contradicción.</p></div></li>
+        <li><div><strong>Romper el candado circular del flag de cuota.</strong>
+          <p>Que el flag caduque por <code>resets_at</code> revalidado contra el adaptador, sin depender de un spawn exitoso que el propio flag impide.</p></div></li>
         <li><div><strong>Arreglar <code>classifyByContext</code>.</strong>
           <p>Que “duró más de 30 segundos” deje de significar error. Exigir <code>timedOut</code> o salida distinta de cero. Sin esto, el próximo incidente vuelve a investigarse a ciegas.</p></div></li>
-        <li><div><strong>Corregir la atribución de causa del watchdog de stall.</strong>
-          <p>Si la cuota está disponible, la causa no es cuota. Distinguir agenda, disponibilidad de cadena y cuota como causas separadas.</p></div></li>
-        <li><div><strong>Agrupar las notificaciones por episodio.</strong>
-          <p>Un aviso por episodio de agotamiento, no uno por vuelta del bucle. Y sacar del canal las alertas que el servicio de Telegram se manda a sí mismo.</p></div></li>
+        <li><div><strong>Corregir la atribución de causa y agrupar las notificaciones.</strong>
+          <p>Si la cuota está disponible, la causa no es cuota. Y un aviso por episodio de agotamiento, no uno por vuelta del bucle.</p></div></li>
       </ol>
     </div>
   </section>
@@ -467,17 +463,30 @@ multi-provider-health → openai: quota pct 10, state green</div>
   <section>
     <p class="eyebrow">Verificación</p>
     <h2>Cómo sabemos que salimos</h2>
-    <p class="col">Cuatro números, medibles al día siguiente sobre los mismos archivos que se usaron para este informe.</p>
+    <p class="col">La comprobación tiene tres niveles, del más rápido al más definitivo. Los dos primeros ya están corridos.</p>
+
+    <h3 style="margin-top:26px">1 · Los tests fijan cada pieza</h3>
+    <p class="col">25 tests nuevos, incluidos tres que ejercitan el <strong>barrido real</strong> del Pulpo —no una réplica— contra el escenario exacto del incidente: dropfile con 592 minutos de mtime heredado y registro frío.</p>
+
+    <h3 style="margin-top:22px">2 · La noche del incidente, replicada</h3>
+    <p class="col">Un test simula las diez horas reales con la cadena caída y el Pulpo tickeando cada 30 segundos, y cuenta los intentos que habría hecho con el backoff puesto:</p>
+    <div class="evidence col">ticks de la noche (sin backoff):  1200
+intentos con backoff           :    44
+reducción                      : 96,3%</div>
+
+    <h3 style="margin-top:22px">3 · La medición en producción</h3>
+    <p class="col">Los tests prueban las unidades; esto mide el pipeline real, sobre los mismos archivos con los que se diagnosticó el incidente. Se corre mañana:</p>
+    <span class="cmd">node .pipeline/scripts/verificar-fix-huerfanos.js</span>
     <table>
-      <thead><tr><th>Señal</th><th>Hoy</th><th>Objetivo</th></tr></thead>
+      <thead><tr><th>Señal</th><th>8 de septiembre</th><th>Objetivo</th></tr></thead>
       <tbody>
-        <tr><td>Eventos de dispatch por día</td><td class="num">7538</td><td class="num">&lt; 500</td></tr>
+        <tr><td>Intentos de dispatch por día</td><td class="num">7538</td><td class="num">&lt; 500</td></tr>
         <tr><td>Tasa de dispatch efectivo</td><td class="num">0,7%</td><td class="num">&gt; 60%</td></tr>
         <tr><td>Fases rechazadas por huérfano</td><td class="num">3</td><td class="num">0</td></tr>
-        <tr><td>Corridas <code>attempt ≥ 2</code></td><td class="num">40% del gasto</td><td class="num">&lt; 10%</td></tr>
+        <tr><td>Corridas de retrabajo (<code>attempt ≥ 2</code>)</td><td class="num">26</td><td class="num">&lt; 3</td></tr>
       </tbody>
     </table>
-    <p class="band-note col">Si mañana a la mañana el conteo de <code>chain_exhausted</code> de la noche no bajó a cero, la Fase 1 no quedó aplicada — es la verificación más rápida que hay.</p>
+    <p class="band-note col">El script trae los umbrales fijados de antemano y la línea base del 8 de septiembre, y sale con código distinto de cero si alguno queda en rojo — la verificación no depende de leer un log a ojo. Está validado: corrido contra el día del incidente reproduce exactamente esos cuatro números.</p>
   </section>
 
   <footer>

@@ -2170,6 +2170,30 @@ function skillFromFile(filename) {
   return workfileName.skillFromFile(filename);
 }
 
+/**
+ * Recupera las corridas que quedaron en vuelo del Pulpo anterior y decide si el
+ * barrido de huérfanos necesita ventana de gracia (incidente 2026-09-08).
+ *
+ * Se llama en el boot. Está aparte de `mainLoop` para que el test de regresión
+ * ejercite exactamente el mismo camino que producción, en vez de una réplica.
+ */
+function rehidratarRegistroDeCorridas() {
+  try {
+    const rehidratacion = activeProcesses.rehidratar();
+    // Si el registro NO es confiable (primer arranque tras el deploy, o archivo
+    // corrupto), su vacío no prueba que nadie esté corriendo: ahí —y sólo ahí—
+    // el barrido necesita la gracia para no rebotar corridas vivas. Con un
+    // registro confiable la gracia sobra: lo que no figura, no vive.
+    graciaPostBootMinutos = rehidratacion.confiable ? 0 : orphanGuard.GRACIA_POST_BOOT_MINUTOS;
+    log('pulpo', `registro de corridas: ${rehidratacion.rehidratadas} en vuelo recuperadas, ${rehidratacion.descartadas} descartadas por PID muerto (confiable=${rehidratacion.confiable}, gracia=${graciaPostBootMinutos}min).`);
+    return rehidratacion;
+  } catch (e) {
+    graciaPostBootMinutos = orphanGuard.GRACIA_POST_BOOT_MINUTOS;
+    log('pulpo', `rehidratación del registro de corridas falló (sigo con registro vacío + gracia): ${e.message}`);
+    return { rehidratadas: 0, descartadas: 0, error: e.message, confiable: false };
+  }
+}
+
 /** Mover archivo entre carpetas (atómico en filesystem) */
 function moveFile(src, destDir) {
   fs.mkdirSync(destDir, { recursive: true });
@@ -2768,6 +2792,12 @@ function limpiarDaemonsOnDemand() {
 // Instante de arranque de ESTE proceso Pulpo. `brazoHuerfanos` lo necesita para
 // saber si su registro de corridas todavía está frío tras un reinicio.
 let PULPO_BOOT_TS = Date.now();
+
+// Minutos durante los que el barrido de huérfanos se abstiene de rebotar una
+// corrida que no tiene registrada. Sólo se activa cuando el registro de corridas
+// NO es confiable (lo decide `rehidratarRegistroDeCorridas` en el boot); con un
+// registro confiable vale 0, porque ahí "no figura" sí significa "no vive".
+let graciaPostBootMinutos = 0;
 
 // Incidente 2026-09-08: esto era un `new Map()` en memoria. Cada reinicio del
 // Pulpo lo vaciaba y `brazoHuerfanos` leía ese vacío como "ninguna corrida está
@@ -13711,6 +13741,7 @@ function brazoHuerfanos(config) {
           registroConocido: Boolean(info),
           procesoVivo: Boolean(info) && isProcessAlive(info.pid),
           minutosDesdeBoot: (Date.now() - PULPO_BOOT_TS) / 60000,
+          graciaBootMinutos: graciaPostBootMinutos,
         });
         if (!veredicto.huerfano) {
           if (veredicto.motivo === orphanGuard.MOTIVOS.GRACIA_POST_BOOT) {
@@ -25002,12 +25033,7 @@ async function mainLoop() {
   // Pulpo anterior. Sin esto el registro arranca vacío y `brazoHuerfanos` lee
   // ese vacío como "nadie está corriendo", rebotando fases sanas apenas supera
   // el timeout. Cada PID se revalida contra el SO: lo que ya murió no vuelve.
-  try {
-    const rehidratacion = activeProcesses.rehidratar();
-    log('pulpo', `registro de corridas: ${rehidratacion.rehidratadas} en vuelo recuperadas, ${rehidratacion.descartadas} descartadas por PID muerto.`);
-  } catch (e) {
-    log('pulpo', `rehidratación del registro de corridas falló (sigo con registro vacío): ${e.message}`);
-  }
+  rehidratarRegistroDeCorridas();
 
   // #6496 (CA-4) — Migración one-shot del backlog pre-sellado. Va al BOOT y
   // antes de cualquier tick: el gate de caducidad de `delivery.js` puede correr
@@ -26812,6 +26838,7 @@ if (process.env.PULPO_NO_AUTOSTART === '1') {
     brazoHuerfanos,
     activeProcesses,
     moveFile,
+    rehidratarRegistroDeCorridas,
     _setBootTsForTesting: (ts) => { PULPO_BOOT_TS = ts; },
     makeIsClosedFromTitleCache,
     ARCHIVADO_MAX_PER_TICK,

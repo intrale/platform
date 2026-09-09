@@ -73,10 +73,24 @@ test('un archivo corrupto degrada a registro vacío, no tumba el arranque', () =
     assert.equal(reg.size, 0);
 });
 
-test('sin archivo previo la rehidratación es un no-op silencioso', () => {
+test('sin archivo previo la rehidratación es un no-op, pero el registro NO es confiable', () => {
+    // Distinción clave: "no había nada que leer" no es lo mismo que "confirmé
+    // que no hay nadie corriendo". El barrido de huérfanos necesita esa
+    // diferencia para no rebotar corridas vivas en el primer arranque.
     const reg = new ActiveProcessRegistry({ file: tmpFile(), isProcessAlive: () => true });
     const r = reg.rehidratar();
-    assert.deepEqual(r, { rehidratadas: 0, descartadas: 0, error: null });
+    assert.deepEqual(r, { rehidratadas: 0, descartadas: 0, error: null, confiable: false });
+});
+
+test('un archivo presente y legible deja el registro confiable aunque esté vacío', () => {
+    const file = tmpFile();
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify({ version: 1, corridas: {} }), 'utf8');
+
+    const reg = new ActiveProcessRegistry({ file, isProcessAlive: () => true });
+    const r = reg.rehidratar();
+    assert.equal(r.confiable, true);
+    assert.equal(r.rehidratadas, 0);
 });
 
 test('descarta entradas sin pid utilizable', () => {
