@@ -665,6 +665,61 @@ El lock local **se conserva** en modo remoto, pero como optimización intra-host
 (evita que dos procesos del mismo host se peleen y gasten reintentos de CAS), no
 como la garantía. La garantía es la escritura condicional.
 
+#### El `expectedVersion` sale del snapshot del DOMINIO, no de una relectura
+
+Es la parte que se puede escribir mal creyendo que está bien, así que queda
+explícita: **el `expectedVersion` de un mutador es la versión que estaba vigente
+cuando ese mutador leyó el estado que alimentó su decisión.** No es una versión
+releída al momento de escribir.
+
+Un `writeKey(key, value)` sin `expectedVersion` **no es un write sin CAS: es un
+write efectivamente incondicional**. El backend rellena el hueco con la versión
+que él mismo releyó un instante antes del `putItem`, así que la
+`ConditionExpression` que viaja al driver se cumple siempre. Lo único que queda
+protegido es la ventana interna `getItem → putItem` del backend — no la ventana
+del dominio, que es donde ocurre la carrera:
+
+```
+leer previous  ->  evaluateAndAudit()  ->  writeKey()
+^-------------- la carrera vive ACA --------------^
+```
+
+El vector concreto sobre la allowlist, que es el **único estado del pipeline que
+es un control de acceso**:
+
+1. El host A lee la allowlist `[1, 2]`.
+2. El host B agrega el issue 3 **con autoría válida** → `[1, 2, 3]`.
+3. El host A escribe la foto que leyó en el paso 1 → `[1, 2]`.
+
+Sin `expectedVersion`, el paso 3 pasa: el alta autorizada de B desaparece y A
+ejecutó un **removal sin `authorizedBy`**, porque `evaluateAndAudit` comparó
+contra un `previous` stale y no vio removal alguno. El gate de autoría de #3625
+queda evadible por carrera y el audit trail registra "sin cambios" mientras hubo
+un removal efectivo — sobre el gate que decide qué issues se entregan a agentes
+con capacidad de escribir código, abrir PRs y tocar AWS (precedente #5060: ~320
+agentes despachados).
+
+Por eso todos los mutadores de la allowlist toman el snapshot con
+`readAllowlistSnapshot()` (`lib/partial-pause.js`), que devuelve `previous` y
+`expectedVersion` **del mismo instante**, y lo propagan al write:
+
+| convención de `expectedVersion` | significado | condición que viaja al driver |
+|---|---|---|
+| `0` | la clave no existía | `attribute_not_exists(#pk)` — un solo ganador en la creación |
+| entero `n` | versión leída | `#b.#v = :ev` con `:ev = n` |
+| `null` + `degraded` | la lectura falló | **no se escribe** (ver §13.6) |
+
+En modo `fs` el `expectedVersion` se ignora (la exclusión la sigue dando
+`withLockSync`, que entre procesos del mismo host sí excluye), así que
+propagarlo es inocuo y el comportamiento local no cambia.
+
+El control es un **test sobre el camino real de mutación**
+(`lib/__tests__/partial-pause-allowlist-cas-5113.test.js`: dos instancias contra
+el mismo store, más el caso negativo que falla si el write sale sin condición
+por versión), no un test del backend con el `expectedVersion` pasado a mano: ese
+prueba que el CAS funciona cuando alguien se lo pide, no que los mutadores se lo
+pidan.
+
 El token de versión del registro de olas es `meta.updated_at` (ISO) y se mapea
 bidireccionalmente al entero incremental del coordination store. En modo remoto
 **el entero es el autoritativo**; el ISO se preserva en el envelope para no

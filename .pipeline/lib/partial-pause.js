@@ -242,6 +242,85 @@ function readPreviousAllowlist() {
 }
 
 /**
+ * #5113 (CA-A4 / SEC-5) — Snapshot de la allowlist CON la versión del sustrato.
+ *
+ * Existe porque `readPreviousAllowlist()` devuelve sólo el dato y pierde el
+ * único canal que convierte un read-modify-write del dominio en un CAS real
+ * entre hosts: la versión que estaba vigente cuando se computó la decisión.
+ *
+ * Sin ese canal el write sale efectivamente INCONDICIONAL: el backend, ante
+ * `expectedVersion === undefined`, usa la versión que él mismo releyó un
+ * instante antes del `putItem`, así que la condición se cumple siempre. El CAS
+ * cubre entonces la ventana `getItem→putItem` del backend, no la ventana real
+ * del dominio (`leer previous → evaluar gate → escribir`), que es donde ocurre
+ * la carrera: el host A lee, el host B agrega un issue CON autoría, A escribe
+ * la foto vieja y el alta de B desaparece — con el audit trail registrando
+ * "sin cambios" mientras hubo un removal efectivo. Es el gate de autoría de
+ * #3625 evadible por carrera.
+ *
+ * Convención de `expectedVersion`:
+ *   - clave ausente        → `0` = "esperaba que NO existiera". El backend lo
+ *                            traduce a `attribute_not_exists(PK)`: un solo
+ *                            ganador en la creación concurrente.
+ *   - clave presente       → la versión leída (entero en remoto, ISO en fs).
+ *   - lectura DEGRADADA    → `null` + `degraded: true`. El caller NO escribe:
+ *                            escribir sobre un estado que no se pudo leer es
+ *                            fail-open sobre un control de acceso (CA-A7).
+ *
+ * En modo filesystem `writeKey`/`deleteKey` ignoran `expectedVersion` (la
+ * exclusión la sigue dando `withLockSync`, que entre procesos del MISMO host sí
+ * excluye), así que propagarlo es inocuo y el comportamiento no cambia.
+ *
+ * @returns {{previous:number[], value:object|null, expectedVersion:number|string|null,
+ *            degraded:boolean}}
+ */
+function readAllowlistSnapshot() {
+    let res;
+    try {
+        res = stateBackend.readKeyWithVersion(stateBackend.KEYS.PARTIAL_PAUSE);
+    } catch (err) {
+        // Igual que `readPartialFile()`: una excepción del sustrato no puede
+        // leerse como "no había allowlist". Se trata como degradación.
+        return { previous: [], value: null, expectedVersion: null, degraded: true };
+    }
+    const value = (res && res.value && typeof res.value === 'object' && !Array.isArray(res.value))
+        ? res.value
+        : null;
+    if (res && res.degraded) {
+        return { previous: [], value: null, expectedVersion: null, degraded: true };
+    }
+    const previous = (value && Array.isArray(value.allowed_issues))
+        ? value.allowed_issues.map(normalizeIssue).filter(Boolean)
+        : [];
+    let expectedVersion;
+    if (value === null) {
+        expectedVersion = 0;                       // create-once
+    } else if (res.version === null || res.version === undefined) {
+        expectedVersion = 0;                       // modo fs: el marker no lleva ISO de versión
+    } else {
+        expectedVersion = res.version;
+    }
+    return { previous, value, expectedVersion, degraded: false };
+}
+
+/**
+ * Respuesta uniforme cuando el sustrato degradó y por eso NO se muta la
+ * allowlist. Fail-closed explícito: `ok:false` con motivo, nunca un write a
+ * ciegas sobre un control de acceso.
+ * @param {number[]} allowedIssues
+ */
+function degradedWriteRefusal(allowedIssues = []) {
+    return {
+        ok: false,
+        degraded: true,
+        allowedIssues,
+        msg: 'Mutación de la allowlist abortada: el sustrato de estado degradó y no se '
+            + 'pudo leer la versión vigente. Escribir sobre un estado desconocido sería '
+            + 'fail-open sobre el gate de dispatch (CA-A4/CA-A7).',
+    };
+}
+
+/**
  * Estado actual del pipeline.
  * @returns {{
  *   mode: 'running'|'paused'|'partial_pause',
@@ -525,7 +604,14 @@ function setPartialPause(issues, opts = {}) {
         };
     }
 
-    const previous = readPreviousAllowlist();
+    // #5113 (CA-A4) — el snapshot que alimenta el gate viaja CON su versión:
+    // esa versión es el `expectedVersion` del write de más abajo. Si otro host
+    // muta la allowlist entre este read y ese write, el CAS rechaza y ninguna
+    // de las dos altas se pierde.
+    const snapshot = readAllowlistSnapshot();
+    if (snapshot.degraded) return degradedWriteRefusal();
+    const previous = snapshot.previous;
+    const expectedVersion = snapshot.expectedVersion;
 
     // #3625 — Gate + audit ANTES del write (invariante de orden).
     // #3742 — opts.extra viaja al audit entry (recursividad_aplicada,
@@ -619,7 +705,11 @@ function setPartialPause(issues, opts = {}) {
     // primitiva de exclusión: resuelve locks stale por PID vivo en el SO local
     // y entre dos máquinas no excluye nada.
     return withLockSync(partialFile(), () => {
-        const res = stateBackend.writeKey(stateBackend.KEYS.PARTIAL_PAUSE, data);
+        // #5113 (CA-A4) — `expectedVersion` es la versión del snapshot que
+        // alimentó el gate, NO una releída acá: releerla acá reabriría la misma
+        // ventana (el gate ya decidió contra la foto vieja) y el write volvería
+        // a ser incondicional.
+        const res = stateBackend.writeKey(stateBackend.KEYS.PARTIAL_PAUSE, data, expectedVersion);
         if (!res || res.ok === false) {
             return {
                 ok: false,
@@ -796,10 +886,20 @@ function setPartialPauseAtomic(issues, opts = {}) {
     // de storage y se serializa con el MISMO formato con el que se persiste
     // (`JSON.stringify(x, null, 2)`), para que el `prevSha` que el caller usa
     // como testigo de rollback siga comparando lo mismo en los dos modos.
+    //
+    // #5113 (CA-A4) — la lectura es UNA sola y trae la versión: el mismo
+    // snapshot sirve para el testigo de rollback, para el `previous` del gate y
+    // para el `expectedVersion` del write. Leerlo dos veces reabriría la
+    // ventana que el CAS tiene que cerrar.
     let prevBuffer = null;
     let prevSha = null;
     let existedBefore = false;
-    const prevValue = stateBackend.readKey(stateBackend.KEYS.PARTIAL_PAUSE);
+    const snapshot = readAllowlistSnapshot();
+    if (snapshot.degraded) {
+        return { ...degradedWriteRefusal(), prevBuffer, prevSha, existedBefore };
+    }
+    const expectedVersion = snapshot.expectedVersion;
+    const prevValue = snapshot.value;
     if (prevValue) {
         prevBuffer = Buffer.from(JSON.stringify(prevValue, null, 2), 'utf8');
         prevSha = require('crypto').createHash('sha256').update(prevBuffer).digest('hex');
@@ -823,7 +923,9 @@ function setPartialPauseAtomic(issues, opts = {}) {
         )].sort()
         : [];
 
-    const previous = readPreviousAllowlist();
+    // Del MISMO snapshot versionado de arriba: el `previous` que evalúa el gate
+    // y el `expectedVersion` que condiciona el write describen el mismo instante.
+    const previous = snapshot.previous;
 
     // #3625 — Gate + audit ANTES del write.
     const gateResult = evaluateAndAudit({
@@ -877,7 +979,12 @@ function setPartialPauseAtomic(issues, opts = {}) {
     // `evaluateAndAudit()` → escritura. Lo único que se reemplaza es el sink:
     // `writeAtomic` deja de invocarse directo y pasa a ser la implementación
     // del modo `fs` del backend. El store es sustrato, no API de mutación.
-    const writeRes = stateBackend.writeKey(stateBackend.KEYS.PARTIAL_PAUSE, data);
+    //
+    // #5113 (CA-A4) — con `expectedVersion` del snapshot: sin él el write sale
+    // incondicional y el gate de autoría queda evadible por carrera entre hosts.
+    const writeRes = stateBackend.writeKey(
+        stateBackend.KEYS.PARTIAL_PAUSE, data, expectedVersion,
+    );
     if (!writeRes || writeRes.ok === false) {
         return {
             ok: false,
@@ -937,7 +1044,15 @@ function writeAtomic(targetPath, content) {
  * @returns {{ok: boolean, rejected?: boolean, existed: boolean}}
  */
 function clearPartialPause(opts = {}) {
-    const previous = readPreviousAllowlist();
+    // #5113 (CA-A4) — un `clear` es el removal masivo: el RMW más peligroso de
+    // todos. También va con `expectedVersion`, para que no borre una allowlist
+    // que otro host acaba de mutar bajo los pies del gate.
+    const snapshot = readAllowlistSnapshot();
+    if (snapshot.degraded) {
+        return { ...degradedWriteRefusal(), existed: false };
+    }
+    const previous = snapshot.previous;
+    const expectedVersion = snapshot.expectedVersion;
 
     // Gate + audit antes del unlink.
     const gateResult = evaluateAndAudit({
@@ -962,7 +1077,7 @@ function clearPartialPause(opts = {}) {
     // remoto). El gate de autoría de #3625 ya corrió ARRIBA de esta línea: el
     // orden se conserva intacto.
     return withLockSync(partialFile(), () => {
-        const res = stateBackend.deleteKey(stateBackend.KEYS.PARTIAL_PAUSE);
+        const res = stateBackend.deleteKey(stateBackend.KEYS.PARTIAL_PAUSE, expectedVersion);
         if (!res || res.ok === false) {
             return { ok: false, existed: !!(res && res.existed), conflict: !!(res && res.conflict) };
         }
@@ -985,7 +1100,9 @@ function clearPartialPause(opts = {}) {
  * @returns {{removedFull: boolean, removedPartial: boolean, rejected?: boolean}}
  */
 function resumeAll(opts = {}) {
-    const previous = readPreviousAllowlist();
+    // #5113 (CA-A4) — snapshot versionado: el `expectedVersion` viaja al delete.
+    const snapshot = readAllowlistSnapshot();
+    const previous = snapshot.previous;
 
     // Sólo gateamos la parte partial-pause: el `.paused` no tiene allowlist.
     if (previous.length > 0) {
@@ -1011,9 +1128,24 @@ function resumeAll(opts = {}) {
         try { fs.unlinkSync(pauseFile()); removedFull = true; } catch {}
     }
     // La allowlist sí: `deleteKey` resuelve contra el sustrato vigente.
-    const res = stateBackend.deleteKey(stateBackend.KEYS.PARTIAL_PAUSE);
+    //
+    // #5113 (CA-A4/CA-A7) — si la lectura degradó NO se borra a ciegas: no se
+    // sabe qué se estaría borrando ni contra qué versión. `.paused` ya quedó
+    // levantado arriba (es filesystem y es el halt de último recurso), así que
+    // el operador no queda sin salida; la allowlist se reintenta cuando el
+    // sustrato vuelve.
+    if (snapshot.degraded) {
+        return { removedFull, removedPartial: false, degraded: true };
+    }
+    const res = stateBackend.deleteKey(
+        stateBackend.KEYS.PARTIAL_PAUSE, snapshot.expectedVersion,
+    );
     removedPartial = !!(res && res.ok && res.existed);
-    return { removedFull, removedPartial };
+    const out = { removedFull, removedPartial };
+    // Aditivo: el caller que quiera reintentar necesita distinguir "no había
+    // allowlist" de "otro escritor la cambió y el borrado no se aplicó".
+    if (res && res.ok === false && res.conflict) out.conflict = true;
+    return out;
 }
 
 // -----------------------------------------------------------------------------
@@ -1393,6 +1525,7 @@ module.exports = {
     MAX_PAUSE_MARKER_BYTES,
     // #3625 — exportados para callers que quieran leer estado raw y para tests.
     readPreviousAllowlist,
+    readAllowlistSnapshot,   // #5113 CA-A4 — snapshot + versión para el CAS del dominio.
     // #6118 — metadata de ola del marker, para re-inyectarla en setPartialPause
     // y no perderla al sumar un issue al allowlist.
     readWaveMetaFromMarker,
