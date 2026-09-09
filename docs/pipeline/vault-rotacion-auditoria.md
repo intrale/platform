@@ -96,8 +96,11 @@ T-7, T-3, T-1 y T-0. Reglas del inventario:
 `vault.access_audit` está apagado por defecto. Para el rollout se completa
 `expected_principals` con los roles IAM de los hosts y luego se habilita el gate.
 Una lista vacía omite el tick y lo registra en `pulpo.log`; no interpreta a todo
-el mundo como atacante. `burst_threshold: 0` mantiene la detección de ráfagas
-apagada hasta medir el tráfico real de #5440.
+el mundo como atacante. `burst_threshold` ya está **calibrado** (`360
+physical_read/ventana`, derivado del pico medido por la corrida de #5800): el
+esquema lo exige como entero positivo siempre, así que encender el gate no puede
+dejar la detección de ráfagas apagada — ver §Calibración del umbral de ráfaga
+más abajo.
 
 El tick consulta lecturas de SSM y Secrets Manager. Cada entrada del registro
 tiene estos campos, y ninguno más:
@@ -130,6 +133,233 @@ escribe igual una entrada `VaultAuditNotification` / `resultado: error` /
 `evidencia: NOTIFICACION_NO_ENVIADA` en el JSONL encadenado, y lo repite en
 `pulpo.log`. Un tick que no corre también lo dice con su razón, en vez de quedar
 indistinguible de "corrió y no encontró nada".
+
+### Calibración del umbral de ráfaga
+
+`vault.access_audit.burst_threshold` es el único número calibrado de esta
+sección: los otros tres controles (allowlist de principals, rechazos de
+autorización, cooldown) se derivan de la política, no de una medición.
+
+#### Qué cuenta y qué no
+
+La decisión de ráfaga consume **exclusivamente `physical_read`**. El vocabulario
+de las tres categorías tiene una sola fuente de verdad,
+`VAULT_TELEMETRY_CATEGORIES` en `.pipeline/lib/secret-vault.js` (#5803), y el
+auditor la importa en vez de reescribirla.
+
+| Categoría | ¿Entra al umbral? | Por qué |
+|---|---|---|
+| `physical_read` | **Sí** | Es la única resolución que sale del proceso y llega a AWS: la que factura, la que deja rastro en CloudTrail y la única que alguien puede provocar desde afuera. |
+| `cache_hit` | No | La sirve la caché en memoria durante `cache_ttl_seconds`. No emite llamada a AWS y por lo tanto no aparece en el Event history: contarla mezclaría dos poblaciones distintas y ataría el umbral al hit rate. |
+| `single_flight_join` | No | Es un consumidor que se colgó de una lectura física ya en vuelo. Contarla haría que un mismo acceso pese tantas veces como consumidores concurrentes tuvo. |
+
+Dos clases más quedan fuera del numerador y se cuentan aparte como
+`rechazados`: los `AccessDenied` (no leyeron ningún secreto, y ya tienen su
+propio control en `authorization_failure_threshold`) y los eventos que el
+evaluador no puede clasificar. Un evento desconocido o malformado se **rechaza
+explícitamente y nunca se reclasifica** como lectura física: reclasificar por
+defecto convertiría cualquier ruido en tráfico y correría el umbral solo.
+
+#### Fórmula y unidades
+
+```
+burst_threshold    = ceil(pico_en_la_ventana * (1 + margen))
+pico_en_la_ventana = peak_physical_reads_per_minute * lookback_min
+```
+
+| Magnitud | Unidad | De dónde sale |
+|---|---|---|
+| `peak_physical_reads_per_minute` | `physical_read/minute` | `.pipeline/audit/vault-load-calibration.json`, campo homónimo, publicado por la corrida productiva de #5800. |
+| `lookback_min` | minutos | `vault.access_audit.lookback_min` (hoy `30`). Es la ventana que el tick consulta en cada pasada. |
+| `pico_en_la_ventana` | `physical_read/ventana` | Conversión de la fila anterior a la ventana del auditor. |
+| `margen` | fracción adimensional | Holgura declarada sobre el pico. Va documentada junto al número, no elegida al momento de configurar. |
+| `burst_threshold` | `physical_read/ventana` | Entero seguro positivo. |
+
+**La conversión de unidad no es opcional.** La calibración publica el pico *por
+minuto*; el auditor cuenta lecturas físicas *acumuladas en `lookback_min`*.
+Copiar el número por minuto directo a `burst_threshold` deja el umbral unas 30
+veces por debajo del tráfico normal y produce una alerta por tick — que en la
+práctica se resuelve silenciando el control.
+
+La comparación es **estricta** (`lecturas_fisicas > burst_threshold`): un conteo
+igual al umbral es carga normal. Si fuera `>=`, un umbral derivado del pico
+alertaría exactamente en el pico, o sea en la carga que la calibración declaró
+normal.
+
+#### Estado actual: umbral calibrado en `360 physical_read/ventana`
+
+`burst_threshold: 360`, derivado del pico medido por la corrida productiva de
+#5800 sobre el HEAD de esta entrega. La derivación completa, con sustitución
+numérica:
+
+```
+peak_physical_reads_per_minute = 6          (artefacto de la corrida)
+lookback_min                   = 30         (vault.access_audit.lookback_min)
+
+pico_ventana    = ceil(6 * 30)              = 180  physical_read/ventana
+margen          = 1.0                              (100 %)
+burst_threshold = ceil(180 * (1 + 1.0))     = 360  physical_read/ventana
+```
+
+`360 > 180`: el umbral **supera el pico observado** convertido a la unidad de la
+ventana, que es la comparación válida. Comparar contra el pico *por minuto* sin
+convertir es el error que la tabla de unidades de arriba existe para evitar.
+
+##### Escenario de la corrida (reproducible)
+
+| Parámetro | Valor | Por qué |
+|---|---|---|
+| `concurrency` | `32` | Techo de agentes concurrentes del pipeline: la suma de `concurrencia:` por rol en `.pipeline/config.yaml`, que domina a `max_concurrent_devs`. Medir con menos subdimensionaría el pico. |
+| `launches` | `128` | `4 × concurrency`: cada slot se reusa varias veces dentro de la ventana. |
+| `window_duration_ms` | `60000` | Ventana de un minuto, que es la unidad en la que la calibración publica el pico. |
+| `bucket_ms` | `10000` | Seis buckets exactos; el pico es el bucket físico más cargado escalado a un minuto. |
+| `distribution` | `sequential` | Reproducible con `sequence_seed`. |
+| `unit` | `physical_read` | La única categoría que alimenta el pico. |
+
+Resultado de la corrida, en la proyección **no sensible** del artefacto:
+
+| Campo | Valor |
+|---|---|
+| `counts` | `physical_read: 1`, `cache_hit: 96`, `single_flight_join: 31`, `total_resolutions: 128` |
+| `excluded_from_physical_metrics` | `cache_hit`, `single_flight_join` |
+| `peak_physical_reads_per_minute` | `6` |
+| `peak_unit` | `physical_read/minute` |
+| `peak_basis` | `physical_reads_per_bucket: 1`, `bucket_ms: 10000` |
+
+Los 96 `cache_hit` y los 31 `single_flight_join` son exactamente la población
+que **no** entra al umbral: 127 de las 128 resoluciones nunca salieron del
+proceso. Que el numerador sea `1` sobre `128` es la evidencia de que la
+exclusividad del contador funciona, no un defecto de la corrida.
+
+El artefacto `.pipeline/audit/vault-load-calibration.json` **no se versiona** —
+`.gitignore` cubre `.pipeline/audit/` entero, que existe justamente para no
+versionar auditoría local. Por eso la evidencia viaja **transcripta** acá y al
+comentario del YAML, y sólo con campos no sensibles: nunca el `scope_logico` con
+su path, ni ARN, account id, IP o salida cruda del driver.
+
+##### Por qué el margen es `1.0` y no otro número
+
+El margen es un **parámetro nombrado**, no una elección del momento de
+configurar: una recalibración futura cambia este número con su justificación, en
+vez de re-derivar todo desde cero.
+
+- El pico viene de una corrida de carga **generada**, de ventana corta y una
+  sola muestra: es un punto, no una distribución. Un margen chico sobre un punto
+  sintético produce falsos positivos apenas la carga real se desvía.
+- El control detecta **anomalía gruesa** (lazo de reintentos, uso indebido), no
+  hace capacity planning. Una ráfaga real es de orden de magnitud, no de un
+  20 %: un factor 2 la sigue detectando.
+- El costo del falso positivo es asimétrico, y el propio copy de la alerta lo
+  reconoce: una alerta ruidosa induce al operador a **subir el umbral a mano**,
+  que es exactamente lo que ese texto prohíbe. Un umbral ruidoso se degrada solo.
+- Más de `2.0` tampoco sirve: el umbral quedaría por encima del tráfico de un
+  arranque completo del pipeline y el control dejaría de distinguir «ráfaga» de
+  «operación normal en pico».
+
+##### Cambiar `lookback_min` invalida este umbral
+
+`burst_threshold` está expresado en `physical_read` **por ventana de
+`lookback_min` minutos**. Bajar la ventana a 10 dejaría el umbral 3×
+sobredimensionado y el control apagado de hecho, sin que nada lo avise. Si se
+cambia la ventana hay que **recalcular** el umbral con la fórmula de arriba, no
+ajustarlo a ojo. Un test de regresión fija los dos valores juntos
+(`config-schema.test.js`, `vault-access-audit-burst-5801.test.js`).
+
+Lo mismo si la alerta suena: se **recalibra** con una corrida nueva, no se sube
+el número a mano.
+
+##### Cómo volver a correr la calibración
+
+Runbook completo en [`vault-calibracion-carga.md`](vault-calibracion-carga.md)
+§3. La corrida exige árbol de trabajo limpio, las cuatro dependencias integradas
+en HEAD y el vault resolviendo contra AWS con la identidad de **sólo lectura**
+del host. Los dos valores locales del host que `.pipeline/config.yaml` commitea
+vacíos a propósito por ser un repo público —el gate `vault.enabled` y el nombre
+de perfil `vault.awsProfile`— los aporta el operador en su entorno; no se
+commitean para correr la medición.
+
+Los códigos de salida son estables y discriminan por número: `3` repo/HEAD,
+`4` identidad/scopes, `5` escenario o acceso al vault, `7` disco. Si la corrida
+no cierra, se cita el código — **no se elige un umbral sin el pico medido**.
+
+#### Lo que el esquema garantiza
+
+`.pipeline/lib/config-schema.js` valida `vault.access_audit` **cerrado y sin
+condicionales**: `required: ['burst_threshold']`, `type: 'integer'`,
+`minimum: 1`, `maximum: Number.MAX_SAFE_INTEGER` y
+`additionalProperties: false`, con Ajv corriendo sin `coerceTypes`.
+
+| `burst_threshold` | Resultado al arrancar |
+|---|---|
+| ausente | **`ConfigSchemaViolation`** |
+| `0` o negativo | **`ConfigSchemaViolation`** |
+| `"360"`, `true`, `null`, `360.5`, `NaN`, `±Infinity`, entero inseguro | **`ConfigSchemaViolation`** |
+| clave desconocida bajo `access_audit` (p. ej. `burst_threshhold`) | **`ConfigSchemaViolation`** |
+| entero ≥ 1 | arranca |
+
+El `required` es **incondicional**: ya no depende de `access_audit.enabled`.
+Mientras faltaba el pico medido vivía en una rama `if enabled === true`, porque
+exigirlo sin el número habría dejado el pipeline sin arrancar. Con el umbral
+calibrado en el mismo commit esa ventana no existe, y el estado «apagado con
+umbral cero» deja de ser representable: un cero guardado esperando a que alguien
+encienda el gate es la forma más silenciosa de dejar la detección apagada.
+
+`additionalProperties: false` obliga a que las **7** claves de la sección estén
+declaradas en el esquema (`enabled`, `poll_interval_min`, `lookback_min`,
+`expected_principals`, `burst_threshold`, `authorization_failure_threshold`,
+`cooldown_min`). Omitir una dejaría el pipeline arrancando pausado; un test de
+regresión compara esa lista contra el `config.yaml` real.
+
+El control de runtime es independiente a propósito: `evaluateAccessEvents`
+**lanza** ante un umbral inválido, en vez de degradar a «no hay ráfaga». Antes
+había ahí un fail-OPEN —`Number(cfg.burst_threshold || 0)` más el guard
+`burstThreshold > 0 &&`— que apagaba la detección en silencio por cualquier
+camino que no pasara por el esquema. `pulpo.js` envuelve el tick en `try/catch`
+y registra el mensaje, así que el pipeline no se cae: queda ruidoso, que es lo
+contrario del silencio anterior.
+
+#### La ventana que se cuenta es la ventana completa
+
+El conteo de lecturas físicas cubre **toda la ventana `lookback_min`**, no los
+eventos nuevos del tick. El dedupe entre ticks sigue existiendo, pero gobierna
+sólo el **rastro** y las **alertas** (no se reescriben registros ni se
+renotifica): si gobernara además el conteo, el denominador dependería de la
+cadencia del poll —~`poll_interval_min` en régimen, `lookback_min` en el primer
+tick tras un reset de estado— y un mismo umbral se compararía contra dos
+unidades distintas.
+
+Consecuencia prevista y deseada: mientras la ráfaga siga dentro del lookback, se
+vuelve a detectar en cada tick. El registro auditable repetido es la evidencia de
+que el tráfico sigue; la **notificación** la deduplica `cooldown_min`.
+
+#### Qué dice la alerta
+
+Cuando la ráfaga se dispara, el diagnóstico va **después** de la acción y lleva
+etiquetas y unidades explícitas, para que el operador pueda distinguir las dos
+lecturas posibles —el umbral quedó corto, o hay tráfico que no debería existir—
+que llevan a acciones opuestas:
+
+```
+Lecturas fisicas (physical_read): 9
+Umbral configurado: 4 physical_read/ventana
+Ventana evaluada: 30 minutos
+Contexto que NO cuenta para el umbral: cache_hit=71, single_flight_join=5
+```
+
+Los tres contadores se nombran con el vocabulario del vault justamente para que
+`cache_hit` y `single_flight_join` se lean como contexto y no como parte del
+veredicto. Todos los valores son enteros que produce el pipeline: ninguno viene
+del driver de AWS.
+
+#### La detección se registra aunque no se notifique
+
+Detección y notificación son dos cosas. El cooldown decide si se vuelve a
+molestar al operador, **nunca** si la detección queda registrada: cada detección
+deja una entrada `VaultAuditDetection` en el JSONL encadenado *antes* de
+intentar el envío, con `notificada: true|false`. Sin esa separación, una ráfaga
+sostenida dejaba de existir en el rastro después de la primera alerta — que es
+justo el hueco por el que se esconden las ráfagas siguientes. Un fallo del canal
+de Telegram tampoco revierte ni borra lo ya registrado.
 
 ## Consultar Event history
 

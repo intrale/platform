@@ -540,3 +540,13 @@ security-report-*.md
 # Un `git add -A` durante una corrida alcanzaba para colarlos.
 /.tmp*/
 /.tmp-*.txt
+
+# Scratch compartido de agentes en la raiz del repo (#5801).
+# `/.tmp*/` (arriba) cubre los scratchpads por rol/issue, pero varios skills
+# escriben en `.scratch/` (copias de trabajo de config, dumps de comentarios,
+# perfiles de Chrome de las corridas de QA). Nada de eso es entregable y un
+# `git add -A` durante una corrida alcanza para colarlo: en #5801 se stagearon
+# copias de `config.yaml` y `config-schema.js` y el secret-scan bloqueo el
+# commit de forma correcta. El repo es PUBLICO, asi que estas copias son
+# ademas una via de fuga de valores de config.
+/.scratch/

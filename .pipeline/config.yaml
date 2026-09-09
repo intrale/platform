@@ -2017,11 +2017,38 @@ vault:
   # no crea trails ni modifica event selectors y una allowlist vacía saltea el
   # tick para evitar una tormenta de alertas durante el rollout.
   access_audit:
+    # #5801 — Declarar este bloque EXIGE `burst_threshold` entero positivo en el
+    # mismo commit: el esquema lo pide INCONDICIONALMENTE (`config-schema.js`,
+    # `required: ['burst_threshold']` bajo `vault.access_audit`), o sea también
+    # con `enabled: false`. Es a propósito y más estricto que atarlo al gate:
+    # así el umbral no puede quedar sin calibrar mientras la auditoría está
+    # apagada, para que encenderla nunca sea el momento en que se descubre que
+    # falta. No hay forma de dejar la auditoría corriendo con la detección de
+    # ráfagas apagada y que el pipeline arranque igual.
     enabled: false
     poll_interval_min: 10
     lookback_min: 30
     expected_principals: []
-    burst_threshold: 0
+    # #5801 — Umbral de ráfaga CALIBRADO.
+    #
+    # UNIDAD: `physical_read` por ventana de `lookback_min` minutos (NO por
+    # minuto). El pico que publica la corrida de #5800 viene en
+    # `physical_read/minuto`, así que la conversión es explícita y obligatoria:
+    #
+    #   peak_physical_reads_per_minute = 6      (corrida productiva de #5800)
+    #   lookback_min                   = 30
+    #   pico_ventana    = ceil(6 * 30)          = 180  physical_read/ventana
+    #   margen          = 1.0                          (100 %, ver la doc)
+    #   burst_threshold = ceil(180 * (1 + 1.0)) = 360  physical_read/ventana
+    #
+    # CAMBIAR `lookback_min` INVALIDA este número: hay que recalcularlo con la
+    # fórmula, no ajustarlo a ojo. Si la alerta suena, se RECALIBRA — no se sube
+    # a mano (el propio copy de la alerta lo dice).
+    #
+    # Escenario, procedencia del pico y justificación del margen en
+    # `docs/pipeline/vault-rotacion-auditoria.md` §Calibración del umbral de
+    # ráfaga.
+    burst_threshold: 360
     authorization_failure_threshold: 3
     cooldown_min: 10
   # D5 — El vault resuelve SÓLO los scopes declarados acá. No existe un camino
