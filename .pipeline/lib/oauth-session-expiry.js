@@ -144,6 +144,14 @@ function emptyState() {
         health_alert_open: false,
         expiry_alert_open: false,
         renewal_unhealthy: false,
+        // Vigencia (`expiresAt`) observada en el instante en que CE-2 se
+        // encendió. Es la referencia contra la que se decide, en CUALQUIER
+        // evaluación posterior, si ya hubo una renovación después del
+        // encendido. Sin este ancla el apagado sólo podía ocurrir en el tick
+        // exacto del salto, y el fail-closed se lo comía cuando la señal de
+        // #6238 seguía viva (TTL 60 min) en ese mismo tick. Es una marca de
+        // tiempo de vencimiento, no un dato de la credencial (CA-11).
+        unhealthy_expires_at_epoch: null,
     };
 }
 
@@ -203,11 +211,46 @@ function evaluate({ now = Date.now(), statePath, disabledModule = providerDisabl
     if (renewed) {
         next.t30_sent = false;
         next.t10_sent = false;
-        next.renewal_unhealthy = false; // CA-4 / CA-15: el salto apaga CE-2.
+    }
+
+    // -----------------------------------------------------------------------
+    // CE-2 — apagado por ESTADO VIGENTE, no por el instante del salto.
+    //
+    // El camino feliz principal es: el operador recibe el aviso y reautentica
+    // DENTRO de los 60 min de TTL de la entrada `credential-death`. Ahí el
+    // salto de vigencia y la señal viva caen en el mismo tick, el fail-closed
+    // gana (correctamente) y `renewed` ya nunca vuelve a ser true, porque el
+    // epoch nuevo quedó persistido en ese mismo tick. Condicionar el apagado a
+    // `renewed` dejaba el marcador latcheado para siempre cuando la señal se
+    // drenaba después.
+    //
+    // Regla: CE-2 se apaga en cualquier evaluación donde (a) ya no haya
+    // evidencia vigente de rechazo y (b) se haya observado una renovación
+    // POSTERIOR al encendido. El fail-closed sigue ganando mientras la señal
+    // está viva — pero sólo mientras está viva, no después.
+    // -----------------------------------------------------------------------
+    const ignitionEpoch = Number.isFinite(prev.unhealthy_expires_at_epoch)
+        ? prev.unhealthy_expires_at_epoch
+        : prev.expires_at_epoch; // marker de una corrida previa al ancla.
+    const renewedSinceIgnition = prev.renewal_unhealthy
+        && Number.isFinite(ignitionEpoch)
+        && epoch > ignitionEpoch;
+    if (renewedSinceIgnition && !credentialDeathActive) {
+        next.renewal_unhealthy = false;
+        next.unhealthy_expires_at_epoch = null;
     }
     // Fail-closed: si el encendido y el apagado coinciden en la misma
     // evaluación gana el encendido — ante evidencia de rechazo se avisa.
-    if (credentialDeathActive) next.renewal_unhealthy = true;
+    // El ancla se fija SÓLO en la transición apagado -> encendido: mientras la
+    // señal siga viva por el mismo episodio no se re-ancla, para que la
+    // renovación ocurrida durante ese episodio siga contando al drenarse.
+    if (credentialDeathActive) {
+        if (!prev.renewal_unhealthy) next.unhealthy_expires_at_epoch = epoch;
+        next.renewal_unhealthy = true;
+    }
+    // El apagado de CE-2 puede caer en un tick posterior al salto; el cierre de
+    // CA-9 tiene que poder salir en ese tick aunque `renewed` sea false.
+    const ce2Apagada = prev.renewal_unhealthy && !next.renewal_unhealthy;
 
     if (prev.health_alert_open) {
         save(statePath, next);
@@ -217,9 +260,13 @@ function evaluate({ now = Date.now(), statePath, disabledModule = providerDisabl
         save(statePath, next);
         return { shouldEmit: false, minutesLeft, reason: 'first_reading' };
     }
-    // CA-9 / CA-15: el episodio abierto se cierra solo cuando la vigencia saltó
-    // hacia adelante y ya no queda evidencia de rechazo vigente.
-    if (renewed && prev.expiry_alert_open && !next.renewal_unhealthy) {
+    // CA-9 / CA-15: el episodio abierto se cierra solo cuando la renovación
+    // volvió a funcionar y ya no queda evidencia de rechazo vigente. Vale tanto
+    // el tick del salto (`renewed`) como el tick posterior en el que CE-2 se
+    // apaga al drenarse la señal (`ce2Apagada`): si el cierre dependiera sólo
+    // del primero, un fail-closed en ese tick dejaba el episodio abierto para
+    // siempre.
+    if ((renewed || ce2Apagada) && prev.expiry_alert_open && !next.renewal_unhealthy) {
         save(statePath, next);
         return { shouldEmit: true, alert: 'renewed', minutesLeft, reason: 'session_renewed' };
     }

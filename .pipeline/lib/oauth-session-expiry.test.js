@@ -229,6 +229,101 @@ test('CA-15 · el aviso de CE-2 se apaga solo cuando la renovación vuelve a fun
     assert.equal(oauth.evaluate({ now: inicio + 4 * TICK_MS, statePath, disabledModule }).shouldEmit, false);
 });
 
+test('CA-15 · la reautenticación DENTRO del TTL de la señal apaga CE-2 al drenarse', (t) => {
+    // Orden realista (el que produjo el rebote): la reautenticación es la
+    // RESPUESTA al aviso, así que el salto de vigencia ocurre con la entrada
+    // `credential-death` todavía vigente — su TTL es de 60 min. El fail-closed
+    // gana ese tick; el apagado tiene que ocurrir igual cuando la señal drena,
+    // en un tick posterior donde `renewed` ya es false.
+    const TICK_MS = 5 * 60000;
+    const inicio = 1_800_000_000_000;
+    let epoch = inicio + 25 * 60000;
+    let senal = 'credential-death';
+    const disabledModule = { getDisabledEntry: () => (senal === null ? null : { name: 'anthropic', source: senal }) };
+
+    // Refresh lejano: CE-1 apagada, lo único que puede emitir acá es CE-2.
+    const statePath = fixture(t, credentials(epoch));
+    fs.readFileSync = (file, encoding) => path.resolve(String(file)) === path.resolve(oauth.CREDENTIALS_PATH)
+        ? JSON.stringify(credentials(epoch, epoch + oauth.NEXT_CYCLE_MS * 5))
+        : originalRead.call(fs, file, encoding);
+
+    oauth.evaluate({ now: inicio - TICK_MS, statePath, disabledModule });
+    const aviso = oauth.evaluate({ now: inicio, statePath, disabledModule });
+    assert.equal(aviso.reason, 'credential_death');
+    oauth.recordEmitted({ statePath, alert: aviso.alert, threshold: aviso.threshold });
+
+    // El operador reautentica CON la señal todavía vigente: fail-closed gana.
+    epoch += 8 * 60 * 60000;
+    const conSenalViva = oauth.evaluate({ now: inicio + TICK_MS, statePath, disabledModule });
+    assert.equal(conSenalViva.shouldEmit, false, 'el tick del salto no cierra: la señal sigue viva');
+    assert.equal(JSON.parse(originalRead(statePath, 'utf8')).renewal_unhealthy, true, 'fail-closed intacto');
+
+    // Recién ahora drena el TTL de 60 min. `renewed` ya es false en este tick.
+    senal = null;
+    const cierre = oauth.evaluate({ now: inicio + 2 * TICK_MS, statePath, disabledModule });
+    assert.equal(cierre.alert, 'renewed', 'CA-9: el cierre sale en el tick posterior al salto');
+    oauth.recordEmitted({ statePath, alert: cierre.alert });
+
+    const state = JSON.parse(originalRead(statePath, 'utf8'));
+    assert.equal(state.renewal_unhealthy, false, 'CA-15: CE-2 queda apagada sin intervención humana');
+    assert.equal(state.expiry_alert_open, false);
+
+    // CA-5 / CA-14: cero emisiones en el ciclo siguiente, ya sin ninguna señal.
+    let emisiones = 0;
+    for (let i = 3; i < 130; i += 1) {
+        const now = inicio + i * TICK_MS;
+        if (now >= epoch + 2 * 60000) epoch += 8 * 60 * 60000;
+        const d = oauth.evaluate({ now, statePath, disabledModule });
+        if (d.shouldEmit) { emisiones += 1; oauth.recordEmitted({ statePath, alert: d.alert, threshold: d.threshold }); }
+    }
+    assert.equal(emisiones, 0, 'sin señal vigente el ciclo siguiente es silencio absoluto');
+    assert.equal(JSON.parse(originalRead(statePath, 'utf8')).renewal_unhealthy, false);
+});
+
+test('CE-2 no se apaga sin renovación posterior al encendido, y una señal nueva la reenciende', (t) => {
+    const TICK_MS = 5 * 60000;
+    const inicio = 1_800_000_000_000;
+    let epoch = inicio + 25 * 60000;
+    let senal = 'credential-death';
+    const disabledModule = { getDisabledEntry: () => (senal === null ? null : { name: 'anthropic', source: senal }) };
+
+    const statePath = fixture(t, credentials(epoch));
+    fs.readFileSync = (file, encoding) => path.resolve(String(file)) === path.resolve(oauth.CREDENTIALS_PATH)
+        ? JSON.stringify(credentials(epoch, epoch + oauth.NEXT_CYCLE_MS * 5))
+        : originalRead.call(fs, file, encoding);
+
+    oauth.evaluate({ now: inicio - TICK_MS, statePath, disabledModule });
+    const aviso = oauth.evaluate({ now: inicio, statePath, disabledModule });
+    assert.equal(aviso.reason, 'credential_death');
+    oauth.recordEmitted({ statePath, alert: aviso.alert, threshold: aviso.threshold });
+
+    // La señal drena SIN que la vigencia haya saltado: no hay evidencia de que
+    // la renovación volviera a andar, así que CE-2 sigue encendida.
+    senal = null;
+    oauth.evaluate({ now: inicio + TICK_MS, statePath, disabledModule });
+    assert.equal(JSON.parse(originalRead(statePath, 'utf8')).renewal_unhealthy, true,
+        'sin renovación observada el marcador no se apaga solo');
+
+    // Ahora sí renueva: apaga y cierra el episodio.
+    epoch += 8 * 60 * 60000;
+    const cierre = oauth.evaluate({ now: inicio + 2 * TICK_MS, statePath, disabledModule });
+    assert.equal(cierre.alert, 'renewed');
+    oauth.recordEmitted({ statePath, alert: cierre.alert });
+    assert.equal(JSON.parse(originalRead(statePath, 'utf8')).unhealthy_expires_at_epoch, null);
+
+    // Un episodio NUEVO se ancla a la vigencia vigente ahora, no a la vieja:
+    // la renovación pasada no puede apagarlo retroactivamente.
+    senal = 'credential-death';
+    oauth.evaluate({ now: inicio + 3 * TICK_MS, statePath, disabledModule });
+    const reencendido = JSON.parse(originalRead(statePath, 'utf8'));
+    assert.equal(reencendido.renewal_unhealthy, true);
+    assert.equal(reencendido.unhealthy_expires_at_epoch, epoch, 'el ancla es la vigencia del nuevo encendido');
+    senal = null;
+    oauth.evaluate({ now: inicio + 4 * TICK_MS, statePath, disabledModule });
+    assert.equal(JSON.parse(originalRead(statePath, 'utf8')).renewal_unhealthy, true,
+        'la renovación anterior al reencendido no lo apaga');
+});
+
 test('tres lecturas fallidas abren un único episodio de salud y la recuperación lo cierra', (t) => {
     const now = 1_800_000_000_000;
     const statePath = fixture(t, new Error('missing'));
