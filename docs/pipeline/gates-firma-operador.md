@@ -298,5 +298,97 @@ La firma queda **atada al commit/PR específico**: si el contenido cambia despu�
 
 ---
 
+## 14. Cómo se le avisa al operador que GATE 1 está reteniendo (#6192)
+
+Implementado. Hasta #6192 los tres avisos de GATE 1 (`pulpo.js`) eran una línea
+técnica que interpolaba el motivo crudo del gate y se repetía en **cada
+barrido** mientras el issue siguiera retenido. Con `gate_mode: enforce` eso es
+un mensaje por issue por barrido hasta que el operador firme: el canal se vuelve
+ruido y el operador aprende a ignorarlo, que es la peor falla posible de un gate.
+
+### Qué sale ahora
+
+- **Una ficha de decisión** (`lib/decision-card.js`, #6190) de tipo `firma`: qué
+  issue es, qué se pide firmar, desde cuándo, las tres opciones con su
+  consecuencia y el costo de no decidir. El copy se **consume**, no se redacta:
+  ningún call-site escribe texto propio.
+- **Los tres botones** Aprobar / Rechazar / Ajustar
+  (`operator-gate.buildInlineKeyboard`). El `callback_data` es un id opaco de 16
+  hex; el binding `(issue, acción)` se persiste **server-side**
+  (`operator-gate.register`). Nunca viajan issue, acción ni tenant dentro del
+  `callback_data`, y la autorización es por `from.id` contra la allowlist
+  resuelta del entorno, **fail-closed si está vacía**.
+- **Sin opción recomendada, nunca.** El tipo `firma` declara explícitamente que
+  no hay recomendación y que la decisión es del operador. Un gate que sugiere
+  cómo firmar deja de ser un gate.
+- **Texto plano explícito** (`{ plain: true }`): la intención viaja como campo,
+  no como ausencia de `parse_mode` (lección de #5421 — un metacarácter en el
+  motivo daba HTTP 400 y la alerta se perdía sin rastro).
+
+### Cuándo NO se pide firmar
+
+Si el gate retiene porque **no hay ningún firmante autorizado configurado**, o
+porque **el pipeline no puede emitir la capability de firma**, o porque no se
+pudo leer el issue, o porque el gate reventó, el aviso sale como
+`indeterminado`: dice qué falta, **no ofrece opciones y no lleva botones**.
+Pedir una firma que ninguna identidad podría emitir es ofrecer una acción
+inejecutable.
+
+La disponibilidad de la capability se **sondea antes de redactar**
+(`gate1-signature-keyboard.probeGate1SignatureCapability()`, sin efectos: no
+registra bindings) y entra como **input de la clasificación**. No es un `catch`
+posterior que borra los botones de una ficha que ya prometió firma. Del sondeo
+se loguea sólo el **código acotado** (`VAULT_DISABLED`, `VAULT_FAILURE`…), nunca
+el error crudo, y el texto que ve el operador **no nombra la pieza interna**: le
+dice que la firma por botón no está disponible y por dónde sigue (`/unblock`).
+
+> Con la config productiva actual (`vault.enabled: false`) el sondeo devuelve
+> `ok:false` en **todos** los barridos: el camino `indeterminado` es el único que
+> el operador ve hoy. La suite ejercita la **matriz de capability** (`true` y
+> `false`) a propósito — una suite verde sobre el camino `firma` ya dejó pasar
+> dos veces un defecto del camino que sí corre.
+
+### La reclasificación saca las opciones, no los hechos
+
+Que el pipeline no pueda ofrecer botones **no lo autoriza a decir que no sabe lo
+que sí sabe** (CA-1 de #6192, precisado por el `po` el 09/09). El aviso
+reclasificado a `indeterminado` conserva:
+
+- **qué issue es** y su título citado,
+- **qué se pide firmar** (`¿Aprobás el alcance de #N…?` — la decisión no cambia,
+  cambia el canal por el que se ejecuta),
+- **desde cuándo**: la fecha concreta **y** la antigüedad relativa,
+- **el comando ejecutable** `/unblock <issue> aprobar`, no el molde libre.
+
+Y **no** afirma desconocimiento: cuando la causa se conoce, el copy genérico
+("quedó frenado por algo que no supe clasificar", "no te propongo opciones
+porque no las puedo justificar") queda reservado para el caso en que el
+desconocimiento es real — motivo ilegible o gate caído. Un aviso que niega
+saber la causa dos líneas después de imprimirla se contradice solo, y el
+operador deja de creerle.
+
+### Una sola emisión por estado
+
+`lib/gate1-notify-dedup.js` mantiene `.pipeline/gate1-notify-state.json` con la
+forma `{ "<issue>": { hash, ts } }` — **sólo el hash, nunca el body**. La clave
+combina el hash de los criterios (la misma primitiva con la que el gate detecta
+firma stale), el motivo y el caso: si cambia lo que hay que firmar, el aviso
+**vuelve a salir**; si no cambió nada, el barrido siguiente calla. Cuando el
+gate deja de retener de verdad, el sello se olvida.
+
+El orden es **emitir y después sellar**: un fallo de envío no puede dejar el
+aviso marcado como entregado. El peor caso del dedupe es un aviso repetido —
+nunca una alerta perdida.
+
+### Límite conocido
+
+El botón firma en el audit chain de `operator-gate`, pero el write path de la
+firma de definición es `approval-channel` (#6206) y su carrier de Telegram es
+#6207, todavía sin implementar: hasta entonces el botón **no levanta por sí solo
+la retención de GATE 1**. El pie de la ficha sigue ofreciendo `/unblock`, que sí
+es un camino completo.
+
+---
+
 ## Escapes de referencia
 - #4531 (reabierto), #4500 (reabierto), #4532 (reabierto), #4568 (gate de QA visual — a absorber por el issue §8.2).
