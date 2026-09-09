@@ -720,6 +720,61 @@ por versión), no un test del backend con el `expectedVersion` pasado a mano: es
 prueba que el CAS funciona cuando alguien se lo pide, no que los mutadores se lo
 pidan.
 
+#### El registro de olas: la versión viaja adosada al snapshot
+
+CA-A4 alcanza a la allowlist **y al registro de olas**, y el registro tiene una
+diferencia de forma que obliga a una solución distinta: sus ~17 mutadores
+comparten un mismo patrón (`invalidateCache() → loadWaves() → mutar →
+saveState(state, meta)`) y no hay un único punto de lectura al que agregarle un
+segundo valor de retorno. Pedirle a cada mutador que propague la versión a mano
+es un control que se rompe con el primer mutador nuevo que se olvide — y ese
+olvido es silencioso, porque escribir sin condición **no falla**: pisa.
+
+Por eso la versión no se devuelve aparte: viaja **pegada al objeto `state`**, en
+una propiedad de símbolo que `loadWaves()` estampa una vez y
+`saveStateLocked()` lee al final del recorrido. Los mutadores no cambian y no
+pueden olvidarse.
+
+- Es un `Symbol`, no un campo: `JSON.stringify` lo ignora, `Object.keys` no lo
+  lista, `validateStateStrict` no lo ve como campo desconocido y
+  `computeIntegrityHash` no lo mete en el hash. **El estado que se persiste es
+  byte a byte el mismo que antes.**
+- El caché de 2 s la transporta explícitamente (`deepClone` es un round-trip
+  JSON y la perdería). Sin eso, un `state` servido desde el TTL llegaría al
+  write sin versión y el write volvería a salir incondicional, encubierto por
+  el caché.
+- El vector es el mismo de la allowlist, con otra consecuencia: A lee la ola
+  `[1]`; B agrega el issue 200 → `[1, 200]`; A agrega el 100 escribiendo su foto
+  vieja → `[1, 100]`. **El alta de B desaparece sin que nadie se entere.** Toca
+  el camino que ejercitan `pulpo.js` y `wave-dispatch.js` en cada tick
+  (`addIssueToWave`, `markIssuesCompletedInActiveWave`, `setWaveStalled`), que
+  es justo el que activa el multi-instancia de CA-C6.
+
+Precedencia en `saveStateLocked` (`resolveCasVersion`):
+
+1. `metadata.expectedVersion` — el If-Match **opcional del dominio** (#4372),
+   que sólo pasan la API HTTP y el rollback del commander. Es más estricto y
+   gana si está.
+2. La versión adosada por `loadWaves()` — la que cubre a los mutadores calientes
+   del Pulpo, que nunca pasaron If-Match.
+
+Y dos rechazos explícitos, en modo remoto:
+
+| situación | qué pasa | por qué |
+|---|---|---|
+| versión adosada `null` (la lectura degradó) | `EWAVES_STORE`, no se escribe | `loadWaves()` degrada a `emptyState()`: el write persistiría un registro **vacío** encima del real |
+| sin versión adosada (state armado a mano) | `EWAVES_NO_CAS_VERSION` | escribir sin condición es el defecto, no el default: un mutador futuro falla ruidoso en vez de reintroducir el lost update |
+
+La única excepción deliberada es `restoreFromSnapshots()`: es el rollback de
+emergencia de una transacción que ya falló a mitad de camino, corre bajo el lock
+de la transacción y **tiene que ganar** — restaurar el backup condicionado a una
+versión que la propia transacción fallida movió lo dejaría sin poder revertir.
+
+El control es `lib/__tests__/waves-registro-cas-5113.test.js`: dos instancias con
+carpetas locales distintas (⇒ lockfiles distintos, o sea dos hosts) contra el
+mismo store, más el caso negativo que falla si el `putItem` sale con la versión
+**releída** por el backend en vez de la del snapshot.
+
 El token de versión del registro de olas es `meta.updated_at` (ISO) y se mapea
 bidireccionalmente al entero incremental del coordination store. En modo remoto
 **el entero es el autoritativo**; el ISO se preserva en el envelope para no

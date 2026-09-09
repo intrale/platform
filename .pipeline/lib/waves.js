@@ -315,17 +315,80 @@ function ensureDir(dir) {
     try { fs.mkdirSync(dir, { recursive: true }); } catch {}
 }
 
+// #5113 (CA-A4, rebote rev-4) — Versión del sustrato ADOSADA al snapshot.
+//
+// El fix de la allowlist resolvió su mitad con `readAllowlistSnapshot()`, que
+// devuelve el dato y su versión juntos. El registro de olas no puede copiar esa
+// forma tal cual: sus ~17 mutadores comparten un mismo patrón
+// (`invalidateCache() → loadWaves() → mutar → saveState(state, meta)`) y no hay
+// un único punto de lectura al que agregarle un segundo valor de retorno sin
+// tocar cada uno — y cada mutador que se olvidara de propagarla volvería a
+// escribir incondicional, en silencio, que es exactamente el defecto de rev-4.
+//
+// Por eso la versión viaja PEGADA al objeto `state`, en una propiedad de
+// símbolo: `loadWaves()` la estampa una vez y `saveStateLocked()` la lee al
+// final del recorrido. Los mutadores no cambian y no pueden "olvidarse".
+//
+// Se usa un símbolo (no un campo normal) para que sea invisible a todo lo que
+// serializa o valida el estado: `JSON.stringify` ignora las claves de símbolo,
+// `Object.keys` no las lista, `validateStateStrict` no la ve como campo
+// desconocido y `canonicalStringify` (que recorre `Object.keys`) no la mete en
+// el `integrity_hash`. El estado que se persiste es byte a byte el mismo que
+// antes.
+//
+// La propiedad es ENUMERABLE a propósito: así `{...state}` y `Object.assign`
+// la copian (el spread copia símbolos enumerables). Con `enumerable: false` un
+// mutador que armara su state con spread lo perdería y su write saldría sin
+// condición — el defecto de vuelta, por la puerta de atrás. Nada del código
+// recorre `Reflect.ownKeys`/`getOwnPropertySymbols` sobre el estado, así que
+// ser enumerable no la vuelve visible en ningún lado.
+//
+// Convención del valor estampado (misma que `readAllowlistSnapshot`):
+//   - entero (remoto) / ISO (fs)  → versión vigente leída.
+//   - `0`                         → la clave NO existía ⇒ `attribute_not_exists`,
+//                                   un solo ganador en la creación concurrente.
+//   - `null`                      → la lectura DEGRADÓ. No se puede escribir:
+//                                   ver `resolveCasVersion` (CA-A7).
+const CAS_VERSION = Symbol('intrale.opstate.wavesCasVersion');
+
+/** Adosa la versión del sustrato al state. Muta y devuelve el mismo objeto. */
+function stampCasVersion(state, version) {
+    if (!state || typeof state !== 'object') return state;
+    Object.defineProperty(state, CAS_VERSION, {
+        value: version, enumerable: true, writable: true, configurable: true,
+    });
+    return state;
+}
+
+/**
+ * Versión adosada al state, o `undefined` si el state no salió de una lectura
+ * versionada (construido a mano, deserializado, clonado con JSON).
+ * @returns {number|string|null|undefined}
+ */
+function casVersionOf(state) {
+    if (!state || typeof state !== 'object') return undefined;
+    return Object.prototype.hasOwnProperty.call(state, CAS_VERSION)
+        ? state[CAS_VERSION]
+        : undefined;
+}
+
 function readCached(pipelineRoot) {
     const now = Date.now();
     const hit = cache.get(pipelineRoot);
     if (hit && (now - hit.ts) < CACHE_TTL_MS) {
-        return deepClone(hit.state);
+        // `deepClone` es un round-trip JSON: pierde la propiedad de símbolo. Se
+        // re-estampa desde la entrada del caché para que un state servido desde
+        // el TTL de 2 s NO llegue a `saveState` sin versión (ahí el write
+        // volvería a salir incondicional, encubierto por el caché).
+        return stampCasVersion(deepClone(hit.state), hit.casVersion);
     }
     return null;
 }
 
 function setCached(pipelineRoot, state) {
-    cache.set(pipelineRoot, { state: deepClone(state), ts: Date.now() });
+    cache.set(pipelineRoot, {
+        state: deepClone(state), ts: Date.now(), casVersion: casVersionOf(state),
+    });
 }
 
 // #5113 (D-1) — ÚNICO lector físico del registro de olas. Pasa a delegar en la
@@ -342,18 +405,47 @@ function setCached(pipelineRoot, state) {
 // Degradación (CA-A7): el backend devuelve `null` y acá se cae a `emptyState()`,
 // exactamente igual que ante un `waves.json` corrupto. NUNCA se lee filesystem
 // como alternativa — eso sería la segunda fuente de verdad que CA-C1 prohíbe.
-function readWavesFromDisk(file) {
+//
+// #5113 (CA-A4, rebote rev-4) — La lectura devuelve el dato Y su versión. La
+// versión es el único canal que convierte el read-modify-write del dominio
+// (`leer → mutar → saveState`) en un CAS real entre hosts: sin ella el backend
+// rellena el hueco con la versión que él mismo relee un instante antes del
+// `putItem`, la `ConditionExpression` se cumple siempre y el write es
+// efectivamente INCONDICIONAL. El CAS cubriría entonces la ventana interna del
+// backend (`getItem→putItem`), no la ventana real del dominio, que es donde
+// ocurre la carrera: A lee las olas, B agrega el issue 200, A escribe la foto
+// vieja y el alta de B desaparece sin que nadie se entere.
+//
+// @returns {{raw: object|null, casVersion: number|string|null}}
+function readWavesSnapshotFromDisk(file) {
     const res = stateBackend.readKeyWithVersion(stateBackend.KEYS.WAVES);
     if (res.error) {
         logWarn(`No se pudo leer el registro de olas (${res.remote ? 'store remoto' : file}): ${res.error.message}`);
-        return null;
+        // `null` = "no se pudo leer la versión vigente". NO es 0: escribir con
+        // `attribute_not_exists` acá crearía un registro vacío encima de uno
+        // vivo que simplemente no se pudo leer.
+        return { raw: null, casVersion: null };
     }
-    if (!res.value) return null;
+    if (res.degraded) {
+        return { raw: null, casVersion: null };
+    }
+    if (!res.value) {
+        // Ausencia legítima (equivalente de ENOENT): create-once.
+        return { raw: null, casVersion: 0 };
+    }
     if (typeof res.value !== 'object' || Array.isArray(res.value)) {
         logWarn(`Schema inválido en el registro de olas (${res.remote ? 'store remoto' : file}): no es objeto. Cayendo a estado vacío.`);
-        return null;
+        // La clave EXISTE (con esta versión) aunque su contenido no sirva:
+        // sobrescribirla es legítimo, pero condicionado a que nadie la haya
+        // reparado en el medio.
+        return { raw: null, casVersion: res.version === undefined ? null : res.version };
     }
-    return res.value;
+    return { raw: res.value, casVersion: res.version === undefined ? null : res.version };
+}
+
+/** Azúcar histórica: sólo el dato, sin versión. Para lecturas que NO mutan. */
+function readWavesFromDisk(file) {
+    return readWavesSnapshotFromDisk(file).raw;
 }
 
 // #4532 — Bootstrap del archivo de runtime desde el template versionado.
@@ -413,10 +505,13 @@ function ensureWavesFile() {
     if (seed === null) seed = emptyState();
 
     try {
-        // `expectedVersion: null` en modo remoto ⇒ `attribute_not_exists(PK)`:
-        // si dos instancias bootean a la vez, gana una sola y la otra recibe
-        // `conflict` sin pisar nada (CA-A4).
-        const res = stateBackend.writeKey(stateBackend.KEYS.WAVES, seed, null);
+        // `expectedVersion: 0` = "esperaba que NO existiera" ⇒ el backend lo
+        // traduce a `attribute_not_exists(PK)`: si dos instancias bootean a la
+        // vez, gana una sola y la otra recibe `conflict` sin pisar nada (CA-A4).
+        // Explícito y no derivado: `null` significa "sin If-Match" y ahí el
+        // backend usa la versión que él mismo releyó, que es el write
+        // incondicional que este issue vino a cerrar.
+        const res = stateBackend.writeKey(stateBackend.KEYS.WAVES, seed, 0);
         if (res && res.conflict) {
             return { created: false, reason: 'exists' };
         }
@@ -452,7 +547,7 @@ function loadWaves() {
     const cached = readCached(root);
     if (cached) return cached;
 
-    const raw = readWavesFromDisk(wavesFile());
+    const { raw, casVersion } = readWavesSnapshotFromDisk(wavesFile());
     let state;
     if (!raw) {
         state = emptyState();
@@ -471,8 +566,13 @@ function loadWaves() {
     // waves.json legacy sin `meta.next_wave_number`. La ola activa conserva su
     // número; el próximo correlativo arranca en max(existentes)+1.
     backfillNextWaveNumber(state);
+    // #5113 (CA-A4) — la versión del sustrato viaja adosada al snapshot hasta
+    // `saveStateLocked`, que la usa como `expectedVersion` del CAS. Se estampa
+    // ANTES de cachear (para que el caché la transporte) y también en la copia
+    // que se devuelve, porque `deepClone` no preserva propiedades de símbolo.
+    stampCasVersion(state, casVersion);
     setCached(root, state);
-    return deepClone(state);
+    return stampCasVersion(deepClone(state), casVersion);
 }
 
 /**
@@ -2147,6 +2247,68 @@ function saveState(state, metadata = {}) {
     });
 }
 
+/**
+ * #5113 (CA-A4, rebote rev-4) — Versión que condiciona el write del registro de
+ * olas.
+ *
+ * Precedencia, de más a menos específica:
+ *
+ *   1. `metadata.expectedVersion` — el If-Match del dominio (#4372). Lo pasan
+ *      la API HTTP (`waves-api.js`) y el rollback del commander. Es el más
+ *      estricto: llega como token ISO y el backend lo mapea al entero del store
+ *      (CA-A6); si ese ISO ya no es el vigente, el backend devuelve conflicto.
+ *   2. La versión adosada al snapshot por `loadWaves()`. Es la que cubre a los
+ *      mutadores CALIENTES del Pulpo (`addIssueToWave`,
+ *      `markIssuesCompletedInActiveWave`, `setWaveStalled`, …), que nunca
+ *      pasaron If-Match y por eso escribían de forma efectivamente
+ *      incondicional: el vector de lost update entre hosts que reportó QA.
+ *
+ * Casos de borde:
+ *
+ *   - `null` adosado ⇒ la lectura DEGRADÓ (store caído, error de I/O). En modo
+ *     remoto NO se escribe: `loadWaves()` degrada a `emptyState()`, así que un
+ *     write acá persistiría un registro de olas VACÍO encima del real. Es el
+ *     mismo fail-closed que CA-A7 exige para la allowlist.
+ *   - Sin versión adosada (state construido a mano o deserializado) ⇒ en modo
+ *     remoto se rechaza. Escribir sin condición es el defecto, no el default:
+ *     un mutador futuro que arme su propio state falla ruidosamente acá en vez
+ *     de reintroducir el lost update en silencio.
+ *   - En modo filesystem nada de esto aplica: `writeKey` ignora
+ *     `expectedVersion` y la exclusión la sigue dando `withLockSync`, que entre
+ *     procesos del mismo host sí excluye. El comportamiento local no cambia.
+ *
+ * @param {object} state
+ * @param {object} metadata
+ * @returns {number|string|undefined}
+ * @throws {Error} EWAVES_NO_CAS_VERSION si en modo remoto no hay versión.
+ */
+function resolveCasVersion(state, metadata = {}) {
+    if (metadata.expectedVersion !== undefined && metadata.expectedVersion !== null) {
+        return metadata.expectedVersion;
+    }
+    const stamped = casVersionOf(state);
+    if (!stateBackend.isRemote()) return stamped === null ? undefined : stamped;
+
+    if (stamped === null) {
+        throw mkWavesError(
+            'No se persiste el registro de olas: la lectura del store degradó y no se conoce '
+            + 'la versión vigente. Escribir acá pisaría el estado remoto con el estado vacío '
+            + 'al que degradó la lectura (CA-A4/CA-A7). Verificá el store y reintentá.',
+            'EWAVES_STORE',
+        );
+    }
+    if (stamped === undefined) {
+        throw mkWavesError(
+            'No se persiste el registro de olas: el state no trae la versión del sustrato, '
+            + 'así que el write saldría sin condición por versión y podría pisar en silencio '
+            + 'lo que otra instancia acaba de escribir (CA-A4). El state a persistir tiene que '
+            + 'salir de `loadWaves()`.',
+            'EWAVES_NO_CAS_VERSION',
+        );
+    }
+    return stamped;
+}
+
 function saveStateLocked(state, metadata = {}) {
     if (!state.meta) state.meta = {};
     state.meta.updated_at = nowIso();
@@ -2241,14 +2403,16 @@ function saveStateLocked(state, metadata = {}) {
     // lock local se conserva porque sigue serializando los writes DEL MISMO
     // host, que es exactamente lo que siempre hizo.
     //
-    // `metadata.expectedVersion` es el If-Match opcional del dominio (#4372):
-    // llega como token ISO y el backend lo mapea al entero del store (CA-A6).
-    // Un conflicto NO se escribe: se propaga como EWAVES_VERSION_CONFLICT, el
-    // mismo error que los callers HTTP ya traducen a 409.
+    // La versión que condiciona el write sale de `resolveCasVersion`: el
+    // If-Match opcional del dominio (#4372) si el caller lo pasó, y si no la
+    // versión del snapshot que este mismo state trae adosada. Un conflicto NO
+    // se escribe: se propaga como EWAVES_VERSION_CONFLICT, el mismo error que
+    // los callers HTTP ya traducen a 409.
+    const casVersion = resolveCasVersion(state, metadata);
     let writeRes;
     try {
         writeRes = stateBackend.writeKey(
-            stateBackend.KEYS.WAVES, state, metadata.expectedVersion,
+            stateBackend.KEYS.WAVES, state, casVersion,
         );
     } catch (err) {
         logWarn(`Error escribiendo el registro de olas: ${err.message}`);
@@ -2945,6 +3109,14 @@ function restoreFromSnapshots(marker) {
             } catch (err) {
                 return `Error leyendo el backup de ${label}: ${err.message}`;
             }
+            // #5113 (CA-A4) — ÚNICA excepción deliberada al CAS del registro de
+            // olas, y queda declarada acá para que no se lea como el mismo
+            // olvido que este issue vino a cerrar: es el rollback de emergencia
+            // de una transacción que YA falló a mitad de camino, corre bajo el
+            // lock de esa transacción y tiene que ganar. Condicionarlo a una
+            // versión que la propia transacción fallida movió lo dejaría sin
+            // poder revertir, que es exactamente el escenario en el que el
+            // rollback es lo único que queda.
             const res = stateBackend.writeKey(key, payload);
             if (!res || res.ok === false) {
                 return `Error restaurando ${label}: ${(res && res.error && res.error.message) || 'write rechazado'}`;

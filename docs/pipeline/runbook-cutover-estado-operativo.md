@@ -62,7 +62,7 @@ es peor que no tenerlo.
 
 | Bloque | Qué es | Estado |
 |---|---|---|
-| **Bloque A** — backend + guardrails | `lib/operational-state-backend.js`, CAS con `expectedVersion`, cotas de payload, redacción, gate `boolean` estricto, regla `async-gate` del lint, `partial-pause` en `SOURCES` y en `DEFAULT_KNOWN_KEYS`, driver Dynamo síncrono | ✅ **Implementado, con el flag APAGADO.** Sin impacto operativo: con `durable: false` no se construye driver ni se hace una sola llamada a AWS |
+| **Bloque A** — backend + guardrails | `lib/operational-state-backend.js`, CAS con `expectedVersion` **propagado desde los mutadores de los dos estados** (allowlist vía `readAllowlistSnapshot`, registro de olas vía la versión adosada al snapshot de `loadWaves`), cotas de payload, redacción, gate `boolean` estricto, regla `async-gate` del lint, `partial-pause` en `SOURCES` y en `DEFAULT_KNOWN_KEYS`, driver Dynamo síncrono | ✅ **Implementado, con el flag APAGADO.** Sin impacto operativo: con `durable: false` no se construye driver ni se hace una sola llamada a AWS |
 | **Bloque B** — precondiciones (CA-B1…CA-B5) | strict auth, `atomicUpdate` por sonda, identidad del runtime, audit trail multi-instancia, namespaceado ON | ⏳ **PENDIENTE de ejecución real.** Los comandos de §4 están verificados contra el código; **no fueron corridos contra AWS** |
 | **Bloque C** — cutover, sondas y rollback | migración, sonda positiva no-vacía, ensayo de rollback, ensayo de aborto, multi-instancia | ⏳ **PENDIENTE.** Nada de §2, §5, §8 y §9 fue ejecutado todavía |
 | **CA-UX1…CA-UX5** — lo que ve el operador | chip de procedencia en el header, causa propia en el enum de no-despacho, canal único de alerta, rollback en la primera pantalla, copy que nombra la acción | ✅ **Implementado y verificado en el render real**, con el flag apagado. El chip muestra `filesystem local` hoy; los otros tres estados se capturaron hidratando la bandeja del header contra el dashboard servido |
@@ -897,13 +897,36 @@ Los tests prueban la **semántica**; la sonda contra AWS prueba que el
 `ConditionExpression` viaja de verdad. Las dos, no una: un test verde con
 `atomicUpdate: false` pasaría igual y el CAS no existiría.
 
+#### Y el CAS del CAMINO REAL, que es otra cosa
+
+Los dos de arriba prueban que el backend hace CAS **cuando alguien le pasa
+`expectedVersion` a mano**. No prueban que los mutadores se lo pasen — y esa es
+la mitad que se puede tener rota con esos tests en verde: un `writeKey` sin
+`expectedVersion` no es "un write sin CAS", es un write **efectivamente
+incondicional**, porque el backend rellena el hueco con la versión que él mismo
+relee un instante antes del `putItem`.
+
+Los dos estados operativos tienen su propia suite sobre el camino real de
+mutación (dos instancias con carpetas locales distintas ⇒ lockfiles distintos ⇒
+dos hosts, contra el mismo store), cada una con el caso negativo que falla si el
+`putItem` sale con la versión releída:
+
+```bash
+node --test .pipeline/lib/__tests__/partial-pause-allowlist-cas-5113.test.js
+node --test .pipeline/lib/__tests__/waves-registro-cas-5113.test.js
+```
+
+Ninguna de las dos es opcional: CA-A4 dice "allowlist **y** registro de olas".
+
 ### 8.4 · Regresión mínima antes de encender
 
 ```bash
 node --test .pipeline/lib/__tests__/operational-state*.test.js
+node --test .pipeline/lib/__tests__/partial-pause*.test.js
+node --test .pipeline/lib/__tests__/waves*.test.js
 node --test .pipeline/lib/__tests__/kernel-store-migrate.test.js
 node --test .pipeline/lib/__tests__/kernel-coordination-store.test.js
-node .pipeline/lib/operational-state-lint.js
+node .pipeline/lib/operational-state-lint.js --check
 ```
 
 Todo verde **sin editar un solo test**. Editar un test de regresión para que pase
