@@ -557,6 +557,16 @@ test('CA-10: dos ticks dentro del TTL ⇒ UNA sola descarga de catálogo', async
         agentModelsConfig: AGENT_MODELS, pingImpl, cliProbe: () => false,
         telegramSender: () => true, dedupFile: path.join(dir, 'dedup.json'),
         skipAudit: true, jitter: 0, catalogTtlMs: 6 * 3600e3,
+        // #5174 / #5801 — `intervalMs` explícito para que el test sea HERMÉTICO.
+        // Sin él, `tickIfDue` cae a `readTickIntervalMs()` sin `configPath`, el
+        // resolver baja por la cadena hasta `PIPELINE_REPO_ROOT` y termina
+        // VALIDANDO la configuración del repo AMBIENTE — no la de este checkout.
+        // Este test es sobre el TTL del catálogo, no sobre la cadencia ni sobre
+        // el schema del config del host: cualquier endurecimiento de schema en
+        // otra rama lo hacía fallar por un motivo ajeno a lo que asevera.
+        // 5 min = `multi_provider.health.interval_minutes` del config real, o sea
+        // el mismo valor que venía resolviendo por ambiente: sin cambio de conducta.
+        intervalMs: 5 * 60e3,
     };
     const t0 = Date.parse('2026-08-13T13:00:00.000Z');
     await healthCron.tickIfDue({ ...base, now: t0 });
@@ -587,6 +597,16 @@ test('CA-10/R-E: carry-over — el tick intermedio conserva el catalog_check pre
         agentModelsConfig: AGENT_MODELS, pingImpl, cliProbe: () => false,
         telegramSender: () => true, dedupFile: path.join(dir, 'dedup.json'),
         skipAudit: true, jitter: 0, catalogTtlMs: 6 * 3600e3,
+        // #5174 / #5801 — `intervalMs` explícito para que el test sea HERMÉTICO.
+        // Sin él, `tickIfDue` cae a `readTickIntervalMs()` sin `configPath`, el
+        // resolver baja por la cadena hasta `PIPELINE_REPO_ROOT` y termina
+        // VALIDANDO la configuración del repo AMBIENTE — no la de este checkout.
+        // Este test es sobre el TTL del catálogo, no sobre la cadencia ni sobre
+        // el schema del config del host: cualquier endurecimiento de schema en
+        // otra rama lo hacía fallar por un motivo ajeno a lo que asevera.
+        // 5 min = `multi_provider.health.interval_minutes` del config real, o sea
+        // el mismo valor que venía resolviendo por ambiente: sin cambio de conducta.
+        intervalMs: 5 * 60e3,
     };
     const t0 = Date.parse('2026-08-13T13:00:00.000Z');
     const r1 = await healthCron.tickIfDue({ ...base, now: t0 });

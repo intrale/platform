@@ -7045,14 +7045,24 @@ function brazoBarrido(config) {
                 const authorizedSigners = [...resolveOperatorAllowlist(process.env)];
                 let opIssueJson = null;
                 try {
-                  const raw = execSync(`${GH_BIN} issue view ${issue} --json number,body,createdAt,labels`,
+                  // #6192 — `title` alimenta el «qué está frenado» de la ficha
+                  // de decisión: sin él el operador lee un número pelado.
+                  const raw = execSync(`${GH_BIN} issue view ${issue} --json number,title,body,createdAt,labels`,
                     { cwd: ROOT, encoding: 'utf8', timeout: 8000, windowsHide: true });
                   opIssueJson = JSON.parse(raw);
                 } catch (e) {
                   log('barrido', `#${issue} operator-signoff-gate: ERROR cargando issue (${e.message}) — mode=${opSignoffCfg.gate_mode}`);
                   if (opSignoffCfg.gate_mode === 'enforce') {
                     operatorSignoffBlocked = true;
-                    sendTelegram(`🛑 #${issue} GATE 1 (firma definición, enforce) bloqueó promoción por error de carga: ${e.message}`);
+                    // #6192 — la retención YA está marcada; el aviso nunca la
+                    // levanta. Sin el issue cargado no se sabe qué se firmaría:
+                    // la ficha sale `indeterminado` y sin botones.
+                    notifyGate1Retention({
+                      issue,
+                      caso: 'load-error',
+                      reason: `no pude leer el issue en GitHub: ${e.message}`,
+                      firmantesAutorizados: authorizedSigners.length,
+                    });
                   }
                 }
                 if (opIssueJson) {
@@ -7071,9 +7081,32 @@ function brazoBarrido(config) {
                     operatorSignoffBlocked = true;
                     const routeTag = opGateResult.route ? ` [${opGateResult.route}]` : '';
                     log('barrido', `#${issue} GATE 1 firma-definición BLOQUEÓ promoción (mode=${opGateResult.gate_mode})${routeTag}: ${opGateResult.reason}`);
-                    sendTelegram(`🛑 #${issue} GATE 1 (firma de definición) retuvo admisión a desarrollo${routeTag}: ${opGateResult.reason}`);
+                    // #6192 — el detalle técnico (`reason`, `route`) queda en el
+                    // log, que es donde se diagnostica. Al operador le va la
+                    // ficha: qué issue es, qué se pide firmar y desde cuándo.
+                    const opSig = (opGateResult.condition_results && opGateResult.condition_results.signature) || {};
+                    notifyGate1Retention({
+                      issue,
+                      caso: 'block',
+                      titulo: opIssueJson.title,
+                      reason: opGateResult.reason,
+                      firmantesAutorizados: authorizedSigners.length,
+                      // "Ya lo habías firmado, pero los criterios cambiaron
+                      // después": es el rechazo anti-TOCTOU (A08), no una firma
+                      // ausente. Lo distingue el hash, no el texto del motivo.
+                      firmaVencida: opSig.hash_ok === false && !!opSig.signed_by,
+                      criteriaHash: operatorSignoffGate.computeCriteriaHash(opIssueJson.body),
+                    });
                   } else {
                     log('barrido', `#${issue} GATE 1 firma-definición ${opGateResult.gate_mode}: ${opGateResult.original_decision} (efectivo=${opGateResult.decision}) — ${opGateResult.reason}`);
+                    // #6192 — el gate dejó de retener de verdad (no por
+                    // dry-run): se olvida el sello para que, si el issue
+                    // volviera a quedar retenido por lo mismo, el aviso vuelva
+                    // a salir en vez de quedar silenciado para siempre.
+                    if (opGateResult.original_decision === 'approve') {
+                      try { require('./lib/gate1-notify-dedup').getDefault().forget(issue); }
+                      catch (e) { log('barrido', `#${issue} GATE 1: no pude limpiar el dedupe del aviso (${e.message})`); }
+                    }
                   }
                 }
               }
@@ -7085,7 +7118,14 @@ function brazoBarrido(config) {
               log('barrido', `#${issue} GATE 1 firma-definición ERROR inesperado: ${e.message} (mode=${opMode})`);
               if (opMode === 'enforce') {
                 operatorSignoffBlocked = true;
-                sendTelegram(`🛑 #${issue} GATE 1 firma-definición ERROR inesperado (enforce → bloquea): ${e.message}`);
+                // #6192 — el gate reventó: no se sabe qué se estaría firmando,
+                // así que ficha `indeterminado` y sin botones. La retención ya
+                // quedó puesta arriba: el aviso no la toca.
+                notifyGate1Retention({
+                  issue,
+                  caso: 'gate-error',
+                  reason: `el gate de firma falló al evaluar: ${e.message}`,
+                });
               }
             }
 
@@ -20173,6 +20213,172 @@ function sendTelegramWithMarkup(text, replyMarkup, opts) {
     req.end();
     log('telegram', `Enviado directo (${msg.length} chars)`);
     return null;
+  }
+}
+
+// #6192 — Botones de firma del GATE 1 (parte 3 del split de #6173).
+//
+// La capability la emite `operator-gate.register()`: firma un token HMAC
+// {issue, action}, genera un id opaco de 16 hex y persiste el binding
+// SERVER-SIDE en disco. El `callback_data` es ESE id y nada más — no lleva
+// issue, ni acción, ni tenant adentro. Está prohibido armar un `callback_data`
+// propio: sería un dato client-controlled decidiendo qué se firma.
+//
+// La autorización NO se decide acá: `operator-gate.handleSignature()` valida
+// `from.id` contra la allowlist resuelta server-side y es fail-closed si está
+// vacía (`operator-gate.js:337`). Este helper sólo dibuja el teclado.
+//
+// LÍMITE CONOCIDO (declarado, no descubierto): la transición que aplica el
+// botón vive en `operator-gate.applyTransition` y opera sobre work-files de
+// `waiting-operator/`. El write path de la firma de definición es
+// `approval-channel` (#6206) y su carrier de Telegram es #6207, que todavía no
+// existe: hasta entonces el botón firma en el audit chain de `operator-gate`
+// pero NO levanta la retención de GATE 1 por sí solo. El pie de la ficha sigue
+// ofreciendo `/unblock`, que sí es un camino completo. No se simula lo que no
+// está: prometer con un botón lo que el pipeline no puede cumplir es peor que
+// no ofrecerlo.
+// La implementación vive en `lib/gate1-signature-keyboard.js`. Acá quedó sólo
+// el cableado: como función privada del monolito su test la REPLICABA en vez de
+// invocarla, y esa réplica dejó pasar que el camino real devolvía `null` en
+// todos los barridos con la suite en verde. Movida al módulo, el test ejercita
+// la misma función que corre acá.
+const gate1Keyboard = require('./lib/gate1-signature-keyboard');
+
+function buildGate1SignatureKeyboard(issue) {
+  return gate1Keyboard.buildGate1SignatureKeyboard(issue, {
+    log: (m) => log('barrido', m),
+  });
+}
+
+// #6192 — Aviso del GATE 1 · Firma de Definición: ficha de decisión + botones +
+// UNA SOLA emisión por estado.
+//
+// Antes de este issue los tres avisos de GATE 1 eran una línea técnica que
+// interpolaba `opGateResult.reason` crudo en un mensaje con
+// `parse_mode: 'Markdown'` (R1/#5421: un `_` en el motivo → HTTP 400 → alerta
+// perdida sin rastro) y se repetían en CADA barrido mientras el issue siguiera
+// retenido (R-GATE). Ahora: copy de `decision-card` (#6190), transporte
+// `{ plain: true }` explícito y dedupe persistente por `(issue, hash)`.
+//
+// FAIL-CLOSED: esta función NUNCA lanza y NUNCA levanta la retención — el
+// caller ya marcó `operatorSignoffBlocked` antes de invocarla. Si todo el
+// armado falla, sale un aviso crudo en texto plano; el issue queda retenido
+// igual.
+function notifyGate1Retention(input) {
+  const i = input && typeof input === 'object' ? input : {};
+  const issue = Number(i.issue);
+  const caso = i.caso || 'block';
+  try {
+    const gate1Notify = require('./lib/gate1-notify');
+    const dedup = require('./lib/gate1-notify-dedup').getDefault();
+    const nowMs = Date.now();
+
+    // ORDEN DELIBERADO: primero se pregunta si HAY firma posible, después se
+    // redacta. Al revés —redactar y recién entonces intentar los botones— el
+    // aviso ya había prometido "elegí una opción" cuando se descubría que no
+    // había ninguna capability que emitir, y salía pidiendo firmar sin dar con
+    // qué. El sondeo no registra nada: sólo responde si la firma es posible.
+    const cap = gate1Keyboard.probeGate1SignatureCapability();
+    if (!cap.ok) {
+      log('barrido', `#${issue} GATE 1: la firma por botón no está disponible (${cap.code}) — el aviso sale como indeterminado`);
+    }
+
+    const avisoInput = {
+      issue,
+      titulo: i.titulo,
+      reason: i.reason,
+      caso,
+      firmantesAutorizados: i.firmantesAutorizados,
+      firmaVencida: i.firmaVencida,
+      capacidadFirma: cap.ok,
+      // El aviso sólo se emite cuando cambia el estado firmable, así que el
+      // "desde cuándo" es el instante en que se detectó ESTA retención.
+      blockedAt: new Date(nowMs).toISOString(),
+      fechaCorta: fechaCortaLocal(nowMs),
+    };
+    const aviso = gate1Notify.buildGate1Notice(avisoInput, nowMs);
+
+    // La clave del dedupe incluye el hash de los criterios (misma primitiva que
+    // usa el gate para detectar firma stale), el motivo y el caso: si cambia
+    // cualquiera de los tres, cambió lo que hay que firmar y el aviso vuelve.
+    // El body NUNCA entra al estado: entra su digest y se descarta.
+    const hash = dedup.computeHash([caso, aviso.tipo, i.criteriaHash || '', i.reason || '']);
+
+    // El log tiene que contar lo que SALIÓ, no lo que se pensaba mandar. En la
+    // primera pasada convivían en la misma corrida "no pude registrar los
+    // botones de firma" y "aviso emitido (firma, con botones)", porque el
+    // detalle se armaba con `aviso.ofreceBotones` —la intención— en vez del
+    // teclado efectivamente construido. Un log que miente sobre si el operador
+    // recibió los botones es peor que no loguear: convierte un defecto visible
+    // en uno invisible.
+    const emitido = { conBotones: false, reclasificado: false };
+
+    const res = dedup.notifyOnce({
+      issue,
+      hash,
+      emit: () => {
+        // El registro real de las capabilities ocurre acá y no antes: el dedupe
+        // silencia casi todos los barridos, y registrar en cada uno dejaría
+        // tres bindings huérfanos en disco por barrido silenciado.
+        let texto = aviso.texto;
+        let keyboard = null;
+        if (aviso.ofreceBotones) {
+          const kb = buildGate1SignatureKeyboard(issue);
+          if (kb.ok) {
+            keyboard = kb.keyboard;
+            emitido.conBotones = true;
+          } else {
+            emitido.reclasificado = true;
+            // La capability se cayó entre el sondeo y el registro. El texto ya
+            // redactado ofrece firmar, así que se REARMA como indeterminado en
+            // vez de mandarlo pelado: un aviso que ofrece opciones sin botones
+            // es el defecto que este orden vino a cerrar, y no lo arregla que
+            // la ventana sea chica.
+            texto = gate1Notify.buildGate1Notice(
+              { ...avisoInput, capacidadFirma: false }, nowMs,
+            ).texto;
+          }
+        }
+        sendTelegramWithMarkup(texto, keyboard, { plain: true });
+      },
+    });
+
+    if (res.notified) {
+      const detalle = [
+        emitido.reclasificado ? 'indeterminado' : aviso.tipo,
+        aviso.degradado ? 'degradado' : null,
+        // `emitido.conBotones` es el teclado que se le pasó al transporte, no
+        // el que la ficha se proponía ofrecer: si el registro de capabilities
+        // falló entre el sondeo y el envío, acá dice "sin botones".
+        emitido.conBotones ? 'con botones' : 'sin botones',
+        emitido.reclasificado ? 'reclasificado: la firma se cayó entre el sondeo y el registro' : null,
+        res.sealed ? null : 'SIN sellar (se repetirá el próximo barrido)',
+      ].filter(Boolean).join(', ');
+      log('barrido', `#${issue} GATE 1 aviso emitido (${detalle})`);
+    } else {
+      log('barrido', `#${issue} GATE 1 aviso NO emitido (${res.reason}${res.error ? `: ${res.error}` : ''})`);
+    }
+  } catch (e) {
+    // Última red. Nunca un `catch {}` vacío: el operador se entera igual, en
+    // texto plano (jamás Markdown: acá no se interpola nada externo, pero el
+    // dialecto plano es el contrato del canal desde #5421).
+    log('barrido', `#${issue} GATE 1 aviso: fallo armando/emitiendo (${e.message}) — se emite crudo`);
+    try {
+      sendTelegramPlain(`#${issue} sigue retenido esperando tu firma de definición. No pude armar el aviso completo; mirá el tablero.`);
+    } catch (e2) {
+      log('barrido', `#${issue} GATE 1 aviso crudo también falló: ${e2.message}`);
+    }
+  }
+}
+
+/** Fecha legible corta del momento del aviso. Degrada a '' si el locale falla. */
+function fechaCortaLocal(ms) {
+  try {
+    return new Date(ms).toLocaleString('es-AR', {
+      day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit',
+    });
+  } catch (_) {
+    return '';
   }
 }
 

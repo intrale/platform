@@ -849,6 +849,13 @@ function normalizar(raw, nowMs) {
         criteriosTotal: entero(d.criterios_total),
         firmaVencida: booleano(d.firma_vencida) === true,
         firmantesAutorizados: d.firmantes_autorizados == null ? null : Number(d.firmantes_autorizados),
+        // #6192 — ¿el pipeline PUEDE emitir hoy una capability de firma? Es una
+        // condición distinta de "hay quien firme": la allowlist puede estar
+        // poblada y aun así no haber forma de firmar (el firmador de tokens
+        // resuelve su material sólo desde el vault, y con el vault cerrado no
+        // hay token que emitir). `null` = no se preguntó (call-sites que no
+        // participan del gate); sólo el `false` EXPLÍCITO reclasifica.
+        capacidadFirma: booleano(d.capacidad_firma_disponible),
         autores: (Array.isArray(d.autores) ? d.autores : []).map((x) => rolLegible(x)).filter(Boolean),
         fechaCorta: sec(d.fecha_corta, 40),
         reasonCategory: String(d.reason_category || '').trim().toLowerCase(),
@@ -924,7 +931,16 @@ function clasificar(n) {
     if (RE_FIRMA.test(txt) || n.labels.includes('needs-definition')) {
         // CA-A3 — si el gate retiene porque NO HAY firmante autorizado, pedirle
         // al operador que firme no tiene sentido: ninguna firma sería válida.
-        return n.firmantesAutorizados === 0 ? 'indeterminado' : 'firma';
+        //
+        // #6192 — MISMA REGLA, otra causa: si el pipeline no puede emitir la
+        // capability de firma, tampoco hay firma posible. La ficha `firma` es
+        // la única que ofrece los botones, así que clasificar acá `firma` sin
+        // capability produce exactamente lo que el módulo se propuso evitar:
+        // un aviso que pide firmar y no da con qué. El principio ya estaba
+        // escrito ("un botón que no puede cumplir lo que promete es peor que no
+        // tenerlo"); sólo le faltaba esta entrada.
+        const hayFirmaPosible = n.firmantesAutorizados !== 0 && n.capacidadFirma !== false;
+        return hayFirmaPosible ? 'firma' : 'indeterminado';
     }
     if (RE_REBOTE.test(txt)) {
         // Rebotes agotados vs. una vuelta más: el contador decide.
@@ -1065,6 +1081,11 @@ const COPY = deepFreeze({
         falta_sin_motivo: 'El motivo del bloqueo. Quien lo frenó no dejó texto; el dato está en la actividad reciente del issue.',
         falta_dep_sin_numero: 'Qué trabajo está esperando: dice que espera algo pero no dice cuál.',
         falta_sin_firmante: 'No hay ningún firmante autorizado configurado: sin eso ninguna firma vale.',
+        // #6192 — NO dice "vault", ni "token", ni "HMAC": el operador no
+        // remedia eso desde el chat, y nombrar la pieza interna sería filtrar
+        // configuración de seguridad a un canal. Dice qué no se puede hacer y
+        // por dónde sigue, que es lo accionable.
+        falta_sin_capability: 'La firma por botón no está disponible en este momento: el pipeline no puede emitir una firma válida. Queda frenado hasta que se destrabe a mano.',
         falta_ilegible: 'El motivo del bloqueo llegó ilegible o no entra en un aviso.',
         // Sin valor de ejemplo A PROPÓSITO: si no supe clasificar el bloqueo,
         // menos puedo proponer qué hacer con él. Ver `ORIENTACION_LIBRE`.
@@ -1525,31 +1546,87 @@ function fichaPregunta(n) {
 /** Qué dato falta, según el caso. Nunca un genérico vacío. */
 function faltaDe(n) {
     const txt = `${n.reason} ${n.question}`.trim();
+    // #6192 — La ILEGIBILIDAD manda sobre las dos causas de firma. Si el motivo
+    // llegó ilegible (el gate no pudo leer el issue, o reventó) no se puede
+    // afirmar que lo que falta sea la firma: se sabe que hay una retención y no
+    // se sabe de qué. Nombrar la firma ahí sería inventar la causa.
+    if (n.reasonCategory === 'unknown') return COPY.indeterminado.falta_ilegible;
+    // Orden deliberado: "no hay quien firme" antes que "no se puede firmar".
+    // Si faltan las dos, la primera es la que el operador puede resolver por su
+    // cuenta (configurar el firmante), así que es la que conviene nombrar.
     if (n.firmantesAutorizados === 0) return COPY.indeterminado.falta_sin_firmante;
+    if (n.capacidadFirma === false) return COPY.indeterminado.falta_sin_capability;
     if (!txt) return COPY.indeterminado.falta_sin_motivo;
     if (RE_DEP.test(txt) && n.deps.length === 0) return COPY.indeterminado.falta_dep_sin_numero;
-    if (n.reasonCategory === 'unknown') return COPY.indeterminado.falta_ilegible;
     if (n.question && !esPreguntaUsable(n)) return COPY.indeterminado.falta_ilegible;
     return COPY.indeterminado.falta_sin_motivo;
+}
+
+/**
+ * ¿Este `indeterminado` lo es porque NO HAY FIRMA POSIBLE, sabiendo perfectamente
+ * qué se estaba por firmar? (#6192, precisión de CA-1 del `po`.)
+ *
+ * Son las dos causas que el gate de firma ya distingue: no hay firmante
+ * autorizado configurado (`firmantesAutorizados === 0`) o el pipeline no puede
+ * emitir la capability de firma (`capacidadFirma === false`). En los dos casos
+ * la reclasificación saca las OPCIONES —ninguna firma sería válida— pero NO los
+ * HECHOS: se sabe qué issue es, qué se pide firmar y desde cuándo.
+ *
+ * `reasonCategory === 'unknown'` lo excluye a propósito: ése es el caso en que
+ * el motivo llegó ilegible (el gate no pudo leer el issue, o reventó). Ahí el
+ * desconocimiento es real y el copy genérico dice la verdad.
+ */
+function esIndeterminadoPorFaltaDeFirma(n) {
+    if (n.reasonCategory === 'unknown') return false;
+    return n.firmantesAutorizados === 0 || n.capacidadFirma === false;
 }
 
 function fichaIndeterminado(n) {
     // Evidencia: SÓLO lo afirmable. Si no hay nada, lista vacía — vacía es
     // honesta, rellena es ruido (UX §1.5).
+    //
+    // CA-1.a (#6192) — la fecha CONCRETA no se cae por reclasificar. La ficha
+    // `firma` la imprime (`fichaFirma`) y la `indeterminado` la descartaba, así
+    // que el mismo bloqueo perdía el "desde cuándo" exacto justo en el camino
+    // que corre en producción. La edad relativa no se pierde: sigue saliendo en
+    // `que_esta_frenado.desde`, que es la primera línea de la ficha.
     const evidencia = [];
-    if (n.edad) evidencia.push(`Frenado ${n.edad}`);
+    if (n.fechaCorta) evidencia.push(`Retenido desde el ${n.fechaCorta}`);
+    else if (n.edad) evidencia.push(`Frenado ${n.edad}`);
     if (n.rol) evidencia.push(`Último que lo tocó: ${n.rol}`);
+
+    // CA-1.b/c/d (#6192) — cuando la causa SE CONOCE, el copy genérico de
+    // `indeterminado` miente: dice "no supe clasificar" y "no tengo el dato"
+    // en el mismo aviso que imprime la causa exacta en `falta`, y degrada el
+    // pie a `/unblock <issue> seguido de qué querés que se haga` cuando la
+    // acción se conoce. Se toman los textos de `COPY.firma` —ya validados por
+    // `ux` para EXACTAMENTE esta decisión— en vez de redactar copy nuevo: lo
+    // que cambia es que no hay botones, no lo que hay que decidir.
+    const causaConocida = esIndeterminadoPorFaltaDeFirma(n);
+    const vars = { issue: n.issue, ref: refIssue(n.issue) };
 
     // `opciones` VACÍA SIEMPRE (CA-A5). Cero es mejor que tres inventadas: una
     // opción genérica que el operador no puede ejecutar es peor que decir "no sé".
     return {
-        por_que: COPY.indeterminado.por_que,
-        que_se_decide: interp(COPY.indeterminado.que_se_decide, { issue: n.issue, ref: refIssue(n.issue) }),
+        por_que: causaConocida
+            ? (n.firmaVencida ? COPY.firma.por_que_vencida : COPY.firma.por_que)
+            : COPY.indeterminado.por_que,
+        que_se_decide: interp(
+            causaConocida
+                ? (n.firmaVencida ? COPY.firma.que_se_decide_vencida : COPY.firma.que_se_decide)
+                : COPY.indeterminado.que_se_decide,
+            vars,
+        ),
+        corto: causaConocida ? CORTO.firma : CORTO.indeterminado,
         opciones: [],
         evidencia,
         costo: COPY.indeterminado.costo,
         sin_reco: '',
-        ejemplo: COPY.indeterminado.ejemplo,
+        // CA-1.d — con causa conocida la acción también se conoce: el pie sigue
+        // siendo `/unblock <issue> aprobar`, que es un comando ejecutable, y no
+        // el molde que le pide al operador que invente la orientación.
+        ejemplo: causaConocida ? COPY.firma.ejemplo : COPY.indeterminado.ejemplo,
+        causa_conocida: causaConocida,
     };
 }
 
@@ -1746,7 +1823,7 @@ function buildDecisionCard(raw, nowMs) {
         // (UX §1.5). No es una versión propia del renderer: si no entrara y
         // cada canal la reescribiera ad hoc, volveríamos al problema que este
         // issue cierra.
-        que_se_decide_corto: sec(CORTO[tipo] || CORTO.indeterminado, MAX_CAMPO),
+        que_se_decide_corto: sec(f.corto || CORTO[tipo] || CORTO.indeterminado, MAX_CAMPO),
         opciones,
         evidencia_minima: evidencia,
         costo_de_no_decidir: sec(f.costo, MAX_CAMPO),
@@ -1754,6 +1831,12 @@ function buildDecisionCard(raw, nowMs) {
         sin_recomendacion_porque: sinRecoPorque,
         indeterminado,
         falta: indeterminado ? sec(faltaDe(n), MAX_CAMPO) : '',
+        // #6192 CA-1.c — ¿este `indeterminado` sabe POR QUÉ no hay opciones?
+        // Si lo sabe, el renderer no puede decir "no las puedo justificar": la
+        // justificación está impresa dos líneas más arriba, en `falta`. Es un
+        // dato de la ficha, no una decisión de layout, porque quien conoce la
+        // causa es el clasificador y no el que dibuja.
+        causa_conocida: indeterminado && f.causa_conocida === true,
         // H-UX-3 — el pie deja de ser un molde. `/unblock <issue> <orientación>`
         // con `<issue>` literal obliga al operador a ir a buscar el número
         // arriba, y con 3 fichas agrupadas ni siquiera sabe cuál poner.
