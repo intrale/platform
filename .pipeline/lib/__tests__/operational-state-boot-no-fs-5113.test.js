@@ -355,10 +355,17 @@ test('CA-A7 · con el store caido el boot ABORTA y no cae al estado local', () =
 }));
 
 // -----------------------------------------------------------------------------
-// CA-A4 — dos instancias booteando a la vez
+// CA-A4 — el CAS es lo que resuelve la carrera entre instancias
 // -----------------------------------------------------------------------------
+//
+// (rev-6) El test de abajo — dos `initWavesFromPartial` secuenciales — cubre la
+// IDEMPOTENCIA del seeder, no el CAS: la segunda llamada corta en la guarda de
+// `hasActiveWave` antes de intentar ningun write, asi que el
+// `ConditionExpression` nunca se evalua. Se lo renombra a lo que realmente
+// prueba y se agregan abajo los dos tests que SI ejercitan el CAS, forzando la
+// carrera donde ocurre de verdad: entre el read y el write de `writeKey`.
 
-test('CA-A4 · dos boots concurrentes: uno siembra, el otro pierde la carrera sin pisar', () => enTmp({ PIPELINE_OPSTATE_DURABLE: '1' }, (dir) => {
+test('boot idempotente · el seeder no re-siembra sobre una ola ya sembrada', () => enTmp({ PIPELINE_OPSTATE_DURABLE: '1' }, (dir) => {
     const { backend, seeder } = freshModules();
     const { driver } = montarRemoto(backend);
     backend.writeKey(backend.KEYS.PARTIAL_PAUSE, { allowed_issues: [5113] }, null);
@@ -376,4 +383,99 @@ test('CA-A4 · dos boots concurrentes: uno siembra, el otro pierde la carrera si
     assert.equal(backend.versionOf(backend.KEYS.WAVES), versionTrasPrimera,
         'la version del store avanzo: alguien piso el estado sembrado');
     assert.ok(driver._calls.some((c) => c.op === 'putItem'));
+}));
+
+// Interpone un efecto ENTRE el `getItem` y el `putItem` de `writeKey`: es el
+// unico punto donde la carrera entre dos hosts es observable. Sin esto, dos
+// llamadas secuenciales en el mismo proceso jamas colisionan (la segunda lee la
+// version que dejo la primera) y el `ConditionExpression` pasa siempre.
+function interponerEntreReadYWrite(driver, efecto) {
+    const getItemOriginal = driver.getItem.bind(driver);
+    let disparado = false;
+    driver.getItem = (spec, key) => {
+        const res = getItemOriginal(spec, key);
+        if (!disparado) { disparado = true; efecto(); }
+        return res;
+    };
+    return () => disparado;
+}
+
+test('CA-A4 · create-once: si otra instancia crea la clave entre el read y el write, el segundo NO pisa', () => enTmp({ PIPELINE_OPSTATE_DURABLE: '1' }, () => {
+    const { backend } = freshModules();
+    const { driver } = montarRemoto(backend);
+    const SK = require('../kernel-coordination-store').skFor(backend.KEYS.WAVES);
+
+    // La otra instancia gana la carrera justo despues de que nosotros leimos
+    // "no existe": nuestro write sale con `attribute_not_exists(#pk)` y pierde.
+    const disparo = interponerEntreReadYWrite(driver, () => {
+        driver._seed({
+            PK: PROJECT_ID,
+            SK,
+            entityType: 'coordination',
+            projectId: PROJECT_ID,
+            schemaVersion: require('../kernel-store').SCHEMA_VERSION,
+            body: {
+                key: backend.KEYS.WAVES,
+                value: { active_wave: 'ola-del-ganador', planned_waves: [] },
+                version: 1,
+                updatedBy: 'otra-instancia',
+                updatedAt: Date.now(),
+            },
+        });
+    });
+
+    const res = backend.writeKey(backend.KEYS.WAVES, { active_wave: 'ola-del-perdedor', planned_waves: [] }, null);
+
+    assert.equal(disparo(), true, 'el efecto de carrera no se disparo: el test no probo nada');
+    assert.equal(res.ok, false, 'el segundo escritor creo la clave igual: el create-once no excluye');
+    assert.equal(res.conflict, true, 'la derrota del CAS no se reporto como conflicto');
+    assert.equal(
+        driver._raw(PROJECT_ID, SK).body.value.active_wave, 'ola-del-ganador',
+        'el perdedor de la carrera piso el estado del ganador',
+    );
+    // El putItem SE intento (y la condicion lo rechazo). Si nunca se intento,
+    // el test estaria pasando por una guarda previa y no por el CAS.
+    const put = driver._calls.find((c) => c.op === 'putItem');
+    assert.ok(put, 'no hubo putItem: el CAS no se ejercito');
+
+    // La condicion de creacion sale del helper COMPARTIDO del coordination
+    // store, no de una copia local. Estaba duplicada literal en los dos
+    // modulos: dos definiciones del mismo `attribute_not_exists` divergen y una
+    // de las dos se queda sin ganador unico.
+    assert.deepEqual(
+        put.condOpts,
+        require('../kernel-coordination-store').buildCreateOnceWriteOptions(),
+        'el backend emitio una condicion de creacion propia en vez de la compartida',
+    );
+}));
+
+test('CA-A4 · lost update: un write con version stale pierde y no pisa al ganador', () => enTmp({ PIPELINE_OPSTATE_DURABLE: '1' }, () => {
+    const { backend } = freshModules();
+    const { driver } = montarRemoto(backend);
+    const SK = require('../kernel-coordination-store').skFor(backend.KEYS.PARTIAL_PAUSE);
+
+    // v1: allowlist inicial.
+    const primera = backend.writeKey(backend.KEYS.PARTIAL_PAUSE, { allowed_issues: [1] }, null);
+    assert.equal(primera.ok, true);
+    const versionLeida = primera.version;
+
+    // Otra instancia avanza la version a v2 DESPUES de que nosotros leimos v1.
+    const disparo = interponerEntreReadYWrite(driver, () => {
+        const actual = driver._raw(PROJECT_ID, SK);
+        driver._seed({
+            ...actual,
+            body: { ...actual.body, value: { allowed_issues: [2] }, version: actual.body.version + 1 },
+        });
+    });
+
+    // Nuestro write llega con el `expectedVersion` que leimos: stale.
+    const segunda = backend.writeKey(backend.KEYS.PARTIAL_PAUSE, { allowed_issues: [1, 999] }, versionLeida);
+
+    assert.equal(disparo(), true, 'el efecto de carrera no se disparo: el test no probo nada');
+    assert.equal(segunda.ok, false, 'el write con version stale se aplico: lost update');
+    assert.equal(segunda.conflict, true, 'la derrota del CAS no se reporto como conflicto');
+    assert.deepEqual(
+        driver._raw(PROJECT_ID, SK).body.value.allowed_issues, [2],
+        'el escritor stale piso la allowlist del ganador',
+    );
 }));

@@ -9600,8 +9600,17 @@ function brazoLanzamientoImpl(config, _dcMark, _dcState) {
 
     // 0a. PARTIAL PAUSE (#2490): si hay allowlist activa, saltar issues fuera de ella.
     // El archivo se queda en pendiente/ — no se archiva ni penaliza.
-    if (!partialPause.isIssueAllowed(issue)) {
-      const mode = partialPause.getPipelineMode();
+    //
+    // #5113 (rev-6) — se lee el estado UNA vez por candidato y se reusa para el
+    // gate y para el mensaje, en vez de `isIssueAllowed(issue)` + un segundo
+    // `getPipelineMode()`. Con el estado operativo en el store remoto cada
+    // lectura es un `spawnSync` BLOQUEANTE de la AWS CLI: la forma anterior
+    // pagaba hasta 2 por candidato (2N por tick). La política del gate no
+    // cambia — `isIssueAllowedInState` es la variante pura de la misma tabla
+    // de verdad, incluido el fail-closed de #5060 sobre `running`.
+    const modeState = partialPause.getPipelineMode();
+    if (!partialPause.isIssueAllowedInState(issue, modeState)) {
+      const mode = modeState;
       if (mode.mode === 'partial_pause') {
         log('lanzamiento', `#${issue} skipped by partial_pause (allowed: ${mode.allowedIssues.map(i => `#${i}`).join(', ')})`);
         // #4751 — el modo de ejecución en olas (allowlist) es un estado ESPERADO

@@ -448,3 +448,147 @@ test('CA-A7: la degradacion se reporta en CADA operacion afectada (no se silenci
         'opstate:delete:partial-pause',
     ], 'cada operacion degradada nombra su etapa: el operador sabe que se rompio');
 }));
+
+// =============================================================================
+// Rebote rev-5 — el hueco por el que la degradacion se colaba como "ausencia"
+// =============================================================================
+//
+// Los tests de arriba inyectan el fallo como una EXCEPCION del driver, que es
+// el camino que el backend ya clasificaba bien. El defecto real era otro y mas
+// silencioso: el runner sincrono colapsaba `status === null` (hijo muerto por
+// senal) a `code: 0`, o sea EXITO con stdout vacio. Eso llegaba al backend como
+// `item: null`, que es "clave ausente" — una condicion legitima que
+// explicitamente NO es degradacion. Sin `reportDegradation` no hay causa
+// declarada, no hay alerta, y el tablero sigue en verde.
+//
+// Este test entra por el runner real (con `spawnSync` inyectado), no por el
+// fake driver, porque es la unica forma de recorrer el mismo colapso.
+
+test('CA-A7 (E2E): un `aws` muerto por senal se reporta como DEGRADACION, no como clave ausente', () => enTmp({ PIPELINE_OPSTATE_DURABLE: '1' }, () => {
+    const { backend } = freshModules();
+    const infra = require('../provisioner-infra');
+
+    const degradaciones = [];
+    backend.setDegradationSink({ onDegraded: (err, ctx) => degradaciones.push({ err, ctx }) });
+
+    // Runner REAL con un `spawnSync` que devuelve exactamente lo que devuelve
+    // Node cuando el hijo muere por SIGKILL (OOM-kill del `aws`, CA-C6).
+    const { runSync } = infra.createAwsCliRunnerSync(
+        { AWS_ACCESS_KEY_ID: 'k', AWS_SECRET_ACCESS_KEY: 's' },
+        { spawnSync: () => ({ status: null, signal: 'SIGKILL', stdout: '', stderr: '' }) },
+    );
+    backend._setDriverForTests({
+        driver: infra.createAwsCliDynamoDriverSync({ runSync }),
+        spec: { type: 'dynamodb_table', tableName: 'tabla-fake', keys: [] },
+        projectId: PROJECT_ID,
+        instanceId: PROJECT_ID,
+        atomicUpdate: true,
+    });
+
+    const lectura = backend.readKeyWithVersion(backend.KEYS.WAVES);
+
+    assert.equal(lectura.degraded, true,
+        'la muerte por senal se leyo como "clave ausente": el pipeline operaria creyendo que NO HAY NINGUNA OLA');
+    assert.equal(degradaciones.length, 1,
+        'no se reporto degradacion: sin causa declarada el operador no se entera y el chip sigue en verde');
+    assert.match(String(degradaciones[0].err.message), /SIGKILL/);
+    assert.equal(backend.describeMode().degraded, true,
+        'el chip del tablero no reflejaria la caida');
+}));
+
+// -----------------------------------------------------------------------------
+// Vocabulario de claves: la guarda corre ANTES de bifurcar por sustrato
+// -----------------------------------------------------------------------------
+
+test('CA-A8: una clave fuera del vocabulario se rechaza en los DOS sustratos', () => enTmp({}, () => {
+    const { backend } = freshModules();
+    // Modo filesystem: `fileFor` ya rechazaba.
+    assert.throws(() => backend.readKeyWithVersion('clave-inventada'), /desconocida/);
+
+    // Modo remoto: antes NO se validaba — `fileFor` solo corre en el branch
+    // local, y `validateRemoteValue` dejaba la cota de bytes en `undefined`
+    // para una clave que no conoce, o sea payload SIN COTA (CA-A5 evadido).
+    withEnv({ PIPELINE_OPSTATE_DURABLE: '1' }, () => {
+        montarRemoto(backend);
+        for (const op of [
+            () => backend.readKeyWithVersion('clave-inventada'),
+            () => backend.writeKey('clave-inventada', { a: 1 }, null),
+            () => backend.deleteKey('clave-inventada', null),
+            () => backend.existsKey('clave-inventada'),
+        ]) {
+            assert.throws(op, /desconocida/, 'una clave desconocida llego al store remoto');
+        }
+    });
+}));
+
+test('CA-A5: `validateRemoteValue` con clave desconocida aplica la cota MAS RESTRICTIVA, no ninguna', () => {
+    const { backend } = freshModules();
+    const minima = Math.min(...Object.values(backend.MAX_BYTES_FOR_KEY));
+    const gordo = { relleno: 'x'.repeat(minima + 1024) };
+    const r = backend.validateRemoteValue('clave-que-no-existe', gordo);
+    assert.equal(r.ok, false, 'un payload sin clave conocida quedaba sin cota de bytes');
+});
+
+// -----------------------------------------------------------------------------
+// CA-A5: la cota PRE-PARSE es por clave, no el maximo global
+// -----------------------------------------------------------------------------
+
+test('CA-A5: la cota pre-parse de `partial-pause` es la suya, no la (mas holgada) de `waves`', () => {
+    const { backend } = freshModules();
+    const capPartial = backend.maxResponseBytesFor(backend.KEYS.PARTIAL_PAUSE);
+    const capWaves = backend.maxResponseBytesFor(backend.KEYS.WAVES);
+    assert.ok(capPartial < capWaves,
+        'con la cota global, un `partial-pause` de cientos de KB se parseaba entero antes de rechazarse');
+    // Y la clave sale del SK que arma el propio backend, no de la respuesta.
+    const { skFor } = require('../kernel-coordination-store');
+    const args = ['get-item', '--table-name', 't', '--key',
+        JSON.stringify({ PK: { S: PROJECT_ID }, SK: { S: skFor(backend.KEYS.PARTIAL_PAUSE) } }),
+        '--consistent-read'];
+    assert.equal(backend.keyFromCliArgs(args), backend.KEYS.PARTIAL_PAUSE);
+    // Args sin `--key` ⇒ clave indeterminada ⇒ cota mas restrictiva (fail-closed).
+    assert.equal(backend.keyFromCliArgs(['scan']), null);
+    assert.equal(backend.maxResponseBytesFor(null), capPartial);
+});
+
+// -----------------------------------------------------------------------------
+// Memoizacion de la lectura remota: barata SI, pero jamas cachear una caida
+// -----------------------------------------------------------------------------
+
+test('perf: la lectura remota se memoiza (N gates en un tick = 1 sola llamada al store)', () => enTmp({ PIPELINE_OPSTATE_DURABLE: '1' }, () => {
+    const { backend } = freshModules();
+    const { driver } = montarRemoto(backend);
+    backend.writeKey(backend.KEYS.PARTIAL_PAUSE, { allowed_issues: [1] }, null);
+
+    const antes = driver._calls.filter((c) => c.op === 'getItem').length;
+    for (let i = 0; i < 20; i += 1) backend.readKey(backend.KEYS.PARTIAL_PAUSE);
+    const nuevas = driver._calls.filter((c) => c.op === 'getItem').length - antes;
+
+    assert.equal(nuevas, 1,
+        `20 lecturas en el mismo tick dispararon ${nuevas} llamadas al store: en produccion cada una es un spawnSync BLOQUEANTE`);
+}));
+
+test('CA-A7: una lectura DEGRADADA nunca se memoiza (la caida se reintenta, no se congela)', () => enTmp({ PIPELINE_OPSTATE_DURABLE: '1' }, () => {
+    const { backend } = freshModules();
+    const { driver } = montarRemoto(backend, { failWith: errorDeRed() });
+
+    for (let i = 0; i < 3; i += 1) {
+        assert.equal(backend.readKeyWithVersion(backend.KEYS.WAVES).degraded, true);
+    }
+    assert.equal(driver._calls.filter((c) => c.failed).length, 3,
+        'la degradacion quedo cacheada: extenderia la denegacion mas alla del incidente real');
+}));
+
+test('la escritura invalida la memoizacion (nadie lee un valor que acaba de cambiar)', () => enTmp({ PIPELINE_OPSTATE_DURABLE: '1' }, () => {
+    const { backend } = freshModules();
+    montarRemoto(backend);
+    backend.writeKey(backend.KEYS.PARTIAL_PAUSE, { allowed_issues: [1] }, null);
+    assert.deepEqual(backend.readKey(backend.KEYS.PARTIAL_PAUSE).allowed_issues, [1]);
+
+    backend.writeKey(backend.KEYS.PARTIAL_PAUSE, { allowed_issues: [1, 2] }, null);
+    assert.deepEqual(backend.readKey(backend.KEYS.PARTIAL_PAUSE).allowed_issues, [1, 2],
+        'el gate siguio viendo la allowlist vieja despues de que el operador la cambio');
+
+    backend.deleteKey(backend.KEYS.PARTIAL_PAUSE, null);
+    assert.equal(backend.readKey(backend.KEYS.PARTIAL_PAUSE), null,
+        'el gate siguio viendo una allowlist borrada');
+}));

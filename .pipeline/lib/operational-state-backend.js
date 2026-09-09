@@ -90,7 +90,13 @@ const FILE_FOR_KEY = Object.freeze({
 // ─── Cotas del payload remoto (CA-A5) ───────────────────────────────────────
 //
 // La cota de bytes se aplica sobre el stdout CRUDO del CLI, ANTES del
-// `JSON.parse`: un ítem sobredimensionado se rechaza sin llegar a parsearse.
+// `JSON.parse`, y es POR CLAVE (rev-6): la clave se deriva del `SK` de los
+// propios args del `get-item` (`coord#<key>`, generado por `skFor`), no del
+// contenido de la respuesta. Antes la cota pre-parse era GLOBAL —el máximo de
+// todas las claves— así que un `partial-pause` de 200 KB se parseaba entero y
+// recién después `validateRemoteValue` lo rechazaba por su cota de 64 KB. El
+// punto de CA-A5 es no parsear lo sobredimensionado, no rechazarlo tarde.
+//
 // La de la allowlist mantiene paridad con `MAX_PAUSE_MARKER_BYTES` (64 KB,
 // #5399); la del registro de olas es más holgada porque el archivo real ronda
 // los 31 KB y crece con la historia de olas, pero queda MUY por debajo del
@@ -154,6 +160,7 @@ function invalidateConfigCache() {
     configCache = null;
     versionIndex.clear();
     driverCache = null;
+    invalidateReadCache();
 }
 
 /**
@@ -191,12 +198,31 @@ function describeMode() {
 
 function stateDir() { return require('./project-context').stateDir(); }
 
-function fileFor(key) {
-    const name = FILE_FOR_KEY[key];
-    if (!name) {
+/**
+ * Guarda de vocabulario del estado operativo. `FILE_FOR_KEY` es la allowlist
+ * CERRADA de claves; nada fuera de ella entra al backend por ningún sustrato.
+ *
+ * #5113 (rev-6) — se aplica ANTES de bifurcar entre filesystem y remoto. Antes
+ * la única guarda efectiva era `fileFor()`, que sólo corre en el branch local:
+ * con el flag encendido una clave desconocida llegaba hasta el store, y
+ * `validateRemoteValue` la dejaba pasar sin cota de bytes (`MAX_BYTES_FOR_KEY`
+ * indefinido para esa clave). La cota es la defensa de CA-A5 y no puede
+ * depender de qué sustrato esté activo.
+ *
+ * Lanza (no devuelve false) a propósito: una clave fuera del vocabulario es un
+ * bug de programación, no un estado de runtime que haya que tolerar.
+ *
+ * @param {string} key
+ */
+function assertKnownKey(key) {
+    if (!Object.prototype.hasOwnProperty.call(FILE_FOR_KEY, key)) {
         throw new Error(`operational-state-backend: clave de estado desconocida: ${JSON.stringify(key)}`);
     }
-    return path.join(stateDir(), name);
+}
+
+function fileFor(key) {
+    assertKnownKey(key);
+    return path.join(stateDir(), FILE_FOR_KEY[key]);
 }
 
 // ─── Degradación (CA-A7 / CA-C5 / CA-UX3 / CA-UX5) ──────────────────────────
@@ -307,17 +333,20 @@ function resolveDriver() {
     // CA-A5 · La cota de bytes se aplica ANTES del `JSON.parse`: el guard
     // envuelve al runner, así que un stdout sobredimensionado nunca llega al
     // parser. Es la diferencia entre rechazar un ítem y parsearlo para después
-    // decidir que era muy grande.
+    // decidir que era muy grande. La cota es POR CLAVE (rev-6), derivada del
+    // `SK` de los args: con la cota global, un `partial-pause` de 200 KB se
+    // parseaba igual porque el máximo lo fijaba `waves`.
     const guardedRunSync = (args) => {
         const res = runSync(args);
         const stdout = (res && res.stdout) || '';
-        const cap = maxResponseBytes();
+        const key = keyFromCliArgs(args);
+        const cap = maxResponseBytesFor(key);
         if (stdout.length > cap) {
             return {
                 code: 1,
                 stdout: '',
                 stderr: `operational-state-backend: respuesta de ${stdout.length} bytes supera la cota `
-                    + `de ${cap} (CA-A5, fail-closed): NO se parsea.`,
+                    + `de ${cap} para \`${key || 'clave-desconocida'}\` (CA-A5, fail-closed): NO se parsea.`,
             };
         }
         return res;
@@ -383,13 +412,41 @@ function resolveProjectId() {
     return projectId;
 }
 
-function maxResponseBytes() {
-    return Math.max(...Object.values(MAX_BYTES_FOR_KEY)) + RESPONSE_BYTES_MARGIN;
+/**
+ * Cota de stdout para una clave concreta. Fail-closed: una clave que no
+ * reconocemos cae en la cota MÁS RESTRICTIVA, nunca en la más holgada.
+ * @param {string|null} key
+ * @returns {number}
+ */
+function maxResponseBytesFor(key) {
+    const known = MAX_BYTES_FOR_KEY[key];
+    const base = typeof known === 'number'
+        ? known
+        : Math.min(...Object.values(MAX_BYTES_FOR_KEY));
+    return base + RESPONSE_BYTES_MARGIN;
+}
+
+/**
+ * Clave del estado operativo a la que apunta una invocación de la CLI. Se lee
+ * del `SK` (`coord#<key>`) que nosotros mismos construimos con `skFor`, así que
+ * el dato NO viene de la respuesta del store. Devuelve `null` si no se puede
+ * determinar ⇒ el caller aplica la cota más restrictiva. PURA.
+ * @param {string[]} args
+ * @returns {string|null}
+ */
+function keyFromCliArgs(args) {
+    if (!Array.isArray(args)) return null;
+    const i = args.indexOf('--key');
+    if (i < 0 || typeof args[i + 1] !== 'string') return null;
+    const m = /"SK"\s*:\s*\{\s*"S"\s*:\s*"coord#([^"]+)"/.exec(args[i + 1]);
+    return m ? m[1] : null;
 }
 
 /** Inyección del driver para tests (evita spawnear la CLI). */
 function _setDriverForTests(fake) {
     driverCache = fake;
+    // Cambiar el sustrato bajo los pies invalida cualquier lectura memoizada.
+    invalidateReadCache();
 }
 
 // ─── Validación del payload remoto (CA-A5) ──────────────────────────────────
@@ -408,8 +465,14 @@ function validateRemoteValue(key, value) {
         return { ok: false, reason: 'el valor remoto no es un objeto' };
     }
     const bytes = Buffer.byteLength(JSON.stringify(value), 'utf8');
-    const cap = MAX_BYTES_FOR_KEY[key];
-    if (cap && bytes > cap) {
+    // Defensa en profundidad (rev-6): `assertKnownKey` ya filtra el vocabulario
+    // aguas arriba, pero esta función es PURA y exportada — si la llaman con una
+    // clave que no conoce, la cota tiene que ser la MÁS RESTRICTIVA, jamás
+    // `undefined` (que dejaba el payload sin cota alguna).
+    const cap = typeof MAX_BYTES_FOR_KEY[key] === 'number'
+        ? MAX_BYTES_FOR_KEY[key]
+        : Math.min(...Object.values(MAX_BYTES_FOR_KEY));
+    if (bytes > cap) {
         return { ok: false, reason: `payload de ${bytes} bytes supera la cota de ${cap} para \`${key}\`` };
     }
     if (key === KEYS.PARTIAL_PAUSE) {
@@ -492,6 +555,50 @@ function redactBeforeWrite(value) {
 
 const versionIndex = new Map(); // key -> { intVersion, isoVersion }
 
+// ─── Caché TTL de la lectura remota (#5113 rev-6) ───────────────────────────
+//
+// POR QUÉ EXISTE: en modo remoto cada `readKeyWithVersion` es un `spawnSync` de
+// la AWS CLI (~cientos de ms, BLOQUEANTE). El call-site caliente del despacho
+// (`pulpo.js`, `isIssueAllowed(issue)` dentro del `for (const candidate of
+// candidates)`) lo invocaría una vez por candidato: con N candidatos son hasta
+// 2N spawns bloqueantes por tick del Pulpo. El diseño original daba por hecho
+// esta memoización; no existía.
+//
+// TTL DE 2 s: la MISMA ventana que `waves.js` ya aplica sobre el registro de
+// olas en filesystem, así que no introduce una staleness nueva de la que el
+// pipeline no dependa ya. Para la allowlist, 2 s de retraso frente a un cambio
+// del operador por Telegram es irrelevante.
+//
+// FAIL-CLOSED: sólo se cachean lecturas SANAS (`degraded === false`). Un error
+// de red o de schema NUNCA se memoiza — se reintenta en la llamada siguiente,
+// porque cachear una degradación extendería una denegación más allá del
+// incidente real. Toda escritura o borrado invalida la clave: el CAS lee del
+// store directo (`driver.getItem`), nunca de acá, así que la versión que va al
+// `ConditionExpression` siempre es fresca.
+
+const REMOTE_READ_TTL_MS = 2000;
+const remoteReadCache = new Map(); // key -> { at:number, result:object }
+
+function readTtlMs() {
+    const raw = Number(process.env.PIPELINE_OPSTATE_READ_TTL_MS);
+    if (Number.isFinite(raw) && raw >= 0) return raw;
+    return REMOTE_READ_TTL_MS;
+}
+
+/** Memoiza SÓLO lecturas sanas y devuelve el mismo resultado. */
+function rememberRead(key, result) {
+    if (readTtlMs() > 0 && result && result.degraded === false) {
+        remoteReadCache.set(key, { at: Date.now(), result });
+    }
+    return result;
+}
+
+/** Invalida la memoización de lectura (una clave, o todas si no se pasa). */
+function invalidateReadCache(key) {
+    if (key === undefined) remoteReadCache.clear();
+    else remoteReadCache.delete(key);
+}
+
 /** ISO de versión que transporta un value de estado. PURA. */
 function isoVersionOf(value) {
     return (value && value.meta && typeof value.meta.updated_at === 'string')
@@ -568,9 +675,15 @@ function readFromDisk(file) {
  *            degraded: boolean, error: Error|null}}
  */
 function readKeyWithVersion(key) {
+    assertKnownKey(key);
     if (!isRemote()) {
         const { value, error } = readFromDisk(fileFor(key));
         return { value, version: isoVersionOf(value), remote: false, degraded: false, error };
+    }
+    const ttl = readTtlMs();
+    if (ttl > 0) {
+        const hit = remoteReadCache.get(key);
+        if (hit && (Date.now() - hit.at) < ttl) return hit.result;
     }
     try {
         const { driver, spec, projectId } = resolveDriver();
@@ -580,7 +693,7 @@ function readKeyWithVersion(key) {
             // Ausencia legítima (todavía no migrado / recién borrado): NO es
             // degradación. Es el equivalente remoto de ENOENT.
             versionIndex.delete(key);
-            return { value: null, version: null, remote: true, degraded: false, error: null };
+            return rememberRead(key, { value: null, version: null, remote: true, degraded: false, error: null });
         }
         const value = raw.body.value;
         const check = validateRemoteValue(key, value);
@@ -591,7 +704,7 @@ function readKeyWithVersion(key) {
         }
         rememberVersion(key, raw.body.version, value);
         clearDegradation();
-        return { value, version: raw.body.version, remote: true, degraded: false, error: null };
+        return rememberRead(key, { value, version: raw.body.version, remote: true, degraded: false, error: null });
     } catch (err) {
         // CA-A7 — PROHIBIDO el fallback silencioso a filesystem. Se devuelve
         // `null` y el gate deniega. Una allowlist local stale no es un dato
@@ -637,6 +750,10 @@ function versionOf(key) {
  * @returns {{ok:boolean, conflict?:boolean, version?:number|string|null, error?:Error}}
  */
 function writeKey(key, value, expectedVersion) {
+    assertKnownKey(key);
+    // Toda mutación invalida la memoización de lectura, gane o pierda el CAS:
+    // si ganó, el valor cambió; si perdió, el store tiene algo que no vimos.
+    invalidateReadCache(key);
     if (!isRemote()) {
         const { atomicWriteFile } = require('./waves');
         atomicWriteFile(fileFor(key), JSON.stringify(value, null, 2));
@@ -685,8 +802,13 @@ function writeKey(key, value, expectedVersion) {
         // El CAS es la exclusión real entre hosts. `currentVersion === 0`
         // significa "no existe": la condición es `attribute_not_exists(PK)`,
         // que da un único ganador en la creación.
+        // `currentVersion === 0` significa "no existe": la condición de
+        // creación viene del helper COMPARTIDO del coordination store
+        // (`buildCreateOnceWriteOptions`), no de una copia local — dos
+        // definiciones del mismo `attribute_not_exists` divergen y una de las
+        // dos pierde el ganador único (#5113 rev-6).
         const opts = currentVersion === 0
-            ? { conditionExpression: 'attribute_not_exists(#pk)', expressionAttributeNames: { '#pk': 'PK' } }
+            ? coord().buildCreateOnceWriteOptions()
             : coord().buildCasWriteOptions(currentVersion, atomicUpdate);
 
         driver.putItem(spec, item, opts);
@@ -710,6 +832,8 @@ function writeKey(key, value, expectedVersion) {
  * @returns {{ok:boolean, existed:boolean, conflict?:boolean, error?:Error}}
  */
 function deleteKey(key, expectedVersion) {
+    assertKnownKey(key);
+    invalidateReadCache(key);
     if (!isRemote()) {
         const file = fileFor(key);
         const existed = fs.existsSync(file);
@@ -754,6 +878,7 @@ function deleteKey(key, expectedVersion) {
 
 /** ¿Existe la clave? Equivalente de `fs.existsSync` en los dos modos. */
 function existsKey(key) {
+    assertKnownKey(key);
     if (!isRemote()) return fs.existsSync(fileFor(key));
     return readKeyWithVersion(key).value !== null;
 }
@@ -767,6 +892,10 @@ module.exports = {
     isRemote,
     describeMode,
     fileFor,
+    assertKnownKey,
+    // #5113 (rev-6) — memoización de la lectura remota (2 s) y su invalidación.
+    invalidateReadCache,
+    REMOTE_READ_TTL_MS,
     readKey,
     readKeyWithVersion,
     writeKey,
@@ -775,6 +904,8 @@ module.exports = {
     versionOf,
     // Puras, exportadas para test de contrato:
     validateRemoteValue,
+    maxResponseBytesFor,
+    keyFromCliArgs,
     redactBeforeWrite,
     isoVersionOf,
     versionPairOf,

@@ -977,8 +977,8 @@ function setPartialPauseAtomic(issues, opts = {}) {
     }
     // #5113 (D-5) — el ORDEN no cambia: `readPreviousAllowlist()` →
     // `evaluateAndAudit()` → escritura. Lo único que se reemplaza es el sink:
-    // `writeAtomic` deja de invocarse directo y pasa a ser la implementación
-    // del modo `fs` del backend. El store es sustrato, no API de mutación.
+    // el write atómico local deja de invocarse directo y el modo `fs` lo
+    // resuelve el backend. El store es sustrato, no API de mutación.
     //
     // #5113 (CA-A4) — con `expectedVersion` del snapshot: sin él el write sale
     // incondicional y el gate de autoría queda evadible por carrera entre hosts.
@@ -1011,27 +1011,12 @@ function setPartialPauseAtomic(issues, opts = {}) {
     };
 }
 
-/**
- * Helper interno: write atómico con tmp + renameSync.
- *
- * #5113 — pasó a ser la implementación del modo `fs`: los mutadores ya no lo
- * invocan directo, van por `stateBackend.writeKey()`. Se conserva porque sigue
- * siendo el write atómico local del marker en los caminos que escriben archivos
- * auxiliares y porque los tests de regresión lo ejercitan.
- *
- * @param {string} targetPath
- * @param {string} content
- */
-function writeAtomic(targetPath, content) {
-    const tmp = `${targetPath}.tmp.${process.pid}.${Date.now()}`;
-    try {
-        fs.writeFileSync(tmp, content);
-        fs.renameSync(tmp, targetPath);
-    } catch (err) {
-        try { fs.unlinkSync(tmp); } catch {}
-        throw err;
-    }
-}
+// #5113 (rev-6) — `writeAtomic` local ELIMINADO. Tras la migración al backend
+// quedó sin un solo call-site ni export (el write atómico del modo `fs` lo hace
+// `waves.atomicWriteFile`, invocado desde `stateBackend.writeKey`), y su JSDoc
+// afirmaba que los tests lo ejercitaban, cosa que no era cierta. Un helper
+// muerto con doc falsa es peor que ninguno: invita a llamarlo y a saltear el
+// backend, que es justamente la doble fuente de verdad que CA-C1 prohíbe.
 
 /**
  * Desactiva la pausa parcial (elimina marker).

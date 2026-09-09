@@ -790,7 +790,11 @@ function readOpstateRuntime() {
     } catch { /* el backend no disponible → filesystem, que es el default real */ }
     let cutoverWindow = false;
     try {
-        const cfg = (configResolver.resolve({}) || {}).config || {};
+        // `resolve()` devuelve el documento DIRECTO, no un wrapper `{ config }`.
+        // La forma con `.config` dejaba `cfg` en `{}` siempre y hacía el chip de
+        // cutover inalcanzable por construcción (misma forma que usan
+        // `project-context.js` y `operational-state-backend.js`).
+        const cfg = configResolver.resolve({}) || {};
         cutoverWindow = ((cfg.kernel || {}).cutover_window === true);
     } catch { /* sin config legible → sin ventana declarada */ }
     return { ...desc, cutoverWindow };
@@ -4461,6 +4465,11 @@ module.exports = {
     headerSlice,
     // #5113 CA-UX1 — mapeo puro condición → chip de procedencia (testeable sin I/O).
     resolveOpstateProvenance,
+    // #5113 CA-UX1 (rev-6) — el WIRING real (lectura de flag + ventana de
+    // cutover). Exportado a propósito: el defecto que dejó el chip `cutover`
+    // inalcanzable vivía acá y no en el mapeo puro, así que tiene que estar
+    // cubierto por un test que ejercite esta función y no sólo la pura.
+    readOpstateRuntime,
     kpisSlice,
     equipoSlice,
     // #3955 EP8-H2 — helpers exportados para test unitario.

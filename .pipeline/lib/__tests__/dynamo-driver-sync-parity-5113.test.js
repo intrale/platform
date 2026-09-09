@@ -165,3 +165,72 @@ test('las funciones puras de armado de args estan EXPORTADAS y son deterministas
     assert.deepEqual(infra.buildPutItemArgs(SPEC, item), infra.buildPutItemArgs(SPEC, item));
     assert.deepEqual(infra.buildGetItemArgs(SPEC, item), infra.buildGetItemArgs(SPEC, item));
 });
+
+// ─── Muerte del hijo por senal (rebote rev-5) ────────────────────────────────
+//
+// El defecto: `spawnSync` deja `status === null` cuando el hijo muere por una
+// senal que Node NO origino (el caso de timeout cae antes, en `res.error`). Ese
+// `null` se colapsaba a `code: 0`, o sea EXITO con stdout vacio.
+//
+// La consecuencia no era un error visible sino un SILENCIO: `parseCliResult`
+// devolvia `{}`, `getItem` daba `item: null`, y el backend del estado operativo
+// clasifica un `null` como "clave ausente (todavia no migrada / recien
+// borrada)" — que explicitamente NO es degradacion. Resultado con el flag
+// encendido: el pipeline opera creyendo que no hay ninguna ola, el gate deniega
+// sin causa declarada, y el chip del tablero sigue diciendo "externo · en
+// linea". Es exactamente lo que CA-A7 + CA-UX2 existen para evitar.
+//
+// En Windows es raro; el valor de la historia es el multi-instancia de CA-C6,
+// donde un OOM-kill del `aws` es SIGKILL y deja `status: null`.
+
+const ENV_OK = Object.freeze({ AWS_ACCESS_KEY_ID: 'k', AWS_SECRET_ACCESS_KEY: 's' });
+
+test('CA-A7 (sync): un `aws` muerto por senal es FALLO, nunca exito con stdout vacio', () => {
+    const { runSync } = infra.createAwsCliRunnerSync(ENV_OK, {
+        spawnSync: () => ({ status: null, signal: 'SIGKILL', stdout: '', stderr: '' }),
+    });
+    const res = runSync(['get-item', '--table-name', 't']);
+
+    assert.notEqual(res.code, 0,
+        'un hijo muerto por senal se reporto como exito: aguas abajo es indistinguible de "clave ausente"');
+    assert.match(res.stderr, /SIGKILL/, 'la senal tiene que quedar en el stderr para el diagnostico');
+});
+
+test('CA-A7 (sync): el driver PROPAGA el fallo por senal en vez de devolver `item: null`', () => {
+    const { runSync } = infra.createAwsCliRunnerSync(ENV_OK, {
+        spawnSync: () => ({ status: null, signal: 'SIGKILL', stdout: '', stderr: '' }),
+    });
+    const driver = infra.createAwsCliDynamoDriverSync({ runSync });
+
+    assert.throws(
+        () => driver.getItem(SPEC, { PK: 'p', SK: 'coord#waves' }),
+        /SIGKILL/,
+        'el driver devolvio ausencia en vez de error: el backend no llamaria a reportDegradation',
+    );
+});
+
+test('CA-A7 (sync): un exit code REAL de 0 sigue siendo exito (no se rompio el camino feliz)', () => {
+    const { runSync } = infra.createAwsCliRunnerSync(ENV_OK, {
+        spawnSync: () => ({ status: 0, signal: null, stdout: '{"Item":{}}', stderr: '' }),
+    });
+    const res = runSync(['get-item']);
+    assert.equal(res.code, 0);
+    assert.equal(res.stdout, '{"Item":{}}');
+});
+
+test('CA-A7 (async): el espejo asincrono trata `close(null, signal)` igual que el sincrono', async () => {
+    const { EventEmitter } = require('events');
+    const fakeSpawn = () => {
+        const child = new EventEmitter();
+        child.stdout = new EventEmitter();
+        child.stderr = new EventEmitter();
+        setImmediate(() => child.emit('close', null, 'SIGKILL'));
+        return child;
+    };
+    const { run } = infra.createAwsCliRunner(ENV_OK, { spawn: fakeSpawn });
+    const res = await run(['get-item']);
+
+    assert.notEqual(res.code, 0,
+        'el camino async colapso la senal a exito: la divergencia con el sync es el bug que la paridad debe impedir');
+    assert.match(res.stderr, /SIGKILL/);
+});

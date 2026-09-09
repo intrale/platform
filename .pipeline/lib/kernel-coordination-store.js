@@ -55,10 +55,16 @@ const DEFAULT_INMEMORY_TABLE = 'kernel-coordination-local';
 //
 // #5113 CA-A8 — `partial-pause` (la allowlist de ejecución) entra a la
 // allowlist de claves: es estado operativo mutable de alta frecuencia, del
-// mismo tenor que `waves`, y sin esta entrada el backend del estado operativo
-// no puede escribirla (`assertKnownKey` la rechazaría). Sumarla acá también la
-// convierte en clave RESERVADA para `claim`/`release` (`assertSafeKey`), que es
-// exactamente lo que se quiere: nadie puede pedirla como lease.
+// mismo tenor que `waves`. Sumarla acá la convierte en clave RESERVADA para
+// `claim`/`release` (`assertSafeKey`), que es exactamente lo que se quiere:
+// nadie puede pedirla como lease.
+//
+// (rev-6) PRECISIÓN: `assertKnownKey` es del camino ASYNC de este módulo; el
+// backend síncrono del estado operativo NO lo invoca. Su allowlist de claves
+// es propia y cerrada (`FILE_FOR_KEY` + `assertKnownKey` en
+// `operational-state-backend.js`), y se aplica ANTES de bifurcar entre
+// filesystem y remoto. Son dos guardas distintas sobre el mismo vocabulario,
+// no una sola compartida.
 //
 // `.paused` NO está ni estará acá (D-3 / SEC-7): es el halt de último recurso y
 // el mecanismo de aborto del propio cutover. Si viviera en DynamoDB, una
@@ -116,6 +122,27 @@ function buildCasWriteOptions(expectedVersion, atomicUpdate) {
     conditionExpression: '#b.#v = :ev',
     expressionAttributeNames: { '#b': 'body', '#v': 'version' },
     expressionAttributeValues: { ':ev': expectedVersion },
+  };
+}
+
+/**
+ * Opciones de escritura del CAS de CREACIÓN (`create-once`): la condición que
+ * garantiza un único ganador cuando la clave todavía no existe. PURA.
+ *
+ * #5113 (rev-6) — vive acá y NO duplicada en `operational-state-backend.js`.
+ * La condición `attribute_not_exists(#pk)` es la que decide, entre N instancias
+ * arrancando a la vez, cuál crea el registro de olas; dos copias de la misma
+ * expresión son exactamente el riesgo de divergencia que el issue manda evitar
+ * (una se corrige, la otra no, y el estado se pisa en silencio).
+ *
+ * A diferencia del CAS por versión, esta condición NO depende de que el driver
+ * declare `atomicUpdate`: sin condición la creación deja de tener ganador
+ * único, así que se emite siempre y el driver in-memory la evalúa igual.
+ */
+function buildCreateOnceWriteOptions() {
+  return {
+    conditionExpression: 'attribute_not_exists(#pk)',
+    expressionAttributeNames: { '#pk': 'PK' },
   };
 }
 
@@ -357,10 +384,7 @@ function createCoordinationStore(deps = {}) {
     const item = envelope(key, value, 1, extra);
     assertWritable(item);
     try {
-      await driver.putItem(spec, item, {
-        conditionExpression: 'attribute_not_exists(#pk)',
-        expressionAttributeNames: { '#pk': 'PK' },
-      });
+      await driver.putItem(spec, item, buildCreateOnceWriteOptions());
       return { ok: true, created: true, version: 1 };
     } catch (e) {
       if (e instanceof ConditionalCheckFailedError) return { ok: false, exists: true };
@@ -621,6 +645,7 @@ module.exports = {
   skFor,
   buildCoordinationEnvelope,
   buildCasWriteOptions,
+  buildCreateOnceWriteOptions,
   validateCoordinationRawItem,
   assertCoordinationWritable,
   ENTITY_COORDINATION,

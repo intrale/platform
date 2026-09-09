@@ -580,11 +580,20 @@ function createAwsCliRunner(env, deps = {}) {
                 if (child.stdout) child.stdout.on('data', (d) => { stdout += d; });
                 if (child.stderr) child.stderr.on('data', (d) => { stderr += d; });
                 child.on('error', reject);
-                child.on('close', (code) => resolve({
-                    code: typeof code === 'number' ? code : 0,
-                    stdout,
-                    stderr,
-                }));
+                // #5113 (rev-6) — espejo del fail-closed del runner sincrono:
+                // `close` entrega `code === null` cuando el hijo murio por senal.
+                // Ese `null` NO puede colapsar a 0: seria un exito con stdout
+                // vacio, indistinguible de "clave ausente" aguas abajo.
+                child.on('close', (code, signal) => resolve(
+                    typeof code === 'number'
+                        ? { code, stdout, stderr }
+                        : {
+                            code: 1,
+                            stdout: '',
+                            stderr: `aws dynamodb: proceso terminado por señal ${signal || 'desconocida'} `
+                                + '(sin código de salida). Se trata como fallo, no como clave ausente.',
+                        },
+                ));
             });
         },
     };
@@ -698,9 +707,18 @@ function createAwsCliDynamoDriver({ run } = {}) {
 // el incidente #5060 reproducido por un cambio de tipo de retorno.
 //
 // El patron `spawnSync` ya esta vigente en el repo (`kernel-aws-bootstrap.js`,
-// `kernel-cmk-provision.js`). El costo lo absorben el cache de 2 s de
-// `waves.js` y `isIssueAllowedInState(issue, state)`, que lee el estado UNA vez
-// por tick y lo reusa para N issues.
+// `kernel-cmk-provision.js`).
+//
+// COSTO (rev-6): un `spawnSync` de la AWS CLI es BLOQUEANTE y ronda los cientos
+// de ms, asi que el camino caliente no puede pagarlo una vez por issue. Lo
+// absorben DOS mecanismos concretos, ambos verificables:
+//   1. `operational-state-backend.js` memoiza la lectura remota 2 s por clave
+//      (`REMOTE_READ_TTL_MS`), la misma ventana que `waves.js` ya usa en FS.
+//      Solo cachea lecturas SANAS: una degradacion nunca se memoiza.
+//   2. `partial-pause.isIssueAllowedInState(issue, state)` lee el estado UNA
+//      vez por tick y lo reusa para los N candidatos (`pulpo.js`, bucle de
+//      despacho). Sin (1), la variante `isIssueAllowed(issue)` sin state
+//      spawneaba hasta 2N veces por tick.
 
 /**
  * Espejo sincrono de `createAwsCliRunner`. Mismo fail-closed de credenciales,
@@ -741,8 +759,27 @@ function createAwsCliRunnerSync(env, deps = {}) {
             if (res && res.error) {
                 return { code: 127, stdout: '', stderr: String(res.error.message || res.error) };
             }
+            // #5113 (rev-6) FAIL-CLOSED ante muerte por senal: `spawnSync` deja
+            // `status === null` cuando el hijo muere por una senal que Node no
+            // origino (OOM-kill del `aws` => SIGKILL, escenario real del
+            // multi-instancia de CA-C6). Colapsar ese `null` a `code: 0` lo
+            // hacia indistinguible de un exito con stdout vacio: `parseCliResult`
+            // devolvia `{}`, `getItem` daba `item: null` y el backend lo
+            // clasificaba como "clave ausente / todavia no migrada" => sin
+            // `reportDegradation`, sin alerta, y el pipeline operando con estado
+            // vacio. Un hijo muerto por senal es un FALLO, nunca una ausencia.
+            const status = res ? res.status : undefined;
+            if (typeof status !== 'number') {
+                const signal = (res && res.signal) ? String(res.signal) : 'desconocida';
+                return {
+                    code: 1,
+                    stdout: '',
+                    stderr: `aws dynamodb: proceso terminado por senal ${signal} `
+                        + '(sin codigo de salida). Se trata como fallo, no como clave ausente.',
+                };
+            }
             return {
-                code: typeof (res && res.status) === 'number' ? res.status : 0,
+                code: status,
                 stdout: (res && res.stdout) || '',
                 stderr: (res && res.stderr) || '',
             };
