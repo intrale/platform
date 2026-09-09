@@ -57,6 +57,14 @@ const { renderHeaderMetaSsr, headerPillsClientScript, headerPillsPollClientScrip
 // #4296 — Accessor compartido del banner de ola (avance %, velocidad %/h, ETA)
 // desde la fuente determinística viva /api/dash/ola-eta (no conteos done/total).
 const { missionOlaEtaClientScript } = require('../../lib/mission-ola-eta.js');
+// #6239 — Vigencia de la sesión de Claude Code. Requires DEFENSIVOS (CA-A3 /
+// patrón #3177, el mismo que usa `home` más abajo): si el módulo o su copy no
+// cargan, la línea de sesión simplemente no se dibuja y el resto de la pantalla
+// sigue renderizando. Un require pelado acá tumbaba el panel entero.
+let oauthSessionExpiry = null;
+try { oauthSessionExpiry = require('../../lib/oauth-session-expiry.js'); } catch (_) { /* sin línea de sesión */ }
+let oauthSessionCopy = null;
+try { oauthSessionCopy = require('../../assets/copy/oauth-session-expiry/render.js'); } catch (_) { /* sin línea de sesión */ }
 
 // Fuentes de datos (libs puras — sin req/res). Cada require va con guarda en el
 // colector correspondiente: si una lib falla, la pantalla degrada con "sin
@@ -399,6 +407,8 @@ function buildProvidersModel() {
     const catalog = collectCatalog();
     const agents = collectAgentConfig();
     const disabled = collectDisabled();
+    let oauthSession = { expiresAt: null, minutesLeft: null, available: false };
+    try { if (oauthSessionExpiry) oauthSession = oauthSessionExpiry.getOAuthSessionExpiry(); } catch (_) { /* degradación visible */ }
     // #6180 - estado del episodio de respaldo (parte 2 del split de #6151).
     const episode = collectFallbackEpisode();
 
@@ -453,6 +463,9 @@ function buildProvidersModel() {
             // estado de login: distingue "logueado" de "logueado + con cuota"
             // (CA-5). Shape seguro { adapterStatus, status, pct } — sin secretos.
             quota: (h.quota && typeof h.quota === 'object') ? h.quota : null,
+            session: key === 'anthropic'
+                ? { available: oauthSession.available, minutesLeft: oauthSession.minutesLeft }
+                : null,
             lastChecked: h.last_checked_at || null,
             loadPct,
             dispatches24h: disp,
@@ -694,6 +707,14 @@ function renderProviderRow(p, now) {
     const sev = HEALTH_SEVERITY[p.healthState] || 'info';
     const healthLabel = HEALTH_LABEL[p.healthState] || 'SIN DATOS';
     const reasonTxt = reasonHuman(p.healthReason);
+    // El renderer del copy es fail-closed (tira ante un estado que no conoce):
+    // acá eso no puede costar la fila entera, así que degrada a "sin línea".
+    let session = null;
+    if (p.key === 'anthropic' && oauthSessionCopy) {
+        try {
+            session = oauthSessionCopy.renderDashboard(p.session || { available: false, minutesLeft: null });
+        } catch (_) { session = null; /* sin línea de sesión */ }
+    }
     return `<article class="prov-row" data-provider="${escapeHtmlAttr(p.key)}" style="--row-accent:${p.accent};">
   <div class="prov-id">
     <span class="prov-dot" aria-hidden="true"></span>
@@ -709,6 +730,7 @@ function renderProviderRow(p, now) {
       ${renderQuotaChip(p)}
     </div>
     <span class="prov-health-reason" title="${escapeHtmlAttr('Causa reportada por el health-cron')}">${escapeHtmlText(reasonTxt)}</span>
+    ${session ? `<span class="prov-session is-${escapeHtmlAttr(session.tono)}" title="${escapeHtmlAttr(session.title)}">${escapeHtmlText(session.texto)}</span>` : ''}
     ${renderQuotaBar(p)}
   </div>
   <div class="prov-col prov-col-models">${renderCatalogCell(p, now)}</div>
@@ -1216,6 +1238,11 @@ const PANEL_CSS = `
 .prov-col-health { display: flex; flex-direction: column; gap: 6px; }
 .prov-health-badges { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
 .prov-health-reason { font-size: 11px; color: var(--in-fg-dim); }
+.prov-session { font-size: 10.5px; font-weight: 600; }
+.prov-session.is-dim { color: var(--in-fg-dim); }
+.prov-session.is-info { color: var(--in-info); }
+.prov-session.is-warn { color: var(--in-warn); }
+.prov-session.is-warn-fuerte { color: var(--in-warn); font-weight: 800; }
 /* #4283 — chip de cuota real. Reutiliza las parejas MIZPÁ ya validadas (WCAG
    AA en tema oscuro). No introduce colores nuevos. */
 .prov-quota-chip { font-size: 10.5px; font-weight: 700; letter-spacing: .04em; padding: 2px 7px; border-radius: 999px; border: 1px solid var(--in-border); white-space: nowrap; }

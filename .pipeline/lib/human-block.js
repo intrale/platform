@@ -42,6 +42,21 @@ const ACTIVE_STATES = ['pendiente', 'trabajando', 'listo'];
 const GH_QUEUE_DIR = path.join(PIPELINE_DIR, 'servicios', 'github', 'pendiente');
 const NEEDS_HUMAN_LABEL = 'needs-human';
 
+// #6191 / SEC-F — Tope de `evidence` AL PERSISTIR (defensa en profundidad).
+//
+// `evidence` es texto que escribe un agente al marcar el bloqueo, y un agente
+// que pega el output de un comando llega a decenas de KB sin ninguna intención
+// maliciosa. La ficha de decisión ya se defiende sola (`decision-card.js` topea
+// la ENTRADA de su saneador, que es cuadrático), pero el marker en disco lo lee
+// TODO consumidor del bloqueo: escribirlo sin techo deja crecer un archivo de
+// estado sin límite y le carga el mismo blob a cada lector.
+//
+// 4096 es holgado a propósito: la cita visible se recorta a ~100 caracteres y
+// el saneador nunca mira más allá de 512, así que este techo no puede alterar
+// un solo carácter de lo que ve el operador. Es corte de ENTRADA (descarta el
+// excedente), NUNCA una redacción: redactar es responsabilidad de la ficha.
+const MAX_EVIDENCE_PERSISTIDA = 4096;
+
 // #2880 — encolar comando de label en la cola del servicio-github. Centralizar
 // acá la aplicación del label evita que cada caller (pause-all, scripts manuales,
 // pulpo en barrido) tenga que duplicar la lógica y olvide aplicarlo.
@@ -581,7 +596,9 @@ function reportHumanBlock(opts) {
         // #6448 UX-1 / CA-17 — la cita del issue que disparó el freno viaja en
         // CAMPO PROPIO, nunca concatenada dentro de `reason`. Se persiste para
         // que el recordatorio muestre la misma evidencia que el aviso inicial.
-        ...(String(opts.evidence || '').trim() ? { evidence: String(opts.evidence).trim() } : {}),
+        ...(String(opts.evidence || '').trim()
+            ? { evidence: String(opts.evidence).trim().slice(0, MAX_EVIDENCE_PERSISTIDA) }
+            : {}),
         ...(synthetic ? { synthetic: true } : {}),
         blocked_at: new Date().toISOString(),
     }, null, 2));
@@ -645,6 +662,51 @@ function listBlockedIssues() {
         }
     }
     return result.sort((a, b) => b.age_hours - a.age_hours);
+}
+
+/**
+ * #6191 CA-4 — Proyección `bloqueo crudo → fila del dashboard`.
+ *
+ * Existe por un defecto concreto (gap G-2): `dashboard.js` armaba la lista de
+ * bloqueados con DOS `map` gemelos —el principal y el del `catch` de fallback—
+ * que copiaban 12 campos a mano y ninguno de los dos propagaba `evidence` ni
+ * `precondition`. Consecuencia: `buildDecisionCard()` alimentado con la fila
+ * del dashboard perdía la cita del issue que sí tenía la ficha de Telegram, y
+ * el MISMO bloqueo producía DOS fichas distintas según el canal — exactamente
+ * lo que #6190 vino a cerrar.
+ *
+ * La proyección vive acá, junto al productor del objeto crudo, y es UNA sola:
+ * dos copias del mapeo divergen (ya divergieron), una función compartida no.
+ *
+ * @param {object} b        bloqueo crudo de `listBlockedIssues()`
+ * @param {object} [s]      resumen funcional de `issue-summary` (opcional)
+ * @param {object} [titles] cache de títulos `{ '<issue>': { title } }`
+ */
+function toDashboardRow(b, s, titles) {
+    const raw = (b && typeof b === 'object') ? b : {};
+    const sum = (s && typeof s === 'object') ? s : null;
+    const cache = (titles && typeof titles === 'object') ? titles : {};
+    const cached = cache[String(raw.issue)];
+    return {
+        issue: raw.issue,
+        skill: raw.skill,
+        phase: raw.phase,
+        pipeline: raw.pipeline,
+        reason: raw.reason,
+        question: raw.question,
+        // Los dos campos que se perdían. `evidence` alimenta la cita del issue
+        // en `evidencia_minima` y `precondition` describe la condición de
+        // destrabe: sin ellos la ficha del dashboard sale más pobre que la de
+        // Telegram para el mismo marker.
+        evidence: raw.evidence,
+        precondition: raw.precondition,
+        blocked_at: raw.blocked_at,
+        age_hours: raw.age_hours,
+        title: (cached && cached.title) || '',
+        summary: (sum && sum.summary) || '',
+        recent_events: (sum && sum.recent_events) || [],
+        summary_stale: sum ? !!sum.stale : true,
+    };
 }
 
 // #4653 — Labels de GitHub que implican "esperando intervención humana" pero que
@@ -1901,6 +1963,8 @@ module.exports = {
     unblockIssue,
     dismissBlockedIssue,
     listBlockedIssues,
+    // #6191 CA-4 — proyección única `crudo → fila del dashboard`.
+    toDashboardRow,
     mergeGithubBlockedLabels,
     GITHUB_HUMAN_BLOCK_LABELS,
     listPhaseMarkers,

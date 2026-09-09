@@ -84,8 +84,12 @@ test('dentro de `.pipeline/` no hay ningun directorio de produccion que empiece 
     const sospechosos = fs.readdirSync(PIPELINE_DIR, { withFileTypes: true })
         .filter((e) => e.isDirectory() && isScratchDirName(e.name))
         .map((e) => e.name)
-        // Todo lo que hay hoy es scratchpad: `_tmp` o `tmp<issue>`/`tmp-<algo>`.
-        .filter((name) => name !== '_tmp' && !/^tmp[-_]?[0-9]/.test(name) && !/^tmp-[a-z]+-?[0-9]*$/i.test(name));
+        // Todo lo que hay hoy es scratchpad: `_tmp`, `tmp` pelado (scratchpad
+        // generico compartido, no versionado) o `tmp<issue>`/`tmp-<algo>`.
+        // `tmp` a secas entra por nombre exacto y NO por prefijo: asi un
+        // `tmplates/` de produccion sigue cayendo en la lista de sospechosos,
+        // que es justo lo que este test viene a detectar.
+        .filter((name) => name !== '_tmp' && name !== 'tmp' && !/^tmp[-_]?[0-9]/.test(name) && !/^tmp-[a-z]+-?[0-9]*$/i.test(name));
 
     assert.deepEqual(sospechosos, [], 'aparecio un directorio `tmp*` que no sigue la convencion de scratchpad');
 });

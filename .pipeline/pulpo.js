@@ -240,6 +240,16 @@ const modelPropagationRollout = require('./lib/model-propagation-rollout'); // #
 // Expone isWorkaroundEnabled, recordHit, checkTtlAlert, formatStartupLogLine,
 // formatHitExtension, formatTtlAlertMessage, sanitizeHitLog.
 const oneMWorkaround = require('./lib/commander/anthropic-1m-workaround');
+// #6239 — Chequeo de vigencia de la sesión de Claude Code. Requires
+// DEFENSIVOS: es un aviso best-effort, jamás una razón para que el Pulpo no
+// arranque. Si alguno no carga, el cron no se enciende (se loguea) y todo lo
+// demás sigue igual.
+let oauthSessionExpiry = null;
+try { oauthSessionExpiry = require('./lib/oauth-session-expiry'); } catch (_) { /* sin chequeo de sesión */ }
+let oauthSessionCopy = null;
+let runOAuthExpiryTick = null;
+try { ({ runOAuthExpiryTick } = require('./lib/oauth-session-expiry-tick')); } catch (_) { /* sin coordinador */ }
+try { oauthSessionCopy = require('./assets/copy/oauth-session-expiry/render'); } catch (_) { /* sin chequeo de sesión */ }
 // #3950 (EP7-H3) — política PURA de auto-retry del glitch 1M del CLI Anthropic.
 // Decide retry_same | retry_standard | give_up, backoff acotado, validación del
 // modelo (whitelist SR-A) y formato del log por intento. Sin side effects.
@@ -26568,6 +26578,42 @@ async function mainLoop() {
     log('commander', `[anthropic-1m] cron TTL iniciado: cada ${ANTHROPIC_1M_TTL_CHECK_INTERVAL_MIN}min`);
   } catch (e) {
     log('commander', `[anthropic-1m] no pude iniciar cron TTL: ${e.message}`);
+  }
+
+  // #6239 — Vigencia de la sesión Claude. Best-effort y sin datos sensibles:
+  // el módulo sólo devuelve fechas derivadas y el copy visible es el asset UX.
+  const OAUTH_EXPIRY_CHECK_INTERVAL_MIN = 5;
+  // El marker vive FUERA del arbol del repo (~/.claude/pipeline-state/), igual
+  // que el del cron de rotacion: el calendario de vencimiento de la credencial
+  // del operador no se publica en un repo PUBLICO (#5901 REQ-SEC-1).
+  const OAUTH_EXPIRY_STATE_FILE = oauthSessionExpiry
+    ? oauthSessionExpiry.defaultStateFilePath()
+    : null;
+  try {
+    if (!oauthSessionExpiry || !oauthSessionCopy || !runOAuthExpiryTick) throw new Error('oauth_expiry_modules_unavailable');
+    // Barrido del marker que haya dejado una corrida anterior al fix.
+    if (oauthSessionExpiry.purgeLegacyStateFile(PIPELINE)) {
+      log('commander', '[oauth-expiry] marker legacy dentro del repo eliminado');
+    }
+    const tickOAuthExpiry = () => {
+      try {
+        runOAuthExpiryTick({
+          evaluate: oauthSessionExpiry.evaluate,
+          notify: notifyTelegramFn,
+          render: oauthSessionCopy.renderTelegram,
+          recordEmitted: oauthSessionExpiry.recordEmitted,
+          statePath: OAUTH_EXPIRY_STATE_FILE,
+        });
+      } catch (_) {
+        // No interpolar el error: podría originarse al leer la credencial.
+        log('commander', '[oauth-expiry] tick error (best-effort)');
+      }
+    };
+    setTimeout(tickOAuthExpiry, 60 * 1000);
+    setInterval(tickOAuthExpiry, OAUTH_EXPIRY_CHECK_INTERVAL_MIN * 60 * 1000);
+    log('commander', `[oauth-expiry] cron iniciado: cada ${OAUTH_EXPIRY_CHECK_INTERVAL_MIN}min`);
+  } catch (_) {
+    log('commander', '[oauth-expiry] no pude iniciar el cron');
   }
 
   // #3638 CA-F-7 — Ghost-artifact cleaner: barre carpetas operacionales en
