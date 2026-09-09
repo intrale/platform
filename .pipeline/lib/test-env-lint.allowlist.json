@@ -2015,6 +2015,18 @@
             "reason": "escritura de PIPELINE_DIR_OVERRIDE fuera del helper"
         },
         {
+            "file": "lib/__tests__/pulpo-aislamiento-prueba-7086.test.js",
+            "line": 44,
+            "kind": "falso-positivo",
+            "reason": "aislamiento pre-require: el override tiene que estar seteado ANTES de requerir pulpo.js (las const de modulo capturan el directorio en la carga), y withEnv envuelve una llamada, no un require top-level. Mismo patron que pulpo-config-recovery.test.js"
+        },
+        {
+            "file": "lib/__tests__/pulpo-aislamiento-prueba-7086.test.js",
+            "line": 45,
+            "kind": "falso-positivo",
+            "reason": "aislamiento pre-require: PIPELINE_DIR_OVERRIDE al tmpdir antes del require de pulpo.js. Mismo patron que pulpo-config-recovery.test.js"
+        },
+        {
             "file": "lib/__tests__/pulpo-corruption.test.js",
             "line": 20,
             "kind": "deuda",
