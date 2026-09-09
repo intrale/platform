@@ -939,3 +939,49 @@ test('#6191 la vista degrada sin romper si la ficha no aporta opciones ni contex
     assert.match(html, /motivo plano/);
     assert.ok(!hasLiveTags(html));
 });
+
+// ---------------------------------------------------------------------------
+// #6191 / SEC-F — DoS por consumo cuadratico en el render SSR.
+//
+// Esta vista es el punto donde el render HTTP se conecto por primera vez con
+// `buildDecisionCard()`, y a la vez donde empezo a llegar el campo `evidence`.
+// El saneador de la ficha es cuadratico en el largo de la entrada: un
+// `evidence` de 30 KB —el output de un comando que un agente pega como
+// evidencia— bloqueaba el hilo del dashboard durante segundos. Es UN solo hilo:
+// mientras dura, no responde ni la pantalla, ni `/api/state`, ni el healthcheck.
+// El `try/catch` de `buildCardSafe` NO protege: atrapa excepciones, no cuelgues.
+//
+// El fix vive en `lib/decision-card.js` (tope de ENTRADA antes de `redactAll`) y
+// tiene su bateria propia en `lib/__tests__/decision-card-dos-6191.test.js`.
+// Este test cubre el sink de verdad: el HTML que sale por HTTP.
+// ---------------------------------------------------------------------------
+
+test('#6191 SEC-F el render SSR con evidence de 30 KB termina en tiempo acotado', () => {
+    const gordo = Object.assign({}, INDET, { evidence: 'a'.repeat(30 * 1024) });
+    rowHtml(gordo); // warm-up: no medir la compilacion de los regex
+    const t0 = Date.now();
+    const html = rowHtml(gordo);
+    const ms = Date.now() - t0;
+    assert.ok(ms < 200, 'renderizar una fila tardo ' + ms + 'ms (techo 200ms). ' +
+        'El hilo del dashboard tambien sirve /api/state y el healthcheck.');
+    // Y sigue siendo una fila util: el tope corta la ENTRADA del saneador, no
+    // la salida visible.
+    assert.match(html, /id="bloqueados-row-5805"/);
+    assert.ok(!hasLiveTags(html));
+});
+
+test('#6191 SEC-F diez filas con evidence gigante no cuelgan el hilo del dashboard', () => {
+    // El caso real no es una fila: es la pantalla entera de bloqueados.
+    const filas = [];
+    for (let i = 0; i < 10; i += 1) {
+        filas.push(Object.assign({}, INDET, {
+            issue: 7000 + i, evidence: 'a'.repeat(30 * 1024),
+        }));
+    }
+    renderBloqueadosSsr({ bloqueados: filas }, opts); // warm-up
+    const t0 = Date.now();
+    const html = renderBloqueadosSsr({ bloqueados: filas }, opts);
+    const ms = Date.now() - t0;
+    assert.ok(ms < 500, 'renderizar 10 filas tardo ' + ms + 'ms (techo 500ms).');
+    assert.match(html, /id="bloqueados-row-7009"/);
+});

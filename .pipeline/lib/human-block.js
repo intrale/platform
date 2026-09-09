@@ -42,6 +42,21 @@ const ACTIVE_STATES = ['pendiente', 'trabajando', 'listo'];
 const GH_QUEUE_DIR = path.join(PIPELINE_DIR, 'servicios', 'github', 'pendiente');
 const NEEDS_HUMAN_LABEL = 'needs-human';
 
+// #6191 / SEC-F — Tope de `evidence` AL PERSISTIR (defensa en profundidad).
+//
+// `evidence` es texto que escribe un agente al marcar el bloqueo, y un agente
+// que pega el output de un comando llega a decenas de KB sin ninguna intención
+// maliciosa. La ficha de decisión ya se defiende sola (`decision-card.js` topea
+// la ENTRADA de su saneador, que es cuadrático), pero el marker en disco lo lee
+// TODO consumidor del bloqueo: escribirlo sin techo deja crecer un archivo de
+// estado sin límite y le carga el mismo blob a cada lector.
+//
+// 4096 es holgado a propósito: la cita visible se recorta a ~100 caracteres y
+// el saneador nunca mira más allá de 512, así que este techo no puede alterar
+// un solo carácter de lo que ve el operador. Es corte de ENTRADA (descarta el
+// excedente), NUNCA una redacción: redactar es responsabilidad de la ficha.
+const MAX_EVIDENCE_PERSISTIDA = 4096;
+
 // #2880 — encolar comando de label en la cola del servicio-github. Centralizar
 // acá la aplicación del label evita que cada caller (pause-all, scripts manuales,
 // pulpo en barrido) tenga que duplicar la lógica y olvide aplicarlo.
@@ -581,7 +596,9 @@ function reportHumanBlock(opts) {
         // #6448 UX-1 / CA-17 — la cita del issue que disparó el freno viaja en
         // CAMPO PROPIO, nunca concatenada dentro de `reason`. Se persiste para
         // que el recordatorio muestre la misma evidencia que el aviso inicial.
-        ...(String(opts.evidence || '').trim() ? { evidence: String(opts.evidence).trim() } : {}),
+        ...(String(opts.evidence || '').trim()
+            ? { evidence: String(opts.evidence).trim().slice(0, MAX_EVIDENCE_PERSISTIDA) }
+            : {}),
         ...(synthetic ? { synthetic: true } : {}),
         blocked_at: new Date().toISOString(),
     }, null, 2));

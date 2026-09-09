@@ -154,6 +154,12 @@ const CITA_ISSUE_OVERHEAD = CITA_ISSUE_PREFIJO.length + 2;
 // real, y al ser cuadrático el costo baja ~60x: la misma bomba queda en ~16ms.
 const MAX_ENTRADA_SANEO = 512;  // tope duro de texto externo antes de sanear
 
+// #6191 / SEC-F. Cuánto puede retroceder el corte de entrada para no partir un
+// token por la mitad (ver `topearEntradaSaneo`). 256 deja siempre >= 256
+// caracteres, que es más que `MAX_CAMPO` (220): el retroceso NUNCA puede
+// recortar texto que la ficha llegue a mostrar.
+const MAX_RETROCESO_CORTE = 256;
+
 const TIPOS = Object.freeze([
     'dependencia', 'circuit', 'firma', 'infra', 'rebote', 'pregunta', 'indeterminado',
 ]);
@@ -430,6 +436,39 @@ function limpiarMarkup(s) {
 }
 
 /**
+ * Tope duro de ENTRADA del saneador (rev-10 / SEC-D, reubicado en #6191 /
+ * SEC-F). Descarta el excedente: lo que se corta acá NUNCA se muestra, porque
+ * toda superficie recorta la SALIDA en `MAX_CAMPO` (220) o menos y este techo
+ * es 2,3x más alto.
+ *
+ * Existe porque el saneamiento es CUADRÁTICO en el largo de la entrada
+ * (`redactAll` y las clases ambiguas de `URL_RE`), y el dashboard lo ejecuta
+ * en el mismo hilo que sirve la pantalla, `/api/state` y el healthcheck. Sin
+ * tope, un `evidence` de 30 KB —el output de un comando que un agente pega
+ * como evidencia, sin ninguna intención maliciosa— congela el proceso durante
+ * segundos. La regla #1 del pipeline es que no se muere, y un `try/catch` no
+ * ataja un cuelgue: sólo atrapa excepciones.
+ *
+ * El corte RETROCEDE hasta el último separador. Si cayera en medio de un token,
+ * `redactAll` ya no matchearía ese token completo y podría dejar el prefijo de
+ * una credencial visible —justo el defecto que el orden `redactar → truncar`
+ * de `sec()` viene a evitar—. Un token más largo que `MAX_RETROCESO_CORTE` no
+ * es una credencial de las que se redactan: ahí el corte es duro.
+ */
+function topearEntradaSaneo(value) {
+    const s = String(value == null ? '' : value);
+    if (s.length <= MAX_ENTRADA_SANEO) return s;
+    const corte = s.slice(0, MAX_ENTRADA_SANEO);
+    const piso = MAX_ENTRADA_SANEO - MAX_RETROCESO_CORTE;
+    for (let i = corte.length - 1; i >= piso; i -= 1) {
+        const c = corte.charCodeAt(i);
+        // Espacio, tab, LF, CR, FF, VT: los separadores que puede haber acá.
+        if (c === 32 || (c >= 9 && c <= 13)) return corte.slice(0, i);
+    }
+    return corte;
+}
+
+/**
  * rev-9 / SEC-C. Neutralización de markup y de enlaces, en el ÚNICO orden que
  * no se puede esquivar, y expuesta como función compartida: hasta rev-8 cada
  * superficie tenía su propia copia de la secuencia y el defecto vivía en el
@@ -455,14 +494,10 @@ function limpiarMarkup(s) {
 function neutralizarMarkupYEnlaces(value) {
     let s = String(value == null ? '' : value);
     if (!s) return '';
-    // rev-10 / SEC-D. Tope duro de entrada ANTES de cualquier regex. El campo
-    // más largo de una ficha son 220 caracteres (`MAX_CAMPO`), así que este
-    // techo no recorta nada real; está para que un texto externo enorme —que
-    // llega de un issue público— no pueda convertir el saneamiento en trabajo
-    // cuadrático y colgar al proceso que arma el aviso. La regla #1 del
-    // pipeline es que no se muere: un saneador es una superficie de DoS tanto
-    // como de inyección.
-    if (s.length > MAX_ENTRADA_SANEO) s = s.slice(0, MAX_ENTRADA_SANEO);
+    // Defensa en profundidad: `sec()` ya topeó la entrada, pero esta función se
+    // exporta y la usa también el renderer degradado, que no pasa por `sec()`.
+    // Es idempotente sobre una entrada ya topeada.
+    s = topearEntradaSaneo(s);
     for (let i = 0; i < 2; i += 1) {
         s = limpiarMarkup(s);
         s = s.replace(URL_RE, URL_MARCA);
@@ -480,6 +515,14 @@ function sec(value, max = MAX_CAMPO) {
     if (value == null) return '';
     let s = String(value);
     if (!s) return '';
+    // #6191 / SEC-F — el tope de ENTRADA va PRIMERO, antes de `sinControles` y
+    // de `redactAll`. Estaba una línea tarde (dentro de
+    // `neutralizarMarkupYEnlaces`): `redactAll` es cuadrático y corría sobre el
+    // string COMPLETO, así que el techo no protegía nada. Es corte de ENTRADA
+    // (descarta lo que nunca se muestra), NO un truncado a `MAX_CAMPO`:
+    // invertir el orden `redactar → truncar` de abajo dejaría media credencial
+    // visible.
+    s = topearEntradaSaneo(s);
     s = sinControles(s);
     s = String(redactAll(s));
     s = neutralizarMarkupYEnlaces(s);
@@ -1680,6 +1723,8 @@ module.exports = {
     // duplicada diverge igual que una tabla duplicada; esta función es la
     // única definición del orden para las DOS superficies de texto.
     neutralizarMarkupYEnlaces,
+    topearEntradaSaneo,
+    MAX_ENTRADA_SANEO,
     // rev-7 / SEC-B: misma razón que URL_RE. El camino degradado no puede
     // quedar más flojo que el principal —esa asimetría ya se pagó en rev-2/
     // SEC-A con las URLs— y una copia del regex diverge; esta, no.
