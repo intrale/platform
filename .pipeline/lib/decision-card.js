@@ -152,10 +152,36 @@ const CITA_ISSUE_OVERHEAD = CITA_ISSUE_PREFIJO.length + 2;
 // 512 sigue siendo 2,3x el campo más largo que existe (`MAX_CAMPO` = 220, y
 // toda superficie corta la SALIDA en 220 o menos), así que no recorta nada
 // real, y al ser cuadrático el costo baja ~60x: la misma bomba queda en ~16ms.
-const MAX_ENTRADA_SANEO = 512;  // tope duro de texto externo antes de sanear
+const MAX_ENTRADA_SANEO = 512;  // tope de PRESENTACIÓN, se aplica ya redactado
 
-// #6191 / SEC-F. Cuánto puede retroceder el corte de entrada para no partir un
-// token por la mitad (ver `topearEntradaSaneo`). 256 deja siempre >= 256
+// #6191 / SEC-F rev-2. Hay DOS techos, y confundirlos fue justo la regresión que
+// esta revisión corrige:
+//
+//   - `MAX_ENTRADA_REDACCION` (acá) es el techo ANTI-DoS: lo máximo que puede
+//     ver `redactAll`, que es cuadrático.
+//   - `MAX_ENTRADA_SANEO` (512) es el techo de PRESENTACIÓN: lo máximo que ven
+//     las clases ambiguas de `URL_RE`, y se aplica DESPUÉS de redactar.
+//
+// La primera versión de SEC-F usó 512 para las dos cosas, moviéndolo delante de
+// `redactAll`. Eso arregla el DoS y rompe la redacción: toda credencial más
+// larga que el techo queda partida por el corte, `redactAll` ya no matchea el
+// token completo y el prefijo sale visible. El caso canónico es un JWT de
+// Cognito —el mecanismo de auth de este proyecto—: 1,5 KB, sin un solo
+// separador donde el retroceso pueda apoyarse, y el payload en base64 decodifica
+// a `sub`, `email` y `cognito_groups`. Y la ficha alimenta el aviso de Telegram,
+// así que ese fragmento se va del equipo.
+//
+// 4096 es holgado para contener entera cualquier credencial de los patrones
+// vigentes (`redact.js`: jwt, google_refresh_token y telegram_bot_token no
+// tienen tope superior) y coincide con `MAX_EVIDENCE_PERSISTIDA` de
+// `human-block.js`, que es lo máximo que el pipeline llega a guardar de un
+// `evidence`. El costo medido de `redactAll` con 4096 chars es ~10 ms: lejos del
+// techo de 200 ms del test de DoS, y ~58x por debajo de los 581 ms que costaba
+// la entrada de 30 KB que motivó SEC-F.
+const MAX_ENTRADA_REDACCION = 4096;
+
+// #6191 / SEC-F. Cuánto puede retroceder el corte de PRESENTACIÓN para no partir
+// una palabra por la mitad (ver `topearEntradaSaneo`). 256 deja siempre >= 256
 // caracteres, que es más que `MAX_CAMPO` (220): el retroceso NUNCA puede
 // recortar texto que la ficha llegue a mostrar.
 const MAX_RETROCESO_CORTE = 256;
@@ -436,10 +462,9 @@ function limpiarMarkup(s) {
 }
 
 /**
- * Tope duro de ENTRADA del saneador (rev-10 / SEC-D, reubicado en #6191 /
- * SEC-F). Descarta el excedente: lo que se corta acá NUNCA se muestra, porque
- * toda superficie recorta la SALIDA en `MAX_CAMPO` (220) o menos y este techo
- * es 2,3x más alto.
+ * Techo ANTI-DoS de la redacción (#6191 / SEC-F rev-2). Es lo PRIMERO que corre
+ * sobre el texto externo y acota lo que van a ver `redactAll` y todo lo que
+ * sigue.
  *
  * Existe porque el saneamiento es CUADRÁTICO en el largo de la entrada
  * (`redactAll` y las clases ambiguas de `URL_RE`), y el dashboard lo ejecuta
@@ -449,11 +474,46 @@ function limpiarMarkup(s) {
  * segundos. La regla #1 del pipeline es que no se muere, y un `try/catch` no
  * ataja un cuelgue: sólo atrapa excepciones.
  *
- * El corte RETROCEDE hasta el último separador. Si cayera en medio de un token,
- * `redactAll` ya no matchearía ese token completo y podría dejar el prefijo de
- * una credencial visible —justo el defecto que el orden `redactar → truncar`
- * de `sec()` viene a evitar—. Un token más largo que `MAX_RETROCESO_CORTE` no
- * es una credencial de las que se redactan: ahí el corte es duro.
+ * Y es SEPARADO del techo de presentación (`MAX_ENTRADA_SANEO`, 512) porque
+ * cortar antes de redactar es lo que parte credenciales: `redactAll` deja de
+ * matchear el token completo y el prefijo queda visible. Por eso este techo es
+ * holgado (4096) y por eso el corte NO es duro:
+ *
+ *   - Retrocede hasta el último separador del prefijo, SIN piso. El piso de
+ *     `MAX_RETROCESO_CORTE` que usa el corte de presentación no sirve acá: un
+ *     JWT no tiene un solo separador donde apoyarse en 1,5 KB, así que un
+ *     retroceso acotado degrada al corte duro justo en el caso que importa.
+ *   - Si no hay NINGÚN separador en el prefijo, devuelve vacío. Un token
+ *     indivisible de más de 4096 caracteres no es texto que un operador vaya a
+ *     leer, y sí es la forma exacta que tiene una credencial larga: mostrar su
+ *     prefijo es la fuga. Fail-closed — se pierde evidencia ilegible, no se
+ *     filtra medio secreto.
+ */
+function topearEntradaRedaccion(value) {
+    const s = String(value == null ? '' : value);
+    if (s.length <= MAX_ENTRADA_REDACCION) return s;
+    const corte = s.slice(0, MAX_ENTRADA_REDACCION);
+    for (let i = corte.length - 1; i >= 0; i -= 1) {
+        const c = corte.charCodeAt(i);
+        // Espacio, tab, LF, CR, FF, VT: los separadores que puede haber acá.
+        if (c === 32 || (c >= 9 && c <= 13)) return corte.slice(0, i);
+    }
+    return '';
+}
+
+/**
+ * Techo de PRESENTACIÓN (rev-10 / SEC-D; re-encuadrado en #6191 / SEC-F rev-2).
+ * Descarta el excedente: lo que se corta acá NUNCA se muestra, porque toda
+ * superficie recorta la SALIDA en `MAX_CAMPO` (220) o menos y este techo es
+ * 2,3x más alto. Acota el trabajo de las clases ambiguas de `URL_RE`, que es
+ * donde SEC-E midió el costo cuadrático del saneamiento de markup.
+ *
+ * Corre SIEMPRE sobre texto YA redactado (`sec()` y `sanearMinimo()` del
+ * renderer degradado llaman a `redactAll` antes). Por eso acá el corte duro no
+ * puede filtrar nada: no quedan credenciales que partir, sólo `[REDACTED]`. El
+ * retroceso a separador se mantiene para no cortar una palabra al medio.
+ *
+ * La protección de credenciales NO vive acá: vive en `topearEntradaRedaccion`.
  */
 function topearEntradaSaneo(value) {
     const s = String(value == null ? '' : value);
@@ -494,9 +554,11 @@ function topearEntradaSaneo(value) {
 function neutralizarMarkupYEnlaces(value) {
     let s = String(value == null ? '' : value);
     if (!s) return '';
-    // Defensa en profundidad: `sec()` ya topeó la entrada, pero esta función se
-    // exporta y la usa también el renderer degradado, que no pasa por `sec()`.
-    // Es idempotente sobre una entrada ya topeada.
+    // Techo de PRESENTACIÓN. Acá y no antes: los dos llamadores (`sec()` y el
+    // `sanearMinimo()` del renderer degradado) ya corrieron `redactAll`, así que
+    // este corte no puede partir una credencial. El techo anti-DoS que sí las
+    // protege es `topearEntradaRedaccion`, y lo aplica cada llamador antes de
+    // redactar. Es idempotente sobre una entrada ya topeada.
     s = topearEntradaSaneo(s);
     for (let i = 0; i < 2; i += 1) {
         s = limpiarMarkup(s);
@@ -515,14 +577,23 @@ function sec(value, max = MAX_CAMPO) {
     if (value == null) return '';
     let s = String(value);
     if (!s) return '';
-    // #6191 / SEC-F — el tope de ENTRADA va PRIMERO, antes de `sinControles` y
-    // de `redactAll`. Estaba una línea tarde (dentro de
-    // `neutralizarMarkupYEnlaces`): `redactAll` es cuadrático y corría sobre el
-    // string COMPLETO, así que el techo no protegía nada. Es corte de ENTRADA
-    // (descarta lo que nunca se muestra), NO un truncado a `MAX_CAMPO`:
-    // invertir el orden `redactar → truncar` de abajo dejaría media credencial
-    // visible.
-    s = topearEntradaSaneo(s);
+    // #6191 / SEC-F rev-2 — DOS techos, en este orden exacto:
+    //
+    //   1. `topearEntradaRedaccion` (4096) va PRIMERO, antes de `sinControles`
+    //      y de `redactAll`. Es el techo anti-DoS: `redactAll` es cuadrático y
+    //      sin esto corría sobre el string COMPLETO (un `evidence` de 30 KB
+    //      colgaba el hilo del dashboard). Es holgado a propósito, para que
+    //      cualquier credencial de los patrones vigentes entre ENTERA y
+    //      `redactAll` pueda matchearla completa.
+    //   2. `topearEntradaSaneo` (512) va DESPUÉS, dentro de
+    //      `neutralizarMarkupYEnlaces`. Es el techo de presentación, y sólo
+    //      puede aplicarse sobre texto ya redactado.
+    //
+    // La rev-1 de SEC-F usó el techo de 512 para las dos cosas y adelantó ese:
+    // arregló el DoS y rompió la redacción de todo secreto más largo que el
+    // techo (JWT de Cognito → payload visible). Los dos techos son cosas
+    // distintas y no se pueden fusionar.
+    s = topearEntradaRedaccion(s);
     s = sinControles(s);
     s = String(redactAll(s));
     s = neutralizarMarkupYEnlaces(s);
@@ -1725,6 +1796,8 @@ module.exports = {
     neutralizarMarkupYEnlaces,
     topearEntradaSaneo,
     MAX_ENTRADA_SANEO,
+    topearEntradaRedaccion,
+    MAX_ENTRADA_REDACCION,
     // rev-7 / SEC-B: misma razón que URL_RE. El camino degradado no puede
     // quedar más flojo que el principal —esa asimetría ya se pagó en rev-2/
     // SEC-A con las URLs— y una copia del regex diverge; esta, no.
