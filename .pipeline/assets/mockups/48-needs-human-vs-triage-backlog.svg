@@ -1,0 +1,518 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Mockup 48 — Bloqueo real vs. triaje de backlog (#5678)
+  =============================================================================
+  El issue #5678 separa `needs-human` (bloqueo real de la ola activa) de
+  `tipo:recomendacion` (backlog proactivo). El cambio es de labels, pero la
+  superficie donde el operador lo VE es el dashboard, y ahi hay tres decisiones
+  de diseno que el issue no cierra y que este mockup fija:
+
+    1. El KPI "Necesitan humano" cae de 936 a 13 de un ciclo al siguiente.
+       Sin un affordance de transicion eso se lee como avería del dashboard o
+       como "se destrabo todo solo". Se resuelve con un banner de una sola vez.
+    2. La vista de triaje NO puede heredar el lenguaje visual de la alarma
+       (rojo #B60205, pulso, badge INCIDENTE). Si las 924 recomendaciones
+       aterrizan con la misma piel del panel de bloqueos, el ruido se muda de
+       lugar en vez de desaparecer. Se le asigna su propia rama de color.
+    3. `recommendations.js:139` pide un limit de 200 contra ~1.076 recos
+       abiertas: la vista trunca al 19% en silencio. Como el CA-4 la convierte
+       en LA vista de triaje, truncar sin decirlo pasa de detalle a mentira.
+
+  Superficies cubiertas:
+
+    A. KPI row      — antes / despues + banner de transicion (UX-1, UX-2)
+    B. Panel de bloqueos reales — lo que SOBREVIVE, ahora legible (UX-3)
+    C. Vista de triaje de backlog — jerarquia propia, no-alarma (UX-4, UX-5)
+    D. Empty states y copy — el copy vigente cita `needs-human` (UX-6)
+    E. Chips de label + iconografia (UX-7)
+    F. Reglas de copy, contrastes WCAG AA y mapa de CAs
+
+  Restricciones aplicadas:
+    - Tokens reales de `.pipeline/assets/design-tokens.css`. Cero color inventado
+      salvo el par de triaje, derivado de los tokens purple / purple-dim que ya
+      existen en la paleta (#BC8CFF / #8957E5).
+    - Icono nuevo: ic-triage-backlog (definido abajo, replicado en sprite.svg).
+      Reusa ic-estado-needs-human (sprite:182) sin modificarlo.
+    - Dual-encoding: icono + texto en cada estado. Nunca solo color — un
+      operador con deuteranopia tiene que poder separar bloqueo de backlog.
+    - Ningun numero de este mockup es un CA. Los conteos derivaron 171 issues
+      en horas (guru y security lo midieron distinto el mismo dia); se usan
+      como ilustracion y los CA se redactan como consulta, no como constante.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1440 2240"
+     font-family="-apple-system, 'Segoe UI Variable', 'Segoe UI', Roboto, sans-serif">
+
+  <defs>
+    <!-- ================= ICONO NUEVO (va tambien al sprite) ================ -->
+
+    <!-- ic-triage-backlog: bandeja con documentos apilados y una flecha de
+         entrada. Lee "cola que espera clasificacion", NO "alarma".
+         Deliberadamente sin signos de exclamacion ni triangulos: la forma
+         tiene que contradecir la urgencia, no solo el color. -->
+    <symbol id="ic-triage-backlog" viewBox="0 0 24 24">
+      <path d="M3.2 14.2 H8 L9.4 16.6 H14.6 L16 14.2 H20.8"
+            fill="none" stroke="currentColor" stroke-width="1.7"
+            stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M3.2 14.2 V18.6 C3.2 19.5 3.9 20.2 4.8 20.2 H19.2
+               C20.1 20.2 20.8 19.5 20.8 18.6 V14.2"
+            fill="none" stroke="currentColor" stroke-width="1.7"
+            stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M7.4 10.6 H16.6" fill="none" stroke="currentColor"
+            stroke-width="1.4" stroke-linecap="round" opacity="0.55"/>
+      <path d="M9 7.2 H15" fill="none" stroke="currentColor"
+            stroke-width="1.4" stroke-linecap="round" opacity="0.35"/>
+    </symbol>
+
+    <!-- ic-estado-needs-human — replica exacta de sprite.svg:182. No se toca. -->
+    <symbol id="ic-estado-needs-human" viewBox="0 0 24 24">
+      <circle cx="10" cy="7" r="3.2" fill="none" stroke="currentColor" stroke-width="1.75"/>
+      <path d="M3.5 20 C3.5 16.4 6.4 13.5 10 13.5 C11.2 13.5 12.3 13.8 13.3 14.3"
+            fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/>
+      <circle cx="18" cy="15" r="4.5" fill="none" stroke="currentColor" stroke-width="1.5"/>
+      <path d="M16.5 13.5 C16.5 12.5 17.2 12 18 12 C18.9 12 19.5 12.6 19.5 13.4
+               C19.5 14.2 18.8 14.5 18.5 15 C18.2 15.4 18 15.8 18 16.3"
+            fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+      <circle cx="18" cy="18" r="0.5" fill="currentColor"/>
+    </symbol>
+
+    <!-- ic-info-transition: reloj + flecha. Marca el banner de una sola vez. -->
+    <symbol id="ic-info-transition" viewBox="0 0 24 24">
+      <circle cx="12" cy="12" r="8.6" fill="none" stroke="currentColor" stroke-width="1.7"/>
+      <path d="M12 7.4 V12 L15.2 13.8" fill="none" stroke="currentColor"
+            stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+    </symbol>
+
+    <!-- ================= GRADIENTES (replican los del dashboard) =========== -->
+
+    <linearGradient id="gradKpiDanger" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%"  stop-color="#B60205" stop-opacity="0.18"/>
+      <stop offset="60%" stop-color="#161B22" stop-opacity="1"/>
+    </linearGradient>
+    <linearGradient id="gradKpiTriage" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%"  stop-color="#BC8CFF" stop-opacity="0.14"/>
+      <stop offset="60%" stop-color="#161B22" stop-opacity="1"/>
+    </linearGradient>
+    <linearGradient id="gradKpiMuted" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%"  stop-color="#58A6FF" stop-opacity="0.07"/>
+      <stop offset="60%" stop-color="#161B22" stop-opacity="1"/>
+    </linearGradient>
+    <linearGradient id="gradPanelDanger" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%"   stop-color="#B60205" stop-opacity="0.18"/>
+      <stop offset="100%" stop-color="#B60205" stop-opacity="0.06"/>
+    </linearGradient>
+    <linearGradient id="gradPanelTriage" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%"   stop-color="#BC8CFF" stop-opacity="0.10"/>
+      <stop offset="100%" stop-color="#BC8CFF" stop-opacity="0.03"/>
+    </linearGradient>
+  </defs>
+
+  <!-- ===================== FONDO ========================================== -->
+  <rect width="1440" height="2240" fill="#0D1117"/>
+
+  <!-- ===================== HEADER ======================================== -->
+  <text x="40" y="52" fill="#E6EDF3" font-size="27" font-weight="700">
+    Bloqueo real vs. triaje de backlog — separacion de <tspan font-family="'Cascadia Code', Consolas, monospace" fill="#F85149">needs-human</tspan>
+  </text>
+  <text x="40" y="79" fill="#8B949E" font-size="14">
+    Mockup 48 · issue #5678 · el label se separa en el backend, pero la senal se lee (o se pierde) en el dashboard
+  </text>
+  <rect x="1188" y="30" width="212" height="30" rx="15" fill="#BC8CFF" fill-opacity="0.12" stroke="#8957E5"/>
+  <text x="1294" y="50" fill="#BC8CFF" font-size="12.5" font-weight="600" text-anchor="middle">
+    UX · fase criterios
+  </text>
+  <rect x="40" y="94" width="1360" height="1" fill="#21262D"/>
+
+  <!-- =====================================================================
+       SECCION A — El KPI cambia de escala de golpe
+       ===================================================================== -->
+  <text x="40" y="134" fill="#E6EDF3" font-size="18.5" font-weight="700">
+    A · La lectura del operador cae de 936 a 13 en un ciclo
+  </text>
+  <text x="40" y="157" fill="#B1BAC4" font-size="13.5">
+    Sin explicacion en pantalla, una caida del 98,6% se lee como dashboard roto. El banner de transicion es parte del entregable, no un extra.
+  </text>
+
+  <!-- &#183; A1: HOY -->
+  <text x="40" y="192" fill="#8B949E" font-size="12" font-weight="700" letter-spacing="1.2">HOY</text>
+
+  <g transform="translate(40,204)">
+    <rect width="300" height="98" rx="8" fill="url(#gradKpiDanger)" stroke="#B60205" stroke-opacity="0.55"/>
+    <text x="16" y="26" fill="#8B949E" font-size="11" font-weight="700" letter-spacing="0.9">
+      <tspan fill="#F85149">&#9888;</tspan> NECESITAN HUMANO
+    </text>
+    <text x="16" y="68" fill="#F85149" font-size="38" font-weight="700" font-variant-numeric="tabular-nums">936</text>
+    <text x="16" y="88" fill="#8B949E" font-size="11.5">click para colapsar/expandir</text>
+    <use href="#ic-estado-needs-human" x="252" y="20" width="32" height="32" color="#B60205" opacity="0.5"/>
+  </g>
+
+  <!-- anotacion del problema -->
+  <g transform="translate(364,204)">
+    <path d="M0 49 H24" stroke="#8B949E" stroke-width="1.4" stroke-dasharray="3 3"/>
+    <rect x="24" y="6" width="530" height="86" rx="7" fill="#161B22" stroke="#30363D"/>
+    <text x="40" y="30" fill="#E6EDF3" font-size="13" font-weight="600">El numero no distingue dos cosas opuestas</text>
+    <text x="40" y="52" fill="#B1BAC4" font-size="12.5">
+      <tspan font-family="'Cascadia Code', Consolas, monospace" fill="#BC8CFF">924</tspan> recomendaciones de backlog (98,6%)  ·  <tspan font-family="'Cascadia Code', Consolas, monospace" fill="#F85149">13</tspan> bloqueos reales de la ola
+    </text>
+    <text x="40" y="73" fill="#8B949E" font-size="12">
+      La senal urgente nace ahogada: el operador deja de mirar el KPI porque nunca baja.
+    </text>
+  </g>
+
+  <!-- &#183; A2: DESPUES -->
+  <text x="40" y="342" fill="#8B949E" font-size="12" font-weight="700" letter-spacing="1.2">DESPUES DE #5678</text>
+
+  <g transform="translate(40,354)">
+    <rect width="300" height="98" rx="8" fill="url(#gradKpiDanger)" stroke="#B60205" stroke-opacity="0.55"/>
+    <text x="16" y="26" fill="#8B949E" font-size="11" font-weight="700" letter-spacing="0.9">
+      <tspan fill="#F85149">&#9888;</tspan> NECESITAN HUMANO
+    </text>
+    <text x="16" y="68" fill="#F85149" font-size="38" font-weight="700" font-variant-numeric="tabular-nums">13</text>
+    <text x="16" y="88" fill="#8B949E" font-size="11.5">bloquean la ola activa</text>
+    <use href="#ic-estado-needs-human" x="252" y="20" width="32" height="32" color="#B60205" opacity="0.5"/>
+  </g>
+
+  <g transform="translate(356,354)">
+    <rect width="300" height="98" rx="8" fill="url(#gradKpiTriage)" stroke="#8957E5" stroke-opacity="0.6"/>
+    <text x="16" y="26" fill="#8B949E" font-size="11" font-weight="700" letter-spacing="0.9">TRIAJE DE BACKLOG</text>
+    <text x="16" y="68" fill="#BC8CFF" font-size="38" font-weight="700" font-variant-numeric="tabular-nums">924</text>
+    <text x="16" y="88" fill="#8B949E" font-size="11.5">no frenan ninguna ola</text>
+    <use href="#ic-triage-backlog" x="252" y="20" width="32" height="32" color="#BC8CFF" opacity="0.55"/>
+  </g>
+
+  <g transform="translate(680,354)">
+    <path d="M0 49 H24" stroke="#8B949E" stroke-width="1.4" stroke-dasharray="3 3"/>
+    <rect x="24" y="6" width="656" height="86" rx="7" fill="#161B22" stroke="#30363D"/>
+    <text x="40" y="30" fill="#E6EDF3" font-size="13" font-weight="600">Dos KPI, dos urgencias, dos destinos de click</text>
+    <text x="40" y="52" fill="#B1BAC4" font-size="12.5">
+      Rojo abre el panel de incidentes. Violeta abre la vista de triaje. Ningun click lleva al otro lado.
+    </text>
+    <text x="40" y="73" fill="#8B949E" font-size="12">
+      El KPI de triaje NO pulsa, NO usa rojo y NO dispara notificacion a Telegram. Es un contador, no una alarma.
+    </text>
+  </g>
+
+  <!-- &#183; Banner de transicion -->
+  <g transform="translate(40,474)">
+    <rect width="1360" height="66" rx="8" fill="#58A6FF" fill-opacity="0.09" stroke="#1F6FEB" stroke-opacity="0.7"/>
+    <use href="#ic-info-transition" x="18" y="21" width="24" height="24" color="#58A6FF"/>
+    <text x="54" y="29" fill="#E6EDF3" font-size="13.5" font-weight="600">
+      La caida de 936 a 13 es el efecto esperado de #5678 — el dashboard no perdio datos
+    </text>
+    <text x="54" y="50" fill="#B1BAC4" font-size="12.5">
+      923 recomendaciones se movieron a <tspan font-family="'Cascadia Code', Consolas, monospace" fill="#BC8CFF">Triaje de backlog</tspan>. Los bloqueos reales siguen intactos y verificados por lista (SEC-5).
+      <tspan fill="#8B949E">  ·  Se muestra una sola vez y es descartable.</tspan>
+    </text>
+    <rect x="1252" y="20" width="88" height="26" rx="5" fill="#1C2128" stroke="#30363D"/>
+    <text x="1296" y="37" fill="#B1BAC4" font-size="12" text-anchor="middle">Entendido</text>
+  </g>
+
+  <!-- =====================================================================
+       SECCION B — Panel de bloqueos reales (sobrevive sin cambios de piel)
+       ===================================================================== -->
+  <text x="40" y="600" fill="#E6EDF3" font-size="18.5" font-weight="700">
+    B · Panel de bloqueos reales — misma piel de alarma, ahora con senal real adentro
+  </text>
+  <text x="40" y="623" fill="#B1BAC4" font-size="13.5">
+    No se redisena: el rojo #B60205, el pulso y el badge ya estaban bien calibrados. Lo que cambia es que 13 filas caben en pantalla y 936 no cabian.
+  </text>
+
+  <g transform="translate(40,644)">
+    <rect width="1360" height="242" rx="8" fill="url(#gradPanelDanger)" stroke="#B60205" stroke-width="2"/>
+    <rect width="6" height="242" rx="3" fill="#B60205"/>
+
+    <!-- header -->
+    <circle cx="34" cy="34" r="7" fill="#B60205"/>
+    <circle cx="34" cy="34" r="11" fill="none" stroke="#B60205" stroke-opacity="0.45" stroke-width="2"/>
+    <text x="54" y="40" fill="#FFFFFF" font-size="16.5" font-weight="700">Necesitan intervencion humana</text>
+    <rect x="322" y="24" width="106" height="22" rx="11" fill="#B60205"/>
+    <text x="375" y="39" fill="#FFFFFF" font-size="11" font-weight="700" letter-spacing="0.5" text-anchor="middle">13 INCIDENTES</text>
+    <text x="1318" y="40" fill="#8B949E" font-size="13">&#9662;</text>
+
+    <!-- fila 1 -->
+    <rect x="20" y="60" width="1320" height="76" rx="5" fill="#000000" fill-opacity="0.18"/>
+    <rect x="20" y="60" width="3" height="76" fill="#B60205" fill-opacity="0.7"/>
+    <text x="38" y="82" fill="#E6EDF3" font-size="13.5" font-weight="600">
+      #5641 <tspan fill="#B1BAC4" font-weight="400">Reconciliar el estado de la ola tras un respawn del Pulpo</tspan>
+    </text>
+    <text x="52" y="103" fill="#FFB3B3" font-size="12.5">Circuit breaker agotado — 3 rebotes en fase build</text>
+    <text x="52" y="123" fill="#E8EDF5" font-size="12" opacity="0.92">
+      El agente reintento tres veces con el mismo error de compilacion; el pipeline no puede decidir solo.
+    </text>
+    <text x="1180" y="82" fill="#FF6B6B" font-size="12" font-weight="700" text-anchor="end">hace 2 d</text>
+    <rect x="1198" y="68" width="60" height="24" rx="4" fill="#1a1f2e" stroke="#2a3560"/>
+    <text x="1228" y="84" fill="#E0E6ED" font-size="11.5" text-anchor="middle">Destrabar</text>
+    <rect x="1266" y="68" width="58" height="24" rx="4" fill="#1a1f2e" stroke="#2a3560"/>
+    <text x="1295" y="84" fill="#E0E6ED" font-size="11.5" text-anchor="middle">Ver issue</text>
+
+    <!-- fila 2 -->
+    <rect x="20" y="146" width="1320" height="76" rx="5" fill="#000000" fill-opacity="0.18"/>
+    <rect x="20" y="146" width="3" height="76" fill="#B60205" fill-opacity="0.7"/>
+    <text x="38" y="168" fill="#E6EDF3" font-size="13.5" font-weight="600">
+      #5652 <tspan fill="#B1BAC4" font-weight="400">Rebote cross-phase sin destino valido en el pipeline de definicion</tspan>
+    </text>
+    <text x="52" y="189" fill="#FFB3B3" font-size="12.5">Escalado por deliverable-gate — falta entregable de la fase anterior</text>
+    <text x="52" y="209" fill="#E8EDF5" font-size="12" opacity="0.92">
+      La fase destino declarada no es upstream; el pulpo no puede rutear el rebote sin decision humana.
+    </text>
+    <text x="1180" y="168" fill="#D29922" font-size="12" font-weight="700" text-anchor="end">hace 4 h</text>
+    <rect x="1198" y="154" width="60" height="24" rx="4" fill="#1a1f2e" stroke="#2a3560"/>
+    <text x="1228" y="170" fill="#E0E6ED" font-size="11.5" text-anchor="middle">Destrabar</text>
+    <rect x="1266" y="154" width="58" height="24" rx="4" fill="#1a1f2e" stroke="#2a3560"/>
+    <text x="1295" y="170" fill="#E0E6ED" font-size="11.5" text-anchor="middle">Ver issue</text>
+  </g>
+
+  <!-- regla -->
+  <g transform="translate(40,900)">
+    <rect width="1360" height="40" rx="6" fill="#161B22" stroke="#30363D"/>
+    <text x="16" y="25" fill="#B1BAC4" font-size="12.5">
+      <tspan fill="#3FB950" font-weight="700">Regla:</tspan> este panel se alimenta EXCLUSIVAMENTE de
+      <tspan font-family="'Cascadia Code', Consolas, monospace" fill="#E6EDF3">isRecommendationIssue()</tspan> negado. Ninguna fila puede tener
+      <tspan font-family="'Cascadia Code', Consolas, monospace" fill="#BC8CFF">tipo:recomendacion</tspan> ni
+      <tspan font-family="'Cascadia Code', Consolas, monospace" fill="#BC8CFF">source:recommendation</tspan>. Si aparece una, es bug de gate, no de UI.
+    </text>
+  </g>
+
+  <!-- =====================================================================
+       SECCION C — Vista de triaje de backlog
+       ===================================================================== -->
+  <text x="40" y="994" fill="#E6EDF3" font-size="18.5" font-weight="700">
+    C · Vista de triaje de backlog — jerarquia propia, deliberadamente no-urgente
+  </text>
+  <text x="40" y="1017" fill="#B1BAC4" font-size="13.5">
+    Si hereda la piel de la alarma, el ruido se muda de panel en vez de desaparecer. Violeta, sin pulso, sin badge de incidente, colapsada por defecto.
+  </text>
+
+  <g transform="translate(40,1038)">
+    <rect width="1360" height="386" rx="8" fill="url(#gradPanelTriage)" stroke="#8957E5" stroke-opacity="0.55"/>
+    <rect width="4" height="386" rx="2" fill="#8957E5" fill-opacity="0.8"/>
+
+    <!-- header -->
+    <use href="#ic-triage-backlog" x="20" y="20" width="24" height="24" color="#BC8CFF"/>
+    <text x="54" y="38" fill="#E6EDF3" font-size="16" font-weight="700">Triaje de backlog</text>
+    <rect x="212" y="22" width="52" height="21" rx="10.5" fill="#BC8CFF" fill-opacity="0.16" stroke="#8957E5"/>
+    <text x="238" y="37" fill="#BC8CFF" font-size="11.5" font-weight="700" text-anchor="middle">924</text>
+    <text x="278" y="38" fill="#8B949E" font-size="12">· ultima sync: 07/08 10:42</text>
+    <text x="1318" y="38" fill="#8B949E" font-size="13">&#9662;</text>
+
+    <!-- BANNER DE TRUNCAMIENTO — el fix de recommendations.js:139 -->
+    <rect x="20" y="58" width="1320" height="42" rx="6" fill="#D29922" fill-opacity="0.10" stroke="#9E6A03"/>
+    <text x="36" y="75" fill="#E6EDF3" font-size="12.5" font-weight="600">
+      Mostrando 200 de 924 — la lista esta truncada
+    </text>
+    <text x="36" y="92" fill="#B1BAC4" font-size="12">
+      Ordenadas por mas recientes. Para ver el resto, filtra por agente o abri la busqueda completa en GitHub.
+    </text>
+    <rect x="1160" y="68" width="164" height="24" rx="4" fill="#1C2128" stroke="#30363D"/>
+    <text x="1242" y="84" fill="#B1BAC4" font-size="11.5" text-anchor="middle">Abrir en GitHub &#8599;</text>
+
+    <!-- filtros -->
+    <text x="20" y="130" fill="#8B949E" font-size="11.5" font-weight="700" letter-spacing="0.8">FILTRAR POR AGENTE</text>
+    <g font-size="11.5" font-weight="600">
+      <rect x="176" y="117" width="58" height="22" rx="11" fill="#BC8CFF" fill-opacity="0.18" stroke="#8957E5"/>
+      <text x="205" y="132" fill="#BC8CFF" text-anchor="middle">todos</text>
+      <rect x="242" y="117" width="58" height="22" rx="11" fill="#1C2128" stroke="#30363D"/>
+      <text x="271" y="132" fill="#B1BAC4" text-anchor="middle">guru</text>
+      <rect x="308" y="117" width="74" height="22" rx="11" fill="#1C2128" stroke="#30363D"/>
+      <text x="345" y="132" fill="#B1BAC4" text-anchor="middle">security</text>
+      <rect x="390" y="117" width="46" height="22" rx="11" fill="#1C2128" stroke="#30363D"/>
+      <text x="413" y="132" fill="#B1BAC4" text-anchor="middle">po</text>
+      <rect x="444" y="117" width="46" height="22" rx="11" fill="#1C2128" stroke="#30363D"/>
+      <text x="467" y="132" fill="#B1BAC4" text-anchor="middle">ux</text>
+      <rect x="498" y="117" width="62" height="22" rx="11" fill="#1C2128" stroke="#30363D"/>
+      <text x="529" y="132" fill="#B1BAC4" text-anchor="middle">review</text>
+    </g>
+
+    <!-- tabla: header -->
+    <rect x="20" y="152" width="1320" height="1" fill="#21262D"/>
+    <g fill="#8B949E" font-size="11" font-weight="700" letter-spacing="0.7">
+      <text x="34"   y="172">ISSUE</text>
+      <text x="112"  y="172">AGENTE</text>
+      <text x="216"  y="172">TITULO</text>
+      <text x="880"  y="172">ORIGEN</text>
+      <text x="990"  y="172">CREADO</text>
+      <text x="1120" y="172">ACCIONES</text>
+    </g>
+    <rect x="20" y="182" width="1320" height="1" fill="#21262D"/>
+
+    <!-- fila 1 -->
+    <text x="34" y="210" fill="#58A6FF" font-size="13" font-family="'Cascadia Code', Consolas, monospace">#5680</text>
+    <rect x="112" y="196" width="52" height="20" rx="4" fill="#2DD4BF" fill-opacity="0.16" stroke="#0D9488"/>
+    <text x="138" y="210" fill="#2DD4BF" font-size="11" font-weight="700" text-anchor="middle">guru</text>
+    <text x="216" y="210" fill="#B1BAC4" font-size="12.5">Dejar de aplicar needs-definition a los issues de recomendacion de agente</text>
+    <text x="880" y="210" fill="#8B949E" font-size="12">desde #5678</text>
+    <text x="990" y="210" fill="#8B949E" font-size="12">07/08 09:45</text>
+    <rect x="1120" y="196" width="72" height="22" rx="4" fill="#196C2E" fill-opacity="0.35" stroke="#196C2E"/>
+    <text x="1156" y="211" fill="#3FB950" font-size="11" font-weight="600" text-anchor="middle">Aprobar</text>
+    <rect x="1200" y="196" width="76" height="22" rx="4" fill="#1C2128" stroke="#30363D"/>
+    <text x="1238" y="211" fill="#B1BAC4" font-size="11" font-weight="600" text-anchor="middle">Rechazar</text>
+    <rect x="20" y="228" width="1320" height="1" fill="#21262D"/>
+
+    <!-- fila 2 -->
+    <text x="34" y="256" fill="#58A6FF" font-size="13" font-family="'Cascadia Code', Consolas, monospace">#5682</text>
+    <rect x="112" y="242" width="74" height="20" rx="4" fill="#F85149" fill-opacity="0.14" stroke="#8B1A14"/>
+    <text x="149" y="256" fill="#F85149" font-size="11" font-weight="700" text-anchor="middle">security</text>
+    <text x="216" y="256" fill="#B1BAC4" font-size="12.5">Validar origen y proteger labels de gate en el canal de mutacion por filesystem</text>
+    <text x="880" y="256" fill="#8B949E" font-size="12">desde #5678</text>
+    <text x="990" y="256" fill="#8B949E" font-size="12">07/08 10:22</text>
+    <rect x="1120" y="242" width="72" height="22" rx="4" fill="#196C2E" fill-opacity="0.35" stroke="#196C2E"/>
+    <text x="1156" y="257" fill="#3FB950" font-size="11" font-weight="600" text-anchor="middle">Aprobar</text>
+    <rect x="1200" y="242" width="76" height="22" rx="4" fill="#1C2128" stroke="#30363D"/>
+    <text x="1238" y="257" fill="#B1BAC4" font-size="11" font-weight="600" text-anchor="middle">Rechazar</text>
+    <rect x="20" y="274" width="1320" height="1" fill="#21262D"/>
+
+    <!-- fila 3 -->
+    <text x="34" y="302" fill="#58A6FF" font-size="13" font-family="'Cascadia Code', Consolas, monospace">#5671</text>
+    <rect x="112" y="288" width="52" height="20" rx="4" fill="#BC8CFF" fill-opacity="0.16" stroke="#8957E5"/>
+    <text x="138" y="302" fill="#BC8CFF" font-size="11" font-weight="700" text-anchor="middle">ux</text>
+    <text x="216" y="302" fill="#B1BAC4" font-size="12.5">Unificar la iconografia de estado del dashboard bajo el sprite propio</text>
+    <text x="880" y="302" fill="#8B949E" font-size="12">desde #5646</text>
+    <text x="990" y="302" fill="#8B949E" font-size="12">06/08 14:40</text>
+    <rect x="1120" y="288" width="72" height="22" rx="4" fill="#196C2E" fill-opacity="0.35" stroke="#196C2E"/>
+    <text x="1156" y="303" fill="#3FB950" font-size="11" font-weight="600" text-anchor="middle">Aprobar</text>
+    <rect x="1200" y="288" width="76" height="22" rx="4" fill="#1C2128" stroke="#30363D"/>
+    <text x="1238" y="303" fill="#B1BAC4" font-size="11" font-weight="600" text-anchor="middle">Rechazar</text>
+    <rect x="20" y="320" width="1320" height="1" fill="#21262D"/>
+
+    <!-- nota al pie -->
+    <text x="34" y="350" fill="#8B949E" font-size="12">
+      Aprobar agrega <tspan font-family="'Cascadia Code', Consolas, monospace" fill="#3FB950">recommendation:approved</tspan>
+      y quita <tspan font-family="'Cascadia Code', Consolas, monospace" fill="#BC8CFF">needs:triage-backlog</tspan> — la fila sale de esta vista y el issue entra al pipeline en el proximo ciclo.
+    </text>
+    <text x="34" y="370" fill="#8B949E" font-size="12">
+      Ninguna accion de esta vista escribe ni borra <tspan font-family="'Cascadia Code', Consolas, monospace" fill="#F85149">needs-human</tspan>. El gate humano no se toca desde aca (SEC-4).
+    </text>
+  </g>
+
+  <!-- =====================================================================
+       SECCION D — Empty states y copy
+       ===================================================================== -->
+  <text x="40" y="1478" fill="#E6EDF3" font-size="18.5" font-weight="700">
+    D · Copy — el texto vigente le miente al operador desde el dia de la migracion
+  </text>
+  <text x="40" y="1501" fill="#B1BAC4" font-size="13.5">
+    <tspan font-family="'Cascadia Code', Consolas, monospace" fill="#E6EDF3">dashboard.js:2462</tspan> describe hoy el label que #5678 elimina. Es una linea, y es la unica documentacion que el operador lee en pantalla.
+  </text>
+
+  <!-- antes -->
+  <g transform="translate(40,1522)">
+    <rect width="668" height="130" rx="8" fill="#161B22" stroke="#8B1A14"/>
+    <rect x="14" y="14" width="66" height="20" rx="4" fill="#F85149" fill-opacity="0.16" stroke="#8B1A14"/>
+    <text x="47" y="28" fill="#F85149" font-size="11" font-weight="700" text-anchor="middle">ANTES</text>
+    <text x="94" y="28" fill="#8B949E" font-size="11.5" font-family="'Cascadia Code', Consolas, monospace">dashboard.js:2462 — empty state</text>
+    <text x="14" y="58" fill="#B1BAC4" font-size="12.5">Sin recomendaciones pendientes. Los agentes guru/security/po/ux/</text>
+    <text x="14" y="78" fill="#B1BAC4" font-size="12.5">review crean issues con label <tspan font-family="'Cascadia Code', Consolas, monospace" fill="#BC8CFF">tipo:recomendacion</tspan> +</text>
+    <text x="14" y="98" fill="#B1BAC4" font-size="12.5"><tspan font-family="'Cascadia Code', Consolas, monospace" fill="#F85149" text-decoration="line-through">needs-human</tspan> que aparecen aca hasta que las apruebes o rechaces.</text>
+    <text x="14" y="120" fill="#F85149" font-size="11.5" font-weight="600">
+      &#9888; Post-migracion ninguna recomendacion tiene ese label. El texto queda falso.
+    </text>
+  </g>
+
+  <!-- despues -->
+  <g transform="translate(732,1522)">
+    <rect width="668" height="130" rx="8" fill="#161B22" stroke="#196C2E"/>
+    <rect x="14" y="14" width="76" height="20" rx="4" fill="#3FB950" fill-opacity="0.16" stroke="#196C2E"/>
+    <text x="52" y="28" fill="#3FB950" font-size="11" font-weight="700" text-anchor="middle">DESPUES</text>
+    <text x="104" y="28" fill="#8B949E" font-size="11.5" font-family="'Cascadia Code', Consolas, monospace">copy propuesto</text>
+    <text x="14" y="58" fill="#B1BAC4" font-size="12.5">Nada para triar. Los agentes guru/security/po/ux/review dejan aca las</text>
+    <text x="14" y="78" fill="#B1BAC4" font-size="12.5">mejoras que detectan mientras trabajan en otros issues, con label</text>
+    <text x="14" y="98" fill="#B1BAC4" font-size="12.5"><tspan font-family="'Cascadia Code', Consolas, monospace" fill="#BC8CFF">tipo:recomendacion</tspan> + <tspan font-family="'Cascadia Code', Consolas, monospace" fill="#BC8CFF">needs:triage-backlog</tspan>. No frenan ninguna ola.</text>
+    <text x="14" y="120" fill="#3FB950" font-size="11.5" font-weight="600">
+      &#10003; Nombra el label vigente y aclara explicitamente que no bloquea.
+    </text>
+  </g>
+
+  <!-- =====================================================================
+       SECCION E — Chips de label
+       ===================================================================== -->
+  <text x="40" y="1706" fill="#E6EDF3" font-size="18.5" font-weight="700">
+    E · Chips de label — separables sin depender del color
+  </text>
+  <text x="40" y="1729" fill="#B1BAC4" font-size="13.5">
+    Con deuteranopia, #B60205 y #BC8CFF se acercan. La forma del icono y el texto del chip son los que cargan la distincion; el color solo la refuerza.
+  </text>
+
+  <g transform="translate(40,1750)">
+    <rect width="668" height="112" rx="8" fill="#161B22" stroke="#30363D"/>
+    <rect x="20" y="22" width="4" height="68" rx="2" fill="#B60205"/>
+    <use href="#ic-estado-needs-human" x="38" y="28" width="26" height="26" color="#F85149"/>
+    <text x="76" y="40" fill="#E6EDF3" font-size="14.5" font-weight="700" font-family="'Cascadia Code', Consolas, monospace">needs-human</text>
+    <rect x="230" y="26" width="72" height="20" rx="4" fill="#B60205"/>
+    <text x="266" y="40" fill="#FFFFFF" font-size="10.5" font-weight="700" text-anchor="middle">#B60205</text>
+    <text x="38" y="66" fill="#B1BAC4" font-size="12.5">Bloqueo real de la ola activa. Hay una fase frenada atras.</text>
+    <text x="38" y="85" fill="#8B949E" font-size="12">Notifica al operador · aparece en el panel rojo · lo aplica el pipeline (6 escaladas fail-closed)</text>
+  </g>
+
+  <g transform="translate(732,1750)">
+    <rect width="668" height="112" rx="8" fill="#161B22" stroke="#30363D"/>
+    <rect x="20" y="22" width="4" height="68" rx="2" fill="#8957E5"/>
+    <use href="#ic-triage-backlog" x="38" y="28" width="26" height="26" color="#BC8CFF"/>
+    <text x="76" y="40" fill="#E6EDF3" font-size="14.5" font-weight="700" font-family="'Cascadia Code', Consolas, monospace">needs:triage-backlog</text>
+    <rect x="308" y="26" width="72" height="20" rx="4" fill="#8957E5"/>
+    <text x="344" y="40" fill="#FFFFFF" font-size="10.5" font-weight="700" text-anchor="middle">#BC8CFF</text>
+    <text x="38" y="66" fill="#B1BAC4" font-size="12.5">Backlog proactivo. Si nadie interviene, no pasa nada.</text>
+    <text x="38" y="85" fill="#8B949E" font-size="12">No notifica · aparece en la vista violeta · lo aplican los 5 roles al crear la recomendacion</text>
+  </g>
+
+  <!-- =====================================================================
+       SECCION F — Reglas, contrastes y mapa de CAs
+       ===================================================================== -->
+  <text x="40" y="1916" fill="#E6EDF3" font-size="18.5" font-weight="700">
+    F · Reglas de aplicacion, contraste y mapa de criterios
+  </text>
+
+  <!-- contrastes -->
+  <g transform="translate(40,1936)">
+    <rect width="668" height="184" rx="8" fill="#161B22" stroke="#30363D"/>
+    <text x="18" y="26" fill="#E6EDF3" font-size="13.5" font-weight="700">Contraste sobre superficies del dashboard (WCAG AA)</text>
+    <g font-size="12">
+      <text x="18"  y="52" fill="#B1BAC4">#BC8CFF sobre #161B22 (texto/valor KPI)</text>
+      <text x="560" y="52" fill="#3FB950" font-weight="700">8,1:1  AA</text>
+      <text x="18"  y="74" fill="#B1BAC4">#F85149 sobre #161B22 (valor KPI rojo)</text>
+      <text x="560" y="74" fill="#3FB950" font-weight="700">5,4:1  AA</text>
+      <text x="18"  y="96" fill="#B1BAC4">#E6EDF3 sobre #161B22 (titulos)</text>
+      <text x="560" y="96" fill="#3FB950" font-weight="700">13,9:1 AAA</text>
+      <text x="18"  y="118" fill="#B1BAC4">#B1BAC4 sobre #161B22 (cuerpo)</text>
+      <text x="560" y="118" fill="#3FB950" font-weight="700">8,6:1  AA</text>
+      <text x="18"  y="140" fill="#B1BAC4">#8B949E sobre #161B22 (meta/timestamps)</text>
+      <text x="560" y="140" fill="#D29922" font-weight="700">4,7:1  AA*</text>
+    </g>
+    <text x="18" y="166" fill="#8B949E" font-size="11.5">
+      * solo para texto secundario &#8805;12px. Prohibido usarlo para el unico rotulo de un estado.
+    </text>
+  </g>
+
+  <!-- reglas duras -->
+  <g transform="translate(732,1936)">
+    <rect width="668" height="184" rx="8" fill="#161B22" stroke="#30363D"/>
+    <text x="18" y="26" fill="#E6EDF3" font-size="13.5" font-weight="700">Reglas duras de la separacion visual</text>
+    <g font-size="12">
+      <text x="18" y="52" fill="#B1BAC4"><tspan fill="#F85149" font-weight="700">1.</tspan> La vista de triaje nunca usa #B60205, pulso ni badge "INCIDENTE".</text>
+      <text x="18" y="74" fill="#B1BAC4"><tspan fill="#F85149" font-weight="700">2.</tspan> El KPI de triaje nunca dispara notificacion de Telegram.</text>
+      <text x="18" y="96" fill="#B1BAC4"><tspan fill="#F85149" font-weight="700">3.</tspan> Todo estado se codifica con icono + texto, no solo con color.</text>
+      <text x="18" y="118" fill="#B1BAC4"><tspan fill="#F85149" font-weight="700">4.</tspan> Toda lista truncada declara "mostrando N de M" en pantalla.</text>
+      <text x="18" y="140" fill="#B1BAC4"><tspan fill="#F85149" font-weight="700">5.</tspan> Ninguna accion de la vista de triaje escribe o borra needs-human.</text>
+      <text x="18" y="162" fill="#B1BAC4"><tspan fill="#F85149" font-weight="700">6.</tspan> El copy nombra el label vigente; se actualiza en el mismo commit.</text>
+    </g>
+  </g>
+
+  <!-- mapa de CAs UX -->
+  <g transform="translate(40,2140)">
+    <rect width="1360" height="76" rx="8" fill="#161B22" stroke="#30363D"/>
+    <text x="18" y="24" fill="#E6EDF3" font-size="12.5" font-weight="700">
+      Mapa de criterios UX de este mockup
+    </text>
+    <g font-size="11.5" fill="#B1BAC4">
+      <text x="18" y="46">
+        <tspan fill="#BC8CFF" font-weight="700">UX-1</tspan> banner de transicion  ·
+        <tspan fill="#BC8CFF" font-weight="700">UX-2</tspan> KPI de triaje separado y no-alarma  ·
+        <tspan fill="#BC8CFF" font-weight="700">UX-3</tspan> panel de bloqueos sin recomendaciones  ·
+        <tspan fill="#BC8CFF" font-weight="700">UX-4</tspan> vista de triaje con piel propia
+      </text>
+      <text x="18" y="66">
+        <tspan fill="#BC8CFF" font-weight="700">UX-5</tspan> truncamiento declarado en pantalla  ·
+        <tspan fill="#BC8CFF" font-weight="700">UX-6</tspan> copy que nombra el label vigente  ·
+        <tspan fill="#BC8CFF" font-weight="700">UX-7</tspan> chip + color de label registrado en LABEL_COLORS
+      </text>
+    </g>
+  </g>
+</svg>

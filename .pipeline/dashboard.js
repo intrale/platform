@@ -2636,6 +2636,14 @@ function renderInfraHealth(state) {
 </section>`;
 }
 
+// #5691 (E2/E3) — banners de la vista de recomendaciones. El render vive en
+// `lib/reco-banners.js` para ser testeable con `node --test` sin levantar el
+// servidor; ahí también está documentado por qué el banner de transición va acá
+// y NO sobre el KPI `kpi-needs-human` (ese KPI lee markers del filesystem, no el
+// label de GitHub, así que la migración de #5678 no lo mueve).
+let recoBanners = null;
+try { recoBanners = require('./lib/reco-banners'); } catch { /* opcional */ }
+
 // --- Recomendaciones de agentes (issue #2653) ---
 function renderRecommendationsSection() {
   if (!recommendationsLib) return '';
@@ -2648,9 +2656,16 @@ function renderRecommendationsSection() {
     ? new Date(cache.updatedAt).toLocaleString('es-AR', { timeZone: 'America/Argentina/Buenos_Aires' })
     : 'nunca';
   const errorTxt = cache.error ? `<div class="reco-err">⚠ ${escapeHtml(cache.error)}</div>` : '';
+  // #5691 E2 — banner de transición del modelo de labels de #5678 (descartable,
+  // una sola vez). #5691 E3 — banner ámbar de truncamiento, con el total
+  // computado en runtime (`cache.totalAbiertas`), nunca una constante.
+  const transicion = recoBanners ? recoBanners.renderTransitionBanner() : '';
+  const truncado = recoBanners
+    ? recoBanners.renderTruncationBanner({ mostrando: items.length, total: cache.totalAbiertas })
+    : '';
   const summary = `<summary>💡 Recomendaciones pendientes <span class="reco-count" data-count="${items.length}">${items.length}</span> <span class="reco-meta">· última sync: ${updatedAtTxt}</span></summary>`;
   if (items.length === 0) {
-    return `<details class="collapse-section reco-section">${summary}<div class="collapse-body">${errorTxt}<p class="dim" style="margin:6px 0">Sin recomendaciones pendientes. Los agentes guru/security/po/ux/review crean issues con label <code>tipo:recomendacion</code> + <code>needs:triage-backlog</code> que aparecen acá hasta que las apruebes o rechaces.</p><div style="margin-top:8px"><button class="reco-btn" onclick="recoRefresh()">🔄 Refrescar desde GitHub</button></div></div></details>`;
+    return `<details class="collapse-section reco-section">${summary}<div class="collapse-body">${errorTxt}${transicion}<p class="dim" style="margin:6px 0">Sin recomendaciones pendientes. Los agentes guru/security/po/ux/review crean issues con label <code>tipo:recomendacion</code> + <code>needs:triage-backlog</code> que aparecen acá hasta que las apruebes o rechaces.</p><div style="margin-top:8px"><button class="reco-btn" onclick="recoRefresh()">🔄 Refrescar desde GitHub</button></div></div></details>`;
   }
   const rows = items.map(it => {
     const fromTxt = it.fromIssue ? `desde #${it.fromIssue}` : '';
@@ -2670,7 +2685,7 @@ function renderRecommendationsSection() {
       </td>
     </tr>`;
   }).join('');
-  return `<details class="collapse-section reco-section" open>${summary}<div class="collapse-body">${errorTxt}<div style="margin:6px 0 10px"><button class="reco-btn" onclick="recoRefresh()">🔄 Refrescar</button></div><table class="reco-table"><thead><tr><th>Issue</th><th>Agente</th><th>Título</th><th>Origen</th><th>Creado</th><th>Acciones</th></tr></thead><tbody>${rows}</tbody></table></div></details>`;
+  return `<details class="collapse-section reco-section" open>${summary}<div class="collapse-body">${errorTxt}${transicion}${truncado}<div style="margin:6px 0 10px"><button class="reco-btn" onclick="recoRefresh()">🔄 Refrescar</button></div><table class="reco-table"><thead><tr><th>Issue</th><th>Agente</th><th>Título</th><th>Origen</th><th>Creado</th><th>Acciones</th></tr></thead><tbody>${rows}</tbody></table></div></details>`;
 }
 
 const { escapeHtmlAttr: __escapeHtmlAttrShared } = require('./lib/escape-html');
@@ -6986,6 +7001,22 @@ body.standalone .section-collapsed .section-body{display:block !important}
 .reco-btn-approve:hover{background:rgba(63,185,80,0.12)}
 .reco-btn-reject{border-color:#f85149;color:#f85149}
 .reco-btn-reject:hover{background:rgba(248,81,73,0.12)}
+/* #5691 (E2/E3) — banners de la vista de triaje. Jerarquía deliberadamente NO
+   de alarma: sin rojo #B60205, sin pulso, sin badge de incidente. El acento del
+   banner de transición sale del token --purple de assets/design-tokens.css
+   (rama "definición/backlog"), no de un color hardcodeado; el de truncamiento
+   usa la familia ámbar --retry. Dual-encoding: ícono ic-triage-backlog (bandeja
+   horizontal estable) + texto, para que un operador con deuteranopia separe
+   bloqueo de backlog sin depender del color. */
+.reco-banner{display:flex;align-items:flex-start;gap:10px;margin:8px 0;padding:10px 12px;border-radius:8px;border:1px solid;line-height:1.45}
+.reco-banner-transicion{background:var(--purple-bg,rgba(188,140,255,0.14));border-color:var(--purple-dim,#8957e5)}
+.reco-banner-truncado{background:var(--retry-bg,rgba(245,158,11,0.14));border-color:var(--retry-dim,#b8730a)}
+.reco-banner-ic{flex:0 0 auto;margin-top:2px;color:var(--purple,#bc8cff)}
+.reco-banner-txt{flex:1 1 auto;min-width:0}
+.reco-banner-tit{font-size:0.85em;font-weight:700;color:var(--fg,#e0e6ed)}
+.reco-banner-sub{font-size:0.8em;color:var(--dim,#8b949e);margin-top:3px}
+.reco-banner-sub code,.reco-banner-tit code{font-size:0.95em}
+.reco-banner-cerrar,.reco-banner-link{flex:0 0 auto;align-self:center;text-decoration:none}
 
 /* ============================================================
  * #3625 CA-5 — Widget de Audit trail · Allowlist mutations
@@ -9609,6 +9640,34 @@ document.addEventListener('keydown', function(e) {
     document.getElementById('log-search').focus();
   }
 });
+
+// #5691 E2 — banner de transición descartable. El localStorage es entrada NO
+// confiable (REQ-SEC-C): sólo se compara contra el literal '1' y el valor leído
+// jamás se inyecta en el DOM. El banner nace oculto (atributo hidden) y se
+// muestra sólo si no fue descartado, para que no parpadee en cada render.
+// OJO: este bloque vive DENTRO del template literal que sirve el <script> del
+// cliente — nada de backticks acá adentro, ni siquiera en los comentarios.
+function recoInitBanners() {
+  try {
+    document.querySelectorAll('.reco-banner-transicion[data-banner-key]').forEach(function (el) {
+      var k = el.getAttribute('data-banner-key') || '';
+      var visto = '1';
+      try { visto = window.localStorage.getItem('reco-banner:' + k); } catch (e) { visto = '1'; }
+      if (visto !== '1') el.hidden = false;
+    });
+  } catch (e) { /* sin localStorage: el banner queda oculto, nunca roto */ }
+}
+function recoDescartarBanner(btn) {
+  try {
+    var el = btn && btn.closest ? btn.closest('.reco-banner-transicion') : null;
+    if (!el) return;
+    var k = el.getAttribute('data-banner-key') || '';
+    try { window.localStorage.setItem('reco-banner:' + k, '1'); } catch (e) { /* modo privado */ }
+    el.hidden = true;
+  } catch (e) { /* nunca romper el dashboard por un banner */ }
+}
+if (document.readyState === 'loading') window.addEventListener('DOMContentLoaded', recoInitBanners);
+else recoInitBanners();
 
 // Recomendaciones de agentes (issue #2653)
 async function recoRefresh() {
