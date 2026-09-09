@@ -1860,38 +1860,14 @@ function* _genPipelineState() {
       const issueSummary = require('./lib/issue-summary');
       const blockedList = humanBlock.listBlockedIssues();
       summaries = issueSummary.getSummaries(blockedList.map(b => b.issue));
-      state.bloqueados = blockedList.map(b => {
-        const s = summaries[String(b.issue)] || {};
-        return {
-          issue: b.issue,
-          skill: b.skill,
-          phase: b.phase,
-          pipeline: b.pipeline,
-          reason: b.reason,
-          question: b.question,
-          blocked_at: b.blocked_at,
-          age_hours: b.age_hours,
-          title: titleCache[String(b.issue)]?.title || '',
-          summary: s.summary || '',
-          recent_events: s.recent_events || [],
-          summary_stale: !!s.stale,
-        };
-      });
+      // #6191 CA-4 — proyección ÚNICA (`human-block.toDashboardRow`) para el
+      // camino principal y para el fallback del `catch`. Antes eran dos `map`
+      // gemelos escritos a mano y los DOS perdían `evidence` y `precondition`:
+      // arreglar sólo el principal dejaba el bug vivo en el fallback y el mismo
+      // bloqueo seguía produciendo dos fichas distintas según el canal.
+      state.bloqueados = blockedList.map(b => humanBlock.toDashboardRow(b, summaries[String(b.issue)], titleCache));
     } catch {
-      state.bloqueados = humanBlock.listBlockedIssues().map(b => ({
-        issue: b.issue,
-        skill: b.skill,
-        phase: b.phase,
-        pipeline: b.pipeline,
-        reason: b.reason,
-        question: b.question,
-        blocked_at: b.blocked_at,
-        age_hours: b.age_hours,
-        title: titleCache[String(b.issue)]?.title || '',
-        summary: '',
-        recent_events: [],
-        summary_stale: true,
-      }));
+      state.bloqueados = humanBlock.listBlockedIssues().map(b => humanBlock.toDashboardRow(b, null, titleCache));
     }
   } catch {}
 

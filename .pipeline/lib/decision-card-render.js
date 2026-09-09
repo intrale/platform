@@ -343,6 +343,14 @@ function sanearMinimo(v, max) {
     // Saltos y controles a espacio: sin esto un título hostil fabrica líneas
     // falsas que imitan la estructura del mensaje.
     s = s.replace(CONTROL_MINIMO_RE, ' ');
+    // #6191 / SEC-F rev-2 — techo ANTI-DoS antes de redactar, igual que `sec()`.
+    // `redactAll` es cuadrático y este camino también corre en el hilo único del
+    // dashboard; es más, corre justo cuando el armador de fichas YA falló, que
+    // es el peor momento para colgar el proceso. El techo es holgado (4096) a
+    // propósito: cortar más abajo partiría credenciales y `redactAll` dejaría el
+    // prefijo visible. El techo de presentación (512) lo aplica después
+    // `neutralizarMarkupYEnlaces`, ya sobre texto redactado.
+    s = decisionCard.topearEntradaRedaccion(s);
     s = String(redactAll(s));
     // rev-9 / SEC-C: markup y enlaces se neutralizan con la MISMA función del
     // armador, no con una copia de la secuencia.
