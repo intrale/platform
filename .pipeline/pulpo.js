@@ -20219,6 +20219,15 @@ function notifyGate1Retention(input) {
     // El body NUNCA entra al estado: entra su digest y se descarta.
     const hash = dedup.computeHash([caso, aviso.tipo, i.criteriaHash || '', i.reason || '']);
 
+    // El log tiene que contar lo que SALIÓ, no lo que se pensaba mandar. En la
+    // primera pasada convivían en la misma corrida "no pude registrar los
+    // botones de firma" y "aviso emitido (firma, con botones)", porque el
+    // detalle se armaba con `aviso.ofreceBotones` —la intención— en vez del
+    // teclado efectivamente construido. Un log que miente sobre si el operador
+    // recibió los botones es peor que no loguear: convierte un defecto visible
+    // en uno invisible.
+    const emitido = { conBotones: false, reclasificado: false };
+
     const res = dedup.notifyOnce({
       issue,
       hash,
@@ -20232,7 +20241,9 @@ function notifyGate1Retention(input) {
           const kb = buildGate1SignatureKeyboard(issue);
           if (kb.ok) {
             keyboard = kb.keyboard;
+            emitido.conBotones = true;
           } else {
+            emitido.reclasificado = true;
             // La capability se cayó entre el sondeo y el registro. El texto ya
             // redactado ofrece firmar, así que se REARMA como indeterminado en
             // vez de mandarlo pelado: un aviso que ofrece opciones sin botones
@@ -20249,9 +20260,13 @@ function notifyGate1Retention(input) {
 
     if (res.notified) {
       const detalle = [
-        aviso.tipo,
+        emitido.reclasificado ? 'indeterminado' : aviso.tipo,
         aviso.degradado ? 'degradado' : null,
-        aviso.ofreceBotones ? 'con botones' : 'sin botones',
+        // `emitido.conBotones` es el teclado que se le pasó al transporte, no
+        // el que la ficha se proponía ofrecer: si el registro de capabilities
+        // falló entre el sondeo y el envío, acá dice "sin botones".
+        emitido.conBotones ? 'con botones' : 'sin botones',
+        emitido.reclasificado ? 'reclasificado: la firma se cayó entre el sondeo y el registro' : null,
         res.sealed ? null : 'SIN sellar (se repetirá el próximo barrido)',
       ].filter(Boolean).join(', ');
       log('barrido', `#${issue} GATE 1 aviso emitido (${detalle})`);

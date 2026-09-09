@@ -328,10 +328,44 @@ ruido y el operador aprende a ignorarlo, que es la peor falla posible de un gate
 ### Cuándo NO se pide firmar
 
 Si el gate retiene porque **no hay ningún firmante autorizado configurado**, o
-porque no se pudo leer el issue, o porque el gate reventó, el aviso sale como
+porque **el pipeline no puede emitir la capability de firma**, o porque no se
+pudo leer el issue, o porque el gate reventó, el aviso sale como
 `indeterminado`: dice qué falta, **no ofrece opciones y no lleva botones**.
 Pedir una firma que ninguna identidad podría emitir es ofrecer una acción
 inejecutable.
+
+La disponibilidad de la capability se **sondea antes de redactar**
+(`gate1-signature-keyboard.probeGate1SignatureCapability()`, sin efectos: no
+registra bindings) y entra como **input de la clasificación**. No es un `catch`
+posterior que borra los botones de una ficha que ya prometió firma. Del sondeo
+se loguea sólo el **código acotado** (`VAULT_DISABLED`, `VAULT_FAILURE`…), nunca
+el error crudo, y el texto que ve el operador **no nombra la pieza interna**: le
+dice que la firma por botón no está disponible y por dónde sigue (`/unblock`).
+
+> Con la config productiva actual (`vault.enabled: false`) el sondeo devuelve
+> `ok:false` en **todos** los barridos: el camino `indeterminado` es el único que
+> el operador ve hoy. La suite ejercita la **matriz de capability** (`true` y
+> `false`) a propósito — una suite verde sobre el camino `firma` ya dejó pasar
+> dos veces un defecto del camino que sí corre.
+
+### La reclasificación saca las opciones, no los hechos
+
+Que el pipeline no pueda ofrecer botones **no lo autoriza a decir que no sabe lo
+que sí sabe** (CA-1 de #6192, precisado por el `po` el 09/09). El aviso
+reclasificado a `indeterminado` conserva:
+
+- **qué issue es** y su título citado,
+- **qué se pide firmar** (`¿Aprobás el alcance de #N…?` — la decisión no cambia,
+  cambia el canal por el que se ejecuta),
+- **desde cuándo**: la fecha concreta **y** la antigüedad relativa,
+- **el comando ejecutable** `/unblock <issue> aprobar`, no el molde libre.
+
+Y **no** afirma desconocimiento: cuando la causa se conoce, el copy genérico
+("quedó frenado por algo que no supe clasificar", "no te propongo opciones
+porque no las puedo justificar") queda reservado para el caso en que el
+desconocimiento es real — motivo ilegible o gate caído. Un aviso que niega
+saber la causa dos líneas después de imprimirla se contradice solo, y el
+operador deja de creerle.
 
 ### Una sola emisión por estado
 

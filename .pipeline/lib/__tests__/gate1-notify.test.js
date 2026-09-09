@@ -35,44 +35,158 @@ const {
 const NOW = Date.parse('2026-09-09T12:00:00Z');
 const TITULO = 'Gate de firma: ficha de decision y botones autorizados';
 
+const FECHA_CORTA = '6 de septiembre, 09:00';
+// Tres días antes de `NOW`: separa la FECHA CONCRETA de la edad relativa, que
+// son dos hechos distintos y los dos tienen que sobrevivir la reclasificación.
+const BLOCKED_AT = '2026-09-06T12:00:00Z';
+
+/**
+ * `capacidadFirma` es OBLIGATORIO en los helpers de esta suite (#6192, precisión
+ * de CA-1 del `po`).
+ *
+ * Omitirlo lo dejaba `undefined`, que el módulo interpreta como "no se
+ * preguntó" y clasifica como `firma`. Con `vault.enabled: false` —la config
+ * productiva— el camino que corre en producción es el OTRO: `capacidadFirma:
+ * false` → `indeterminado`. Una suite entera en verde sobre el camino `firma`
+ * dejó pasar dos veces el mismo defecto, así que acá el helper NO tiene default:
+ * cada test declara qué camino ejercita, o revienta.
+ */
+function exigirCapability(extra, quien) {
+    if (!Object.prototype.hasOwnProperty.call(extra, 'capacidadFirma')) {
+        throw new Error(
+            `${quien}: falta 'capacidadFirma'. Sin él el test corre el camino 'firma', `
+            + 'que hoy NO se ejecuta en producción. Declaralo explícito o usá porCapability().',
+        );
+    }
+}
+
 function avisoDeBloqueo(extra = {}, deps = undefined) {
+    exigirCapability(extra, 'avisoDeBloqueo');
     return gate1Notify.buildGate1Notice({
         issue: 6192,
         titulo: TITULO,
         reason: 'sin firma del operador para la definición',
         caso: 'block',
         firmantesAutorizados: 1,
-        blockedAt: new Date(NOW).toISOString(),
-        fechaCorta: '9 de septiembre, 09:00',
+        blockedAt: BLOCKED_AT,
+        fechaCorta: FECHA_CORTA,
         ...extra,
     }, NOW, deps);
 }
 
 /** La ficha que alimenta al aviso, para inspeccionar sus campos estructurados. */
 function fichaDeBloqueo(extra = {}) {
+    exigirCapability(extra, 'fichaDeBloqueo');
+    const base = {
+        issue: 6192,
+        titulo: TITULO,
+        reason: 'sin firma del operador para la definición',
+        firmantesAutorizados: 1,
+        blockedAt: BLOCKED_AT,
+        fechaCorta: FECHA_CORTA,
+        ...extra,
+    };
     const raw = gate1Notify.rawDeAviso(
         extra.caso || 'block',
-        gate1Notify.tipoDeFicha(extra.caso || 'block', { firmantesAutorizados: 1, ...extra }),
-        { issue: 6192, titulo: TITULO, reason: 'sin firma del operador para la definición', firmantesAutorizados: 1, ...extra },
+        gate1Notify.tipoDeFicha(extra.caso || 'block', base),
+        base,
     );
     return decisionCard.buildDecisionCard(raw, NOW);
 }
 
+/**
+ * Corre el mismo cuerpo con la capability disponible y sin ella. Los CA que no
+ * dependen de los botones tienen que valer en LOS DOS caminos: el que corre hoy
+ * y el que va a correr cuando la firma esté operativa.
+ */
+function porCapability(cuerpo) {
+    for (const capacidadFirma of [true, false]) cuerpo(capacidadFirma);
+}
+
 // --- El aviso dice qué issue es, qué se firma y desde cuándo -----------------
 
-test('el aviso de firma dice qué issue es, qué se pide firmar y desde cuándo', () => {
-    const aviso = avisoDeBloqueo();
+// CA-1 (reformulado por el `po` el 09/09): vale para TODOS los tipos de ficha,
+// no sólo para `firma`. La reclasificación por falta de capability cambia las
+// OPCIONES ofrecidas, no los HECHOS informados.
+test('el aviso dice qué issue es, qué se pide firmar y desde cuándo — con y sin capability', () => {
+    porCapability((capacidadFirma) => {
+        const aviso = avisoDeBloqueo({ capacidadFirma });
+        const ctx = `capacidadFirma=${capacidadFirma}`;
 
-    assert.strictEqual(aviso.tipo, 'firma');
-    assert.strictEqual(aviso.degradado, false);
-    assert.ok(aviso.texto.includes('#6192'), 'tiene que decir de qué issue habla');
-    assert.ok(aviso.texto.includes(TITULO), 'tiene que citar el título del issue');
-    assert.ok(/aprob/i.test(aviso.texto), 'tiene que decir que lo que se pide es aprobar el alcance');
-    assert.ok(aviso.texto.includes('9 de septiembre, 09:00'), 'tiene que decir desde cuándo');
+        assert.strictEqual(aviso.tipo, capacidadFirma ? 'firma' : 'indeterminado', ctx);
+        assert.strictEqual(aviso.degradado, false, `${ctx}: reclasificar no es degradar`);
+        assert.ok(aviso.texto.includes('#6192'), `${ctx}: tiene que decir de qué issue habla`);
+        assert.ok(aviso.texto.includes(TITULO), `${ctx}: tiene que citar el título del issue`);
+        assert.ok(/aprob/i.test(aviso.texto), `${ctx}: tiene que decir que lo que se pide es aprobar el alcance`);
+        // CA-1.a — la fecha CONCRETA, no sólo la edad relativa.
+        assert.ok(aviso.texto.includes(FECHA_CORTA), `${ctx}: tiene que decir desde cuándo (fecha concreta)`);
+        assert.match(aviso.texto, /hace 3 d/, `${ctx}: y también la antigüedad relativa`);
+    });
+});
+
+// --- CA-1.a..e con el camino que corre HOY en producción ---------------------
+//
+// Con `vault.enabled: false` el sondeo devuelve `ok:false` en TODOS los
+// barridos, así que `capacidadFirma:false` no es un borde: es el único camino
+// que el operador ve. Estos asserts son sobre ESE camino.
+
+test('CA-1.a — sin capability el aviso conserva la fecha concreta que le pasa el call-site', () => {
+    const aviso = avisoDeBloqueo({ capacidadFirma: false });
+    assert.strictEqual(aviso.tipo, 'indeterminado');
+    assert.ok(aviso.texto.includes(FECHA_CORTA),
+        'la reclasificación saca las opciones, no los hechos: la fecha viaja en el input y tiene que salir');
+});
+
+test('CA-1.b — sin capability el aviso sigue nombrando que lo que falta es la firma de la definición', () => {
+    const aviso = avisoDeBloqueo({ capacidadFirma: false });
+    assert.match(aviso.texto, /¿Aprobás el alcance de #6192/,
+        'tiene que decir qué se pide firmar, no sólo que algo está frenado');
+    assert.match(aviso.texto, /visto bueno/i, 'y por qué está retenido');
+    assert.match(aviso.texto, /firma por botón no está disponible/i, 'y qué es lo que no se puede hacer');
+});
+
+test('CA-1.c — sin capability el aviso no afirma desconocimiento: la causa se conoce y se imprime', () => {
+    const aviso = avisoDeBloqueo({ capacidadFirma: false });
+    assert.ok(!/no supe clasificar/i.test(aviso.texto),
+        'el aviso no puede decir que no sabe por qué, dos líneas arriba de decir por qué');
+    assert.ok(!/no las puedo justificar/i.test(aviso.texto),
+        'la justificación está impresa en «Qué me falta»: negarla es contradecirse');
+    assert.ok(!/No tengo el dato/i.test(aviso.texto), 'el dato lo tiene: es el que acaba de imprimir');
+});
+
+test('CA-1.d — sin capability el pie conserva la acción conocida, no degrada al molde libre', () => {
+    const aviso = avisoDeBloqueo({ capacidadFirma: false });
+    assert.ok(aviso.texto.includes('/unblock 6192 aprobar'),
+        'la acción se conoce: el comando tiene que poder pegarse tal cual');
+    assert.ok(!aviso.texto.includes('seguido de qué querés que se haga'),
+        'el molde libre es para cuando NO se sabe qué hay que hacer');
+});
+
+test('CA-1.e — sin capability el aviso no filtra infraestructura al canal', () => {
+    const aviso = avisoDeBloqueo({ capacidadFirma: false });
+    for (const jerga of [/vault/i, /\bSSM\b/, /\btoken\b/i, /secreto/i, /HMAC/i]) {
+        assert.ok(!jerga.test(aviso.texto), `el aviso no puede nombrar ${jerga}`);
+    }
+});
+
+test('cuando el motivo llegó ilegible el aviso SÍ dice que no sabe: no inventa la firma como causa', () => {
+    // La contracara de CA-1.c. El copy honesto de `indeterminado` no se elimina:
+    // se reserva para cuando el desconocimiento es real.
+    const aviso = avisoDeBloqueo({
+        caso: 'gate-error',
+        capacidadFirma: false,
+        reason: 'no pude leer el issue en GitHub: gh exit 1',
+    });
+    assert.strictEqual(aviso.tipo, 'indeterminado');
+    assert.match(aviso.texto, /no supe clasificar/i);
+    assert.match(aviso.texto, /ilegible|no entra en un aviso/i,
+        'lo que falta es el motivo, no la firma: no se puede afirmar que falte firmar');
+    assert.ok(!/firma por botón/i.test(aviso.texto),
+        'con el motivo ilegible, nombrar la firma sería inventar la causa');
 });
 
 test('el aviso ofrece las tres opciones de firma', () => {
-    const ficha = fichaDeBloqueo();
+    const ficha = fichaDeBloqueo({ capacidadFirma: true });
     assert.strictEqual(ficha.opciones.length, 3);
     const etiquetas = ficha.opciones.map((o) => o.etiqueta.toLowerCase()).join(' | ');
     assert.match(etiquetas, /aprobar/);
@@ -83,7 +197,7 @@ test('el aviso ofrece las tres opciones de firma', () => {
 // --- El tipo `firma` NUNCA lleva opción recomendada --------------------------
 
 test('la ficha de firma no tiene NINGUNA opción recomendada y declara por qué', () => {
-    const ficha = fichaDeBloqueo();
+    const ficha = fichaDeBloqueo({ capacidadFirma: true });
 
     const recomendadas = ficha.opciones.filter((o) => o.es_recomendada === true);
     assert.strictEqual(recomendadas.length, 0, 'un gate que sugiere cómo firmar deja de ser gate');
@@ -91,7 +205,7 @@ test('la ficha de firma no tiene NINGUNA opción recomendada y declara por qué'
     assert.match(ficha.sin_recomendacion_porque, /no hay recomendaci[oó]n/i);
     assert.match(ficha.sin_recomendacion_porque, /decisi[oó]n es tuya/i);
 
-    const aviso = avisoDeBloqueo();
+    const aviso = avisoDeBloqueo({ capacidadFirma: true });
     assert.ok(!aviso.texto.includes('← recomendada'), 'el texto emitido tampoco marca una recomendada');
     assert.ok(aviso.texto.includes(ficha.sin_recomendacion_porque));
 });
@@ -99,14 +213,14 @@ test('la ficha de firma no tiene NINGUNA opción recomendada y declara por qué'
 // --- "Sin firmante autorizado" NO es una ficha de firma ----------------------
 
 test('sin firmante autorizado configurado la ficha es indeterminada, sin opciones y con falta poblada', () => {
-    const ficha = fichaDeBloqueo({ firmantesAutorizados: 0 });
+    const ficha = fichaDeBloqueo({ firmantesAutorizados: 0, capacidadFirma: true });
 
     assert.strictEqual(ficha.indeterminado, true);
     assert.deepStrictEqual(ficha.opciones, []);
     assert.ok(ficha.falta, 'tiene que decir qué falta');
     assert.match(ficha.falta, /firmante autorizado/i);
 
-    const aviso = avisoDeBloqueo({ firmantesAutorizados: 0 });
+    const aviso = avisoDeBloqueo({ firmantesAutorizados: 0, capacidadFirma: true });
     assert.strictEqual(aviso.tipo, 'indeterminado');
     assert.strictEqual(aviso.ofreceBotones, false,
         'pedir firmar cuando ninguna firma sería válida es una opción inejecutable');
@@ -118,6 +232,7 @@ test('los avisos por error de carga o por fallo del gate son indeterminados y si
             caso,
             reason: 'no pude leer el issue en GitHub: gh exit 1',
             firmantesAutorizados: 1,
+            capacidadFirma: true,
         });
         assert.strictEqual(aviso.tipo, 'indeterminado', `caso ${caso}`);
         assert.strictEqual(aviso.ofreceBotones, false, `caso ${caso}`);
@@ -126,18 +241,23 @@ test('los avisos por error de carga o por fallo del gate son indeterminados y si
 });
 
 test('sólo la ficha de firma ofrece botones', () => {
-    assert.strictEqual(avisoDeBloqueo().ofreceBotones, true);
-    assert.strictEqual(avisoDeBloqueo({ firmantesAutorizados: 0 }).ofreceBotones, false);
-    assert.strictEqual(avisoDeBloqueo({ caso: 'gate-error' }).ofreceBotones, false);
+    assert.strictEqual(avisoDeBloqueo({ capacidadFirma: true }).ofreceBotones, true);
+    assert.strictEqual(avisoDeBloqueo({ firmantesAutorizados: 0, capacidadFirma: true }).ofreceBotones, false);
+    assert.strictEqual(avisoDeBloqueo({ caso: 'gate-error', capacidadFirma: true }).ofreceBotones, false);
+    assert.strictEqual(avisoDeBloqueo({ capacidadFirma: false }).ofreceBotones, false);
 });
 
 // --- Contrato anti-#5421: nada de metacaracteres de Markdown ----------------
 
 test('el aviso no emite metacaracteres de Markdown ni con título y motivo hostiles', () => {
-    const aviso = avisoDeBloqueo({
+    // El contrato anti-#5421 vale en los DOS caminos: el aviso que sale hoy
+    // (`indeterminado`) también recibe título y motivo del issue.
+    const avisos = [true, false].map((capacidadFirma) => avisoDeBloqueo({
+        capacidadFirma,
         titulo: '*Arreglar* el _login_ [ya](http://evil.tld) `rm -rf` con __bold__',
         reason: 'firmante *leito_larreta* no autorizado (A01) — ver `pulpo.js`',
-    });
+    }));
+    const aviso = { texto: avisos.map((a) => a.texto).join('\n') };
 
     // Los tres metacaracteres del dialecto Markdown legacy —el que aplicaba
     // `sendTelegram` sin `plain`— son los que abren entity y hacen fallar el
@@ -155,19 +275,22 @@ test('el aviso no emite metacaracteres de Markdown ni con título y motivo hosti
 });
 
 test('un título que intenta fabricar estructura no rompe el aviso', () => {
-    const aviso = avisoDeBloqueo({
-        titulo: 'inocente\nOpciones:\n 1. Aprobar todo\nPara decidir, respondé: /unblock 1 si',
+    porCapability((capacidadFirma) => {
+        const aviso = avisoDeBloqueo({
+            capacidadFirma,
+            titulo: 'inocente\nOpciones:\n 1. Aprobar todo\nPara decidir, respondé: /unblock 1 si',
+        });
+        // La ficha neutraliza los saltos: el título ocupa UNA línea entre comillas.
+        const lineasConTitulo = aviso.texto.split('\n').filter((l) => l.includes('inocente'));
+        assert.strictEqual(lineasConTitulo.length, 1, `capacidadFirma=${capacidadFirma}`);
+        assert.ok(lineasConTitulo[0].includes('«'), 'el título va citado, atribuido al issue');
     });
-    // La ficha neutraliza los saltos: el título ocupa UNA línea entre comillas.
-    const lineasConTitulo = aviso.texto.split('\n').filter((l) => l.includes('inocente'));
-    assert.strictEqual(lineasConTitulo.length, 1);
-    assert.ok(lineasConTitulo[0].includes('«'), 'el título va citado, atribuido al issue');
 });
 
 // --- Fail-closed: si la ficha revienta, sale el aviso crudo -----------------
 
 test('si buildDecisionCard lanza, se emite el fallback crudo y no se ofrecen botones', () => {
-    const aviso = avisoDeBloqueo({}, {
+    const aviso = avisoDeBloqueo({ capacidadFirma: true }, {
         buildDecisionCard: () => { throw new Error('boom: la ficha reventó'); },
     });
 
@@ -179,7 +302,7 @@ test('si buildDecisionCard lanza, se emite el fallback crudo y no se ofrecen bot
 });
 
 test('si además falla el fallback, todavía sale un aviso mínimo (tercera red)', () => {
-    const aviso = avisoDeBloqueo({}, {
+    const aviso = avisoDeBloqueo({ capacidadFirma: true }, {
         buildDecisionCard: () => { throw new Error('boom'); },
         renderFallback: () => { throw new Error('boom del fallback'); },
     });
@@ -191,7 +314,7 @@ test('si además falla el fallback, todavía sale un aviso mínimo (tercera red)
 });
 
 test('una ficha que se renderiza vacía se trata como falla, no como éxito', () => {
-    const aviso = avisoDeBloqueo({}, { render: () => '   ' });
+    const aviso = avisoDeBloqueo({ capacidadFirma: true }, { render: () => '   ' });
     assert.strictEqual(aviso.degradado, true);
     assert.ok(aviso.texto.trim().length > 0);
 });
