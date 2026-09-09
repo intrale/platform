@@ -2982,6 +2982,45 @@ function updateMarkerFsync(markerPath, payload) {
  *   partialBakPath: string|null, partialBakSha: string|null, partialExisted: boolean,
  * }}
  */
+/**
+ * Lee una clave del estado operativo PARA SNAPSHOT, distinguiendo los TRES
+ * casos que `readKey()` colapsa en `null`: presente / ausente / ilegible.
+ *
+ * #5113 rev-7 — `readKey()` devuelve `null` tanto cuando la clave no existe
+ * como cuando el sustrato falló (permisos, JSON corrupto, store degradado).
+ * Sellar `existed:false` sobre esa ambigüedad es destructivo: `restoreKey()`
+ * lee ese `false` como "no existía antes, borralo" y el rollback termina
+ * BORRANDO un `waves.json` que sólo estaba ilegible — mientras reporta
+ * `ok:true`. En `origin/main` el snapshot era `existsSync + copyFileSync`
+ * sobre los bytes crudos y no tenía esa ambigüedad; el paso por la capa de
+ * storage la introdujo.
+ *
+ * Por eso acá se ABORTA en vez de adivinar: sin snapshot confiable no hay
+ * rollback, y una transacción sin rollback es peor que una que no arranca.
+ * Corre ANTES de escribir el marker y ANTES de tocar producción, así que
+ * abortar no deja nada a medio camino.
+ *
+ * @param {string} key — clave del backend (`stateBackend.KEYS.*`).
+ * @param {string} label — nombre humano para el mensaje de error.
+ * @returns {object|null} el valor si existe; `null` SÓLO si la ausencia está
+ *   confirmada por una lectura sana.
+ * @throws {Error} con `code = 'STATE_UNREADABLE'` si la lectura falló o degradó.
+ */
+function readKeyForSnapshot(key, label) {
+    const read = stateBackend.readKeyWithVersion(key);
+    if (read.error || read.degraded) {
+        const detail = (read.error && read.error.message) || 'sustrato degradado';
+        throw mkWavesError(
+            `No pude leer ${label} para el snapshot transaccional: ${detail}. ` +
+            `Sin snapshot confiable no hay rollback posible, así que la transacción ` +
+            `no arranca (fail-closed). Revisá permisos/JSON del estado local o la ` +
+            `salud del store remoto y reintentá.`,
+            'STATE_UNREADABLE'
+        );
+    }
+    return read.value;
+}
+
 function snapshotForTransaction(ts) {
     ensureDir(archivedDir());
 
@@ -2996,7 +3035,7 @@ function snapshotForTransaction(ts) {
     // segunda fuente de verdad — nadie lo lee como estado vigente. Sin esto,
     // `/wave promote` en modo remoto se quedaría sin rollback: el snapshot
     // saldría vacío porque el archivo local ya no existe.
-    const wavesValue = stateBackend.readKey(stateBackend.KEYS.WAVES);
+    const wavesValue = readKeyForSnapshot(stateBackend.KEYS.WAVES, 'waves.json');
     if (wavesValue) {
         const bak = path.join(archivedDir(), `waves-rollback.${ts}.json`);
         atomicWriteFile(bak, JSON.stringify(wavesValue, null, 2));
@@ -3004,7 +3043,7 @@ function snapshotForTransaction(ts) {
         result.wavesBakSha = sha256File(bak);
         result.wavesExisted = true;
     }
-    const partialValue = stateBackend.readKey(stateBackend.KEYS.PARTIAL_PAUSE);
+    const partialValue = readKeyForSnapshot(stateBackend.KEYS.PARTIAL_PAUSE, '.partial-pause.json');
     if (partialValue) {
         const bak = path.join(archivedDir(), `partial-pause-rollback.${ts}.json`);
         atomicWriteFile(bak, JSON.stringify(partialValue, null, 2));
@@ -3125,6 +3164,21 @@ function restoreFromSnapshots(marker) {
         }
         if (existedBefore === false) {
             // No existía antes — si por algún motivo existe ahora, borrarlo.
+            //
+            // #5113 rev-7 — defensa en profundidad para el marker persistido:
+            // `snapshotForTransaction` ya no puede sellar `false` sobre una
+            // lectura degradada, pero el marker se lee de disco y puede venir de
+            // una versión anterior, de un recovery de boot o manipulado. Un
+            // `false` no confiable convierte el rollback en un borrado, así que
+            // confirmamos que el sustrato responde ANTES de eliminar. Cualquier
+            // valor que no sea `false` estricto (incluido `'unknown'`) ya no
+            // entra acá: no se borra lo que no se pudo leer.
+            const probe = stateBackend.readKeyWithVersion(key);
+            if (probe.error || probe.degraded) {
+                return `No pude confirmar el estado de ${label} antes del rollback a `
+                    + `pre-existencia (${(probe.error && probe.error.message) || 'sustrato degradado'}): `
+                    + `no se borra nada (fail-closed).`;
+            }
             const res = stateBackend.deleteKey(key);
             if (!res || res.ok === false) {
                 return `Error eliminando ${label} (rollback a pre-existencia): `
@@ -3315,12 +3369,35 @@ function promoteWaveAtomic(waveNumber, metadata = {}) {
                 };
             }
         } catch { /* defensivo: degradar al fallback del seeder */ }
-        partialPause.setPartialPauseAtomic(newAllowlist, {
+        // #5113 rev-7 — `setPartialPauseAtomic` NO lanza: devuelve
+        // `{ok:false, rejected?|conflict?, msg}` cuando el gate de autoría
+        // rechaza, cuando el snapshot degradó o cuando el CAS pierde la carrera.
+        // Descartar ese retorno dejaba la promoción sellando `phase=done`,
+        // borrando los `.bak` y emitiendo audit de éxito con `waves.json` ya en
+        // la ola nueva y la allowlist todavía en la vieja: dos fuentes de verdad
+        // desincronizadas, exactamente lo que CA-C1 vino a impedir. Convertimos
+        // el fallo en excepción para que caiga en el catch de abajo y dispare el
+        // rollback de AMBAS claves.
+        const partialRes = partialPause.setPartialPauseAtomic(newAllowlist, {
             source: metadata.source || 'wave-promote-atomic',
             authorizedBy: 'wave-promote',
             justification: metadata.note || `promote wave ${waveNumber} → active (atomic)`,
             ...waveMetaForPartial,
         });
+        if (!partialRes || partialRes.ok === false) {
+            const detail = (partialRes && partialRes.msg) || 'motivo desconocido';
+            const err = mkWavesError(
+                `No pude aplicar la allowlist de la ola ${waveNumber}: ${detail}`,
+                'PARTIAL_PAUSE_WRITE_REJECTED'
+            );
+            // Shape homogéneo con los callers que ya miran `rejected`/`conflict`
+            // sobre el retorno de partial-pause (p. ej. `cmdPausaParcial` en
+            // pulpo.js): el mismo predicado sirve sobre el error propagado.
+            err.rejected = !!(partialRes && partialRes.rejected);
+            err.conflict = !!(partialRes && partialRes.conflict);
+            err.partialResult = partialRes || null;
+            throw err;
+        }
     } catch (err) {
         // Rollback inmediato: ambos archivos vuelven al snapshot.
         logWarn(`promoteWaveAtomic falló mid-transaction: ${err.message}. Restaurando snapshots.`);
@@ -3658,7 +3735,7 @@ function archiveWave(waveNumber, metadata = {}) {
         let wavesBakSha = null;
         let wavesExisted = false;
         // #5113 — contenido por la capa de storage, backup en `archived/` local.
-        const prevForArchive = stateBackend.readKey(stateBackend.KEYS.WAVES);
+        const prevForArchive = readKeyForSnapshot(stateBackend.KEYS.WAVES, 'waves.json');
         if (prevForArchive) {
             const bak = path.join(archivedDir(), `waves-archive-rollback.${ts}.json`);
             atomicWriteFile(bak, JSON.stringify(prevForArchive, null, 2));
