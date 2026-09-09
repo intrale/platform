@@ -97,7 +97,7 @@ test('CA-A1: round-trip en modo filesystem — lo que se escribe es lo que se le
     assert.equal(backend.readKey(backend.KEYS.WAVES), null, 'sin estado previo lee null');
 
     const state = stateWithIso('2026-09-08T10:00:00.000Z');
-    const res = backend.writeKey(backend.KEYS.WAVES, state);
+    const res = backend.writeKey(backend.KEYS.WAVES, state, backend.UNCONDITIONAL_WRITE);
     assert.equal(res.ok, true);
 
     // El archivo existe físicamente y el contenido coincide.
@@ -112,7 +112,7 @@ test('CA-A1: round-trip en modo remoto — la MISMA API resuelve contra el store
     assert.equal(backend.readKey(backend.KEYS.WAVES), null, 'partición vacía lee null');
 
     const state = stateWithIso('2026-09-08T11:00:00.000Z');
-    const res = backend.writeKey(backend.KEYS.WAVES, state);
+    const res = backend.writeKey(backend.KEYS.WAVES, state, backend.UNCONDITIONAL_WRITE);
     assert.equal(res.ok, true);
     assert.equal(res.version, 1, 'primera escritura arranca en versión 1');
 
@@ -132,7 +132,7 @@ test('CA-A1: round-trip en modo remoto — la MISMA API resuelve contra el store
 test('CA-A1: la allowlist usa la misma superficie y su propia clave', () => enTmp({ PIPELINE_OPSTATE_DURABLE: '1' }, () => {
     const { backend, driver } = remoteBackend();
     const marker = { allowed_issues: [5113], allowed_skills: ['pipeline-dev'], source: 'telegram' };
-    assert.equal(backend.writeKey(backend.KEYS.PARTIAL_PAUSE, marker).ok, true);
+    assert.equal(backend.writeKey(backend.KEYS.PARTIAL_PAUSE, marker, backend.UNCONDITIONAL_WRITE).ok, true);
     assert.deepEqual(backend.readKey(backend.KEYS.PARTIAL_PAUSE), marker);
     assert.ok(driver._raw(PROJECT_ID, 'coord#partial-pause'), 'SK propio de la allowlist');
     // Las dos claves NO se pisan.
@@ -156,7 +156,7 @@ test('D-3 / SEC-7: `.paused` NO es una clave del backend y no puede resolverse',
 test('CA-A6: el ISO se preserva en el value y el entero del store es el autoritativo', () => enTmp({ PIPELINE_OPSTATE_DURABLE: '1' }, () => {
     const { backend } = remoteBackend();
     const iso1 = '2026-09-08T12:00:00.000Z';
-    assert.equal(backend.writeKey(backend.KEYS.WAVES, stateWithIso(iso1)).version, 1);
+    assert.equal(backend.writeKey(backend.KEYS.WAVES, stateWithIso(iso1), backend.UNCONDITIONAL_WRITE).version, 1);
 
     const leido = backend.readKeyWithVersion(backend.KEYS.WAVES);
     assert.equal(leido.version, 1, 'la versión que se expone en remoto es el entero');
@@ -165,7 +165,7 @@ test('CA-A6: el ISO se preserva en el value y el entero del store es el autorita
 
     // Segundo write: el entero incrementa, el ISO nuevo se preserva.
     const iso2 = '2026-09-08T12:05:00.000Z';
-    assert.equal(backend.writeKey(backend.KEYS.WAVES, stateWithIso(iso2)).version, 2);
+    assert.equal(backend.writeKey(backend.KEYS.WAVES, stateWithIso(iso2), backend.UNCONDITIONAL_WRITE).version, 2);
     const leido2 = backend.readKeyWithVersion(backend.KEYS.WAVES);
     assert.equal(leido2.version, 2);
     assert.equal(leido2.value.meta.updated_at, iso2);
@@ -174,7 +174,7 @@ test('CA-A6: el ISO se preserva en el value y el entero del store es el autorita
 test('CA-A6: round-trip del mapeo — un ISO vigente traduce al entero; uno stale es conflicto', () => enTmp({ PIPELINE_OPSTATE_DURABLE: '1' }, () => {
     const { backend } = remoteBackend();
     const iso = '2026-09-08T13:00:00.000Z';
-    backend.writeKey(backend.KEYS.WAVES, stateWithIso(iso));
+    backend.writeKey(backend.KEYS.WAVES, stateWithIso(iso), backend.UNCONDITIONAL_WRITE);
     backend.readKeyWithVersion(backend.KEYS.WAVES); // refresca el índice
 
     const par = backend.versionPairOf(backend.KEYS.WAVES);
@@ -197,8 +197,8 @@ test('CA-A6: round-trip del mapeo — un ISO vigente traduce al entero; uno stal
 
 test('CA-A4: un write con versión stale devuelve conflicto y NO pisa el estado', () => enTmp({ PIPELINE_OPSTATE_DURABLE: '1' }, () => {
     const { backend, driver } = remoteBackend();
-    backend.writeKey(backend.KEYS.PARTIAL_PAUSE, { allowed_issues: [1] });   // v1
-    backend.writeKey(backend.KEYS.PARTIAL_PAUSE, { allowed_issues: [1, 2] }); // v2
+    backend.writeKey(backend.KEYS.PARTIAL_PAUSE, { allowed_issues: [1] }, backend.UNCONDITIONAL_WRITE);   // v1
+    backend.writeKey(backend.KEYS.PARTIAL_PAUSE, { allowed_issues: [1, 2] }, backend.UNCONDITIONAL_WRITE); // v2
 
     // Escritor con versión vieja (1): debe ser rechazado.
     const res = backend.writeKey(backend.KEYS.PARTIAL_PAUSE, { allowed_issues: [1, 99] }, 1);
@@ -213,9 +213,9 @@ test('CA-A4: un write con versión stale devuelve conflicto y NO pisa el estado'
 
 test('CA-A4: un ISO stale como expectedVersion también es conflicto (If-Match del dominio)', () => enTmp({ PIPELINE_OPSTATE_DURABLE: '1' }, () => {
     const { backend } = remoteBackend();
-    backend.writeKey(backend.KEYS.WAVES, stateWithIso('2026-09-08T14:00:00.000Z'));
+    backend.writeKey(backend.KEYS.WAVES, stateWithIso('2026-09-08T14:00:00.000Z'), backend.UNCONDITIONAL_WRITE);
     backend.readKeyWithVersion(backend.KEYS.WAVES);
-    backend.writeKey(backend.KEYS.WAVES, stateWithIso('2026-09-08T14:10:00.000Z'));
+    backend.writeKey(backend.KEYS.WAVES, stateWithIso('2026-09-08T14:10:00.000Z'), backend.UNCONDITIONAL_WRITE);
     backend.readKeyWithVersion(backend.KEYS.WAVES);
 
     const res = backend.writeKey(
@@ -229,8 +229,8 @@ test('CA-A4: un ISO stale como expectedVersion también es conflicto (If-Match d
 
 test('CA-A4: la condición que viaja al driver es el CAS por versión, no un write ciego', () => enTmp({ PIPELINE_OPSTATE_DURABLE: '1' }, () => {
     const { backend, driver } = remoteBackend();
-    backend.writeKey(backend.KEYS.WAVES, stateWithIso('2026-09-08T15:00:00.000Z'));
-    backend.writeKey(backend.KEYS.WAVES, stateWithIso('2026-09-08T15:01:00.000Z'));
+    backend.writeKey(backend.KEYS.WAVES, stateWithIso('2026-09-08T15:00:00.000Z'), backend.UNCONDITIONAL_WRITE);
+    backend.writeKey(backend.KEYS.WAVES, stateWithIso('2026-09-08T15:01:00.000Z'), backend.UNCONDITIONAL_WRITE);
 
     const puts = driver._calls.filter((c) => c.op === 'putItem');
     assert.equal(puts.length, 2);
@@ -243,8 +243,8 @@ test('CA-A4: la condición que viaja al driver es el CAS por versión, no un wri
 
 test('CA-A4: delete condicional — no se borra un ítem que cambió bajo los pies', () => enTmp({ PIPELINE_OPSTATE_DURABLE: '1' }, () => {
     const { backend } = remoteBackend();
-    backend.writeKey(backend.KEYS.PARTIAL_PAUSE, { allowed_issues: [1] });   // v1
-    backend.writeKey(backend.KEYS.PARTIAL_PAUSE, { allowed_issues: [1, 2] }); // v2
+    backend.writeKey(backend.KEYS.PARTIAL_PAUSE, { allowed_issues: [1] }, backend.UNCONDITIONAL_WRITE);   // v1
+    backend.writeKey(backend.KEYS.PARTIAL_PAUSE, { allowed_issues: [1, 2] }, backend.UNCONDITIONAL_WRITE); // v2
 
     const stale = backend.deleteKey(backend.KEYS.PARTIAL_PAUSE, 1);
     assert.equal(stale.ok, false);
@@ -268,7 +268,7 @@ test('CA-A9: un token embebido en `justification` NO llega al ítem escrito', ()
         allowed_issues: [5113],
         justification: `habilito la ola con ${token} para el smoke`,
         source: 'telegram',
-    });
+    }, backend.UNCONDITIONAL_WRITE);
 
     const raw = driver._raw(PROJECT_ID, 'coord#partial-pause');
     const serializado = JSON.stringify(raw);
@@ -311,7 +311,7 @@ test('CA-C1: el flag es único — con él encendido no queda camino de lectura 
     assert.equal(backend.existsKey(backend.KEYS.PARTIAL_PAUSE), false);
 
     // Y las escrituras tampoco vuelven al archivo: sigue con el contenido viejo.
-    backend.writeKey(backend.KEYS.PARTIAL_PAUSE, { allowed_issues: [5113] });
+    backend.writeKey(backend.KEYS.PARTIAL_PAUSE, { allowed_issues: [5113] }, backend.UNCONDITIONAL_WRITE);
     const local = JSON.parse(fs.readFileSync(path.join(dir, '.partial-pause.json'), 'utf8'));
     assert.deepEqual(local, { allowed_issues: [666] },
         'el archivo local no se toca: no hay dos fuentes de verdad');
@@ -322,7 +322,7 @@ test('CA-C1 / R8: apagar el flag devuelve el pipeline a filesystem sin perder el
     fs.writeFileSync(path.join(dir, '.partial-pause.json'),
         JSON.stringify({ allowed_issues: [4242] }));
     const { backend } = remoteBackend();
-    backend.writeKey(backend.KEYS.PARTIAL_PAUSE, { allowed_issues: [5113] });
+    backend.writeKey(backend.KEYS.PARTIAL_PAUSE, { allowed_issues: [5113] }, backend.UNCONDITIONAL_WRITE);
 
     // Rollback: se baja el flag (equivale a `durable: false` + restart).
     withEnv({ PIPELINE_OPSTATE_DURABLE: '0' }, () => {
@@ -371,7 +371,7 @@ test('CA-B2: con `atomicUpdate` falso la escritura remota se RECHAZA, no sale a 
         atomicUpdate: false,   // <- el driver NO garantiza escritura condicional
     });
 
-    const res = backend.writeKey(backend.KEYS.PARTIAL_PAUSE, { allowed_issues: [5113] });
+    const res = backend.writeKey(backend.KEYS.PARTIAL_PAUSE, { allowed_issues: [5113] }, backend.UNCONDITIONAL_WRITE);
     assert.equal(res.ok, false, 'sin CAS la escritura no puede prosperar');
     assert.ok(res.error instanceof Error);
     assert.match(res.error.message, /CA-B2|atomicUpdate|condicional/i,
@@ -395,7 +395,7 @@ test('CA-B2: la baja remota tambien exige CAS — un delete ciego borra lo que o
     });
 
     montar(true);
-    assert.equal(backend.writeKey(backend.KEYS.PARTIAL_PAUSE, { allowed_issues: [5113] }).ok, true);
+    assert.equal(backend.writeKey(backend.KEYS.PARTIAL_PAUSE, { allowed_issues: [5113] }, backend.UNCONDITIONAL_WRITE).ok, true);
 
     // Ahora degrada la garantia: el delete tiene que negarse.
     montar(false);
@@ -419,7 +419,7 @@ test('CA-B2: `atomicUpdate` se exige ESTRICTO — un truthy cualquiera no alcanz
             instanceId: PROJECT_ID,
             atomicUpdate: valor,
         });
-        const res = backend.writeKey(backend.KEYS.WAVES, stateWithIso('2026-09-08T12:00:00.000Z'));
+        const res = backend.writeKey(backend.KEYS.WAVES, stateWithIso('2026-09-08T12:00:00.000Z'), backend.UNCONDITIONAL_WRITE);
         assert.equal(res.ok, false,
             `atomicUpdate=${JSON.stringify(valor)} NO puede habilitar la escritura remota`);
     }
@@ -449,13 +449,13 @@ test('CA-B5: dos proyectos escriben el mismo key sin pisarse (aislados por PK)',
     };
 
     const alfa = montar('proyecto-alfa');
-    assert.equal(alfa.writeKey(alfa.KEYS.PARTIAL_PAUSE, { allowed_issues: [111] }).ok, true);
+    assert.equal(alfa.writeKey(alfa.KEYS.PARTIAL_PAUSE, { allowed_issues: [111] }, alfa.UNCONDITIONAL_WRITE).ok, true);
 
     const beta = montar('proyecto-beta');
     // Beta no ve nada: su particion esta vacia aunque el store ya tenga datos.
     assert.equal(beta.readKey(beta.KEYS.PARTIAL_PAUSE), null,
         'un proyecto no puede leer la allowlist de otro');
-    assert.equal(beta.writeKey(beta.KEYS.PARTIAL_PAUSE, { allowed_issues: [222] }).ok, true);
+    assert.equal(beta.writeKey(beta.KEYS.PARTIAL_PAUSE, { allowed_issues: [222] }, beta.UNCONDITIONAL_WRITE).ok, true);
 
     // Y la escritura de beta no piso la de alfa.
     const alfa2 = montar('proyecto-alfa');
@@ -476,13 +476,13 @@ test('CA-B5: el aislamiento vale tambien para el registro de olas', () => enTmp(
     };
 
     const alfa = montar('proyecto-alfa');
-    alfa.writeKey(alfa.KEYS.WAVES, stateWithIso('2026-09-08T10:00:00.000Z'));
+    alfa.writeKey(alfa.KEYS.WAVES, stateWithIso('2026-09-08T10:00:00.000Z'), alfa.UNCONDITIONAL_WRITE);
 
     const beta = montar('proyecto-beta');
     assert.equal(beta.readKey(beta.KEYS.WAVES), null, 'beta arranca sin olas propias');
 
     // La version es POR PARTICION: beta arranca en 1, no continua la de alfa.
-    const res = beta.writeKey(beta.KEYS.WAVES, stateWithIso('2026-09-08T11:00:00.000Z'));
+    const res = beta.writeKey(beta.KEYS.WAVES, stateWithIso('2026-09-08T11:00:00.000Z'), beta.UNCONDITIONAL_WRITE);
     assert.equal(res.ok, true);
     assert.equal(res.version, 1,
         'el contador de version no puede ser global: seria un canal entre proyectos');

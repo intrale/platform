@@ -308,7 +308,7 @@ test('CA-A5: un item de allowlist que supera los 64 KB se descarta entero al lee
 test('CA-A5: tampoco se ESCRIBE un item sobredimensionado (no se deja el estado ilegible)', () => enTmp({ PIPELINE_OPSTATE_DURABLE: '1' }, () => {
     const { backend, driver } = remoteBackend();
     const res = backend.writeKey(backend.KEYS.PARTIAL_PAUSE,
-        markerLegitimo({ justification: 'z'.repeat(70 * 1024) }));
+        markerLegitimo({ justification: 'z'.repeat(70 * 1024) }), backend.UNCONDITIONAL_WRITE);
 
     assert.equal(res.ok, false);
     assert.match(res.error.message, /escritura remota rechazada \(CA-A5\)/);
@@ -366,12 +366,12 @@ test('CA-A5: la cardinalidad excesiva tampoco se puede escribir', () => enTmp({ 
     const { backend, driver } = remoteBackend();
 
     const porIssues = backend.writeKey(backend.KEYS.PARTIAL_PAUSE,
-        { allowed_issues: issues(backend.MAX_ALLOWED_ISSUES + 1) });
+        { allowed_issues: issues(backend.MAX_ALLOWED_ISSUES + 1) }, backend.UNCONDITIONAL_WRITE);
     assert.equal(porIssues.ok, false);
     assert.match(porIssues.error.message, /allowed_issues/);
 
     const porSkills = backend.writeKey(backend.KEYS.PARTIAL_PAUSE,
-        { allowed_skills: skills(backend.MAX_ALLOWED_SKILLS + 1) });
+        { allowed_skills: skills(backend.MAX_ALLOWED_SKILLS + 1) }, backend.UNCONDITIONAL_WRITE);
     assert.equal(porSkills.ok, false);
     assert.match(porSkills.error.message, /allowed_skills/);
 
@@ -454,7 +454,7 @@ test('CA-A5: un payload legitimo se acepta en el round-trip completo (write + re
 
     assert.equal(backend.validateRemoteValue(backend.KEYS.PARTIAL_PAUSE, marker).ok, true);
 
-    const escrito = backend.writeKey(backend.KEYS.PARTIAL_PAUSE, marker);
+    const escrito = backend.writeKey(backend.KEYS.PARTIAL_PAUSE, marker, backend.UNCONDITIONAL_WRITE);
     assert.equal(escrito.ok, true);
     assert.equal(escrito.version, 1);
 
@@ -481,6 +481,6 @@ test('CA-A5: un registro de olas realista (decenas de olas y dependencias) pasa 
     };
 
     assert.equal(backend.validateRemoteValue(backend.KEYS.WAVES, estado).ok, true);
-    assert.equal(backend.writeKey(backend.KEYS.WAVES, estado).ok, true);
+    assert.equal(backend.writeKey(backend.KEYS.WAVES, estado, backend.UNCONDITIONAL_WRITE).ok, true);
     assert.deepEqual(backend.readKey(backend.KEYS.WAVES), estado);
 }));

@@ -714,7 +714,18 @@ function initWavesFromPartial(opts = {}) {
 
     const destino = labelFor(backend().KEYS.WAVES);
     try {
-        const write = backend().writeKey(backend().KEYS.WAVES, newState, wavesState.version);
+        // #5113 rev-8 — `version: null` significa "la clave NO existía", y la
+        // convención del backend para eso es `0` = create-once
+        // (`attribute_not_exists`), no "sin condición". Pasar el `null` crudo
+        // funcionaba de casualidad: el backend lo trataba como incondicional y
+        // rellenaba con la versión que él mismo leía (0), que da la misma
+        // condición. Desde esta revisión el write remoto sin versión se rechaza
+        // de plano, así que la intención se declara acá — que además es donde se
+        // sabe: quien leyó el estado es quien sabe si existía.
+        const expectedVersion = wavesState.version === null || wavesState.version === undefined
+            ? 0
+            : wavesState.version;
+        const write = backend().writeKey(backend().KEYS.WAVES, newState, expectedVersion);
         if (write && write.conflict) {
             // Otra instancia sembró entre nuestra lectura y nuestro write. NO se
             // reintenta ni se fuerza: el estado que quedó es el de la otra

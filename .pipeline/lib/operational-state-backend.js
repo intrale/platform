@@ -134,20 +134,96 @@ const MAX_WAVES_PER_BUCKET = 500;
 
 let configCache = null;
 
+// #5113 rev-8 — `readConfig()` distingue tres cosas que antes colapsaba en una:
+//
+//   1. config resuelta            → `{cfg, error:null}`, se CACHEA.
+//   2. config AUSENTE             → el resolver tira con `causa: 'ENOENT'` y el
+//                                   archivo efectivamente no está. Es el estado
+//                                   legítimo pre-cutover (tmpdirs de test,
+//                                   checkouts sin config): modo filesystem, y se
+//                                   CACHEA porque es un hecho estable.
+//   3. config ILEGIBLE            → el resolver tira por cualquier otra causa:
+//                                   YAML mal parseado, schema inválido, ruta que
+//                                   no es un archivo regular, o un `open` que
+//                                   falla con el archivo PRESENTE (lock/EACCES).
+//                                   NO se cachea y NO se resuelve a filesystem.
+//
+// El caso 3 era el agujero: se tragaba el error, devolvía `cfg:null` y lo
+// CACHEABA. `isRemote()` pasaba a `false` para SIEMPRE (el caché es por proceso
+// y nadie lo invalida en caliente) mientras el resto de la flota seguía
+// escribiendo en el store remoto: dos fuentes de verdad y el flag de cutover
+// apagándose solo, por la puerta de atrás de CA-C1. Un YAML corrupto de un
+// segundo — un editor guardando a medias — dejaba ese proceso desincronizado
+// hasta el próximo restart, sin una sola línea de log.
+//
+// El discriminador es `err.causa` (`ConfigParseViolation`), no el mensaje.
+// `causa: 'ENOENT'` se re-verifica contra el filesystem a propósito: el
+// resolver etiqueta así CUALQUIER `openSync` fallido, así que un config
+// bloqueado o sin permisos llegaría disfrazado de ausente — que es justo el
+// caso "lock de archivo" que no puede degradar a filesystem en silencio.
+function configErrorIsAbsence(err) {
+    if (!err || err.causa !== 'ENOENT') return false;
+    if (!err.archivo) return true;   // sin path no se puede refutar: se cree.
+    try {
+        // Presente pero no abrible ⇒ ilegible, NO ausente.
+        return !fs.existsSync(err.archivo);
+    } catch {
+        return false;
+    }
+}
+
 function readConfig() {
     if (configCache) return configCache;
     let cfg = null;
+    let error = null;
     try {
         // Lazy-require deliberado y caché por proceso: el resolver arrastra
         // js-yaml + ajv y este módulo se consulta en el camino caliente de
         // resolución del estado. Mismo patrón que `project-context.js`.
         // eslint-disable-next-line global-require
         cfg = require('./config-resolver').resolve({ pipelineDir: pipelineDir() });
-    } catch {
-        cfg = null; // config ilegible ⇒ modo filesystem (comportamiento conocido).
+    } catch (err) {
+        cfg = null;
+        // Config ausente ⇒ pre-cutover legítimo, sin `error`: el modo se
+        // resuelve por el default (filesystem) igual que siempre.
+        error = configErrorIsAbsence(err) ? null : err;
     }
-    configCache = { cfg };
-    return configCache;
+    const result = { cfg, error };
+    // Un fallo NO se memoiza: la config puede volver (el editor termina de
+    // guardar, el lock se libera) y el proceso tiene que poder enterarse sin
+    // reiniciar. Sólo el resultado estable (sano o ausencia confirmada) se cachea.
+    if (!error) configCache = result;
+    return result;
+}
+
+/**
+ * Error a devolver cuando la config del pipeline es ILEGIBLE: no se puede
+ * decidir dónde vive el estado operativo, así que no se lee ni se escribe en
+ * ningún lado. Fail-closed puro (CA-A7): elegir filesystem "por default" sería
+ * elegir la fuente de verdad equivocada justo cuando no se sabe cuál es.
+ *
+ * `.paused` NO pasa por este módulo (es filesystem SIEMPRE, D-3/SEC-7), así que
+ * el halt de último recurso sigue disponible con la config rota.
+ *
+ * @returns {Error|null}
+ */
+function configFailure() {
+    // El override por env es una decisión EXPLÍCITA del operador sobre dónde
+    // vive el estado: no necesita la config para nada y tiene que seguir
+    // funcionando con el YAML roto (es la herramienta del rollback en caliente).
+    const env = process.env.PIPELINE_OPSTATE_DURABLE;
+    if (env === '1' || env === '0') return null;
+    const { error } = readConfig();
+    if (!error) return null;
+    const err = new Error(
+        `config del pipeline ILEGIBLE: no se puede determinar el sustrato del estado `
+        + `operativo (CA-C1): ${error.message}. No se lee ni se escribe estado hasta `
+        + `resolverlo — caer a filesystem por default sería elegir la fuente de verdad `
+        + `equivocada mientras la flota puede estar en remoto.`
+    );
+    err.opstateKind = 'config';
+    err.cause = error;
+    return err;
 }
 
 function pipelineDir() {
@@ -676,6 +752,13 @@ function readFromDisk(file) {
  */
 function readKeyWithVersion(key) {
     assertKnownKey(key);
+    // #5113 rev-8 — config ilegible ⇒ degradación explícita, no modo filesystem
+    // silencioso. Los callers ya tratan `degraded` como fail-closed.
+    const cfgErr = configFailure();
+    if (cfgErr) {
+        reportDegradation(cfgErr, `read:${key}`);
+        return { value: null, version: null, remote: false, degraded: true, error: cfgErr };
+    }
     if (!isRemote()) {
         const { value, error } = readFromDisk(fileFor(key));
         return { value, version: isoVersionOf(value), remote: false, degraded: false, error };
@@ -736,6 +819,16 @@ function versionOf(key) {
 // ─── Escritura ──────────────────────────────────────────────────────────────
 
 /**
+ * #5113 rev-8 — Centinela para declarar una escritura remota INCONDICIONAL.
+ *
+ * Existe para que "no paso versión porque este write tiene que ganar" y "no paso
+ * versión porque me olvidé" dejen de ser el mismo código. Sólo lo usa el
+ * rollback de emergencia de `/wave promote`; cualquier otro uso es un bug y se
+ * lee como tal en el diff.
+ */
+const UNCONDITIONAL_WRITE = Symbol('opstate:unconditional-write');
+
+/**
  * Persiste una clave del estado operativo.
  *
  * En modo filesystem delega en el write atómico de siempre (tmp + fsync +
@@ -754,10 +847,44 @@ function writeKey(key, value, expectedVersion) {
     // Toda mutación invalida la memoización de lectura, gane o pierda el CAS:
     // si ganó, el valor cambió; si perdió, el store tiene algo que no vimos.
     invalidateReadCache(key);
+    const cfgErr = configFailure();
+    if (cfgErr) {
+        reportDegradation(cfgErr, `write:${key}`);
+        return { ok: false, degraded: true, error: cfgErr };
+    }
     if (!isRemote()) {
         const { atomicWriteFile } = require('./waves');
         atomicWriteFile(fileFor(key), JSON.stringify(value, null, 2));
         return { ok: true, version: isoVersionOf(value) };
+    }
+    // #5113 rev-8 — en modo remoto el `expectedVersion` es OBLIGATORIO.
+    //
+    // Antes, omitirlo no era un error: el backend rellenaba el hueco con la
+    // versión que él mismo acababa de leer, la `ConditionExpression` salía igual
+    // y se cumplía SIEMPRE. El CAS quedaba protegiendo la ventana
+    // `getItem→putItem` del propio backend (microsegundos, sin carrera real) en
+    // vez de la ventana del dominio (`leer previous → evaluar gate → escribir`),
+    // que es donde ocurre el lost update entre hosts. Hoy todos los callers de
+    // producción lo pasan, pero era un default silencioso: un mutador nuevo
+    // reintroducía la carrera de #5113 sin poner un solo test en rojo.
+    //
+    // La única excepción legítima es el rollback de emergencia
+    // (`waves.js:restoreKey`), que tiene que ganar contra la versión que la
+    // propia transacción fallida movió. Esa excepción ahora se DECLARA con
+    // `UNCONDITIONAL_WRITE` en el call-site, en vez de ser indistinguible de un
+    // olvido.
+    if (expectedVersion === UNCONDITIONAL_WRITE) {
+        expectedVersion = undefined;   // incondicional EXPLÍCITO: usa la versión leída.
+    } else if (expectedVersion === undefined || expectedVersion === null) {
+        const err = new Error(
+            `escritura remota de '${key}' SIN expectedVersion: el CAS quedaría cumpliéndose `
+            + `siempre y la carrera del dominio (leer → decidir → escribir) sin proteger `
+            + `(CA-A4). Pasá la versión del snapshot que alimentó la decisión, o `
+            + `UNCONDITIONAL_WRITE si es un rollback de emergencia.`
+        );
+        err.opstateKind = 'cas';
+        reportDegradation(err, `write:${key}`);
+        return { ok: false, error: err };
     }
     const payload = redactBeforeWrite(value);
     const check = validateRemoteValue(key, payload);
@@ -834,6 +961,11 @@ function writeKey(key, value, expectedVersion) {
 function deleteKey(key, expectedVersion) {
     assertKnownKey(key);
     invalidateReadCache(key);
+    const cfgErr = configFailure();
+    if (cfgErr) {
+        reportDegradation(cfgErr, `delete:${key}`);
+        return { ok: false, existed: false, degraded: true, error: cfgErr };
+    }
     if (!isRemote()) {
         const file = fileFor(key);
         const existed = fs.existsSync(file);
@@ -876,9 +1008,16 @@ function deleteKey(key, expectedVersion) {
     }
 }
 
-/** ¿Existe la clave? Equivalente de `fs.existsSync` en los dos modos. */
+/**
+ * ¿Existe la clave? Equivalente de `fs.existsSync` en los dos modos.
+ *
+ * #5113 rev-8 — con la config ilegible devuelve `false`: no se puede afirmar
+ * existencia sobre un sustrato que no se sabe cuál es. Los callers usan esto
+ * para reportar, no para autorizar (los gates van por `readKeyWithVersion`).
+ */
 function existsKey(key) {
     assertKnownKey(key);
+    if (configFailure()) return false;
     if (!isRemote()) return fs.existsSync(fileFor(key));
     return readKeyWithVersion(key).value !== null;
 }
@@ -899,6 +1038,8 @@ module.exports = {
     readKey,
     readKeyWithVersion,
     writeKey,
+    // #5113 rev-8 — centinela del write incondicional (rollback de emergencia).
+    UNCONDITIONAL_WRITE,
     deleteKey,
     existsKey,
     versionOf,

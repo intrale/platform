@@ -255,7 +255,7 @@ test('CA-C1 · el seeder lee y escribe el STORE: cero contacto con los dos archi
         allowed_skills: ['pipeline-dev'],
         created_at: '2026-09-08T00:00:00.000Z',
         source: 'ola-vigente',
-    }, null);
+    }, backend.UNCONDITIONAL_WRITE);
 
     let resultado;
     const registro = espiandoFs(() => {
@@ -289,8 +289,8 @@ test('CA-C1 · la guarda de idempotencia del seeder resuelve contra el STORE (no
         planned_waves: [],
         archived_waves: [],
         dependencies: [],
-    }, null);
-    backend.writeKey(backend.KEYS.PARTIAL_PAUSE, { allowed_issues: [5113] }, null);
+    }, backend.UNCONDITIONAL_WRITE);
+    backend.writeKey(backend.KEYS.PARTIAL_PAUSE, { allowed_issues: [5113] }, backend.UNCONDITIONAL_WRITE);
 
     const res = seeder.initWavesFromPartial({ skipAlert: true });
     assert.equal(res.action, 'noop_already_seeded',
@@ -316,7 +316,7 @@ test('CA-C1 · el alcance de ola del desync-detector sale del STORE', () => enTm
         planned_waves: [],
         archived_waves: [],
         dependencies: [],
-    }, null);
+    }, backend.UNCONDITIONAL_WRITE);
 
     let alcance;
     const registro = espiandoFs(() => { alcance = desync._internal.readWavesAllowlist(); });
@@ -368,7 +368,7 @@ test('CA-A7 · con el store caido el boot ABORTA y no cae al estado local', () =
 test('boot idempotente · el seeder no re-siembra sobre una ola ya sembrada', () => enTmp({ PIPELINE_OPSTATE_DURABLE: '1' }, (dir) => {
     const { backend, seeder } = freshModules();
     const { driver } = montarRemoto(backend);
-    backend.writeKey(backend.KEYS.PARTIAL_PAUSE, { allowed_issues: [5113] }, null);
+    backend.writeKey(backend.KEYS.PARTIAL_PAUSE, { allowed_issues: [5113] }, backend.UNCONDITIONAL_WRITE);
 
     // La segunda instancia leyo el estado ANTES de que la primera escribiera:
     // su `expectedVersion` queda stale. Se simula sembrando desde afuera entre
@@ -424,7 +424,7 @@ test('CA-A4 · create-once: si otra instancia crea la clave entre el read y el w
         });
     });
 
-    const res = backend.writeKey(backend.KEYS.WAVES, { active_wave: 'ola-del-perdedor', planned_waves: [] }, null);
+    const res = backend.writeKey(backend.KEYS.WAVES, { active_wave: 'ola-del-perdedor', planned_waves: [] }, backend.UNCONDITIONAL_WRITE);
 
     assert.equal(disparo(), true, 'el efecto de carrera no se disparo: el test no probo nada');
     assert.equal(res.ok, false, 'el segundo escritor creo la clave igual: el create-once no excluye');
@@ -455,7 +455,7 @@ test('CA-A4 · lost update: un write con version stale pierde y no pisa al ganad
     const SK = require('../kernel-coordination-store').skFor(backend.KEYS.PARTIAL_PAUSE);
 
     // v1: allowlist inicial.
-    const primera = backend.writeKey(backend.KEYS.PARTIAL_PAUSE, { allowed_issues: [1] }, null);
+    const primera = backend.writeKey(backend.KEYS.PARTIAL_PAUSE, { allowed_issues: [1] }, backend.UNCONDITIONAL_WRITE);
     assert.equal(primera.ok, true);
     const versionLeida = primera.version;
 

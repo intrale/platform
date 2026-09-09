@@ -232,3 +232,148 @@ test('R2 — promoteWaveAtomic promueve normalmente cuando la allowlist se aplic
         assert.equal(fs.existsSync(markerFile(dir)), false);
     });
 });
+
+// ─── R3 (rev-8) — el rollback con el STORE degradado, no con un JSON corrupto ─
+//
+// Los tests R1 de arriba alcanzan la rama fail-closed de `restoreKey` por un
+// único camino: `waves.json` ilegible en modo FILESYSTEM. Pero el comentario que
+// justifica esa rama cita el escenario REMOTO ("el sustrato responde"), y ese
+// camino no estaba ejercitado por ningún test: la suite entera corría contra
+// filesystem. Un cambio en la resolución del driver, en el manejo del timeout o
+// en el mapeo de errores del store podía romper el fail-closed del rollback sin
+// poner nada en rojo.
+//
+// Acá la degradación ocurre DONDE de verdad ocurre en producción: el store deja
+// de responder a mitad de la transacción, con el marker ya sellado en disco.
+
+const { createFakeSyncDynamoDriver } = require('./fixtures/fake-sync-dynamo-driver');
+
+const PROJECT_ID_REMOTO = 'intrale-platform';
+
+/**
+ * Escribe un backup de rollback en `archived/` y devuelve su sha. El marker
+ * lleva el sha justamente para que el rollback no restaure un backup alterado:
+ * omitirlo hace que el recovery aborte por `SHA mismatch` antes de tocar el
+ * store, y el test estaría pasando por el chequeo equivocado.
+ */
+function escribirBackup(dir, estado) {
+    const file = path.join(dir, 'archived', 'waves-rollback.test.json');
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const contenido = JSON.stringify(estado, null, 2);
+    fs.writeFileSync(file, contenido);
+    const sha = require('node:crypto').createHash('sha256').update(contenido).digest('hex');
+    return { path: file, sha };
+}
+
+/**
+ * Igual que `enTmp` pero con el backend en modo REMOTO contra un driver fake.
+ * `caerDespuesDe` deja pasar N operaciones sanas y a partir de ahí el store
+ * falla: es como se simula "se cayó a mitad de la transacción" sin red.
+ */
+function enTmpRemoto(fn) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wave-rollback-remoto-5113-'));
+    try {
+        return withEnv({
+            PIPELINE_DIR_OVERRIDE: dir,
+            WAVE_PROMOTE_RECOVERY_TTL_MS: '1',
+            PIPELINE_OPSTATE_DURABLE: '1',
+        }, () => {
+            delete require.cache[require.resolve('../waves')];
+            delete require.cache[require.resolve('../partial-pause')];
+            delete require.cache[require.resolve('../operational-state-backend')];
+            const backend = require('../operational-state-backend');
+            const waves = require('../waves');
+            const pp = require('../partial-pause');
+            const driver = createFakeSyncDynamoDriver();
+            backend.setDegradationSink({ onDegraded: () => {} });
+            backend._setDriverForTests({
+                driver,
+                spec: { type: 'dynamodb_table', tableName: 'tabla-fake', keys: [] },
+                projectId: PROJECT_ID_REMOTO,
+                instanceId: PROJECT_ID_REMOTO,
+                atomicUpdate: true,
+            });
+            // El store se cae para TODAS las operaciones a partir del llamado.
+            //
+            // Se invalida además la memoización de lectura (2 s, rev-6): el
+            // setup del test acaba de leer el estado sano y ese hit vivo haría
+            // que la sonda del rollback resolviera contra el caché en vez de
+            // contra el store caído. En producción la caída dura bastante más
+            // que el TTL; acá hay que forzarlo para no probar el caché.
+            const tumbarStore = () => {
+                const caida = () => {
+                    throw new Error('ETIMEDOUT: la tabla de coordinación dejó de responder');
+                };
+                driver.getItem = caida;
+                driver.putItem = caida;
+                driver.deleteItem = caida;
+                backend.invalidateReadCache();
+            };
+            waves.invalidateCache();
+            return fn({ dir, waves, pp, backend, driver, tumbarStore });
+        });
+    } finally {
+        try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* best-effort */ }
+    }
+}
+
+test('R3 — con el STORE caído el rollback a pre-existencia NO borra (fail-closed remoto)', () => {
+    enTmpRemoto(({ dir, waves, backend, tumbarStore }) => {
+        // Estado remoto real: la clave EXISTE en el store.
+        backend.writeKey(backend.KEYS.WAVES, sampleWaves(), 0);
+        assert.ok(backend.readKey(backend.KEYS.WAVES), 'premisa: el estado está en el store');
+
+        // Marker de una transacción interrumpida que selló "no existía". El
+        // rollback tendría que borrar la clave... salvo que no pueda confirmar
+        // nada porque el store dejó de responder.
+        seedStaleMarker(dir);
+        tumbarStore();
+
+        const res = waves.recoverIncompletePromote();
+
+        assert.equal(res.action, 'failed', 'el rollback siguió adelante sin poder consultar el store');
+        assert.match(String(res.reason), /no se borra nada|fail-closed|no pude confirmar/i);
+    });
+});
+
+test('R3 — con el STORE caído la restauración desde backup falla explícitamente', () => {
+    enTmpRemoto(({ dir, waves, backend, tumbarStore }) => {
+        backend.writeKey(backend.KEYS.WAVES, sampleWaves(), 0);
+
+        // Marker que SÍ tiene backup: el rollback debe reescribir la clave. Con
+        // el store caído el `writeKey` no puede aplicarse, y eso tiene que
+        // reportarse como fallo — no como "revertido".
+        const bak = escribirBackup(dir, sampleWaves());
+        seedStaleMarker(dir, {
+            waves_bak_path: bak.path, waves_bak_sha: bak.sha, waves_existed: true,
+        });
+
+        tumbarStore();
+        const res = waves.recoverIncompletePromote();
+
+        assert.equal(res.action, 'failed',
+            'el rollback reportó éxito sin haber podido escribir el estado restaurado');
+        assert.match(String(res.reason), /restaurando|write|rechazado|ETIMEDOUT/i);
+    });
+});
+
+test('R3 — control positivo: con el store SANO el mismo rollback sí revierte', () => {
+    enTmpRemoto(({ dir, waves, backend }) => {
+        // Sin `tumbarStore()`: demuestra que los dos tests de arriba fallan por
+        // la degradación y no porque el camino remoto esté roto de entrada.
+        const estado = sampleWaves();
+        estado.active_wave.number = 8;   // el estado "a medio promover"
+        backend.writeKey(backend.KEYS.WAVES, estado, 0);
+
+        const bak = escribirBackup(dir, sampleWaves());   // ola 7
+        seedStaleMarker(dir, {
+            waves_bak_path: bak.path, waves_bak_sha: bak.sha, waves_existed: true,
+        });
+
+        const res = waves.recoverIncompletePromote();
+
+        assert.equal(res.action, 'recovered');
+        assert.equal(backend.readKey(backend.KEYS.WAVES).active_wave.number, 7,
+            'el estado remoto no volvió a la ola previa');
+    });
+});

@@ -147,7 +147,7 @@ test('CA-A2 (remoto): el gate sigue siendo boolean estricto con el estado en el 
 
     backend.writeKey(backend.KEYS.PARTIAL_PAUSE, {
         allowed_issues: [5113], allowed_skills: ['pipeline-dev'], source: 'test',
-    });
+    }, backend.UNCONDITIONAL_WRITE);
 
     assertStrictBoolean(partialPause.isIssueAllowed(5113), 'remoto/dentro');
     assert.equal(partialPause.isIssueAllowed(5113), true, 'el issue de la ola se despacha');
@@ -187,7 +187,7 @@ test('CA-A2: las variantes `...InState` también son boolean estricto (mismo con
 test('CA-A2: la fachada `operational-state` tampoco cambia de tipo en modo remoto', () => enTmp({ PIPELINE_OPSTATE_DURABLE: '1' }, () => {
     const { backend, opState } = freshModules();
     mountRemote(backend);
-    backend.writeKey(backend.KEYS.PARTIAL_PAUSE, { allowed_issues: [5113] });
+    backend.writeKey(backend.KEYS.PARTIAL_PAUSE, { allowed_issues: [5113] }, backend.UNCONDITIONAL_WRITE);
 
     assertStrictBoolean(opState.isIssueAllowed(5113), 'fachada/dentro');
     assert.equal(opState.isIssueAllowed(5113), true);

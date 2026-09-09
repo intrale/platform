@@ -229,25 +229,42 @@ test('CA-A7: con el store caido el gate DENIEGA y no lee el archivo local ni una
     assert.equal(degradaciones.length > 0, true, 'la degradacion se reporta, no se traga');
 }));
 
-test('CA-A7: el gate por skill degrada a su politica de `running` y tampoco mira el archivo local', () => enTmp({ PIPELINE_OPSTATE_DURABLE: '1' }, () => {
+test('CA-A7: el gate por skill DENIEGA con el store degradado (no hereda la politica de `running`)', () => enTmp({ PIPELINE_OPSTATE_DURABLE: '1' }, () => {
     const { backend, partialPause } = freshModules();
     montarRemoto(backend, { failWith: errorDeRed() });
     sembrarAllowlistLocalRevocada(partialPause, 666);
 
     const registro = espiandoFs(() => {
-        // ASIMETRIA DELIBERADA DE PRODUCCION (#3680 / #5060): `isSkillAllowed`
-        // NO comparte el fail-closed de `isIssueAllowed`. Los skills de esta
-        // lista son componentes del control-plane (smoke-test de providers,
-        // harnesses de diagnostico) que no consumen backlog, y en `running`
-        // deben seguir corriendo. Con el store caido el modo colapsa a
-        // `running`, asi que el gate por skill queda PERMISIVO.
+        // #5113 rev-8 (D-3) — este test fijaba la conducta CONTRARIA y por eso
+        // el defecto no se veia: asertaba `true` describiendolo como "la
+        // politica de `running`". La asimetria con `isIssueAllowed` (#3680 /
+        // #5060) sigue siendo deliberada para el `running` REAL — los skills del
+        // control-plane (smoke-test de providers, harnesses de diagnostico) no
+        // consumen backlog y deben correr entre olas.
         //
-        // El test lo fija tal cual es, y demuestra que ese `true` viene de la
-        // politica de `running` y NO del archivo local: un skill que no figura
-        // en ninguna allowlist tambien pasa.
-        assert.equal(partialPause.isSkillAllowed('pipeline-dev'), true);
-        assert.equal(partialPause.isSkillAllowed('skill-que-no-figura-en-ninguna-allowlist'), true,
-            'el permiso sale de la politica de `running`, no de los allowed_skills del archivo local');
+        // Pero degradado NO es `running`. Al mover el estado a la capa de
+        // storage, "no hay marker" y "no pude leer el marker" pasaron a colapsar
+        // en el mismo modo, y con una ventana de ola que restringe
+        // `allowed_skills` una caida del store habilitaba TODOS los skills:
+        // exactamente lo contrario de lo que la ventana declara.
+        assert.equal(partialPause.isSkillAllowed('pipeline-dev'), false,
+            'sustrato ilegible ⇒ denegar, aunque el skill figure en la allowlist local stale');
+        assert.equal(partialPause.isSkillAllowed('skill-que-no-figura-en-ninguna-allowlist'), false,
+            'y con mas razon uno que no figura en ninguna allowlist');
+
+        // La denegacion viene de la DEGRADACION, no de haber colapsado a
+        // `paused` ni de leer el archivo local: el modo sigue siendo `running`
+        // (contrato del enum, ver el test de abajo) con el flag `degraded`.
+        const modo = partialPause.getPipelineMode();
+        assert.equal(modo.degraded, true, 'la degradacion viaja explicita en el estado');
+        assert.equal(partialPause.isSkillAllowedInState('pipeline-dev', modo), false);
+        // Contraprueba: el MISMO estado sin el flag vuelve a ser permisivo. Eso
+        // demuestra que lo que deniega es `degraded` y no otra cosa, y que la
+        // politica de `running` sigue intacta para el caso legitimo.
+        assert.equal(
+            partialPause.isSkillAllowedInState('pipeline-dev', { ...modo, degraded: false }), true,
+            'en un `running` REAL (marker ausente, lectura sana) el skill del control-plane pasa',
+        );
     });
 
     assertCeroContactoConElArchivo(registro, MARKER, 'gate por skill degradado');
@@ -277,6 +294,11 @@ test('CA-A7: el modo degradado cae en `running` (fail-closed), no en la ola loca
         assert.deepEqual(modo.allowedIssues, [], 'no se hereda un solo issue del archivo local');
         assert.deepEqual(modo.allowedSkills, []);
         assert.equal(modo.source, null, 'ni siquiera la autoria de la ola vieja se filtra');
+        // #5113 rev-8 (D-3) — el `mode` sigue siendo el enum de tres valores
+        // (lo consumen ~15 modulos de presentacion), pero la degradacion ya no
+        // queda muda: viaja en un campo aditivo que leen los DOS gates.
+        assert.equal(modo.degraded, true,
+            '`running` degradado se distingue de `running` real por este flag, no por el modo');
     });
 
     assertCeroContactoConElArchivo(registro, MARKER, 'getPipelineMode degradado');
@@ -352,7 +374,7 @@ test('CA-A7: `writeKey` degradado falla y NO escribe el archivo local como consu
 
     let res;
     const registro = espiandoFs(() => {
-        res = backend.writeKey(backend.KEYS.PARTIAL_PAUSE, { allowed_issues: [5113], source: 'ola-9.4' });
+        res = backend.writeKey(backend.KEYS.PARTIAL_PAUSE, { allowed_issues: [5113], source: 'ola-9.4' }, backend.UNCONDITIONAL_WRITE);
     });
 
     assert.equal(res.ok, false, 'la escritura degradada FALLA: el caller se entera');
@@ -419,7 +441,7 @@ test('CA-A7: recuperado el store se vuelve a servir el estado remoto, sin haber 
         driver._clearFailure();
         assert.equal(backend.writeKey(backend.KEYS.PARTIAL_PAUSE, {
             allowed_issues: [5113], allowed_skills: ['pipeline-dev'], source: 'ola-9.4',
-        }).ok, true);
+        }, backend.UNCONDITIONAL_WRITE).ok, true);
 
         // 3) El gate opera de nuevo contra el store: autoriza lo vigente y sigue
         //    denegando lo revocado, que es lo unico que el archivo local traia.
@@ -438,7 +460,7 @@ test('CA-A7: la degradacion se reporta en CADA operacion afectada (no se silenci
 
     backend.readKey(backend.KEYS.PARTIAL_PAUSE);
     backend.readKey(backend.KEYS.WAVES);
-    backend.writeKey(backend.KEYS.PARTIAL_PAUSE, { allowed_issues: [5113] });
+    backend.writeKey(backend.KEYS.PARTIAL_PAUSE, { allowed_issues: [5113] }, backend.UNCONDITIONAL_WRITE);
     backend.deleteKey(backend.KEYS.PARTIAL_PAUSE);
 
     assert.deepEqual(degradaciones.map((d) => d.ctx.stage), [
@@ -512,7 +534,7 @@ test('CA-A8: una clave fuera del vocabulario se rechaza en los DOS sustratos', (
         montarRemoto(backend);
         for (const op of [
             () => backend.readKeyWithVersion('clave-inventada'),
-            () => backend.writeKey('clave-inventada', { a: 1 }, null),
+            () => backend.writeKey('clave-inventada', { a: 1 }, backend.UNCONDITIONAL_WRITE),
             () => backend.deleteKey('clave-inventada', null),
             () => backend.existsKey('clave-inventada'),
         ]) {
@@ -557,7 +579,7 @@ test('CA-A5: la cota pre-parse de `partial-pause` es la suya, no la (mas holgada
 test('perf: la lectura remota se memoiza (N gates en un tick = 1 sola llamada al store)', () => enTmp({ PIPELINE_OPSTATE_DURABLE: '1' }, () => {
     const { backend } = freshModules();
     const { driver } = montarRemoto(backend);
-    backend.writeKey(backend.KEYS.PARTIAL_PAUSE, { allowed_issues: [1] }, null);
+    backend.writeKey(backend.KEYS.PARTIAL_PAUSE, { allowed_issues: [1] }, backend.UNCONDITIONAL_WRITE);
 
     const antes = driver._calls.filter((c) => c.op === 'getItem').length;
     for (let i = 0; i < 20; i += 1) backend.readKey(backend.KEYS.PARTIAL_PAUSE);
@@ -581,10 +603,10 @@ test('CA-A7: una lectura DEGRADADA nunca se memoiza (la caida se reintenta, no s
 test('la escritura invalida la memoizacion (nadie lee un valor que acaba de cambiar)', () => enTmp({ PIPELINE_OPSTATE_DURABLE: '1' }, () => {
     const { backend } = freshModules();
     montarRemoto(backend);
-    backend.writeKey(backend.KEYS.PARTIAL_PAUSE, { allowed_issues: [1] }, null);
+    backend.writeKey(backend.KEYS.PARTIAL_PAUSE, { allowed_issues: [1] }, backend.UNCONDITIONAL_WRITE);
     assert.deepEqual(backend.readKey(backend.KEYS.PARTIAL_PAUSE).allowed_issues, [1]);
 
-    backend.writeKey(backend.KEYS.PARTIAL_PAUSE, { allowed_issues: [1, 2] }, null);
+    backend.writeKey(backend.KEYS.PARTIAL_PAUSE, { allowed_issues: [1, 2] }, backend.UNCONDITIONAL_WRITE);
     assert.deepEqual(backend.readKey(backend.KEYS.PARTIAL_PAUSE).allowed_issues, [1, 2],
         'el gate siguio viendo la allowlist vieja despues de que el operador la cambio');
 

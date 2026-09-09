@@ -151,14 +151,38 @@ function sanitizeWaveMetaForWrite(opts) {
 // son fail-closed: un ítem sobredimensionado o con cardinalidad excesiva
 // devuelve `null` acá, no una allowlist a medias.
 //
-// CA-A7: si el store degrada, esto devuelve `null` → `getPipelineMode()` cae en
-// `mode: 'running'` → `isIssueAllowedInState` DENIEGA. NUNCA se lee el archivo
-// local como alternativa: una allowlist local stale no es un dato viejo, es una
-// autorización revocada que vuelve a estar vigente.
-function readPartialFile() {
+// CA-A7: si el store degrada, la degradación se PROPAGA (`degraded: true`) →
+// `getPipelineMode()` marca el estado como degradado → AMBOS gates (issues y
+// skills) DENIEGAN. NUNCA se lee el archivo local como alternativa: una
+// allowlist local stale no es un dato viejo, es una autorización revocada que
+// vuelve a estar vigente.
+//
+// #5113 rev-8 (D-3) — antes esto usaba el azúcar `readKey()`, que DESCARTA
+// `degraded`/`error`, y la degradación llegaba a `getPipelineMode()`
+// indistinguible de "no hay marker" (`mode: 'running'`). El gate de issues
+// denegaba igual por el fail-closed de #5060, pero el de skills tenía
+// `if (mode === 'running') return true` y quedaba fail-OPEN: con una ventana de
+// ola que restringe `allowed_skills`, una degradación del store habilitaba
+// TODOS los skills. La política de skills era correcta cuando `running` sólo
+// podía significar "no hay marker"; este issue le agregó un segundo significado
+// ("no pude leer") y hay que distinguirlos en el origen, no en cada gate.
+//
+// @returns {{data: object|null, degraded: boolean, error: Error|null}}
+function readPartialFileWithState() {
+    let res;
     try {
-        const parsed = stateBackend.readKey(stateBackend.KEYS.PARTIAL_PAUSE);
-        if (!parsed) return null;
+        res = stateBackend.readKeyWithVersion(stateBackend.KEYS.PARTIAL_PAUSE);
+    } catch (err) {
+        return { data: null, degraded: true, error: err };
+    }
+    // Mismo criterio que `readAllowlistSnapshot` (D-1): `error` degrada igual
+    // que `degraded`. En modo filesystem el fallo SIEMPRE viaja por `error`.
+    if (res && (res.degraded || res.error)) {
+        return { data: null, degraded: true, error: res.error || null };
+    }
+    try {
+        const parsed = res ? res.value : null;
+        if (!parsed) return { data: null, degraded: false, error: null };
         const arr = Array.isArray(parsed.allowed_issues) ? parsed.allowed_issues : [];
         const allowed = arr.map(normalizeIssue).filter(Boolean);
         // #2893: campos opcionales aditivos.
@@ -176,21 +200,40 @@ function readPartialFile() {
                 .filter(Boolean)
         )].sort();
         return {
-            allowed_issues: allowed,
-            allowed_skills: allowedSkills,
-            created_at: parsed.created_at || null,
-            source: parsed.source || null,
-            accepted_dep_risk: acceptedDepRisk,
-            dep_sources: depSources,
-            // #3625: TTLs de autoría heredada (recursive-deps:from-N) viven en
-            // un campo aditivo del JSON y se purgan vía pulpo:cleanup cron.
-            authorization_ttls: (parsed.authorization_ttls && typeof parsed.authorization_ttls === 'object')
-                ? parsed.authorization_ttls
-                : null,
+            data: {
+                allowed_issues: allowed,
+                allowed_skills: allowedSkills,
+                created_at: parsed.created_at || null,
+                source: parsed.source || null,
+                accepted_dep_risk: acceptedDepRisk,
+                dep_sources: depSources,
+                // #3625: TTLs de autoría heredada (recursive-deps:from-N) viven en
+                // un campo aditivo del JSON y se purgan vía pulpo:cleanup cron.
+                authorization_ttls: (parsed.authorization_ttls && typeof parsed.authorization_ttls === 'object')
+                    ? parsed.authorization_ttls
+                    : null,
+            },
+            degraded: false,
+            error: null,
         };
-    } catch {
-        return null;
+    } catch (err) {
+        // Un fallo NORMALIZANDO el payload tampoco es "no había allowlist": es
+        // un payload que no se puede interpretar. Degradación (fail-closed).
+        return { data: null, degraded: true, error: err };
     }
+}
+
+/**
+ * Azúcar sobre `readPartialFileWithState()`: sólo el dato.
+ *
+ * OJO — descarta la señal de degradación: `null` acá significa "no hay
+ * allowlist" O "no se pudo leer". Sirve para los callers que ya tratan ambos
+ * casos igual (leer metadata de la ola, heredar TTLs). Los GATES y todo camino
+ * que decida autorizaciones deben usar `readPartialFileWithState()`.
+ * @returns {object|null}
+ */
+function readPartialFile() {
+    return readPartialFileWithState().data;
 }
 
 /**
@@ -266,13 +309,15 @@ function readPreviousAllowlist() {
  *   - lectura DEGRADADA    → `null` + `degraded: true`. El caller NO escribe:
  *                            escribir sobre un estado que no se pudo leer es
  *                            fail-open sobre un control de acceso (CA-A7).
+ *                            "Degradada" incluye el `error` del sustrato, no
+ *                            sólo el flag `degraded` del modo remoto (D-1).
  *
  * En modo filesystem `writeKey`/`deleteKey` ignoran `expectedVersion` (la
  * exclusión la sigue dando `withLockSync`, que entre procesos del MISMO host sí
  * excluye), así que propagarlo es inocuo y el comportamiento no cambia.
  *
  * @returns {{previous:number[], value:object|null, expectedVersion:number|string|null,
- *            degraded:boolean}}
+ *            degraded:boolean, error:Error|null}}
  */
 function readAllowlistSnapshot() {
     let res;
@@ -281,13 +326,25 @@ function readAllowlistSnapshot() {
     } catch (err) {
         // Igual que `readPartialFile()`: una excepción del sustrato no puede
         // leerse como "no había allowlist". Se trata como degradación.
-        return { previous: [], value: null, expectedVersion: null, degraded: true };
+        return { previous: [], value: null, expectedVersion: null, degraded: true, error: err };
     }
     const value = (res && res.value && typeof res.value === 'object' && !Array.isArray(res.value))
         ? res.value
         : null;
-    if (res && res.degraded) {
-        return { previous: [], value: null, expectedVersion: null, degraded: true };
+    // #5113 rev-8 (D-1) — `error` degrada IGUAL que `degraded`, y la asimetría
+    // no era teórica: en modo filesystem `readKeyWithVersion` devuelve SIEMPRE
+    // `degraded:false` y reporta el fallo por `error` (un JSON truncado, un
+    // EBUSY/EPERM transitorio de Windows — la misma razón por la que
+    // `atomicWriteFile` tiene retry). Mirando sólo `degraded` un marker ilegible
+    // se leía como "no había allowlist": el gate de autoría de #3625 no veía
+    // NINGÚN removal, aceptaba la mutación sin `authorizedBy` y el write pisaba
+    // la allowlist entera con el audit registrando "sin cambios".
+    //
+    // Es el mismo criterio que `waves.js:readKeyForSnapshot` (`read.error ||
+    // read.degraded` → `STATE_UNREADABLE`). La ruta de LECTURA ya abortaba; la
+    // de MUTACIÓN de la allowlist había quedado del otro lado de la asimetría.
+    if (res && (res.degraded || res.error)) {
+        return { previous: [], value: null, expectedVersion: null, degraded: true, error: res.error || null };
     }
     const previous = (value && Array.isArray(value.allowed_issues))
         ? value.allowed_issues.map(normalizeIssue).filter(Boolean)
@@ -300,7 +357,7 @@ function readAllowlistSnapshot() {
     } else {
         expectedVersion = res.version;
     }
-    return { previous, value, expectedVersion, degraded: false };
+    return { previous, value, expectedVersion, degraded: false, error: null };
 }
 
 /**
@@ -322,6 +379,17 @@ function degradedWriteRefusal(allowedIssues = []) {
 
 /**
  * Estado actual del pipeline.
+ * #5113 rev-8 (D-3) — campo ADITIVO `degraded`. No se agregó un `mode:
+ * 'degraded'` a propósito: `mode` lo consumen ~15 módulos (dashboard, telegram,
+ * wizards, dispatch-facts) que asumen el enum cerrado de tres valores, y un
+ * cuarto valor los rompería justo cuando el sustrato ya está caído. El flag
+ * viaja al lado y los gates lo leen; para todo consumidor de presentación el
+ * modo sigue siendo el de siempre.
+ *
+ * `degraded: true` significa "el sustrato no se pudo leer": NO es "no hay
+ * allowlist". Cualquier decisión de AUTORIZACIÓN sobre un estado degradado es
+ * fail-open sobre un control de acceso.
+ *
  * @returns {{
  *   mode: 'running'|'paused'|'partial_pause',
  *   allowedIssues: number[],
@@ -329,16 +397,19 @@ function degradedWriteRefusal(allowedIssues = []) {
  *   source: string|null,
  *   acceptedDepRisk: boolean,
  *   depSources: Object|null,
+ *   degraded: boolean,
  * }}
  */
 function getPipelineMode() {
     if (fs.existsSync(pauseFile())) {
+        // `.paused` es filesystem SIEMPRE (D-3/SEC-7) y es halt total: no
+        // depende del store, así que acá no hay degradación que reportar.
         return {
             mode: 'paused', allowedIssues: [], allowedSkills: [], createdAt: null, source: null,
-            acceptedDepRisk: false, depSources: null,
+            acceptedDepRisk: false, depSources: null, degraded: false,
         };
     }
-    const partial = readPartialFile();
+    const { data: partial, degraded } = readPartialFileWithState();
     // #3680 CA-A15: el modo partial_pause se activa si hay allowed_issues O
     // allowed_skills no vacíos. Antes era sólo allowed_issues; agregamos la
     // disyunción para que un harness que se identifica por skill (no por issue
@@ -356,11 +427,12 @@ function getPipelineMode() {
             acceptedDepRisk: partial.accepted_dep_risk === true,
             depSources: partial.dep_sources || null,
             authorizationTtls: partial.authorization_ttls || null,
+            degraded: false,
         };
     }
     return {
         mode: 'running', allowedIssues: [], allowedSkills: [], createdAt: null, source: null,
-        acceptedDepRisk: false, depSources: null,
+        acceptedDepRisk: false, depSources: null, degraded,
     };
 }
 
@@ -415,10 +487,11 @@ function isIssueAllowed(issue) {
  * de cola, reconciler) y no quieren pagar el costo de releer el filesystem
  * por cada uno. La política es la misma que `isIssueAllowed`.
  *
- * Tabla de verdad (#5060 cambia la primera fila):
+ * Tabla de verdad (#5060 cambia la primera fila; #5113 rev-8 agrega la última):
  *   running        → false, salvo `PIPELINE_ALLOW_UNSCOPED_DISPATCH=1`
  *   paused         → false
  *   partial_pause  → issue ∈ allowedIssues
+ *   degraded       → false SIEMPRE (ni siquiera con el escape hatch)
  *
  * @param {number|string} issue
  * @param {ReturnType<typeof getPipelineMode>} state
@@ -428,6 +501,12 @@ function isIssueAllowedInState(issue, state) {
     const n = normalizeIssue(issue);
     if (!n) return false;
     if (!state || state.mode === 'paused') return false;
+    // #5113 rev-8 (D-3/CA-A7) — sustrato ilegible ⇒ denegar, y ANTES del escape
+    // hatch: `PIPELINE_ALLOW_UNSCOPED_DISPATCH` existe para dispatchar sin ola
+    // vigente, no para dispatchar sin saber si hay ola vigente. Con el store
+    // caído y el hatch prendido, el default sería el backlog histórico entero
+    // (el incidente #5060).
+    if (state.degraded === true) return false;
     // #5060 — sin allowlist NO hay ola vigente que acote el dispatch: fail-closed.
     if (state.mode === 'running') {
         if (!unscopedDispatchEnabled()) return false;
@@ -448,12 +527,25 @@ function isIssueAllowedInState(issue, state) {
 //   running         → true (no hay pausa)
 //   paused          → false (halt total)
 //   partial_pause   → skill ∈ allowedSkills
+//   degraded        → false (#5113 rev-8, D-3)
 //
-// #5060 — NO se le aplica el fail-closed de `isIssueAllowedInState`. El gate de
-// issues acota el BACKLOG a la ola vigente; los skills de acá son componentes
-// del control-plane (smoke-test de providers, harnesses de diagnóstico) que no
-// consumen backlog y deben seguir corriendo entre olas. Denegarlos dejaría al
-// pipeline sin diagnóstico justo cuando no hay ola activa.
+// #5060 — al modo `running` NO se le aplica el fail-closed de
+// `isIssueAllowedInState`. El gate de issues acota el BACKLOG a la ola vigente;
+// los skills de acá son componentes del control-plane (smoke-test de providers,
+// harnesses de diagnóstico) que no consumen backlog y deben seguir corriendo
+// entre olas. Denegarlos dejaría al pipeline sin diagnóstico justo cuando no hay
+// ola activa.
+//
+// #5113 rev-8 (D-3) — pero `degraded` SÍ deniega, y no es la misma regla. Ese
+// `return true` era correcto mientras `running` significaba una sola cosa: "no
+// hay marker", es decir un HECHO leído del sustrato. Al mover el estado a la
+// capa de storage, `running` pasó a poder significar también "no pude leer el
+// marker", y ahí el `true` deja de ser una política y pasa a ser una
+// suposición: con una ventana de ola que restringe `allowed_skills`, una
+// degradación del store habilitaba TODOS los skills — exactamente lo contrario
+// de lo que la ventana declara. Un skill que no corre por store caído se
+// reintenta; uno que corrió fuera de su ventana ya consumió cuota y tocó
+// producción.
 // -----------------------------------------------------------------------------
 function isSkillAllowed(skillName) {
     return isSkillAllowedInState(skillName, getPipelineMode());
@@ -462,6 +554,7 @@ function isSkillAllowed(skillName) {
 function isSkillAllowedInState(skillName, state) {
     if (typeof skillName !== 'string' || skillName.trim().length === 0) return false;
     if (!state || state.mode === 'paused') return false;
+    if (state.degraded === true) return false;
     if (state.mode === 'running') return true;
     return Array.isArray(state.allowedSkills) && state.allowedSkills.includes(skillName.trim());
 }
@@ -593,8 +686,38 @@ function setPartialPause(issues, opts = {}) {
             extra: opts.extra,   // #3742 — preservar contexto del wizard.
         });
         // Normalizar shape al de setPartialPause para compat con callers.
-        if (r.rejected) {
-            return { ok: false, rejected: true, allowedIssues: readPreviousAllowlist(), allowedSkills: [], msg: 'Mutación rechazada por gate' };
+        //
+        // #5113 rev-8 (D-2) — se mira `r.ok === false`, NO `r.rejected`. Antes
+        // sólo se contemplaba el rechazo del gate, pero `clearPartialPause`
+        // ganó en este mismo issue dos salidas de fallo que no llevan
+        // `rejected`: la refusal por sustrato degradado
+        // (`{...degradedWriteRefusal(), existed:false}`) y el CAS perdido
+        // (`{ok:false, existed, conflict}`). Ambas caían en el `return {ok:true,
+        // msg:'Pausa parcial desactivada'}` de abajo: el store rechazaba el
+        // borrado y el caller leía "desactivada". Los call-sites son justo los
+        // peligrosos — `pulpo.js` y la poda convergente que causó el incidente
+        // #5060 —, así que un falso "desactivada" ahí es un freno que se cree
+        // aplicado y no lo está.
+        if (r.ok === false) {
+            const allowedIssues = Array.isArray(r.allowedIssues) && r.allowedIssues.length > 0
+                ? r.allowedIssues
+                // Ante degradación NO se relee (la relectura devolvería `[]` por
+                // el mismo motivo por el que falló). Ante rechazo del gate sí:
+                // el caller necesita ver la allowlist que quedó vigente.
+                : (r.degraded ? [] : readPreviousAllowlist());
+            return {
+                ok: false,
+                rejected: !!r.rejected,
+                degraded: !!r.degraded,
+                conflict: !!r.conflict,
+                allowedIssues,
+                allowedSkills: [],
+                msg: r.msg
+                    || (r.conflict
+                        ? 'Desactivación de la pausa parcial NO aplicada: otro escritor mutó la '
+                          + 'allowlist entre la lectura y el borrado (CAS perdido). Releé y reintentá.'
+                        : 'Mutación rechazada por gate'),
+            };
         }
         return {
             ok: true,
@@ -1087,6 +1210,30 @@ function clearPartialPause(opts = {}) {
 function resumeAll(opts = {}) {
     // #5113 (CA-A4) — snapshot versionado: el `expectedVersion` viaja al delete.
     const snapshot = readAllowlistSnapshot();
+
+    // #5113 rev-8 — este chequeo estaba DESPUÉS del gate de autoría y DESPUÉS de
+    // borrar `.paused`, y era inútil ahí: con el snapshot degradado `previous`
+    // es `[]`, el `if (previous.length > 0)` no entra y el gate de #3625 se
+    // salteaba ENTERO. O sea que la única situación en la que no se sabe qué se
+    // está revocando era también la única en la que nadie pedía autoría.
+    //
+    // Corre primero y no se toca NADA: ni `.paused` ni la allowlist. Levantar el
+    // halt total dejando la allowlist ilegible no es "dejarle una salida al
+    // operador" — es reanudar el pipeline sin saber qué alcance queda vigente,
+    // que es el fail-open que este issue vino a cerrar. La salida del operador
+    // es reintentar cuando el sustrato responda; `.paused` sigue siendo
+    // filesystem y se puede borrar a mano si hace falta.
+    if (snapshot.degraded) {
+        return {
+            removedFull: false,
+            removedPartial: false,
+            degraded: true,
+            msg: '/resume abortado: el sustrato de estado degradó y no se pudo leer la '
+                + 'allowlist vigente. No se levantó ninguna pausa — reanudar sin saber qué '
+                + 'alcance se está revocando sería fail-open sobre el gate de dispatch '
+                + '(CA-A7). Revisá la salud del store/JSON y reintentá.',
+        };
+    }
     const previous = snapshot.previous;
 
     // Sólo gateamos la parte partial-pause: el `.paused` no tiene allowlist.
@@ -1112,16 +1259,8 @@ function resumeAll(opts = {}) {
     if (fs.existsSync(pauseFile())) {
         try { fs.unlinkSync(pauseFile()); removedFull = true; } catch {}
     }
-    // La allowlist sí: `deleteKey` resuelve contra el sustrato vigente.
-    //
-    // #5113 (CA-A4/CA-A7) — si la lectura degradó NO se borra a ciegas: no se
-    // sabe qué se estaría borrando ni contra qué versión. `.paused` ya quedó
-    // levantado arriba (es filesystem y es el halt de último recurso), así que
-    // el operador no queda sin salida; la allowlist se reintenta cuando el
-    // sustrato vuelve.
-    if (snapshot.degraded) {
-        return { removedFull, removedPartial: false, degraded: true };
-    }
+    // La allowlist sí: `deleteKey` resuelve contra el sustrato vigente. El caso
+    // degradado ya abortó arriba, antes de tocar `.paused` y antes del gate.
     const res = stateBackend.deleteKey(
         stateBackend.KEYS.PARTIAL_PAUSE, snapshot.expectedVersion,
     );
@@ -1511,6 +1650,10 @@ module.exports = {
     // #3625 — exportados para callers que quieran leer estado raw y para tests.
     readPreviousAllowlist,
     readAllowlistSnapshot,   // #5113 CA-A4 — snapshot + versión para el CAS del dominio.
+    // #5113 rev-8 (D-3) — lectura del marker CON la señal de degradación. La
+    // usa `getPipelineMode()` y se exporta para tests: `readPartialFile` (el
+    // azúcar) colapsa "no hay marker" con "no se pudo leer".
+    readPartialFileWithState,
     // #6118 — metadata de ola del marker, para re-inyectarla en setPartialPause
     // y no perderla al sumar un issue al allowlist.
     readWaveMetaFromMarker,

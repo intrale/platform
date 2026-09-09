@@ -2369,7 +2369,39 @@ function saveStateLocked(state, metadata = {}) {
     // #5113 — el contenido sale de la capa de storage (así el backup existe
     // también en modo remoto); el archivo de backup se escribe siempre local.
     try {
-        const previousState = stateBackend.readKey(stateBackend.KEYS.WAVES);
+        // #5113 rev-8 — se lee CON la señal de degradación. Antes usaba el azúcar
+        // `readKey()`, que colapsa "no había estado previo" con "no lo pude
+        // leer": ante una degradación `previousState` quedaba `null`, no se
+        // escribía backup en `archived/` y el write seguía adelante sin un solo
+        // log. Se perdía el respaldo justo en el momento de más riesgo — cuando
+        // el sustrato ya está dando problemas y estamos por sobreescribir.
+        //
+        // NO aborta el save: el backup es defensa en profundidad y el write en
+        // sí ya está protegido por el CAS de más abajo (un conflicto lo frena).
+        // Frenar el registro de olas porque no se pudo respaldar convertiría una
+        // degradación transitoria en un pipeline detenido. Pero deja de ser
+        // silencioso: queda log + alerta para que el operador sepa que ese save
+        // no tiene punto de retorno en `archived/`.
+        const prevRead = stateBackend.readKeyWithVersion(stateBackend.KEYS.WAVES);
+        if (prevRead.error || prevRead.degraded) {
+            const detail = (prevRead.error && prevRead.error.message) || 'sustrato degradado';
+            logWarn(
+                `No se pudo leer el registro de olas previo para el backup (${detail}). `
+                + `El save continúa (el CAS protege el write), pero SIN respaldo en archived/.`
+            );
+            try {
+                notifyTelegram({
+                    level: 'warn',
+                    component: 'waves-backup',
+                    message: 'save del registro de olas SIN backup previo',
+                    detail,
+                    action: 'Revisá la salud del estado operativo (JSON local o store remoto). '
+                        + 'Si el save siguiente sale mal, no hay copia en archived/ de este punto.',
+                    diag: `node -e "console.log(JSON.stringify(require('./.pipeline/lib/operational-state-backend').readKeyWithVersion('waves')))"`,
+                });
+            } catch {}
+        }
+        const previousState = prevRead.value;
         if (previousState) {
             ensureDir(archivedDir());
             // ts viene exclusivamente de state.meta.updated_at (derivado de
@@ -3156,7 +3188,13 @@ function restoreFromSnapshots(marker) {
             // versión que la propia transacción fallida movió lo dejaría sin
             // poder revertir, que es exactamente el escenario en el que el
             // rollback es lo único que queda.
-            const res = stateBackend.writeKey(key, payload);
+            //
+            // #5113 rev-8 — la excepción ahora se DECLARA con el centinela en
+            // vez de omitir el argumento. Omitirlo era indistinguible de un
+            // olvido, y desde esta revisión el backend rechaza los writes
+            // remotos sin versión: este call-site es el único que puede pasar
+            // por acá, y queda explícito en el diff que lo hace a propósito.
+            const res = stateBackend.writeKey(key, payload, stateBackend.UNCONDITIONAL_WRITE);
             if (!res || res.ok === false) {
                 return `Error restaurando ${label}: ${(res && res.error && res.error.message) || 'write rechazado'}`;
             }
