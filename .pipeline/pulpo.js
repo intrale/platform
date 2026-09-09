@@ -20152,23 +20152,17 @@ function sendTelegramWithMarkup(text, replyMarkup, opts) {
 // ofreciendo `/unblock`, que sí es un camino completo. No se simula lo que no
 // está: prometer con un botón lo que el pipeline no puede cumplir es peor que
 // no ofrecerlo.
+// La implementación vive en `lib/gate1-signature-keyboard.js`. Acá quedó sólo
+// el cableado: como función privada del monolito su test la REPLICABA en vez de
+// invocarla, y esa réplica dejó pasar que el camino real devolvía `null` en
+// todos los barridos con la suite en verde. Movida al módulo, el test ejercita
+// la misma función que corre acá.
+const gate1Keyboard = require('./lib/gate1-signature-keyboard');
+
 function buildGate1SignatureKeyboard(issue) {
-  try {
-    const gate = require('./lib/operator-gate').getDefault();
-    const approve = gate.register({ issue, action: 'approve' });
-    const reject = gate.register({ issue, action: 'reject' });
-    const adjust = gate.register({ issue, action: 'adjust-definicion' });
-    return gate.buildInlineKeyboard({
-      approveId: approve.callbackData,
-      rejectId: reject.callbackData,
-      adjustId: adjust.callbackData,
-    });
-  } catch (e) {
-    // Sin botones el aviso sigue saliendo: perder la alerta entera por no poder
-    // registrar una capability sería cambiar un problema por uno peor.
-    log('barrido', `#${issue} GATE 1: no pude registrar los botones de firma (${e.message}) — el aviso sale sin botones`);
-    return null;
-  }
+  return gate1Keyboard.buildGate1SignatureKeyboard(issue, {
+    log: (m) => log('barrido', m),
+  });
 }
 
 // #6192 — Aviso del GATE 1 · Firma de Definición: ficha de decisión + botones +
@@ -20194,18 +20188,30 @@ function notifyGate1Retention(input) {
     const dedup = require('./lib/gate1-notify-dedup').getDefault();
     const nowMs = Date.now();
 
-    const aviso = gate1Notify.buildGate1Notice({
+    // ORDEN DELIBERADO: primero se pregunta si HAY firma posible, después se
+    // redacta. Al revés —redactar y recién entonces intentar los botones— el
+    // aviso ya había prometido "elegí una opción" cuando se descubría que no
+    // había ninguna capability que emitir, y salía pidiendo firmar sin dar con
+    // qué. El sondeo no registra nada: sólo responde si la firma es posible.
+    const cap = gate1Keyboard.probeGate1SignatureCapability();
+    if (!cap.ok) {
+      log('barrido', `#${issue} GATE 1: la firma por botón no está disponible (${cap.code}) — el aviso sale como indeterminado`);
+    }
+
+    const avisoInput = {
       issue,
       titulo: i.titulo,
       reason: i.reason,
       caso,
       firmantesAutorizados: i.firmantesAutorizados,
       firmaVencida: i.firmaVencida,
+      capacidadFirma: cap.ok,
       // El aviso sólo se emite cuando cambia el estado firmable, así que el
       // "desde cuándo" es el instante en que se detectó ESTA retención.
       blockedAt: new Date(nowMs).toISOString(),
       fechaCorta: fechaCortaLocal(nowMs),
-    }, nowMs);
+    };
+    const aviso = gate1Notify.buildGate1Notice(avisoInput, nowMs);
 
     // La clave del dedupe incluye el hash de los criterios (misma primitiva que
     // usa el gate para detectar firma stale), el motivo y el caso: si cambia
@@ -20217,8 +20223,27 @@ function notifyGate1Retention(input) {
       issue,
       hash,
       emit: () => {
-        const keyboard = aviso.ofreceBotones ? buildGate1SignatureKeyboard(issue) : null;
-        sendTelegramWithMarkup(aviso.texto, keyboard, { plain: true });
+        // El registro real de las capabilities ocurre acá y no antes: el dedupe
+        // silencia casi todos los barridos, y registrar en cada uno dejaría
+        // tres bindings huérfanos en disco por barrido silenciado.
+        let texto = aviso.texto;
+        let keyboard = null;
+        if (aviso.ofreceBotones) {
+          const kb = buildGate1SignatureKeyboard(issue);
+          if (kb.ok) {
+            keyboard = kb.keyboard;
+          } else {
+            // La capability se cayó entre el sondeo y el registro. El texto ya
+            // redactado ofrece firmar, así que se REARMA como indeterminado en
+            // vez de mandarlo pelado: un aviso que ofrece opciones sin botones
+            // es el defecto que este orden vino a cerrar, y no lo arregla que
+            // la ventana sea chica.
+            texto = gate1Notify.buildGate1Notice(
+              { ...avisoInput, capacidadFirma: false }, nowMs,
+            ).texto;
+          }
+        }
+        sendTelegramWithMarkup(texto, keyboard, { plain: true });
       },
     });
 

@@ -60,6 +60,9 @@ const CASOS = Object.freeze(['block', 'load-error', 'gate-error']);
  * @param {string} [input.reason]                motivo del gate — clasifica, NO se imprime.
  * @param {string} [input.caso]                  'block' | 'load-error' | 'gate-error'.
  * @param {number} [input.firmantesAutorizados]  tamaño del allowlist resuelto server-side.
+ * @param {boolean}[input.capacidadFirma]        ¿se pudo emitir la capability de firma?
+ *   `false` EXPLÍCITO reclasifica la ficha a `indeterminado`; `undefined`/`null`
+ *   = no se preguntó y el comportamiento no cambia.
  * @param {boolean}[input.firmaVencida]          firmó, pero los criterios cambiaron (anti-TOCTOU).
  * @param {string} [input.blockedAt]             ISO del momento en que se detectó la retención.
  * @param {string} [input.fechaCorta]            fecha legible de esa detección.
@@ -138,6 +141,12 @@ function tipoDeFicha(caso, i) {
     if (caso !== 'block') return 'indeterminado';
     const firmantes = Number(i.firmantesAutorizados);
     if (Number.isFinite(firmantes) && firmantes === 0) return 'indeterminado';
+    // #6192 — El tipo `firma` es el ÚNICO que ofrece los botones. Si el
+    // pipeline no pudo emitir la capability, una ficha `firma` pediría firmar
+    // sin dar con qué: misma opción inejecutable que "no hay firmante", por
+    // otra causa. Sólo el `false` explícito reclasifica — `undefined` es "no se
+    // preguntó", y tratarlo como indisponible degradaría avisos sanos.
+    if (i.capacidadFirma === false) return 'indeterminado';
     return 'firma';
 }
 
@@ -156,6 +165,11 @@ function rawDeAviso(caso, tipo, i) {
         firmantes_autorizados: Number.isFinite(Number(i.firmantesAutorizados))
             ? Number(i.firmantesAutorizados) : null,
         firma_vencida: i.firmaVencida === true,
+        // Se pasa junto a `firmantes_autorizados` porque alimenta la MISMA
+        // decisión en `decision-card` (clasificación + qué dato falta): el
+        // clasificador tiene que poder ver las dos causas de "no hay firma
+        // posible", no una sola.
+        capacidad_firma_disponible: i.capacidadFirma === undefined ? null : i.capacidadFirma,
         blocked_at: i.blockedAt || null,
         fecha_corta: i.fechaCorta || '',
         skill: 'operador',

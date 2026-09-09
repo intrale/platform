@@ -27,6 +27,10 @@ const gate1Notify = require('../gate1-notify');
 const decisionCard = require('../decision-card');
 const { createOperatorGate } = require('../operator-gate');
 const { createTokenSigner } = require('../action-token');
+const {
+    buildGate1SignatureKeyboard,
+    probeGate1SignatureCapability,
+} = require('../gate1-signature-keyboard');
 
 const NOW = Date.parse('2026-09-09T12:00:00Z');
 const TITULO = 'Gate de firma: ficha de decision y botones autorizados';
@@ -227,18 +231,27 @@ function makeGate(overrides = {}) {
     return { gate, dirs };
 }
 
-/** Arma el teclado igual que `pulpo.js::buildGate1SignatureKeyboard`. */
+// INVOCA el call-site de producción; NO lo replica.
+//
+// La versión anterior de este helper repetía la secuencia
+// `register×3 → buildInlineKeyboard` "igual que pulpo.js". Esa réplica probaba
+// que `operator-gate` sabe armar un teclado —lo que ya se sabía— y no que el
+// camino del aviso lo arme. Con la suite en verde, el camino real devolvía
+// `null` en TODOS los barridos: los avisos salían sin un solo botón.
+//
+// Ahora se llama la función que corre en producción y sólo se le inyecta de
+// dónde sale el gate. Si ese camino se rompe, estos tests se caen.
 function teclado(gate, issue) {
-    const approve = gate.register({ issue, action: 'approve' });
-    const reject = gate.register({ issue, action: 'reject' });
-    const adjust = gate.register({ issue, action: 'adjust-definicion' });
+    const res = buildGate1SignatureKeyboard(issue, { gateFactory: () => gate });
+    assert.strictEqual(res.ok, true, `la capability de firma tenía que emitirse (code=${res.code})`);
+    const fila = res.keyboard.inline_keyboard[0];
     return {
-        markup: gate.buildInlineKeyboard({
-            approveId: approve.callbackData,
-            rejectId: reject.callbackData,
-            adjustId: adjust.callbackData,
-        }),
-        ids: { approve: approve.callbackData, reject: reject.callbackData, adjust: adjust.callbackData },
+        markup: res.keyboard,
+        ids: {
+            approve: fila[0].callback_data,
+            reject: fila[1].callback_data,
+            adjust: fila[2].callback_data,
+        },
     };
 }
 
@@ -293,4 +306,144 @@ test('allowlist vacío = fail-closed: ni el operador puede firmar', () => {
     assert.strictEqual(res.ok, false);
     assert.strictEqual(res.reason, 'unauthorized');
     assert.ok(fs.existsSync(path.join(dirs.waitingDir, '6192.json')), 'nada se movió');
+});
+
+// =============================================================================
+// #6192 · regresión — la capability de firma NO disponible.
+//
+// El defecto que motivó estos tests: `buildGate1SignatureKeyboard` devolvía
+// `null` en todos los barridos (el firmador resuelve su material sólo desde el
+// vault y el vault está cerrado en la config productiva), pero el aviso se
+// redactaba ANTES de averiguarlo y salía como ficha de `firma` — pidiendo
+// elegir una opción— sin un solo botón. La suite no lo veía porque el helper
+// del test replicaba el call-site en vez de invocarlo.
+// =============================================================================
+
+/** Gate que falla al construirse, como con el vault cerrado. */
+function gateCaido(code = 'VAULT_DISABLED') {
+    return () => { throw Object.assign(new Error('sin material de firma'), { code }); };
+}
+
+test('si el gate no se puede construir, el builder degrada a sin botones y reporta el código', () => {
+    const logs = [];
+    const res = buildGate1SignatureKeyboard(6192, {
+        gateFactory: gateCaido(),
+        log: (m) => logs.push(m),
+    });
+
+    assert.strictEqual(res.ok, false);
+    assert.strictEqual(res.keyboard, null);
+    assert.strictEqual(res.code, 'VAULT_DISABLED', 'el código acotado viaja para poder diagnosticar');
+    assert.strictEqual(logs.length, 1, 'el fallo se loguea: no es un null silencioso');
+    assert.ok(!/sin material de firma/.test(logs[0]), 'se loguea el code, nunca el message crudo');
+});
+
+test('el builder NUNCA lanza aunque el gate explote: la alerta tiene que salir igual', () => {
+    for (const factory of [gateCaido(), () => null, () => ({}), () => { throw 'string pelado'; }]) {
+        const res = buildGate1SignatureKeyboard(6192, { gateFactory: factory });
+        assert.strictEqual(res.ok, false);
+        assert.strictEqual(res.keyboard, null);
+        assert.ok(typeof res.code === 'string' && res.code.length > 0);
+    }
+});
+
+test('un teclado mal formado se trata como fallo, no como éxito', () => {
+    const { gate } = makeGate();
+    const res = buildGate1SignatureKeyboard(6192, {
+        gateFactory: () => ({
+            register: gate.register,
+            buildInlineKeyboard: () => ({ inline_keyboard: [[{ text: 'Aprobar', callback_data: 'x' }]] }),
+        }),
+    });
+    assert.strictEqual(res.ok, false, 'un solo botón no son los tres botones');
+    assert.strictEqual(res.code, 'KEYBOARD_MALFORMED');
+});
+
+test('el sondeo de capability responde sin registrar NADA en disco', () => {
+    const { gate, dirs } = makeGate();
+
+    const ok = probeGate1SignatureCapability({ gateFactory: () => gate });
+    assert.strictEqual(ok.ok, true);
+    assert.strictEqual(
+        fs.existsSync(dirs.storeDir) ? fs.readdirSync(dirs.storeDir).length : 0,
+        0,
+        'el sondeo no deja bindings huérfanos: los barridos silenciados por el dedupe no escriben',
+    );
+
+    const caido = probeGate1SignatureCapability({ gateFactory: gateCaido('VAULT_FAILURE') });
+    assert.strictEqual(caido.ok, false);
+    assert.strictEqual(caido.code, 'VAULT_FAILURE');
+});
+
+test('sin capability de firma el aviso NO es ficha de firma: no pide firmar sin dar con qué', () => {
+    const aviso = gate1Notify.buildGate1Notice({
+        issue: 6192, titulo: TITULO, caso: 'block',
+        reason: 'GATE 1 retuvo admision a desarrollo: falta la firma de definicion',
+        firmantesAutorizados: 1,
+        capacidadFirma: false,
+    }, NOW);
+
+    assert.strictEqual(aviso.tipo, 'indeterminado');
+    assert.strictEqual(aviso.ofreceBotones, false);
+    assert.strictEqual(aviso.degradado, false, 'es una reclasificación honesta, no una degradación');
+});
+
+test('la misma retención CON capability sí es ficha de firma con botones', () => {
+    const base = {
+        issue: 6192, titulo: TITULO, caso: 'block',
+        reason: 'GATE 1 retuvo admision a desarrollo: falta la firma de definicion',
+        firmantesAutorizados: 1,
+    };
+    const conCap = gate1Notify.buildGate1Notice({ ...base, capacidadFirma: true }, NOW);
+    assert.strictEqual(conCap.tipo, 'firma');
+    assert.strictEqual(conCap.ofreceBotones, true);
+
+    // `undefined` = "no se preguntó": los call-sites que no participan del gate
+    // no cambian de comportamiento por este campo.
+    const sinPreguntar = gate1Notify.buildGate1Notice(base, NOW);
+    assert.strictEqual(sinPreguntar.tipo, 'firma');
+    assert.strictEqual(sinPreguntar.ofreceBotones, true);
+});
+
+test('el aviso sin capability dice QUÉ falta y no nombra la pieza interna', () => {
+    const aviso = gate1Notify.buildGate1Notice({
+        issue: 6192, titulo: TITULO, caso: 'block',
+        reason: 'GATE 1 retuvo admision a desarrollo: falta la firma de definicion',
+        firmantesAutorizados: 1,
+        capacidadFirma: false,
+    }, NOW);
+
+    assert.match(aviso.texto, /no está disponible|no puede emitir/i, 'el operador se entera de que no puede firmar');
+    for (const jerga of [/vault/i, /HMAC/i, /token/i, /callback_data/i]) {
+        assert.ok(!jerga.test(aviso.texto), `el aviso no filtra jerga interna (${jerga})`);
+    }
+});
+
+test('el tipo de la ficha cambia con la capability: el dedupe vuelve a avisar cuando la firma se recupera', () => {
+    const base = {
+        issue: 6192, titulo: TITULO, caso: 'block',
+        reason: 'GATE 1 retuvo admision a desarrollo: falta la firma de definicion',
+        firmantesAutorizados: 1,
+    };
+    // La clave del dedupe que arma `pulpo.js` incluye `aviso.tipo`. Que el tipo
+    // difiera es lo que hace que el operador reciba el aviso CON botones apenas
+    // la firma vuelve a estar disponible, en vez de quedar sellado en el estado
+    // degradado del primer barrido.
+    const sinCap = gate1Notify.buildGate1Notice({ ...base, capacidadFirma: false }, NOW);
+    const conCap = gate1Notify.buildGate1Notice({ ...base, capacidadFirma: true }, NOW);
+    assert.notStrictEqual(sinCap.tipo, conCap.tipo);
+});
+
+test('sin firmante autorizado la falta nombrada es la del firmante, no la de la capability', () => {
+    // Las dos causas pueden darse juntas. Se nombra la que el operador puede
+    // resolver por su cuenta.
+    const aviso = gate1Notify.buildGate1Notice({
+        issue: 6192, titulo: TITULO, caso: 'block',
+        reason: 'GATE 1 retuvo admision a desarrollo: falta la firma de definicion',
+        firmantesAutorizados: 0,
+        capacidadFirma: false,
+    }, NOW);
+    assert.strictEqual(aviso.tipo, 'indeterminado');
+    assert.strictEqual(aviso.ofreceBotones, false);
+    assert.match(aviso.texto, /firmante autorizado/i);
 });

@@ -735,6 +735,13 @@ function normalizar(raw, nowMs) {
         criteriosTotal: entero(d.criterios_total),
         firmaVencida: booleano(d.firma_vencida) === true,
         firmantesAutorizados: d.firmantes_autorizados == null ? null : Number(d.firmantes_autorizados),
+        // #6192 — ¿el pipeline PUEDE emitir hoy una capability de firma? Es una
+        // condición distinta de "hay quien firme": la allowlist puede estar
+        // poblada y aun así no haber forma de firmar (el firmador de tokens
+        // resuelve su material sólo desde el vault, y con el vault cerrado no
+        // hay token que emitir). `null` = no se preguntó (call-sites que no
+        // participan del gate); sólo el `false` EXPLÍCITO reclasifica.
+        capacidadFirma: booleano(d.capacidad_firma_disponible),
         autores: (Array.isArray(d.autores) ? d.autores : []).map((x) => rolLegible(x)).filter(Boolean),
         fechaCorta: sec(d.fecha_corta, 40),
         reasonCategory: String(d.reason_category || '').trim().toLowerCase(),
@@ -810,7 +817,16 @@ function clasificar(n) {
     if (RE_FIRMA.test(txt) || n.labels.includes('needs-definition')) {
         // CA-A3 — si el gate retiene porque NO HAY firmante autorizado, pedirle
         // al operador que firme no tiene sentido: ninguna firma sería válida.
-        return n.firmantesAutorizados === 0 ? 'indeterminado' : 'firma';
+        //
+        // #6192 — MISMA REGLA, otra causa: si el pipeline no puede emitir la
+        // capability de firma, tampoco hay firma posible. La ficha `firma` es
+        // la única que ofrece los botones, así que clasificar acá `firma` sin
+        // capability produce exactamente lo que el módulo se propuso evitar:
+        // un aviso que pide firmar y no da con qué. El principio ya estaba
+        // escrito ("un botón que no puede cumplir lo que promete es peor que no
+        // tenerlo"); sólo le faltaba esta entrada.
+        const hayFirmaPosible = n.firmantesAutorizados !== 0 && n.capacidadFirma !== false;
+        return hayFirmaPosible ? 'firma' : 'indeterminado';
     }
     if (RE_REBOTE.test(txt)) {
         // Rebotes agotados vs. una vuelta más: el contador decide.
@@ -951,6 +967,11 @@ const COPY = deepFreeze({
         falta_sin_motivo: 'El motivo del bloqueo. Quien lo frenó no dejó texto; el dato está en la actividad reciente del issue.',
         falta_dep_sin_numero: 'Qué trabajo está esperando: dice que espera algo pero no dice cuál.',
         falta_sin_firmante: 'No hay ningún firmante autorizado configurado: sin eso ninguna firma vale.',
+        // #6192 — NO dice "vault", ni "token", ni "HMAC": el operador no
+        // remedia eso desde el chat, y nombrar la pieza interna sería filtrar
+        // configuración de seguridad a un canal. Dice qué no se puede hacer y
+        // por dónde sigue, que es lo accionable.
+        falta_sin_capability: 'La firma por botón no está disponible en este momento: el pipeline no puede emitir una firma válida. Queda frenado hasta que se destrabe a mano.',
         falta_ilegible: 'El motivo del bloqueo llegó ilegible o no entra en un aviso.',
         // Sin valor de ejemplo A PROPÓSITO: si no supe clasificar el bloqueo,
         // menos puedo proponer qué hacer con él. Ver `ORIENTACION_LIBRE`.
@@ -1411,7 +1432,11 @@ function fichaPregunta(n) {
 /** Qué dato falta, según el caso. Nunca un genérico vacío. */
 function faltaDe(n) {
     const txt = `${n.reason} ${n.question}`.trim();
+    // Orden deliberado: "no hay quien firme" antes que "no se puede firmar".
+    // Si faltan las dos, la primera es la que el operador puede resolver por su
+    // cuenta (configurar el firmante), así que es la que conviene nombrar.
     if (n.firmantesAutorizados === 0) return COPY.indeterminado.falta_sin_firmante;
+    if (n.capacidadFirma === false) return COPY.indeterminado.falta_sin_capability;
     if (!txt) return COPY.indeterminado.falta_sin_motivo;
     if (RE_DEP.test(txt) && n.deps.length === 0) return COPY.indeterminado.falta_dep_sin_numero;
     if (n.reasonCategory === 'unknown') return COPY.indeterminado.falta_ilegible;
