@@ -1,0 +1,496 @@
+<title>Diez horas en vacío</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans+Condensed:wght@600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+  :root {
+    --paper: #f7f6f3;
+    --surface: #ffffff;
+    --sunken: #efede8;
+    --ink: #1a1c1f;
+    --ink-soft: #55585e;
+    --ink-faint: #8b8e95;
+    --rule: #dcd9d2;
+    --rule-soft: #e8e5df;
+    --alert: #a92d18;
+    --alert-soft: #f5e3df;
+    --warn: #9a6200;
+    --warn-soft: #f7ecd8;
+    --ok: #1f6b45;
+    --ok-soft: #dfeee6;
+    --idle: #c9c5bc;
+    --shadow: 0 1px 2px rgba(26, 28, 31, .06);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper: #16181b;
+      --surface: #1d2024;
+      --sunken: #121417;
+      --ink: #e8e6e1;
+      --ink-soft: #a8aab0;
+      --ink-faint: #74777e;
+      --rule: #33373d;
+      --rule-soft: #282c31;
+      --alert: #ef7b63;
+      --alert-soft: #3a221d;
+      --warn: #d9a441;
+      --warn-soft: #362a17;
+      --ok: #5fb98a;
+      --ok-soft: #1a2f24;
+      --idle: #3c4046;
+      --shadow: 0 1px 2px rgba(0, 0, 0, .3);
+    }
+  }
+  :root[data-theme="dark"] {
+    --paper: #16181b;
+    --surface: #1d2024;
+    --sunken: #121417;
+    --ink: #e8e6e1;
+    --ink-soft: #a8aab0;
+    --ink-faint: #74777e;
+    --rule: #33373d;
+    --rule-soft: #282c31;
+    --alert: #ef7b63;
+    --alert-soft: #3a221d;
+    --warn: #d9a441;
+    --warn-soft: #362a17;
+    --ok: #5fb98a;
+    --ok-soft: #1a2f24;
+    --idle: #3c4046;
+    --shadow: 0 1px 2px rgba(0, 0, 0, .3);
+  }
+
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    font-family: "IBM Plex Sans", system-ui, -apple-system, sans-serif;
+    font-size: 16px;
+    line-height: 1.6;
+    margin: 0;
+  }
+  .wrap { max-width: 900px; margin: 0 auto; padding: 40px 28px 80px; }
+  .col { max-width: 68ch; }
+
+  h1, h2, h3 {
+    font-family: "IBM Plex Sans Condensed", "IBM Plex Sans", system-ui, sans-serif;
+    text-wrap: balance;
+    line-height: 1.15;
+    margin: 0;
+  }
+  h1 { font-size: 2.6rem; font-weight: 700; letter-spacing: -.01em; }
+  h2 { font-size: 1.55rem; font-weight: 700; margin-bottom: .2em; }
+  h3 { font-size: 1.08rem; font-weight: 600; }
+  p { margin: 0 0 1em; }
+  a { color: inherit; }
+
+  .eyebrow {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: .72rem;
+    letter-spacing: .12em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    margin: 0 0 .8em;
+  }
+  code, .mono { font-family: "IBM Plex Mono", ui-monospace, monospace; }
+  code {
+    font-size: .86em;
+    background: var(--sunken);
+    padding: .1em .35em;
+    border-radius: 3px;
+  }
+
+  header.masthead { border-bottom: 2px solid var(--ink); padding-bottom: 22px; margin-bottom: 34px; }
+  .subtitle { font-size: 1.12rem; color: var(--ink-soft); margin: .7em 0 0; max-width: 62ch; }
+  .meta {
+    display: flex; flex-wrap: wrap; gap: 6px 22px;
+    font-family: "IBM Plex Mono", monospace; font-size: .76rem;
+    color: var(--ink-faint); margin-top: 1.4em;
+  }
+
+  .verdict {
+    background: var(--alert-soft);
+    border-left: 4px solid var(--alert);
+    padding: 20px 24px;
+    margin-bottom: 40px;
+  }
+  .verdict p { margin: 0; font-size: 1.14rem; line-height: 1.5; }
+  .verdict strong { font-weight: 600; }
+
+  section { margin-bottom: 46px; }
+
+  .tiles {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 1px;
+    background: var(--rule);
+    border: 1px solid var(--rule);
+    margin-top: 22px;
+  }
+  .tile { background: var(--surface); padding: 16px 18px; }
+  .tile .n {
+    font-family: "IBM Plex Sans Condensed", sans-serif;
+    font-size: 2rem; font-weight: 700; line-height: 1;
+    font-variant-numeric: tabular-nums;
+    display: block;
+  }
+  .tile .l {
+    font-size: .78rem; color: var(--ink-soft);
+    margin-top: 7px; display: block; line-height: 1.35;
+  }
+  .tile.bad .n { color: var(--alert); }
+  .tile.warn .n { color: var(--warn); }
+
+  /* Banda horaria */
+  .band { margin-top: 26px; overflow-x: auto; }
+  .band-inner { min-width: 620px; }
+  .band-row { display: grid; grid-template-columns: 62px 1fr 74px; align-items: center; gap: 12px; padding: 2px 0; }
+  .band-row .hr {
+    font-family: "IBM Plex Mono", monospace; font-size: .74rem;
+    color: var(--ink-faint); font-variant-numeric: tabular-nums; text-align: right;
+  }
+  .bar-track { position: relative; height: 15px; background: var(--rule-soft); }
+  .bar-fill { position: absolute; inset: 0 auto 0 0; }
+  .bar-fill.void { background: var(--alert); }
+  .bar-fill.quiet { background: var(--idle); }
+  .bar-live { position: absolute; top: 0; bottom: 0; background: var(--ok); }
+  .band-row .out {
+    font-family: "IBM Plex Mono", monospace; font-size: .74rem;
+    font-variant-numeric: tabular-nums; color: var(--ink-soft);
+  }
+  .band-row .out.zero { color: var(--alert); font-weight: 500; }
+  .band-legend {
+    display: flex; flex-wrap: wrap; gap: 18px; margin-top: 14px;
+    font-size: .78rem; color: var(--ink-soft);
+  }
+  .swatch { display: inline-block; width: 11px; height: 11px; margin-right: 6px; vertical-align: -1px; }
+  .band-note {
+    font-size: .82rem; color: var(--ink-faint);
+    border-top: 1px solid var(--rule-soft); margin-top: 16px; padding-top: 10px;
+  }
+
+  /* Cadena causal */
+  ol.chain { list-style: none; padding: 0; margin: 24px 0 0; counter-reset: step; }
+  ol.chain > li {
+    counter-increment: step;
+    display: grid; grid-template-columns: 34px 1fr; gap: 16px;
+    padding: 16px 0; border-top: 1px solid var(--rule-soft);
+  }
+  ol.chain > li:last-child { border-bottom: 1px solid var(--rule-soft); }
+  ol.chain > li::before {
+    content: counter(step);
+    font-family: "IBM Plex Mono", monospace; font-size: .8rem; font-weight: 600;
+    color: var(--ink-faint); padding-top: .25em;
+  }
+  ol.chain h3 { margin-bottom: .25em; }
+  ol.chain p { margin: 0; color: var(--ink-soft); font-size: .95rem; }
+
+  /* Fallas */
+  .fault { border-top: 1px solid var(--rule); padding-top: 20px; margin-top: 30px; }
+  .fault-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 12px; margin-bottom: .5em; }
+  .tag {
+    font-family: "IBM Plex Mono", monospace; font-size: .68rem;
+    letter-spacing: .08em; text-transform: uppercase;
+    padding: 3px 8px; border-radius: 2px; white-space: nowrap;
+  }
+  .tag.p1 { background: var(--alert); color: var(--surface); }
+  .tag.ok { background: var(--ok-soft); color: var(--ok); border: 1px solid var(--ok); }
+  .tag.p2 { background: var(--warn-soft); color: var(--warn); border: 1px solid var(--warn); }
+  .tag.p3 { background: var(--sunken); color: var(--ink-soft); border: 1px solid var(--rule); }
+  .fault h3 { flex: 1 1 auto; min-width: 240px; }
+  .evidence {
+    background: var(--sunken); border-left: 3px solid var(--rule);
+    padding: 12px 16px; margin: 14px 0 0;
+    font-family: "IBM Plex Mono", monospace; font-size: .8rem;
+    line-height: 1.55; color: var(--ink-soft);
+    overflow-x: auto; white-space: pre-wrap; word-break: break-word;
+  }
+  .where {
+    font-family: "IBM Plex Mono", monospace; font-size: .78rem;
+    color: var(--ink-faint); margin-top: 10px;
+  }
+
+  /* Plan */
+  .phase { margin-top: 30px; }
+  .phase-head {
+    display: flex; align-items: baseline; gap: 14px;
+    border-bottom: 2px solid var(--ink); padding-bottom: 8px; margin-bottom: 6px;
+  }
+  .phase-head h3 { font-size: 1.3rem; }
+  .phase-when {
+    font-family: "IBM Plex Mono", monospace; font-size: .76rem;
+    color: var(--ink-faint); margin-left: auto; white-space: nowrap;
+  }
+  ol.steps { padding-left: 0; list-style: none; margin: 0; counter-reset: s; }
+  ol.steps > li {
+    counter-increment: s;
+    display: grid; grid-template-columns: 30px 1fr; gap: 14px;
+    padding: 14px 0; border-bottom: 1px solid var(--rule-soft);
+  }
+  ol.steps > li::before {
+    content: counter(s) ".";
+    font-family: "IBM Plex Mono", monospace; font-size: .82rem;
+    color: var(--ink-faint); padding-top: .15em;
+  }
+  ol.steps strong { font-weight: 600; }
+  ol.steps p { margin: .3em 0 0; font-size: .93rem; color: var(--ink-soft); }
+  .cmd {
+    display: block; background: var(--sunken); border: 1px solid var(--rule-soft);
+    padding: 8px 12px; margin-top: 9px; border-radius: 3px;
+    font-family: "IBM Plex Mono", monospace; font-size: .8rem;
+    overflow-x: auto; white-space: pre;
+  }
+
+  table { border-collapse: collapse; width: 100%; margin-top: 20px; font-size: .9rem; }
+  th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--rule-soft); vertical-align: top; }
+  th {
+    font-family: "IBM Plex Mono", monospace; font-size: .72rem;
+    letter-spacing: .08em; text-transform: uppercase; color: var(--ink-faint);
+    border-bottom: 1px solid var(--rule);
+  }
+  td.num { font-family: "IBM Plex Mono", monospace; font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+  ul.plain { padding-left: 1.15em; margin: 12px 0 0; }
+  ul.plain li { margin-bottom: .5em; color: var(--ink-soft); }
+  ul.plain li strong { color: var(--ink); font-weight: 600; }
+
+  footer {
+    border-top: 1px solid var(--rule); margin-top: 56px; padding-top: 18px;
+    font-family: "IBM Plex Mono", monospace; font-size: .76rem; color: var(--ink-faint);
+  }
+  @media (max-width: 560px) {
+    h1 { font-size: 2rem; }
+    .wrap { padding: 28px 18px 60px; }
+  }
+</style>
+
+<div class="wrap">
+
+  <header class="masthead">
+    <p class="eyebrow">Informe de incidente · pipeline Intrale</p>
+    <h1>Diez horas en vacío</h1>
+    <p class="subtitle">Por qué el 8 de septiembre el pipeline consumió cuota todo el día, relanzó agentes sin sentido y produjo un solo PR.</p>
+    <div class="meta">
+      <span>2026-09-08</span>
+      <span>Ventana analizada: 00:00Z → 01:00Z (+1)</span>
+      <span>Fuentes: spawn-exit · cross-provider-dispatch · pulpo.log · liveness</span>
+    </div>
+  </header>
+
+  <div class="verdict col">
+    <p><strong>No hubo una falla del modelo ni de los agentes.</strong> Fueron dos defectos de infraestructura que se combinaron: el barrido de huérfanos rebota trabajo sano después de cada reinicio del Pulpo, y el dispatch reintenta cada 30 segundos aunque no haya ningún provider capaz de atender. Uno produjo el retrabajo; el otro, el giro en vacío. Los dos están corregidos, con la verificación descrita al final.</p>
+  </div>
+
+  <section>
+    <p class="eyebrow">El día en números</p>
+    <h2>Mucho movimiento, casi nada de avance</h2>
+    <div class="tiles">
+      <div class="tile bad"><span class="n">7538</span><span class="l">eventos de dispatch</span></div>
+      <div class="tile bad"><span class="n">51</span><span class="l">llegaron a lanzar un agente (0,7%)</span></div>
+      <div class="tile bad"><span class="n">1</span><span class="l">PR mergeado a <code>main</code></span></div>
+      <div class="tile warn"><span class="n">912</span><span class="l">salidas de agente auditadas (2,2× el día anterior)</span></div>
+      <div class="tile warn"><span class="n">928</span><span class="l">mensajes a Telegram</span></div>
+      <div class="tile"><span class="n">58%</span><span class="l">cuota semanal Anthropic <em>sin usar</em> al cierre</span></div>
+    </div>
+    <p class="band-note col" style="margin-top:18px">El contador de ola marca 93% de avance y el watchdog de dispatch atribuye el estancamiento a <code>causeKind: "quota"</code>. Ninguna de las dos cosas describe lo que pasó: la cuota estaba disponible y el avance real fueron 9 PR el sábado, 1 el domingo y 1 el lunes.</p>
+  </section>
+
+  <section>
+    <p class="eyebrow">Reconstrucción horaria</p>
+    <h2>Dónde se fue el día</h2>
+    <p class="col">Cada barra es una hora. El largo es la cantidad de intentos de dispatch; el segmento verde, los que efectivamente lanzaron un agente. Hora de Buenos Aires.</p>
+
+    <div class="band">
+      <div class="band-inner">
+        <div class="band-row"><span class="hr">21:00</span><div class="bar-track"><div class="bar-fill void" style="width:15.5%"></div><div class="bar-live" style="left:0;width:.9%"></div></div><span class="out">4 / 362</span></div>
+        <div class="band-row"><span class="hr">22:00</span><div class="bar-track"><div class="bar-fill void" style="width:22.2%"></div></div><span class="out zero">0 / 519</span></div>
+        <div class="band-row"><span class="hr">23:00</span><div class="bar-track"><div class="bar-fill void" style="width:21.6%"></div></div><span class="out zero">0 / 504</span></div>
+        <div class="band-row"><span class="hr">00:00</span><div class="bar-track"><div class="bar-fill void" style="width:22.6%"></div></div><span class="out zero">0 / 528</span></div>
+        <div class="band-row"><span class="hr">01:00</span><div class="bar-track"><div class="bar-fill void" style="width:21.6%"></div></div><span class="out zero">0 / 504</span></div>
+        <div class="band-row"><span class="hr">02:00</span><div class="bar-track"><div class="bar-fill void" style="width:22.1%"></div></div><span class="out zero">0 / 516</span></div>
+        <div class="band-row"><span class="hr">03:00</span><div class="bar-track"><div class="bar-fill void" style="width:21.6%"></div></div><span class="out zero">0 / 504</span></div>
+        <div class="band-row"><span class="hr">04:00</span><div class="bar-track"><div class="bar-fill void" style="width:21.6%"></div></div><span class="out zero">0 / 504</span></div>
+        <div class="band-row"><span class="hr">05:00</span><div class="bar-track"><div class="bar-fill void" style="width:21.3%"></div></div><span class="out zero">0 / 498</span></div>
+        <div class="band-row"><span class="hr">06:00</span><div class="bar-track"><div class="bar-fill void" style="width:22.1%"></div></div><span class="out zero">0 / 516</span></div>
+        <div class="band-row"><span class="hr">07:00</span><div class="bar-track"><div class="bar-fill quiet" style="width:2.1%"></div><div class="bar-live" style="left:0;width:.35%"></div></div><span class="out">8 / 50</span></div>
+        <div class="band-row"><span class="hr">08:00</span><div class="bar-track"><div class="bar-fill quiet" style="width:.7%"></div><div class="bar-live" style="left:0;width:.1%"></div></div><span class="out">2 / 17</span></div>
+        <div class="band-row"><span class="hr">13:00</span><div class="bar-track"><div class="bar-fill quiet" style="width:1.3%"></div><div class="bar-live" style="left:0;width:.2%"></div></div><span class="out">5 / 31</span></div>
+        <div class="band-row"><span class="hr">14:00</span><div class="bar-track"><div class="bar-fill quiet" style="width:1.2%"></div><div class="bar-live" style="left:0;width:.17%"></div></div><span class="out">4 / 29</span></div>
+        <div class="band-row"><span class="hr">16:00</span><div class="bar-track"><div class="bar-fill quiet" style="width:1.5%"></div><div class="bar-live" style="left:0;width:.17%"></div></div><span class="out">4 / 34</span></div>
+        <div class="band-row"><span class="hr">18:00</span><div class="bar-track"><div class="bar-fill quiet" style="width:1.8%"></div><div class="bar-live" style="left:0;width:.26%"></div></div><span class="out">6 / 41</span></div>
+        <div class="band-row"><span class="hr">19:00</span><div class="bar-track"><div class="bar-fill quiet" style="width:1.8%"></div><div class="bar-live" style="left:0;width:.26%"></div></div><span class="out">6 / 43</span></div>
+        <div class="band-row"><span class="hr">20:00</span><div class="bar-track"><div class="bar-fill void" style="width:100%"></div><div class="bar-live" style="left:0;width:.51%"></div></div><span class="out">12 / 2338</span></div>
+      </div>
+    </div>
+    <div class="band-legend">
+      <span><span class="swatch" style="background:var(--alert)"></span>giro en vacío (cadena de providers agotada)</span>
+      <span><span class="swatch" style="background:var(--idle)"></span>operación normal</span>
+      <span><span class="swatch" style="background:var(--ok)"></span>agentes efectivamente lanzados</span>
+    </div>
+    <p class="band-note col">Las horas 09:00–12:00, 15:00, 17:00 y 21:00 no registraron eventos de dispatch. La barra de las 20:00 es de esta misma noche: el ciclo <strong>ya arrancó de nuevo</strong> — 2338 intentos en una hora, 12 lanzados.</p>
+  </section>
+
+  <section>
+    <p class="eyebrow">Mecanismo</p>
+    <h2>Cómo un apagón nocturno se convirtió en trabajo rechazado</h2>
+    <ol class="chain col">
+      <li>
+        <h3>Anthropic entra en su ventana de reposo a las 20:00</h3>
+        <p>Es política declarada, no un bug: <code>provider-schedule.json</code> apaga Anthropic de 20:00 a 07:00. Verificado en vivo: <code>isProviderActiveNow('anthropic') === false</code>.</p>
+      </li>
+      <li>
+        <h3>La cadena de respaldo no tiene a nadie de pie</h3>
+        <p>OpenAI/Codex bloqueado por flag de cuota (2190 veces), Gemini sin licencia de CLI (453), Kimi sin credenciales (86), Cerebras agotado, NVIDIA NIM caído. La cadena <code>anthropic → openai-codex</code> se agotó 1719 veces.</p>
+      </li>
+      <li>
+        <h3>El Pulpo reintenta cada 21 segundos, toda la noche</h3>
+        <p>Al agotarse la cadena no hay backoff ni espera hasta la próxima ventana activa: vuelve a intentar de inmediato. ~170 <code>chain_exhausted</code> por hora, diez horas seguidas.</p>
+      </li>
+      <li>
+        <h3>El dropfile entra a <code>trabajando/</code> ya vencido</h3>
+        <p><code>moveFile</code> es <code>fs.renameSync</code>, que <strong>preserva el mtime</strong>. Y el barrido mide la edad de la corrida con ese mtime. Un archivo que esperó horas en <code>pendiente/</code> nace por encima del timeout, aunque su agente tenga segundos de vida.</p>
+      </li>
+      <li>
+        <h3>El reinicio del Pulpo borra el registro de quién está corriendo</h3>
+        <p><code>activeProcesses</code> era un <code>Map</code> en memoria sin rehidratación. Tras un boot está vacío: <em>ninguna</em> corrida figura como viva, ni siquiera las que están corriendo bien.</p>
+      </li>
+      <li>
+        <h3>Las dos señales fallan juntas y el barrido rebota trabajo sano</h3>
+        <p>Edad vencida más registro vacío es exactamente la firma de “el agente murió”. El Pulpo reinició a las <strong>10:09:23</strong> y a las <strong>10:09:43</strong> empezó a rebotar fases. Tres pasadas y quedan rechazadas.</p>
+      </li>
+      <li>
+        <h3>De día se rehace desde cero</h3>
+        <p>De ahí los <code>attempt-2</code> en guru, po, ux y pipeline-dev sobre los mismos 7 issues, y los ~113 M de tokens (40% del día) gastados en repetir trabajo ya hecho.</p>
+      </li>
+    </ol>
+    <div class="evidence col" style="margin-top:22px">10:09:23  [pulpo] reinicio
+10:09:43  [huerfanos] 5801.pipeline-dev lleva 592min sin proceso → pendiente/ (intento 1/3)
+10:35:00  [huerfanos] 5801.pipeline-dev lleva 617min sin proceso → pendiente/ (intento 2/3)
+10:56:29  [huerfanos] 5801.pipeline-dev lleva 638min sin proceso → pendiente/ (intento 3/3)
+11:09:55  [huerfanos] 5801.pipeline-dev excedió 3 reintentos → rechazado</div>
+    <p class="where col">Los tres reintentos se consumieron en una hora de la mañana, no durante la noche — y la edad crece 592 → 617 → 638 porque el mtime nunca se refresca. Le pasó lo mismo a #6239, con <code>qa:passed</code> puesto.</p>
+  </section>
+
+  <section>
+    <p class="eyebrow">Fallas de fondo</p>
+    <h2>Las seis cosas que hay que arreglar</h2>
+
+    <div class="fault">
+      <div class="fault-head"><span class="tag ok">Corregido</span><h3>El barrido de huérfanos rebotaba trabajo sano tras cada reinicio</h3></div>
+      <p class="col">Las dos señales con las que decide fallan juntas después de un boot. Ahora el registro de corridas se persiste y se rehidrata revalidando cada PID contra el sistema operativo; la entrada a <code>trabajando/</code> marca el mtime, así la edad mide la corrida y no el dropfile; y mientras el registro esté frío el barrido se abstiene, porque no puede distinguir “murió” de “no lo lancé yo”.</p>
+      <div class="evidence">registro frío tras el reinicio: el barrido NO rebota la corrida        ✔
+pasada la ventana de gracia, una corrida sin proceso sí se recupera   ✔
+la entrada a trabajando/ refresca el mtime                            ✔</div>
+      <p class="where">.pipeline/lib/orphan-guard.js · .pipeline/lib/active-process-registry.js</p>
+    </div>
+
+    <div class="fault">
+      <div class="fault-head"><span class="tag ok">Corregido</span><h3>El dispatch no esperaba cuando no había a quién despachar</h3></div>
+      <p class="col">Con toda la cadena apagada, el Pulpo reintentaba cada 30 segundos. Ahora cada agotamiento programa una espera exponencial de 1 a 15 minutos para ese <code>(skill, issue)</code>, consultada <em>antes</em> de mover el dropfile — así tampoco rebota entre carpetas en cada vuelta. Medido sobre la noche real: <strong>1200 intentos pasan a 44, un 96,3% menos</strong>.</p>
+      <div class="evidence">chain_exhausted: 2143   reason: "all_gated"
+fallback_also_gated: 2672   primary_inactive_by_schedule: 2133
+fallback_selected: 51</div>
+      <p class="where">.pipeline/lib/dispatch-backoff.js</p>
+    </div>
+
+    <div class="fault">
+      <div class="fault-head"><span class="tag p1">Pendiente</span><h3>Un provider bloqueado por cuota no puede desbloquearse solo</h3></div>
+      <p class="col">El flag de cuota se limpia únicamente cuando ese provider tiene un spawn exitoso — pero mientras el flag está puesto, el provider no puede spawnear. Es un candado circular: OpenAI/Codex bloqueó 2190 dispatches con el flag puesto, y hoy su cuota real marca 0% de uso. Cerebras está marcado agotado hasta mañana a las 23:00Z por una detección de las 20:00.</p>
+      <div class="evidence">quota-exhausted.json → cerebras: exhausted:true, resets_at 2026-09-09T23:00:29Z
+multi-provider-health → openai: quota pct 10, state green</div>
+      <p class="where">.pipeline/lib/quota-exhausted.js — <code>clearFlag</code> sólo en <code>success_spawn</code></p>
+    </div>
+
+    <div class="fault">
+      <div class="fault-head"><span class="tag p2">Alta</span><h3>La telemetría de diagnóstico está envenenada</h3></div>
+      <p class="col">El clasificador marca como error transitorio <em>toda</em> corrida que dure más de 30 segundos y no traiga un error reconocible — es decir, todos los agentes sanos, que corren entre 5 y 27 minutos. Resultado: 809 de 912 salidas auditadas como <code>transient_5xx</code>, 682 de ellas con <code>exit_code: 0</code> y muerte normal. Verificado que <strong>no dispara relanzamientos</strong>: el Pulpo decide el éxito por <code>exit_code</code>. Pero convierte en basura la única fuente que sirve para diagnosticar incidentes de provider — que es parte de por qué no aparecía una causa clara.</p>
+      <div class="evidence">if (timedOut === true || durationMs &gt;= 30000) return { errorClass: 'transient_5xx' }</div>
+      <p class="where">.pipeline/lib/agent-launcher/provider-error-parser.js:814 — <code>classifyByContext</code></p>
+    </div>
+
+    <div class="fault">
+      <div class="fault-head"><span class="tag p2">Alta</span><h3>El diagnóstico automático apunta al lugar equivocado</h3></div>
+      <p class="col">El watchdog de dispatch reporta <code>causeKind: "quota"</code> con Anthropic al 58% semanal y 76% de sesión disponibles. La causa real es de agenda y disponibilidad de cadena, no de cuota. Mientras el sistema se autodiagnostique mal, cada incidente arranca la investigación por la pista falsa.</p>
+    </div>
+
+    <div class="fault">
+      <div class="fault-head"><span class="tag p3">Media</span><h3>El ruido de Telegram tapa la señal</h3></div>
+      <p class="col">928 mensajes en el día, de los cuales 177 son alertas del propio servicio de Telegram sobre sí mismo. Se emitieron además 2112 eventos de pausa por agotamiento — uno por cada vuelta del bucle — y varios fallaron al enviarse. Hay que agrupar por episodio, no por evento.</p>
+    </div>
+  </section>
+
+  <section class="col">
+    <p class="eyebrow">Descartado con evidencia</p>
+    <h2>Lo que no fue</h2>
+    <ul class="plain">
+      <li><strong>No fue cuota agotada.</strong> Anthropic cerró el día con 58% semanal y 76% de sesión disponibles.</li>
+      <li><strong>No fue calidad del código ni rebotes de QA.</strong> Un solo rebote en todo el día, y de infraestructura. #5801 y #6239 tienen <code>qa:passed</code>.</li>
+      <li><strong>No fue el watchdog matando al Pulpo.</strong> Hubo un solo <code>kill-respawn</code> en todo el día, a las 21:45 — consecuencia del final del día, no su causa.</li>
+      <li><strong>No fue el modelo ni los agentes.</strong> Cuando lograron correr, terminaron con salida normal; el problema fue que su trabajo se descartaba después.</li>
+    </ul>
+  </section>
+
+  <section>
+    <p class="eyebrow">Plan de salida</p>
+    <h2>Qué hacer, en este orden</h2>
+
+    <div class="phase">
+      <div class="phase-head"><h3>Hecho · PR sobre #7103</h3><span class="phase-when">con tests</span></div>
+      <ol class="steps">
+        <li><div><strong>El registro de corridas sobrevive al reinicio.</strong>
+          <p>Se persiste en cada cambio y se rehidrata al arrancar, revalidando cada PID contra el sistema operativo: lo que ya murió no vuelve. Extiende <code>Map</code>, así que ningún call-site existente cambió.</p></div></li>
+        <li><div><strong>La entrada a <code>trabajando/</code> marca el mtime.</strong>
+          <p>La edad pasa a medir la corrida y no la antigüedad heredada del dropfile. Va dentro de <code>moveFile</code>, el único lugar por el que pasan todos los movimientos, para que ningún call-site futuro tenga que acordarse.</p></div></li>
+        <li><div><strong>El barrido se abstiene mientras no pueda saber.</strong>
+          <p>Si el registro no es confiable —primer arranque tras el deploy, o archivo corrupto— su vacío no prueba que nadie esté corriendo, y el barrido espera en vez de rebotar. Con un registro rehidratado la espera no aplica: lo que no figura, no vive.</p></div></li>
+        <li><div><strong>Backoff exponencial ante cadena agotada.</strong>
+          <p>De 1 a 15 minutos por <code>(skill, issue)</code>, consultado antes de mover el dropfile. Se reinicia en cuanto hay un despacho efectivo.</p></div></li>
+      </ol>
+    </div>
+
+    <div class="phase">
+      <div class="phase-head"><h3>Queda pendiente</h3><span class="phase-when">issues aparte</span></div>
+      <ol class="steps">
+        <li><div><strong>Decidir qué pasa de noche, explícitamente.</strong>
+          <p>Hay una contradicción de política: se apaga Anthropic 11 horas y se deja al pipeline intentando igual, con una cadena de respaldo que en la práctica no existe. Las dos salidas honestas son conseguir un respaldo nocturno que funcione de verdad, o declarar la noche como parada. El backoff contiene el daño, no resuelve la contradicción.</p></div></li>
+        <li><div><strong>Romper el candado circular del flag de cuota.</strong>
+          <p>Que el flag caduque por <code>resets_at</code> revalidado contra el adaptador, sin depender de un spawn exitoso que el propio flag impide.</p></div></li>
+        <li><div><strong>Arreglar <code>classifyByContext</code>.</strong>
+          <p>Que “duró más de 30 segundos” deje de significar error. Exigir <code>timedOut</code> o salida distinta de cero. Sin esto, el próximo incidente vuelve a investigarse a ciegas.</p></div></li>
+        <li><div><strong>Corregir la atribución de causa y agrupar las notificaciones.</strong>
+          <p>Si la cuota está disponible, la causa no es cuota. Y un aviso por episodio de agotamiento, no uno por vuelta del bucle.</p></div></li>
+      </ol>
+    </div>
+  </section>
+
+  <section>
+    <p class="eyebrow">Verificación</p>
+    <h2>Cómo sabemos que salimos</h2>
+    <p class="col">La comprobación tiene tres niveles, del más rápido al más definitivo. Los dos primeros ya están corridos.</p>
+
+    <h3 style="margin-top:26px">1 · Los tests fijan cada pieza</h3>
+    <p class="col">25 tests nuevos, incluidos tres que ejercitan el <strong>barrido real</strong> del Pulpo —no una réplica— contra el escenario exacto del incidente: dropfile con 592 minutos de mtime heredado y registro frío.</p>
+
+    <h3 style="margin-top:22px">2 · La noche del incidente, replicada</h3>
+    <p class="col">Un test simula las diez horas reales con la cadena caída y el Pulpo tickeando cada 30 segundos, y cuenta los intentos que habría hecho con el backoff puesto:</p>
+    <div class="evidence col">ticks de la noche (sin backoff):  1200
+intentos con backoff           :    44
+reducción                      : 96,3%</div>
+
+    <h3 style="margin-top:22px">3 · La medición en producción</h3>
+    <p class="col">Los tests prueban las unidades; esto mide el pipeline real, sobre los mismos archivos con los que se diagnosticó el incidente. Se corre mañana:</p>
+    <span class="cmd">node .pipeline/scripts/verificar-fix-huerfanos.js</span>
+    <table>
+      <thead><tr><th>Señal</th><th>8 de septiembre</th><th>Objetivo</th></tr></thead>
+      <tbody>
+        <tr><td>Intentos de dispatch por día</td><td class="num">7538</td><td class="num">&lt; 500</td></tr>
+        <tr><td>Tasa de dispatch efectivo</td><td class="num">0,7%</td><td class="num">&gt; 60%</td></tr>
+        <tr><td>Fases rechazadas por huérfano</td><td class="num">3</td><td class="num">0</td></tr>
+        <tr><td>Corridas de retrabajo (<code>attempt ≥ 2</code>)</td><td class="num">26</td><td class="num">&lt; 3</td></tr>
+      </tbody>
+    </table>
+    <p class="band-note col">El script trae los umbrales fijados de antemano y la línea base del 8 de septiembre, y sale con código distinto de cero si alguno queda en rojo — la verificación no depende de leer un log a ojo. Está validado: corrido contra el día del incidente reproduce exactamente esos cuatro números.</p>
+  </section>
+
+  <footer>
+    Elaborado el 2026-09-08 sobre <span class="mono">spawn-exit-2026-09-0*.jsonl</span>, <span class="mono">cross-provider-dispatch-2026-09-08.jsonl</span>, <span class="mono">pulpo.log</span>, <span class="mono">pulpo-liveness.log</span>, <span class="mono">service-liveness.log</span>, <span class="mono">svc-telegram.log</span> y el estado del kanban en <span class="mono">.pipeline/desarrollo/</span>.
+  </footer>
+
+</div>

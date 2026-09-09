@@ -84,6 +84,12 @@ const { redact } = require('./redact');
 // #3934 (CA-3 / SEC-1) — escaneo por VALOR (entropía Shannon ≥4.5) para reforzar
 // la sanitización de los turnos del Commander antes de persistir.
 const { redactSecretValue } = require('./lib/redact');
+// Guarda del barrido de huérfanos (incidente 2026-09-08): decide si una corrida
+// está realmente huérfana y marca su entrada a `trabajando/`.
+const orphanGuard = require('./lib/orphan-guard');
+// Espera entre reintentos cuando la cadena de providers queda agotada
+// (incidente 2026-09-08: ~170 intentos por hora sin lanzar nada).
+const dispatchBackoff = require('./lib/dispatch-backoff');
 // #5135 — Sink fail-loud de la degradación del store durable a filesystem.
 // Borde de salida: enum cerrado + template fijo + rate-limit por causa (CA-3/D-2).
 const kernelDegradationAlert = require('./lib/kernel-degradation-alert');
@@ -1168,6 +1174,52 @@ function ghThrottle() {
 }
 
 /**
+ * #7086 — GUARD DE EFECTOS SOBRE EL PIPELINE PRODUCTIVO DESDE UNA CORRIDA DE PRUEBA.
+ *
+ * Hermano de `ghWritesBloqueadas` (#6496): la misma direccion de riesgo, aplicada
+ * a los dos canales que quedaban abiertos — la cola de Telegram y el marker de
+ * pausa/log del halt por config corrupta.
+ *
+ * El problema medido (08/09/2026): un test que requiere `pulpo.js` sin
+ * `PIPELINE_DIR_OVERRIDE` —o que lo setea DESPUES del require, cuando las const
+ * de modulo ya capturaron el directorio real— encola salientes en la cola de
+ * Telegram REAL (180 avisos de auto-incorporacion al chat del operador en un solo
+ * dia) y escribe `CONFIG INVALIDA — dispatch pausado` en el `pulpo.log`
+ * productivo, contaminando con corridas de prueba la unica via de diagnostico.
+ *
+ * El predicado NO bloquea toda corrida de prueba: bloquea solo cuando el DESTINO
+ * del efecto cae dentro del `.pipeline` productivo (`__dirname`). Un test bien
+ * aislado (override a un tmpdir) sigue ejercitando el camino completo, dropfile
+ * incluido; lo que se corta es exactamente el derrame.
+ *
+ * Escape hatch explicito para el operador: `PIPELINE_ALLOW_PROD_SIDE_EFFECTS=1`.
+ *
+ * @returns {string|null} motivo de la corrida de prueba, o `null`.
+ */
+function corridaDePrueba() {
+  if (process.env.PIPELINE_ALLOW_PROD_SIDE_EFFECTS === '1') return null;
+  if (process.env.NODE_TEST_CONTEXT) return 'node --test';
+  if (process.env.PULPO_NO_AUTOSTART === '1') return 'PULPO_NO_AUTOSTART=1';
+  if (process.env.NODE_ENV === 'test') return 'NODE_ENV=test';
+  return null;
+}
+
+/**
+ * @param {string} destino ruta del efecto (archivo o directorio).
+ * @returns {string|null} motivo del bloqueo, o `null` si el efecto puede salir.
+ */
+function efectoProductivoBloqueado(destino) {
+  const motivo = corridaDePrueba();
+  if (!motivo) return null;
+  try {
+    const prod = path.resolve(__dirname);
+    const d = path.resolve(String(destino || ''));
+    if (d === prod || d.startsWith(prod + path.sep)) return motivo;
+  } catch { /* destino no resoluble: no bloqueamos */ }
+  return null;
+}
+
+/**
  * #6496 (rebote security · OWASP A05/A08) — GUARD DE ESCRITURA A GITHUB.
  *
  * Un `require('pulpo.js')` desde la suite de tests deja TODOS los brazos del
@@ -1793,6 +1845,14 @@ const CONFIG_CORRUPTION_ALERT_THROTTLE_MS = 5 * 60 * 1000;
  *        `ConfigSchemaViolation`), del que sale la tríada de copy.
  */
 function haltOnConfigCorruption(reason, redactedDetail, err) {
+  // #7086 — un config de prueba corrupto NO pausa el dispatch productivo ni
+  // ensucia su log de diagnostico. Con el test bien aislado (PAUSE_FILE dentro
+  // de su propio tmpdir) el halt sigue corriendo entero.
+  const bloqueoPrueba = efectoProductivoBloqueado(PAUSE_FILE);
+  if (bloqueoPrueba) {
+    console.error(`[${new Date().toISOString()}] [pulpo] halt SUPRIMIDO (entorno de prueba: ${bloqueoPrueba}) — el marker de pausa apunta al pipeline productivo | causa: ${reason}`);
+    return;
+  }
   // ¿La pausa que va a quedar activa la generó ESTA corrupción, o ya había otra?
   // Se decide ANTES de escribir, leyendo el marker: es lo que elige la variante
   // de copy (CA-UX-3).
@@ -1845,7 +1905,7 @@ function haltOnConfigCorruption(reason, redactedDetail, err) {
   // línea y un bloque multilínea rompe el filtrado.
   const safeMsg = `[${new Date().toISOString()}] [pulpo] `
     + configSchema.formatConfigFailureLog(copia, { titulo: 'CONFIG INVÁLIDA — dispatch pausado' });
-  try { fs.appendFileSync(path.join(__dirname, 'logs', 'pulpo.log'), safeMsg + '\n'); } catch {}
+  try { fs.appendFileSync(path.join(LOG_DIR, 'pulpo.log'), safeMsg + '\n'); } catch {}
   console.error(safeMsg);
   // Alerta Telegram throttleada y redactada.
   const now = Date.now();
@@ -2164,11 +2224,45 @@ function skillFromFile(filename) {
   return workfileName.skillFromFile(filename);
 }
 
+/**
+ * Recupera las corridas que quedaron en vuelo del Pulpo anterior y decide si el
+ * barrido de huérfanos necesita ventana de gracia (incidente 2026-09-08).
+ *
+ * Se llama en el boot. Está aparte de `mainLoop` para que el test de regresión
+ * ejercite exactamente el mismo camino que producción, en vez de una réplica.
+ */
+function rehidratarRegistroDeCorridas() {
+  try {
+    const rehidratacion = activeProcesses.rehidratar();
+    // Si el registro NO es confiable (primer arranque tras el deploy, o archivo
+    // corrupto), su vacío no prueba que nadie esté corriendo: ahí —y sólo ahí—
+    // el barrido necesita la gracia para no rebotar corridas vivas. Con un
+    // registro confiable la gracia sobra: lo que no figura, no vive.
+    graciaPostBootMinutos = rehidratacion.confiable ? 0 : orphanGuard.GRACIA_POST_BOOT_MINUTOS;
+    log('pulpo', `registro de corridas: ${rehidratacion.rehidratadas} en vuelo recuperadas, ${rehidratacion.descartadas} descartadas por PID muerto (confiable=${rehidratacion.confiable}, gracia=${graciaPostBootMinutos}min).`);
+    return rehidratacion;
+  } catch (e) {
+    graciaPostBootMinutos = orphanGuard.GRACIA_POST_BOOT_MINUTOS;
+    log('pulpo', `rehidratación del registro de corridas falló (sigo con registro vacío + gracia): ${e.message}`);
+    return { rehidratadas: 0, descartadas: 0, error: e.message, confiable: false };
+  }
+}
+
 /** Mover archivo entre carpetas (atómico en filesystem) */
 function moveFile(src, destDir) {
   fs.mkdirSync(destDir, { recursive: true });
   const dest = path.join(destDir, path.basename(src));
   fs.renameSync(src, dest);
+  // Incidente 2026-09-08: `renameSync` PRESERVA el mtime, y `fileAgeMinutes`
+  // —la señal con la que `brazoHuerfanos` decide si una corrida se colgó— lo
+  // lee como si fuera la edad de la corrida. Un dropfile que esperó horas en
+  // `pendiente/` entraba a `trabajando/` ya vencido y el primer barrido lo
+  // rebotaba con el agente recién arrancado. Marcamos la entrada acá, en el
+  // único lugar por el que pasan todos los movimientos, para que ningún
+  // call-site futuro tenga que acordarse.
+  if (path.basename(destDir) === 'trabajando') {
+    orphanGuard.marcarEntradaEnTrabajando(dest, { fsImpl: fs });
+  }
   return dest;
 }
 
@@ -2749,7 +2843,26 @@ function limpiarDaemonsOnDemand() {
 
 // --- Estado de procesos activos (PIDs lanzados por el Pulpo) ---
 
-const activeProcesses = new Map(); // key: "skill:issue" → { pid, startTime }
+// Instante de arranque de ESTE proceso Pulpo. `brazoHuerfanos` lo necesita para
+// saber si su registro de corridas todavía está frío tras un reinicio.
+let PULPO_BOOT_TS = Date.now();
+
+// Minutos durante los que el barrido de huérfanos se abstiene de rebotar una
+// corrida que no tiene registrada. Sólo se activa cuando el registro de corridas
+// NO es confiable (lo decide `rehidratarRegistroDeCorridas` en el boot); con un
+// registro confiable vale 0, porque ahí "no figura" sí significa "no vive".
+let graciaPostBootMinutos = 0;
+
+// Incidente 2026-09-08: esto era un `new Map()` en memoria. Cada reinicio del
+// Pulpo lo vaciaba y `brazoHuerfanos` leía ese vacío como "ninguna corrida está
+// viva", rebotando fases sanas 20 segundos después del boot. Ahora el registro
+// se persiste y se rehidrata revalidando cada PID contra el SO.
+const { ActiveProcessRegistry } = require('./lib/active-process-registry');
+const activeProcesses = new ActiveProcessRegistry({ // key: "skill:issue" → { pid, startTime }
+  file: path.join(PIPELINE, 'state', 'active-processes.json'),
+  isProcessAlive: (pid) => isProcessAlive(pid),
+  onLog: (msg) => log('huerfanos', msg),
+});
 
 // Cache en memoria del qaMode resuelto por el preflight para cada issue.
 // Issue #2351 — R1: el `modo` que emite el agente en el YAML no es fuente de
@@ -9814,6 +9927,25 @@ function brazoLanzamientoImpl(config, _dcMark, _dcState) {
       continue;
     }
 
+    // 7c. BACKOFF DE CADENA AGOTADA (incidente 2026-09-08). Si el despacho
+    //     anterior de este (skill, issue) terminó con todos los providers
+    //     bloqueados, esperamos antes de volver a intentar: lo que frena el
+    //     despacho es una ventana horaria o una cuota, y ninguna se resuelve en
+    //     los 30 segundos que tarda el próximo tick. Sin esto fueron ~170
+    //     intentos por hora durante toda la noche, ninguno capaz de lanzar.
+    //     El chequeo va ANTES del move: así el dropfile tampoco rebota entre
+    //     `pendiente/` y `trabajando/` en cada vuelta.
+    try {
+      const espera = dispatchBackoff.estaEsperando(PIPELINE, skill, issue);
+      if (espera.esperando) {
+        _dcMark(dispatchCause.CAUSAS.COOLDOWN, `${skill}:#${issue} esperando ${espera.restanteMin}min: la cadena de providers quedó agotada en el intento anterior`);
+        continue;
+      }
+    } catch (e) {
+      // Fail-open: un backoff roto no puede frenar el pipeline.
+      log('lanzamiento', `backoff de dispatch falló para ${skill}:#${issue} (sigo): ${e.message}`);
+    }
+
     // Mover a trabajando/ + spawn dentro de una SECCIÓN CRÍTICA por skill
     // (#3939, CA-2/CA-3). El check de concurrencia de arriba (`running >=
     // maxConcurrencia`) es un fast-path: evita pagar el preflight cuando el
@@ -11038,6 +11170,15 @@ async function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, 
         const pendienteDir = path.join(fasePath(pipeline, fase), 'pendiente');
         moveFile(trabajandoPath, pendienteDir);
       } catch {}
+      // Incidente 2026-09-08 — programar la espera antes del próximo intento.
+      // Sin esto el dropfile volvía a `trabajando/` en el tick siguiente (30s) y
+      // el ciclo se repetía ~170 veces por hora sin lanzar nada.
+      try {
+        const espera = dispatchBackoff.registrarCadenaAgotada(PIPELINE, skill, issue);
+        log('lanzamiento', `⏳ ${skill}:#${issue} cadena agotada ${espera.consecutivos}× consecutiva(s) — próximo intento en ${espera.esperaMin}min.`);
+      } catch (e) {
+        log('lanzamiento', `no pude programar el backoff de ${skill}:#${issue}: ${e.message}`);
+      }
       try {
         quotaExhausted.appendAudit({
           event: 'gate_blocked_spawn',
@@ -11079,6 +11220,10 @@ async function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, 
     //   - source='fallback': cadena evaluada + provider elegido + razones de skip.
     //   - source='primary'/happy-path: una sola línea "✓ ... sin fallback necesario".
     // Da trazabilidad en tiempo real de qué provider arrancó y por qué.
+    // Hubo ruta de despacho: la cuenta de agotamientos vuelve a cero para que el
+    // próximo backoff arranque en 1 minuto y no herede el techo de la noche.
+    try { dispatchBackoff.limpiar(PIPELINE, skill, issue); } catch { /* best-effort */ }
+
     if (providerResolutionLog) {
       log('lanzamiento', providerResolutionLog);
     } else if (dispatchResolution.source === 'fallback' && dispatchResolution.fallbackUsed) {
@@ -13637,11 +13782,27 @@ function brazoHuerfanos(config) {
         const key = processKey(skill, issue);
         const age = fileAgeMinutes(archivo.path);
 
-        if (age < timeoutMinutes) continue;
-
-        // Verificar si el proceso sigue vivo
+        // Incidente 2026-09-08: acá vivían dos señales que fallan JUNTAS después
+        // de un reinicio del Pulpo — el mtime heredado por `renameSync` (la
+        // corrida "nace vencida") y el registro de corridas vacío (nada figura
+        // como vivo). El resultado era rebotar fases sanas a los 20 segundos del
+        // boot y quemarles los tres reintentos. La decisión ahora es explícita y
+        // se abstiene mientras el registro esté frío.
         const info = activeProcesses.get(key);
-        if (info && isProcessAlive(info.pid)) continue;
+        const veredicto = orphanGuard.decidirHuerfano({
+          ageMinutes: age,
+          timeoutMinutes,
+          registroConocido: Boolean(info),
+          procesoVivo: Boolean(info) && isProcessAlive(info.pid),
+          minutosDesdeBoot: (Date.now() - PULPO_BOOT_TS) / 60000,
+          graciaBootMinutos: graciaPostBootMinutos,
+        });
+        if (!veredicto.huerfano) {
+          if (veredicto.motivo === orphanGuard.MOTIVOS.GRACIA_POST_BOOT) {
+            log('huerfanos', `${archivo.name}: registro de corridas todavía frío tras el reinicio → no lo toco en este tick (${veredicto.motivo}).`);
+          }
+          continue;
+        }
 
         // #5796 (fix rev-4) — EL CIERRE DE ESTA CORRIDA PUEDE ESTAR EN MANOS DE
         // OTRO ACTOR. Cuando un agente muere por credencial vencida y el gate de
@@ -19841,6 +20002,13 @@ function sendTelegramPlain(text) {
 // El servicio-telegram hace passthrough del campo reply_markup al API.
 // #2975 — Tercer arg `opts.plain=true` desactiva `parse_mode: 'Markdown'`.
 function sendTelegramWithMarkup(text, replyMarkup, opts) {
+  // #7086 — un saliente encolado desde una corrida de prueba en la cola REAL
+  // llega al telefono del operador como si fuera un aviso legitimo del pipeline.
+  const bloqueoPrueba = efectoProductivoBloqueado(telegramPendienteDir());
+  if (bloqueoPrueba) {
+    log('telegram', `⛔ saliente SUPRIMIDO (entorno de prueba: ${bloqueoPrueba}) — la cola de destino es la productiva, no se encola`);
+    return null;
+  }
   const token = getTelegramToken();
   const chatId = getTelegramChatId();
   if (!token || !chatId) { log('telegram', 'Sin token/chatId'); return null; }
@@ -23118,6 +23286,22 @@ const _ghBreaker = createGhCircuitBreaker({
 // crudo en el hot-path del intake: si el circuito está abierto, tira rápido SIN
 // spawnear gh (evita bloquear el event loop 30s por llamada durante un outage).
 // El caller ya envuelve en try/catch y degrada — el throw se maneja igual.
+//
+// #7013 (regresión) — `maxBuffer` EXPLÍCITO. El default de `execSync` es 1 MiB.
+// Al subir `INTAKE_GH_LIST_LIMIT` de 50 a 500, la respuesta del intake de
+// definición (`--json number,title,labels,body` sobre ~193 issues admisibles)
+// pasó a ~1,06 MB y cada llamada empezó a morir con `ENOBUFS` ANTES de devolver
+// una sola línea. El `catch` del caller lo degradaba a `issues.length === 0`, así
+// que el brazo quedaba silenciosamente inerte: ningún issue de la ola volvía a
+// entrar a definición aunque la búsqueda de GitHub sí los devolviera.
+//
+// ENOBUFS NO matchea `CONN_ERROR_PATTERNS`, así que el breaker no lo contaba
+// como outage y tampoco había señal por ese lado: fallo mudo, ciclo tras ciclo.
+//
+// El piso es el mismo que ya usa la ruta REST de `_ghCallWithTimeout` (32 MiB) y
+// va ANTES del spread para que un caller pueda seguir ajustándolo.
+const GH_EXEC_MAX_BUFFER = 32 * 1024 * 1024;
+
 function _ghExecSyncGuarded(command, opts = {}) {
   if (_ghBreaker.shouldShortCircuit(Date.now())) {
     const err = new Error('gh-circuit-open: GitHub inalcanzable, execSync cortocircuitado');
@@ -23125,7 +23309,7 @@ function _ghExecSyncGuarded(command, opts = {}) {
     throw err;
   }
   try {
-    const out = execSync(command, { timeout: 15000, ...opts });
+    const out = execSync(command, { timeout: 15000, maxBuffer: GH_EXEC_MAX_BUFFER, ...opts });
     _ghBreaker.record({ ok: true }, Date.now());
     return out;
   } catch (err) {
@@ -24905,6 +25089,12 @@ async function mainLoop() {
   log('pulpo', `Pulpo V2 iniciado — poll cada ${loadConfig().timeouts?.poll_interval_seconds || 30}s`);
   log('pulpo', `Pipeline: ${PIPELINE}`);
   log('pulpo', `Claude launcher: ${CLAUDE_LAUNCHER.kind} → ${CLAUDE_LAUNCHER.cmd}`);
+
+  // Incidente 2026-09-08 — recuperar las corridas que quedaron en vuelo del
+  // Pulpo anterior. Sin esto el registro arranca vacío y `brazoHuerfanos` lee
+  // ese vacío como "nadie está corriendo", rebotando fases sanas apenas supera
+  // el timeout. Cada PID se revalida contra el SO: lo que ya murió no vuelve.
+  rehidratarRegistroDeCorridas();
 
   // #6496 (CA-4) — Migración one-shot del backlog pre-sellado. Va al BOOT y
   // antes de cualquier tick: el gate de caducidad de `delivery.js` puede correr
@@ -26693,6 +26883,9 @@ if (process.env.PULPO_NO_AUTOSTART === '1') {
     buildIntakeSearchQueries,
     INTAKE_SEARCH_EXCLUDED_LABELS,
     INTAKE_GH_LIST_LIMIT,
+    // #7013 (regresión) — piso de buffer de las llamadas `gh` por execSync.
+    GH_EXEC_MAX_BUFFER,
+    _ghExecSyncGuarded,
     // #5689 (SEC-1/SEC-2) — gate autoritativo de recomendaciones del intake.
     isPendingRecommendationIssue,
     // #4763 (Ola Puente P4) — ruteo product-aware por instancia (fallback single-product).
@@ -26701,6 +26894,13 @@ if (process.env.PULPO_NO_AUTOSTART === '1') {
     getMultiInstanceRouter,
     // #4136 — brazo de archivado (frontera activo/histórico).
     brazoArchivado,
+    // Incidente 2026-09-08 — expuestos para el test de regresión que ejercita el
+    // barrido REAL contra un dropfile con mtime heredado y el registro frío.
+    brazoHuerfanos,
+    activeProcesses,
+    moveFile,
+    rehidratarRegistroDeCorridas,
+    _setBootTsForTesting: (ts) => { PULPO_BOOT_TS = ts; },
     makeIsClosedFromTitleCache,
     ARCHIVADO_MAX_PER_TICK,
     // #4051 — ventana nocturna: límites efectivos + piso de concurrencia.
@@ -26885,6 +27085,12 @@ if (process.env.PULPO_NO_AUTOSTART === '1') {
     // persiste, jamás se auto-levanta).
     loadConfig,
     haltOnConfigCorruption,
+    // #7086 — seam del guard de efectos productivos desde una corrida de prueba.
+    // Se expone el predicado (no sólo el wiring) porque la decisión que importa
+    // aseverar es la del DESTINO: mismo entorno de test, bloquea si la ruta cae
+    // en el `.pipeline` real y deja pasar si cae en el tmpdir aislado.
+    corridaDePrueba,
+    efectoProductivoBloqueado,
     CONFIG_PATH,
     _getPaused: () => paused,
     _resetConfigCorruptionState: () => {
