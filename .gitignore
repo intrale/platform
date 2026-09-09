@@ -451,6 +451,14 @@ __pycache__/
 .pipeline/provider-schedule.json
 .pipeline/provider-disabled.json
 
+# #6239 — marker de vigencia de la sesion OAuth. El estado canonico vive FUERA
+# del arbol (~/.claude/pipeline-state/, ver lib/oauth-session-expiry.js), igual
+# que el del cron de rotacion (#5901 REQ-SEC-1). Esta regla cubre el marker que
+# pueda quedar dentro del repo por una corrida vieja: publica el calendario de
+# vencimiento de la credencial del operador, o sea la ventana exacta en la que
+# la infra se queda sin poder lanzar agentes. El repo es PUBLICO. NO commitear.
+.pipeline/oauth-session-expiry-state.json
+
 # #4512 — reporte de auditoría de seguridad por-issue (raíz del repo). Lo
 # genera el gate /security en cada corrida y lo sobrescribe por issue. Trackear-
 # lo produce conflictos add/add recurrentes en el rebase de /delivery (ver
