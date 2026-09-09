@@ -679,3 +679,263 @@ test('#4193 el filtro client-side oculta grupos sin filas visibles', () => {
     assert.match(js, /v3-bloqueados-group/);
     assert.match(js, /anyVisible/);
 });
+
+// ---------------------------------------------------------------------------
+// #6191 — La tarjeta encabeza con la DECISIÓN (ficha única de decision-card.js)
+//
+// Contrato: `bloqueados.js` aporta jerarquía, orden y estado de colapso; el copy
+// de decisión lo redacta `lib/decision-card.js` (#6190) y NADIE MÁS. Los tests
+// de abajo verifican eso por inspección del HTML renderizado, que es la única
+// evidencia que no se puede falsear leyendo el código.
+// ---------------------------------------------------------------------------
+
+const { buildDecisionCard } = require('../../../lib/decision-card');
+const humanBlock = require('../../../lib/human-block');
+const fsNode = require('node:fs');
+
+// Bloqueo tipo `dependencia`: es el único de la tabla congelada que produce
+// opciones sin necesitar contexto que el marker no trae (verificado en
+// definicion/criterios y re-verificado acá).
+const DEP = {
+    issue: 6191, title: 'La ventana de bloqueados', skill: 'po', phase: 'criterios',
+    age_hours: 27, reason: '{"dependency_block":[6190]}', blocked_at: '2026-06-08T09:00:00Z',
+};
+// Bloqueo con `reason` no clasificable → ficha `indeterminado`, cero opciones.
+// Según la medición del `ux` (H-6191-2) es el caso MÁS FRECUENTE, no un borde.
+const INDET = {
+    issue: 5805, title: 'Instrumentar el vault', skill: 'delivery', phase: 'entrega',
+    age_hours: 29, reason: 'zzz-motivo-que-nadie-clasifica', blocked_at: '2026-06-08T07:00:00Z',
+};
+
+function rowHtml(b, state) {
+    return renderBloqueadosSsr(Object.assign({ bloqueados: [b] }, state || {}), opts);
+}
+// Todo lo que está antes de la apertura del `<details>` es lo que el operador
+// ve SIN abrir nada. Es el corte que pide CA-2 literalmente.
+function visiblePart(html) {
+    const i = html.indexOf('<details');
+    assert.ok(i > -1, 'la tarjeta debe traer el bloque técnico colapsable');
+    return html.slice(0, i);
+}
+function reEscape(s) {
+    return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+test('#6191 CA-1 la tarjeta muestra `que_se_decide` como encabezado', () => {
+    const card = buildDecisionCard(DEP, NOW);
+    const html = rowHtml(DEP);
+    // El texto de la ficha está DENTRO del elemento de encabezado de la tarjeta.
+    assert.match(html, new RegExp('<h3 class="v3-bloqueados-decision">' + reEscape(card.que_se_decide) + '</h3>'));
+    // Y el encabezado es el PRIMER contenido de la tarjeta (CA-UX-5: el lector
+    // de pantalla arranca por la decisión, igual que el ojo).
+    const row = html.slice(html.indexOf('id="bloqueados-row-6191"'));
+    assert.ok(row.indexOf('v3-bloqueados-decision') < row.indexOf('v3-bloqueados-subtitle'));
+});
+
+test('#6191 CA-UX-1 el numero y titulo bajan a subtítulo secundario', () => {
+    const html = rowHtml(DEP);
+    assert.match(html, /<span class="v3-bloqueados-subtitle"[^>]*>#6191 «La ventana de bloqueados»<\/span>/);
+});
+
+test('#6191 CA-2 las opciones se ven sin abrir nada, con etiqueta y consecuencia', () => {
+    const card = buildDecisionCard(DEP, NOW);
+    assert.ok(card.opciones.length >= 2, 'la ficha de dependencia debe traer opciones');
+    const visible = visiblePart(rowHtml(DEP));
+    for (const o of card.opciones) {
+        assert.ok(visible.includes(o.etiqueta), 'etiqueta fuera de la parte visible: ' + o.etiqueta);
+        assert.ok(visible.includes(o.consecuencia), 'consecuencia fuera de la parte visible: ' + o.etiqueta);
+    }
+});
+
+test('#6191 CA-3 el detalle técnico va en un details SIN atributo open', () => {
+    for (const b of [DEP, INDET]) {
+        const html = rowHtml(b);
+        assert.doesNotMatch(html, /<details[^>]*\bopen\b/);
+        assert.match(html, /<summary class="v3-bloqueados-tech-summary">Detalle técnico del bloqueo · motivo completo, actividad reciente y accesos<\/summary>/);
+    }
+});
+
+test('#6191 CA-3 el motivo crudo, el resumen y la actividad reciente viven dentro del details', () => {
+    const html = rowHtml({
+        issue: 4242, title: 'x', age_hours: 5, reason: 'motivo crudo del agente',
+        summary: 'resumen funcional', recent_events: [{ when: '2026-06-09T11:00:00Z', author: 'leito', preview: 'un comentario' }],
+    });
+    const visible = visiblePart(html);
+    assert.ok(!visible.includes('motivo crudo del agente'), 'el motivo crudo no puede estar visible');
+    assert.ok(!visible.includes('resumen funcional'), 'el resumen no puede estar visible');
+    assert.ok(!visible.includes('Actividad reciente'), 'la actividad reciente no puede estar visible');
+    assert.match(html, /motivo crudo del agente/);
+    assert.match(html, /Actividad reciente/);
+});
+
+test('#6191 CA-4 la ficha del dashboard es idéntica a la del objeto crudo (evidence/precondition propagados)', () => {
+    // Objeto crudo TAL CUAL lo devuelve `listBlockedIssues()` (human-block.js).
+    const crudo = {
+        issue: 6191, skill: 'po', phase: 'criterios', pipeline: 'definicion',
+        reason: '{"dependency_block":[6190]}', question: '',
+        precondition: { kind: 'human_judgement' },
+        evidence: 'El PO pidió confirmar el alcance antes de seguir',
+        blocked_at: '2026-06-08T09:00:00Z', age_hours: 27, marker_path: 'x',
+    };
+    // La MISMA proyección que usa `dashboard.js` en sus dos caminos.
+    const fila = humanBlock.toDashboardRow(crudo, { summary: 's', recent_events: [], stale: false }, { 6191: { title: 'La ventana' } });
+    assert.equal(fila.evidence, crudo.evidence, 'la fila del dashboard debe propagar `evidence`');
+    assert.deepEqual(fila.precondition, crudo.precondition, 'la fila del dashboard debe propagar `precondition`');
+    // El verificable literal del criterio: misma evidencia mínima por ambos lados.
+    assert.deepEqual(
+        buildDecisionCard(fila, NOW).evidencia_minima,
+        buildDecisionCard(crudo, NOW).evidencia_minima,
+    );
+    // Y la cita del issue efectivamente llega (si no, el criterio pasaría en vacío).
+    assert.ok(buildDecisionCard(fila, NOW).evidencia_minima.some(e => e.includes(crudo.evidence)));
+});
+
+test('#6191 CA-4 dashboard.js arma la lista con la proyección única, también en el fallback', () => {
+    // Guarda contra la regresión concreta que este issue cierra (gap G-2): dos
+    // `map` gemelos escritos a mano, y arreglar uno solo deja el bug vivo.
+    const src = fsNode.readFileSync(path.join(__dirname, '..', '..', '..', 'dashboard.js'), 'utf8');
+    const usos = (src.match(/humanBlock\.toDashboardRow\(/g) || []).length;
+    assert.equal(usos, 2, 'los DOS caminos (principal y catch) deben usar toDashboardRow');
+});
+
+test('#6191 CA-5 todo campo de ficha sale escapado y ninguno llega por innerHTML', () => {
+    const hostil = 'Bug" onmouseover=alert(1) x=" & <script>alert(2)</script> R&D';
+    const html = rowHtml({ issue: 777, title: hostil, age_hours: 5, reason: '{"dependency_block":[6190]}', evidence: hostil });
+    assert.ok(!hasLiveTags(html));
+    // El `&` y la `"` que el saneo de la ficha NO toca (H-6191-3) salen escapados.
+    assert.ok(!/<h3 class="v3-bloqueados-decision">[^<]*"/.test(html), 'comilla cruda dentro del encabezado');
+    assert.match(html, /&amp;/);
+    // R6 — cero `innerHTML` en el camino alimentado por la ficha. El único
+    // `innerHTML =` del módulo es preexistente, vive en el client script y se
+    // alimenta de contadores numéricos de la ola, no de campos de la tarjeta.
+    const fuente = fsNode.readFileSync(path.join(__dirname, '..', 'bloqueados.js'), 'utf8');
+    const desde = fuente.indexOf('function renderRowSsr');
+    const hasta = fuente.indexOf('\nfunction ', desde + 1);
+    assert.ok(desde > -1 && hasta > desde);
+    assert.doesNotMatch(fuente.slice(desde, hasta), /innerHTML/);
+    assert.equal((fuente.match(/innerHTML\s*=/g) || []).length, 1, 'no se agregaron asignaciones de innerHTML');
+});
+
+test('#6191 CA-6 las opciones son información: cero onclick/href/data-action con su etiqueta', () => {
+    const card = buildDecisionCard(DEP, NOW);
+    const html = rowHtml(DEP);
+    for (const o of card.opciones) {
+        const etq = reEscape(o.etiqueta);
+        assert.doesNotMatch(html, new RegExp('onclick="[^"]*' + etq));
+        assert.doesNotMatch(html, new RegExp('href="[^"]*' + etq));
+        assert.doesNotMatch(html, new RegExp('data-action="[^"]*' + etq));
+    }
+    // Las acciones ejecutables se conservan: CTA + Destrabar + Desestimar visibles.
+    const visible = visiblePart(html);
+    assert.match(visible, /needsHumanCta\(6191, '/);
+    assert.match(visible, /needsHumanReactivate\(6191\)/);
+    assert.match(visible, /Destrabar/);
+    assert.match(visible, /needsHumanDismiss\(6191\)/);
+    assert.match(visible, /Desestimar/);
+    // Desestimar va última (destructiva, separada y a la derecha — D-2 del UX).
+    assert.ok(visible.indexOf('needsHumanReactivate') < visible.indexOf('needsHumanDismiss'));
+});
+
+test('#6191 CA-6 Ver issue / Ver logs / Telegram bajan al detalle colapsado', () => {
+    const html = rowHtml(DEP, { telegramBotUsername: 'intrale_bot' });
+    const visible = visiblePart(html);
+    assert.ok(!visible.includes('Ver issue'), 'Ver issue debe vivir dentro del details');
+    assert.ok(!visible.includes('Ver logs'), 'Ver logs debe vivir dentro del details');
+    assert.ok(!visible.includes('t.me/'), 'el deep-link de Telegram debe vivir dentro del details');
+    // Pero siguen existiendo (no se perdió ninguna vía de acceso).
+    assert.match(html, /href="https:\/\/github\.com\/intrale\/platform\/issues\/6191"/);
+    assert.match(html, /href="\/historial\?q=6191"/);
+    assert.match(html, /href="https:\/\/t\.me\/intrale_bot\?start=unblock_6191"/);
+});
+
+test('#6191 CA-UX-2 con cero opciones se muestra `card.falta`, no un hueco', () => {
+    const card = buildDecisionCard(INDET, NOW);
+    assert.equal(card.opciones.length, 0, 'el fixture debe producir una ficha indeterminada');
+    assert.ok(card.falta, 'la ficha indeterminada trae `falta`');
+    const visible = visiblePart(rowHtml(INDET));
+    assert.ok(visible.includes(card.falta), 'falta debe estar visible sin abrir nada');
+    assert.match(visible, /v3-bloqueados-falta/);
+    // Y no se inventa copy propio para tapar el vacío.
+    assert.doesNotMatch(rowHtml(INDET), /sin opciones disponibles/i);
+});
+
+test('#6191 CA-UX-3 la recomendada se distingue sin depender del color; sin ella, la ficha dice por qué', () => {
+    // Sin contexto de dependencia la ficha NO recomienda: es degradación
+    // diseñada (#6190), no un defecto — y la tarjeta no puede inventar la estrella.
+    const card = buildDecisionCard(DEP, NOW);
+    assert.ok(!card.opciones.some(o => o.es_recomendada));
+    const html = rowHtml(DEP);
+    assert.ok(!html.includes('★'), 'prohibido inventar una estrella que la ficha no trae');
+    assert.ok(visiblePart(html).includes(card.sin_recomendacion_porque));
+
+    // Con el contexto que habilita la recomendación aparecen las TRES señales.
+    const conReco = Object.assign({}, DEP, { dep_age_hours: 3, dep_titulo: 'El módulo de la ficha', dependientes: 2 });
+    const cardReco = buildDecisionCard(conReco, NOW);
+    const reco = cardReco.opciones.find(o => o.es_recomendada);
+    assert.ok(reco, 'con contexto de dependencia la ficha sí recomienda');
+    const htmlReco = rowHtml(conReco);
+    assert.match(htmlReco, /v3-bloqueados-opcion-reco/);          // barra de acento
+    assert.match(htmlReco, /v3-bloqueados-opcion-star" aria-hidden="true">★/); // glifo
+    assert.ok(htmlReco.includes(reco.razon_recomendacion));        // razón visible
+});
+
+test('#6191 CA-UX-4 `costo_de_no_decidir` siempre visible, fuera del details', () => {
+    for (const b of [DEP, INDET]) {
+        const card = buildDecisionCard(b, NOW);
+        const visible = visiblePart(rowHtml(b));
+        assert.ok(visible.includes(card.costo_de_no_decidir), 'el costo de no decidir debe verse sin abrir nada');
+        assert.ok(visible.includes('Si no decidís:'));
+    }
+});
+
+test('#6191 CA-UX-5 cada tarjeta es un article con details/summary nativo', () => {
+    const html = rowHtml(DEP);
+    assert.match(html, /<article class="v3-bloqueados-row [^"]*" id="bloqueados-row-6191"/);
+    assert.match(html, /<details class="v3-bloqueados-tech">\s*<summary/);
+    // Nada de colapsable reimplementado con div + onclick.
+    assert.doesNotMatch(html, /class="v3-bloqueados-tech[^"]*"[^>]*onclick=/);
+});
+
+test('#6191 CA-UX-5 el texto de ficha sólo usa colores que llegan a AA en los dos temas', () => {
+    // Medido con la fórmula WCAG 2.1 componiendo el alpha de los `*-soft`
+    // contra el fondo real de la tarjeta, en ambos temas de `theme.css`:
+    //   --in-fg      12,42 / 13,55 (sobre tarjeta) · 10,51 / 14,52 (sobre reco)
+    //   --in-fg-dim   4,77 /  5,48 (sobre tarjeta) ·  5,62 /  6,39 (sobre opción)
+    //   --in-fg-soft  3,20 /  2,60 → PROHIBIDO
+    //   --in-accent   7,81 /  1,46 → falla en claro
+    //   --in-warn     4,32 /  1,90 → falla en los dos
+    //   --in-bad      4,38 /  2,88 → falla en los dos
+    // El color nunca es el único portador: la recomendada tiene ★ + barra de
+    // acento y la nota de `falta` tiene borde punteado + fondo (WCAG 1.4.1).
+    const css = fsNode.readFileSync(path.join(__dirname, '..', 'theme.css'), 'utf8');
+    const prohibidos = ['--in-fg-soft', '--in-accent', '--in-warn', '--in-bad'];
+    const clasesDeFicha = [
+        'v3-bloqueados-decision', 'v3-bloqueados-subtitle', 'v3-bloqueados-porque',
+        'v3-bloqueados-opcion-etq', 'v3-bloqueados-opcion-cons', 'v3-bloqueados-opcion-razon',
+        'v3-bloqueados-falta', 'v3-bloqueados-falta-rotulo', 'v3-bloqueados-falta-txt',
+        'v3-bloqueados-sinreco', 'v3-bloqueados-costo', 'v3-bloqueados-costo-rotulo',
+        'v3-bloqueados-evidencia-item', 'v3-bloqueados-tech-summary',
+    ];
+    for (const cls of clasesDeFicha) {
+        const re = new RegExp('\\.' + cls + '[^{}]*\\{[^}]*\\}', 'g');
+        const bloques = css.match(re) || [];
+        assert.ok(bloques.length >= 1, 'falta la regla de ' + cls);
+        for (const bloque of bloques) {
+            // Sólo interesa la propiedad `color`: el mismo token puede seguir
+            // usándose para `border`/`background`, que no son texto.
+            const color = (bloque.match(/(?:^|[;{])\s*color\s*:\s*([^;}]+)/) || [])[1] || '';
+            for (const token of prohibidos) {
+                assert.ok(!color.includes(token), cls + ' usa ' + token + ' como color de texto de ficha (no llega a AA)');
+            }
+        }
+    }
+});
+
+test('#6191 la vista degrada sin romper si la ficha no aporta opciones ni contexto', () => {
+    // El pipeline no puede morir por una ficha: la fila sigue renderizando su
+    // bloque técnico, que es información real.
+    const html = rowHtml({ issue: 31337, age_hours: 2, reason: 'motivo plano' });
+    assert.match(html, /id="bloqueados-row-31337"/);
+    assert.match(html, /motivo plano/);
+    assert.ok(!hasLiveTags(html));
+});

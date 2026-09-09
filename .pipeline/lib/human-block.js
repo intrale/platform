@@ -647,6 +647,51 @@ function listBlockedIssues() {
     return result.sort((a, b) => b.age_hours - a.age_hours);
 }
 
+/**
+ * #6191 CA-4 — Proyección `bloqueo crudo → fila del dashboard`.
+ *
+ * Existe por un defecto concreto (gap G-2): `dashboard.js` armaba la lista de
+ * bloqueados con DOS `map` gemelos —el principal y el del `catch` de fallback—
+ * que copiaban 12 campos a mano y ninguno de los dos propagaba `evidence` ni
+ * `precondition`. Consecuencia: `buildDecisionCard()` alimentado con la fila
+ * del dashboard perdía la cita del issue que sí tenía la ficha de Telegram, y
+ * el MISMO bloqueo producía DOS fichas distintas según el canal — exactamente
+ * lo que #6190 vino a cerrar.
+ *
+ * La proyección vive acá, junto al productor del objeto crudo, y es UNA sola:
+ * dos copias del mapeo divergen (ya divergieron), una función compartida no.
+ *
+ * @param {object} b        bloqueo crudo de `listBlockedIssues()`
+ * @param {object} [s]      resumen funcional de `issue-summary` (opcional)
+ * @param {object} [titles] cache de títulos `{ '<issue>': { title } }`
+ */
+function toDashboardRow(b, s, titles) {
+    const raw = (b && typeof b === 'object') ? b : {};
+    const sum = (s && typeof s === 'object') ? s : null;
+    const cache = (titles && typeof titles === 'object') ? titles : {};
+    const cached = cache[String(raw.issue)];
+    return {
+        issue: raw.issue,
+        skill: raw.skill,
+        phase: raw.phase,
+        pipeline: raw.pipeline,
+        reason: raw.reason,
+        question: raw.question,
+        // Los dos campos que se perdían. `evidence` alimenta la cita del issue
+        // en `evidencia_minima` y `precondition` describe la condición de
+        // destrabe: sin ellos la ficha del dashboard sale más pobre que la de
+        // Telegram para el mismo marker.
+        evidence: raw.evidence,
+        precondition: raw.precondition,
+        blocked_at: raw.blocked_at,
+        age_hours: raw.age_hours,
+        title: (cached && cached.title) || '',
+        summary: (sum && sum.summary) || '',
+        recent_events: (sum && sum.recent_events) || [],
+        summary_stale: sum ? !!sum.stale : true,
+    };
+}
+
 // #4653 — Labels de GitHub que implican "esperando intervención humana" pero que
 // NO siempre dejan un marker en `bloqueado-humano/` (p.ej. el Commander aplica
 // `blocked:routing-manual` sobre el issue sin tocar el filesystem del pipeline).
@@ -1901,6 +1946,8 @@ module.exports = {
     unblockIssue,
     dismissBlockedIssue,
     listBlockedIssues,
+    // #6191 CA-4 — proyección única `crudo → fila del dashboard`.
+    toDashboardRow,
     mergeGithubBlockedLabels,
     GITHUB_HUMAN_BLOCK_LABELS,
     listPhaseMarkers,
