@@ -74,8 +74,25 @@ const HEALTH_DEGRADED_MS = 1000;
 // archivos en el mismo host) el proceso padre que MIDE queda saturado y puede
 // registrar un pico aislado apenas sobre el piso (rebote #4513: 1/56 a 1222ms,
 // 22ms sobre el umbral, con zero-tolerance). Se tolera una minoría dura de picos
-// (10%, mínimo 1) sin perder la señal: el loop realmente starvado dispara ~100%.
+// (10%, con el piso absoluto de abajo) sin perder la señal: el loop realmente
+// starvado dispara ~100%.
 const STARVATION_TOLERANCE_RATIO = 0.10;
+// Piso ABSOLUTO de la tolerancia (#6239). El ratio solo no alcanza: se contrae
+// justo cuando mas ruido hay. Bajo la suite completa el proceso padre que MIDE
+// esta saturado y junta el minimo de muestras (MIN_SAMPLES=12), asi que el
+// ratio da una tolerancia de 1 -floor(12*0.10)- EN LA MISMA CORRIDA en la que
+// el jitter es maximo. Eso es lo que rebotaron #4513 (1/56 a 1222ms) y #6239
+// (2/12 a 1580ms), ambos sobre diffs que no tocan el dashboard. El piso
+// desacopla la tolerancia del tamano de la muestra sin perder senal: la
+// regresion real de #4126 clava el loop en ~100% de las requests.
+const STARVATION_TOLERANCE_MIN = 2;
+// Umbral de stall del PROPIO proceso medidor durante una muestra. Si el event
+// loop de ESTE proceso (no el del dashboard) se clavo mas que esto mientras la
+// request estaba en vuelo, la latencia medida es ruido del medidor y no dice
+// nada sobre el dashboard.
+const SELF_STALL_MS = 300;
+// Cadencia del probe que mide el drift del event loop propio.
+const SELF_PROBE_MS = 20;
 // Presupuesto para /api/state. Una vez poblado el snapshot, es O(1); el objetivo
 // del CA-3 es detectar que NO se cuelga (un cuelgue real llega al timeout HTTP de
 // 5s). Bajo la suite Node completa el proceso padre está saturado y un servido
@@ -100,11 +117,27 @@ function getJson(p, urlPath, timeoutMs, cb) {
 function timedHealth(p) {
   return new Promise((resolve) => {
     const t0 = Date.now();
+    // Control de ruido del medidor (#6239). La asercion dura de abajo afirma
+    // algo sobre el event loop del DASHBOARD, pero lo unico que observa es
+    // wall-clock desde ESTE proceso, que bajo la suite completa (946 archivos
+    // en un unico proceso) tambien se clava. Un pico medido mientras el medidor
+    // estaba stalleado no distingue "el dashboard se starvo" de "yo no pude
+    // leer el socket": se registra el drift maximo de un timer propio tomado en
+    // la MISMA ventana para poder descontar esas muestras.
+    let selfStallMs = 0;
+    let lastTick = Date.now();
+    const probe = setInterval(() => {
+      const now = Date.now();
+      const drift = now - lastTick - SELF_PROBE_MS;
+      if (drift > selfStallMs) selfStallMs = drift;
+      lastTick = now;
+    }, SELF_PROBE_MS);
     // Damos margen alto al timeout HTTP (2s) para MEDIR la latencia real: si el
     // loop está starvado, queremos ver 1500ms, no un corte temprano.
     getJson(p, '/api/health', 2000, (err, r) => {
+      clearInterval(probe);
       const elapsed = Date.now() - t0;
-      resolve({ elapsed, ok: !err && r && r.status === 200, err: err && err.message });
+      resolve({ elapsed, selfStallMs, ok: !err && r && r.status === 200, err: err && err.message });
     });
   });
 }
@@ -226,7 +259,14 @@ test('CA-1/CA-4 — /api/health responde < 500ms mientras el worker computa el s
   // Un timeout (elapsed ~= timeout HTTP de 2000ms) es, por latencia, una muestra
   // starvada: se incluye explícitamente para que cuente en el presupuesto de
   // starvation aunque su `elapsed` medido quede al ras del piso.
-  const starved = samples.filter((s) => s.elapsed >= STARVATION_MS || (!s.ok && s.err === 'timeout'));
+  const starvedRaw = samples.filter((s) => s.elapsed >= STARVATION_MS || (!s.ok && s.err === 'timeout'));
+  // #6239 — una muestra tomada mientras el medidor estaba stalleado no es
+  // evidencia sobre el dashboard: se descuenta del conteo de starvation, no del
+  // total (que sigue dimensionando la tolerancia). Bajo la regresion real de
+  // #4126 el loop clavado es el del HIJO y el drift propio queda bajo, asi que
+  // el ~100% de muestras starvadas sobrevive al descuento y el test dispara.
+  const noisy = starvedRaw.filter((s) => (s.selfStallMs || 0) >= SELF_STALL_MS);
+  const starved = starvedRaw.filter((s) => (s.selfStallMs || 0) < SELF_STALL_MS);
 
   // Señal DURA: starvation SOSTENIDA. La regresión real (#4126) clavaba el loop
   // por segundos en TODAS las requests durante el escaneo síncrono → se manifiesta
@@ -235,11 +275,15 @@ test('CA-1/CA-4 — /api/health responde < 500ms mientras el worker computa el s
   // saturado, no starvation del dashboard (rebote #4513). Toleramos una minoría
   // dura (STARVATION_TOLERANCE_RATIO); el loop realmente clavado dispara ~100% y
   // cruza el umbral holgadamente.
-  const maxStarvedAllowed = Math.max(1, Math.floor(samples.length * STARVATION_TOLERANCE_RATIO));
+  const maxStarvedAllowed = Math.max(
+    STARVATION_TOLERANCE_MIN,
+    Math.floor(samples.length * STARVATION_TOLERANCE_RATIO),
+  );
   assert.ok(
     starved.length <= maxStarvedAllowed,
     `REGRESIÓN #4126: /api/health alcanzó nivel de starvation (>=${STARVATION_MS}ms) en ` +
-    `${starved.length}/${samples.length} muestras (tolerado: ${maxStarvedAllowed}, max=${max}ms) mientras el ` +
+    `${starved.length}/${samples.length} muestras (tolerado: ${maxStarvedAllowed}, max=${max}ms, ` +
+    `descontadas por stall del medidor: ${noisy.length}) mientras el ` +
     `worker computaba. El event loop se starvó: el snapshot volvió a un escaneo síncrono monolítico o ` +
     `reintrodujo wmic/tasklist sync.`,
   );
