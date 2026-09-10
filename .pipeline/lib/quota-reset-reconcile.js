@@ -59,7 +59,12 @@ const DEFAULT_MIN_INTERVAL_MS = 5 * 60 * 1000;
 const MAX_MEASUREMENT_LAG_MS = 30 * 60 * 1000;
 
 function stateFile() {
-    return path.join(__dirname, '..', 'state', 'quota-reset-reconcile.json');
+    // Mismo override que `quota-exhausted.pipelineDir()`. Sin esto el throttle
+    // vive siempre en el `.pipeline/` del checkout: los tests aislados le
+    // escribirían encima al estado real y compartirían la ventana entre sí.
+    const base = process.env.PIPELINE_DIR_OVERRIDE
+        || path.join(__dirname, '..');
+    return path.join(base, 'state', 'quota-reset-reconcile.json');
 }
 
 function readState() {
