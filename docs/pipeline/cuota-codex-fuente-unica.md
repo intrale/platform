@@ -208,7 +208,96 @@ al alcanzar el límite lo **quemaría en días**. Es un anti-patrón operacional
 > alcanzado" ya existe vía el flag `quota-exhausted` (banner + gate de spawn por
 > proveedor). Cualquier consumo de resets futuro DEBE pasar por gate humano.
 
-## 6. Archivos afectados
+## 6. Re-verificación del flag: el gate deja de gobernar su propia evidencia (#7181)
+
+### 6.1. El círculo cerrado
+
+El flag `quota-exhausted.json` tenía exactamente dos formas de irse:
+
+1. que venciera su `resets_at`, o
+2. `clearFlag` tras un spawn **exitoso** del proveedor.
+
+La segunda es inalcanzable mientras el flag está puesto: el gate bloquea el
+spawn, así que el éxito que probaría la recuperación nunca puede ocurrir. Si el
+`resets_at` quedaba mal escrito, nada podía corregirlo salvo un humano.
+
+Y nada lo contradecía tampoco. El health check de un proveedor CLI-OAuth es
+`isBinaryOnPath()`: mide si el **binario está instalado**, no si responde. Es
+incapaz por construcción de virar a rojo por cuota, así que el panel mostraba
+`green / cli_oauth_ok` mientras el pipeline rebotaba cada spawn de ese mismo
+proveedor. El operador leía "sano" y el flag decía "agotado".
+
+**Incidente del 2026-09-10:** codex quedó gateado hasta el día siguiente
+(`resets_at: 2026-09-11T14:54Z`) cuando su ventana real se liberaba a las
+`19:16Z` del mismo día. 19,5 horas de apagón sobre un proveedor que volvía en 4.
+
+### 6.2. El dato estaba en disco
+
+El adapter ya leía los `rate_limits` de los rollouts, pero el CLI emite **dos
+formas** del objeto y sólo una trae ventanas:
+
+| `limit_id` | `primary` / `secondary` | Cuándo aparece |
+|------------|-------------------------|----------------|
+| `codex`    | pobladas (`used_percent`, `window_minutes`, `resets_at`) | medición normal |
+| `premium`  | **ambas `null`**, sólo `credits` | acompaña al tope de créditos |
+
+`readLatestEvent` tomaba el evento más reciente **a secas**. Cuando el último era
+un frame `premium`, tapaba la medición real que estaba unas líneas más arriba y
+el adapter devolvía `adapterStatus:'error'` (*"ventanas inválidas"*) — con lo que
+el health hacía fail-open y mostraba verde.
+
+Un frame sin ventanas no es un dato de cuota: es la ausencia de ese dato. Ahora
+`readLatestEvent` acepta `requireWindows` (default `true`) y salta esos frames.
+
+### 6.3. `readObservedWindows` — por qué esquiva el umbral de frescura
+
+El adapter mide *"cuánto queda AHORA"*, y para eso un dato de hace más de una
+hora no sirve: degrada a `unknown`. Pero un **`resets_at` no envejece**: es una
+fecha futura anunciada por el servidor y sigue siendo cierta aunque el porcentaje
+que la acompañaba ya no lo sea.
+
+`readObservedWindows()` expone las ventanas observadas sin ese gate, porque la
+reconciliación necesita la fecha, no el porcentaje. El umbral de staleness del
+adapter protege otra decisión y queda intacto.
+
+### 6.4. Sólo acorta, nunca alarga
+
+`quota-exhausted.shortenResetsAt()` reemplaza el `resets_at` persistido por el
+observado **sólo si el observado es anterior**, y drena el slot si ya venció.
+
+La asimetría es deliberada:
+
+- El `resets_at` del flag suele ser una **cota superior** (un cap por proveedor
+  cuando la evidencia no traía fecha), no una medición. Acortarlo lo acerca a la
+  verdad.
+- Acortar es **auto-corrector**: si el proveedor sigue capado, el próximo spawn
+  vuelve a escribir el flag.
+- Alargar no tiene vuelta atrás automática: convertiría un error de lectura en
+  horas de apagón que nadie revisa.
+
+Ante ausencia de señal (rollouts ilegibles, sin ventanas, medición muy anterior
+al `detected_at`) **no destraba nada**: fail-closed.
+
+### 6.5. Dónde corre
+
+En `shouldGateSpawn()`, antes de honrar el gate — que es el punto donde el flag
+hace daño. `reconcileCodexReset()` trae throttle propio (5 min) porque el barrido
+de rollouts recorre miles de archivos; el costo por spawn es una lectura de
+estado.
+
+El health suma el flag como **cuarto insumo**: un proveedor con slot activo no
+puede reportarse `green`, y sale con `reason_code: quota_flag_active`. Queda
+fuera de `DURABLE_RED_REASONS` a propósito — el flag ya gatea el spawn por su
+cuenta y se drena solo.
+
+### 6.6. Esto NO es un auto-reset
+
+Nada de lo anterior consume el recurso escaso de la §5. No se ejecuta ningún
+reset de cuota ni se compran créditos: sólo se corrige **la fecha del flag
+local** al valor que el propio Codex ya había anunciado. La política fail-closed
+de la §5 queda intacta.
+
+## 7. Archivos afectados
 
 - `lib/provider-quota.js` — `enrich()` mode `event`: 3 estados + helper
   `_isProviderExhausted(provider, opts)`.
@@ -222,8 +311,13 @@ al alcanzar el límite lo **quemaría en días**. Es un anti-patrón operacional
 - `lib/__tests__/quota-adapters/openai-codex.test.js` y
   `lib/__tests__/dashboard-slices-kpis.test.js` — fixtures aislados y
   propagación adapter → slice.
+- `lib/quota-reset-reconcile.js` (#7181) — reconciliación flag ↔ reset observado.
+- `lib/quota-exhausted.js` (#7181) — `shortenResetsAt()` + hook en `shouldGateSpawn`.
+- `lib/multi-provider/health-cron.js` (#7181) — `quotaFlagState()` como cuarto insumo.
+- `lib/__tests__/quota-reset-reconcile-7181.test.js` — suite con los frames
+  reales del incidente del 2026-09-10.
 
-## 7. Trabajo diferido (issues de recomendación)
+## 8. Trabajo diferido (issues de recomendación)
 
 1. **Ruta del dato fresco de cuota/resets** (CA-3 completo + conteo de resets):
    decidir en definición/arquitectura entre `codex exec` acotado (con costo
