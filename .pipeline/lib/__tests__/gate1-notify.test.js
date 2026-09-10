@@ -397,39 +397,157 @@ test('el teclado trae los tres botones y ningún callback_data lleva issue ni ac
     assert.strictEqual(new Set(Object.values(ids)).size, 3, 'un id distinto por acción');
 });
 
-test('un from.id fuera del allowlist recibe rechazo y NO ejecuta la firma', () => {
-    const { gate, dirs } = makeGate();
-    const { ids } = teclado(gate, 6192);
-    fs.mkdirSync(dirs.waitingDir, { recursive: true });
-    fs.writeFileSync(path.join(dirs.waitingDir, '6192.json'), JSON.stringify({ issue: 6192 }));
+// -----------------------------------------------------------------------------
+// #6207 — EL CAMINO DE LOS BOTONES CAMBIÓ DE EJECUTOR.
+//
+// Hasta #6207 estos dos tests ejercitaban `handleSignature()` sobre los botones
+// del aviso, porque era el único camino que existía. Ese camino era el ERRÓNEO:
+// abajo de `handleSignature` vive `applyTransition()`, que mueve work-files de
+// `waiting-operator/` — el ejecutor de GATE 0/2, no el de GATE 1, cuyo efecto es
+// una firma en el audit chain de `operator-signoff-gate`. Ambos gates comparten
+// el vocabulario de acciones (`approve`/`reject`/`adjust-definicion`), y eso los
+// hacía indistinguibles.
+//
+// Desde #6207 los botones de GATE 1 llevan `channel_gate: 'definicion'`
+// persistido y se rutean a `gate1-signature-handler`. Los CAs que estos tests
+// cuidan —autorización por `from.id` fail-closed, el work-file intacto, la
+// capability del operador que un intruso no puede quemar— siguen VIGENTES y se
+// verifican acá contra el camino que hoy corre de verdad. El test se muda con el
+// código; el criterio no se relaja.
+// -----------------------------------------------------------------------------
 
-    const res = gate.handleSignature({ operatorId: INTRUSO, callbackData: ids.approve });
+const canalDeAprobacion = require('../approval-channel');
+const depositoGate1 = require('../gate1-signature-deposit');
+const { createGate1SignatureHandler } = require('../gate1-signature-handler');
+const auditLogGate1 = require('../audit-log');
+
+const BODY_GATE1 = '## Criterios\n\n- [ ] CA-1 el operador firma desde Telegram\n';
+
+/**
+ * Gate + canal + handler herméticos, compartiendo raíz. Devuelve además el
+ * episodio ya armado (pedido depositado + los tres botones emitidos), que es el
+ * estado en el que el operador recibe el aviso.
+ */
+function makeEpisodioGate1(overrides = {}) {
+    const { gate, dirs } = makeGate(overrides);
+    const root = path.dirname(dirs.storeDir);
+    const allow = overrides.operatorAllowlist || [OPERADOR];
+
+    const channelDeps = {
+        depositDir: path.join(root, 'canal', 'pendiente'),
+        auditFile: path.join(root, 'audit', 'approval-channel.jsonl'),
+        rejectFile: path.join(root, 'audit', 'approval-channel-rejects.jsonl'),
+        rateFile: path.join(root, 'canal', '.reject-rate.json'),
+        signer: createTokenSigner({
+            secret: CLAVE_DE_PRUEBA,
+            nonceFile: path.join(root, 'audit', 'canal-tokens.jsonl'),
+        }),
+        auditCompanion: (record) => auditLogGate1.appendChained({
+            file: dirs.auditFile,
+            entry: { ...record, ts: new Date().toISOString() },
+        }),
+        env: allow.length > 0 ? { TELEGRAM_LEO_OPERATOR_CHAT_ID: String(allow[0]) } : {},
+        config: {
+            operator_signoff: { enabled: true, gate_mode: 'enforce' },
+            operator_signature: { enabled: true, gate_mode: 'enforce' },
+            cua: { operator_chat_ids: [] },
+        },
+        writerPipelineDir: root,
+    };
+
+    const dep = depositoGate1.depositGate1Request(
+        { issue: 6192, body: BODY_GATE1, title: TITULO },
+        { approvalImpl: canalDeAprobacion, channelDeps },
+    );
+    assert.strictEqual(dep.ok, true, `el pedido tenía que depositarse: ${dep.reason}`);
+
+    const handler = createGate1SignatureHandler({
+        gateFactory: () => gate,
+        approvalImpl: canalDeAprobacion,
+        depositImpl: depositoGate1,
+        channelDeps,
+        readIssueBody: () => BODY_GATE1,
+        enqueueGithub: () => { },
+    });
+
+    return {
+        gate, dirs, handler, root,
+        ids: teclado(gate, 6192).ids,
+        firmaDelGate: () => {
+            const f = path.join(root, 'audit', 'operator-signoff.jsonl');
+            return fs.existsSync(f) ? auditLogGate1.readAll(f) : [];
+        },
+    };
+}
+
+test('un from.id fuera del allowlist recibe rechazo y NO ejecuta la firma', () => {
+    const env = makeEpisodioGate1();
+    fs.mkdirSync(env.dirs.waitingDir, { recursive: true });
+    const workfile = path.join(env.dirs.waitingDir, '6192.json');
+    fs.writeFileSync(workfile, JSON.stringify({ issue: 6192 }));
+
+    const res = env.handler.handleGate1Signature({
+        operatorId: INTRUSO, callbackData: env.ids.approve,
+    });
 
     assert.strictEqual(res.ok, false);
     assert.strictEqual(res.reason, 'unauthorized');
     assert.match(res.toast, /No autorizado/i);
-    assert.ok(fs.existsSync(path.join(dirs.waitingDir, '6192.json')),
-        'el ítem no se movió: la firma no se ejecutó');
-    assert.ok(!fs.existsSync(dirs.auditFile), 'no se audita nada con datos del intruso');
+    assert.ok(fs.existsSync(workfile), 'el ítem no se movió: la firma no se ejecutó');
+    assert.deepStrictEqual(env.firmaDelGate(), [], 'no queda ninguna firma del intruso');
 
     // Y la capability del operador legítimo sigue viva: un intruso no puede
     // invalidarla tocando el botón.
-    const legitimo = gate.handleSignature({ operatorId: OPERADOR, callbackData: ids.approve });
-    assert.strictEqual(legitimo.ok, true);
+    const legitimo = env.handler.handleGate1Signature({
+        operatorId: OPERADOR, callbackData: env.ids.approve,
+    });
+    assert.strictEqual(legitimo.ok, true, `el operador debía poder firmar: ${legitimo.reason}`);
+    assert.strictEqual(env.firmaDelGate().length, 1);
+    // Y el work-file SIGUE intacto: firmar GATE 1 no mueve nada de lifecycle.
+    assert.ok(fs.existsSync(workfile), 'firmar GATE 1 no toca work-files');
 });
 
 test('allowlist vacío = fail-closed: ni el operador puede firmar', () => {
-    const { gate, dirs } = makeGate({ operatorAllowlist: [] });
-    const { ids } = teclado(gate, 6192);
-    fs.mkdirSync(dirs.waitingDir, { recursive: true });
-    fs.writeFileSync(path.join(dirs.waitingDir, '6192.json'), JSON.stringify({ issue: 6192 }));
+    const env = makeEpisodioGate1({ operatorAllowlist: [] });
+    fs.mkdirSync(env.dirs.waitingDir, { recursive: true });
+    const workfile = path.join(env.dirs.waitingDir, '6192.json');
+    fs.writeFileSync(workfile, JSON.stringify({ issue: 6192 }));
 
-    const res = gate.handleSignature({ operatorId: OPERADOR, callbackData: ids.approve });
+    const res = env.handler.handleGate1Signature({
+        operatorId: OPERADOR, callbackData: env.ids.approve,
+    });
 
     assert.strictEqual(res.ok, false);
     assert.strictEqual(res.reason, 'unauthorized');
-    assert.ok(fs.existsSync(path.join(dirs.waitingDir, '6192.json')), 'nada se movió');
+    assert.ok(fs.existsSync(workfile), 'nada se movió');
+    assert.deepStrictEqual(env.firmaDelGate(), []);
 });
+
+test('#6207: un botón de GATE 1 NO puede atravesar handleSignature (confused deputy)', () => {
+    const env = makeEpisodioGate1();
+    fs.mkdirSync(env.dirs.waitingDir, { recursive: true });
+    const workfile = path.join(env.dirs.waitingDir, '6192.json');
+    fs.writeFileSync(workfile, JSON.stringify({ issue: 6192 }));
+
+    // Defensa en profundidad: aunque el ruteo del listener fallara y el binding
+    // llegara al camino de lifecycle, ahí se rechaza SIN consumir y sin mover
+    // nada. Esto es lo que impide que ✅ Aprobar de GATE 1 promueva un ítem de
+    // otro gate por compartir el nombre de la acción.
+    const res = env.gate.handleSignature({ operatorId: OPERADOR, callbackData: env.ids.approve });
+
+    assert.strictEqual(res.ok, false);
+    assert.strictEqual(res.reason, 'not-a-lifecycle-binding');
+    assert.ok(fs.existsSync(workfile), 'el work-file de otro gate queda donde estaba');
+    assert.ok(env.gate.resolve(env.ids.approve), 'y la capability sigue viva para su handler');
+});
+
+test('#6207: los botones del aviso clasifican como `gate-signature`, no como `gate`', () => {
+    const env = makeEpisodioGate1();
+    for (const id of Object.values(env.ids)) {
+        assert.strictEqual(env.gate.classifyCallback(id), 'gate-signature');
+    }
+});
+
 
 // =============================================================================
 // #6192 · regresión — la capability de firma NO disponible.
