@@ -522,6 +522,22 @@ function sanitizeRawExcerpt(raw) {
  * @param {number} opts.now Date.now() override (para tests)
  * @returns {{ ms: number, iso: string, source: 'input'|'fallback'|'cap_max' }}
  */
+/**
+ * #7161 — normaliza a epoch ms los tres shapes que puede traer un `resets_at`
+ * (número, Date, ISO string). Mismo criterio que usa `capResetsAt` puertas
+ * adentro; se extrae para que otros puntos puedan VALIDAR el candidato antes de
+ * delegarle el clamp. Devuelve `NaN` si no es parseable.
+ */
+function toEpochMs(input) {
+    if (typeof input === 'number' && Number.isFinite(input)) return input;
+    if (input instanceof Date) return input.getTime();
+    if (typeof input === 'string') {
+        const parsed = Date.parse(input);
+        if (Number.isFinite(parsed)) return parsed;
+    }
+    return NaN;
+}
+
 function capResetsAt(input, opts = {}) {
     const maxDays = Number.isFinite(opts.maxDays) && opts.maxDays > 0
         ? opts.maxDays
@@ -1206,8 +1222,23 @@ function setFlag(opts = {}) {
     // aportó un `resets_at` (el CLI lo emite como texto libre, sin campo
     // estructurado), gateamos por una ventana corta en vez del fallback semanal.
     let effectiveResetsAt = opts.resetsAt;
-    if (effectiveResetsAt == null && errorType === 'usage_limit_reached') {
-        effectiveResetsAt = now + CODEX_USAGE_LIMIT_RESET_MS;
+    // #7161 CA-4 — para el cap rolling de codex, el `resets_at` NUNCA puede
+    // degradar al fallback semanal ni al cap por proveedor (24h). Hay tres
+    // caminos y los tres terminan en una ventana corta:
+    //   a) el caller trajo el reset ANUNCIADO por el propio frame de control
+    //      ("try again at ...") y es usable → se respeta tal cual;
+    //   b) no vino ninguno → ventana fija de 1h (comportamiento previo);
+    //   c) vino pero no es usable (basura, pasado, o más lejos que el techo de
+    //      sanidad de 24h) → también ventana fija de 1h.
+    // El caso (c) importa: `capResetsAt` descarta un input fuera de rango
+    // cayendo al próximo reset SEMANAL, que luego se clampea al cap del
+    // proveedor — es decir, exactamente el apagón de 24h que este issue corrige.
+    if (errorType === 'usage_limit_reached') {
+        const announced = toEpochMs(effectiveResetsAt);
+        const usable = Number.isFinite(announced)
+            && announced >= now + MIN_RESETS_AT_MS
+            && announced <= now + CODEX_USAGE_LIMIT_MAX_ANNOUNCED_MS;
+        effectiveResetsAt = usable ? announced : now + CODEX_USAGE_LIMIT_RESET_MS;
     }
     // #4731 — TTL configurable por proveedor (clampeado). Prioriza opts.maxDays.
     let maxDays = resolveMaxDays(provider, opts);
@@ -1336,6 +1367,83 @@ const _CODEX_USAGE_LIMIT_PATTERN =
 // desperdiciamos el fallback pago durante días. Es auto-corrector: si al drenar
 // la cuota sigue agotada, el próximo intento re-setea el flag (idempotente).
 const CODEX_USAGE_LIMIT_RESET_MS = 60 * 60 * 1000; // 1h
+
+// #7161 — El propio mensaje de control de codex ANUNCIA cuándo se libera el cap
+// ("...or try again at Sep 10th, 2026 1:00 AM."). Antes se ignoraba: sólo se
+// hacía `.test()` del patrón y el gate duraba la ventana fija de 1h (o, cuando
+// el error_type llegaba pisado, el cap por proveedor de 24h). Capturar la fecha
+// hace que el gate dure lo que dura de verdad.
+//
+// Se aceptan las dos formas que emite el CLI:
+//   a) fecha completa  — "Sep 10th, 2026 1:00 AM"  (con o sin ordinal/coma)
+//   b) sólo hora       — "6:02 AM"                 (mismo día o el siguiente)
+// El mensaje NO trae zona horaria: se interpreta en la hora LOCAL del host, que
+// es la del usuario de la cuenta ChatGPT que corre el CLI.
+// ReDoS-safe: clases restringidas, cuantificadores acotados, sin anidamiento.
+const _CODEX_TRY_AGAIN_AT_PATTERN =
+    /\btry\s+again\s+at\s+(?:([A-Za-z]{3,9})\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+(\d{4})\s+)?(\d{1,2}):(\d{2})\s*([AaPp])\.?[Mm]\.?/i;
+
+// Techo de sanidad para la fecha anunciada. Un cap ROLLING de la cuenta ChatGPT
+// se libera en minutos u horas; nunca en días. Si el texto anuncia algo más
+// lejano (o una fecha del pasado, o basura), lo descartamos y caemos a la
+// ventana corta de 1h — que es auto-correctora: si al drenar sigue capado, el
+// próximo intento re-setea el flag. NUNCA se degrada al cap de 24h por esta vía.
+const CODEX_USAGE_LIMIT_MAX_ANNOUNCED_MS = 24 * 60 * 60 * 1000; // 24h
+
+const _MONTH_BY_PREFIX = Object.freeze({
+    jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5,
+    jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11,
+});
+
+/**
+ * Extrae el `try again at <fecha>` del mensaje de control de codex.
+ *
+ * @param {string} message texto del frame de control (NUNCA canal de contenido)
+ * @param {{now?: number}} [opts]
+ * @returns {string|null} ISO 8601 del reset anunciado, o `null` si no hay fecha
+ *                        usable (no matcheó, quedó en el pasado o excede el
+ *                        techo de sanidad).
+ */
+function _parseCodexUsageLimitResetAt(message, opts = {}) {
+    if (typeof message !== 'string' || message.length === 0) return null;
+    // Cap de input: el mensaje de control es corto; recortamos por las dudas.
+    const text = message.length > 512 ? message.slice(0, 512) : message;
+    const m = _CODEX_TRY_AGAIN_AT_PATTERN.exec(text);
+    if (!m) return null;
+
+    const now = Number.isFinite(opts.now) ? opts.now : Date.now();
+    const [, monthName, dayStr, yearStr, hourStr, minuteStr, meridiem] = m;
+
+    let hour = Number(hourStr);
+    const minute = Number(minuteStr);
+    if (!Number.isFinite(hour) || !Number.isFinite(minute)) return null;
+    if (hour < 1 || hour > 12 || minute > 59) return null;
+    const isPm = meridiem.toLowerCase() === 'p';
+    if (hour === 12) hour = 0;
+    if (isPm) hour += 12;
+
+    let ts;
+    if (monthName) {
+        const month = _MONTH_BY_PREFIX[monthName.slice(0, 3).toLowerCase()];
+        if (month == null) return null;
+        const day = Number(dayStr);
+        const year = Number(yearStr);
+        if (!Number.isFinite(day) || day < 1 || day > 31) return null;
+        if (!Number.isFinite(year) || year < 2000 || year > 2100) return null;
+        ts = new Date(year, month, day, hour, minute, 0, 0).getTime();
+    } else {
+        // Sólo hora: el próximo cruce de esa hora local a partir de `now`.
+        const base = new Date(now);
+        base.setHours(hour, minute, 0, 0);
+        ts = base.getTime();
+        if (ts <= now) ts += 24 * 60 * 60 * 1000;
+    }
+
+    if (!Number.isFinite(ts)) return null;
+    if (ts <= now) return null;
+    if (ts - now > CODEX_USAGE_LIMIT_MAX_ANNOUNCED_MS) return null;
+    return new Date(ts).toISOString();
+}
 
 // #4731 — TTL (cap de `resets_at`) configurable POR PROVEEDOR. Fuente:
 // `config.yaml:quota_detector.ttl_by_provider.<id>` (en días) con default
@@ -1696,7 +1804,7 @@ function _detectAnthropic(evt, allowlist, opts = {}) {
  * modelo (canal de contenido). El match sigue siendo fail-closed: `type`/`code`
  * sólo cuentan si el provider DECLARÓ ese error_type en su allowlist.
  */
-function _detectOpenAI(evt, allowlist) {
+function _detectOpenAI(evt, allowlist, opts = {}) {
     if (!evt || typeof evt !== 'object') return { matched: false };
 
     // Shape SSE canónico: { event: 'error', data: { error: { type, message } } }
@@ -1745,7 +1853,12 @@ function _detectOpenAI(evt, allowlist) {
             ? evt.error.message
             : (typeof evt.message === 'string' ? evt.message : '');
         if (msg && _CODEX_USAGE_LIMIT_PATTERN.test(msg)) {
-            return { matched: true, errorType: 'usage_limit_reached' };
+            // #7161 — el mismo frame anuncia el reset ("try again at ..."). Se
+            // propaga como `resetsAt` para que el gate dure lo real. Si no se
+            // puede parsear, viaja `null` y el escritor del flag cae a la
+            // ventana corta de 1h (comportamiento previo).
+            const resetsAt = _parseCodexUsageLimitResetAt(msg, { now: opts.now });
+            return { matched: true, errorType: 'usage_limit_reached', resetsAt };
         }
     }
 
@@ -1961,6 +2074,7 @@ module.exports = {
     DETERMINISTIC_SKILLS,
     KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER,
     CODEX_USAGE_LIMIT_RESET_MS,
+    CODEX_USAGE_LIMIT_MAX_ANNOUNCED_MS,
     // #5455 — canal de contenido (excepción acotada Anthropic-only).
     WEEKLY_LIMIT_CONTENT_ERROR_TYPE,
     WEEKLY_LIMIT_CONTENT_SOURCE,
@@ -1982,6 +2096,9 @@ module.exports = {
     _detectOpenAI,
     _CLI_1M_CONTEXT_GLITCH_PATTERN,
     _CODEX_USAGE_LIMIT_PATTERN,
+    // #7161 — reset anunciado por el propio mensaje de control de codex.
+    _CODEX_TRY_AGAIN_AT_PATTERN,
+    _parseCodexUsageLimitResetAt,
     // #5455
     _detectAnthropicContentChannel,
     _normalizeAnthropicResultContent,

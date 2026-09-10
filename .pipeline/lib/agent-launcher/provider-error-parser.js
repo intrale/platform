@@ -163,6 +163,10 @@ const TIMEOUT_THRESHOLD_MS = 30000;
 // Cap textual sobre `raw`/`evidence` (ya impuesto por sanitizeRawExcerpt
 // vía RAW_EXCERPT_MAX_CHARS, pero documentamos el contrato).
 const EVIDENCE_MAX_CHARS = 200;
+// #7161 — techo del `errorType` propagado en el veredicto. Los tipos reales son
+// identificadores cortos (`insufficient_quota`, `usage_limit_reached`); el cap
+// es una defensa por si un detector futuro devuelve algo no acotado.
+const ERROR_TYPE_MAX_CHARS = 64;
 
 // SR-5: providers conocidos. Si el caller pasa algo fuera de este set, el
 // parser falla cerrado (`unknown`). NO inferimos `provider` desde rawOutput.
@@ -402,7 +406,7 @@ function tryParseJson(line) {
 //
 // Devuelve `{ errorClass, evidence }` o `null` si no hay match.
 // -----------------------------------------------------------------------------
-function detectFromCliStderr(input, provider, quotaModule) {
+function detectFromCliStderr(input, provider, quotaModule, opts = {}) {
     const linesMeta = splitBoundedLinesMeta(input);
     const lines = linesMeta.map((m) => m.text);
     // Helper local: strip prefijo SSE `data: ` para que JSON.parse vea el JSON.
@@ -445,9 +449,13 @@ function detectFromCliStderr(input, provider, quotaModule) {
             }
             const r = quotaModule._detectAnthropic(parsed, allowlist);
             if (r && r.matched) {
+                // #7161 CA-1: el detector YA resolvió el error_type contra la
+                // allowlist del provider. Se propaga en el veredicto para que
+                // el caller lo persista tal cual, en vez de re-adivinarlo.
                 return {
                     errorClass: 'quota_exhausted',
                     evidence: line,
+                    errorType: r.errorType || null,
                 };
             }
         }
@@ -458,11 +466,22 @@ function detectFromCliStderr(input, provider, quotaModule) {
         for (const line of lines) {
             const parsed = parseJsonOrSSE(line);
             if (!parsed) continue;
-            const r = quotaModule._detectOpenAI(parsed, allowlist);
+            const r = quotaModule._detectOpenAI(parsed, allowlist, { now: opts.now });
             if (r && r.matched) {
+                // #7161 CA-1 — INCIDENTE QUE FIJA ESTA PROPAGACIÓN.
+                // El frame de control de codex (`turn.failed` con el límite en
+                // `error.message`) no tiene `error.type`. El detector lo
+                // resuelve igual a `usage_limit_reached` por regex acotado sobre
+                // el canal de CONTROL, pero antes se tiraba ese valor acá: el
+                // caller reparseaba el evidence, no encontraba candidato y caía
+                // al default `allowlist[0]` = `insufficient_quota`, que gatea
+                // codex 24h en vez de la ventana rolling real.
+                // `resetsAt` viaja por el mismo motivo (CA-4).
                 return {
                     errorClass: 'quota_exhausted',
                     evidence: line,
+                    errorType: r.errorType || null,
+                    resetsAt: r.resetsAt || null,
                 };
             }
         }
@@ -658,6 +677,9 @@ function detectFromApiResponse(input, provider, quotaModule) {
                 return {
                     errorClass: 'quota_exhausted',
                     evidence: JSON.stringify(errObj).slice(0, MAX_LINE_BYTES),
+                    // #7161 CA-1: el tipo que decidió el match viaja en el
+                    // veredicto (mismo orden de preferencia que el match).
+                    errorType: allowlist.includes(type) ? type : code,
                 };
             }
 
@@ -746,7 +768,12 @@ function detectFromApiResponse(input, provider, quotaModule) {
 
         const allowlist = (quotaModule.KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER || {})[provider] || [];
         if (allowlist.includes(type) || allowlist.includes(code)) {
-            return { errorClass: 'quota_exhausted', evidence: line };
+            // #7161 CA-1: propagamos el tipo que decidió el match.
+            return {
+                errorClass: 'quota_exhausted',
+                evidence: line,
+                errorType: allowlist.includes(type) ? type : code,
+            };
         }
         if (status === 429 || type === 'rate_limit_error' || code === 'rate_limit_exceeded') {
             return { errorClass: 'rate_limit', evidence: line };
@@ -1017,7 +1044,7 @@ function parseProviderError(rawOutput, ctx = {}) {
     let detection = null;
     if (hasContent) {
         if (transport === 'cli') {
-            detection = detectFromCliStderr(truncated, provider, quotaModule);
+            detection = detectFromCliStderr(truncated, provider, quotaModule, { now: ctx.now });
         } else if (transport === 'api') {
             detection = detectFromApiResponse(truncated, provider, quotaModule);
         }
@@ -1044,13 +1071,31 @@ function parseProviderError(rawOutput, ctx = {}) {
     // `quota_exhausted` significa "encontré un error_type que existe en la
     // allowlist del provider". Otros errorClass NO disparan setFlag por
     // política (ver matriz).
+    // #7161 CA-1 — el `errorType` resuelto por el detector viaja HASTA el
+    // caller que persiste el flag. Sólo se propaga si es un string acotado (el
+    // valor sale de la allowlist del provider, no del texto del provider, pero
+    // validamos igual: este campo termina en disco).
     const { errorClass, evidence } = detection;
+    const propagatedType = (typeof detection.errorType === 'string'
+        && detection.errorType.length > 0
+        && detection.errorType.length <= ERROR_TYPE_MAX_CHARS)
+        ? detection.errorType
+        : null;
+    // `resetsAt` (CA-4): ISO announced por el propio canal de control. El
+    // escritor del flag lo clampea igual (`capResetsAt`); acá sólo se transporta.
+    const propagatedResetsAt = (typeof detection.resetsAt === 'string'
+        && detection.resetsAt.length > 0
+        && detection.resetsAt.length <= 40)
+        ? detection.resetsAt
+        : null;
     return {
         errorClass,
         retriable: classifyRetriable(errorClass),
         shouldFallback: classifyShouldFallback(errorClass),
         raw: sanitizedRaw,
         evidence: sanitize(evidence || ''),
+        ...(propagatedType ? { errorType: propagatedType } : {}),
+        ...(propagatedResetsAt ? { resetsAt: propagatedResetsAt } : {}),
     };
 }
 
