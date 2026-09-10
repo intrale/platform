@@ -22,7 +22,12 @@ node .pipeline/restart.js
 
 # 3) VERIFICAR el modo EFECTIVO del runtime (no el YAML)
 node -e "console.log(JSON.stringify(require('./.pipeline/lib/operational-state-backend').describeMode()))"
-#   → {"mode":"fs","source":"config","degraded":false,"lastError":null}
+#   → {"mode":"fs","source":"config","degraded":false,"degradedKeys":[],"observed":false,...}
+
+# 4) ¿QUEDÓ PAUSADO? Si la degradación abrió la ventana de cutover, el sink
+#    escribió `.pipeline/.paused` y el restart NO lo levanta solo (a propósito).
+#    Sin este paso el modo dice `fs` — verde — y el pipeline sigue muerto.
+cat .pipeline/.paused 2>/dev/null && echo "^^ HAY HALT ACTIVO: mandá /reanudar (o borrá el archivo)"
 ```
 
 Atajo en caliente, sin editar ni mergear el YAML (§1.3):
@@ -155,7 +160,7 @@ estado que había **antes** de la migración.
 | `waves.json` / `.partial-pause.json` en filesystem | `kernel-store-migrate.js --rollback --from <dir>` | ✅ Sí, un comando |
 | Los ítems `coord#waves` / `coord#partial-pause` ya escritos en DynamoDB | **No se borran.** Quedan ahí y dejan de leerse | — |
 | Los cambios de estado hechos **durante** la ventana remota | **No vuelven solos al filesystem.** Hay que exportarlos antes de apagar (§1.5) o aceptar perderlos | ❌ **Manual** |
-| `.paused` | No participa: nunca se fue del filesystem (D-3) | — |
+| `.paused` | **Ojo: participa aunque nunca se haya ido del filesystem (D-3).** El estado *dónde vive* no cambia, pero si la degradación ocurrió con la ventana de cutover abierta, el sink lo ESCRIBIÓ para abortar. Se levanta con `/reanudar` (o borrando `.pipeline/.paused`) — ver §1.6 | ❌ **Manual, y obligatorio si existe** |
 
 > **Sin esta tabla, esta sección mentiría por omisión.** Apagar el flag es
 > instantáneo; recuperar *lo escrito mientras estuvo encendido* no lo es.
@@ -215,6 +220,36 @@ y, si no cierra, no restaura nada (fail-closed):
 node .pipeline/lib/kernel-store-migrate.js --rollback --from .pipeline/backup/<timestamp>
 ```
 
+**Dónde restaura (#5113 rev-12).** El destino por default es el layout VIGENTE,
+resuelto con la misma función que usa el sustrato (`project-context.stateDir()`):
+
+- con `namespaced.enabled: false` → `.pipeline/` plano;
+- con `namespaced.enabled: true` (que el orden de encendido de §3 exige) →
+  `.pipeline/projects/<projectId>/`.
+
+Antes el default era siempre el plano: con el namespaceado encendido, el
+rollback escribía en el directorio equivocado y devolvía `[OK]` igual — un falso
+verde en la única ruta de recuperación del cutover, que además re-creaba los
+archivos obsoletos del layout plano. Para apuntar a un layout distinto del que
+declara la config (por ejemplo, volver al plano después de apagar el
+namespeceado) está el flag explícito:
+
+```bash
+# destino explícito (tiene que caer dentro de .pipeline/, si no se rechaza)
+node .pipeline/lib/kernel-store-migrate.js --rollback --from .pipeline/backup/<ts> \
+     --target-dir .pipeline
+
+# comprobar a dónde va a escribir ANTES de correrlo
+node -e "console.log(require('./.pipeline/lib/project-context').stateDir())"
+```
+
+El rollback toma el **lock** de cada archivo y escribe de forma atómica (tmp +
+fsync + rename), igual que el pipeline en caliente: `.partial-pause.json` es el
+archivo que controla el acceso al dispatch y un write a medias deja la allowlist
+ilegible. Si el lock está tomado por un proceso vivo, **no escribe**: devuelve
+`restore_locked`. Con el pipeline detenido y un lock stale, `--force` saltea el
+lock (y sólo entonces).
+
 Salida esperada (comparación visual, no interpretativa):
 
 ```
@@ -241,10 +276,46 @@ Códigos de error que frenan el paso:
 | `from_not_found` | No existe ese `<timestamp>`. | `ls -1 .pipeline/backup/ \| tail -5`. |
 | `manifest_unreadable` / `checksum_mismatch` | El backup perdió integridad. | **No restaura nada.** Elegí otro `<timestamp>`. |
 | `unsafe_backup_entry` | El manifest trae una entrada fuera de la allowlist de fuentes. | **Descartá ese backup**: es sospechoso. |
+| `state_dir_unresolved` | No se pudo resolver dónde vive el estado (contexto de proyecto inválido). | **No restaura nada**, a propósito: adivinar el layout plano es volver al defecto. Corregí el contexto o pasá `--target-dir` explícito. |
+| `target_out_of_root` | El `--target-dir` cae fuera de `.pipeline/`. | Rechazado por path-traversal. |
+| `target_unwritable` | No se pudo preparar el directorio destino. | Revisá permisos del `.pipeline/projects/<projectId>/`. |
+| `restore_locked` | Otro proceso tiene el lock del archivo a restaurar. | Detené el pipeline y reintentá. Si el proceso que lo sostiene está muerto, repetí con `--force`. |
 
 > **El rollback restaura los archivos, no el destino.** Después de restaurar hay
 > que apagar el flag igual (§1.2): si el pipeline sigue en modo remoto, esos
 > archivos no los lee nadie.
+
+### 1.6 · Reanudar si el halt dejó el pipeline pausado
+
+> **Éste es el paso que más se olvida, y el que deja el pipeline muerto en
+> silencio.** Escenario real y cerrado: el store se cae con la ventana de
+> cutover abierta → el sink aborta y escribe `.pipeline/.paused` → el operador
+> hace exactamente lo que dice la alerta (apagar el flag + `restart.js`) →
+> `describeMode()` devuelve `mode: fs`, que este runbook presenta como verde →
+> **y el pipeline sigue sin despachar**, por un marker que nadie le nombró.
+
+El marker del halt es deliberadamente **no auto-levantable**: `restart.js` no lo
+borra (`isAutoLiftableSource` lo rechaza), justamente para que un cutover
+abortado no desaparezca sin registro.
+
+```bash
+# 1) ¿Existe el halt, y de quién es?
+cat .pipeline/.paused 2>/dev/null
+#   → {"source":"kernel-cutover-degraded-halt","ts":"...","cause":"red",...}
+
+# 2) Levantarlo (cualquiera de las dos):
+#    · por Telegram:  /reanudar
+#    · a mano:
+rm .pipeline/.paused
+
+# 3) Confirmar que el pipeline volvió a despachar
+node -e "console.log(JSON.stringify(require('./.pipeline/lib/partial-pause').getPipelineMode()))"
+#   → mode distinto de 'paused'
+```
+
+Si el `source` **no** es `kernel-cutover-degraded-halt`, había una pausa previa
+de otro origen y el aborto no la pisó (la alerta lo dice explícitamente): no la
+levantes sin revisar antes por qué estaba puesta.
 
 ### 1.5 · Lo escrito durante la ventana remota (y R8)
 
@@ -416,14 +487,17 @@ m.migrateState({
 
 ### 2.4 · Trampa 1 — `sourceDir` con el namespaceado encendido
 
-El `sourceDir` por default del migrador es `.pipeline/` **plano**. Con
-`namespaced.enabled: true` (que D-4 exige encender **antes**), el estado real
-vive en `.pipeline/projects/<projectId>/`. Si migrás con el default:
+**Corregido en #5113 rev-12**, pero la verificación sigue valiendo. El
+`sourceDir` por default del migrador ya **no** es `.pipeline/` plano: resuelve
+por `project-context.stateDir()`, la misma función que usa el sustrato, así que
+sigue al layout vigente (plano con el flag apagado, `.pipeline/projects/<id>/`
+con el flag encendido). Lo que este párrafo describía era el riesgo real:
 
-- las fuentes aparecen como `presente: no` y el resultado es `no_sources`, o
-- peor, encuentra archivos viejos del layout plano y **migra estado obsoleto**.
+- las fuentes aparecían como `presente: no` y el resultado era `no_sources`, o
+- peor, encontraba archivos viejos del layout plano y **migraba estado obsoleto**.
 
-Por eso el snippet pasa `sourceDir: pc.stateDir()` explícito. Verificalo antes:
+El snippet sigue pasando `sourceDir: pc.stateDir()` explícito — ser explícito en
+un cutover no molesta — y la comprobación previa sigue siendo obligatoria:
 
 ```bash
 node .pipeline/scripts/migrate-operational-state-namespace.js --status

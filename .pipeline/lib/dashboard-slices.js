@@ -784,7 +784,7 @@ function headerSlice(state, ctx) {
  * @returns {{mode:string, degraded:boolean, lastError:string|null, source:string, cutoverWindow:boolean}}
  */
 function readOpstateRuntime() {
-    let desc = { mode: 'fs', source: 'config', degraded: false, lastError: null };
+    let desc = { mode: 'fs', source: 'config', degraded: false, lastError: null, observed: false, degradedKeys: [] };
     try {
         desc = require('./operational-state-backend').describeMode() || desc;
     } catch { /* el backend no disponible → filesystem, que es el default real */ }
@@ -839,12 +839,31 @@ function resolveOpstateProvenance(rt) {
             source,
         };
     }
+    if (remoto && r.observed !== true) {
+        // #5113 rev-12 (R-3) — `degraded: false` NO es salud: es "este proceso
+        // todavía no vio fallar nada". Un dashboard recién reiniciado
+        // (`restart.js` es rutina) con el store caído y cero accesos previos
+        // pintaba verde y afirmaba "sonda en verde" sin haber sondeado nada.
+        // El estado honesto sin verificación es "sin verificar", y no es
+        // alertable: no hay anomalía, hay ausencia de evidencia.
+        return {
+            state: 'remote_unverified',
+            symbol: '?',
+            label: 'Estado: externo · sin verificar',
+            detail: 'sin accesos al store en este proceso · se confirma en la primera lectura',
+            tone: 'neutral',
+            alertable: false,
+            source,
+        };
+    }
     if (remoto) {
         return {
             state: 'remote_ok',
             symbol: '✓',
             label: 'Estado: externo · en línea',
-            detail: 'store durable · sonda en verde',
+            // Se afirma lo que efectivamente se sabe: el último acceso al store
+            // respondió. No hay sonda periódica y el copy no puede inventarla.
+            detail: 'store durable · último acceso OK',
             tone: 'ok',
             alertable: false,
             source,

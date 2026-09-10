@@ -35,13 +35,31 @@ test('CA-UX1: flag de cutover OFF ⇒ chip "filesystem local", sin alerta', () =
     assert.equal(p.tone, 'neutral');
 });
 
-test('CA-UX1: flag ON + sonda en verde ⇒ chip "externo · en línea", sin alerta', () => {
-    const p = resolveOpstateProvenance({ mode: 'remote', source: 'config', degraded: false, cutoverWindow: false });
+test('CA-UX1: flag ON + un acceso al store que respondió ⇒ chip "externo · en línea", sin alerta', () => {
+    // #5113 rev-12 (R-3) — `observed: true` es parte de la premisa: el chip sólo
+    // puede afirmar salud si ALGUIEN habló con el store en este proceso.
+    // `degraded: false` por sí solo no es salud, es ausencia de evidencia.
+    const p = resolveOpstateProvenance({
+        mode: 'remote', source: 'config', degraded: false, observed: true, cutoverWindow: false,
+    });
     assert.equal(p.state, 'remote_ok');
     assert.match(p.label, /externo/i);
     assert.match(p.label, /en línea/i);
     assert.equal(p.tone, 'ok');
     assert.equal(p.alertable, false);
+});
+
+test('CA-UX1 (R-3): flag ON y NINGÚN acceso al store ⇒ "sin verificar", nunca verde', () => {
+    // El caso del dashboard recién reiniciado (`restart.js` es rutina) con el
+    // store caído: cero lecturas ⇒ cero degradaciones ⇒ antes pintaba verde y
+    // encima afirmaba "sonda en verde" sin sonda alguna.
+    const p = resolveOpstateProvenance({
+        mode: 'remote', source: 'config', degraded: false, observed: false, cutoverWindow: false,
+    });
+    assert.equal(p.state, 'remote_unverified');
+    assert.match(p.label, /sin verificar/i);
+    assert.notEqual(p.tone, 'ok');
+    assert.equal(p.alertable, false, 'no hay anomalía: hay ausencia de evidencia');
 });
 
 test('CA-UX1: ventana de cutover abierta ⇒ chip "cutover en curso", alertable', () => {
@@ -125,9 +143,16 @@ test('CA-UX1: el chip sale del flag EFECTIVO del runtime — un override por env
             assert.equal(desc.mode, 'remote', 'el runtime quedó en remoto por env');
             assert.equal(desc.source, 'env', 'y la procedencia del flag es la variable, no el archivo');
 
-            const p = resolveOpstateProvenance({ ...desc, cutoverWindow: false });
-            assert.equal(p.state, 'remote_ok');
-            assert.equal(p.source, 'env');
+            // El estado del chip depende de si hubo acceso al store (R-3); lo
+            // que este CA fija es la PROCEDENCIA del flag, que es `env` en los
+            // dos casos.
+            assert.equal(resolveOpstateProvenance({ ...desc, cutoverWindow: false }).source, 'env');
+            assert.equal(
+                resolveOpstateProvenance({ ...desc, observed: true, cutoverWindow: false }).state,
+                'remote_ok');
+            assert.equal(
+                resolveOpstateProvenance({ ...desc, observed: false, cutoverWindow: false }).state,
+                'remote_unverified');
         });
 
         // Y el camino inverso: forzar filesystem con el env en '0'.
@@ -274,7 +299,26 @@ test('CA-UX1 (E2E): los CUATRO estados del mockup 60 son alcanzables desde `head
     assert.equal(render({ kernel: { cutover_window: true } }, { PIPELINE_OPSTATE_DURABLE: '0' }), 'cutover');
 
     backend.clearDegradation();
-    assert.equal(render(sinVentana, { PIPELINE_OPSTATE_DURABLE: '1' }), 'remote_ok');
+    // #5113 rev-12 (R-3) — `remote_ok` exige que el store haya RESPONDIDO al
+    // menos una vez en este proceso: `degraded: false` solo no alcanza. Se monta
+    // un driver sano y se lee de verdad; el estado "sin verificar" (proceso sin
+    // ningún acceso) se cubre en el test unitario de arriba, porque no es
+    // alcanzable por esta vía: renderizar el header en modo remoto YA es un
+    // acceso al store.
+    const { createFakeSyncDynamoDriver: driverSano } = require('./fixtures/fake-sync-dynamo-driver');
+    backend._setDriverForTests({
+        driver: driverSano(),
+        spec: { type: 'dynamodb_table', tableName: 'tabla-fake', keys: [] },
+        projectId: 'intrale-platform',
+        instanceId: 'intrale-platform',
+        atomicUpdate: true,
+    });
+    try {
+        withEnv({ PIPELINE_OPSTATE_DURABLE: '1' }, () => backend.readKeyWithVersion(backend.KEYS.WAVES));
+        assert.equal(render(sinVentana, { PIPELINE_OPSTATE_DURABLE: '1' }), 'remote_ok');
+    } finally {
+        backend._setDriverForTests(null);
+    }
 
     // La degradacion se produce como en produccion: una lectura remota real que
     // falla. Marcarla a mano probaria el cartel, no el camino que lo enciende.

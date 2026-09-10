@@ -257,7 +257,25 @@ function isRemote() {
  * Descripción del modo vigente, para el operador y para el dashboard (CA-UX1).
  * NUNCA lee el YAML por su cuenta: expone el flag EFECTIVO del runtime, que es
  * distinto del valor del archivo cuando hay override por env.
- * @returns {{mode:'remote'|'fs', source:'env'|'config', degraded:boolean, lastError:string|null}}
+ *
+ * #5113 rev-12 (R-2) — `degraded` es "¿ALGUNA clave del estado operativo está
+ * caída?", no "¿el último acceso de este proceso falló?". La distinción no es
+ * cosmética: `waves` y `partial-pause` son dos ítems independientes del store y
+ * pueden degradar por separado (throttling sobre un SK, payload que viola las
+ * cotas de CA-A5). Con el slot global anterior, cualquier lectura sana de
+ * `waves` — que los brazos previos del tick hacen SIEMPRE, vía `getActiveWave()`
+ * — borraba la degradación de la allowlist, y el operador terminaba leyendo el
+ * chip en verde con el dispatch 100 % denegado. `degradedKeys` viaja para que la
+ * alerta y el tablero puedan nombrar QUÉ se cayó.
+ *
+ * #5113 rev-12 (R-3) — `observed` distingue "el store respondió al menos una vez
+ * en este proceso" de "nunca lo tocamos". Sin eso, un dashboard recién
+ * reiniciado (restart.js es rutina) pinta verde con el store caído: cero reads
+ * previos ⇒ cero degradaciones ⇒ "en línea". El chip lo usa para no afirmar
+ * salud que nadie verificó.
+ *
+ * @returns {{mode:'remote'|'fs', source:'env'|'config', degraded:boolean,
+ *            lastError:string|null, degradedKeys:string[], observed:boolean}}
  */
 function describeMode() {
     const env = process.env.PIPELINE_OPSTATE_DURABLE;
@@ -265,8 +283,10 @@ function describeMode() {
     return {
         mode: isRemote() ? 'remote' : 'fs',
         source,
-        degraded: lastDegradation !== null,
+        degraded: degradations.size > 0,
         lastError: lastDegradation ? lastDegradation.cause : null,
+        degradedKeys: Array.from(degradations.keys()).sort(),
+        observed: remoteObserved,
     };
 }
 
@@ -308,17 +328,89 @@ function fileFor(key) {
 // de cutover está abierta). Se reusa; NO se emite un `sendTelegram` nuevo para
 // este hecho (CA-UX3).
 
-let lastDegradation = null;
+// #5113 rev-12 (R-2) — La degradación se lleva POR CLAVE. Antes era un slot
+// único global y era cross-key: un acceso sano a cualquier clave lo borraba
+// entero, incluida la degradación de una clave que seguía caída.
+const degradations = new Map();   // key -> { key, cause, stage, at }
+let lastDegradation = null;       // la más reciente (compat de `getLastDegradation`)
 let degradationSink = null;
+// #5113 rev-12 (R-3) — ¿este proceso obtuvo alguna respuesta del store remoto?
+let remoteObserved = false;
 
 /** Inyecta el sink (tests / cableado del pulpo). */
 function setDegradationSink(sink) { degradationSink = sink; }
 
-/** Último evento de degradación observado (null si nunca degradó). */
+/** Último evento de degradación observado (null si no hay ninguna clave caída). */
 function getLastDegradation() { return lastDegradation; }
 
-/** Limpia el rastro de degradación (tests / tras una lectura exitosa). */
-function clearDegradation() { lastDegradation = null; }
+/** Snapshot de las claves degradadas: `{ [key]: { cause, stage, at } }`. */
+function getDegradations() {
+    const out = {};
+    for (const [k, v] of degradations) out[k] = { ...v };
+    return out;
+}
+
+/** ¿Está degradada esta clave puntual? (sin argumento: ¿alguna?). */
+function isDegraded(key) {
+    return key === undefined ? degradations.size > 0 : degradations.has(key);
+}
+
+/**
+ * Deriva la clave desde el `stage` (`read:waves`, `write:partial-pause`, …).
+ * Una degradación que no mapea a una clave del vocabulario se guarda bajo
+ * `'*'`: no se pierde (sigue contando para `degraded`), pero tampoco se le
+ * atribuye a una clave que quizás está sana.
+ */
+function keyFromStage(stage) {
+    const s = String(stage || '');
+    const i = s.indexOf(':');
+    const k = i >= 0 ? s.slice(i + 1) : s;
+    return Object.prototype.hasOwnProperty.call(FILE_FOR_KEY, k) ? k : '*';
+}
+
+function recomputeLastDegradation() {
+    let best = null;
+    for (const v of degradations.values()) {
+        if (!best || v.at >= best.at) best = v;
+    }
+    lastDegradation = best;
+}
+
+/**
+ * Limpia el rastro de degradación.
+ * @param {string} [key] clave puntual. Sin argumento limpia TODAS (tests / reset).
+ *
+ * #5113 rev-12 (R-2) — los call-sites del camino feliz pasan SIEMPRE su clave:
+ * un `read` sano de `waves` no puede declarar sana la allowlist que no leyó.
+ */
+function clearDegradation(key) {
+    if (key === undefined) {
+        degradations.clear();
+        lastDegradation = null;
+        return;
+    }
+    degradations.delete(key);
+    recomputeLastDegradation();
+}
+
+/**
+ * CA-UX5 · El canal de este sink (`notifyTelegram`) escapa el texto ENTERO antes
+ * de mandarlo (SEC-1 de #5400: nada de lo que parezca metacarácter puede
+ * interpretarse, porque puede venir de datos). El template de
+ * `kernel-degradation-alert` está escrito en dialecto `Markdown` y declara su
+ * `parseMode`, pero acá ese parámetro no tiene a quién dárselo: el resultado
+ * eran backticks y guiones bajos escapados, literales, en la cara del operador.
+ *
+ * Como el dialecto lo fija el canal y no nosotros, se despoja la sintaxis
+ * Markdown INTENCIONAL del template (los code-spans) y se manda texto plano
+ * legible. No se toca el contenido: sólo los delimitadores.
+ *
+ * @param {string} text
+ * @returns {string}
+ */
+function plainForTelegram(text) {
+    return String(text == null ? '' : text).replace(/`([^`]*)`/g, '$1');
+}
 
 function resolveSink() {
     if (degradationSink) return degradationSink;
@@ -329,7 +421,8 @@ function resolveSink() {
             config: cfg || {},
             operationalState: true,
             sendTelegram: (message) => require('./notify-telegram').notifyTelegram({
-                level: 'error', component: 'operational-state', message,
+                level: 'error', component: 'operational-state',
+                message: plainForTelegram(message),
             }),
             // El halt queda en FS y no reemplaza una pausa de otro origen.
             halt: ({ cause, correlationId }) => {
@@ -358,7 +451,10 @@ function reportDegradation(err, stage) {
     try {
         cause = require('./kernel-degradation-alert').classifyDegradation(err);
     } catch { /* la clasificación no puede tumbar el gate */ }
-    lastDegradation = { cause, stage, at: Date.now() };
+    const key = keyFromStage(stage);
+    const evento = { key, cause, stage, at: Date.now() };
+    degradations.set(key, evento);
+    lastDegradation = evento;
     try {
         const sink = resolveSink();
         if (sink && typeof sink.onDegraded === 'function') {
@@ -830,6 +926,8 @@ function readKeyWithVersion(key) {
             // Ausencia legítima (todavía no migrado / recién borrado): NO es
             // degradación. Es el equivalente remoto de ENOENT.
             versionIndex.delete(key);
+            remoteObserved = true;
+            clearDegradation(key);
             return rememberRead(key, { value: null, version: null, remote: true, degraded: false, error: null });
         }
         const value = raw.body.value;
@@ -840,7 +938,8 @@ function readKeyWithVersion(key) {
             return { value: null, version: null, remote: true, degraded: true, error: err };
         }
         rememberVersion(key, raw.body.version, value);
-        clearDegradation();
+        remoteObserved = true;
+        clearDegradation(key);
         return rememberRead(key, { value, version: raw.body.version, remote: true, degraded: false, error: null });
     } catch (err) {
         // CA-A7 — PROHIBIDO el fallback silencioso a filesystem. Se devuelve
@@ -994,7 +1093,8 @@ function writeKey(key, value, expectedVersion) {
 
         driver.putItem(spec, item, opts);
         rememberVersion(key, nextVersion, payload);
-        clearDegradation();
+        remoteObserved = true;
+        clearDegradation(key);
         return { ok: true, version: nextVersion };
     } catch (err) {
         if (err && err.name === 'ConditionalCheckFailedError') {
@@ -1051,7 +1151,8 @@ function deleteKey(key, expectedVersion) {
         driver.deleteItem(spec, { PK: projectId, SK: coord().skFor(key) },
             coord().buildCasWriteOptions(currentVersion, atomicUpdate));
         versionIndex.delete(key);
-        clearDegradation();
+        remoteObserved = true;
+        clearDegradation(key);
         return { ok: true, existed: true };
     } catch (err) {
         if (err && err.name === 'ConditionalCheckFailedError') {
@@ -1110,6 +1211,12 @@ module.exports = {
     setDegradationSink,
     getLastDegradation,
     clearDegradation,
+    // Reset del rastro de observabilidad del sustrato (R-3). SOLO tests: en
+    // produccion `remoteObserved` es monotono por proceso a proposito.
+    _resetRemoteObservedForTests() { remoteObserved = false; },
+    _plainForTelegram: plainForTelegram,
+    getDegradations,
+    isDegraded,
     invalidateConfigCache,
     _setDriverForTests,
 };

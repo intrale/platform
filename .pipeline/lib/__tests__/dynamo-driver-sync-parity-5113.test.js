@@ -46,10 +46,15 @@ function argsDeAmbosCaminos(invocar) {
     const capturadosSync = [];
 
     const driverAsync = infra.createAwsCliDynamoDriver({
-        run: async (args) => { capturadosAsync.push(args); return {}; },
+        // #5113 rev-12 — `{ code: 0, stdout: '' }` es lo que devuelve el runner
+        // REAL en el camino feliz. Antes el fake devolvia `{}` (sin `code`) y
+        // funcionaba sólo porque `parseCliResult` colapsaba un code no numérico
+        // a éxito — el defecto que este mismo issue cerró. Un fake que depende
+        // de un bug deja de probar la paridad en cuanto el bug se arregla.
+        run: async (args) => { capturadosAsync.push(args); return { code: 0, stdout: '' }; },
     });
     const driverSync = infra.createAwsCliDynamoDriverSync({
-        runSync: (args) => { capturadosSync.push(args); return {}; },
+        runSync: (args) => { capturadosSync.push(args); return { code: 0, stdout: '' }; },
     });
 
     return Promise.resolve(invocar(driverAsync))
@@ -142,8 +147,8 @@ test('los args son ELEMENTOS SEPARADOS del array, nunca un string de shell', asy
 });
 
 test('ambos drivers exponen la misma superficie de operaciones de item', () => {
-    const a = infra.createAwsCliDynamoDriver({ run: async () => ({}) });
-    const s = infra.createAwsCliDynamoDriverSync({ runSync: () => ({}) });
+    const a = infra.createAwsCliDynamoDriver({ run: async () => ({ code: 0, stdout: '' }) });
+    const s = infra.createAwsCliDynamoDriverSync({ runSync: () => ({ code: 0, stdout: '' }) });
     for (const op of ['putItem', 'getItem', 'deleteItem']) {
         assert.equal(typeof a[op], 'function', `el driver async debe exponer ${op}`);
         assert.equal(typeof s[op], 'function', `el driver sync debe exponer ${op}`);

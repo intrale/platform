@@ -507,9 +507,26 @@ function buildDeleteItemArgs(spec, key, opts = {}) {
  * `ConditionalCheckFailedException` (#4743 REQ-4) tenga UNA definicion.
  */
 function parseCliResult(res, args) {
-    const code = res && typeof res.code === 'number' ? res.code : 0;
+    // #5113 rev-12 — El default era `0` (EXITO). Un resultado malformado — el
+    // caso real es `spawnSync` devolviendo `status: null` porque el hijo murio
+    // por senal (OOM-kill del `aws`) — se leia como exit 0 con stdout vacio, y
+    // eso llega al backend como `item: null`, que es "clave ausente": una
+    // condicion LEGITIMA que explicitamente NO es degradacion. Resultado: el
+    // pipeline opera creyendo que no hay ninguna ola, sin causa declarada, sin
+    // alerta y con el tablero en verde. Es la falla que rev-6 cerro en los dos
+    // runners, viva en el parser compartido — que ademas es export publico.
+    // El default tiene que ser FALLO: un resultado que no sabemos leer no se
+    // interpreta como "todo bien".
+    const code = res && typeof res.code === 'number'
+        ? res.code
+        : -1;
     if (code !== 0) {
-        const err = (res && res.stderr) || `aws dynamodb ${args[0]} exit ${code}`;
+        const err = (res && res.stderr)
+            || (code === -1
+                ? `aws dynamodb ${args[0]}: resultado malformado del proceso `
+                  + `(sin exit code numerico: ${JSON.stringify(res && res.code)}) — `
+                  + 'posible muerte por senal o timeout. Fail-closed: se trata como fallo.'
+                : `aws dynamodb ${args[0]} exit ${code}`);
         const raw = String(err).trim();
         // Mapeo fail-closed (#4743 REQ-4): solo un match preciso con
         // word-boundary de `ConditionalCheckFailedException` se degrada al

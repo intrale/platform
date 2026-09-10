@@ -211,6 +211,45 @@ function defaultPipelineDir() {
   return path.resolve(__dirname, '..');
 }
 
+/**
+ * Directorio donde vive REALMENTE el estado operativo.
+ *
+ * #5113 rev-12 (R-1) — El migrador leía y restauraba contra `.pipeline/` PLANO.
+ * Pero `operational_state.namespaced.enabled: true` es el **paso 1 del orden de
+ * encendido no negociable** del cutover, y con él el estado vive en
+ * `.pipeline/projects/<projectId>/`. Con el layout namespaceado activo, el
+ * rollback escribía en el directorio equivocado y devolvía `ok: true`: un falso
+ * verde en la ÚNICA ruta de recuperación del cutover, que además re-creaba los
+ * archivos del layout plano (el estado obsoleto que el propio runbook §2.4
+ * advierte que después hay que re-migrar).
+ *
+ * `project-context.stateDir()` es la misma función que consumen `waves.js` y
+ * `partial-pause.js`: con el flag apagado devuelve la raíz plana, con el flag
+ * encendido el directorio del proyecto. Una sola definición de "dónde vive el
+ * estado" para el sustrato y para el migrador — que diverjan es justamente el
+ * defecto.
+ *
+ * LANZA si no puede resolver el contexto, a propósito: caer al layout plano
+ * "por las dudas" es reintroducir el mismo defecto por la puerta de atrás — con
+ * el namespaceado encendido y el contexto roto, restaurar al plano vuelve a dar
+ * un falso verde. Los dos call-sites lo atrapan y devuelven el fallo COMO DATO
+ * (fail-closed), con la salida manual (`--target-dir`) en el mensaje.
+ */
+function defaultStateDir() {
+  return require('./project-context').stateDir();
+}
+
+/** Mensaje único para los dos call-sites que resuelven el layout. */
+function stateDirUnresolved(e, flag) {
+  return {
+    ok: false,
+    code: 'state_dir_unresolved',
+    error: `no se pudo resolver dónde vive el estado operativo: ${e.message}. `
+      + 'Fail-closed: NO se opera sobre un directorio adivinado — con el namespaceado '
+      + `encendido, el layout plano es el lugar equivocado. Pasá \`${flag}\` explícito.`,
+  };
+}
+
 // Valida que `fromDir` (input del operador en --rollback) resuelva DENTRO de
 // `backupRoot`. Rechaza traversal (`..`, symlinks fuera, paths absolutos ajenos).
 function assertWithin(rootDir, candidate) {
@@ -643,7 +682,12 @@ function buildReport({ mode, items, before, after, actions, backupDir, integrity
  */
 async function migrateState(opts = {}) {
   const apply = opts.apply === true;
-  const sourceDir = opts.sourceDir || defaultPipelineDir();
+  let sourceDir;
+  try {
+    sourceDir = opts.sourceDir || defaultStateDir();
+  } catch (e) {
+    return stateDirUnresolved(e, '--source-dir/sourceDir');
+  }
   const backupRoot = opts.backupRoot || path.join(defaultPipelineDir(), 'backup');
 
   // CA-11′ (D-7 / GURU-10) — `sources` tiene TRES casos, no dos. El guard
@@ -704,9 +748,25 @@ async function migrateState(opts = {}) {
     if (!it.present) continue;
     const res = await writeThroughStore(opts.store, it);
     if (!res.ok) {
+      // #5113 rev-12 — El apply es multi-clave y aborta en el primer fallo: el
+      // store queda A MEDIAS. Sin `actions` el operador no sabe cuál entró y
+      // cuál no, y el único remedio ofrecido (`rollbackCmd`) restaura
+      // filesystem — no toca el store. `partial: true` + el detalle de qué se
+      // escribió es la diferencia entre un rollback informado y uno a ciegas.
+      const escritas = Object.keys(actions);
       return {
         ok: false, code: res.code || 'write_failed', error: res.error,
+        partial: escritas.length > 0,
+        failedKey: it.key,
+        actions,
         backupDir: backup.dir, rollbackCmd: rollbackCommand(backup.dir),
+        remediation: escritas.length > 0
+          ? `Migración PARCIAL: ya entraron al store [${escritas.join(', ')}] y falló '${it.key}'. `
+            + 'El store tiene esas claves nuevas y el filesystem sigue siendo la fuente vigente '
+            + '(el flag no se encendió todavía). Corregí la causa y reintentá `--apply`: la '
+            + 'escritura es idempotente por clave. NO enciendas `operational_state.durable` con '
+            + 'la migración a medias.'
+          : `Ninguna clave entró al store: falló la primera ('${it.key}'). Corregí la causa y reintentá.`,
       };
     }
     actions[it.key] = res.action;
@@ -730,6 +790,51 @@ async function migrateState(opts = {}) {
 }
 
 /**
+ * Escritura de UN archivo restaurado, con la misma garantía que usa el sustrato
+ * en caliente: lock del archivo + write atómico + modo 0600.
+ *
+ * El lock importa porque el rollback corre sobre un pipeline que puede seguir
+ * vivo. Si no se puede tomar (pulpo colgado sosteniéndolo), NO se escribe a
+ * ciegas: se devuelve un error accionable y el operador decide con `--force`,
+ * que es exactamente la decisión que un write pelado tomaba sola y en silencio.
+ *
+ * @param {string} dst        destino ya validado dentro de targetDir.
+ * @param {object} value      contenido verificado por checksum.
+ * @param {object} [opts]     `{ force?:boolean, lockTimeoutMs?:number }`.
+ * @returns {{ok:boolean, code?:string, error?:string}}
+ */
+function restoreOneFile(dst, value, opts = {}) {
+  const data = JSON.stringify(value, null, 2);
+  const write = () => {
+    require('./waves').atomicWriteFile(dst, data);
+    try { fs.chmodSync(dst, 0o600); } catch { /* FS sin modos (Windows): no es fatal */ }
+  };
+  try {
+    if (opts.force === true) {
+      write();
+    } else {
+      const { withLockSync } = require('./file-lock');
+      withLockSync(dst, write, {
+        component: 'kernel-store-migrate',
+        timeoutMs: Number.isFinite(opts.lockTimeoutMs) ? opts.lockTimeoutMs : 10000,
+      });
+    }
+    return { ok: true };
+  } catch (e) {
+    const esLock = /lock/i.test(String(e && e.message));
+    return {
+      ok: false,
+      code: esLock ? 'restore_locked' : 'restore_write_failed',
+      error: esLock
+        ? `no se pudo tomar el lock de ${path.basename(dst)}: ${e.message}. `
+          + 'Qué hacer ahora: verificá que el pipeline esté detenido (o el lock stale) y reintentá; '
+          + 'si el proceso que lo sostiene está muerto, repetí con `--force`.'
+        : `no se pudo restaurar ${path.basename(dst)}: ${e.message}`,
+    };
+  }
+}
+
+/**
  * Restaura las fuentes JSON desde un backup, verificando PRIMERO el checksum de
  * cada archivo del backup contra su manifest (no reintroducir estado corrupto).
  * Fail-closed, errores como dato.
@@ -742,7 +847,16 @@ async function migrateState(opts = {}) {
  */
 function rollbackState(opts = {}) {
   const backupRoot = opts.backupRoot || path.join(defaultPipelineDir(), 'backup');
-  const targetDir = opts.targetDir || defaultPipelineDir();
+  // #5113 rev-12 (R-1) — restaurar DONDE vive el estado, no donde vivía antes
+  // del namespaceado. Un `targetDir` explícito sigue mandando (lo usan los tests
+  // y el operador vía `--target-dir`); la contención del input de LÍNEA DE
+  // COMANDOS se valida en el CLI, que es donde el path deja de ser confiable.
+  let targetDir;
+  try {
+    targetDir = opts.targetDir || defaultStateDir();
+  } catch (e) {
+    return stateDirUnresolved(e, '--target-dir');
+  }
 
   if (!opts.fromDir || typeof opts.fromDir !== 'string') {
     return { ok: false, code: 'from_required', error: '--from <backupDir> requerido' };
@@ -769,6 +883,15 @@ function rollbackState(opts = {}) {
   // (quien controla el backup controla la clave y su checksum). El checksum NO
   // frena un Zip-Slip porque se recalcula sobre el value provisto.
   const allowedFiles = new Set(SOURCES.map((s) => s.file));
+
+  // El layout namespaceado puede no existir todavía en la máquina que restaura
+  // (`.pipeline/projects/<projectId>/`). Sin esto el write falla con ENOENT
+  // justo en la ruta de emergencia.
+  try {
+    fs.mkdirSync(targetDir, { recursive: true });
+  } catch (e) {
+    return { ok: false, code: 'target_unwritable', error: `no se pudo preparar el destino ${targetDir}: ${e.message}` };
+  }
 
   // Verificar checksum de CADA archivo del backup ANTES de restaurar.
   const restored = [];
@@ -810,12 +933,16 @@ function rollbackState(opts = {}) {
       };
     }
     // Checksum OK → restaurar (dst validado dentro de targetDir).
-    try {
-      fs.writeFileSync(dst, JSON.stringify(value, null, 2));
-      restored.push(file);
-    } catch (e) {
-      return { ok: false, code: 'restore_write_failed', error: `no se pudo restaurar ${file}: ${e.message}` };
-    }
+    //
+    // #5113 rev-12 — Antes era un `fs.writeFileSync` pelado sobre
+    // `.partial-pause.json`, el archivo que controla el acceso al dispatch: sin
+    // lock (el pulpo podía estar leyéndolo/escribiéndolo en el mismo instante),
+    // sin atomicidad (un write truncado deja la allowlist ilegible → el gate
+    // deniega todo) y sin fijar modo. Se usa la MISMA primitiva que el sustrato:
+    // `withLockSync` + `atomicWriteFile` (tmp + fsync + rename con reintentos).
+    const escritura = restoreOneFile(dst, value, opts);
+    if (!escritura.ok) return escritura;
+    restored.push(file);
   }
 
   const report = buildReport({
@@ -1142,12 +1269,18 @@ function restoreDescriptors(opts = {}) {
 // -----------------------------------------------------------------------------
 
 function parseArgs(argv) {
-  const args = { apply: false, rollback: false, from: null };
+  const args = { apply: false, rollback: false, from: null, targetDir: null, force: false };
   for (let i = 0; i < argv.length; i += 1) {
     const a = argv[i];
     if (a === '--apply' || a === '--commit') args.apply = true;
     else if (a === '--rollback') args.rollback = true;
     else if (a === '--from') { args.from = argv[i + 1]; i += 1; }
+    // #5113 rev-12 (R-1) — destino explícito de la restauración. Sin el flag el
+    // default ya es el layout vigente (`defaultStateDir()`); esto existe para
+    // restaurar a un layout que NO es el que la config declara hoy (p. ej.
+    // volver al plano después de apagar el namespaceado).
+    else if (a === '--target-dir') { args.targetDir = argv[i + 1]; i += 1; }
+    else if (a === '--force') args.force = true;
   }
   return args;
 }
@@ -1156,7 +1289,21 @@ async function main() {
   const args = parseArgs(process.argv.slice(2));
 
   if (args.rollback) {
-    const res = rollbackState({ fromDir: args.from });
+    // El `--target-dir` viene de la línea de comandos: se exige contenido dentro
+    // de `.pipeline/` antes de usarlo como destino de escritura (anti-traversal,
+    // fail-closed — mismo criterio que `--from`).
+    let targetDir = null;
+    if (args.targetDir) {
+      targetDir = assertWithin(defaultPipelineDir(), args.targetDir);
+      if (!targetDir) {
+        process.stdout.write(
+          `--target-dir fuera de ${defaultPipelineDir()} (posible path-traversal, rechazado)
+`);
+        process.exit(1);
+        return;
+      }
+    }
+    const res = rollbackState({ fromDir: args.from, targetDir, force: args.force });
     process.stdout.write((res.report || res.error || '') + '\n');
     process.exit(res.ok ? 0 : 1);
     return;

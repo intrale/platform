@@ -743,6 +743,14 @@ function initWavesFromPartial(opts = {}) {
         }
         waves.invalidateCache();
     } catch (err) {
+        // #5113 rev-12 — Un fallo del STORE durante el write no es un
+        // `waves.json` corrupto. El rótulo importa porque el pulpo lo traduce a
+        // una acción para el operador: `aborted_waves_corrupt` le dice
+        // "restaurá desde archived/", que es exactamente la acción equivocada
+        // para un timeout de DynamoDB (restauraría estado viejo sobre un store
+        // que está sano y sólo no respondía). `aborted_remote_degraded` ya
+        // existía en el vocabulario de este módulo y no se usaba en este camino.
+        const degradadoRemoto = esFalloDeSustratoRemoto();
         logWarn(`write del registro de olas falló (${destino}): ${err.message}`);
         if (!skipAlert) {
             notifyOnceForBoot({
@@ -750,12 +758,16 @@ function initWavesFromPartial(opts = {}) {
                 component: 'init-waves',
                 message: 'write del registro de olas falló',
                 detail: err.message.slice(0, 200),
-                action: `Revisá el sustrato del estado operativo (${destino}). ` +
-                    'Pipeline puede quedar con allowlist vacía.',
+                action: degradadoRemoto
+                    ? 'El estado operativo externo no respondió. NO restaures desde archived/: ' +
+                      'el registro local no está corrupto. Revisá el store (o volvé ' +
+                      '`operational_state.durable` a `false` siguiendo el runbook de cutover) y reintentá.'
+                    : `Revisá el sustrato del estado operativo (${destino}). ` +
+                      'Pipeline puede quedar con allowlist vacía.',
             });
         }
         return {
-            action: 'aborted_waves_corrupt',
+            action: degradadoRemoto ? 'aborted_remote_degraded' : 'aborted_waves_corrupt',
             reason: `write falló: ${err.message}`,
             errors: [err.message],
         };
@@ -768,6 +780,26 @@ function initWavesFromPartial(opts = {}) {
         waveNumber,
         allowlist: partial.allowedIssues,
     };
+}
+
+/**
+ * ¿El fallo que acabamos de ver viene del sustrato REMOTO y no del archivo?
+ *
+ * Se le pregunta al backend por la clave concreta (`waves`), no por un flag
+ * global: con la degradación llaveada (#5113 rev-12 R-2) esto distingue "el
+ * store no respondió" de "el JSON local está roto". Ante cualquier duda
+ * devuelve `false`, que conserva el rótulo histórico.
+ *
+ * @returns {boolean}
+ */
+function esFalloDeSustratoRemoto() {
+    try {
+        const backend = require('../lib/operational-state-backend');
+        if (typeof backend.isRemote === 'function' && backend.isRemote() !== true) return false;
+        return typeof backend.isDegraded === 'function' && backend.isDegraded('waves') === true;
+    } catch {
+        return false;
+    }
 }
 
 module.exports = {

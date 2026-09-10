@@ -9680,14 +9680,25 @@ function brazoLanzamientoImpl(config, _dcMark, _dcState) {
     // 0a. PARTIAL PAUSE (#2490): si hay allowlist activa, saltar issues fuera de ella.
     // El archivo se queda en pendiente/ — no se archiva ni penaliza.
     //
-    // #5113 (rev-6) — se lee el estado UNA vez por candidato y se reusa para el
-    // gate y para el mensaje, en vez de `isIssueAllowed(issue)` + un segundo
-    // `getPipelineMode()`. Con el estado operativo en el store remoto cada
-    // lectura es un `spawnSync` BLOQUEANTE de la AWS CLI: la forma anterior
-    // pagaba hasta 2 por candidato (2N por tick). La política del gate no
-    // cambia — `isIssueAllowedInState` es la variante pura de la misma tabla
-    // de verdad, incluido el fail-closed de #5060 sobre `running`.
-    const modeState = partialPause.getPipelineMode();
+    // #5113 (rev-12, R-6) — UNA lectura del estado por TICK, reusando el
+    // snapshot que ya tomó el cálculo de prioridades (`ppStateForPriority`,
+    // arriba en esta misma función). rev-6 bajó de 2N a N lecturas; el objetivo
+    // real es 1.
+    //
+    // Por qué importa: en modo remoto cada `getPipelineMode()` es un `spawnSync`
+    // BLOQUEANTE de la AWS CLI (`timeout: 20000`), y las lecturas degradadas
+    // NUNCA se memoizan (decisión explícita del backend: un fallo no se cachea).
+    // Con la cola real (~200 pendientes) eso eran hasta 200 spawns bloqueantes
+    // por tick; en un blackhole de red el tick supera los 180 s del watchdog de
+    // liveness → respawn en frío → el bucle de muerte documentado arriba.
+    //
+    // La política del gate no cambia: `isIssueAllowedInState` es la variante
+    // PURA de la misma tabla de verdad — mismo fail-closed de #5060 sobre
+    // `running` — y es exactamente el snapshot con el que ya se ordenó el lote,
+    // así que gate y prioridad quedan además coherentes entre sí. Un cambio de
+    // allowlist a mitad de tick se ve en el tick siguiente, igual que antes lo
+    // veían de forma inconsistente unos candidatos sí y otros no.
+    const modeState = ppStateForPriority;
     if (!partialPause.isIssueAllowedInState(issue, modeState)) {
       const mode = modeState;
       if (mode.mode === 'partial_pause') {
@@ -21024,6 +21035,28 @@ function brazoIntake(config) {
   // Si es pausa completa, no hacer intake.
   const pipelineMode = partialPause.getPipelineMode();
   if (pipelineMode.mode === 'paused') return;
+
+  // #5113 rev-12 (R-5) — FAIL-CLOSED bajo degradación del estado operativo.
+  //
+  // `allowlistSet` es `null` para TODO lo que no sea `partial_pause`, y con el
+  // store caído el modo colapsa a `'running'` por diseño (`partial-pause.js`:
+  // el estado local stale es una autorización revocada, no un dato viejo). El
+  // resultado era `null` ⇒ sin filtro ⇒ el intake ingiriendo el backlog `Ready`
+  // COMPLETO: workfiles en `pendiente/` y mutaciones de labels en GitHub, sin
+  // saber cuál es la ola vigente. No dispara agentes (el gate por issue aguanta
+  // más abajo), pero es la forma de #5060 una capa más arriba y ensucia la cola
+  // justo durante el incidente — trabajo que después hay que deshacer a mano.
+  //
+  // El issue endureció los dos gates PUROS (`isIssueAllowedInState` /
+  // `isSkillAllowedInState`) y no revisó a los consumidores que miran sólo
+  // `mode`. Éste MUTA estado, así que la degradación tiene que frenarlo.
+  if (pipelineMode.degraded === true) {
+    log('intake', 'estado operativo DEGRADADO — intake omitido (fail-closed). '
+      + 'No se puede determinar la ola vigente: ingerir el backlog Ready ensuciaría la cola '
+      + 'y mutaría labels en GitHub. Se reintenta en el próximo ciclo.');
+    return;
+  }
+
   const allowlistSet = pipelineMode.mode === 'partial_pause'
     ? new Set(pipelineMode.allowedIssues.map(String))
     : null;
@@ -24656,6 +24689,18 @@ async function brazoDesbloqueoImpl(config) {
   // ciclo consultando sus dependencias en GitHub.
   const pipelineMode = partialPause.getPipelineMode();
   if (pipelineMode.mode === 'paused') return;
+
+  // #5113 rev-12 (R-5, hermano del intake) — mismo fail-closed, misma razón:
+  // con el store degradado `allowlistSet` queda `null` y los reaps de este brazo
+  // dejan de acotarse a la ola vigente. Estos reaps QUITAN labels de bloqueo en
+  // GitHub: aplicados sobre todo el universo de markers destraban issues que no
+  // son de la ola. Bajo degradación no se toca nada; se reintenta al próximo tick.
+  if (pipelineMode.degraded === true) {
+    log('desbloqueo', 'estado operativo DEGRADADO — brazo omitido (fail-closed): '
+      + 'sin ola vigente conocida, los reaps mutarían labels fuera de alcance.');
+    return;
+  }
+
   const allowlistSet = pipelineMode.mode === 'partial_pause'
     ? new Set(pipelineMode.allowedIssues.map(String))
     : null;
@@ -25844,6 +25889,12 @@ async function mainLoop() {
       log('pulpo', `WARN [init-waves] fail-closed: .partial-pause.json malformado. ${(initResult.errors || []).slice(0, 3).join('; ')}`);
     } else if (initResult.action === 'aborted_waves_corrupt') {
       log('pulpo', `WARN [init-waves] fail-closed: waves.json corrupto. ${(initResult.errors || []).slice(0, 3).join('; ')}`);
+    } else if (initResult.action === 'aborted_remote_degraded') {
+      // #5113 rev-12 — Antes caía en el `else` genérico y se logueaba como
+      // "noop", indistinguible de un boot sano. Es lo contrario: el registro de
+      // olas NO quedó sembrado y la causa es el sustrato externo, no el archivo.
+      log('pulpo', `WARN [init-waves] fail-closed: estado operativo externo degradado — el registro de olas NO se sembró. `
+        + `NO restaurar desde archived/ (el registro local no está corrupto). ${(initResult.errors || []).slice(0, 3).join('; ')}`);
     } else if (initResult.action === 'noop_already_seeded') {
       log('pulpo', `[init-waves] noop — active_wave #${initResult.waveNumber} ya existente.`);
     } else {
