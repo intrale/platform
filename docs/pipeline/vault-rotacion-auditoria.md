@@ -237,6 +237,56 @@ versionar auditoría local. Por eso la evidencia viaja **transcripta** acá y al
 comentario del YAML, y sólo con campos no sensibles: nunca el `scope_logico` con
 su path, ni ARN, account id, IP o salida cruda del driver.
 
+##### Piso mensual de lecturas físicas: `43200 physical_read/month`
+
+El pico de arriba dimensiona la **alerta**; este número dimensiona el **tráfico
+sostenido**. Son dos preguntas distintas y se responden con dos métricas
+distintas del mismo artefacto: `peak_physical_reads_per_minute` alimenta
+`burst_threshold`, y `monthly_extrapolation` es el piso de llamadas que el vault
+va a recibir de AWS bajo la carga que la calibración declaró normal. Ninguna de
+las dos mira `cache_hit` ni `single_flight_join`.
+
+La fórmula la construye el núcleo (`vault-load-calibration.js`,
+`buildCalibrationEvidence`); acá va transcripta con su sustitución numérica:
+
+```
+monthly_extrapolation = ceil(physical_read * horizon_ms / window_duration_ms)
+
+physical_read      = 1              (categoría física de la corrida)
+horizon_ms         = 2592000000     (CALIBRATION_LIMITS.MONTH_MS — mes de 30 días)
+window_duration_ms = 60000          (ventana de la corrida)
+
+monthly_extrapolation = ceil(1 * 2592000000 / 60000) = 43200  physical_read/month
+```
+
+| Campo | Valor | Unidad |
+|---|---|---|
+| `monthly_extrapolation` | `43200` | `physical_read/month` |
+| `formula.kind` | `ceil_rate_extrapolation` | — |
+| `formula.rounding` | `ceil` | conservador: nunca subdimensiona la cuota |
+
+**Por qué es un piso y no un pronóstico.** El horizonte es un mes fijo de 30
+días y la extrapolación es lineal desde una ventana de un minuto: asume que el
+minuto medido se repite idéntico 43.200 veces. No modela arranques del pipeline,
+ventanas de QA ni rotaciones. Sirve para responder «¿este orden de magnitud
+entra en la cuota de Parameter Store?», no para presupuestar al peso.
+
+**Qué lo distingue de los cache hits — la diferencia es de dos órdenes de
+magnitud.** Las mismas 128 resoluciones de la corrida, extrapoladas sin la
+exclusión, darían `ceil(128 * 2592000000 / 60000) = 5529600`/mes: **128×** el
+piso real. Esos 5,53 M no son tráfico: 127 de cada 128 resoluciones las sirve la
+memoización dentro de `cache_ttl_seconds` (`cache_hit`) o se cuelgan de una
+lectura ya en vuelo (`single_flight_join`), y ninguna emite llamada a AWS ni
+aparece en el Event history. Publicar el total como «accesos/mes» sería el error
+que `excluded_from_physical_metrics` existe para hacer imposible: ataría tanto
+el costo como el umbral al hit rate de la caché, de modo que **bajar** el TTL
+—que empeora el tráfico real— *aparentaría* mejorar el número.
+
+Un test de regresión fija los tres valores juntos —el publicado acá, el de la
+corrida y el que devuelve la fórmula del núcleo— para que una recalibración
+futura no pueda dejar esta transcripción desincronizada
+(`vault-piso-mensual-5793.test.js`).
+
 ##### Por qué el margen es `1.0` y no otro número
 
 El margen es un **parámetro nombrado**, no una elección del momento de
