@@ -126,6 +126,10 @@ function auditLogFile(now = new Date()) {
 // CA-5: cap del `resets_at`. Mínimo 5 min para que un flag con drift de unos
 // segundos no se borre instantáneamente; máximo configurable (default 7 días).
 const MIN_RESETS_AT_MS = 5 * 60 * 1000;
+// #7181 — Delta mínimo para reescribir el flag al acortar su ventana. Sin él,
+// una diferencia de segundos entre el reset anunciado y el observado dispararía
+// un write atómico por cada reconciliación.
+const MIN_SHORTEN_DELTA_MS = 60 * 1000;
 const DEFAULT_MAX_RESETS_AT_DAYS = 7;
 
 // CA-7: cap de raw_excerpt en log (defensa anti DoS de log size).
@@ -994,6 +998,83 @@ const RECONCILE_PROVIDER_ALIAS = Object.freeze({
     openai: 'openai-codex',
     'anthropic-claude': 'anthropic',
 });
+
+/**
+ * #7181 — ACORTA la ventana de un slot activo al reset REAL observado.
+ *
+ * Por qué sólo acorta. El flag se escribe desde la evidencia de un spawn que
+ * falló; cuando esa evidencia no trae fecha, el escritor cae a un cap por
+ * proveedor. Ese cap es una COTA SUPERIOR, no una medición: puede sobrar horas
+ * (el incidente #7161 gateó 24h sobre una ventana de 5h). El reset observado en
+ * los rollouts del propio Codex sí es una medición, y siempre que sea ANTERIOR
+ * al persistido lo reemplaza.
+ *
+ * Alargar, en cambio, jamás: extender el gate desde un dato observado convierte
+ * un error de lectura en horas de apagón, y no hace falta — si el provider
+ * sigue capado, el próximo spawn vuelve a escribir el flag. Acortar es
+ * auto-corrector; alargar no tiene vuelta atrás automática.
+ *
+ * No crea slots: si el provider no tiene uno activo, no hace nada.
+ *
+ * @param {object} opts
+ * @param {string} opts.provider
+ * @param {number} opts.resetsAtMs   reset observado (epoch ms).
+ * @param {string} [opts.source]     de dónde salió el dato (para el audit).
+ * @param {number} [opts.now]
+ * @returns {{adjusted:boolean, reason:string, from?:string, to?:string}}
+ */
+function shortenResetsAt(opts = {}) {
+    const provider = canonicalProvider(opts.provider);
+    const observed = toEpochMs(opts.resetsAtMs);
+    const now = Number.isFinite(opts.now) ? opts.now : Date.now();
+    const auditEnabled = opts.auditLogEnabled !== false;
+    if (!provider) return { adjusted: false, reason: 'provider_missing' };
+    if (!Number.isFinite(observed)) return { adjusted: false, reason: 'observed_invalid' };
+
+    const map = readCurrentMap();
+    const slot = map[provider];
+    if (!slot) return { adjusted: false, reason: 'no_active_slot' };
+
+    const current = toEpochMs(slot.resets_at);
+    if (!Number.isFinite(current)) return { adjusted: false, reason: 'slot_resets_at_invalid' };
+    // Sólo hacia abajo, y sólo si la diferencia es real (evita reescribir el
+    // archivo por ruido de segundos).
+    if (observed >= current - MIN_SHORTEN_DELTA_MS) {
+        return { adjusted: false, reason: 'observed_not_earlier' };
+    }
+
+    const fromIso = new Date(current).toISOString();
+    const toIso = new Date(observed).toISOString();
+    map[provider] = { ...slot, resets_at: toIso };
+
+    if (auditEnabled) {
+        appendAudit({
+            event: 'resets_at_shortened',
+            agent: null,
+            provider,
+            model: slot.model || null,
+            error_type: slot.pattern_matched || null,
+            raw_excerpt: `source=${opts.source || 'unknown'} from=${fromIso} to=${toIso}`,
+            flag_set: true,
+        }, { now });
+    }
+
+    // Si el reset real ya venció, el slot no tiene por qué seguir vivo: lo
+    // drenamos acá mismo en vez de esperar al próximo `readDefensive`.
+    if (observed <= now) {
+        clearFlag({
+            provider,
+            event: 'observed_reset_elapsed',
+            reason: `reset real ${toIso} ya vencido (source=${opts.source || 'unknown'})`,
+            auditLogEnabled: auditEnabled,
+        });
+        return { adjusted: true, reason: 'cleared_elapsed', from: fromIso, to: toIso };
+    }
+
+    const payload = buildHybridPayload(map);
+    if (payload) writeJsonAtomic(flagFile(), payload);
+    return { adjusted: true, reason: 'shortened', from: fromIso, to: toIso };
+}
 
 /**
  * #5455 — Normaliza un id de provider al canónico del adapter.
@@ -1969,6 +2050,22 @@ function isDeterministicSkill(skill) {
  */
 function shouldGateSpawn(skill, opts = {}) {
     if (isDeterministicSkill(skill)) return false;
+    // #7181 — RE-VERIFICACIÓN ANTES DE HONRAR EL GATE.
+    //
+    // Va acá, y no en un cron, porque este es el punto donde el flag hace daño:
+    // si su `resets_at` sobra horas, cada llamada que pasa por acá apaga un
+    // provider que ya volvió. El reconciliador trae throttle propio (5 min), así
+    // que el costo real es una lectura de estado por spawn. Es best-effort: si
+    // falla, seguimos con el flag tal cual (fail-closed, nunca destraba por error).
+    //
+    // El require es lazy a propósito: `quota-reset-reconcile` nos requiere a
+    // nosotros, y resolverlo en el tope del módulo dejaría exports a medio
+    // inicializar en el ciclo.
+    try {
+        require('./quota-reset-reconcile').reconcileCodexReset({
+            now: Number.isFinite(opts.now) ? opts.now : undefined,
+        });
+    } catch { /* best-effort */ }
     const flag = readDefensive(opts);
     if (flag.exhausted !== true) return false;
     // #3077 CA-7 / #4731: si el caller pasó provider, gatear SOLO si ese
@@ -2042,6 +2139,8 @@ module.exports = {
     appendAudit,
     // #4865 — reconciliación contra la fuente única de verdad por proveedor.
     reconcileWithCanonicalSource,
+    // #7181 — acorta la ventana de un slot activo al reset real observado.
+    shortenResetsAt,
     // #5455 — predicado exacto de la única excepción al veto (SET + GET).
     isWeeklyLimitContentChannel,
     canonicalProvider,
@@ -2069,6 +2168,7 @@ module.exports = {
     DEFAULT_MAX_RESETS_AT_DAYS,
     DEFAULT_PROVIDER,
     MIN_RESETS_AT_MS,
+    MIN_SHORTEN_DELTA_MS,
     RAW_EXCERPT_MAX_CHARS,
     PATTERN_MATCHED_MAX_CHARS,
     DETERMINISTIC_SKILLS,
