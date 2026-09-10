@@ -1033,6 +1033,37 @@ re-migrar o rollback. **No borres ítems a mano** con `aws dynamodb delete-item`
 salteás el CAS y la próxima escritura conflictúa contra una versión que ya no
 existe.
 
+### "El Pulpo alertó `Integridad de waves.json comprometida` al bootear"
+
+Antes de tratarlo como tampering, descartá la causa benigna conocida: un registro
+de olas **sellado antes del fix de rev-9**. Hasta ese fix, `waves.js` computaba el
+`integrity_hash` sobre el estado **sin redactar** y la capa de storage aplicaba la
+redacción de campos libres (`source`, `note`, `justification`, `reason`, `detail`)
+**después**, al escribir. Si alguno de esos campos tenía forma de secreto, lo
+persistido dejaba de ser lo hasheado y `checkStateIntegrity()` devolvía `mismatch`
+sobre un estado que nadie había tocado.
+
+Cómo distinguir una cosa de la otra:
+
+```bash
+# 1. ¿Hay campos redactados en el estado vigente?
+node -e "console.log(JSON.stringify(require('./.pipeline/lib/operational-state-backend').readKey('waves')))" | grep -o "\[REDACTED[^\"]*\]" | sort -u
+# 2. ¿Qué dice el chequeo hoy?
+node -e "console.log(JSON.stringify(require('./.pipeline/lib/waves').checkStateIntegrity()))"
+```
+
+- **Hay `[REDACTED]` + `mismatch`** ⇒ es el desfase de sello descrito arriba. El
+  estado es sano: la **primera escritura** del registro de olas posterior al fix
+  lo re-sella sobre el payload ya redactado y el `mismatch` desaparece. No hace
+  falta restaurar desde `archived/`.
+- **No hay ningún `[REDACTED]` y aun así `mismatch`** ⇒ tratalo como alteración
+  fuera del flujo: pausá, compará contra el último backup de `archived/` y
+  escalá. Esa es la señal que el control de #4370 está para dar.
+
+Desde rev-9 la redacción corre **antes** del sello (misma función que usa la capa
+de storage, aplicada in-place), así que lo hasheado y lo escrito coinciden en los
+dos sustratos y este falso positivo no se vuelve a generar.
+
 ### Cómo verificar que el pipeline volvió a un estado sano
 
 ```bash

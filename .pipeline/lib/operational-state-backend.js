@@ -606,22 +606,46 @@ function validateRemoteValue(key, value) {
 
 const REDACTED_FIELDS = new Set(['justification', 'source', 'note', 'reason', 'detail']);
 
-function redactBeforeWrite(value) {
+// #5113 rev-9 — la redacción se expone en DOS formas que producen exactamente el
+// mismo resultado, y esa paridad es un requisito, no un detalle:
+//
+//   - `redactBeforeWrite(value)` → CLONA. Es la que aplica `writeKey` sobre el
+//     payload remoto (no puede mutar el objeto del caller).
+//   - `redactInPlace(value)`     → MUTA y devuelve el mismo objeto. La usa
+//     `waves.js` para redactar ANTES de computar el sello de integridad.
+//
+// Por qué in-place y no el clon en waves: el state lleva adosada la versión del
+// sustrato en una propiedad de SÍMBOLO (`CAS_VERSION`), y un clon por
+// `Object.entries` la pierde ⇒ el write remoto saldría sin `expectedVersion` y
+// `resolveCasVersion` lo abortaría. Mutar preserva símbolo e identidad.
+//
+// Por qué tienen que dar lo mismo: si `waves.js` sella sobre A y `writeKey`
+// persiste `redactBeforeWrite(A)` ≠ A, lo hasheado no es lo escrito y
+// `checkStateIntegrity()` devuelve `mismatch` en el boot siguiente — el pulpo
+// alerta al operador por un tampering que nunca ocurrió y el control de #4370 se
+// vuelve ruido. Con la paridad + la idempotencia de `redactSecretValue`
+// (redactar dos veces no cambia nada), el estado redactado es punto fijo.
+
+function redactWalker(mutate) {
     let redactSecretValue;
     try {
         ({ redactSecretValue } = require('./redact'));
     } catch {
-        return value; // sin el módulo, se escribe tal cual (no se pierde el write).
+        return null; // sin el módulo, se escribe tal cual (no se pierde el write).
     }
-    if (typeof redactSecretValue !== 'function') return value;
+    if (typeof redactSecretValue !== 'function') return null;
 
     const seen = new WeakSet();
     const walk = (node) => {
-        if (Array.isArray(node)) return node.map(walk);
+        if (Array.isArray(node)) {
+            if (!mutate) return node.map(walk);
+            for (let i = 0; i < node.length; i += 1) node[i] = walk(node[i]);
+            return node;
+        }
         if (!node || typeof node !== 'object') return node;
         if (seen.has(node)) return node;
         seen.add(node);
-        const out = {};
+        const out = mutate ? node : {};
         for (const [k, v] of Object.entries(node)) {
             if (typeof v === 'string' && REDACTED_FIELDS.has(k)) {
                 out[k] = redactSecretValue(v);
@@ -631,7 +655,21 @@ function redactBeforeWrite(value) {
         }
         return out;
     };
-    return walk(value);
+    return walk;
+}
+
+function redactBeforeWrite(value) {
+    const walk = redactWalker(false);
+    return walk ? walk(value) : value;
+}
+
+/**
+ * Misma redacción que `redactBeforeWrite`, pero MUTANDO el objeto recibido
+ * (preserva identidad y propiedades de símbolo). Devuelve el mismo objeto.
+ */
+function redactInPlace(value) {
+    const walk = redactWalker(true);
+    return walk ? walk(value) : value;
 }
 
 // ─── Mapeo de versión ISO ↔ entero (CA-A6) ──────────────────────────────────
@@ -1064,6 +1102,7 @@ module.exports = {
     maxResponseBytesFor,
     keyFromCliArgs,
     redactBeforeWrite,
+    redactInPlace,
     isoVersionOf,
     versionPairOf,
     toRemoteExpectedVersion,

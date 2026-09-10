@@ -808,7 +808,18 @@ function addDependencyLocked(parent, children, meta) {
     const state = loadWaves();
     if (!Array.isArray(state.dependencies)) state.dependencies = [];
 
-    const source = typeof meta.source === 'string' && meta.source ? meta.source : 'split-auto';
+    // #5113 rev-9 — el `source` se redacta ACÁ, en el mismo acto en que se deriva,
+    // no recién al persistir. Dos razones, y la segunda es la que muerde:
+    //   1. El `logInfo` de más abajo imprime el source: con la redacción recién en
+    //      el write, un token con forma de secreto quedaba escrito en el log.
+    //   2. La idempotencia de esta función compara `d.source === source` contra lo
+    //      YA persistido (que sale redactado). Buscar con el valor crudo no
+    //      encontraría nunca la entry existente, y cada llamada agregaría una
+    //      dependencia duplicada para el mismo par (parent, source).
+    // Sobre texto que no parece secreto (`split-auto`, `telegram`) es la identidad.
+    const source = redactSecretValue(
+        typeof meta.source === 'string' && meta.source ? meta.source : 'split-auto'
+    );
     // Buscar una entry existente con el mismo par (parent, source) para ser
     // idempotentes y no fragmentar el rastro en múltiples entries por padre.
     let entry = state.dependencies.find(
@@ -2418,10 +2429,32 @@ function saveStateLocked(state, metadata = {}) {
         logWarn(`Error preparando backup: ${err.message}`);
     }
 
+    // #5113 rev-9 — la redacción va ANTES del sello, no después.
+    //
+    // El bug: `writeKey` en modo remoto aplica `redactBeforeWrite` sobre el
+    // payload (operational-state-backend.js, CA-A9), así que un `source` con
+    // forma de secreto se persistía como "[REDACTED]" mientras el hash se había
+    // computado sobre el valor SIN redactar. Lo escrito no era lo hasheado y
+    // `checkStateIntegrity()` devolvía `mismatch` en el boot siguiente: el pulpo
+    // alertaba tampering sobre un estado sano y el control de #4370 se degradaba
+    // a ruido (una alerta que se aprende a ignorar es una alerta que no protege).
+    //
+    // Se redacta in-place con la MISMA función que usa la capa de storage — no
+    // una copia local: dos definiciones divergen y el mismatch vuelve. In-place
+    // porque el state trae la versión del sustrato en una propiedad de símbolo
+    // que un clon perdería ⇒ el write remoto saldría sin `expectedVersion`.
+    //
+    // El resultado es punto fijo: `redactBeforeWrite` sobre un state ya redactado
+    // no lo cambia (`redactSecretValue` es idempotente), así que el payload
+    // persistido coincide con el que se hasheó, en remoto y en filesystem. Efecto
+    // lateral buscado: el camino local queda con la misma garantía de redacción
+    // que el remoto, en vez de menos.
+    stateBackend.redactInPlace(state);
+
     // CA-4/SEC-3 — sellar el estado con el hash de integridad canónico (omitiendo
-    // el propio campo). Se computa DESPUÉS de la validación y del backup, sobre el
-    // shape final que se persiste. Migración (CA-9): un waves.json legacy sin hash
-    // queda sellado en este primer save.
+    // el propio campo). Se computa DESPUÉS de la validación, del backup y de la
+    // redacción, sobre el shape final que se persiste. Migración (CA-9): un
+    // waves.json legacy sin hash queda sellado en este primer save.
     state[INTEGRITY_FIELD] = computeIntegrityHash(state);
 
     // #5113 (CA-A4) — el write pasa por la capa de storage.
