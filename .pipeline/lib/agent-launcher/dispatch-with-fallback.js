@@ -250,11 +250,27 @@ function ensureSecureAuditFile(file, fsImpl) {
 // SR-7: NUNCA persistir un errorType fuera de
 // KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER[provider]. Si no podemos extraer un
 // valor de la allowlist, devolvemos null y el caller omite setFlag.
+//
+// #7161 CA-2/CA-3 — ORDEN DE PRECEDENCIA (y por qué):
+//   1. `verdict.errorType` — el tipo que YA resolvió el detector contra esta
+//      misma allowlist. Es la única fuente que vio el frame entero; re-derivar
+//      desde `evidence` (truncado y saneado) es estrictamente peor.
+//   2. re-parseo del `evidence` — compat para veredictos sin tipo propagado.
+//   3. `allowlist[0]` — degradado. Es una ADIVINANZA, y para codex significaba
+//      persistir `insufficient_quota` ("sin crédito", gate de 24h) sobre un cap
+//      rolling de 1h. Ahora deja traza explícita vía `opts.onDegraded`.
 // -----------------------------------------------------------------------------
-function _selectErrorTypeForFlag(provider, verdict, quotaModule) {
+function _selectErrorTypeForFlag(provider, verdict, quotaModule, opts = {}) {
     const allowlist =
         (quotaModule.KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER || {})[provider] || [];
     if (allowlist.length === 0) return null;
+
+    // 1. Tipo propagado por el detector (#7161 CA-2). Se valida igual contra la
+    //    allowlist: SR-7 no se relaja por confiar en el productor.
+    const propagated = verdict && typeof verdict.errorType === 'string'
+        ? verdict.errorType
+        : null;
+    if (propagated && allowlist.includes(propagated)) return propagated;
 
     try {
         const trimmed = (verdict.evidence || '').trim();
@@ -281,7 +297,19 @@ function _selectErrorTypeForFlag(provider, verdict, quotaModule) {
         }
     } catch { /* fallthrough */ }
 
-    // Default safe = primer elemento de la allowlist del provider.
+    // 3. Default safe = primer elemento de la allowlist del provider.
+    //    #7161 CA-3: el degradado deja traza. Antes se inventaba un tipo en
+    //    silencio y el operador leía en el flag una causa que nunca ocurrió.
+    if (typeof opts.onDegraded === 'function') {
+        try {
+            opts.onDegraded({
+                provider,
+                chosen: allowlist[0],
+                reason: propagated ? 'propagated_type_out_of_allowlist' : 'no_error_type_in_evidence',
+                propagated: propagated || null,
+            });
+        } catch { /* best-effort: la traza nunca rompe la clasificación */ }
+    }
     return allowlist[0];
 }
 
@@ -501,6 +529,9 @@ function onSpawnExit(opts = {}) {
                 timedOut,
                 exitCode,
                 durationMs,
+                // #7161 CA-4 — el detector necesita el reloj del hook para
+                // resolver el "try again at <hora>" que anuncia el CLI.
+                now: _now,
                 _quotaModule: _quota,
             });
         } catch (e) {
@@ -557,7 +588,15 @@ function onSpawnExit(opts = {}) {
                     : null;
                 const errorType = contentChannel
                     ? contentChannel.errorType
-                    : _selectErrorTypeForFlag(provider, verdict, _quota);
+                    : _selectErrorTypeForFlag(provider, verdict, _quota, {
+                        // #7161 CA-3 — traza explícita del degradado.
+                        onDegraded: (info) => {
+                            try {
+                                log('lanzamiento', `${CODEPATH_EMOJI.generalized} onSpawnExit: error_type degradado a default `
+                                    + `(${info.chosen}) para ${info.provider} — motivo=${info.reason}`);
+                            } catch { /* best-effort */ }
+                        },
+                    });
                 if (errorType && typeof _quota.setFlag === 'function') {
                     _quota.setFlag({
                         provider,
@@ -566,14 +605,23 @@ function onSpawnExit(opts = {}) {
                         // escribe el JSON a mano. `setFlag` clampea igual el TTL
                         // efectivo de este tipo a 60 minutos (`maxDays` es
                         // redundante-por-contrato, la garantía vive en setFlag).
+                        // #7161 CA-4 — fuera del canal de contenido, el reset
+                        // puede venir anunciado por el propio frame de control
+                        // del CLI (codex: "try again at <fecha>"). Si el
+                        // detector lo parseó, se pasa; si no, `setFlag` aplica
+                        // la ventana corta que corresponda al tipo.
                         ...(contentChannel
                             ? {
                                 ...(contentChannel.resetsAt ? { resetsAt: contentChannel.resetsAt } : {}),
                                 maxDays: _quota.WEEKLY_LIMIT_CONTENT_MAX_DAYS,
                             }
-                            : {}),
+                            : (verdict.resetsAt ? { resetsAt: verdict.resetsAt } : {})),
                         rawExcerpt: contentChannel ? contentChannel.rawExcerpt : safeEvidence,
                         agent: skill || null,
+                        // #7161 — el flag se fecha con el instante del exit que
+                        // lo originó (mismo reloj que la clasificación), no con
+                        // el que corra al llegar al escritor.
+                        now: _now,
                     });
                     flagSet = true;
                 }

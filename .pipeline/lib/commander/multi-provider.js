@@ -1761,6 +1761,8 @@ function runCommanderSpawn(opts = {}) {
         timedOut,
         exitCode,
         durationMs,
+        // #7161 CA-4 — reloj inyectable para resolver el reset anunciado.
+        ...(Number.isFinite(now) ? { now } : {}),
         _quotaModule: _quota,
     });
 
@@ -1773,13 +1775,27 @@ function runCommanderSpawn(opts = {}) {
     let flagSet = false;
     if (verdict.errorClass === 'quota_exhausted' || verdict.errorClass === 'rate_limit') {
         try {
-            const errorType = _selectErrorTypeForFlag(provider, verdict, _quota);
+            const errorType = _selectErrorTypeForFlag(provider, verdict, _quota, {
+                // #7161 CA-3 — el degradado al default de la allowlist deja
+                // traza; antes se inventaba un tipo en silencio.
+                onDegraded: (info) => {
+                    try {
+                        console.error(`[multi-provider] error_type degradado a default (${info.chosen}) `
+                            + `para ${info.provider} — motivo=${info.reason}`);
+                    } catch { /* best-effort */ }
+                },
+            });
             if (errorType) {
                 _quota.setFlag({
                     provider,
                     errorType,
+                    // #7161 CA-4 — reset anunciado por el canal de control del
+                    // CLI, cuando el detector lo pudo parsear.
+                    ...(verdict.resetsAt ? { resetsAt: verdict.resetsAt } : {}),
                     rawExcerpt: verdict.evidence,
                     agent: COMMANDER_SKILL,
+                    // #7161 — mismo reloj que la clasificación.
+                    ...(Number.isFinite(now) ? { now } : {}),
                 });
                 flagSet = true;
             }
@@ -1839,17 +1855,27 @@ function runCommanderSpawn(opts = {}) {
 // `lib/agent-models-validate.js`. Si no podemos encontrar un valor seguro,
 // devolvemos `null` y el caller skipea el setFlag.
 //
-// Estrategia:
+// Estrategia (#7161 CA-2 agrega el paso 0):
+//   0. Si el veredicto ya trae el `errorType` que resolvió el detector contra
+//      esta misma allowlist → usarlo. Es la única fuente que vio el frame
+//      completo; re-derivarlo desde el `evidence` truncado es peor.
 //   1. Si el `evidence` parsea como JSON con shape `error_type` o `type` y
 //      ese valor está en la allowlist → usarlo.
 //   2. Si no, usar el primer valor de la allowlist como "default safe"
-//      del provider.
+//      del provider (#7161 CA-3: con traza, nunca en silencio).
 //   3. Si la allowlist está vacía → null.
 // -----------------------------------------------------------------------------
-function _selectErrorTypeForFlag(provider, verdict, quotaModule) {
+function _selectErrorTypeForFlag(provider, verdict, quotaModule, opts = {}) {
     const allowlist =
         (quotaModule.KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER || {})[provider] || [];
     if (allowlist.length === 0) return null;
+
+    // 0. Tipo propagado por el detector. Se revalida contra la allowlist: SR-7
+    //    no se relaja por confiar en el productor.
+    const propagated = verdict && typeof verdict.errorType === 'string'
+        ? verdict.errorType
+        : null;
+    if (propagated && allowlist.includes(propagated)) return propagated;
 
     // 1. Intentar extraer del evidence si es JSON.
     try {
@@ -1883,7 +1909,19 @@ function _selectErrorTypeForFlag(provider, verdict, quotaModule) {
         }
     } catch { /* fallthrough */ }
 
-    // 2. Default safe = primer elemento de la allowlist del provider.
+    // 2. Default safe = primer elemento de la allowlist del provider (#7161
+    //    CA-3: con traza explícita — el operador tiene que poder distinguir un
+    //    tipo REPORTADO por el provider de uno ADIVINADO por nosotros).
+    if (typeof opts.onDegraded === 'function') {
+        try {
+            opts.onDegraded({
+                provider,
+                chosen: allowlist[0],
+                reason: propagated ? 'propagated_type_out_of_allowlist' : 'no_error_type_in_evidence',
+                propagated: propagated || null,
+            });
+        } catch { /* best-effort */ }
+    }
     return allowlist[0];
 }
 
