@@ -74,8 +74,29 @@ function buildGate1SignatureKeyboard(issue, deps = {}) {
             throw Object.assign(new Error('gate sin register/buildInlineKeyboard'), { code: 'GATE_UNAVAILABLE' });
         }
 
+        // #6207 (CA-SEC-6) — REVOCAR ANTES DE RE-EMITIR. Este builder se invoca
+        // en cada aviso efectivamente emitido, y desde #6207 el dedupe re-emite
+        // un recordatorio acotado mientras el issue siga pendiente. Sin esta
+        // revocación, cada recordatorio dejaría tres capabilities más en disco y
+        // los botones del mensaje anterior seguirían firmando: el operador
+        // tendría N teclados vivos para un único episodio.
+        //
+        // Best-effort: un fallo de la revocación NO puede impedir que el aviso
+        // salga (contra un binding sobreviviente ya está el nonce single-use).
+        // Va acá y no en el caller porque es la contracara exacta del registro:
+        // separarlas es lo que las desincroniza.
+        if (typeof gate.revokeFor === 'function') {
+            try { gate.revokeFor({ issue, channelGate: 'definicion' }); }
+            catch (_) { /* higiene, no gate */ }
+        }
+
+        // El `channelGate` queda PERSISTIDO en el binding: es lo que hace que el
+        // click se rutee al kernel del canal de aprobación y no a
+        // `applyTransition()`, que es el ejecutor de OTRO gate (CA-SEC-1). Es
+        // camino de ESCRITURA (qué capability se emite), no presentación ni
+        // dedupe — el resto de este archivo sigue siendo propiedad de #6192.
         const [approve, reject, adjust] = ACCIONES_GATE1
-            .map((action) => gate.register({ issue, action }));
+            .map((action) => gate.register({ issue, action, channelGate: 'definicion' }));
 
         const keyboard = gate.buildInlineKeyboard({
             approveId: approve.callbackData,

@@ -7080,6 +7080,35 @@ function brazoBarrido(config) {
                     // log, que es donde se diagnostica. Al operador le va la
                     // ficha: qué issue es, qué se pide firmar y desde cuándo.
                     const opSig = (opGateResult.condition_results && opGateResult.condition_results.signature) || {};
+                    // #6207 (D-3) — DEPOSITAR ANTES DE AVISAR, fuera del dedupe.
+                    //
+                    // El pedido de firma se deja en el canal de aprobación para
+                    // que los medios lo presenten: los botones de Telegram (acá
+                    // abajo) y la bandeja del dashboard. Va en la rama `block` y
+                    // NO colgado del `emit` de `notifyGate1Retention` porque el
+                    // aviso está deduplicado: de N barridos retenidos se emite
+                    // uno, y un depósito que colgara de ese `emit` existiría
+                    // sólo en ese barrido — la bandeja mostraría "nada que
+                    // firmar" con el issue frenado. La idempotencia por ancla
+                    // del propio módulo evita el spam de audit.
+                    //
+                    // try/catch de última red: esto NUNCA puede tumbar el
+                    // barrido ni —sobre todo— LEVANTAR la retención, que ya
+                    // quedó puesta arriba. El peor caso es un pendiente que no
+                    // llega a la bandeja; el issue sigue retenido igual.
+                    try {
+                      const dep = require('./lib/gate1-signature-deposit').depositGate1Request(
+                        { issue, body: opIssueJson.body, title: opIssueJson.title },
+                        { log: (m) => log('barrido', m) },
+                      );
+                      if (dep.ok && dep.deposited) {
+                        log('barrido', `#${issue} GATE 1: pedido de firma depositado en el canal de aprobación`);
+                      } else if (!dep.ok) {
+                        log('barrido', `#${issue} GATE 1: no pude depositar el pedido de firma (${dep.reason}) — el issue queda retenido igual`);
+                      }
+                    } catch (e) {
+                      log('barrido', `#${issue} GATE 1: fallo inesperado depositando el pedido de firma (${e.message}) — el issue queda retenido igual`);
+                    }
                     notifyGate1Retention({
                       issue,
                       caso: 'block',

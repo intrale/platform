@@ -63,6 +63,25 @@ const RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 // no alcanza. Se conservan las más recientes.
 const MAX_ENTRIES = 1000;
 
+// #6207 (CA-B2 / SEC-10) — CADENCIA DEL RECORDATORIO.
+//
+// El dedupe original era "una vez por `(issue, hash)`, para siempre": si el
+// operador no llegaba a ver el aviso —notificaciones silenciadas, chat scrolleado,
+// se fue el fin de semana— el pedido de firma no volvía a aparecer NUNCA, porque
+// el hash no cambia mientras nadie edite el issue. Un issue retenido en silencio
+// permanente es peor que un issue que avisa de más: el trabajo queda frenado y no
+// hay ninguna señal de que lo esté.
+//
+// Por eso la regla pasa a ser "una vez por hash **o** cada `reminderMs` mientras
+// SIGA pendiente". La supresión permanente queda prohibida; lo que se acota es la
+// frecuencia. 6 horas es el punto medio deliberado: espacia lo suficiente como
+// para no entrenar al operador a ignorar el canal (que es la peor falla de un
+// gate) y garantiza que en una jornada de trabajo el pedido reaparece.
+//
+// Es constante del módulo A PROPÓSITO: no se agrega ninguna clave a la sección
+// `operator_signoff:` de `config.yaml`, que es alcance de otra historia.
+const DEFAULT_REMINDER_MS = 6 * 60 * 60 * 1000;
+
 const HASH_RE = /^[a-f0-9]{64}$/;
 
 // Separador de partes: `\x1f` (unit separator). Con un separador vacío
@@ -101,6 +120,8 @@ function issueKey(issue) {
  * @param {string}   [opts.stateFile]   ruta del JSON de estado.
  * @param {function} [opts.now]         clock inyectable (ms).
  * @param {number}   [opts.retentionMs] TTL de las entradas.
+ * @param {number}   [opts.reminderMs]  #6207 — cada cuánto se re-emite el aviso
+ *                                      de un pendiente que sigue sin firmar.
  * @param {object}   [opts.jsonImpl]    `{ readJsonSafe, writeJsonAtomic }`.
  */
 function createGate1NotifyDedup(opts = {}) {
@@ -108,6 +129,12 @@ function createGate1NotifyDedup(opts = {}) {
     const now = typeof opts.now === 'function' ? opts.now : () => Date.now();
     const retentionMs = Number.isFinite(opts.retentionMs) && opts.retentionMs > 0
         ? opts.retentionMs : RETENTION_MS;
+    // #6207 — un `reminderMs` no positivo o no finito cae al default. Aceptar un
+    // `0` como "recordar siempre" convertiría un valor mal pasado en el aviso por
+    // barrido que este módulo vino a cerrar; e `Infinity` sería la supresión
+    // permanente que CA-B2 prohíbe.
+    const reminderMs = Number.isFinite(opts.reminderMs) && opts.reminderMs > 0
+        ? opts.reminderMs : DEFAULT_REMINDER_MS;
     const json = opts.jsonImpl || atomicJson;
 
     /**
@@ -159,8 +186,11 @@ function createGate1NotifyDedup(opts = {}) {
     }
 
     /**
-     * ¿Hay que avisar? `true` si nunca se avisó de este issue o si el hash
-     * cambió (cambió lo que hay que firmar / por qué se retiene).
+     * ¿Hay que avisar? `true` si nunca se avisó de este issue, si el hash cambió
+     * (cambió lo que hay que firmar / por qué se retiene), o si pasó
+     * `reminderMs` desde el último aviso y el issue SIGUE pendiente (#6207,
+     * CA-B2). Nunca devuelve `false` para siempre: la supresión permanente está
+     * prohibida.
      */
     function shouldNotify(issue, hash) {
         const k = issueKey(issue);
@@ -170,7 +200,13 @@ function createGate1NotifyDedup(opts = {}) {
         if (typeof hash !== 'string' || !HASH_RE.test(hash)) return true;
         const prev = read()[k];
         if (!prev) return true;
-        return prev.hash !== hash;
+        if (prev.hash !== hash) return true;   // cambió lo que hay que firmar.
+        // #6207 — recordatorio acotado. Una entrada sin fecha usable no se puede
+        // fechar, y ante la duda se avisa: el fail-safe del módulo apunta al
+        // duplicado, nunca al silencio.
+        const t = Date.parse(prev.ts);
+        if (!Number.isFinite(t)) return true;
+        return (now() - t) >= reminderMs;
     }
 
     /**
@@ -241,6 +277,7 @@ function createGate1NotifyDedup(opts = {}) {
         // Expuestos para diagnóstico y tests.
         read,
         stateFile,
+        reminderMs,
     };
 }
 
@@ -258,4 +295,5 @@ module.exports = {
     DEFAULT_STATE_FILE,
     RETENTION_MS,
     MAX_ENTRIES,
+    DEFAULT_REMINDER_MS,
 };

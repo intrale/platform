@@ -111,6 +111,8 @@ function telegramRequest(method, params) {
 const deps = {
   telegramRequest,
   operatorGate: null, // override para tests; null → getDefault() lazy.
+  // #6207 — handler de la firma de GATE 1; override para tests, null → lazy.
+  gate1SignatureHandler: null,
   operationalExecutorOptions: null, // seam de dependencias; el executor sigue siendo el real.
   // #4780 — commander product-aware; override para tests, null → lazy build.
   productCommander: null,
@@ -386,6 +388,18 @@ function getOperatorGate() {
     _operatorGate = undefined; // no reintentar
     return null;
   }
+}
+
+// #6207 — Handler dedicado de la firma de GATE 1. Carga lazy y best-effort,
+// igual que el gate: si el módulo no cargara, se degrada con un toast y el
+// binding queda vivo — NUNCA se cae al camino de lifecycle como fallback (ese
+// fallback es exactamente el confused deputy que la rama viene a cerrar).
+let _gate1SignatureHandler = null;
+function getGate1SignatureHandler() {
+  if (deps.gate1SignatureHandler) return deps.gate1SignatureHandler; // override de tests
+  if (_gate1SignatureHandler) return _gate1SignatureHandler;
+  _gate1SignatureHandler = require('./lib/gate1-signature-handler').getDefault();
+  return _gate1SignatureHandler;
 }
 
 // =============================================================================
@@ -990,6 +1004,63 @@ async function handleCallbackQuery(cbq) {
     return;
   }
 
+  // #6207 — FIRMA DE GATE 1. Un binding con `channel_gate: 'definicion'` es una
+  // capability del canal de aprobación: su efecto es una FIRMA en el audit chain
+  // de `operator-signoff-gate`, escrita por el kernel `approval-channel`. NO
+  // puede caer en `handleSignature()` — ahí abajo vive `applyTransition()`, el
+  // ejecutor de GATE 0/2, que mueve work-files de `waiting-operator/`. Ambos
+  // gates comparten el vocabulario de acciones (`approve`/`reject`/`adjust`), así
+  // que el ruteo lo decide el `channel_gate` PERSISTIDO server-side, nunca el
+  // `callback_data` (client-controlled). Misma forma que el aislamiento
+  // operacional de #5458, sobre la dimensión que faltaba: de QUÉ gate es.
+  //
+  // La rama va ANTES del `handleSignature()` legacy y CORTA el flujo.
+  if (callbackKind === 'gate-signature') {
+    let sigResult;
+    try {
+      sigResult = getGate1SignatureHandler().handleGate1Signature({
+        operatorId: cbq.from?.id,
+        callbackData: cbq.data,
+      });
+    } catch (e) {
+      // El `message` crudo NO va al toast: puede arrastrar paths o material del
+      // issue. CA-9: el spinner se corta igual.
+      log(`Error procesando firma de GATE 1: ${e.message}`);
+      await answerCallbackQuery(cbq.id, 'No se pudo procesar la firma');
+      return;
+    }
+
+    // CA-9: answerCallbackQuery en TODOS los caminos (éxito y cada rechazo).
+    await answerCallbackQuery(cbq.id, sigResult.toast);
+
+    // Constancia PERMANENTE en el chat: sólo se edita cuando la firma quedó
+    // registrada de verdad. En los rechazos el binding sigue vivo y los botones
+    // tienen que quedar para el reintento del operador legítimo.
+    if (sigResult.ok && sigResult.editMessage && cbq.message) {
+      const actorName = cbq.from?.first_name || cbq.from?.id || 'operador';
+      const hora = new Date().toISOString().replace('T', ' ').slice(0, 16);
+      await removeInlineKeyboard(
+        cbq.message,
+        `🖊️ Firmado por ${actorName} · ${hora} — ${sigResult.toast}`
+      );
+    }
+
+    try {
+      appendHistory({
+        direction: 'in',
+        handler: 'gate1-signature',
+        from: cbq.from?.first_name || 'unknown',
+        from_id: cbq.from?.id,
+        ok: !!sigResult.ok,
+        action: sigResult.action || null,
+        issue: sigResult.issue || null,
+        verdict: sigResult.verdict || null,
+        reason: sigResult.reason || null,
+      });
+    } catch { /* best-effort */ }
+    return;
+  }
+
   // A01/A07: la autorización se valida DENTRO de operator-gate contra `from.id`
   // (no `chat.id`) + binding tenant→operador server-side. Acá sólo pasamos los
   // datos crudos del callback (tratados como no confiables).
@@ -1235,6 +1306,7 @@ module.exports = {
   removeInlineKeyboard,
   getOperatorGate,
   getOperationalExecutor,
+  getGate1SignatureHandler, // #6207 — seam de la firma de GATE 1
   getProductCommander, // #4780 — seam product-aware para el handler NL
   // #4780 — wiring runtime del commander product-aware (inbound + confirmación).
   maybeHandleProductCommand,
