@@ -195,6 +195,7 @@ const NOTA_PAUSA_PREEXISTENTE = 'Ojo: ya había una pausa activa de otro origen,
  * @param {number}  [opts.repeats=1]        repeticiones acumuladas desde el último envío (CA-10).
  * @param {boolean} [opts.aborted=false]    true ⇒ template (A); false ⇒ template (B) (D-4).
  * @param {boolean} [opts.pausePreexisting] true ⇒ suma la nota de CA-20.
+ * @param {boolean} [opts.operationalState] true ⇒ copy de estado operativo (mockup 60).
  * @returns {string} mensaje listo para `sendTelegram` en dialecto `PARSE_MODE`.
  */
 function formatDegradationAlert(opts = {}) {
@@ -212,10 +213,16 @@ function formatDegradationAlert(opts = {}) {
         accion = aborted ? ACCION_ABORTADO : ACCION_SIGUE;
     }
 
+    // #5113: mismo canal y plantilla; copy del mockup 60 para el estado operativo.
+    const operationalState = opts.operationalState === true;
+    if (operationalState) {
+        accion = 'Volvé `operational_state.durable` a `false` siguiendo el rollback de '
+            + '`docs/pipeline/runbook-cutover-estado-operativo.md`.';
+    }
     return [
-        aborted ? HEADER_ABORTADO : HEADER_SIGUE,                       // (1) severidad
+        operationalState ? 'Estado externo sin respuesta - dispatch denegado' : (aborted ? HEADER_ABORTADO : HEADER_SIGUE),
         '',
-        aborted ? CONSECUENCIA_ABORTADO : CONSECUENCIA_SIGUE,           // (2) consecuencia
+        operationalState ? 'Se frena a propósito. El estado local está obsoleto: no se usa.' : (aborted ? CONSECUENCIA_ABORTADO : CONSECUENCIA_SIGUE),
         '',
         'Causa: `' + cause + '` — ' + CAUSA_GLOSA[cause],               //     token del enum + glosa (UX-8)
         '',
@@ -345,6 +352,7 @@ function createDegradationSink(deps = {}) {
             entry.lastSentTs = ts;
             entry.sinceLastSend = 0;
             const text = formatDegradationAlert({
+                operationalState: deps.operationalState === true,
                 cause,
                 correlationId,
                 repeats,

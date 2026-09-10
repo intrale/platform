@@ -327,9 +327,25 @@ function resolveSink() {
         const { cfg } = readConfig();
         degradationSink = createDegradationSink({
             config: cfg || {},
-            sendTelegram: (() => {
-                try { return require('./notify-telegram').notifyTelegram; } catch { return null; }
-            })(),
+            operationalState: true,
+            sendTelegram: (message) => require('./notify-telegram').notifyTelegram({
+                level: 'error', component: 'operational-state', message,
+            }),
+            // El halt queda en FS y no reemplaza una pausa de otro origen.
+            halt: ({ cause, correlationId }) => {
+                try {
+                    fs.writeFileSync(path.join(pipelineDir(), '.paused'), JSON.stringify({
+                        source: 'kernel-cutover-degraded-halt',
+                        ts: new Date().toISOString(), cause, correlationId,
+                    }), { flag: 'wx', mode: 0o600 });
+                    return { markerWritten: true, preexisting: false };
+                } catch (err) {
+                    if (err.code === 'EEXIST') return { markerWritten: false, preexisting: true };
+                    throw err; // El sink registra el fallo sin propagarlo al gate.
+                }
+            },
+            log: (message) => console.warn(message),
+            redact: (message) => require('./redact').redactSecretValue(message),
         });
     } catch {
         degradationSink = { onDegraded: () => {} };
