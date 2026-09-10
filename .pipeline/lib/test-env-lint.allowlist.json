@@ -1055,6 +1055,12 @@
             "reason": "PULPO_NO_AUTOSTART escrita en el sentido seguro (apagar)"
         },
         {
+            "file": "lib/__tests__/gh-exec-maxbuffer-7013.test.js",
+            "line": 19,
+            "kind": "deuda",
+            "reason": "PULPO_NO_AUTOSTART escrita en el sentido seguro (apagar)"
+        },
+        {
             "file": "lib/__tests__/gradle-lock.test.js",
             "line": 23,
             "kind": "deuda",
@@ -1145,6 +1151,12 @@
             "reason": "escritura de PIPELINE_DIR_OVERRIDE fuera del helper"
         },
         {
+            "file": "lib/__tests__/intake-gh-list-limit-7013.test.js",
+            "line": 14,
+            "kind": "deuda",
+            "reason": "PULPO_NO_AUTOSTART escrita en el sentido seguro (apagar)"
+        },
+        {
             "file": "lib/__tests__/intake-recommendation-gate-5689.test.js",
             "line": 24,
             "kind": "deuda",
@@ -1176,37 +1188,37 @@
         },
         {
             "file": "lib/__tests__/listener-callback.test.js",
-            "line": 73,
+            "line": 75,
             "kind": "deuda",
             "reason": "escritura de TELEGRAM_LEO_OPERATOR_CHAT_ID fuera del helper"
         },
         {
             "file": "lib/__tests__/listener-callback.test.js",
-            "line": 220,
+            "line": 222,
             "kind": "deuda",
             "reason": "escritura de TELEGRAM_LEO_OPERATOR_CHAT_ID fuera del helper"
         },
         {
             "file": "lib/__tests__/listener-callback.test.js",
-            "line": 235,
+            "line": 237,
             "kind": "deuda",
             "reason": "escritura de TELEGRAM_LEO_OPERATOR_CHAT_ID fuera del helper"
         },
         {
             "file": "lib/__tests__/listener-callback.test.js",
-            "line": 314,
+            "line": 316,
             "kind": "deuda",
             "reason": "escritura de TELEGRAM_LEO_OPERATOR_CHAT_ID fuera del helper"
         },
         {
             "file": "lib/__tests__/listener-callback.test.js",
-            "line": 343,
+            "line": 345,
             "kind": "deuda",
             "reason": "escritura de TELEGRAM_LEO_OPERATOR_CHAT_ID fuera del helper"
         },
         {
             "file": "lib/__tests__/listener-callback.test.js",
-            "line": 359,
+            "line": 361,
             "kind": "deuda",
             "reason": "escritura de TELEGRAM_LEO_OPERATOR_CHAT_ID fuera del helper"
         },
@@ -2003,6 +2015,18 @@
             "reason": "escritura de PIPELINE_DIR_OVERRIDE fuera del helper"
         },
         {
+            "file": "lib/__tests__/pulpo-aislamiento-prueba-7086.test.js",
+            "line": 44,
+            "kind": "deuda",
+            "reason": "PULPO_NO_AUTOSTART escrita en el sentido seguro (apagar)"
+        },
+        {
+            "file": "lib/__tests__/pulpo-aislamiento-prueba-7086.test.js",
+            "line": 45,
+            "kind": "deuda",
+            "reason": "escritura de PIPELINE_DIR_OVERRIDE fuera del helper"
+        },
+        {
             "file": "lib/__tests__/pulpo-config-recovery.test.js",
             "line": 54,
             "kind": "deuda",
@@ -2013,18 +2037,6 @@
             "line": 55,
             "kind": "deuda",
             "reason": "escritura de PIPELINE_DIR_OVERRIDE fuera del helper"
-        },
-        {
-            "file": "lib/__tests__/pulpo-aislamiento-prueba-7086.test.js",
-            "line": 44,
-            "kind": "falso-positivo",
-            "reason": "aislamiento pre-require: el override tiene que estar seteado ANTES de requerir pulpo.js (las const de modulo capturan el directorio en la carga), y withEnv envuelve una llamada, no un require top-level. Mismo patron que pulpo-config-recovery.test.js"
-        },
-        {
-            "file": "lib/__tests__/pulpo-aislamiento-prueba-7086.test.js",
-            "line": 45,
-            "kind": "falso-positivo",
-            "reason": "aislamiento pre-require: PIPELINE_DIR_OVERRIDE al tmpdir antes del require de pulpo.js. Mismo patron que pulpo-config-recovery.test.js"
         },
         {
             "file": "lib/__tests__/pulpo-corruption.test.js",
@@ -5253,18 +5265,6 @@
             "line": 607,
             "kind": "deuda",
             "reason": "escritura de CANARIO_5804 fuera del helper"
-        },
-        {
-            "file": "lib/__tests__/intake-gh-list-limit-7013.test.js",
-            "line": 14,
-            "kind": "deuda",
-            "reason": "PULPO_NO_AUTOSTART escrita en el sentido seguro (apagar)"
-        },
-        {
-            "file": "lib/__tests__/gh-exec-maxbuffer-7013.test.js",
-            "line": 19,
-            "kind": "deuda",
-            "reason": "PULPO_NO_AUTOSTART escrita en el sentido seguro (apagar)"
         }
     ]
 }

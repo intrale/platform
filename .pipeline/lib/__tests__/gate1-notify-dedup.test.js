@@ -22,11 +22,12 @@ function tmpState(nombre) {
 }
 
 /** Instancia hermética con reloj fijo y estado en un tmpdir propio. */
-function crear(nombre, ms = Date.parse('2026-09-09T12:00:00Z')) {
+function crear(nombre, ms = Date.parse('2026-09-09T12:00:00Z'), opts = {}) {
     let ahora = ms;
     const dedup = dedupModule.createGate1NotifyDedup({
         stateFile: tmpState(nombre),
         now: () => ahora,
+        ...opts,
     });
     return { dedup, avanzar: (delta) => { ahora += delta; } };
 }
@@ -213,4 +214,120 @@ test('computeHash separa las partes: dos particiones distintas no colisionan', (
         dedupModule.computeHash(['block', 'firma', BODY_V1]),
     );
     assert.match(dedupModule.computeHash(['x']), /^[a-f0-9]{64}$/);
+});
+
+
+// =============================================================================
+// #6207 · CA-B2 / SEC-10 — LA DEDUPLICACIÓN NUNCA DEGRADA A SILENCIO.
+//
+// El dedupe original silenciaba PARA SIEMPRE mientras el hash no cambiara. Un
+// pedido de firma que el operador no llegó a ver (notificaciones en silencio,
+// chat scrolleado, fin de semana) desaparecía sin dejar rastro y el issue
+// quedaba frenado sin ninguna señal. Lo que se cementa acá es que la supresión
+// es ACOTADA: se espacia la frecuencia, nunca se apaga el canal.
+//
+// Todo con reloj inyectado: un test de cadencia que dependa del reloj real es
+// un test que no corre o que tarda seis horas.
+// =============================================================================
+
+test('CA-B2: avisa, silencia, y tras reminderMs VUELVE a avisar', () => {
+    const RECORDATORIO = 6 * 60 * 60 * 1000;
+    const { dedup, avanzar } = crear('recordatorio', undefined, { reminderMs: RECORDATORIO });
+    const hash = dedup.computeHash(['block', 'firma', BODY_V1]);
+    let emitidos = 0;
+    const emit = () => { emitidos += 1; };
+
+    // Barrido 1: avisa.
+    dedup.notifyOnce({ issue: 6207, hash, emit });
+    assert.strictEqual(emitidos, 1);
+
+    // Barridos siguientes dentro de la ventana: silencio (el pulpo barre cada
+    // pocos minutos; sin esto sería un aviso por barrido).
+    for (let i = 0; i < 20; i++) {
+        avanzar(60 * 1000);
+        dedup.notifyOnce({ issue: 6207, hash, emit });
+    }
+    assert.strictEqual(emitidos, 1, 'dentro de la ventana no se repite');
+
+    // Justo antes del vencimiento: sigue en silencio.
+    avanzar(RECORDATORIO - 20 * 60 * 1000 - 1);
+    dedup.notifyOnce({ issue: 6207, hash, emit });
+    assert.strictEqual(emitidos, 1, 'un milisegundo antes todavía no toca');
+
+    // Cumplida la ventana: el recordatorio SALE, con el mismo hash.
+    avanzar(1);
+    const recordatorio = dedup.notifyOnce({ issue: 6207, hash, emit });
+    assert.strictEqual(emitidos, 2, 'el pedido pendiente vuelve a aparecer');
+    assert.strictEqual(recordatorio.notified, true);
+    assert.strictEqual(recordatorio.reason, 'emitido');
+});
+
+test('CA-B2 / SEC-10: prohibida la supresión permanente — el aviso reaparece siempre', () => {
+    const RECORDATORIO = 60 * 60 * 1000;
+    const { dedup, avanzar } = crear('sin-silencio', undefined, { reminderMs: RECORDATORIO });
+    const hash = dedup.computeHash(['block', 'firma', BODY_V1]);
+    let emitidos = 0;
+    const emit = () => { emitidos += 1; };
+
+    // Cinco días de issue retenido sin que nadie edite nada.
+    for (let i = 0; i < 5 * 24; i++) {
+        dedup.notifyOnce({ issue: 6207, hash, emit });
+        avanzar(RECORDATORIO);
+    }
+    assert.strictEqual(emitidos, 5 * 24, 'un recordatorio por ventana, ni uno menos');
+});
+
+test('CA-B2: `record` refresca la marca de tiempo (el recordatorio se cuenta desde el último aviso)', () => {
+    const RECORDATORIO = 60 * 60 * 1000;
+    const { dedup, avanzar } = crear('refresca-ts', undefined, { reminderMs: RECORDATORIO });
+    const hash = dedup.computeHash(['block', 'firma', BODY_V1]);
+
+    dedup.record(6207, hash);
+    const primerTs = dedup.read()['6207'].ts;
+
+    avanzar(RECORDATORIO / 2);
+    assert.strictEqual(dedup.shouldNotify(6207, hash), false, 'media ventana: silencio');
+
+    avanzar(RECORDATORIO / 2);
+    assert.strictEqual(dedup.shouldNotify(6207, hash), true, 'ventana cumplida: avisa');
+
+    dedup.record(6207, hash);
+    const segundoTs = dedup.read()['6207'].ts;
+    assert.notStrictEqual(segundoTs, primerTs, 'el sello se renueva');
+    assert.strictEqual(dedup.shouldNotify(6207, hash), false, 'y la ventana arranca de nuevo');
+});
+
+test('CA-B2: una entrada con `ts` ilegible avisa (fail-safe hacia el duplicado)', () => {
+    const { dedup } = crear('ts-roto');
+    const hash = dedup.computeHash(['block', 'firma', BODY_V1]);
+    dedup.record(6207, hash);
+
+    // Se corrompe el `ts` a mano: sin fecha usable no se puede calcular la
+    // ventana, y ante la duda el módulo avisa en vez de callarse.
+    const estado = JSON.parse(fs.readFileSync(dedup.stateFile, 'utf8'));
+    estado['6207'].ts = 'no-es-una-fecha';
+    fs.writeFileSync(dedup.stateFile, JSON.stringify(estado), 'utf8');
+
+    assert.strictEqual(dedup.shouldNotify(6207, hash), true);
+});
+
+test('un reminderMs inválido cae al default en vez de silenciar o spamear', () => {
+    // `0` sería "recordar en cada barrido" (el spam que #6192 cerró) e
+    // `Infinity` sería la supresión permanente que CA-B2 prohíbe: ambos caen al
+    // default en vez de convertirse en comportamiento.
+    for (const malo of [0, -1, Infinity, NaN, null, 'seis horas', {}]) {
+        const { dedup } = crear(`reminder-malo`, undefined, { reminderMs: malo });
+        assert.strictEqual(
+            dedup.reminderMs, dedupModule.DEFAULT_REMINDER_MS,
+            `reminderMs ${JSON.stringify(malo)} debe caer al default`,
+        );
+    }
+});
+
+test('el default del recordatorio es acotado: ni por barrido ni para siempre', () => {
+    assert.ok(Number.isFinite(dedupModule.DEFAULT_REMINDER_MS));
+    assert.ok(dedupModule.DEFAULT_REMINDER_MS > 60 * 60 * 1000,
+        'más de una hora: no puede entrenar al operador a ignorar el canal');
+    assert.ok(dedupModule.DEFAULT_REMINDER_MS <= 24 * 60 * 60 * 1000,
+        'como mucho un día: en una jornada de trabajo el pedido reaparece');
 });

@@ -74,6 +74,32 @@ function actionKind(action) {
     return null;
 }
 
+// #6207 (D-1) — DE QUÉ GATE es la capability. Enum CERRADO, congelado.
+//
+// `kind` (#5458) responde "¿es una acción de gate o una operacional?". No
+// responde "¿de qué gate?", y `GATE_ACTIONS` está COMPARTIDO entre gates con
+// efectos distintos: `approve` de GATE 1 (firma de definición, la escribe el
+// kernel `approval-channel`) y `approve` de GATE 0/2 (transición de un
+// work-file `waiting-operator/`, la ejecuta `applyTransition`). Discriminar por
+// el nombre de la acción no alcanza — es el confused deputy que cierra CA-SEC-1.
+//
+// Se PERSISTE server-side en el binding, mismo molde que `kind` en #5458: el
+// `callback_data` es client-controlled y no puede decidir a qué ejecutor va.
+// `null` (default) = binding de lifecycle, el camino histórico de
+// `handleSignature()` → `applyTransition()`.
+const CHANNEL_GATES = Object.freeze(['definicion', 'aceptacion']);
+
+/**
+ * Normaliza el `channelGate` de un binding.
+ * @returns {{ok:true, value:string|null}|{ok:false}} — `ok:false` si está fuera
+ *   del enum (fail-closed: el caller decide si lanza o degrada a `null`).
+ */
+function normalizeChannelGate(raw) {
+    if (raw === null || raw === undefined || raw === '') return { ok: true, value: null };
+    if (typeof raw === 'string' && CHANNEL_GATES.includes(raw)) return { ok: true, value: raw };
+    return { ok: false };
+}
+
 // El id opaco (callback_data) es hex corto: 16 chars = 8 bytes, holgadamente
 // dentro del límite de 64 bytes de Telegram. Se valida como nombre de archivo
 // del store (anti path-traversal: sólo [a-f0-9], sin separadores).
@@ -214,11 +240,15 @@ function createOperatorGate(opts = {}) {
     /**
      * Registra un botón de firma: firma el token {issue, action}, genera el id
      * opaco corto (callback_data) y persiste el binding server-side en disco.
-     * @returns {{id, callbackData, token, kind}} — `id`/`callbackData` van al
-     *   botón; `kind` es 'gate' | 'operational' (#5458).
-     * @throws si issue/action/tenant son inválidos (inputs no confiables).
+     * @param {string} [p.channelGate] — #6207 (D-1): de QUÉ gate del canal de
+     *   aprobación es esta capability (∈ `CHANNEL_GATES`). Queda persistido como
+     *   `channel_gate`. Omitirlo (`null`) = binding de lifecycle, el camino
+     *   histórico de `handleSignature()`.
+     * @returns {{id, callbackData, token, kind, channelGate}} — `id`/`callbackData`
+     *   van al botón; `kind` es 'gate' | 'operational' (#5458).
+     * @throws si issue/action/tenant/channelGate son inválidos (inputs no confiables).
      */
-    function register({ issue, action, tenant = null } = {}) {
+    function register({ issue, action, tenant = null, channelGate = null } = {}) {
         const i = Number(issue);
         if (!isValidIssue(i)) throw new Error(`operator-gate.register: issue inválido (${issue})`);
         // #5458 — se aceptan acciones de gate Y operacionales; el `kind` queda
@@ -227,26 +257,86 @@ function createOperatorGate(opts = {}) {
         const kind = actionKind(action);
         if (!kind) throw new Error(`operator-gate.register: action inválida (${action})`);
         if (!isValidTenant(tenant)) throw new Error(`operator-gate.register: tenant inválido (${tenant})`);
+        // #6207 — enum cerrado. Un `channelGate` desconocido LANZA en vez de
+        // degradar a `null`: degradar emitiría un botón que resuelve al camino
+        // de lifecycle, que es exactamente el confused deputy de CA-SEC-1. El
+        // productor es código nuestro; un typo tiene que doler acá, no en el
+        // click del operador.
+        const cg = normalizeChannelGate(channelGate);
+        if (!cg.ok) throw new Error(`operator-gate.register: channelGate inválido (${channelGate})`);
 
         const token = signer.sign({ issue: i, action });
         const id = crypto.randomBytes(8).toString('hex'); // 16 hex chars ≤ 64B
         const entry = {
             id, token, issue: i, action, kind,
             tenant: tenant || null,
+            // #6207 — se persiste SIEMPRE (aunque sea `null`) para que el
+            // binding sea autodescriptivo: un entry sin la clave es residuo
+            // legacy, y así se lo puede distinguir de uno emitido hoy.
+            channel_gate: cg.value,
             created_at: new Date(now()).toISOString(),
         };
         const file = storePathFor(id);
         try { _fs.mkdirSync(path.dirname(file), { recursive: true }); } catch { /* idempotente */ }
         _fs.writeFileSync(file, JSON.stringify(entry), 'utf8');
-        return { id, callbackData: id, token, kind };
+        return { id, callbackData: id, token, kind, channelGate: cg.value };
+    }
+
+    /**
+     * #6207 (D-1 / CA-SEC-6) — Revoca TODOS los bindings vivos del par
+     * `(issue, channelGate)`. Se llama antes de re-emitir el teclado de un
+     * episodio: sin esto, cada recordatorio del dedupe deja tres capabilities
+     * más en disco y los botones del aviso viejo siguen firmando.
+     *
+     * Barre `storeDir` en vez de mantener un índice: el store es chico (una
+     * mano de entries), y un índice paralelo es otra cosa que se puede
+     * desincronizar del disco, que es la fuente de verdad.
+     *
+     * NUNCA lanza: es higiene, no un gate. Un fallo de lectura devuelve 0 y el
+     * caller sigue — el peor caso es un binding viejo que sobrevive, y contra
+     * eso ya está el nonce single-use del token.
+     *
+     * @param {{issue:number|string, channelGate:string}} p
+     * @returns {{revoked:number}} cuántos bindings se borraron.
+     */
+    function revokeFor({ issue, channelGate } = {}) {
+        const i = Number(issue);
+        if (!isValidIssue(i)) return { revoked: 0 };
+        const cg = normalizeChannelGate(channelGate);
+        // Revocar "los bindings sin channel_gate" barrería los de lifecycle de
+        // GATE 0/2, que no son nuestros. Sin gate del canal no se revoca nada.
+        if (!cg.ok || cg.value === null) return { revoked: 0 };
+
+        let names;
+        try { names = _fs.readdirSync(storeDir); } catch { return { revoked: 0 }; }
+
+        let revoked = 0;
+        for (const name of names) {
+            if (!name.endsWith('.json')) continue;
+            const id = name.slice(0, -'.json'.length);
+            const entry = resolve(id);
+            if (!entry) continue;
+            if (Number(entry.issue) !== i) continue;
+            if (entry.channel_gate !== cg.value) continue;
+            const file = storePathFor(id);
+            if (!file) continue;
+            try { _fs.unlinkSync(file); revoked += 1; } catch { /* ya no está */ }
+        }
+        return { revoked };
     }
 
     /**
      * #5458 — Clasifica un `callback_data` SIN consumir nada, resolviendo el
      * binding server-side. El listener lo usa para derivar los callbacks
      * operacionales a su handler dedicado ANTES del gate de lifecycle.
-     * @returns {'gate'|'operational'|null} — null si el id es desconocido o la
-     *   acción persistida no está en ninguna allowlist (fail-closed).
+     * #6207 (D-1) — gana un cuarto valor, `gate-signature`: binding de gate CON
+     * `channel_gate: 'definicion'` persistido. El listener lo deriva a
+     * `gate1-signature-handler`, que despacha al kernel `approval-channel` y
+     * NUNCA toca `applyTransition()`.
+     *
+     * @returns {'gate'|'gate-signature'|'operational'|null} — null si el id es
+     *   desconocido, la acción persistida no está en ninguna allowlist, o el
+     *   `channel_gate` persistido está fuera del enum (fail-closed).
      */
     function classifyCallback(callbackData) {
         const entry = resolve(callbackData);
@@ -256,6 +346,16 @@ function createOperatorGate(opts = {}) {
         const derived = actionKind(entry.action);
         if (!derived) return null;
         if (entry.kind && entry.kind !== derived) return null;
+
+        // #6207 — un `channel_gate` fuera del enum es un store manipulado o
+        // corrupto: no se clasifica, no se rutea, no se firma.
+        const cg = normalizeChannelGate(entry.channel_gate);
+        if (!cg.ok) return null;
+        if (cg.value === 'definicion') return derived === 'gate' ? 'gate-signature' : null;
+        // `aceptacion` todavía no tiene adaptador de Telegram (es alcance de
+        // otra historia). Clasificarlo como `gate` lo mandaría a
+        // `applyTransition()`, que es justo el ejecutor equivocado: fail-closed.
+        if (cg.value !== null) return null;
         return derived;
     }
 
@@ -410,6 +510,29 @@ function createOperatorGate(opts = {}) {
                 toast: rejectionToast('unknown-id'),
                 editMessage: false,
                 reason: 'not-a-gate-action',
+            };
+        }
+
+        // 1.ter #6207 (D-1 / CA-SEC-1) — DEFENSA EN PROFUNDIDAD. Un binding con
+        //    `channel_gate` es una capability del canal de aprobación: su
+        //    ejecutor es el kernel `approval-channel`, que escribe una firma en
+        //    el audit chain del gate. Acá abajo vive `applyTransition()`, que
+        //    MUEVE work-files. Si el ruteo del listener fallara (versión vieja,
+        //    `classifyCallback` que explota, orden de ramas alterado), el
+        //    fallback no puede ser el camino que mueve archivos.
+        //    Fail-closed y SIN consumir: la capability sigue viva para su
+        //    handler dedicado, igual que en el aislamiento operacional de #5458.
+        //    La comprobación es "¿el campo declara ALGO?", no "¿declara un gate
+        //    del enum?": un `channel_gate` basura (store manipulado) tampoco
+        //    puede caer al camino de lifecycle por no matchear el enum.
+        const cgEntry = entry.channel_gate;
+        const declaraCanal = cgEntry !== null && cgEntry !== undefined && cgEntry !== '';
+        if (declaraCanal) {
+            return {
+                ok: false,
+                toast: rejectionToast('unknown-id'),
+                editMessage: false,
+                reason: 'not-a-lifecycle-binding',
             };
         }
 
@@ -699,6 +822,8 @@ function createOperatorGate(opts = {}) {
         applyTransition,
         auditSignature,
         handleSignature,
+        // #6207 — revocación del episodio de firma del canal (CA-SEC-6).
+        revokeFor,
         // #5458 — despacho operacional aislado del lifecycle.
         classifyCallback,
         handleOperationalCallback,
@@ -733,6 +858,10 @@ module.exports = {
     // copia: una segunda lista literal se desincroniza del aislamiento.
     OPERATIONAL_ACTIONS,
     actionKind,
+    // #6207 — vocabulario único de gates del canal de aprobación. Se importa,
+    // nunca se copia: una segunda lista literal se desincroniza del ruteo.
+    CHANNEL_GATES,
+    normalizeChannelGate,
     OPAQUE_ID_RE,
     TENANT_RE,
 };
