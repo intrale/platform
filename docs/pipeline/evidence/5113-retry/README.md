@@ -34,4 +34,5 @@ automatizadas cubren además ventana cerrada, pausa previa y alertas repetidas.
 La vista muestra el texto del dropfile; no es una captura del cliente Telegram
 ni acredita entrega externa. El audio narra esa limitación. No se solicitó
 `qa:skipped`. La evidencia no acredita cutover de producción ni los bloques B/C
-del issue, que permanecen fuera de este PR-1 conforme al alcance del PO.
+del issue, que permanecen fuera de este PR-1 conforme al alcance del PO: viven
+en la historia hija #7189 `[Split de #5113]`, bloqueada por #5113.

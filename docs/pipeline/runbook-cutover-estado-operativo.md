@@ -6,6 +6,12 @@
 >
 > Historia que lo crea: #5113 (CA-C8 · Ola 9.4 · E2 · cadena `#5108 → #5109 → #5110 → #5113`).
 > Espejo estructural de `docs/pipeline/runbook-cutover-durable.md`.
+>
+> **Alcance de #5113 (PR-1 · Bloque A): el mecanismo, con el flag APAGADO.** La
+> ejecución del cutover —Bloques B y C: precondiciones por sonda, migración con
+> paridad, rollback ensayado en real, aborto en la ventana real y multi-instancia
+> en dos hosts— vive en la historia hija **#7189** `[Split de #5113]`, bloqueada
+> por ésta. #5113 **no reclama** el valor multi-instancia.
 
 ## Rollback en una pantalla (CA-UX4)
 
@@ -68,14 +74,17 @@ es peor que no tenerlo.
 | Bloque | Qué es | Estado |
 |---|---|---|
 | **Bloque A** — backend + guardrails | `lib/operational-state-backend.js`, CAS con `expectedVersion` **propagado desde los mutadores de los dos estados** (allowlist vía `readAllowlistSnapshot`, registro de olas vía la versión adosada al snapshot de `loadWaves`), cotas de payload, redacción, gate `boolean` estricto, regla `async-gate` del lint, `partial-pause` en `SOURCES` y en `DEFAULT_KNOWN_KEYS`, driver Dynamo síncrono | ✅ **Implementado, con el flag APAGADO.** Sin impacto operativo: con `durable: false` no se construye driver ni se hace una sola llamada a AWS |
-| **Bloque B** — precondiciones (CA-B1…CA-B5) | strict auth, `atomicUpdate` por sonda, identidad del runtime, audit trail multi-instancia, namespaceado ON | ⏳ **PENDIENTE de ejecución real.** Los comandos de §4 están verificados contra el código; **no fueron corridos contra AWS** |
-| **Bloque C** — cutover, sondas y rollback | migración, sonda positiva no-vacía, ensayo de rollback, ensayo de aborto, multi-instancia | ⏳ **PENDIENTE.** Nada de §2, §5, §8 y §9 fue ejecutado todavía |
+| **Bloque B** — precondiciones (CA-B1…CA-B5) | strict auth, `atomicUpdate` por sonda, identidad del runtime, audit trail multi-instancia, namespaceado ON | ⏳ **PENDIENTE de ejecución real — vive en la hija #7189.** Los comandos de §4 están verificados contra el código; **no fueron corridos contra AWS** |
+| **Bloque C** — cutover, sondas y rollback | migración, sonda positiva no-vacía, ensayo de rollback, ensayo de aborto, multi-instancia | ⏳ **PENDIENTE — vive en la hija #7189.** Nada de §2, §5, §8 y §9 fue ejecutado todavía |
 | **CA-UX1…CA-UX5** — lo que ve el operador | chip de procedencia en el header, causa propia en el enum de no-despacho, canal único de alerta, rollback en la primera pantalla, copy que nombra la acción | ✅ **Implementado y verificado en el render real**, con el flag apagado. El chip muestra `filesystem local` hoy; los otros tres estados se capturaron hidratando la bandeja del header contra el dashboard servido |
 
 > **Ningún tramo de este documento afirma haber sido ensayado.** Donde hay
 > evidencia, es del cutover del kernel (#5208/#5209) y está marcada como tal.
-> Cuando se ejecute el Bloque C, la evidencia redactada se agrega acá, en su
-> propia sección, como hizo §8 del runbook del kernel.
+> Cuando #7189 ejecute los Bloques B y C, la evidencia redactada se agrega acá,
+> en su propia sección, como hizo §8 del runbook del kernel. Las dos decisiones
+> que #7189 tiene que cerrar antes (CA-C6 por dos hosts reales o por singleton
+> `(projectId, host)` sobre el lease; quién ejecuta el cutover bajo la política
+> de firma del operador) no las decide este runbook.
 
 ### Léxico único
 

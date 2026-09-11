@@ -556,6 +556,12 @@ faltaba era que el estado que se disputa estuviera afuera.
 La dimensión de sustrato es **`operational_state.durable`**, y es **ortogonal** a
 `namespaced`: el namespaceado decide la clave, el sustrato decide el medio.
 
+> **Estado al cerrar #5113:** el mecanismo descrito en esta sección está
+> implementado y probado con el flag en `false`. El cutover ejecutado (migración
+> con paridad, rollback ensayado, multi-instancia en dos hosts) es alcance de la
+> historia hija #7189 `[Split de #5113]`; hasta que cierre, el sustrato efectivo
+> en producción es filesystem.
+
 ### 13.1 Quién conoce el flag
 
 **Un solo archivo: `lib/operational-state-backend.js`.** Es la capa de storage y
