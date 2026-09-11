@@ -1314,12 +1314,18 @@ function setFlag(opts = {}) {
     // El caso (c) importa: `capResetsAt` descarta un input fuera de rango
     // cayendo al próximo reset SEMANAL, que luego se clampea al cap del
     // proveedor — es decir, exactamente el apagón de 24h que este issue corrige.
+    //   d) #7183 — vino y cae en el pasado reciente (dentro de la gracia) o
+    //      más cerca que `MIN_RESETS_AT_MS`: el cap se liberó o está por
+    //      liberarse → gate MÍNIMO (5 min), no la ventana fija de 1h. Es
+    //      auto-corrector: si el próximo spawn vuelve a chocar, re-setea.
     if (errorType === 'usage_limit_reached') {
         const announced = toEpochMs(effectiveResetsAt);
-        const usable = Number.isFinite(announced)
-            && announced >= now + MIN_RESETS_AT_MS
+        const inRange = Number.isFinite(announced)
+            && announced >= now - CODEX_ANNOUNCED_RESET_GRACE_MS
             && announced <= now + CODEX_USAGE_LIMIT_MAX_ANNOUNCED_MS;
-        effectiveResetsAt = usable ? announced : now + CODEX_USAGE_LIMIT_RESET_MS;
+        effectiveResetsAt = inRange
+            ? Math.max(announced, now + MIN_RESETS_AT_MS)
+            : now + CODEX_USAGE_LIMIT_RESET_MS;
     }
     // #4731 — TTL configurable por proveedor (clampeado). Prioriza opts.maxDays.
     let maxDays = resolveMaxDays(provider, opts);
@@ -1471,6 +1477,15 @@ const _CODEX_TRY_AGAIN_AT_PATTERN =
 // próximo intento re-setea el flag. NUNCA se degrada al cap de 24h por esta vía.
 const CODEX_USAGE_LIMIT_MAX_ANNOUNCED_MS = 24 * 60 * 60 * 1000; // 24h
 
+// #7183 — Gracia para un reset anunciado que YA PASÓ. El CLI redondea el reset
+// al minuto ("try again at 9:18 PM") y el pipeline lee el frame segundos
+// después: el 2026-09-10 llegó a las 21:18:21 un "9:18 PM" y la forma
+// "sólo hora" lo interpretó como "ya pasó hoy → mañana", sumando 24h justo por
+// debajo del techo de sanidad. Un anuncio dentro de esta gracia significa
+// "el cap se liberó recién", no "vuelvo mañana a esta hora". Se devuelve la
+// hora anunciada tal cual y `setFlag` gatea el mínimo (auto-corrector).
+const CODEX_ANNOUNCED_RESET_GRACE_MS = 10 * 60 * 1000; // 10 min
+
 const _MONTH_BY_PREFIX = Object.freeze({
     jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5,
     jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11,
@@ -1482,8 +1497,10 @@ const _MONTH_BY_PREFIX = Object.freeze({
  * @param {string} message texto del frame de control (NUNCA canal de contenido)
  * @param {{now?: number}} [opts]
  * @returns {string|null} ISO 8601 del reset anunciado, o `null` si no hay fecha
- *                        usable (no matcheó, quedó en el pasado o excede el
- *                        techo de sanidad).
+ *                        usable (no matcheó, quedó en el pasado más allá de la
+ *                        gracia o excede el techo de sanidad). Un reset dentro
+ *                        de la gracia (#7183) se devuelve tal cual aunque sea
+ *                        anterior a `now`: significa "recién liberado".
  */
 function _parseCodexUsageLimitResetAt(message, opts = {}) {
     if (typeof message !== 'string' || message.length === 0) return null;
@@ -1514,14 +1531,17 @@ function _parseCodexUsageLimitResetAt(message, opts = {}) {
         ts = new Date(year, month, day, hour, minute, 0, 0).getTime();
     } else {
         // Sólo hora: el próximo cruce de esa hora local a partir de `now`.
+        // #7183 — salvo que ese cruce haya pasado hace instantes: entonces es
+        // el reset que acaba de vencer (redondeo al minuto + lag), NO el de
+        // mañana. Sumar 24h acá es el apagón de un día que este issue cierra.
         const base = new Date(now);
         base.setHours(hour, minute, 0, 0);
         ts = base.getTime();
-        if (ts <= now) ts += 24 * 60 * 60 * 1000;
+        if (ts < now - CODEX_ANNOUNCED_RESET_GRACE_MS) ts += 24 * 60 * 60 * 1000;
     }
 
     if (!Number.isFinite(ts)) return null;
-    if (ts <= now) return null;
+    if (ts < now - CODEX_ANNOUNCED_RESET_GRACE_MS) return null;
     if (ts - now > CODEX_USAGE_LIMIT_MAX_ANNOUNCED_MS) return null;
     return new Date(ts).toISOString();
 }
@@ -2175,6 +2195,7 @@ module.exports = {
     KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER,
     CODEX_USAGE_LIMIT_RESET_MS,
     CODEX_USAGE_LIMIT_MAX_ANNOUNCED_MS,
+    CODEX_ANNOUNCED_RESET_GRACE_MS,
     // #5455 — canal de contenido (excepción acotada Anthropic-only).
     WEEKLY_LIMIT_CONTENT_ERROR_TYPE,
     WEEKLY_LIMIT_CONTENT_SOURCE,
