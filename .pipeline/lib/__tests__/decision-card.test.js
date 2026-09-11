@@ -29,6 +29,11 @@ const reminder = require('../human-block-reminder');
 
 const AHORA = Date.parse('2026-08-19T20:00:00Z');
 
+test('el costo de firma informa el recordatorio de seis horas sin prometer silencio (#6209)', () => {
+    assert.doesNotMatch(dc.COPY.firma.costo, /no se te vuelve a avisar/i);
+    assert.match(dc.COPY.firma.costo, /recordatorio vuelve cada 6 horas mientras siga sin firmar/);
+});
+
 // Mismo predicado que `human-block.test.js:403` (el CA manda reusarlo, no
 // inventar otro), más el de HTML: el criterio dice "ni Markdown ni HTML" y
 // `MARKUP_CHARS` no cubre `<>` (H-UX-6).

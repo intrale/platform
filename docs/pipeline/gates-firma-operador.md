@@ -313,8 +313,8 @@ ruido y el operador aprende a ignorarlo, que es la peor falla posible de un gate
   consecuencia y el costo de no decidir. El copy se **consume**, no se redacta:
   ningún call-site escribe texto propio.
 - **Los tres botones** Aprobar / Rechazar / Ajustar
-  (`operator-gate.buildInlineKeyboard`). El `callback_data` es un id opaco de 16
-  hex; el binding `(issue, acción)` se persiste **server-side**
+  (`operator-gate.buildInlineKeyboard`). El `callback_data` es opaco;
+  el binding `(issue, acción)` se persiste **server-side**
   (`operator-gate.register`). Nunca viajan issue, acción ni tenant dentro del
   `callback_data`, y la autorización es por `from.id` contra la allowlist
   resuelta del entorno, **fail-closed si está vacía**.
@@ -373,20 +373,98 @@ operador deja de creerle.
 forma `{ "<issue>": { hash, ts } }` — **sólo el hash, nunca el body**. La clave
 combina el hash de los criterios (la misma primitiva con la que el gate detecta
 firma stale), el motivo y el caso: si cambia lo que hay que firmar, el aviso
-**vuelve a salir**; si no cambió nada, el barrido siguiente calla. Cuando el
-gate deja de retener de verdad, el sello se olvida.
+**vuelve a salir**; si no cambió nada, el barrido siguiente calla hasta el
+recordatorio de cada 6 horas mientras siga sin firmar (#6207). Cuando el gate
+deja de retener de verdad, el sello se olvida.
 
 El orden es **emitir y después sellar**: un fallo de envío no puede dejar el
 aviso marcado como entregado. El peor caso del dedupe es un aviso repetido —
 nunca una alerta perdida.
 
-### Límite conocido
+### Alcance del canal integrado
 
-El botón firma en el audit chain de `operator-gate`, pero el write path de la
-firma de definición es `approval-channel` (#6206) y su carrier de Telegram es
-#6207, todavía sin implementar: hasta entonces el botón **no levanta por sí solo
-la retención de GATE 1**. El pie de la ficha sigue ofreciendo `/unblock`, que sí
-es un camino completo.
+El adaptador Telegram de #6207 está integrado por #7175. El handler entrega la
+firma humana a `approval-channel`, que valida autoridad y criterios vigentes y
+registra la firma de definición. El siguiente barrido reevalúa el gate y puede
+admitir el issue; recibir el callback por sí solo no acredita promoción.
+La disponibilidad efectiva exige procesos actualizados, credenciales resueltas
+y capability disponible. La integración no acredita un ensayo real ni autoriza
+encender el gate: el cierre operativo se verifica según §15.
+
+---
+
+## 15. Canal de aprobación unificado
+
+El contrato único vive en `lib/approval-channel.js`: los adaptadores presentan
+pedidos y transmiten decisiones; el kernel autoriza y escribe la firma. La
+emisión, reclasificación y deduplicación de la ficha se describen en §14.
+
+### Contrato y medios
+
+- `requestSignature` prepara un pedido ligado al gate, issue y estado a firmar.
+  El kernel resuelve autoridad, modo y ancla; la capability se entrega en memoria
+  al adaptador y no se incorpora al índice de presentación.
+- `submitSignature` revalida identidad, autoridad, ancla y uso único antes de
+  despachar al writer registrado. Cambiar los criterios o el commit invalida la
+  firma previa y exige una nueva decisión humana.
+- `listPending` presenta pendientes: el depósito es un índice, nunca autoridad.
+  La ausencia de un pedido no significa aprobación; un depósito ausente o
+  corrupto en enforce retiene y alerta.
+- El registro cerrado incluye `definicion` (ancla de criterios; firmado,
+  redefinición o rechazo) y `aceptacion` (ancla del commit; firmado o rechazo).
+  Cada gate usa la misma fuente de firmantes que su evaluador.
+
+Telegram porta la identidad humana autenticada; el botón de GATE 1 pasa por
+`gate1-signature-handler` y el kernel. El dashboard local permite consultar y
+solicitar una decisión, pero no representa una identidad firmante. Su drenador
+`gate-signature-drainer` valida la intención y la despacha al medio con identidad:
+no firma ni llama writers. Un pedido aceptado o despachado no equivale a firmado;
+sin medio disponible sigue pendiente. La cola de solicitudes y el depósito del
+kernel son distintos y el drenador no borra el segundo.
+
+El contrato es **mobile-ready**, pero **el transporte remoto no está habilitado**.
+No se habilitan por esta documentación un endpoint público, firma móvil ni una
+identidad de servicio que sustituya al operador humano.
+
+### Cómo se suma un gate nuevo
+
+El gate se incorpora al registro cerrado del kernel con su ancla, veredictos,
+writer, fuente de autoridad y clave de configuración. Se agregan la preparación
+de evidencia que necesite y las validaciones de su writer, reutilizando el canal
+y el mecanismo de uso único existente. Los adaptadores sólo consumen ese
+contrato: no agregan writers ni un circuito de aprobación paralelo.
+
+Los seis invariantes no negociables son:
+
+1. Autorización **revalidada al ejecutar**, además de comprobarla al emitir.
+2. **Fail-closed** ante allowlist vacía, ausente o fallo del resolver.
+3. Identidad y binding por producto resueltos **server-side**, nunca confiados
+   al `callback_data` ni al actor declarado en una solicitud del dashboard.
+4. Token **de un solo uso**, con autorización validada antes de consumir el nonce.
+5. Firma en **audit chain con integridad**; el ancla de evidencia se lee del chain,
+   no del payload. Una firma sobre otro estado no habilita el gate.
+6. Token y `callback_data` **no se persisten ni se loguean**, ni se muestran al
+   usuario; el binding server-side no autoriza guardar la capability bearer.
+
+Las pruebas del nuevo gate deben cubrir autorización y rechazo entre productos,
+configuración ausente, cambio de ancla, replay, corrupción del depósito, auditoría
+y el recorrido del adaptador hasta la reevaluación. Una suite verde no sustituye
+la firma humana del ensayo operativo.
+
+### Encendido y evidencia operativa
+
+La [receta de ensayo de #6209](gate1-ensayo-6209.md) distingue autorización previa,
+observación dry-run, override temporal, firma real, rollback bajo pausa y commit
+permanente. El ensayo es global: la pausa parcial no filtra el barrido.
+Sin autorización explícita de la ventana no se cambia configuración operativa.
+Sin retención, ficha con botones, firma humana auténtica, admisión y rollback
+verificados no se prepara el commit definitivo de `enabled: true` + `enforce`.
+
+La evidencia pública omite chat id, contenido completo de callback, tokens,
+nonces, nombre privado del bot y paths absolutos de stores. Se documentan contrato
+y resultados redactados, nunca material criptográfico ni formatos de tokens.
+El mockup histórico de #6173 se conserva como evidencia del diseño aceptado; el
+copy vigente proviene de `decision-card.js`, con recordatorio de seis horas.
 
 ---
 
