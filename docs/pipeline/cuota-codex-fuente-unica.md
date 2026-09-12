@@ -280,10 +280,26 @@ al `detected_at`) **no destraba nada**: fail-closed.
 
 ### 6.5. Dónde corre
 
-En `shouldGateSpawn()`, antes de honrar el gate — que es el punto donde el flag
-hace daño. `reconcileCodexReset()` trae throttle propio (5 min) porque el barrido
-de rollouts recorre miles de archivos; el costo por spawn es una lectura de
-estado.
+En el **único sitio de spawn real** del Pulpo (`pulpo.js`, justo antes de
+`resolveSpawnWithFallback`), antes de honrar el gate — que es el punto donde el
+flag hace daño. `reconcileCodexReset()` trae throttle propio (5 min) porque el
+barrido de rollouts recorre miles de archivos; el costo por spawn es una lectura
+de estado.
+
+**No** vive dentro de `shouldGateSpawn()` (#7188). Ese es un predicado que
+consultan sondas de sólo lectura (`isCommanderChainGated`, `isLlmGated`, el
+`failover-probe`, todas con `recordEpisode: false`) y el contrato que #4565
+protege con test es que no dejen rastro en disco. Con el reconcile adentro, cada
+tick del commander creaba `state/quota-reset-reconcile.json`. Por la misma
+razón, `reconcileCodexReset()` persiste su throttle recién cuando confirmó que
+hay slot de codex vigente: sin flag —o con flag de otro proveedor— sale como
+`noop` sin tocar disco.
+
+Consecuencia aceptada: el commander (que resuelve provider por
+`lib/commander/multi-provider.js`) ya no dispara el reconcile por sí mismo. El
+Pulpo lo corre en cada intento de despacho, así que sólo deja de correr con la
+cola vacía — y ahí el flag no gatea a nadie. Peor caso: un gate un poco más
+largo; nunca un destrabe indebido (fail-closed).
 
 El health suma el flag como **cuarto insumo**: un proveedor con slot activo no
 puede reportarse `green`, y sale con `reason_code: quota_flag_active`. Queda
@@ -312,10 +328,17 @@ de la §5 queda intacta.
   `lib/__tests__/dashboard-slices-kpis.test.js` — fixtures aislados y
   propagación adapter → slice.
 - `lib/quota-reset-reconcile.js` (#7181) — reconciliación flag ↔ reset observado.
-- `lib/quota-exhausted.js` (#7181) — `shortenResetsAt()` + hook en `shouldGateSpawn`.
+- `lib/quota-exhausted.js` (#7181) — `shortenResetsAt()`. El hook del reconcile
+  que vivía en `shouldGateSpawn` se movió a `pulpo.js` (#7188).
+- `pulpo.js` (#7188) — llamada a `reconcileCodexReset()` antes de
+  `resolveSpawnWithFallback` en `lanzarAgenteClaude`.
 - `lib/multi-provider/health-cron.js` (#7181) — `quotaFlagState()` como cuarto insumo.
+- `lib/provider-pause-cause.js` y `views/dashboard/providers.js` (#7188) — copy
+  de `quota_flag_active` en `REASON_TABLE`/`ACTION_*` y `REASON_LABEL`.
 - `lib/__tests__/quota-reset-reconcile-7181.test.js` — suite con los frames
-  reales del incidente del 2026-09-10.
+  reales del incidente del 2026-09-10 (+ CA-18 de #7188).
+- `lib/__tests__/quota-exhausted-should-gate-spawn-pure-7188.test.js` — el
+  predicado `shouldGateSpawn` no escribe en `pipelineDir`.
 
 ## 8. Trabajo diferido (issues de recomendación)
 

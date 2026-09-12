@@ -144,11 +144,10 @@ function reconcileCodexReset(opts = {}) {
         return { action: 'skipped', reason: 'module_unavailable', error: e && e.message };
     }
 
-    // Marcamos el intento ANTES de hacer el trabajo: si el barrido tira, el
-    // throttle igual corre y no reintentamos en bucle contra un disco roto.
-    writeState({ ...state, last_run_ms: now });
-
     // 2. ¿Hay slot activo de codex? `readDefensive` ya drena lo vencido.
+    //    Es una lectura JSON barata: no marca el intento. #7188 — sin flag, o
+    //    con flag de otro provider, salimos como `noop` SIN tocar disco (ni
+    //    `state/`): este camino lo recorren también las sondas read-only.
     let snapshot;
     try {
         snapshot = quotaModule.readDefensive({ now });
@@ -165,6 +164,11 @@ function reconcileCodexReset(opts = {}) {
     if (!slot) {
         return { action: 'noop', reason: 'provider_not_flagged' };
     }
+
+    // Marcamos el intento ANTES de hacer el trabajo caro (el barrido de
+    // rollouts): si el barrido tira, el throttle igual corre y no reintentamos
+    // en bucle contra un disco roto.
+    writeState({ ...state, last_run_ms: now });
 
     // 3. Ventanas observadas por el propio Codex (sin gate de frescura: un
     //    `resets_at` futuro no envejece — ver `readObservedWindows`).

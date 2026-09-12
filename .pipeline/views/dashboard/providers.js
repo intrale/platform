@@ -129,6 +129,7 @@ const REASON_LABEL = Object.freeze({
     invalid_credentials: 'credencial inválida',
     quota_exhausted: 'cuota agotada',
     quota_exhausted_real: 'sin cuota usable (medida)',
+    quota_flag_active: 'frenado por cuota (fallo reciente)', // #7188: el flag no mide, recuerda un fallo real
     no_key_configured: 'sin key configurada',
     unknown_provider: 'provider desconocido',
     cli_unavailable: 'CLI no disponible',
