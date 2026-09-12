@@ -94,3 +94,53 @@ test('servicio-github bloquea remove-label legacy de labels QA', () => {
   const listo = JSON.parse(fs.readFileSync(path.join(pipeline, 'servicios/github/listo', '2.json'), 'utf8'));
   assert.equal(listo.discarded, 'legacy-gate-label-remove-blocked');
 });
+
+for (const target of ['issue', 'pr']) {
+  test(`#7206 cola ${target}: prefijos distintos y revocación reintentada tras re-ratificar`, () => {
+    const { pipeline, service } = loadServiceWithTempState();
+    const queue = path.join(pipeline, 'servicios/github');
+    const ghClient = fakeGithubClient({ 7206: ['qa:pending'] });
+    ghClient.editPullRequest = ghClient.editIssue;
+    ghClient.getPrLabels = ghClient.getIssueLabels;
+    const oldName = '7206-seal-caduco-gate-20260912200000000.json';
+    const newName = '7206-reratificado-gate-20260912200100000.json';
+    const order = (label) => ({ action: 'label', issue: 7206, target, label, origen: 'gate-caducidad-sello' });
+    const enqueue = (name, data) => fs.writeFileSync(path.join(queue, 'pendiente', name), JSON.stringify(data));
+    enqueue(oldName, order('qa:pending'));
+    enqueue(newName, order('qa:passed'));
+    console.log('Orden filesystem:', fs.readdirSync(path.join(queue, 'pendiente')));
+    service.processQueue({ ghClient });
+    assert.deepEqual(ghClient.getIssueLabels(7206), ['qa:passed']);
+    assert.equal(JSON.parse(fs.readFileSync(path.join(queue, 'listo', oldName))).discarded, 'superseded-gate-order');
+    // Simula reinicio real del módulo y reintento tardío con nombre original.
+    const servicePath = require.resolve('../servicio-github');
+    delete require.cache[servicePath];
+    enqueue(oldName, { ...order('qa:pending'), retries: 1 });
+    require(servicePath).processQueue({ ghClient });
+    assert.deepEqual(ghClient.getIssueLabels(7206), ['qa:passed']);
+    console.log(`${target}: qa:passed después de cola y reintento tras reinicio`);
+    // Una caducidad realmente posterior conserva su capacidad de cerrar QA.
+    enqueue('7206-seal-caduco-gate-20260912200200000.json', order('qa:pending'));
+    require(servicePath).processQueue({ ghClient });
+    assert.deepEqual(ghClient.getIssueLabels(7206), ['qa:pending']);
+  });
+}
+
+test('#7206 fallo parcial: mismo intento puede completar; una orden vieja no puede revocar', () => {
+  const { pipeline, service } = loadServiceWithTempState();
+  const queue = path.join(pipeline, 'servicios/github');
+  const ghClient = fakeGithubClient({ 7206: ['qa:pending'] });
+  const edit = ghClient.editIssue;
+  let fail = true;
+  ghClient.editIssue = function (issue, change) {
+    if (change.addLabel === 'qa:passed' && fail) { fail = false; throw new Error('API temporal'); }
+    return edit.call(this, issue, change);
+  };
+  for (const [name, label] of [
+    ['7206-seal-caduco-gate-20260912200000000.json', 'qa:pending'],
+    ['7206-reratificado-gate-20260912200100000.json', 'qa:passed'],
+  ]) fs.writeFileSync(path.join(queue, 'pendiente', name), JSON.stringify({ action: 'label', issue: 7206, label, origen: 'gate-caducidad-sello' }));
+  service.processQueue({ ghClient });
+  service.processQueue({ ghClient });
+  assert.deepEqual(ghClient.getIssueLabels(7206), ['qa:passed']);
+});
