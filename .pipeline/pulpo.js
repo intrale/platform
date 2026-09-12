@@ -11219,6 +11219,13 @@ async function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, 
   // (b) la env var PROVIDER_RESOLUTION_LOG del child (visible desde el agente).
   let providerResolutionLog = null;
   try {
+    // #7188 — re-verificación del flag de cuota (#7181) ANTES de honrar el gate.
+    // Vive acá (único sitio de spawn real) y NO dentro de `shouldGateSpawn`: ese
+    // predicado lo consultan sondas read-only (#4565) y no puede escribir disco.
+    // Trae throttle propio (5 min). Best-effort: si falla, el flag manda (fail-closed).
+    try {
+      require('./lib/quota-reset-reconcile').reconcileCodexReset({});
+    } catch { /* best-effort */ }
     dispatchResolution = resolveSpawnWithFallback({
       skill,
       issue,

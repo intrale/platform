@@ -439,3 +439,56 @@ test('CA-17 · un slot ya vencido no pinta de rojo (readDefensive lo drena antes
         }
     });
 });
+
+// =============================================================================
+// BLOQUE 5 · #7188 — el reconcile no deja rastro si no tiene nada que hacer
+// =============================================================================
+//
+// `writeState(last_run_ms)` corría ANTES de mirar si había slot de codex, así
+// que cualquier llamada —incluso desde una sonda read-only (#4565)— creaba
+// `state/quota-reset-reconcile.json`. Ahora el intento se marca recién antes
+// del barrido caro de rollouts, que sólo ocurre con slot de codex vigente.
+
+test('CA-18 · sin slot de codex no crea state/', () => {
+    // Sin flag alguno.
+    conEntornoAislado(({ reconcile: rec, pipelineDir }) => {
+        const r = rec.reconcileCodexReset({ force: true, now: AHORA });
+        assert.equal(r.action, 'noop');
+        assert.equal(r.reason, 'no_active_flag');
+        assert.ok(!fs.existsSync(path.join(pipelineDir, 'state')),
+            'sin flag activo el reconcile no debe crear state/');
+    }, { lineasRollout: [FRAME_CON_VENTANAS] });
+
+    // Con flag de OTRO provider (el caso exacto del fixture de #4565).
+    conEntornoAislado(({ reconcile: rec, pipelineDir }) => {
+        fs.writeFileSync(path.join(pipelineDir, 'quota-exhausted.json'), JSON.stringify({
+            exhausted: true,
+            provider: 'anthropic',
+            resets_at: FLAG_24H_ISO,
+            detected_at: DETECTADO_ISO,
+            pattern_matched: 'usage_limit_error',
+            providers: {
+                anthropic: {
+                    exhausted: true,
+                    resets_at: FLAG_24H_ISO,
+                    detected_at: DETECTADO_ISO,
+                    pattern_matched: 'usage_limit_error',
+                },
+            },
+        }, null, 2), 'utf8');
+        const r = rec.reconcileCodexReset({ force: true, now: AHORA });
+        assert.equal(r.action, 'noop');
+        assert.equal(r.reason, 'provider_not_flagged');
+        assert.ok(!fs.existsSync(path.join(pipelineDir, 'state')),
+            'con flag de otro provider el reconcile no debe crear state/');
+    }, { lineasRollout: [FRAME_CON_VENTANAS] });
+
+    // Contraste: CON slot de codex el throttle sí se persiste (CA-12/CA-13
+    // dependen de esto), así que el reorden no lo desarmó.
+    conEntornoAislado(({ reconcile: rec, pipelineDir }) => {
+        escribirFlagCodex(pipelineDir);
+        rec.reconcileCodexReset({ force: true, now: AHORA });
+        assert.ok(fs.existsSync(path.join(pipelineDir, 'state', 'quota-reset-reconcile.json')),
+            'con slot de codex el throttle se marca antes del barrido');
+    }, { lineasRollout: [FRAME_CON_VENTANAS, FRAME_PREMIUM_SIN_VENTANAS] });
+});

@@ -2070,22 +2070,14 @@ function isDeterministicSkill(skill) {
  */
 function shouldGateSpawn(skill, opts = {}) {
     if (isDeterministicSkill(skill)) return false;
-    // #7181 — RE-VERIFICACIÓN ANTES DE HONRAR EL GATE.
-    //
-    // Va acá, y no en un cron, porque este es el punto donde el flag hace daño:
-    // si su `resets_at` sobra horas, cada llamada que pasa por acá apaga un
-    // provider que ya volvió. El reconciliador trae throttle propio (5 min), así
-    // que el costo real es una lectura de estado por spawn. Es best-effort: si
-    // falla, seguimos con el flag tal cual (fail-closed, nunca destraba por error).
-    //
-    // El require es lazy a propósito: `quota-reset-reconcile` nos requiere a
-    // nosotros, y resolverlo en el tope del módulo dejaría exports a medio
-    // inicializar en el ciclo.
-    try {
-        require('./quota-reset-reconcile').reconcileCodexReset({
-            now: Number.isFinite(opts.now) ? opts.now : undefined,
-        });
-    } catch { /* best-effort */ }
+    // #7188 — Este es un PREDICADO y no escribe disco. La re-verificación del
+    // flag contra el reset real de Codex (#7181, `quota-reset-reconcile`) vivió
+    // un tiempo acá adentro, pero este predicado lo consultan sondas read-only
+    // (`isCommanderChainGated`, `isLlmGated`, `failover-probe`, todas con
+    // `recordEpisode: false`) y el reconcile creaba `state/` como efecto
+    // colateral, violando el contrato que #4565 protege con test. Hoy el
+    // reconcile corre en el ÚNICO sitio de spawn real (`pulpo.js`, justo antes
+    // de `resolveSpawnWithFallback`), que es donde el flag hace daño.
     const flag = readDefensive(opts);
     if (flag.exhausted !== true) return false;
     // #3077 CA-7 / #4731: si el caller pasó provider, gatear SOLO si ese
