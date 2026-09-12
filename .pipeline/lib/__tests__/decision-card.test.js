@@ -26,12 +26,22 @@ const path = require('path');
 const dc = require('../decision-card');
 const cardRender = require('../decision-card-render');
 const reminder = require('../human-block-reminder');
+// CA-UX-5 (#6209): la frecuencia real del recordatorio de GATE 1 vive en
+// `gate1-notify-dedup.js` (DEFAULT_REMINDER_MS). El copy la cita en horas y
+// el test las deriva de la constante: si alguien mueve la constante sin
+// tocar el copy (o al revés), este test es el que rompe, no la confianza
+// del operador.
+const { DEFAULT_REMINDER_MS } = require('../gate1-notify-dedup');
 
 const AHORA = Date.parse('2026-08-19T20:00:00Z');
 
-test('el costo de firma informa el recordatorio de seis horas sin prometer silencio (#6209)', () => {
+test('el costo de firma informa el recordatorio real sin prometer silencio (#6209, CA-UX-5)', () => {
+    const horas = DEFAULT_REMINDER_MS / 3600000;
+    assert.ok(Number.isInteger(horas) && horas > 0,
+        `DEFAULT_REMINDER_MS (${DEFAULT_REMINDER_MS} ms) debe ser un número entero de horas para que el copy lo cite`);
     assert.doesNotMatch(dc.COPY.firma.costo, /no se te vuelve a avisar/i);
-    assert.match(dc.COPY.firma.costo, /recordatorio vuelve cada 6 horas mientras siga sin firmar/);
+    assert.match(dc.COPY.firma.costo,
+        new RegExp(`recordatorio vuelve cada ${horas} horas mientras siga sin firmar`));
 });
 
 // Mismo predicado que `human-block.test.js:403` (el CA manda reusarlo, no
