@@ -1,0 +1,64 @@
+<!DOCTYPE html><html lang="es"><head><meta charset="utf-8"><title>Ola Proveedores — propuesta de ubicación en el roadmap</title>
+<style>
+@page{size:A4;margin:14mm 13mm}
+body{font-family:"Segoe UI",Arial,sans-serif;color:#1f2933;font-size:10.5px;line-height:1.45;margin:0}
+h1{font-size:22px;margin:0 0 4px;color:#0f2f4f}
+h2{font-size:14px;margin:20px 0 8px;color:#0f2f4f;border-bottom:2px solid #0f2f4f;padding-bottom:3px}
+.sub{color:#5f6b7a;font-size:9.5px;margin-bottom:12px}
+.lead{background:#eef3f8;border-left:4px solid #0f2f4f;padding:10px 12px;margin:10px 0 14px}
+.grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin:8px 0}
+.kpi{border:1px solid #d9e1ea;border-radius:6px;padding:8px 10px}.kpi .v{font-size:18px;font-weight:700;color:#0f2f4f}.kpi .l{font-size:9px;color:#5f6b7a}
+.tl{position:relative;margin:10px 0 6px;padding-left:26px}.tl:before{content:"";position:absolute;left:9px;top:6px;bottom:6px;width:3px;background:#c8d3df;border-radius:2px}
+.step{position:relative;margin:0 0 9px}.step:before{content:"";position:absolute;left:-23px;top:9px;width:13px;height:13px;border-radius:50%;background:#c8d3df;border:2px solid #fff;box-shadow:0 0 0 2px #c8d3df}
+.step.now:before{background:#e08600;box-shadow:0 0 0 2px #e08600}.step.new:before{background:#7d3c98;box-shadow:0 0 0 2px #7d3c98}
+.card{border:1px solid #d9e1ea;border-radius:6px;padding:8px 11px}.card.now{border-color:#e08600;background:#fff9f0}.card.new{border-color:#7d3c98;background:#faf5fc;border-width:2px}
+.card .t{font-weight:700;font-size:11.5px;color:#0f2f4f}.card .m{font-size:9px;color:#5f6b7a}
+table{border-collapse:collapse;width:100%;margin:6px 0 10px}th{background:#0f2f4f;color:#fff;text-align:left;padding:5px 7px;font-size:9.5px}td{border-bottom:1px solid #e0e6ec;padding:5px 7px;vertical-align:top}tr:nth-child(even) td{background:#f7f9fb}
+.chain{display:flex;flex-wrap:wrap;align-items:center;gap:4px;margin:6px 0 8px}.node{border:1px solid #7d3c98;border-radius:4px;padding:3px 7px;font-size:9.5px;white-space:nowrap}.node.free{border-style:dashed}.arrow{color:#7d3c98;font-weight:700}
+.warn{background:#fff4e5;border-left:4px solid #e08600;padding:8px 10px;margin:8px 0}
+.opt{border:1px solid #d9e1ea;border-radius:6px;padding:8px 11px;margin:6px 0}.opt.rec{border-color:#1e8449;background:#f2fbf5;border-width:2px}
+.badge{display:inline-block;padding:1px 6px;border-radius:3px;font-size:8.5px;font-weight:600;margin-left:4px}.b-ready{background:#eafaf1;color:#1e8449}.b-nd{background:#fff4e5;color:#b35c00}
+</style></head><body>
+<h1>Ola Proveedores · Antigravity encendido y retiro de los gratuitos</h1>
+<div class="sub">Propuesta de ubicación en el roadmap · Commander · 12/09/2026 · registro: <code>planned_waves</code> #13 · doc: <code>docs/pipeline/roadmap-olas.md</code></div>
+<div class="lead"><b>Decisión del operador (12/09):</b> en vez de sumar Antigravity y la baja de proveedores gratuitos a la Ola 9.4 (211 issues, ritmo difícil de seguir), se arma una <b>ola nueva, chica y acotada</b>. Este reporte muestra qué contiene, en qué orden corre y dónde se propone ubicarla.</div>
+<div class="grid"><div class="kpi"><div class="v">9</div><div class="l">issues (1 épico + 8)</div></div><div class="kpi"><div class="v">6 / 3</div><div class="l">Ready / needs-definition</div></div><div class="kpi"><div class="v">1.º</div><div class="l">posición propuesta tras la 9.4 (opción A)</div></div></div>
+
+<h2>1. Contenido de la ola</h2>
+<table><tr><th>Issue</th><th>Qué hace</th><th>Estado</th><th>Tamaño</th></tr>
+<tr><td>#6856</td><td>Épico: encender el proveedor Google vía Antigravity CLI y retirar el Gemini CLI gratuito</td><td><span class="badge b-nd">needs-definition</span> (split)</td><td>grande</td></tr>
+<tr><td>#6857</td><td>Encender Antigravity y reemplazar el chequeo de licencia por un health con round-trip real</td><td><span class="badge b-ready">Ready</span></td><td>medium</td></tr>
+<tr><td>#6858</td><td>Corregir el catálogo de modelos: 9 skills declaran un id que no existe en Antigravity</td><td><span class="badge b-ready">Ready</span></td><td>medium</td></tr>
+<tr><td>#6859</td><td>El launcher ignora el worktree: sin <code>--add-dir</code> el agente escribe en un scratch fantasma</td><td><span class="badge b-ready">Ready</span></td><td>simple</td></tr>
+<tr><td>#6860</td><td>Matriz modelo por agente sobre cuota Google + sign-off de seguridad sobre el TOS de la licencia paga</td><td><span class="badge b-nd">needs-definition</span></td><td>medium</td></tr>
+<tr><td>#6861</td><td>Renombrar el provider a <code>antigravity</code> y actualizar la documentación canónica</td><td><span class="badge b-nd">needs-definition</span></td><td>medium</td></tr>
+<tr><td>#6562</td><td>Criterio de admisión de proveedores: CLI que edite archivos, consumo verificable, términos sin entrenamiento</td><td><span class="badge b-ready">Ready</span></td><td>simple</td></tr>
+<tr><td>#6563</td><td>Dar de baja los proveedores gratuitos del ruteo (Cerebras, Kimi, NVIDIA) y verificar la cadena con tres pagos</td><td><span class="badge b-ready">Ready</span></td><td>medium</td></tr>
+<tr><td>#6564</td><td>Verificar que Google corre con el plan pago (probable absorción por #6857 al refinar)</td><td><span class="badge b-ready">Ready</span></td><td>simple</td></tr>
+</table>
+
+<h2>2. Cadena de dependencias (declarada en formato máquina, R5)</h2>
+<div class="chain"><span class="node free">#6857 encender</span><span class="node free">#6858 catálogo</span><span class="node free">#6859 --add-dir</span><span class="node free">#6562 criterio</span><span class="arrow">→</span><span class="node">#6860 matriz + TOS</span><span class="arrow">→</span><span class="node">#6861 rename + doc</span></div>
+<div class="chain"><span class="node free">#6857</span><span class="arrow">+</span><span class="node free">#6562</span><span class="arrow">→</span><span class="node">#6563 baja de gratuitos</span> &nbsp; <span class="node free">#6857</span><span class="arrow">→</span><span class="node">#6564 plan pago</span> &nbsp; <span class="node">#6856 épico cierra último</span></div>
+<div class="warn"><b>Freno clave:</b> #6563 (sacar los gratuitos) no corre hasta que #6857 (Antigravity encendido) esté cerrado. Si se diera de baja a los gratuitos antes, la cadena quedaría con dos patas (Claude + Codex) y de noche con una sola. Frenos efectivos: label <code>blocked:dependencies</code> en #6563, #6564, #6860 y #6861.</div>
+
+<h2>3. Dónde ubicarla</h2>
+<div class="tl">
+<div class="step now"><div class="card now"><div class="t">Ola 9.4 · Partir config + externalizar el estado operativo</div><div class="m">En curso · 94 % · lo que falta: #7188 (main en rojo) → #6209 → #6199, y #5113 frenado por disco</div></div></div>
+<div class="step new"><div class="card new"><div class="t">Ola Proveedores · Antigravity + retiro de gratuitos — NUEVA (propuesta A)</div><div class="m">planned_waves #13 · 9 issues · 3 agentes · gate humano R7 al abrir</div></div></div>
+<div class="step"><div class="card"><div class="t">Ola 9.4.1 · Ambiente de pruebas del CORE</div><div class="m">7 issues · precondición #7082 (tests rojos en main)</div></div></div>
+<div class="step"><div class="card"><div class="t">Ola E8 · Contabilidad de cuota y auditor del modelo operativo</div><div class="m">10 issues · secuencial (decisión 11/09) · necesita el plantel definitivo de proveedores</div></div></div>
+<div class="step"><div class="card"><div class="t">Ola 9.3 · Partir skills híbridos → E3+E5 → 9.5 cutover → App operadora móvil</div><div class="m">sin épico creado</div></div></div>
+</div>
+<div class="opt rec"><b>Opción A (recomendada, es la que quedó registrada): primera después de la 9.4.</b><br>Por qué: (1) hoy de noche queda una sola pata paga viva (Codex, gateado ~15 h de 26 h el 11/09); la tercera pata destraba ritmo en <i>todas</i> las olas que siguen. (2) E8 lleva el libro contable de cuota y necesita proveedores contables: los gratuitos son agujeros en el libro. (3) Es corta: 9 issues, 3 de ellos simples; no posterga a 9.4.1 más que unos días.</div>
+<div class="opt"><b>Opción B: después de 9.4.1, antes de E8.</b><br>Respeta el orden que ya estaba decidido y prioriza que los tests del CORE dejen de correr contra la instalación productiva. Costo: las próximas dos olas corren con la cadena de proveedores actual. Se cambia con un solo reorden, sin tocar nada más.</div>
+<div class="opt"><b>Opción C (descartada): sumar los 9 issues a la 9.4.</b><br>Es exactamente lo que el operador pidió evitar: la 9.4 ya tiene 211 issues.</div>
+
+<h2>4. Qué se hizo y qué NO se tocó</h2>
+<ul>
+<li>Creada la ola planificada #13 con los 9 issues y su objetivo; reordenadas las planificadas: <b>Proveedores → 9.4.1 → E8 → App móvil → EP-9</b>.</li>
+<li>Declaradas 5 dependencias en el registro (fuente <code>manual:leo-ola-proveedores</code>) y puestos los frenos <code>blocked:dependencies</code> en GitHub.</li>
+<li>Fila nueva en <code>docs/pipeline/roadmap-olas.md</code> (mismo PR #7187 que ya lleva la fila de E8, para no abrir dos PRs sobre la misma tabla).</li>
+<li><b>No se tocó la ola activa ni su allowlist</b>: ninguno de los 9 issues es despachable hasta que la ola se abra con el gate humano R7. Verificado: allowlist en sincronía, sin flag de desync.</li>
+</ul>
+</body></html>

@@ -1,0 +1,217 @@
+<!DOCTYPE html><html lang="es"><head><meta charset="utf-8"><title>Roadmap de olas y la ola propuesta E8</title>
+<style>
+@page { size: A4; margin: 14mm 13mm; }
+body{font-family:"Segoe UI",Arial,sans-serif;color:#1f2933;font-size:10.5px;line-height:1.45;margin:0}
+h1{font-size:22px;margin:0 0 4px;color:#0f2f4f}
+h2{font-size:14px;margin:20px 0 8px;color:#0f2f4f;border-bottom:2px solid #0f2f4f;padding-bottom:3px;page-break-after:avoid}
+h3{font-size:11.5px;margin:10px 0 4px;color:#0f2f4f}
+p{margin:4px 0 8px}
+.sub{color:#5f6b7a;font-size:9.5px;margin-bottom:12px}
+.lead{background:#eef3f8;border-left:4px solid #0f2f4f;padding:10px 12px;margin:10px 0 14px;font-size:10.5px}
+.grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin:8px 0}
+.kpi{background:#fff;border:1px solid #d9e1ea;border-radius:6px;padding:8px 10px}
+.kpi .v{font-size:18px;font-weight:700;color:#0f2f4f}
+.kpi .l{font-size:9px;color:#5f6b7a}
+/* Timeline */
+.tl{position:relative;margin:10px 0 6px;padding-left:26px}
+.tl:before{content:"";position:absolute;left:9px;top:6px;bottom:6px;width:3px;background:#c8d3df;border-radius:2px}
+.step{position:relative;margin:0 0 9px;page-break-inside:avoid}
+.step:before{content:"";position:absolute;left:-23px;top:9px;width:13px;height:13px;border-radius:50%;background:#c8d3df;border:2px solid #fff;box-shadow:0 0 0 2px #c8d3df}
+.step.done:before{background:#1e8449;box-shadow:0 0 0 2px #1e8449}
+.step.now:before{background:#e08600;box-shadow:0 0 0 2px #e08600}
+.step.next:before{background:#0f2f4f;box-shadow:0 0 0 2px #0f2f4f}
+.step.new:before{background:#7d3c98;box-shadow:0 0 0 2px #7d3c98}
+.card{border:1px solid #d9e1ea;border-radius:6px;padding:8px 11px;background:#fff}
+.card.now{border-color:#e08600;background:#fff9f0}
+.card.new{border-color:#7d3c98;background:#faf5fc;border-width:2px}
+.card .t{font-weight:700;font-size:11.5px;color:#0f2f4f}
+.card .m{font-size:9px;color:#5f6b7a;margin:1px 0 5px}
+.card ul{margin:3px 0 3px 14px;padding:0}
+.card li{margin:1px 0}
+.why{margin-top:5px;padding:5px 8px;background:#f4f6f9;border-radius:4px;font-size:9.5px}
+.why b{color:#0f2f4f}
+.badge{display:inline-block;padding:1px 6px;border-radius:3px;font-size:8.5px;font-weight:600;vertical-align:middle;margin-left:4px}
+.b-done{background:#eafaf1;color:#1e8449}.b-now{background:#fff1dc;color:#b35c00}.b-next{background:#e3ebf3;color:#0f2f4f}
+.b-new{background:#efe3f5;color:#6c3483}.b-par{background:#f0f0f0;color:#555}.b-ready{background:#eafaf1;color:#1e8449}.b-nd{background:#fff4e5;color:#b35c00}
+table{border-collapse:collapse;width:100%;margin:6px 0 10px;page-break-inside:avoid}
+th{background:#0f2f4f;color:#fff;text-align:left;padding:5px 7px;font-size:9.5px;font-weight:600}
+td{border-bottom:1px solid #e0e6ec;padding:5px 7px;vertical-align:top}
+tr:nth-child(even) td{background:#f7f9fb}
+.mono{font-family:Consolas,monospace;font-size:9px}
+.ok{color:#1e8449;font-weight:700}.no{color:#c0392b;font-weight:700}
+/* Chain */
+.chain{display:flex;flex-wrap:wrap;align-items:center;gap:4px;margin:6px 0 8px}
+.node{border:1px solid #7d3c98;background:#fff;border-radius:4px;padding:3px 7px;font-size:9.5px;white-space:nowrap}
+.node.free{border-style:dashed}
+.arrow{color:#7d3c98;font-weight:700}
+.phase{border-left:4px solid #7d3c98;padding:6px 10px;margin:6px 0;background:#fff}
+.phase .ph{font-weight:700;color:#6c3483;font-size:10.5px}
+.small{font-size:9px;color:#5f6b7a}
+.warn{background:#fff4e5;border-left:4px solid #e08600;padding:8px 10px;margin:8px 0}
+.pb{page-break-before:always}
+</style></head><body>
+
+<h1>Roadmap de olas y la ola propuesta E8</h1>
+<div class="sub">Modelo operativo Intrale &middot; Generado 2026-09-11 &middot; Fuentes: <span class="mono">docs/pipeline/roadmap-olas.md</span>, <span class="mono">corte-kernel-y-tres-proyectos.md</span>, <span class="mono">.pipeline/waves.json</span>, GitHub</div>
+
+<div class="lead">
+<b>En una frase:</b> el roadmap actual es <b>el corte del kernel</b> — separar el motor que orquesta agentes (Pulpo, Commander, skills, dashboard) del producto Intrale, para que pueda operar varios proyectos. Hay una ola en curso, cuatro por delante en el camino crítico y un bloque "paralelizable" llamado <b>E8 · Cuota y prioridad por proyecto</b> que <b>nunca se bajó a ola</b>. Este reporte propone crear esa ola y meter ahí los issues de contabilidad de cuota y el auditor del modelo operativo. <b>Decisión del operador (11/09):</b> aprobada, pero <b>secuencial</b> — se abre al cerrar 9.4.1 y antes de 9.3; no corre en paralelo. Registrada como ola planificada #12 (épico #7186).
+</div>
+
+<div class="grid">
+  <div class="kpi"><div class="v">1</div><div class="l">ola en curso (9.4) — 51 ítems sin completar</div></div>
+  <div class="kpi"><div class="v">3</div><div class="l">olas planificadas en <span class="mono">waves.json</span> (9.4.1, App móvil, EP-9)</div></div>
+  <div class="kpi"><div class="v">#12</div><div class="l">Ola E8 registrada en <span class="mono">planned_waves</span> (épico #7186) — 2.ª, tras 9.4.1</div></div>
+</div>
+
+<h2>1 &middot; Cómo leer el roadmap</h2>
+<p>El orden <b>no lo fija la numeración sino el camino crítico</b>: <span class="mono">E1 → E2 → (E3, E5) → E6 → E7 → E9</span>. Cada "E" es una etapa del corte del kernel; las olas 9.x son la forma operativa de esas etapas. Un número mayor puede ir antes que uno menor si destraba más trabajo (por eso 9.4 fue antes que 9.3). Lo que no está en la cadena se declara <b>paralelizable</b>: se puede abrir en cualquier momento sin tocar el camino crítico.</p>
+
+<h3>Lo que ya se cerró (baseline)</h3>
+<table>
+<tr><th>Ola</th><th>Cerrada</th><th>Qué dejó</th></tr>
+<tr><td>Olas 1–7 auditoría 2026-06 + Ola 8</td><td>jun/jul</td><td>Confianza, Sherlock, observabilidad, memoria, dashboard, calidad. Su salida son los documentos de diseño que el roadmap actual consume.</td></tr>
+<tr><td>Gates de firma del operador (#4570)</td><td>12/07</td><td>Firma humana no repudiable (GATE 1 / GATE 2), fail-closed, sin auto-aprobación por silencio. 21/21 entregados.</td></tr>
+<tr><td><b>9.1</b> Migrar el repositorio del kernel (#4661)</td><td>13/07</td><td>El motor vive en su propio repo.</td></tr>
+<tr><td><b>Ola Puente</b> Kernel multi-producto (#4644)</td><td>20/07</td><td>El kernel puede operar más de un producto. 35 entregados.</td></tr>
+<tr><td>Cierre de gestión de producto nuevo</td><td>27/07</td><td>Wizard de alta de proyecto. 42 entregados.</td></tr>
+<tr><td><b>9.2</b> Parametrizar skills de orquestación (#5064)</td><td>28/07</td><td>Skills sin reglas del producto + guardrail anti-regresión #5068 (la "red" que necesita 9.3).</td></tr>
+<tr><td><b>E1</b> Release firmado del kernel</td><td>—</td><td><span class="mono">v0.1.2</span> publicado y firmado. Raíz de todo: sin release no hay de dónde consumir.</td></tr>
+</table>
+
+<h2 class="pb">2 &middot; Orden de olas hacia adelante</h2>
+
+<div class="tl">
+
+<div class="step now"><div class="card now">
+<div class="t">Ola 9.4 · Partir config + externalizar el estado operativo <span class="badge b-now">EN CURSO</span></div>
+<div class="m">Etapa E2 · Épico #5107 · Abierta 28/07 · 6 hijos originales (4 cerrados) · absorbió 210 ítems, 51 sin completar</div>
+<b>Objetivo:</b> que el estado del pipeline deje de ser plano y global. Mientras lo sea, dos proyectos se pisan.
+<ul>
+<li>Envoltorio único de acceso al estado (olas + allowlist) y migración de ~193 accesos directos con guardrail (#5108, #5109 ✅).</li>
+<li>Namespaceado por <span class="mono">projectId</span> (#5110 ✅) y partición de <span class="mono">config.yaml</span> en kernel / producto (#5111 ✅).</li>
+<li><b>Encendido del store durable</b> (#5112) y <b>estado operativo en almacenamiento externo</b> (#5113) — alcance ampliado por decisión del operador el 28/07. Pendientes.</li>
+</ul>
+<div class="why"><b>Por qué acá:</b> es el cuello de botella real. Destraba multi-proyecto, app móvil y consumo real del kernel. Por eso fue antes que 9.3 aunque el número diga lo contrario. <b>Regla vigente desde el 06/09:</b> no entra alcance nuevo salvo fixes de raíz.</div>
+</div></div>
+
+<div class="step next"><div class="card">
+<div class="t">1.º · Ola 9.4.1 · Ambiente de pruebas del CORE <span class="badge b-next">PLANIFICADA</span></div>
+<div class="m">Épico #7102 · 7 issues · concurrencia máx. 3 · registrada en <span class="mono">planned_waves</span></div>
+<b>Objetivo:</b> que los tests del CORE dejen de correr contra la instalación productiva.
+<ul>
+<li>Resolvedor único de ambiente (#7110) y <span class="mono">pipelineDir</span> de pruebas desechable (#7111).</li>
+<li>Inversión del default en los puntos que escriben (#7112); credenciales y canales externos separados (#7113).</li>
+<li>Guardrail por destino + <span class="mono">docs/pipeline/ambientes.md</span> (#7114). Precondición: #7082 (7 tests rojos en main).</li>
+</ul>
+<div class="why"><b>Por qué acá:</b> se insertó entre 9.4 y 9.3 porque 9.3 es la más riesgosa y no se puede encarar con tests que ensucian producción.</div>
+</div></div>
+
+<div class="step next"><div class="card">
+<div class="t">2.º · Ola 9.3 · Partir skills híbridos <span class="badge b-next">SIN ÉPICO</span></div>
+<div class="m">Etapa E6 · Tamaño grande · Depende de 9.4 y 9.4.1</div>
+<b>Objetivo:</b> mudar los skills que mezclan orquestación con reglas del producto (strings, flavors, gates de QA) al lado que corresponde.
+<ul>
+<li>Partición skill por skill con <b>test de no-regresión del adaptador</b> como criterio de aceptación.</li>
+<li>Red de contención: guardrail #5068 (ya cerrado en 9.2).</li>
+</ul>
+<div class="why"><b>Por qué acá:</b> es la más riesgosa. Un error es silencioso: una regla del producto se evapora y se descubre semanas después.</div>
+</div></div>
+
+<div class="step next"><div class="card">
+<div class="t">3.º · Red de seguridad del corte (E3) + Launcher/updater externo (E5) <span class="badge b-next">SIN ÉPICO</span></div>
+<div class="m">Tamaño medio + medio · Dependen de E1</div>
+<b>Objetivo:</b> las precondiciones del cutover.
+<ul>
+<li><b>E3:</b> botón de pánico independiente, snapshot verificado, timeout de decisión, aviso por vía alternativa y <b>simulacro verde obligatorio</b>.</li>
+<li><b>E5:</b> componente mínimo y estable que hace el swap de versión, verifica firma, corre smoke y revierte solo.</li>
+</ul>
+<div class="why"><b>Por qué acá:</b> "sin ensayo no hay corte".</div>
+</div></div>
+
+<div class="step next"><div class="card">
+<div class="t">4.º · Ola 9.5 · Cutover con freeze + observación <span class="badge b-next">SIN ÉPICO</span></div>
+<div class="m">Etapa E7 · Tamaño medio · Depende de E2, E3, E5, E6</div>
+<b>Objetivo:</b> el punto de no retorno. El kernel pasa a consumir de su release; el motor local queda congelado como destino de rollback.
+<ul><li>Ventana acotada y agendada, drenaje previo, <span class="mono">consume:true</span>, observación post-corte.</li></ul>
+</div></div>
+
+<div class="step next"><div class="card">
+<div class="t">5.º · App operadora móvil <span class="badge b-next">PLANIFICADA · TENTATIVA</span></div>
+<div class="m">Etapa E9 · Tamaño grande · Depende dura de E2 y E7 · Groundwork: API de olas #4372 + spike #4398</div>
+<b>Objetivo:</b> consola móvil para operar el modelo operativo (firmar gates, ver estado). Es la <b>prueba de fuego</b> del desacople: si el kernel no puede operar un proyecto que no es Intrale, el corte no terminó.
+</div></div>
+
+</div>
+
+<h3>Paralelizables (no tocan el camino crítico)</h3>
+<table>
+<tr><th>Bloque</th><th>Qué es</th><th>Registrado como ola</th></tr>
+<tr><td><b>E4</b> Runbook de continuidad y modo degradado</td><td>Cómo se opera si el modelo operativo no está; bootstrap frío en máquina nueva.</td><td class="no">No</td></tr>
+<tr><td><b>E8</b> Cuota y prioridad por proyecto</td><td>Que un proyecto no le consuma la cuota a otro; presupuesto y prioridad por proyecto. Tamaño medio, depende de E2.</td><td class="ok">Sí desde el 11/09 — bajado a ola secuencial #12 (deja de ser paralelizable)</td></tr>
+<tr><td><b>EP-9</b> Deuda operativa y quick wins (G-1..G-10)</td><td>Gaps del plan de auditoría 2026-06; slot flexible.</td><td class="ok">Sí (planned #5, tentativa, sin issues)</td></tr>
+<tr><td><b>#5055</b> Reconciliación automática del registro</td><td>Que <span class="mono">waves.json</span> no se desfase de GitHub.</td><td class="no">No</td></tr>
+</table>
+
+<h2 class="pb">3 &middot; La ola propuesta: E8 · Contabilidad de cuota y auditor del modelo operativo</h2>
+
+<div class="tl"><div class="step new"><div class="card new">
+<div class="t">2.º · Ola E8 · Contabilidad de cuota y auditor del modelo operativo <span class="badge b-new">REGISTRADA · PLANIFICADA #12</span></div>
+<div class="m">Etapa E8 · Épico #7186 · <b>Secuencial: se abre al cerrar 9.4.1 y antes de 9.3, no corre en paralelo</b> (decisión del operador 11/09) · 10 issues · concurrencia 3 · gate humano R7 al abrir</div>
+
+<b>El problema que resuelve:</b> hoy el pipeline lleva <b>alarmas</b> de cuota, no <b>contabilidad</b>. Sabe cuándo un proveedor dijo "basta", pero no cuánto tiene, cuánto gastó, a qué ritmo, ni cuánto trabajo se frenó por eso. Cualquier decisión —subir el plan de OpenAI, correr el horario de reposo de Anthropic, reordenar la cadena de fallback— hoy se arma cruzando cuatro archivos a mano y con un día de datos.
+
+<div class="warn" style="margin:8px 0"><b>Caso que lo motiva (2026-09-11):</b> con Anthropic en reposo todo el viernes (91 % de su semanal consumido) y cerebras / gemini / kimi fuera, codex quedó como <b>única pata viva</b> y estuvo gateado por cuota real <b>≈15 h de las últimas 26 h (58 %)</b>: cinco topes del cap de 5 h y un tope semanal (100 % en ~2 días, cuando las tres semanas previas no pasaron del 31 %). El reset manual del operador no lo vio nadie hasta que venció el flag.</div>
+
+<b>Objetivo:</b> libro contable de cuota por proveedor (techo, consumo, saldo, ritmo, costo de oportunidad) <b>y</b> un auditor que saque conclusiones y se las mande al operador — sin aplicar nada por su cuenta.
+
+<div class="phase"><div class="ph">Fase 1 · Datos — todo <span class="badge b-ready">Ready</span>, retorno inmediato</div>
+<ul>
+<li><b>#7185</b> Canje automático de créditos de reset de codex + reconciliación en vivo del flag. Cuota gratis desde el primer día; independiente del resto.</li>
+<li><b>#6558</b> Consumo real por ejecución con <b>proveedor efectivo</b>, timestamp y resultado (hoy las 10.654 líneas de costo dicen "anthropic", incluso las que corrió codex).</li>
+<li><b>#6559</b> Techo contratado y plan vigente por proveedor, declarado en configuración.</li>
+<li><b>#6560</b> Saldo, ritmo y proyección de agotamiento, más las <b>series derivadas</b> que hoy no existen: horas gateado por proveedor y motivo, horas de cadena agotada con trabajo elegible, horas de única pata viva, trabajo ganado por unidad de cuota.</li>
+<li><i>Si sobra slot:</i> #6561 balanceo por saldo y ritmo, #6565 panel en el dashboard.</li>
+</ul></div>
+
+<div class="phase"><div class="ph">Fase 2 · Conclusiones — <span class="badge b-nd">needs-definition</span>, refinar antes</div>
+<ul>
+<li><b>#6807</b> Registro único de propuestas al operador (contrato + almacenamiento persistente).</li>
+<li><b>#6809</b> Auditor del modelo operativo — size:large, conviene partirlo en tres hijos: eje <i>proceso</i>, eje <i>paralelismo</i>, eje <i>proveedores / cuota / plan</i>. Veredictos: subir plan, bajar plan, mover schedule, reordenar cadena, mantener. Ordena la causa antes del remedio (descarta schedule, cadena y flag falso antes de pedir más plan). Nunca aplica.</li>
+<li><b>#6793</b> Auditor de calidad-precio del modelo por agente.</li>
+<li><b>Entrega al operador:</b> Commander proactivo #5528 → #5529 (bitácora del día, tres momentos de entrega).</li>
+</ul></div>
+
+<b>Dependencias internas:</b>
+<div class="chain">
+<span class="node">#6558 consumo</span><span class="arrow">→</span><span class="node">#6559 techo</span><span class="arrow">→</span><span class="node">#6560 saldo + series</span><span class="arrow">→</span><span class="node">#6809 auditor</span>
+<span class="arrow">&nbsp;&nbsp;|&nbsp;&nbsp;</span><span class="node">#6807 registro</span><span class="arrow">→</span><span class="node">#6809</span>
+<span class="arrow">&nbsp;&nbsp;|&nbsp;&nbsp;</span><span class="node free">#7185 libre</span>
+</div>
+
+<div class="why"><b>Por qué acá y no en otro lado:</b> 9.4 está cerrada a alcance nuevo (regla del 06/09). 9.4.1 es otro tema con su propia cadena de siete issues y ya está planificada. Después de 9.3 es tarde para una decisión de plan que se necesita en semanas. Este programa <b>es</b> la base de E8: "que un proyecto no le consuma la cuota a otro" no existe sin libro contable. <b>Secuencial y no paralela</b> para no repartir los tres slots de agentes ni la cuota entre dos olas.</div>
+
+<div class="why" style="margin-top:4px"><b>Riesgo a declarar:</b> la ola consume la misma cuota que mide. Fase 1 son cuatro issues chicos / medios: impacto acotado. Con #6560 en main, la pregunta "¿subimos el plan?" tendría datos limpios en ~2 ventanas semanales.</div>
+</div></div></div>
+
+<h2>4 &middot; Comparativa: dónde podrían entrar estos issues</h2>
+<table>
+<tr><th style="width:26%">Opción</th><th style="width:8%">Veredicto</th><th>Motivo</th></tr>
+<tr><td>Ola 9.4 (activa)</td><td class="no">No</td><td>51 ítems sin completar, 210 absorbidos. Regla del 06/09: nada nuevo a la ola activa salvo fix de raíz; ninguno de estos lo es.</td></tr>
+<tr><td>Ola 9.4.1 (ambiente de pruebas)</td><td class="no">No</td><td>Tema distinto, siete issues encadenados con <span class="mono">blocked:dependencies</span> como freno. Mezclar contabilidad de cuota diluye el objetivo y rompe la cadena.</td></tr>
+<tr><td>Después de 9.3 (partir skills)</td><td class="no">No</td><td>9.3 es la más grande y riesgosa del camino crítico. La decisión del plan se necesita en semanas, no en meses.</td></tr>
+<tr><td><b>Ola E8 nueva, secuencial tras 9.4.1</b></td><td class="ok">Sí — elegida</td><td>No toca el camino crítico y el programa #6558–#6566 es exactamente su base (lleva la nota "arranca al cerrar la ola en curso" desde el 25/08). Secuencial para no repartir slots ni cuota entre dos olas.</td></tr>
+</table>
+
+<h2>5 &middot; Qué se hizo para materializarla (11/09)</h2>
+<table>
+<tr><th style="width:5%">#</th><th style="width:34%">Paso</th><th>Detalle</th></tr>
+<tr><td>1 ✅</td><td><b>Épico creado: #7186</b></td><td>Fuera de la ola activa, <span class="mono">needs-definition</span> + <span class="mono">blocked:dependencies</span>, sin allowlist. Agrupa Fase 1 y Fase 2; dependencias declaradas en <span class="mono">waves.json</span> (6559←6558, 6560←6559, 6561←6560, 6565←6560, 6809←{6560, 6807}) y freno <span class="mono">blocked:dependencies</span> en los hijos encadenados (regla R5).</td></tr>
+<tr><td>2 ✅</td><td><b>Ola registrada: planificada #12</b></td><td>Creada con <span class="mono">createPlannedWave</span> y reordenada con <span class="mono">reorderPlannedWaves</span>: orden 9.4.1 (#11) → E8 (#12) → App móvil (#4) → EP-9 (#5). Fila en la tabla de <span class="mono">docs/pipeline/roadmap-olas.md</span> en PR aparte (regla R6).</td></tr>
+<tr><td>3 ⏳</td><td><b>Refinar Fase 2</b></td><td>#6807 y #6809 siguen en <span class="mono">needs-definition</span>; #6809 se parte en tres hijos por eje. #5444 figura <span class="mono">blocked:dependencies</span> pero su cuerpo sólo declara orden interno: verificar que no arrastre un bloqueo viejo.</td></tr>
+<tr><td>4 ⏳</td><td><b>Abrir con gate humano</b></td><td>Al cerrar 9.4.1: tag de rollback, firma del operador (regla R7), habilitación en allowlist. Nada de esto se toca antes.</td></tr>
+</table>
+
+<div class="small" style="margin-top:14px">Versión 2 (11/09, tras la decisión del operador). <span class="mono">waves.json</span> fue modificado sólo en <span class="mono">planned_waves</span> y <span class="mono">dependencies</span>; la ola activa y la allowlist no se tocaron. Los issues #6809 y #6560 fueron actualizados el 2026-09-11 con el eje de proveedores / cuota y las series derivadas; #7185 con la reconciliación en vivo.</div>
+
+</body></html>
