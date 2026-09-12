@@ -38,6 +38,10 @@ const crypto = require('crypto');
 const { withLockSync } = require('./file-lock');
 const { notifyTelegram } = require('./notify-telegram');
 const { redactSecretValue } = require('./redact');
+// #5113 (D-1) — capa de storage del estado operativo. Resuelve contra
+// filesystem o contra el store de coordinación según el flag ÚNICO de cutover.
+// Es el único módulo que conoce ese flag; acá sólo se le pide leer/escribir.
+const stateBackend = require('./operational-state-backend');
 
 const SCHEMA_VERSION = '1.0';
 const CACHE_TTL_MS = 2000;
@@ -311,40 +315,137 @@ function ensureDir(dir) {
     try { fs.mkdirSync(dir, { recursive: true }); } catch {}
 }
 
+// #5113 (CA-A4, rebote rev-4) — Versión del sustrato ADOSADA al snapshot.
+//
+// El fix de la allowlist resolvió su mitad con `readAllowlistSnapshot()`, que
+// devuelve el dato y su versión juntos. El registro de olas no puede copiar esa
+// forma tal cual: sus ~17 mutadores comparten un mismo patrón
+// (`invalidateCache() → loadWaves() → mutar → saveState(state, meta)`) y no hay
+// un único punto de lectura al que agregarle un segundo valor de retorno sin
+// tocar cada uno — y cada mutador que se olvidara de propagarla volvería a
+// escribir incondicional, en silencio, que es exactamente el defecto de rev-4.
+//
+// Por eso la versión viaja PEGADA al objeto `state`, en una propiedad de
+// símbolo: `loadWaves()` la estampa una vez y `saveStateLocked()` la lee al
+// final del recorrido. Los mutadores no cambian y no pueden "olvidarse".
+//
+// Se usa un símbolo (no un campo normal) para que sea invisible a todo lo que
+// serializa o valida el estado: `JSON.stringify` ignora las claves de símbolo,
+// `Object.keys` no las lista, `validateStateStrict` no la ve como campo
+// desconocido y `canonicalStringify` (que recorre `Object.keys`) no la mete en
+// el `integrity_hash`. El estado que se persiste es byte a byte el mismo que
+// antes.
+//
+// La propiedad es ENUMERABLE a propósito: así `{...state}` y `Object.assign`
+// la copian (el spread copia símbolos enumerables). Con `enumerable: false` un
+// mutador que armara su state con spread lo perdería y su write saldría sin
+// condición — el defecto de vuelta, por la puerta de atrás. Nada del código
+// recorre `Reflect.ownKeys`/`getOwnPropertySymbols` sobre el estado, así que
+// ser enumerable no la vuelve visible en ningún lado.
+//
+// Convención del valor estampado (misma que `readAllowlistSnapshot`):
+//   - entero (remoto) / ISO (fs)  → versión vigente leída.
+//   - `0`                         → la clave NO existía ⇒ `attribute_not_exists`,
+//                                   un solo ganador en la creación concurrente.
+//   - `null`                      → la lectura DEGRADÓ. No se puede escribir:
+//                                   ver `resolveCasVersion` (CA-A7).
+const CAS_VERSION = Symbol('intrale.opstate.wavesCasVersion');
+
+/** Adosa la versión del sustrato al state. Muta y devuelve el mismo objeto. */
+function stampCasVersion(state, version) {
+    if (!state || typeof state !== 'object') return state;
+    Object.defineProperty(state, CAS_VERSION, {
+        value: version, enumerable: true, writable: true, configurable: true,
+    });
+    return state;
+}
+
+/**
+ * Versión adosada al state, o `undefined` si el state no salió de una lectura
+ * versionada (construido a mano, deserializado, clonado con JSON).
+ * @returns {number|string|null|undefined}
+ */
+function casVersionOf(state) {
+    if (!state || typeof state !== 'object') return undefined;
+    return Object.prototype.hasOwnProperty.call(state, CAS_VERSION)
+        ? state[CAS_VERSION]
+        : undefined;
+}
+
 function readCached(pipelineRoot) {
     const now = Date.now();
     const hit = cache.get(pipelineRoot);
     if (hit && (now - hit.ts) < CACHE_TTL_MS) {
-        return deepClone(hit.state);
+        // `deepClone` es un round-trip JSON: pierde la propiedad de símbolo. Se
+        // re-estampa desde la entrada del caché para que un state servido desde
+        // el TTL de 2 s NO llegue a `saveState` sin versión (ahí el write
+        // volvería a salir incondicional, encubierto por el caché).
+        return stampCasVersion(deepClone(hit.state), hit.casVersion);
     }
     return null;
 }
 
 function setCached(pipelineRoot, state) {
-    cache.set(pipelineRoot, { state: deepClone(state), ts: Date.now() });
+    cache.set(pipelineRoot, {
+        state: deepClone(state), ts: Date.now(), casVersion: casVersionOf(state),
+    });
 }
 
+// #5113 (D-1) — ÚNICO lector físico del registro de olas. Pasa a delegar en la
+// capa de storage (`operational-state-backend.js`), que resuelve contra
+// filesystem o contra el store de coordinación según el flag ÚNICO de cutover.
+//
+// La normalización y el TTL de 2 s de `loadWaves()` NO se tocan: siguen exactos.
+// Lo único que cambia es DÓNDE sale el JSON.
+//
+// El argumento `file` se conserva por compatibilidad de firma (dos callers
+// internos lo pasan) y se usa sólo para el mensaje de log: en modo remoto el
+// path no es la fuente, es la etiqueta.
+//
+// Degradación (CA-A7): el backend devuelve `null` y acá se cae a `emptyState()`,
+// exactamente igual que ante un `waves.json` corrupto. NUNCA se lee filesystem
+// como alternativa — eso sería la segunda fuente de verdad que CA-C1 prohíbe.
+//
+// #5113 (CA-A4, rebote rev-4) — La lectura devuelve el dato Y su versión. La
+// versión es el único canal que convierte el read-modify-write del dominio
+// (`leer → mutar → saveState`) en un CAS real entre hosts: sin ella el backend
+// rellena el hueco con la versión que él mismo relee un instante antes del
+// `putItem`, la `ConditionExpression` se cumple siempre y el write es
+// efectivamente INCONDICIONAL. El CAS cubriría entonces la ventana interna del
+// backend (`getItem→putItem`), no la ventana real del dominio, que es donde
+// ocurre la carrera: A lee las olas, B agrega el issue 200, A escribe la foto
+// vieja y el alta de B desaparece sin que nadie se entere.
+//
+// @returns {{raw: object|null, casVersion: number|string|null}}
+function readWavesSnapshotFromDisk(file) {
+    const res = stateBackend.readKeyWithVersion(stateBackend.KEYS.WAVES);
+    if (res.error) {
+        logWarn(`No se pudo leer el registro de olas (${res.remote ? 'store remoto' : file}): ${res.error.message}`);
+        // `null` = "no se pudo leer la versión vigente". NO es 0: escribir con
+        // `attribute_not_exists` acá crearía un registro vacío encima de uno
+        // vivo que simplemente no se pudo leer.
+        return { raw: null, casVersion: null };
+    }
+    if (res.degraded) {
+        return { raw: null, casVersion: null };
+    }
+    if (!res.value) {
+        // Ausencia legítima (equivalente de ENOENT): create-once.
+        return { raw: null, casVersion: 0 };
+    }
+    if (typeof res.value !== 'object' || Array.isArray(res.value)) {
+        logWarn(`Schema inválido en el registro de olas (${res.remote ? 'store remoto' : file}): no es objeto. Cayendo a estado vacío.`);
+        // La clave EXISTE (con esta versión) aunque su contenido no sirva:
+        // sobrescribirla es legítimo, pero condicionado a que nadie la haya
+        // reparado en el medio.
+        return { raw: null, casVersion: res.version === undefined ? null : res.version };
+    }
+    return { raw: res.value, casVersion: res.version === undefined ? null : res.version };
+}
+
+/** Azúcar histórica: sólo el dato, sin versión. Para lecturas que NO mutan. */
 function readWavesFromDisk(file) {
-    let raw;
-    try {
-        raw = fs.readFileSync(file, 'utf8');
-    } catch (err) {
-        if (err && err.code !== 'ENOENT') {
-            logWarn(`No se pudo leer ${file}: ${err.message}`);
-        }
-        return null;
-    }
-    try {
-        const parsed = JSON.parse(raw);
-        if (!parsed || typeof parsed !== 'object') {
-            logWarn(`Schema inválido en ${file}: no es objeto. Cayendo a estado vacío.`);
-            return null;
-        }
-        return parsed;
-    } catch (err) {
-        logWarn(`JSON corrupto en ${file}: ${err.message}. Cayendo a estado vacío.`);
-        return null;
-    }
+    return readWavesSnapshotFromDisk(file).raw;
 }
 
 // #4532 — Bootstrap del archivo de runtime desde el template versionado.
@@ -358,31 +459,73 @@ function readWavesFromDisk(file) {
 // real. Best-effort: nunca tira (el pipeline no puede morir por esto); si el
 // template no es legible, cae a `emptyState()` en disco.
 //
+// #5113 CA-C1 (rebote rev-1) — El bootstrap TAMBIÉN pasa por la capa de
+// storage. Antes sondeaba y escribía `waves.json` con `fs` directo, así que con
+// el flag de cutover encendido creaba un registro de olas LOCAL mientras el
+// pipeline leía el remoto: dos fuentes de verdad simultáneas en el propio boot
+// del pulpo, que es justo lo que el issue prohíbe. El template sigue saliendo
+// del filesystem (es un artefacto VERSIONADO en git, no estado operativo: no
+// migra y no tiene por qué migrar); lo que cambia de sustrato es el DESTINO.
+//
+// Degradación (CA-A7): si el store no responde, `existsKey` no puede afirmar
+// "no existe" — devolvería `false` por no poder leer, y sembrar sobre esa
+// respuesta pisaría estado remoto vivo con un template vacío. Por eso el camino
+// remoto distingue ausencia legítima de degradación y ante degradación NO
+// escribe nada.
+//
 // @returns {{ created: boolean, reason: string }}
 function ensureWavesFile() {
     const file = wavesFile();
-    if (fs.existsSync(file)) {
+    const remoto = stateBackend.isRemote();
+
+    if (remoto) {
+        const actual = stateBackend.readKeyWithVersion(stateBackend.KEYS.WAVES);
+        if (actual.degraded || actual.error) {
+            logWarn('ensureWavesFile: el store del estado operativo no respondió — '
+                + 'NO se siembra el registro de olas (fail-closed CA-A7): sembrar sobre una '
+                + 'lectura fallida pisaría estado remoto vivo con el template vacío.');
+            return { created: false, reason: 'remote-degraded' };
+        }
+        if (actual.value) return { created: false, reason: 'exists' };
+    } else if (fs.existsSync(file)) {
         return { created: false, reason: 'exists' };
     }
-    let content = null;
+
+    let seed = null;
     let fromTemplate = false;
     try {
         const raw = fs.readFileSync(wavesTemplateFile(), 'utf8');
         const parsed = JSON.parse(raw); // validar que el template parsea
-        if (parsed && typeof parsed === 'object') { content = raw; fromTemplate = true; }
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+            seed = parsed; fromTemplate = true;
+        }
     } catch {
-        content = null; // template ausente/ilegible → fallback a estado vacío.
+        seed = null; // template ausente/ilegible → fallback a estado vacío.
     }
-    if (content === null) {
-        content = JSON.stringify(emptyState(), null, 2);
-    }
+    if (seed === null) seed = emptyState();
+
     try {
-        atomicWriteFile(file, content);
+        // `expectedVersion: 0` = "esperaba que NO existiera" ⇒ el backend lo
+        // traduce a `attribute_not_exists(PK)`: si dos instancias bootean a la
+        // vez, gana una sola y la otra recibe `conflict` sin pisar nada (CA-A4).
+        // Explícito y no derivado: `null` significa "sin If-Match" y ahí el
+        // backend usa la versión que él mismo releyó, que es el write
+        // incondicional que este issue vino a cerrar.
+        const res = stateBackend.writeKey(stateBackend.KEYS.WAVES, seed, 0);
+        if (res && res.conflict) {
+            return { created: false, reason: 'exists' };
+        }
+        if (res && res.ok === false) {
+            const msg = res.error ? res.error.message : 'escritura rechazada';
+            logWarn(`ensureWavesFile: no se pudo sembrar el registro de olas: ${msg}`);
+            return { created: false, reason: `error: ${msg}` };
+        }
         invalidateCache();
-        logInfo(`ensureWavesFile: waves.json creado desde ${fromTemplate ? 'template' : 'emptyState'}.`);
+        logInfo(`ensureWavesFile: registro de olas creado en ${remoto ? 'el store remoto' : 'waves.json'} `
+            + `desde ${fromTemplate ? 'template' : 'emptyState'}.`);
         return { created: true, reason: fromTemplate ? 'from-template' : 'from-empty-state' };
     } catch (err) {
-        logWarn(`ensureWavesFile: no se pudo crear waves.json: ${err.message}`);
+        logWarn(`ensureWavesFile: no se pudo crear el registro de olas: ${err.message}`);
         return { created: false, reason: `error: ${err.message}` };
     }
 }
@@ -404,7 +547,7 @@ function loadWaves() {
     const cached = readCached(root);
     if (cached) return cached;
 
-    const raw = readWavesFromDisk(wavesFile());
+    const { raw, casVersion } = readWavesSnapshotFromDisk(wavesFile());
     let state;
     if (!raw) {
         state = emptyState();
@@ -423,8 +566,13 @@ function loadWaves() {
     // waves.json legacy sin `meta.next_wave_number`. La ola activa conserva su
     // número; el próximo correlativo arranca en max(existentes)+1.
     backfillNextWaveNumber(state);
+    // #5113 (CA-A4) — la versión del sustrato viaja adosada al snapshot hasta
+    // `saveStateLocked`, que la usa como `expectedVersion` del CAS. Se estampa
+    // ANTES de cachear (para que el caché la transporte) y también en la copia
+    // que se devuelve, porque `deepClone` no preserva propiedades de símbolo.
+    stampCasVersion(state, casVersion);
     setCached(root, state);
-    return deepClone(state);
+    return stampCasVersion(deepClone(state), casVersion);
 }
 
 /**
@@ -660,7 +808,18 @@ function addDependencyLocked(parent, children, meta) {
     const state = loadWaves();
     if (!Array.isArray(state.dependencies)) state.dependencies = [];
 
-    const source = typeof meta.source === 'string' && meta.source ? meta.source : 'split-auto';
+    // #5113 rev-9 — el `source` se redacta ACÁ, en el mismo acto en que se deriva,
+    // no recién al persistir. Dos razones, y la segunda es la que muerde:
+    //   1. El `logInfo` de más abajo imprime el source: con la redacción recién en
+    //      el write, un token con forma de secreto quedaba escrito en el log.
+    //   2. La idempotencia de esta función compara `d.source === source` contra lo
+    //      YA persistido (que sale redactado). Buscar con el valor crudo no
+    //      encontraría nunca la entry existente, y cada llamada agregaría una
+    //      dependencia duplicada para el mismo par (parent, source).
+    // Sobre texto que no parece secreto (`split-auto`, `telegram`) es la identidad.
+    const source = redactSecretValue(
+        typeof meta.source === 'string' && meta.source ? meta.source : 'split-auto'
+    );
     // Buscar una entry existente con el mismo par (parent, source) para ser
     // idempotentes y no fragmentar el rastro en múltiples entries por padre.
     let entry = state.dependencies.find(
@@ -2099,6 +2258,68 @@ function saveState(state, metadata = {}) {
     });
 }
 
+/**
+ * #5113 (CA-A4, rebote rev-4) — Versión que condiciona el write del registro de
+ * olas.
+ *
+ * Precedencia, de más a menos específica:
+ *
+ *   1. `metadata.expectedVersion` — el If-Match del dominio (#4372). Lo pasan
+ *      la API HTTP (`waves-api.js`) y el rollback del commander. Es el más
+ *      estricto: llega como token ISO y el backend lo mapea al entero del store
+ *      (CA-A6); si ese ISO ya no es el vigente, el backend devuelve conflicto.
+ *   2. La versión adosada al snapshot por `loadWaves()`. Es la que cubre a los
+ *      mutadores CALIENTES del Pulpo (`addIssueToWave`,
+ *      `markIssuesCompletedInActiveWave`, `setWaveStalled`, …), que nunca
+ *      pasaron If-Match y por eso escribían de forma efectivamente
+ *      incondicional: el vector de lost update entre hosts que reportó QA.
+ *
+ * Casos de borde:
+ *
+ *   - `null` adosado ⇒ la lectura DEGRADÓ (store caído, error de I/O). En modo
+ *     remoto NO se escribe: `loadWaves()` degrada a `emptyState()`, así que un
+ *     write acá persistiría un registro de olas VACÍO encima del real. Es el
+ *     mismo fail-closed que CA-A7 exige para la allowlist.
+ *   - Sin versión adosada (state construido a mano o deserializado) ⇒ en modo
+ *     remoto se rechaza. Escribir sin condición es el defecto, no el default:
+ *     un mutador futuro que arme su propio state falla ruidosamente acá en vez
+ *     de reintroducir el lost update en silencio.
+ *   - En modo filesystem nada de esto aplica: `writeKey` ignora
+ *     `expectedVersion` y la exclusión la sigue dando `withLockSync`, que entre
+ *     procesos del mismo host sí excluye. El comportamiento local no cambia.
+ *
+ * @param {object} state
+ * @param {object} metadata
+ * @returns {number|string|undefined}
+ * @throws {Error} EWAVES_NO_CAS_VERSION si en modo remoto no hay versión.
+ */
+function resolveCasVersion(state, metadata = {}) {
+    if (metadata.expectedVersion !== undefined && metadata.expectedVersion !== null) {
+        return metadata.expectedVersion;
+    }
+    const stamped = casVersionOf(state);
+    if (!stateBackend.isRemote()) return stamped === null ? undefined : stamped;
+
+    if (stamped === null) {
+        throw mkWavesError(
+            'No se persiste el registro de olas: la lectura del store degradó y no se conoce '
+            + 'la versión vigente. Escribir acá pisaría el estado remoto con el estado vacío '
+            + 'al que degradó la lectura (CA-A4/CA-A7). Verificá el store y reintentá.',
+            'EWAVES_STORE',
+        );
+    }
+    if (stamped === undefined) {
+        throw mkWavesError(
+            'No se persiste el registro de olas: el state no trae la versión del sustrato, '
+            + 'así que el write saldría sin condición por versión y podría pisar en silencio '
+            + 'lo que otra instancia acaba de escribir (CA-A4). El state a persistir tiene que '
+            + 'salir de `loadWaves()`.',
+            'EWAVES_NO_CAS_VERSION',
+        );
+    }
+    return stamped;
+}
+
 function saveStateLocked(state, metadata = {}) {
     if (!state.meta) state.meta = {};
     state.meta.updated_at = nowIso();
@@ -2155,16 +2376,51 @@ function saveStateLocked(state, metadata = {}) {
         logWarn(`assertArchivedDirSafe falló: ${err.message}. Continuando sin backup.`);
     }
 
-    // Backup ANTES de sobreescribir (si existe waves.json previo).
+    // Backup ANTES de sobreescribir (si hay estado previo).
+    // #5113 — el contenido sale de la capa de storage (así el backup existe
+    // también en modo remoto); el archivo de backup se escribe siempre local.
     try {
-        if (fs.existsSync(wavesFile())) {
+        // #5113 rev-8 — se lee CON la señal de degradación. Antes usaba el azúcar
+        // `readKey()`, que colapsa "no había estado previo" con "no lo pude
+        // leer": ante una degradación `previousState` quedaba `null`, no se
+        // escribía backup en `archived/` y el write seguía adelante sin un solo
+        // log. Se perdía el respaldo justo en el momento de más riesgo — cuando
+        // el sustrato ya está dando problemas y estamos por sobreescribir.
+        //
+        // NO aborta el save: el backup es defensa en profundidad y el write en
+        // sí ya está protegido por el CAS de más abajo (un conflicto lo frena).
+        // Frenar el registro de olas porque no se pudo respaldar convertiría una
+        // degradación transitoria en un pipeline detenido. Pero deja de ser
+        // silencioso: queda log + alerta para que el operador sepa que ese save
+        // no tiene punto de retorno en `archived/`.
+        const prevRead = stateBackend.readKeyWithVersion(stateBackend.KEYS.WAVES);
+        if (prevRead.error || prevRead.degraded) {
+            const detail = (prevRead.error && prevRead.error.message) || 'sustrato degradado';
+            logWarn(
+                `No se pudo leer el registro de olas previo para el backup (${detail}). `
+                + `El save continúa (el CAS protege el write), pero SIN respaldo en archived/.`
+            );
+            try {
+                notifyTelegram({
+                    level: 'warn',
+                    component: 'waves-backup',
+                    message: 'save del registro de olas SIN backup previo',
+                    detail,
+                    action: 'Revisá la salud del estado operativo (JSON local o store remoto). '
+                        + 'Si el save siguiente sale mal, no hay copia en archived/ de este punto.',
+                    diag: `node -e "console.log(JSON.stringify(require('./.pipeline/lib/operational-state-backend').readKeyWithVersion('waves')))"`,
+                });
+            } catch {}
+        }
+        const previousState = prevRead.value;
+        if (previousState) {
             ensureDir(archivedDir());
             // ts viene exclusivamente de state.meta.updated_at (derivado de
             // Date.now() vía nowIso) — security req: nunca de input externo.
             const ts = state.meta.updated_at.replace(/[:.]/g, '-');
             const backup = path.join(archivedDir(), `waves.${ts}.json`);
             try {
-                fs.copyFileSync(wavesFile(), backup);
+                atomicWriteFile(backup, JSON.stringify(previousState, null, 2));
             } catch (err) {
                 logWarn(`No se pudo crear backup ${backup}: ${err.message}`);
             }
@@ -2173,17 +2429,72 @@ function saveStateLocked(state, metadata = {}) {
         logWarn(`Error preparando backup: ${err.message}`);
     }
 
+    // #5113 rev-9 — la redacción va ANTES del sello, no después.
+    //
+    // El bug: `writeKey` en modo remoto aplica `redactBeforeWrite` sobre el
+    // payload (operational-state-backend.js, CA-A9), así que un `source` con
+    // forma de secreto se persistía como "[REDACTED]" mientras el hash se había
+    // computado sobre el valor SIN redactar. Lo escrito no era lo hasheado y
+    // `checkStateIntegrity()` devolvía `mismatch` en el boot siguiente: el pulpo
+    // alertaba tampering sobre un estado sano y el control de #4370 se degradaba
+    // a ruido (una alerta que se aprende a ignorar es una alerta que no protege).
+    //
+    // Se redacta in-place con la MISMA función que usa la capa de storage — no
+    // una copia local: dos definiciones divergen y el mismatch vuelve. In-place
+    // porque el state trae la versión del sustrato en una propiedad de símbolo
+    // que un clon perdería ⇒ el write remoto saldría sin `expectedVersion`.
+    //
+    // El resultado es punto fijo: `redactBeforeWrite` sobre un state ya redactado
+    // no lo cambia (`redactSecretValue` es idempotente), así que el payload
+    // persistido coincide con el que se hasheó, en remoto y en filesystem. Efecto
+    // lateral buscado: el camino local queda con la misma garantía de redacción
+    // que el remoto, en vez de menos.
+    stateBackend.redactInPlace(state);
+
     // CA-4/SEC-3 — sellar el estado con el hash de integridad canónico (omitiendo
-    // el propio campo). Se computa DESPUÉS de la validación y del backup, sobre el
-    // shape final que se persiste. Migración (CA-9): un waves.json legacy sin hash
-    // queda sellado en este primer save.
+    // el propio campo). Se computa DESPUÉS de la validación, del backup y de la
+    // redacción, sobre el shape final que se persiste. Migración (CA-9): un
+    // waves.json legacy sin hash queda sellado en este primer save.
     state[INTEGRITY_FIELD] = computeIntegrityHash(state);
 
-    // Write atómico vía helper compartido (CA-1: tmp + fsync + rename + retry).
+    // #5113 (CA-A4) — el write pasa por la capa de storage.
+    //
+    // En modo filesystem es el mismo write atómico de siempre (tmp + fsync +
+    // rename con retry). En modo remoto es un CAS con `expectedVersion`, y ahí
+    // `withLockSync` DEJA de ser la primitiva de exclusión: `file-lock.js`
+    // resuelve locks stale por PID vivo en el SO local, así que entre dos hosts
+    // no excluye nada. Dejarlo como única garantía sería peor que no tenerlo —
+    // simularía una exclusión inexistente. La exclusión real la da el CAS; el
+    // lock local se conserva porque sigue serializando los writes DEL MISMO
+    // host, que es exactamente lo que siempre hizo.
+    //
+    // La versión que condiciona el write sale de `resolveCasVersion`: el
+    // If-Match opcional del dominio (#4372) si el caller lo pasó, y si no la
+    // versión del snapshot que este mismo state trae adosada. Un conflicto NO
+    // se escribe: se propaga como EWAVES_VERSION_CONFLICT, el mismo error que
+    // los callers HTTP ya traducen a 409.
+    const casVersion = resolveCasVersion(state, metadata);
+    let writeRes;
     try {
-        atomicWriteFile(wavesFile(), JSON.stringify(state, null, 2));
+        writeRes = stateBackend.writeKey(
+            stateBackend.KEYS.WAVES, state, casVersion,
+        );
     } catch (err) {
-        logWarn(`Error escribiendo waves.json: ${err.message}`);
+        logWarn(`Error escribiendo el registro de olas: ${err.message}`);
+        throw err;
+    }
+    if (writeRes && writeRes.conflict) {
+        const e = mkWavesError(
+            `Conflicto de versión al persistir el registro de olas: otro escritor ganó la carrera `
+            + `(versión vigente ${writeRes.version}). Ninguna de las dos altas se pierde: releé y reintentá.`,
+            'EWAVES_VERSION_CONFLICT',
+        );
+        e.currentVersion = writeRes.version;
+        throw e;
+    }
+    if (writeRes && writeRes.ok === false) {
+        const err = writeRes.error || new Error('write rechazado por la capa de storage');
+        logWarn(`Error escribiendo el registro de olas: ${err.message}`);
         throw err;
     }
 
@@ -2383,49 +2694,46 @@ function validateStateStrict(raw, opts = {}) {
  */
 function loadStateStrict() {
     const file = wavesFile();
-    if (!fs.existsSync(file)) {
-        // Sin archivo → estado vacío válido. NO alertar (caso normal en startup
-        // fresco, no es corrupción).
+    // #5113 — segundo lector físico del registro de olas: también pasa por la
+    // capa de storage. Un lector suelto contra filesystem con el flag encendido
+    // son dos fuentes de verdad y CA-C1 falla.
+    const res = stateBackend.readKeyWithVersion(stateBackend.KEYS.WAVES);
+    if (res.error) {
+        // El `opstateKind` preserva la distinción histórica entre "no se pudo
+        // leer" (permisos/disco → EWAVES_READ) y "no parsea" (corrupción →
+        // EWAVES_JSON): son dos acciones distintas para el operador. Un fallo
+        // del store remoto es un tercer caso y tiene su propio código.
+        const parseErr = res.error.opstateKind === 'parse';
+        const msg = parseErr
+            ? `waves.json: JSON inválido (${res.error.message})`
+            : `waves.json: no se pudo leer (${res.error.message})`;
+        try {
+            notifyTelegram({
+                level: 'error',
+                component: 'waves-schema',
+                message: parseErr ? 'JSON corrupto en el registro de olas' : 'read falló sobre el registro de olas',
+                detail: res.error.message,
+                action: res.remote
+                    ? 'Store remoto degradado. Verificá credenciales/red o bajá `operational_state.durable` (runbook §1).'
+                    : (parseErr
+                        ? 'Pipeline en modo human-block. Revisá el archivo o restaurá desde archived/.'
+                        : 'Verificá permisos/espacio en disco. Pipeline en modo human-block.'),
+                diag: res.remote
+                    ? 'node .pipeline/lib/kernel-cutover-probe.js'
+                    : (parseErr ? `cat ${file}` : `ls -la ${file} && df -h`),
+            });
+        } catch {}
+        const e = new Error(msg);
+        if (res.remote) e.code = 'EWAVES_STORE';
+        else e.code = parseErr ? 'EWAVES_JSON' : 'EWAVES_READ';
+        throw e;
+    }
+    if (!res.value) {
+        // Sin estado → estado vacío válido. NO alertar (caso normal en startup
+        // fresco o en una partición recién creada; no es corrupción).
         return emptyState();
     }
-    let raw;
-    try {
-        raw = fs.readFileSync(file, 'utf8');
-    } catch (err) {
-        const msg = `waves.json: no se pudo leer (${err.message})`;
-        try {
-            notifyTelegram({
-                level: 'error',
-                component: 'waves-schema',
-                message: 'read falló sobre waves.json',
-                detail: err.message,
-                action: 'Verificá permisos/espacio en disco. Pipeline en modo human-block.',
-                diag: `ls -la ${file} && df -h`,
-            });
-        } catch {}
-        const e = new Error(msg);
-        e.code = 'EWAVES_READ';
-        throw e;
-    }
-    let parsed;
-    try {
-        parsed = JSON.parse(raw);
-    } catch (err) {
-        const msg = `waves.json: JSON inválido (${err.message})`;
-        try {
-            notifyTelegram({
-                level: 'error',
-                component: 'waves-schema',
-                message: 'JSON corrupto en waves.json',
-                detail: err.message,
-                action: 'Pipeline en modo human-block. Revisá el archivo o restaurá desde archived/.',
-                diag: `cat ${file}`,
-            });
-        } catch {}
-        const e = new Error(msg);
-        e.code = 'EWAVES_JSON';
-        throw e;
-    }
+    const parsed = res.value;
     const errors = validateStateStrict(parsed, { source: 'post-load' });
     if (errors.length > 0) {
         try {
@@ -2577,14 +2885,13 @@ function verifyIntegrityHash(state) {
  *             error?: string, errors?: string[], expected?: string, actual?: string }}
  */
 function checkStateIntegrity() {
-    const file = wavesFile();
-    if (!fs.existsSync(file)) return { status: 'absent' };
-    let parsed;
-    try {
-        parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
-    } catch (e) {
-        return { status: 'unreadable', error: e.message };
-    }
+    // #5113 — tercer lector físico del registro de olas, también por la capa de
+    // storage. En modo remoto `absent` significa "sin ítem en la partición",
+    // que es el equivalente exacto de "sin archivo".
+    const res = stateBackend.readKeyWithVersion(stateBackend.KEYS.WAVES);
+    if (res.error) return { status: 'unreadable', error: res.error.message };
+    if (!res.value) return { status: 'absent' };
+    const parsed = res.value;
     const schemaErrors = validateStateStrict(parsed, { source: 'boot' });
     if (schemaErrors.length > 0) return { status: 'schema_invalid', errors: schemaErrors };
     return verifyIntegrityHash(parsed);
@@ -2740,6 +3047,45 @@ function updateMarkerFsync(markerPath, payload) {
  *   partialBakPath: string|null, partialBakSha: string|null, partialExisted: boolean,
  * }}
  */
+/**
+ * Lee una clave del estado operativo PARA SNAPSHOT, distinguiendo los TRES
+ * casos que `readKey()` colapsa en `null`: presente / ausente / ilegible.
+ *
+ * #5113 rev-7 — `readKey()` devuelve `null` tanto cuando la clave no existe
+ * como cuando el sustrato falló (permisos, JSON corrupto, store degradado).
+ * Sellar `existed:false` sobre esa ambigüedad es destructivo: `restoreKey()`
+ * lee ese `false` como "no existía antes, borralo" y el rollback termina
+ * BORRANDO un `waves.json` que sólo estaba ilegible — mientras reporta
+ * `ok:true`. En `origin/main` el snapshot era `existsSync + copyFileSync`
+ * sobre los bytes crudos y no tenía esa ambigüedad; el paso por la capa de
+ * storage la introdujo.
+ *
+ * Por eso acá se ABORTA en vez de adivinar: sin snapshot confiable no hay
+ * rollback, y una transacción sin rollback es peor que una que no arranca.
+ * Corre ANTES de escribir el marker y ANTES de tocar producción, así que
+ * abortar no deja nada a medio camino.
+ *
+ * @param {string} key — clave del backend (`stateBackend.KEYS.*`).
+ * @param {string} label — nombre humano para el mensaje de error.
+ * @returns {object|null} el valor si existe; `null` SÓLO si la ausencia está
+ *   confirmada por una lectura sana.
+ * @throws {Error} con `code = 'STATE_UNREADABLE'` si la lectura falló o degradó.
+ */
+function readKeyForSnapshot(key, label) {
+    const read = stateBackend.readKeyWithVersion(key);
+    if (read.error || read.degraded) {
+        const detail = (read.error && read.error.message) || 'sustrato degradado';
+        throw mkWavesError(
+            `No pude leer ${label} para el snapshot transaccional: ${detail}. ` +
+            `Sin snapshot confiable no hay rollback posible, así que la transacción ` +
+            `no arranca (fail-closed). Revisá permisos/JSON del estado local o la ` +
+            `salud del store remoto y reintentá.`,
+            'STATE_UNREADABLE'
+        );
+    }
+    return read.value;
+}
+
 function snapshotForTransaction(ts) {
     ensureDir(archivedDir());
 
@@ -2748,18 +3094,24 @@ function snapshotForTransaction(ts) {
         partialBakPath: null, partialBakSha: null, partialExisted: false,
     };
 
-    // waves.json
-    if (fs.existsSync(wavesFile())) {
+    // #5113 — el CONTENIDO se lee por la capa de storage (filesystem o store
+    // remoto); el BACKUP se escribe siempre en `archived/` local. Es deliberado:
+    // el backup de una transacción es evidencia local de recuperación, no una
+    // segunda fuente de verdad — nadie lo lee como estado vigente. Sin esto,
+    // `/wave promote` en modo remoto se quedaría sin rollback: el snapshot
+    // saldría vacío porque el archivo local ya no existe.
+    const wavesValue = readKeyForSnapshot(stateBackend.KEYS.WAVES, 'waves.json');
+    if (wavesValue) {
         const bak = path.join(archivedDir(), `waves-rollback.${ts}.json`);
-        fs.copyFileSync(wavesFile(), bak);
+        atomicWriteFile(bak, JSON.stringify(wavesValue, null, 2));
         result.wavesBakPath = bak;
         result.wavesBakSha = sha256File(bak);
         result.wavesExisted = true;
     }
-    // .partial-pause.json
-    if (fs.existsSync(partialFile())) {
+    const partialValue = readKeyForSnapshot(stateBackend.KEYS.PARTIAL_PAUSE, '.partial-pause.json');
+    if (partialValue) {
         const bak = path.join(archivedDir(), `partial-pause-rollback.${ts}.json`);
-        fs.copyFileSync(partialFile(), bak);
+        atomicWriteFile(bak, JSON.stringify(partialValue, null, 2));
         result.partialBakPath = bak;
         result.partialBakSha = sha256File(bak);
         result.partialExisted = true;
@@ -2848,49 +3200,84 @@ function restoreFromSnapshots(marker) {
         marker.partial_bak_path = safePath;
     }
 
-    // Restaurar waves.json
-    if (marker.waves_bak_path) {
-        const tmp = wavesFile() + '.recover.tmp';
-        try {
-            fs.copyFileSync(marker.waves_bak_path, tmp);
-            fs.renameSync(tmp, wavesFile());
-            out.wavesRestored = true;
-        } catch (err) {
-            try { fs.unlinkSync(tmp); } catch {}
-            out.reason = `Error restaurando waves.json: ${err.message}`;
-            return out;
+    // #5113 — la restauración escribe por la capa de storage: el backup vive en
+    // `archived/` (FS siempre) pero el DESTINO es el sustrato vigente. Sin esto,
+    // en modo remoto el rollback dejaría el archivo local restaurado y el store
+    // con el estado a medio promover: dos fuentes de verdad, justo en el peor
+    // momento posible.
+    const restoreKey = (bakPath, existedBefore, key, label) => {
+        if (bakPath) {
+            let payload;
+            try {
+                payload = JSON.parse(fs.readFileSync(bakPath, 'utf8'));
+            } catch (err) {
+                return `Error leyendo el backup de ${label}: ${err.message}`;
+            }
+            // #5113 (CA-A4) — ÚNICA excepción deliberada al CAS del registro de
+            // olas, y queda declarada acá para que no se lea como el mismo
+            // olvido que este issue vino a cerrar: es el rollback de emergencia
+            // de una transacción que YA falló a mitad de camino, corre bajo el
+            // lock de esa transacción y tiene que ganar. Condicionarlo a una
+            // versión que la propia transacción fallida movió lo dejaría sin
+            // poder revertir, que es exactamente el escenario en el que el
+            // rollback es lo único que queda.
+            //
+            // #5113 rev-8 — la excepción ahora se DECLARA con el centinela en
+            // vez de omitir el argumento. Omitirlo era indistinguible de un
+            // olvido, y desde esta revisión el backend rechaza los writes
+            // remotos sin versión: este call-site es el único que puede pasar
+            // por acá, y queda explícito en el diff que lo hace a propósito.
+            const res = stateBackend.writeKey(key, payload, stateBackend.UNCONDITIONAL_WRITE);
+            if (!res || res.ok === false) {
+                return `Error restaurando ${label}: ${(res && res.error && res.error.message) || 'write rechazado'}`;
+            }
+            return null;
         }
-    } else if (marker.waves_existed === false) {
-        // No existía antes — si por algún motivo existe ahora, borrarlo.
-        try {
-            if (fs.existsSync(wavesFile())) fs.unlinkSync(wavesFile());
-            out.wavesRestored = true;
-        } catch (err) {
-            out.reason = `Error eliminando waves.json (rollback a pre-existencia): ${err.message}`;
-            return out;
+        if (existedBefore === false) {
+            // No existía antes — si por algún motivo existe ahora, borrarlo.
+            //
+            // #5113 rev-7 — defensa en profundidad para el marker persistido:
+            // `snapshotForTransaction` ya no puede sellar `false` sobre una
+            // lectura degradada, pero el marker se lee de disco y puede venir de
+            // una versión anterior, de un recovery de boot o manipulado. Un
+            // `false` no confiable convierte el rollback en un borrado, así que
+            // confirmamos que el sustrato responde ANTES de eliminar. Cualquier
+            // valor que no sea `false` estricto (incluido `'unknown'`) ya no
+            // entra acá: no se borra lo que no se pudo leer.
+            const probe = stateBackend.readKeyWithVersion(key);
+            if (probe.error || probe.degraded) {
+                return `No pude confirmar el estado de ${label} antes del rollback a `
+                    + `pre-existencia (${(probe.error && probe.error.message) || 'sustrato degradado'}): `
+                    + `no se borra nada (fail-closed).`;
+            }
+            const res = stateBackend.deleteKey(key);
+            if (!res || res.ok === false) {
+                return `Error eliminando ${label} (rollback a pre-existencia): `
+                    + `${(res && res.error && res.error.message) || 'delete rechazado'}`;
+            }
+            return null;
         }
+        return null;
+    };
+
+    // Restaurar el registro de olas.
+    if (marker.waves_bak_path || marker.waves_existed === false) {
+        const reason = restoreKey(
+            marker.waves_bak_path, marker.waves_existed, stateBackend.KEYS.WAVES, 'waves.json',
+        );
+        if (reason) { out.reason = reason; return out; }
+        out.wavesRestored = true;
+        invalidateCache();
     }
 
-    // Restaurar .partial-pause.json
-    if (marker.partial_bak_path) {
-        const tmp = partialFile() + '.recover.tmp';
-        try {
-            fs.copyFileSync(marker.partial_bak_path, tmp);
-            fs.renameSync(tmp, partialFile());
-            out.partialRestored = true;
-        } catch (err) {
-            try { fs.unlinkSync(tmp); } catch {}
-            out.reason = `Error restaurando .partial-pause.json: ${err.message}`;
-            return out;
-        }
-    } else if (marker.partial_existed === false) {
-        try {
-            if (fs.existsSync(partialFile())) fs.unlinkSync(partialFile());
-            out.partialRestored = true;
-        } catch (err) {
-            out.reason = `Error eliminando .partial-pause.json (rollback a pre-existencia): ${err.message}`;
-            return out;
-        }
+    // Restaurar la allowlist de ejecución.
+    if (marker.partial_bak_path || marker.partial_existed === false) {
+        const reason = restoreKey(
+            marker.partial_bak_path, marker.partial_existed,
+            stateBackend.KEYS.PARTIAL_PAUSE, '.partial-pause.json',
+        );
+        if (reason) { out.reason = reason; return out; }
+        out.partialRestored = true;
     }
 
     out.ok = true;
@@ -2967,15 +3354,15 @@ function promoteWaveAtomic(waveNumber, metadata = {}) {
     const newWaveName = newWave.name || `Ola ${waveNumber}`;
 
     // Snapshot allowlist previa (para diff added/removed en CA-D1).
+    // #5113 — cuarto lector físico de la allowlist: también por la capa de
+    // storage (era el olvido clásico que dejaría dos fuentes de verdad).
     let prevAllowlist = [];
     try {
-        if (fs.existsSync(partialFile())) {
-            const parsed = JSON.parse(fs.readFileSync(partialFile(), 'utf8'));
-            prevAllowlist = Array.isArray(parsed.allowed_issues)
-                ? parsed.allowed_issues.map(normalizeIssue).filter(Boolean)
-                : [];
+        const parsed = stateBackend.readKey(stateBackend.KEYS.PARTIAL_PAUSE);
+        if (parsed && Array.isArray(parsed.allowed_issues)) {
+            prevAllowlist = parsed.allowed_issues.map(normalizeIssue).filter(Boolean);
         }
-    } catch { /* defensivo: si no parsea, prev queda vacío */ }
+    } catch { /* defensivo: si no resuelve, prev queda vacío */ }
 
     // 1. Snapshot atómico de ambos archivos.
     const ts = new Date().toISOString().replace(/[:.]/g, '-');
@@ -3053,12 +3440,35 @@ function promoteWaveAtomic(waveNumber, metadata = {}) {
                 };
             }
         } catch { /* defensivo: degradar al fallback del seeder */ }
-        partialPause.setPartialPauseAtomic(newAllowlist, {
+        // #5113 rev-7 — `setPartialPauseAtomic` NO lanza: devuelve
+        // `{ok:false, rejected?|conflict?, msg}` cuando el gate de autoría
+        // rechaza, cuando el snapshot degradó o cuando el CAS pierde la carrera.
+        // Descartar ese retorno dejaba la promoción sellando `phase=done`,
+        // borrando los `.bak` y emitiendo audit de éxito con `waves.json` ya en
+        // la ola nueva y la allowlist todavía en la vieja: dos fuentes de verdad
+        // desincronizadas, exactamente lo que CA-C1 vino a impedir. Convertimos
+        // el fallo en excepción para que caiga en el catch de abajo y dispare el
+        // rollback de AMBAS claves.
+        const partialRes = partialPause.setPartialPauseAtomic(newAllowlist, {
             source: metadata.source || 'wave-promote-atomic',
             authorizedBy: 'wave-promote',
             justification: metadata.note || `promote wave ${waveNumber} → active (atomic)`,
             ...waveMetaForPartial,
         });
+        if (!partialRes || partialRes.ok === false) {
+            const detail = (partialRes && partialRes.msg) || 'motivo desconocido';
+            const err = mkWavesError(
+                `No pude aplicar la allowlist de la ola ${waveNumber}: ${detail}`,
+                'PARTIAL_PAUSE_WRITE_REJECTED'
+            );
+            // Shape homogéneo con los callers que ya miran `rejected`/`conflict`
+            // sobre el retorno de partial-pause (p. ej. `cmdPausaParcial` en
+            // pulpo.js): el mismo predicado sirve sobre el error propagado.
+            err.rejected = !!(partialRes && partialRes.rejected);
+            err.conflict = !!(partialRes && partialRes.conflict);
+            err.partialResult = partialRes || null;
+            throw err;
+        }
     } catch (err) {
         // Rollback inmediato: ambos archivos vuelven al snapshot.
         logWarn(`promoteWaveAtomic falló mid-transaction: ${err.message}. Restaurando snapshots.`);
@@ -3395,9 +3805,11 @@ function archiveWave(waveNumber, metadata = {}) {
         let wavesBakPath = null;
         let wavesBakSha = null;
         let wavesExisted = false;
-        if (fs.existsSync(wavesFile())) {
+        // #5113 — contenido por la capa de storage, backup en `archived/` local.
+        const prevForArchive = readKeyForSnapshot(stateBackend.KEYS.WAVES, 'waves.json');
+        if (prevForArchive) {
             const bak = path.join(archivedDir(), `waves-archive-rollback.${ts}.json`);
-            fs.copyFileSync(wavesFile(), bak);
+            atomicWriteFile(bak, JSON.stringify(prevForArchive, null, 2));
             wavesBakPath = bak;
             wavesBakSha = sha256File(bak);
             wavesExisted = true;

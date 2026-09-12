@@ -14,12 +14,6 @@
   "files": [],
   "rules": [
     {
-      "file": "lib/desync-detector.js",
-      "anchor": "const wavesPath = path.join(pipelineDir(), 'waves.json');",
-      "line": 122,
-      "reason": "#5176 A-2: el detector necesita distinguir 'sin active_wave' (null, NO es desync) de 'ola vacia' ([]), no puede lanzar ante waves.json corrupto y no debe disparar la alerta dedupada de waves.getAllowlist (#3616). Ningun lector del envoltorio cumple las tres. Version estructural: #5191."
-    },
-    {
       "file": "pulpo.js",
       "anchor": "const PAUSE_FILE = path.join(PIPELINE, '.paused');",
       "line": 21001,

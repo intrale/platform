@@ -36,6 +36,10 @@ const DISPATCH_CAUSE_TO_WATCHDOG_KIND = Object.freeze({
     [dispatchCause.CAUSAS.CB_INFRA]: 'cb-infra',
     [dispatchCause.CAUSAS.PRESION_RECURSOS]: 'resource-pressure',
     [dispatchCause.CAUSAS.DISCO_LLENO]: 'disk-pressure',
+    // #5113 CA-UX2 — la degradacion del estado operativo remoto tiene kind
+    // propio. Sin el, `causeFromArtifact` devuelve null (enum sin mapear) y el
+    // watchdog dispara "no se por que no despacho" cuando la causa se conoce.
+    [dispatchCause.CAUSAS.ESTADO_REMOTO_DEGRADADO]: 'opstate-remote-degraded',
 });
 
 /**

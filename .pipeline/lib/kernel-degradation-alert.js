@@ -174,6 +174,34 @@ const ACCION_CONFIG_ABORTADO = 'el encendido ya se abortó y el pipeline quedó 
 const ACCION_CONFIG_SIGUE = 'completá `kernel.tableName` y `kernel.region` en `.pipeline/config.yaml` '
     + 'para poder reintentar el encendido de forma supervisada.';
 
+// #5113 · Copy del estado operativo (mockup 60). Son CUATRO variantes, no una:
+// el override anterior pisaba la acción INCONDICIONALMENTE y con eso se perdían
+// las dos cosas que el operador necesita para salir del incidente.
+//
+//   (a) `aborted` — el halt ya escribió `.pipeline/.paused` y NO es
+//       auto-levantable (`isAutoLiftableSource` lo rechaza a propósito). El
+//       operador que hace exactamente lo que decía el texto viejo (apagar el
+//       flag + `restart.js`) ve `describeMode()` en `mode: fs` — verde según el
+//       runbook — y el pipeline sigue muerto por un marker que nadie le nombró.
+//       Escenario cerrado y verificado en rev-10. La reanudación es parte de la
+//       acción, no una nota al pie.
+//   (b) `config_incompleta` — CA-5 del PO PROHÍBE decir "volvé el flag a false"
+//       con esta causa: al operador sólo le falta llenar dos campos.
+const ACCION_OPSTATE_SIGUE = 'volvé `operational_state.durable` a `false` siguiendo el rollback de '
+    + '`docs/pipeline/runbook-cutover-estado-operativo.md`.';
+
+const ACCION_OPSTATE_ABORTADO = 'el encendido ya se abortó y el pipeline quedó PAUSADO. '
+    + 'Volvé `operational_state.durable` a `false` siguiendo el rollback de '
+    + '`docs/pipeline/runbook-cutover-estado-operativo.md` Y DESPUÉS mandá /reanudar '
+    + '(o borrá `.pipeline/.paused`): sin ese paso el pipeline sigue frenado aunque el estado vuelva a filesystem.';
+
+const ACCION_OPSTATE_CONFIG_SIGUE = 'completá `kernel.coordinationTableName` y `kernel.region` en '
+    + '`.pipeline/config.yaml` — el estado externo no tiene destino. No hace falta apagar el flag.';
+
+const ACCION_OPSTATE_CONFIG_ABORTADO = 'el encendido ya se abortó y el pipeline quedó PAUSADO. '
+    + 'Completá `kernel.coordinationTableName` y `kernel.region` en `.pipeline/config.yaml` y '
+    + 'mandá /reanudar (o borrá `.pipeline/.paused`) para retomar.';
+
 // CA-20 · Cuando el abort NO pudo escribir su marker porque ya había una pausa de
 // otro origen, esa distinción viaja en la alerta: sin esto el operador levanta la
 // pausa que ve y el cutover abortado desaparece sin registro.
@@ -195,6 +223,7 @@ const NOTA_PAUSA_PREEXISTENTE = 'Ojo: ya había una pausa activa de otro origen,
  * @param {number}  [opts.repeats=1]        repeticiones acumuladas desde el último envío (CA-10).
  * @param {boolean} [opts.aborted=false]    true ⇒ template (A); false ⇒ template (B) (D-4).
  * @param {boolean} [opts.pausePreexisting] true ⇒ suma la nota de CA-20.
+ * @param {boolean} [opts.operationalState] true ⇒ copy de estado operativo (mockup 60).
  * @returns {string} mensaje listo para `sendTelegram` en dialecto `PARSE_MODE`.
  */
 function formatDegradationAlert(opts = {}) {
@@ -212,10 +241,27 @@ function formatDegradationAlert(opts = {}) {
         accion = aborted ? ACCION_ABORTADO : ACCION_SIGUE;
     }
 
+    // #5113: mismo canal y plantilla; copy del mockup 60 para el estado operativo.
+    // rev-12 (R-4) — el override conserva las DOS dimensiones que ya decidía el
+    // template general: si el encendido se abortó (⇒ hay `.paused` que levantar)
+    // y si la causa es `config_incompleta` (⇒ no se apaga ningún flag).
+    const operationalState = opts.operationalState === true;
+    if (operationalState) {
+        if (cause === 'config_incompleta') {
+            accion = aborted ? ACCION_OPSTATE_CONFIG_ABORTADO : ACCION_OPSTATE_CONFIG_SIGUE;
+        } else {
+            accion = aborted ? ACCION_OPSTATE_ABORTADO : ACCION_OPSTATE_SIGUE;
+        }
+    }
     return [
-        aborted ? HEADER_ABORTADO : HEADER_SIGUE,                       // (1) severidad
+        operationalState
+            ? ('Estado externo sin respuesta - dispatch denegado' + (aborted ? ' - PIPELINE PAUSADO' : ''))
+            : (aborted ? HEADER_ABORTADO : HEADER_SIGUE),
         '',
-        aborted ? CONSECUENCIA_ABORTADO : CONSECUENCIA_SIGUE,           // (2) consecuencia
+        operationalState
+            ? ('Se frena a propósito. El estado local está obsoleto: no se usa.'
+                + (aborted ? ' Además quedó escrito `.pipeline/.paused`, que el restart NO levanta solo.' : ''))
+            : (aborted ? CONSECUENCIA_ABORTADO : CONSECUENCIA_SIGUE),
         '',
         'Causa: `' + cause + '` — ' + CAUSA_GLOSA[cause],               //     token del enum + glosa (UX-8)
         '',
@@ -345,6 +391,7 @@ function createDegradationSink(deps = {}) {
             entry.lastSentTs = ts;
             entry.sinceLastSend = 0;
             const text = formatDegradationAlert({
+                operationalState: deps.operationalState === true,
                 cause,
                 correlationId,
                 repeats,

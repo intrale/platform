@@ -601,6 +601,13 @@ function headerSlice(state, ctx) {
             allowedSkills = Array.isArray(dispatch.allowedSkills) ? dispatch.allowedSkills : [];
         } catch { /* envoltorio degradado → header en running, nunca rompe */ }
     }
+    // #5113 CA-UX1 — Procedencia del estado operativo. El operador tiene que
+    // poder responder "¿de dónde sale el estado que estoy mirando?" sin abrir
+    // una terminal y greppear un YAML. Nunca se lee `config.yaml` para esto:
+    // se publica el flag EFECTIVO del runtime, que es OTRA COSA cuando hay
+    // override por env (`PIPELINE_OPSTATE_DURABLE`).
+    const opstate = resolveOpstateProvenance(readOpstateRuntime());
+
     const procesos = state.procesos || {};
     const pulpoAlive = !!(procesos.pulpo && procesos.pulpo.alive);
 
@@ -748,7 +755,128 @@ function headerSlice(state, ctx) {
         resources,
         build: readBuildStatus(PIPELINE),
         restMode,
+        // #5113 CA-UX1 — { state, symbol, label, detail, tone, alertable }
+        opstate,
         timestamp: Date.now(),
+    };
+}
+
+// ─── #5113 CA-UX1 · Procedencia del estado operativo ────────────────────────
+//
+// Mapeo CERRADO del mockup 60 (§4): cada condición verificable tiene UN y sólo
+// un chip. La tabla no es decorativa — es lo que impide que el operador tenga
+// que inferir de dónde sale el estado en medio de una ventana de cutover:
+//
+//   flag de cutover OFF        →  #  filesystem local        (no alerta)
+//   flag ON + sonda en verde   →  ✓  externo · en línea      (no alerta)
+//   cutover_window == true     →  ~  cutover en curso        (alerta)
+//   flag ON + store sin responder → ! externo · sin respuesta (ALERTABLE)
+//
+// El chip INFORMA, no muta (regla de diseño 3): el dashboard jamás cambia el
+// flag de cutover desde la UI. Es display-only, coherente con D-5 y con el
+// invariante "el adaptador pide, el kernel ejecuta".
+
+/**
+ * Lee el modo EFECTIVO del sustrato + la ventana de cutover. Aislado para que
+ * `resolveOpstateProvenance` quede puro y testeable sin tocar disco.
+ * Degradado a "filesystem" ante cualquier error: es el modo conocido, y un
+ * cartel roto jamás puede tumbar el header.
+ * @returns {{mode:string, degraded:boolean, lastError:string|null, source:string, cutoverWindow:boolean}}
+ */
+function readOpstateRuntime() {
+    let desc = { mode: 'fs', source: 'config', degraded: false, lastError: null, observed: false, degradedKeys: [] };
+    try {
+        desc = require('./operational-state-backend').describeMode() || desc;
+    } catch { /* el backend no disponible → filesystem, que es el default real */ }
+    let cutoverWindow = false;
+    try {
+        // `resolve()` devuelve el documento DIRECTO, no un wrapper `{ config }`.
+        // La forma con `.config` dejaba `cfg` en `{}` siempre y hacía el chip de
+        // cutover inalcanzable por construcción (misma forma que usan
+        // `project-context.js` y `operational-state-backend.js`).
+        const cfg = configResolver.resolve({}) || {};
+        cutoverWindow = ((cfg.kernel || {}).cutover_window === true);
+    } catch { /* sin config legible → sin ventana declarada */ }
+    return { ...desc, cutoverWindow };
+}
+
+/**
+ * Mapeo puro condición → chip. Sin I/O: recibe el runtime ya leído.
+ *
+ * Precedencia (importa cuando dos condiciones coexisten): la degradación gana
+ * sobre la ventana de cutover. Durante un cutover el store PUEDE caerse, y en
+ * ese instante lo que el operador necesita leer no es "estoy migrando" sino
+ * "el dispatch está denegado y el rollback es acá".
+ *
+ * @param {{mode?:string, degraded?:boolean, lastError?:string|null, source?:string, cutoverWindow?:boolean}} rt
+ * @returns {{state:string, symbol:string, label:string, detail:string, tone:string, alertable:boolean, source:string}}
+ */
+function resolveOpstateProvenance(rt) {
+    const r = rt && typeof rt === 'object' ? rt : {};
+    const remoto = r.mode === 'remote';
+    const source = r.source === 'env' ? 'env' : 'config';
+
+    if (remoto && r.degraded === true) {
+        return {
+            state: 'remote_down',
+            symbol: '!',
+            label: 'Estado: externo · sin respuesta',
+            // CA-UX5 — qué está frenado, por qué y cuál es el próximo paso.
+            detail: 'dispatch DENEGADO · no degrada a FS — rollback: operational_state.durable: false',
+            tone: 'bad',
+            alertable: true,
+            source,
+        };
+    }
+    if (r.cutoverWindow === true) {
+        return {
+            state: 'cutover',
+            symbol: '~',
+            label: 'Estado: cutover en curso',
+            detail: 'ventana abierta · migrando',
+            tone: 'warn',
+            alertable: true,
+            source,
+        };
+    }
+    if (remoto && r.observed !== true) {
+        // #5113 rev-12 (R-3) — `degraded: false` NO es salud: es "este proceso
+        // todavía no vio fallar nada". Un dashboard recién reiniciado
+        // (`restart.js` es rutina) con el store caído y cero accesos previos
+        // pintaba verde y afirmaba "sonda en verde" sin haber sondeado nada.
+        // El estado honesto sin verificación es "sin verificar", y no es
+        // alertable: no hay anomalía, hay ausencia de evidencia.
+        return {
+            state: 'remote_unverified',
+            symbol: '?',
+            label: 'Estado: externo · sin verificar',
+            detail: 'sin accesos al store en este proceso · se confirma en la primera lectura',
+            tone: 'neutral',
+            alertable: false,
+            source,
+        };
+    }
+    if (remoto) {
+        return {
+            state: 'remote_ok',
+            symbol: '✓',
+            label: 'Estado: externo · en línea',
+            // Se afirma lo que efectivamente se sabe: el último acceso al store
+            // respondió. No hay sonda periódica y el copy no puede inventarla.
+            detail: 'store durable · último acceso OK',
+            tone: 'ok',
+            alertable: false,
+            source,
+        };
+    }
+    return {
+        state: 'fs',
+        symbol: '#',
+        label: 'Estado: filesystem local',
+        detail: 'flag OFF · .pipeline/*.json',
+        tone: 'neutral',
+        alertable: false,
+        source,
     };
 }
 
@@ -4354,6 +4482,13 @@ module.exports = {
     recentlyFinished,
     nextInQueue,
     headerSlice,
+    // #5113 CA-UX1 — mapeo puro condición → chip de procedencia (testeable sin I/O).
+    resolveOpstateProvenance,
+    // #5113 CA-UX1 (rev-6) — el WIRING real (lectura de flag + ventana de
+    // cutover). Exportado a propósito: el defecto que dejó el chip `cutover`
+    // inalcanzable vivía acá y no en el mapeo puro, así que tiene que estar
+    // cubierto por un test que ejercite esta función y no sólo la pura.
+    readOpstateRuntime,
     kpisSlice,
     equipoSlice,
     // #3955 EP8-H2 — helpers exportados para test unitario.

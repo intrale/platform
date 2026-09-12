@@ -1,0 +1,147 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Mockup 60 - Procedencia del estado operativo, visible para el operador.
+  Issue #5113 (Ola 9.4 - E2) - addendum de UX a los criterios del PO.
+
+  Por que existe:
+    Los 23 CA del PO cierran el COMPORTAMIENTO del cutover (flag unico, fail-closed,
+    CAS, rollback). Ninguno cubre que VE el operador mientras eso pasa. Verificado
+    en HEAD 177ab2bf6: grep -niE "durable|operational_state|namespaced" sobre
+    .pipeline/dashboard.js y .pipeline/lib/dashboard-slices.js devuelve 0 lineas.
+    Hoy la unica forma de saber donde vive el estado es greppear un YAML - el propio
+    runbook-cutover-durable.md lo instruye asi en "Como verificar que estas parado
+    donde creias". Durante un cutover con dos hosts eso no alcanza.
+
+  Regla rectora (heredada del mockup 49):
+    ningun estado se codifica SOLO por color. Cada chip lleva simbolo + etiqueta
+    textual + procedencia literal. Contraste AA sobre #0D1117.
+
+  Design system: tokens de .pipeline/assets/design-tokens.css. Sin colores fuera
+  del sistema. Target 1240x920.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="1240" height="920" viewBox="0 0 1240 920"
+     font-family="-apple-system, 'Segoe UI', system-ui, sans-serif">
+
+  <rect width="1240" height="920" fill="#0D1117"/>
+
+  <text x="40" y="52" fill="#E6EDF3" font-size="24" font-weight="600">Procedencia del estado operativo</text>
+  <text x="40" y="78" fill="#8B949E" font-size="14">#5113 - el operador tiene que poder ver de donde sale la allowlist sin abrir una terminal</text>
+  <line x1="40" y1="98" x2="1200" y2="98" stroke="#21262D" stroke-width="1"/>
+
+  <text x="40" y="134" fill="#B1BAC4" font-size="13" font-weight="600" letter-spacing="0.8">1 - CHIP DE PROCEDENCIA - HEADER DEL DASHBOARD</text>
+
+  <g transform="translate(40,156)">
+    <rect width="270" height="88" rx="10" fill="#161B22" stroke="#30363D"/>
+    <g transform="translate(16,18)">
+      <rect width="238" height="30" rx="15" fill="#1C2128" stroke="#30363D"/>
+      <text x="14" y="20" fill="#8B949E" font-size="13" font-family="'SF Mono', Consolas, monospace">#</text>
+      <text x="32" y="20" fill="#B1BAC4" font-size="13" font-weight="600">Estado: filesystem local</text>
+    </g>
+    <text x="16" y="72" fill="#8B949E" font-size="11.5" font-family="'SF Mono', Consolas, monospace">flag OFF - .pipeline/*.json</text>
+  </g>
+
+  <g transform="translate(326,156)">
+    <rect width="270" height="88" rx="10" fill="#161B22" stroke="#30363D"/>
+    <g transform="translate(16,18)">
+      <rect width="238" height="30" rx="15" fill="rgba(63,185,80,0.14)" stroke="#196C2E"/>
+      <text x="14" y="20" fill="#3FB950" font-size="13" font-family="'SF Mono', Consolas, monospace">OK</text>
+      <text x="42" y="20" fill="#E6EDF3" font-size="13" font-weight="600">Estado: externo - en linea</text>
+    </g>
+    <text x="16" y="72" fill="#8B949E" font-size="11.5" font-family="'SF Mono', Consolas, monospace">v.418 - sonda 12s - host-a</text>
+  </g>
+
+  <g transform="translate(612,156)">
+    <rect width="270" height="88" rx="10" fill="#161B22" stroke="#30363D"/>
+    <g transform="translate(16,18)">
+      <rect width="238" height="30" rx="15" fill="rgba(210,153,34,0.14)" stroke="#9E6A03"/>
+      <text x="14" y="20" fill="#D29922" font-size="13" font-family="'SF Mono', Consolas, monospace">~</text>
+      <text x="32" y="20" fill="#E6EDF3" font-size="13" font-weight="600">Estado: cutover en curso</text>
+    </g>
+    <text x="16" y="72" fill="#B1BAC4" font-size="11.5" font-family="'SF Mono', Consolas, monospace">ventana abierta - migrando</text>
+  </g>
+
+  <g transform="translate(898,156)">
+    <rect width="302" height="88" rx="10" fill="#161B22" stroke="#8B1A14"/>
+    <g transform="translate(16,18)">
+      <rect width="270" height="30" rx="15" fill="rgba(248,81,73,0.14)" stroke="#8B1A14"/>
+      <text x="14" y="20" fill="#F85149" font-size="13" font-family="'SF Mono', Consolas, monospace">!</text>
+      <text x="30" y="20" fill="#E6EDF3" font-size="13" font-weight="600">Estado: externo - sin respuesta</text>
+    </g>
+    <text x="16" y="72" fill="#F85149" font-size="11.5" font-family="'SF Mono', Consolas, monospace">dispatch DENEGADO - no degrada a FS</text>
+  </g>
+
+  <text x="40" y="298" fill="#B1BAC4" font-size="13" font-weight="600" letter-spacing="0.8">2 - BANNER DE NO-DESPACHO - CAUSA NUEVA EN EL ENUM CERRADO</text>
+
+  <g transform="translate(40,320)">
+    <rect width="560" height="150" rx="10" fill="#161B22" stroke="#30363D"/>
+    <text x="18" y="28" fill="#F85149" font-size="12" font-weight="700">ASI SE VE HOY (sin CA de UX)</text>
+    <rect x="18" y="44" width="524" height="54" rx="8" fill="rgba(248,81,73,0.14)" stroke="#8B1A14"/>
+    <text x="34" y="68" fill="#F85149" font-size="14" font-weight="600">Anomalia: causa no determinable</text>
+    <text x="34" y="88" fill="#B1BAC4" font-size="12">La cola no despacha y el pipeline no sabe por que.</text>
+    <text x="18" y="126" fill="#8B949E" font-size="11.5">El enum de dispatch-cause.js es CERRADO: si el store no responde,</text>
+    <text x="18" y="142" fill="#8B949E" font-size="11.5">el fail-closed cae al fallback y miente en pleno cutover.</text>
+  </g>
+
+  <g transform="translate(640,320)">
+    <rect width="560" height="150" rx="10" fill="#161B22" stroke="#196C2E"/>
+    <text x="18" y="28" fill="#3FB950" font-size="12" font-weight="700">ASI TIENE QUE VERSE (CA-UX2)</text>
+    <rect x="18" y="44" width="524" height="54" rx="8" fill="rgba(248,81,73,0.14)" stroke="#8B1A14"/>
+    <text x="34" y="68" fill="#F85149" font-size="14" font-weight="600">Estado externo sin respuesta - dispatch denegado</text>
+    <text x="34" y="88" fill="#B1BAC4" font-size="12">Se frena a proposito. El estado local esta obsoleto: no se usa.</text>
+    <text x="18" y="126" fill="#B1BAC4" font-size="11.5">Causa propia + ALERTABLE (Telegram) + accion sugerida: apagar el flag</text>
+    <text x="18" y="142" fill="#B1BAC4" font-size="11.5">de cutover (rollback a filesystem, runbook seccion de rollback).</text>
+  </g>
+
+  <text x="40" y="522" fill="#B1BAC4" font-size="13" font-weight="600" letter-spacing="0.8">3 - UBICACION - JUNTO AL MODO DE OLA, NO EN UN PANEL APARTE</text>
+
+  <g transform="translate(40,544)">
+    <rect width="1160" height="86" rx="10" fill="#161B22" stroke="#30363D"/>
+    <text x="24" y="34" fill="#E6EDF3" font-size="16" font-weight="600">Intrale - Pipeline</text>
+    <text x="24" y="58" fill="#8B949E" font-size="12" font-family="'SF Mono', Consolas, monospace">ola 9.4 - 7 issues</text>
+
+    <g transform="translate(300,26)">
+      <rect width="150" height="30" rx="15" fill="rgba(63,185,80,0.14)" stroke="#196C2E"/>
+      <text x="14" y="20" fill="#3FB950" font-size="12" font-family="'SF Mono', Consolas, monospace">OK</text>
+      <text x="42" y="20" fill="#E6EDF3" font-size="12" font-weight="600">3 agentes</text>
+    </g>
+    <g transform="translate(466,26)">
+      <rect width="164" height="30" rx="15" fill="#1C2128" stroke="#30363D"/>
+      <text x="16" y="20" fill="#B1BAC4" font-size="12" font-weight="600">modo ola - activa</text>
+    </g>
+    <g transform="translate(646,26)">
+      <rect width="238" height="30" rx="15" fill="rgba(63,185,80,0.14)" stroke="#3FB950" stroke-width="2"/>
+      <text x="14" y="20" fill="#3FB950" font-size="12" font-family="'SF Mono', Consolas, monospace">OK</text>
+      <text x="42" y="20" fill="#E6EDF3" font-size="12" font-weight="600">Estado: externo - en linea</text>
+    </g>
+    <text x="646" y="78" fill="#3FB950" font-size="11">chip nuevo - misma fila, mismo peso visual que el modo de ola</text>
+  </g>
+
+  <text x="40" y="682" fill="#B1BAC4" font-size="13" font-weight="600" letter-spacing="0.8">4 - MAPEO CERRADO - CADA ESTADO TIENE UN Y SOLO UN CHIP</text>
+
+  <g transform="translate(40,700)">
+    <rect width="1160" height="186" rx="10" fill="#161B22" stroke="#30363D"/>
+    <line x1="0" y1="40" x2="1160" y2="40" stroke="#30363D"/>
+    <text x="20"  y="26" fill="#8B949E" font-size="12" font-weight="600">CONDICION VERIFICABLE</text>
+    <text x="470" y="26" fill="#8B949E" font-size="12" font-weight="600">CHIP</text>
+    <text x="820" y="26" fill="#8B949E" font-size="12" font-weight="600">ALERTA TELEGRAM</text>
+
+    <text x="20"  y="68" fill="#B1BAC4" font-size="12" font-family="'SF Mono', Consolas, monospace">flag de cutover OFF</text>
+    <text x="470" y="68" fill="#B1BAC4" font-size="12"># filesystem local</text>
+    <text x="820" y="68" fill="#8B949E" font-size="12">no (estado esperado)</text>
+    <line x1="0" y1="82" x2="1160" y2="82" stroke="#21262D"/>
+
+    <text x="20"  y="108" fill="#B1BAC4" font-size="12" font-family="'SF Mono', Consolas, monospace">flag ON + sonda en verde</text>
+    <text x="470" y="108" fill="#3FB950" font-size="12">OK externo - en linea</text>
+    <text x="820" y="108" fill="#8B949E" font-size="12">no (estado esperado)</text>
+    <line x1="0" y1="122" x2="1160" y2="122" stroke="#21262D"/>
+
+    <text x="20"  y="148" fill="#B1BAC4" font-size="12" font-family="'SF Mono', Consolas, monospace">cutover_window == true</text>
+    <text x="470" y="148" fill="#D29922" font-size="12">~ cutover en curso</text>
+    <text x="820" y="148" fill="#D29922" font-size="12">si - apertura y cierre de ventana</text>
+    <line x1="0" y1="162" x2="1160" y2="162" stroke="#21262D"/>
+
+    <text x="20"  y="180" fill="#B1BAC4" font-size="12" font-family="'SF Mono', Consolas, monospace">flag ON + store no responde</text>
+    <text x="470" y="180" fill="#F85149" font-size="12">! externo - sin respuesta</text>
+    <text x="820" y="180" fill="#F85149" font-size="12">si - ALERTABLE, con accion de rollback</text>
+  </g>
+</svg>

@@ -21,13 +21,15 @@
 // ----------------------------------------------------
 //   - **Idempotente**: si `waves.json` ya tiene `active_wave != null`, no
 //     toca nada. Re-ejecutable infinitas veces sin corromper estado.
-//   - **Atómico**: write vía `atomicWriteFile` (tmp + fsync + rename, retry
-//     EPERM/EBUSY en Windows). Cero archivos parciales.
+//   - **Atómico**: write vía la capa de storage — en modo filesystem es el
+//     mismo `atomicWriteFile` de siempre (tmp + fsync + rename, retry
+//     EPERM/EBUSY en Windows); en modo remoto es un CAS contra la versión leída.
+//     Cero archivos parciales, cero lost update entre instancias.
 //   - **Fail-closed**: si `.partial-pause.json` está malformado (IDs no
 //     enteros, payload inesperado, campos extra que no parsean), aborta sin
 //     tocar `waves.json` + log explícito + Telegram dedupedo.
-//   - **Cero deps npm**: solo `fs`, `path`, `crypto` + libs internas del
-//     pipeline (waves, notify-telegram).
+//   - **Cero deps npm**: sólo libs internas del pipeline (la capa de storage
+//     `operational-state-backend`, waves, notify-telegram).
 //   - **Sin red**: no llama a GitHub ni servicios externos.
 //
 // Numeración (guru riesgo #4)
@@ -43,7 +45,8 @@
 //     { action, reason?, seededWave?, waveNumber?, allowlist?, skipAlert? }
 //
 //   action ∈ { 'noop_already_seeded', 'noop_no_partial', 'noop_empty_partial',
-//              'seeded', 'aborted_invalid_partial', 'aborted_waves_corrupt' }
+//              'seeded', 'aborted_invalid_partial', 'aborted_waves_corrupt',
+//              'aborted_remote_degraded' }
 //
 // Ejecutar como CLI (para debugging):
 //   node .pipeline/scripts/init-waves-from-partial.js [--dry-run]
@@ -51,16 +54,11 @@
 
 'use strict';
 
-const fs = require('fs');
-const path = require('path');
-
-// Resolver el root: si el script vive en `.pipeline/scripts/`, el root es el
-// parent. Si se invoca como módulo desde `pulpo.js`, `PIPELINE_DIR_OVERRIDE`
-// (env var) lo redirige para tests.
-function pipelineDir() {
-    if (process.env.PIPELINE_DIR_OVERRIDE) return process.env.PIPELINE_DIR_OVERRIDE;
-    return path.resolve(__dirname, '..');
-}
+// #5113 CA-C1 — Este módulo ya no importa `fs` ni resuelve el root del pipeline:
+// no le queda ni un acceso físico al estado. Todo pasa por la capa de storage,
+// que es la que sabe si hoy el registro de olas vive en un archivo o en el store
+// remoto. Que el `require('fs')` haya desaparecido del archivo NO es cosmético:
+// es la propiedad que hace verificable "cero segunda fuente de verdad".
 
 // #5179 grupo 3b — los paths de estado NO se construyen a mano: se los pide a
 // los módulos DUEÑOS del estado, que los resuelven honrando
@@ -74,8 +72,35 @@ function pipelineDir() {
 // con su propia validación fail-closed, y esos campos no viajan en
 // `getDispatchState()`. Opera deliberadamente por debajo de la abstracción; lo
 // que sí respeta es la propiedad del path.
-function wavesFile() { return require('../lib/waves')._paths().WAVES_FILE; }
-function partialFile() { return require('../lib/partial-pause')._paths().PARTIAL_FILE; }
+//
+// #5113 CA-C1 (rebote rev-1) — Operar por debajo de la FACHADA no autoriza a
+// operar por debajo del SUSTRATO. Este script leía y escribía con `fs` los dos
+// paths que le daban los dueños, así que con el flag de cutover encendido
+// sembraba una ola en `waves.json` local mientras el pipeline leía el store
+// remoto: dos fuentes de verdad simultáneas en el propio boot del pulpo, y un
+// log de "waves.json sembrado" que el resto del pipeline no veía. El bootstrap
+// pasa a resolverse contra `operational-state-backend`, que es exactamente la
+// capa que necesita: crudo, tolerante y con la misma noción de ausencia.
+//
+// Ya no se pide `_paths()` a los dueños: pedir el path FISICO del estado desde
+// fuera del sustrato es el bypass que la regla `paths-indirect` del guardrail
+// marca desde #5113 — es como este defecto quedo invisible para el grep de
+// control. El path sobrevive solo como ETIQUETA de los mensajes al operador, y
+// lo da la propia capa de storage (`fileFor`), que sabe si hoy significa algo.
+function backend() { return require('../lib/operational-state-backend'); }
+
+/**
+ * Etiqueta del sustrato para los mensajes: en modo remoto no hay archivo que
+ * mirar, y decirle al operador "revisá .pipeline/waves.json" cuando el dato
+ * vive en el store lo manda al lugar equivocado.
+ */
+function labelFor(key) {
+    try {
+        const b = backend();
+        if (!b.isRemote()) return b.fileFor(key);
+    } catch { /* si el backend no carga, caemos al nombre lógico */ }
+    return `store remoto [${key}]`;
+}
 
 // ─── Sanitización defensiva ─────────────────────────────────────────────────
 
@@ -171,30 +196,34 @@ function logWarn(msg) {
  *   - campos extra del payload no rompen — son ignorados (forward compat).
  */
 function readPartialStrict() {
-    if (!fs.existsSync(partialFile())) {
+    const b = backend();
+    const res = b.readKeyWithVersion(b.KEYS.PARTIAL_PAUSE);
+    // #5113 CA-A7 — degradación del store ⇒ ABORTAR, jamás degradar a
+    // filesystem. Con el store mudo no sabemos si hay allowlist: sembrar una ola
+    // con lo que quedó en el disco del host resucita autorizaciones revocadas.
+    if (res.degraded) {
+        return {
+            ok: false,
+            action: 'aborted_remote_degraded',
+            allowedIssues: [],
+            errors: [`store del estado operativo no disponible: ${res.error ? res.error.message : 'sin detalle'}`],
+        };
+    }
+    if (res.error) {
+        return {
+            ok: false,
+            action: 'aborted_invalid_partial',
+            allowedIssues: [],
+            errors: [res.error.opstateKind === 'parse'
+                ? `JSON inválido: ${res.error.message}`
+                : `read falló: ${res.error.message}`],
+        };
+    }
+    // Ausencia legítima (ENOENT local o clave inexistente en el store).
+    if (res.value === null || res.value === undefined) {
         return { ok: true, action: 'noop_no_partial', allowedIssues: [], errors: [] };
     }
-    let raw, parsed;
-    try {
-        raw = fs.readFileSync(partialFile(), 'utf8');
-    } catch (err) {
-        return {
-            ok: false,
-            action: 'aborted_invalid_partial',
-            allowedIssues: [],
-            errors: [`read falló: ${err.message}`],
-        };
-    }
-    try {
-        parsed = JSON.parse(raw);
-    } catch (err) {
-        return {
-            ok: false,
-            action: 'aborted_invalid_partial',
-            allowedIssues: [],
-            errors: [`JSON inválido: ${err.message}`],
-        };
-    }
+    const parsed = res.value;
     if (!parsed || typeof parsed !== 'object') {
         return {
             ok: false,
@@ -249,34 +278,45 @@ function readPartialStrict() {
  *   el desync-detector y el recovery del Commander lo manejan.
  */
 function readWavesState() {
-    if (!fs.existsSync(wavesFile())) {
-        return { ok: true, hasActiveWave: false, maxArchivedNumber: 0, nextWaveNumber: 1, preservedIdentity: null, raw: null };
+    const b = backend();
+    const res = b.readKeyWithVersion(b.KEYS.WAVES);
+    // #5113 CA-C1 — La guarda de idempotencia (`hasActiveWave`) resuelve contra
+    // el MISMO sustrato que el resto del pipeline. Resolverla leyendo el disco
+    // en régimen remoto la dejaba ciega: veía un `waves.json` local vacío,
+    // concluía "no hay ola" y volvía a sembrar sobre estado ya migrado.
+    if (res.degraded) {
+        return {
+            ok: false,
+            action: 'aborted_remote_degraded',
+            hasActiveWave: false,
+            maxArchivedNumber: 0,
+            errors: [`store del estado operativo no disponible: ${res.error ? res.error.message : 'sin detalle'}`],
+        };
     }
-    let raw;
-    try {
-        raw = fs.readFileSync(wavesFile(), 'utf8');
-    } catch (err) {
+    if (res.error) {
         return {
             ok: false,
             action: 'aborted_waves_corrupt',
             hasActiveWave: false,
             maxArchivedNumber: 0,
-            errors: [`read falló: ${err.message}`],
+            errors: [res.error.opstateKind === 'parse'
+                ? `JSON inválido: ${res.error.message}`
+                : `read falló: ${res.error.message}`],
         };
     }
-    let parsed;
-    try {
-        parsed = JSON.parse(raw);
-    } catch (err) {
+    const parsed = res.value;
+    if (parsed === null || parsed === undefined) {
         return {
-            ok: false,
-            action: 'aborted_waves_corrupt',
+            ok: true,
             hasActiveWave: false,
             maxArchivedNumber: 0,
-            errors: [`JSON inválido: ${err.message}`],
+            nextWaveNumber: 1,
+            preservedIdentity: null,
+            raw: null,
+            version: null,
         };
     }
-    if (!parsed || typeof parsed !== 'object') {
+    if (typeof parsed !== 'object' || Array.isArray(parsed)) {
         return {
             ok: false,
             action: 'aborted_waves_corrupt',
@@ -335,7 +375,10 @@ function readWavesState() {
                 ? rawIdentity.started_at : null,
         };
     }
-    return { ok: true, hasActiveWave, maxArchivedNumber, nextWaveNumber, preservedIdentity, raw: parsed };
+    // `version` viaja hasta el write: es el `expectedVersion` del CAS remoto
+    // (CA-A4). Sin él, dos instancias booteando a la vez sembrarían dos olas
+    // distintas y la última ganaría en silencio.
+    return { ok: true, hasActiveWave, maxArchivedNumber, nextWaveNumber, preservedIdentity, raw: parsed, version: res.version };
 }
 
 /**
@@ -369,7 +412,8 @@ function _resetDedupeForTests() {
  * @param {boolean} [opts.skipAlert=false] — si true, no envía Telegram.
  * @returns {{
  *   action: 'noop_already_seeded'|'noop_no_partial'|'noop_empty_partial'|
- *           'seeded'|'aborted_invalid_partial'|'aborted_waves_corrupt',
+ *           'seeded'|'aborted_invalid_partial'|'aborted_waves_corrupt'|
+ *           'aborted_remote_degraded',
  *   reason?: string,
  *   seededWave?: object,
  *   waveNumber?: number,
@@ -382,30 +426,42 @@ function initWavesFromPartial(opts = {}) {
     const dryRun = opts.dryRun === true;
     const skipAlert = opts.skipAlert === true;
 
-    // 1. Leer waves.json — si está corrupto, abortamos sin tocar.
+    // 1. Leer el registro de olas — si está corrupto o el store no responde,
+    //    abortamos sin tocar.
     const wavesState = readWavesState();
     if (!wavesState.ok) {
-        logWarn(`waves.json corrupto, no toco: ${wavesState.errors.join('; ')}`);
+        const degradado = wavesState.action === 'aborted_remote_degraded';
+        const etiqueta = labelFor(backend().KEYS.WAVES);
+        logWarn(degradado
+            ? `store del estado operativo no disponible, init abortado: ${wavesState.errors.join('; ')}`
+            : `${etiqueta} corrupto, no toco: ${wavesState.errors.join('; ')}`);
         if (!skipAlert) {
             notifyOnceForBoot({
                 level: 'error',
                 component: 'init-waves',
-                message: 'waves.json corrupto, init abortado',
+                message: degradado
+                    ? 'estado operativo remoto no disponible, init abortado'
+                    : 'registro de olas corrupto, init abortado',
                 detail: wavesState.errors.join('; ').slice(0, 200),
-                action: 'Revisá .pipeline/waves.json. El init NO modificó el archivo. ' +
-                    'El desync-detector va a alertar también si el partial-pause queda sin canónica.',
+                action: degradado
+                    ? 'El store del estado operativo no respondió. El init NO sembró nada y NO ' +
+                        'degradó a filesystem (CA-A7). Revisá conectividad/credenciales; el rollback ' +
+                        'es `operational_state.durable: false` + reinicio.'
+                    : `Revisá ${etiqueta}. El init NO modificó el estado. ` +
+                        'El desync-detector va a alertar también si el partial-pause queda sin canónica.',
             });
         }
         return {
-            action: 'aborted_waves_corrupt',
-            reason: 'waves.json corrupto',
+            action: wavesState.action || 'aborted_waves_corrupt',
+            reason: degradado ? 'store del estado operativo no disponible' : 'registro de olas corrupto',
             errors: wavesState.errors,
         };
     }
 
     // 2. Idempotencia: si ya hay ola activa, NO tocar (CA-1 punto 3).
     if (wavesState.hasActiveWave) {
-        logInfo(`waves.json ya tiene active_wave (number=${wavesState.raw.active_wave.number}) — no-op.`);
+        logInfo(`${labelFor(backend().KEYS.WAVES)} ya tiene active_wave `
+            + `(number=${wavesState.raw.active_wave.number}) — no-op.`);
         return {
             action: 'noop_already_seeded',
             reason: 'active_wave existe',
@@ -416,7 +472,11 @@ function initWavesFromPartial(opts = {}) {
     // 3. Leer .partial-pause.json — si está malformado, fail-closed.
     const partial = readPartialStrict();
     if (!partial.ok) {
-        logWarn(`.partial-pause.json malformado, init abortado: ${partial.errors.join('; ')}`);
+        const degradado = partial.action === 'aborted_remote_degraded';
+        const etiqueta = labelFor(backend().KEYS.PARTIAL_PAUSE);
+        logWarn(degradado
+            ? `store del estado operativo no disponible, init abortado: ${partial.errors.join('; ')}`
+            : `${etiqueta} malformado, init abortado: ${partial.errors.join('; ')}`);
         if (!skipAlert) {
             // Importante: NO incluir el raw del archivo (security req 3) — solo
             // contar cuántos errores hubo y el primer error para diagnóstico.
@@ -424,15 +484,21 @@ function initWavesFromPartial(opts = {}) {
             notifyOnceForBoot({
                 level: 'error',
                 component: 'init-waves',
-                message: '.partial-pause.json malformado, init abortado',
+                message: degradado
+                    ? 'estado operativo remoto no disponible, init abortado'
+                    : 'allowlist de la ola malformada, init abortado',
                 detail: `${partial.errors.length} error(es); primero: ${firstError.slice(0, 120)}`,
-                action: 'Revisá .pipeline/.partial-pause.json. ' +
-                    'El init NO sembró waves.json. Allowlist queda vacía hasta que se corrija.',
+                action: degradado
+                    ? 'El store del estado operativo no respondió. El init NO sembró nada y NO ' +
+                        'degradó a filesystem (CA-A7): la allowlist local puede tener autorizaciones ' +
+                        'ya revocadas. Rollback: `operational_state.durable: false` + reinicio.'
+                    : `Revisá ${etiqueta}. ` +
+                        'El init NO sembró el registro de olas. Allowlist queda vacía hasta que se corrija.',
             });
         }
         return {
-            action: 'aborted_invalid_partial',
-            reason: 'partial-pause malformado',
+            action: degradado ? 'aborted_remote_degraded' : 'aborted_invalid_partial',
+            reason: degradado ? 'store del estado operativo no disponible' : 'partial-pause malformado',
             errors: partial.errors,
         };
     }
@@ -442,7 +508,7 @@ function initWavesFromPartial(opts = {}) {
     //    en intake). El desync-detector ya tolera este caso.
     if (partial.action === 'noop_no_partial' || partial.allowedIssues.length === 0) {
         const reason = partial.action === 'noop_no_partial'
-            ? 'no hay .partial-pause.json'
+            ? `no hay allowlist en ${labelFor(backend().KEYS.PARTIAL_PAUSE)}`
             : 'allowlist vacía';
         logInfo(`Nada para sembrar (${reason}) — no-op.`);
         return {
@@ -535,14 +601,24 @@ function initWavesFromPartial(opts = {}) {
         };
     }
 
-    // 6. Persistir via lib/waves.js. Usamos `saveState` interno (vía
-    //    `addIssueToWave` o el _internal export) NO — porque eso requeriría
-    //    crear la ola "vacía" primero y después agregar issues uno a uno.
-    //    En cambio, usamos `atomicWriteFile` directo con el state completo.
+    // 6. Persistir. Usamos `saveState` interno (vía `addIssueToWave` o el
+    //    `_internal` export) NO — porque eso requeriría crear la ola "vacía"
+    //    primero y después agregar issues uno a uno. En cambio escribimos el
+    //    state completo por la CAPA DE STORAGE (`operational-state-backend`).
     //    Esto es seguro porque:
     //      - validamos el state contra `validateStateStrict` antes de escribir.
-    //      - el write es atómico (tmp + fsync + rename + retry EPERM).
-    //      - no estamos pisando datos: `hasActiveWave` ya fue chequeado.
+    //      - en modo filesystem el backend delega en el mismo write atómico de
+    //        siempre (tmp + fsync + rename + retry EPERM).
+    //      - en modo remoto el write es un CAS contra la versión que leímos, así
+    //        que si otra instancia sembró entremedio perdemos la carrera en vez
+    //        de pisarla (CA-A4).
+    //      - no estamos pisando datos: `hasActiveWave` ya fue chequeado, y ahora
+    //        contra el MISMO sustrato donde vamos a escribir.
+    //
+    //    #5113 CA-C1 (rebote rev-1) — Antes esto era `waves.atomicWriteFile(...)`
+    //    directo: con el flag encendido escribía el disco local mientras el
+    //    pipeline leía el store, y el log decía "waves.json sembrado" sobre una
+    //    ola que nadie iba a ver.
     let waves;
     try {
         waves = require('../lib/waves');
@@ -636,34 +712,94 @@ function initWavesFromPartial(opts = {}) {
         });
     } catch {}
 
+    const destino = labelFor(backend().KEYS.WAVES);
     try {
-        waves.atomicWriteFile(wavesFile(), JSON.stringify(newState, null, 2));
+        // #5113 rev-8 — `version: null` significa "la clave NO existía", y la
+        // convención del backend para eso es `0` = create-once
+        // (`attribute_not_exists`), no "sin condición". Pasar el `null` crudo
+        // funcionaba de casualidad: el backend lo trataba como incondicional y
+        // rellenaba con la versión que él mismo leía (0), que da la misma
+        // condición. Desde esta revisión el write remoto sin versión se rechaza
+        // de plano, así que la intención se declara acá — que además es donde se
+        // sabe: quien leyó el estado es quien sabe si existía.
+        const expectedVersion = wavesState.version === null || wavesState.version === undefined
+            ? 0
+            : wavesState.version;
+        const write = backend().writeKey(backend().KEYS.WAVES, newState, expectedVersion);
+        if (write && write.conflict) {
+            // Otra instancia sembró entre nuestra lectura y nuestro write. NO se
+            // reintenta ni se fuerza: el estado que quedó es el de la otra
+            // instancia y pisarlo sería exactamente el lost update que el CAS
+            // viene a impedir. El próximo boot lee `hasActiveWave` y hace no-op.
+            logWarn(`seed descartado por conflicto de versión en ${destino}: otra instancia ` +
+                'sembró primero. No se pisa (CA-A4).');
+            return {
+                action: 'noop_already_seeded',
+                reason: 'otra instancia sembró primero (conflicto de versión)',
+            };
+        }
+        if (write && write.ok === false) {
+            throw write.error || new Error('escritura rechazada por la capa de storage');
+        }
         waves.invalidateCache();
     } catch (err) {
-        logWarn(`write atómico de waves.json falló: ${err.message}`);
+        // #5113 rev-12 — Un fallo del STORE durante el write no es un
+        // `waves.json` corrupto. El rótulo importa porque el pulpo lo traduce a
+        // una acción para el operador: `aborted_waves_corrupt` le dice
+        // "restaurá desde archived/", que es exactamente la acción equivocada
+        // para un timeout de DynamoDB (restauraría estado viejo sobre un store
+        // que está sano y sólo no respondía). `aborted_remote_degraded` ya
+        // existía en el vocabulario de este módulo y no se usaba en este camino.
+        const degradadoRemoto = esFalloDeSustratoRemoto();
+        logWarn(`write del registro de olas falló (${destino}): ${err.message}`);
         if (!skipAlert) {
             notifyOnceForBoot({
                 level: 'error',
                 component: 'init-waves',
-                message: 'write atómico de waves.json falló',
+                message: 'write del registro de olas falló',
                 detail: err.message.slice(0, 200),
-                action: 'Revisá permisos/espacio en disco. Pipeline puede quedar con allowlist vacía.',
+                action: degradadoRemoto
+                    ? 'El estado operativo externo no respondió. NO restaures desde archived/: ' +
+                      'el registro local no está corrupto. Revisá el store (o volvé ' +
+                      '`operational_state.durable` a `false` siguiendo el runbook de cutover) y reintentá.'
+                    : `Revisá el sustrato del estado operativo (${destino}). ` +
+                      'Pipeline puede quedar con allowlist vacía.',
             });
         }
         return {
-            action: 'aborted_waves_corrupt',
+            action: degradadoRemoto ? 'aborted_remote_degraded' : 'aborted_waves_corrupt',
             reason: `write falló: ${err.message}`,
             errors: [err.message],
         };
     }
 
-    logInfo(`waves.json sembrado: ola #${waveNumber} con ${partial.allowedIssues.length} issue(s).`);
+    logInfo(`registro de olas sembrado en ${destino}: ola #${waveNumber} con ${partial.allowedIssues.length} issue(s).`);
     return {
         action: 'seeded',
         seededWave,
         waveNumber,
         allowlist: partial.allowedIssues,
     };
+}
+
+/**
+ * ¿El fallo que acabamos de ver viene del sustrato REMOTO y no del archivo?
+ *
+ * Se le pregunta al backend por la clave concreta (`waves`), no por un flag
+ * global: con la degradación llaveada (#5113 rev-12 R-2) esto distingue "el
+ * store no respondió" de "el JSON local está roto". Ante cualquier duda
+ * devuelve `false`, que conserva el rótulo histórico.
+ *
+ * @returns {boolean}
+ */
+function esFalloDeSustratoRemoto() {
+    try {
+        const backend = require('../lib/operational-state-backend');
+        if (typeof backend.isRemote === 'function' && backend.isRemote() !== true) return false;
+        return typeof backend.isDegraded === 'function' && backend.isDegraded('waves') === true;
+    } catch {
+        return false;
+    }
 }
 
 module.exports = {
@@ -689,7 +825,8 @@ if (require.main === module) {
     const result = initWavesFromPartial({ dryRun });
     console.log(JSON.stringify(result, null, 2));
     // Exit code: 0 si no hubo error fatal, 2 si abortamos por inputs inválidos.
-    if (result.action === 'aborted_invalid_partial' || result.action === 'aborted_waves_corrupt') {
+    if (result.action === 'aborted_invalid_partial' || result.action === 'aborted_waves_corrupt'
+        || result.action === 'aborted_remote_degraded') {
         process.exit(2);
     }
     process.exit(0);

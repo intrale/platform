@@ -178,6 +178,11 @@ const fileLock = require('./lib/file-lock');
 const dispatchCause = require('./lib/dispatch-cause');
 // #5400 — traducción enum de causa → `kind` del watchdog (pura, testeable).
 const dispatchCauseKind = require('./lib/dispatch-cause-kind');
+// #5113 CA-UX2 — sustrato del estado operativo (registro de olas + allowlist).
+// El pulpo lo usa SÓLO para introspección (`describeMode`): quién lee y escribe
+// el estado sigue siendo `waves.js` / `partial-pause.js`. Con el flag apagado
+// (default) `describeMode()` devuelve `{mode:'fs'}` y no toca red ni driver.
+const opstateBackend = require('./lib/operational-state-backend');
 // #5400 rev-3 — brazo de RECOLECCIÓN de hechos del watchdog de despacho.
 // Vive en lib/ y con dependencias inyectadas porque era el único tramo del
 // circuito sin test, y ahí se colaron los tres bloqueantes de la review rev-2
@@ -9450,11 +9455,72 @@ function brazoLanzamiento(config) {
   }
 }
 
+/**
+ * #5113 CA-UX2 — Decisión PURA: ¿el sustrato del estado operativo explica el
+ * no-despacho de este ciclo?
+ *
+ * Sólo bloquea cuando se dan las DOS condiciones a la vez: el estado vive en el
+ * store remoto **y** el store degradó. En modo filesystem nunca bloquea, aunque
+ * haya un rastro viejo de degradación: en `fs` el estado se lee del disco local
+ * y una falla del store no frena nada (sería nombrar una causa falsa, que es el
+ * error opuesto y igual de caro).
+ *
+ * @param {{mode?:string, degraded?:boolean, lastError?:string|null}} desc
+ *        salida de `operational-state-backend.describeMode()`.
+ * @returns {{blocked:boolean, detalle:string}}
+ */
+function opstateDispatchGate(desc) {
+  const d = desc && typeof desc === 'object' ? desc : {};
+  if (d.mode !== 'remote' || d.degraded !== true) return { blocked: false, detalle: '' };
+  // CA-UX5 — qué está frenado, por qué, y cuál es el próximo paso. El label del
+  // enum (`dispatch-cause.js`) ya trae la acción de rollback; acá va la causa
+  // técnica concreta que el operador necesita para decidir si reintenta o vuelve.
+  const causa = typeof d.lastError === 'string' && d.lastError ? d.lastError : 'sin detalle';
+  return {
+    blocked: true,
+    detalle: `Estado operativo en el store remoto y el store no responde (${causa}) — `
+      + 'dispatch DENEGADO por fail-closed, no se degrada a filesystem. '
+      + 'Rollback: operational_state.durable: false + reinicio.',
+  };
+}
+
+/**
+ * `describeMode()` envuelto: la introspección del sustrato JAMÁS puede tumbar el
+ * brazo de lanzamiento. Ante cualquier error se devuelve el modo conocido y sin
+ * degradación, que es el que NO bloquea (fail-open de la CAUSA, no del gate: el
+ * gate real sigue siendo `isIssueAllowed`, que deniega por su cuenta).
+ */
+function safeDescribeOpstateMode() {
+  try {
+    return opstateBackend.describeMode();
+  } catch (e) {
+    log('lanzamiento', `[WARN] no se pudo describir el modo del estado operativo: ${e.message}`);
+    return { mode: 'fs', source: 'config', degraded: false, lastError: null };
+  }
+}
+
 function brazoLanzamientoImpl(config, _dcMark, _dcState) {
   // Circuit breaker de infra (#2305): si está abierto, no tomar nuevos issues.
   // Se reabre manualmente con `node .pipeline/resume.js` una vez validada la red.
   if (cbInfra.isOpen()) {
     _dcMark(dispatchCause.CAUSAS.CB_INFRA, 'Circuit breaker de infra abierto — dispatch suspendido hasta validar red');
+    _dcState.hayPendientes = countPendientesGlobal(config) > 0;
+    return;
+  }
+
+  // #5113 CA-UX2 — El estado operativo vive en el store remoto y el store no
+  // responde. El gate YA deniega solo (fail-closed de CA-A7: `isIssueAllowed`
+  // devuelve `false` cuando no puede leer la allowlist, y tiene prohibido
+  // degradar a filesystem). Lo que falta sin esto es el NOMBRE: la cola queda
+  // ociosa, ninguna causa conocida aplica y `resolveCause` cae en
+  // `anomalia_no_determinable` — "no sé por qué no despacho" justo en el
+  // momento en que la causa se conoce con precisión absoluta.
+  //
+  // Es introspección pura: no lee estado, no toca red. Con el flag apagado
+  // (default) `describeMode()` corta en `mode: 'fs'` y esto es un no-op.
+  const _opstate = opstateDispatchGate(safeDescribeOpstateMode());
+  if (_opstate.blocked) {
+    _dcMark(dispatchCause.CAUSAS.ESTADO_REMOTO_DEGRADADO, _opstate.detalle);
     _dcState.hayPendientes = countPendientesGlobal(config) > 0;
     return;
   }
@@ -9613,8 +9679,28 @@ function brazoLanzamientoImpl(config, _dcMark, _dcState) {
 
     // 0a. PARTIAL PAUSE (#2490): si hay allowlist activa, saltar issues fuera de ella.
     // El archivo se queda en pendiente/ — no se archiva ni penaliza.
-    if (!partialPause.isIssueAllowed(issue)) {
-      const mode = partialPause.getPipelineMode();
+    //
+    // #5113 (rev-12, R-6) — UNA lectura del estado por TICK, reusando el
+    // snapshot que ya tomó el cálculo de prioridades (`ppStateForPriority`,
+    // arriba en esta misma función). rev-6 bajó de 2N a N lecturas; el objetivo
+    // real es 1.
+    //
+    // Por qué importa: en modo remoto cada `getPipelineMode()` es un `spawnSync`
+    // BLOQUEANTE de la AWS CLI (`timeout: 20000`), y las lecturas degradadas
+    // NUNCA se memoizan (decisión explícita del backend: un fallo no se cachea).
+    // Con la cola real (~200 pendientes) eso eran hasta 200 spawns bloqueantes
+    // por tick; en un blackhole de red el tick supera los 180 s del watchdog de
+    // liveness → respawn en frío → el bucle de muerte documentado arriba.
+    //
+    // La política del gate no cambia: `isIssueAllowedInState` es la variante
+    // PURA de la misma tabla de verdad — mismo fail-closed de #5060 sobre
+    // `running` — y es exactamente el snapshot con el que ya se ordenó el lote,
+    // así que gate y prioridad quedan además coherentes entre sí. Un cambio de
+    // allowlist a mitad de tick se ve en el tick siguiente, igual que antes lo
+    // veían de forma inconsistente unos candidatos sí y otros no.
+    const modeState = ppStateForPriority;
+    if (!partialPause.isIssueAllowedInState(issue, modeState)) {
+      const mode = modeState;
       if (mode.mode === 'partial_pause') {
         log('lanzamiento', `#${issue} skipped by partial_pause (allowed: ${mode.allowedIssues.map(i => `#${i}`).join(', ')})`);
         // #4751 — el modo de ejecución en olas (allowlist) es un estado ESPERADO
@@ -20956,6 +21042,28 @@ function brazoIntake(config) {
   // Si es pausa completa, no hacer intake.
   const pipelineMode = partialPause.getPipelineMode();
   if (pipelineMode.mode === 'paused') return;
+
+  // #5113 rev-12 (R-5) — FAIL-CLOSED bajo degradación del estado operativo.
+  //
+  // `allowlistSet` es `null` para TODO lo que no sea `partial_pause`, y con el
+  // store caído el modo colapsa a `'running'` por diseño (`partial-pause.js`:
+  // el estado local stale es una autorización revocada, no un dato viejo). El
+  // resultado era `null` ⇒ sin filtro ⇒ el intake ingiriendo el backlog `Ready`
+  // COMPLETO: workfiles en `pendiente/` y mutaciones de labels en GitHub, sin
+  // saber cuál es la ola vigente. No dispara agentes (el gate por issue aguanta
+  // más abajo), pero es la forma de #5060 una capa más arriba y ensucia la cola
+  // justo durante el incidente — trabajo que después hay que deshacer a mano.
+  //
+  // El issue endureció los dos gates PUROS (`isIssueAllowedInState` /
+  // `isSkillAllowedInState`) y no revisó a los consumidores que miran sólo
+  // `mode`. Éste MUTA estado, así que la degradación tiene que frenarlo.
+  if (pipelineMode.degraded === true) {
+    log('intake', 'estado operativo DEGRADADO — intake omitido (fail-closed). '
+      + 'No se puede determinar la ola vigente: ingerir el backlog Ready ensuciaría la cola '
+      + 'y mutaría labels en GitHub. Se reintenta en el próximo ciclo.');
+    return;
+  }
+
   const allowlistSet = pipelineMode.mode === 'partial_pause'
     ? new Set(pipelineMode.allowedIssues.map(String))
     : null;
@@ -24588,6 +24696,18 @@ async function brazoDesbloqueoImpl(config) {
   // ciclo consultando sus dependencias en GitHub.
   const pipelineMode = partialPause.getPipelineMode();
   if (pipelineMode.mode === 'paused') return;
+
+  // #5113 rev-12 (R-5, hermano del intake) — mismo fail-closed, misma razón:
+  // con el store degradado `allowlistSet` queda `null` y los reaps de este brazo
+  // dejan de acotarse a la ola vigente. Estos reaps QUITAN labels de bloqueo en
+  // GitHub: aplicados sobre todo el universo de markers destraban issues que no
+  // son de la ola. Bajo degradación no se toca nada; se reintenta al próximo tick.
+  if (pipelineMode.degraded === true) {
+    log('desbloqueo', 'estado operativo DEGRADADO — brazo omitido (fail-closed): '
+      + 'sin ola vigente conocida, los reaps mutarían labels fuera de alcance.');
+    return;
+  }
+
   const allowlistSet = pipelineMode.mode === 'partial_pause'
     ? new Set(pipelineMode.allowedIssues.map(String))
     : null;
@@ -25776,6 +25896,12 @@ async function mainLoop() {
       log('pulpo', `WARN [init-waves] fail-closed: .partial-pause.json malformado. ${(initResult.errors || []).slice(0, 3).join('; ')}`);
     } else if (initResult.action === 'aborted_waves_corrupt') {
       log('pulpo', `WARN [init-waves] fail-closed: waves.json corrupto. ${(initResult.errors || []).slice(0, 3).join('; ')}`);
+    } else if (initResult.action === 'aborted_remote_degraded') {
+      // #5113 rev-12 — Antes caía en el `else` genérico y se logueaba como
+      // "noop", indistinguible de un boot sano. Es lo contrario: el registro de
+      // olas NO quedó sembrado y la causa es el sustrato externo, no el archivo.
+      log('pulpo', `WARN [init-waves] fail-closed: estado operativo externo degradado — el registro de olas NO se sembró. `
+        + `NO restaurar desde archived/ (el registro local no está corrupto). ${(initResult.errors || []).slice(0, 3).join('; ')}`);
     } else if (initResult.action === 'noop_already_seeded') {
       log('pulpo', `[init-waves] noop — active_wave #${initResult.waveNumber} ya existente.`);
     } else {
@@ -27180,6 +27306,8 @@ if (process.env.PULPO_NO_AUTOSTART === '1') {
     resolveIntakeRepo,
     setMultiInstanceRouter,
     getMultiInstanceRouter,
+    // #5113 CA-UX2 — decisión pura del gate de sustrato del estado operativo.
+    opstateDispatchGate,
     // #4136 — brazo de archivado (frontera activo/histórico).
     brazoArchivado,
     // Incidente 2026-09-08 — expuestos para el test de regresión que ejercita el

@@ -519,6 +519,8 @@ test('CA-10 · SELF_EXEMPT: el sustrato del envoltorio y el propio guardrail no 
     const body = "const path=require('path');\nconst w = path.join(D, 'waves.json');\nconst p = path.join(D, '.partial-pause.json');";
     for (const rel of [
         'lib/operational-state.js', 'lib/waves.js', 'lib/partial-pause.js', 'lib/operational-state-lint.js',
+        // #5113 — capa de storage del estado operativo (filesystem vs store remoto).
+        'lib/operational-state-backend.js',
         // #5110 — sustrato del namespaceo por projectId.
         'lib/project-context.js', 'scripts/migrate-operational-state-namespace.js',
     ]) {
@@ -533,7 +535,13 @@ test('CA-10 · SELF_EXEMPT: el sustrato del envoltorio y el propio guardrail no 
     //   - el migrador MUEVE el layout plano a ese namespace.
     // Ambos manipulan los literales de estado por definición, igual que
     // `waves.js`. Auditarlos sería tautológico.
+    // #5113 suma una tercera entrada de SUSTRATO (no de consumidor):
+    //   - `lib/operational-state-backend.js` es la capa de storage que resuelve
+    //     entre filesystem y store remoto, y construye esos paths por
+    //     definicion. Sin la exencion, el guardrail bloquea en pre-commit al
+    //     propio modulo que implementa el control.
     assert.deepEqual([...I.SELF_EXEMPT].sort(), [
+        'lib/operational-state-backend.js',
         'lib/operational-state-lint.js',
         'lib/operational-state.js',
         'lib/partial-pause.js',
@@ -1198,11 +1206,97 @@ test('CA-1a · --report separa produccion de tests y emite fila de total', () =>
     installBin(root);
     placeJs(root, 'lib/prod.js', "const path=require('path');\nconst w = path.join(D, 'waves.json');");
     const out = runCli(root, ['--report']).stdout;
-    assert.match(out, /\| archivo \| scope \| path-level \| internal-bypass \| total \|/);
+    assert.match(out, /\| archivo \| scope \| path-level \| internal-bypass \| async-gate \| paths-indirect \| total \|/);
     assert.match(out, /subtotal produccion/);
     assert.match(out, /subtotal tests/);
     assert.match(out, /\*\*TOTAL\*\*/);
-    assert.match(out, /`lib\/prod\.js` \| produccion \| 1 \| 0 \| 1/);
+    assert.match(out, /`lib\/prod\.js` \| produccion \| 1 \| 0 \| 0 \| 0 \| 1/);
+});
+
+// -----------------------------------------------------------------------------
+// #5113 CA-A3 · regla `async-gate` — casos NEGATIVOS
+//
+// El criterio exige evidencia de que el guardrail FALLA al introducir el
+// patron, no solo de que pasa cuando no esta. Un lint que nunca se vio en rojo
+// es indistinguible de un lint roto: estos tests son esa evidencia.
+//
+// Lo que se protege: `if (ops.isIssueAllowed(n))` sobre una Promise es SIEMPRE
+// `true`. Convertir el gate a async lo vuelve fail-OPEN sin poner en rojo
+// ningun test de dominio — es el incidente #5060 reproducido por un refactor
+// que parece inocente.
+// -----------------------------------------------------------------------------
+
+test('CA-A3 · el gate consumido con `await` es una violation y el CLI sale != 0', () => {
+    const root = makeTmpPipeline();
+    installBin(root);
+    // El `await` solo tiene sentido si el gate es thenable: escribirlo YA
+    // significa que alguien lo convirtio, o cree que lo es.
+    placeJs(root, 'lib/consumidor.js',
+        "const ops = require('./operational-state');\n"
+        + 'async function despachar(n) {\n'
+        + '    if (await ops.isIssueAllowed(n)) return true;\n'
+        + '    return false;\n'
+        + '}\n'
+        + 'module.exports = { despachar };');
+    const r = runCli(root, ['--check']);
+    assert.notEqual(r.code, 0, 'el guardrail DEBE romper el build ante un gate awaiteado');
+    assert.match(r.all, /async-gate/);
+});
+
+test('CA-A3 · declarar el gate como `async` es una violation en sus tres formas', () => {
+    for (const forma of [
+        'async function isIssueAllowed(n) { return true; }',
+        'module.exports = { isSkillAllowed: async (s) => true };',
+        'const isIssueAllowedInState = async (n, st) => true;',
+    ]) {
+        const root = makeTmpPipeline();
+        installBin(root);
+        placeJs(root, 'lib/gate.js', forma);
+        const r = runCli(root, ['--check']);
+        assert.notEqual(r.code, 0, `declaracion async no detectada: ${forma}`);
+        assert.match(r.all, /async-gate/);
+    }
+});
+
+test('CA-A3 · las cuatro funciones del gate estan cubiertas, no solo las dos principales', () => {
+    // `...InState` es la variante que consume el Pulpo por tick para N issues:
+    // dejarla afuera del control seria dejar afuera el path caliente.
+    for (const nombre of ['isIssueAllowed', 'isIssueAllowedInState', 'isSkillAllowed', 'isSkillAllowedInState']) {
+        const root = makeTmpPipeline();
+        installBin(root);
+        placeJs(root, 'lib/c.js', `async function f(x) { return await ops.${nombre}(x); }`);
+        const r = runCli(root, ['--check']);
+        assert.notEqual(r.code, 0, `${nombre} no esta cubierta por la regla async-gate`);
+    }
+});
+
+test('CA-A3 · el consumo SINCRONICO correcto del gate NO es violation (sin falsos positivos)', () => {
+    const root = makeTmpPipeline();
+    installBin(root);
+    // Esta es la forma correcta y es la que escribe todo el pipeline hoy: si la
+    // regla la marcara, el guardrail seria inusable y terminaria desactivado.
+    placeJs(root, 'lib/consumidor-ok.js',
+        "const ops = require('./operational-state');\n"
+        + 'function despachar(n) {\n'
+        + '    if (!ops.isIssueAllowed(n)) return false;\n'
+        + '    return ops.isSkillAllowedInState("pipeline-dev", st);\n'
+        + '}\n'
+        + 'module.exports = { despachar };');
+    const r = runCli(root, ['--check']);
+    assert.equal(r.code, 0, `el uso sincronico correcto no puede ser violation:\n${r.all}`);
+});
+
+test('CA-A3 · el anti-patron NOMBRADO EN PROSA no se auto-reporta (linea comentada)', () => {
+    const root = makeTmpPipeline();
+    installBin(root);
+    // El propio contrato documenta el anti-patron; si la regla marcara los
+    // comentarios, documentar el peligro seria imposible.
+    placeJs(root, 'lib/doc.js',
+        '// Prohibido: `await ops.isIssueAllowed(n)` convierte el gate en fail-open.\n'
+        + '// async function isSkillAllowed(s) { ... }  <- tampoco\n'
+        + 'module.exports = {};');
+    const r = runCli(root, ['--check']);
+    assert.equal(r.code, 0, `una mencion en comentario no puede ser violation:\n${r.all}`);
 });
 
 test('CA-1a · classifyScope distingue produccion de tests', () => {
@@ -1669,4 +1763,81 @@ test('rebote rev-1 · el eco del fragmento de JSON.parse queda acotado (CA-3b: n
     assert.equal(r.code, 2);
     const linea = r.all.split('\n').find(l => l.includes('JSON inválido')) || '';
     assert.ok(linea.length < 400, `el mensaje no debe volcar el archivo (largo: ${linea.length})`);
+});
+
+// -----------------------------------------------------------------------------
+// #5113 CA-C1 · regla `paths-indirect` — casos NEGATIVOS
+//
+// El falso negativo que costo el rebote rev-1. La regla `path-level` matchea el
+// LITERAL de estado; pedirle el path al dueno con `_paths()` no deja ningun
+// literal en el archivo, asi que un lector/escritor fisico entero quedaba
+// invisible para el control y el grep salia limpio:
+//
+//     function wavesFile() { return require('../lib/waves')._paths().WAVES_FILE; }
+//     fs.readFileSync(wavesFile(), 'utf8');
+//
+// Eso es exactamente lo que hacia `scripts/init-waves-from-partial.js`: con el
+// flag de cutover encendido sembraba una ola en el disco local mientras el
+// pipeline leia el store remoto — dos fuentes de verdad, control en verde.
+// -----------------------------------------------------------------------------
+
+test('CA-C1 · pedir el path fisico con `_paths()` desde el require es una violation', () => {
+    const root = makeTmpPipeline();
+    installBin(root);
+    placeJs(root, 'scripts/seeder.js',
+        "const fs = require('fs');\n"
+        + "function wavesFile() { return require('../lib/waves')._paths().WAVES_FILE; }\n"
+        + "module.exports = () => JSON.parse(fs.readFileSync(wavesFile(), 'utf8'));");
+    const r = runCli(root, ['--check']);
+    assert.notEqual(r.code, 0, 'el bypass por `_paths()` DEBE romper el build');
+    assert.match(r.all, /paths-indirect/);
+});
+
+test('CA-C1 · `_paths()` sobre un binding del sustrato tambien es violation', () => {
+    for (const forma of [
+        "const marker = partialPause._paths().PARTIAL_FILE;",
+        "const f = waves._paths().WAVES_FILE;",
+        "function partialFile() { return require('./partial-pause')._paths().PARTIAL_FILE; }",
+    ]) {
+        const root = makeTmpPipeline();
+        installBin(root);
+        placeJs(root, 'lib/consumidor.js', forma);
+        const r = runCli(root, ['--check']);
+        assert.notEqual(r.code, 0, `bypass no detectado: ${forma}`);
+        assert.match(r.all, /paths-indirect/);
+    }
+});
+
+test('CA-C1 · la remediacion nombra la capa de storage, no la fachada', () => {
+    // Si el mensaje mandara a `operational-state.js`, el proximo dev migraria a
+    // la FACHADA — que es justo lo que el seeder no puede usar (necesita el
+    // payload crudo y la nocion de "ausente"). El destino correcto es el
+    // sustrato, y el mensaje tiene que decirlo.
+    const root = makeTmpPipeline();
+    installBin(root);
+    placeJs(root, 'lib/c.js', "const f = waves._paths().WAVES_FILE;");
+    const r = runCli(root, ['--check']);
+    assert.match(r.all, /operational-state-backend/);
+});
+
+test('CA-C1 · usar la capa de storage NO es violation (sin falsos positivos)', () => {
+    const root = makeTmpPipeline();
+    installBin(root);
+    // Esta es la forma correcta post-#5113 y es la que escribe el seeder hoy.
+    placeJs(root, 'scripts/seeder-ok.js',
+        "const backend = require('../lib/operational-state-backend');\n"
+        + 'module.exports = () => backend.readKeyWithVersion(backend.KEYS.WAVES);');
+    const r = runCli(root, ['--check']);
+    assert.equal(r.code, 0, `el uso del sustrato no puede ser violation:\n${r.all}`);
+});
+
+test('CA-C1 · `_paths()` nombrado en PROSA no se auto-reporta', () => {
+    const root = makeTmpPipeline();
+    installBin(root);
+    placeJs(root, 'lib/doc.js',
+        '// Prohibido: `waves._paths().WAVES_FILE` para leer el estado con fs.\n'
+        + "// Tampoco `require('./partial-pause')._paths()`.\n"
+        + 'module.exports = {};');
+    const r = runCli(root, ['--check']);
+    assert.equal(r.code, 0, `una mencion en comentario no puede ser violation:\n${r.all}`);
 });
