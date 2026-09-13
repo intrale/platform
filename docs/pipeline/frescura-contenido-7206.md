@@ -19,6 +19,12 @@ como `descartada: sello-vigente`, sin crear work-files de verificación.
 El gate de delivery sigue cerrado sobre su dropfile canónico hasta que el
 barrido promueve el veredicto nuevo. Ningún label declarado prueba vigencia.
 
+El evento `re-ratificado` debe persistirse antes de encolar el éxito. Si la
+auditoría falla, el productor devuelve un error reintentable sin publicar
+`qa:passed` ni gastar contador; el drenador conserva la orden pendiente.
+La regresión en `.pipeline/tests/rebote-sello-7206.test.js` cubre el fallo de
+escritura y la recuperación posterior con fuente y los cuatro IDs de Git.
+
 Las generaciones se persisten en `.<issue>.gate-generation` antes de encolar,
 con lock de archivo y PID para evitar empates entre productores. La contención
 falla cerrada; un lock abandonado queda disponible para diagnóstico operativo.
