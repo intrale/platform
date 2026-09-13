@@ -137,6 +137,9 @@ function evaluateFreshnessGate({
             shaVerificado: stale.head_actual || null,
             headSellado: stale.head_sellado || null,
             headActual: stale.head_actual || null,
+            treeSellado: stale.tree_sellado || null,
+            treeActual: stale.tree_actual || null,
+            frescura: stale.frescura || null,
             exento: stale.exento === true,
         };
     }
@@ -152,6 +155,9 @@ function evaluateFreshnessGate({
             motivo: stale.motivo,
             headSellado: stale.head_sellado,
             headActual: stale.head_actual,
+            treeSellado: stale.tree_sellado,
+            treeActual: stale.tree_actual,
+            cwd,
         });
     } catch (e) {
         reparacionError = (e && e.message ? String(e.message) : String(e)).slice(0, 300);
@@ -164,6 +170,8 @@ function evaluateFreshnessGate({
     const stderr = [`⛔ Entrega frenada — ${motivoLegible}`];
     if (reparacionError) {
         stderr.push(`⛔ veredicto caduco y no se pudo encolar la reparación: ${reparacionError}`);
+    } else if (repar?.reratificado) {
+        stderr.push('QA re-ratificado por sello vigente; entrega pendiente de promover el veredicto canónico.');
     } else {
         stderr.push(`⛔ veredicto caduco — ${escalado
             ? `escalado a needs-human tras ${intentos} re-encolado(s) automático(s)`
@@ -178,6 +186,9 @@ function evaluateFreshnessGate({
         motivo: stale.motivo, motivoLegible,
         headSellado: stale.head_sellado || null,
         headActual: stale.head_actual || null,
+        treeSellado: stale.tree_sellado || null,
+        treeActual: stale.tree_actual || null,
+        reratificado: repar?.reratificado === true,
         escalado, intentos,
         reparacionOk: !!(repar && repar.ok),
         reparacionError,

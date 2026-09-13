@@ -100,6 +100,22 @@ const meta = (over = {}) => ({
     ...over,
 });
 
+test('#7206 recibo persiste tras materializar destino y listo cuenta como vivo cross-fase', () => {
+    const file = path.join(PIPELINE, 'desarrollo', 'verificacion', 'procesado', '999706.qa');
+    const fs = fakeFs({ [file]: JSON.stringify({ resultado: 'rechazado', motivo: 'defecto' }) });
+    fs.renameSync = (src, dest) => { fs.files[dest] = fs.files[src]; delete fs.files[src]; };
+    const { deps } = build({ fs });
+    assert.equal(deps.rebote(999706, meta()), true);
+    const receipt = require('js-yaml').load(fs.files[file]);
+    assert.equal(receipt.rebote_emitido_por, 'reconciler');
+    assert.equal(receipt.rebote_emitido_destino, 'dev');
+    assert.equal(receipt.rebote_emitido_numero, 1);
+    assert.ok(receipt.rebote_emitido_ts);
+    fs.files[path.join(PIPELINE, 'desarrollo', 'verificacion', 'listo', '999707.qa')] = '{}';
+    assert.equal(deps.issueLiveElsewhere('999707', 'desarrollo', 'aprobacion'), true);
+    assert.equal(deps.issueLiveElsewhere('999708', 'desarrollo', 'aprobacion'), false);
+});
+
 // ─── resolveRebote: destino vía rebote-destino.js ───────────────────────────
 // #6745 (CA-3) - `resolveReboteDestino` sumo la salida `degradadoACodigo`.
 // Este carril lo invoca SIEMPRE con `esReboteDeInfra: false`, asi que el
