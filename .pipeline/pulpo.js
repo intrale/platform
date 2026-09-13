@@ -9092,6 +9092,10 @@ function drenarRequeueVerificacion(config, { comentar = ghCommentOnIssue, resolv
           }
         } catch { /* El delivery propaga el gate al PR cuando vuelve a correr. */ }
         const ratified = qaEvidenceSeal.reratifySealedVerdict({ pipelineDir: PIPELINE, issue, cwd, prNumber });
+        if (ratified.reintentable) {
+          log('caducidad', `#${issue}: auditoría no persistida; orden conservada para reintentar.`);
+          continue;
+        }
         if (ratified.ok) {
           fs.mkdirSync(doneDir, { recursive: true });
           const donePath = path.join(doneDir, fname);

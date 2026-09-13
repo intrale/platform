@@ -169,6 +169,21 @@ test('drenador real descarta la revocación vieja sin crear nuevos work-files', 
   seal.requeueVerification({ pipelineDir: f.pipelineDir, issue: ISSUE, motivo: 'head-desincronizado' });
   const name = `${ISSUE}-requeue.json`;
   fs.writeFileSync(path.join(pending, name), JSON.stringify({ tipo: seal.REQUEUE_TYPE, issue: ISSUE, intentos: 1 }));
+  // Falla real del append, sin afectar otras rutas: la orden debe sobrevivir.
+  const auditPath = path.join(f.pipelineDir, 'logs', 'audit-seal-caducidad.jsonl');
+  fs.unlinkSync(auditPath);
+  fs.mkdirSync(auditPath);
+  const originalOrder = fs.readFileSync(path.join(pending, name), 'utf8');
+  pulpo.drenarRequeueVerificacion({ pipelines: { desarrollo: { skills_por_fase: { verificacion: ['qa'] } } } }, {
+    comentar: () => assert.fail('No debe revocar'), resolveCwd: () => f.cwd, resolvePr: () => 999707,
+  });
+  assert.equal(fs.readFileSync(path.join(pending, name), 'utf8'), originalOrder);
+  assert.ok(!fs.existsSync(path.join(path.dirname(pending), 'procesado', name)));
+  assert.ok(!fs.existsSync(path.join(f.pipelineDir, 'desarrollo/verificacion/pendiente', `${ISSUE}.qa`)));
+  const githubQueue = path.join(f.pipelineDir, 'servicios/github/pendiente');
+  assert.ok(fs.readdirSync(githubQueue).every(n =>
+    JSON.parse(fs.readFileSync(path.join(githubQueue, n))).label !== 'qa:passed'));
+  fs.rmdirSync(auditPath);
   pulpo.drenarRequeueVerificacion({ pipelines: { desarrollo: { skills_por_fase: { verificacion: ['qa'] } } } }, {
     comentar: () => assert.fail('No debe revocar'), resolveCwd: () => f.cwd, resolvePr: () => 999707,
   });
@@ -180,4 +195,28 @@ test('drenador real descarta la revocación vieja sin crear nuevos work-files', 
   const orders = fs.readdirSync(queue).map(n => JSON.parse(fs.readFileSync(path.join(queue, n))));
   assert.ok(orders.some(o => o.label === 'qa:passed' && o.target === 'issue'));
   assert.ok(orders.some(o => o.label === 'qa:passed' && o.target === 'pr'));
+  const event = fs.readFileSync(auditPath, 'utf8').trim().split('\n').map(line => JSON.parse(line))
+    .find(entry => entry.evento === 're-ratificado');
+  assert.equal(event.evento, 're-ratificado');
+  assert.equal(event.fuente, path.join(f.pipelineDir, 'desarrollo/verificacion/procesado', `${ISSUE}.qa`));
+  for (const key of ['head_sellado', 'head_actual', 'tree_sellado', 'tree_actual']) {
+    assert.match(event[key], /^[a-f0-9]{40}$/);
+  }
+});
+
+test('productor no publica éxito sin auditoría y permite reintentar sin gastar contador', t => {
+  const f = fixture(t);
+  const blocked = path.join(f.pipelineDir, 'logs');
+  fs.writeFileSync(blocked, 'no es directorio');
+  const result = seal.requeueVerification({ ...f.params, motivo: 'head-desincronizado' });
+  assert.equal(result.ok, false);
+  assert.equal(result.reratificado, false);
+  assert.equal(result.reintentable, true);
+  assert.equal(result.motivo, 'auditoria-no-persistida');
+  assert.equal(result.intentos, 0);
+  assert.deepEqual(result.ordenes, []);
+  assert.ok(!fs.existsSync(path.join(f.pipelineDir, 'servicios/github/pendiente')));
+  assert.ok(!fs.existsSync(path.join(f.pipelineDir, 'desarrollo/verificacion', `.${ISSUE}.seal-retries`)));
+  fs.unlinkSync(blocked);
+  assert.equal(seal.requeueVerification(f.params).reratificado, true);
 });

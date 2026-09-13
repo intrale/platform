@@ -1441,6 +1441,12 @@ function reratifySealedVerdict({ pipelineDir, issue, cwd, prNumber, ahora } = {}
   const vig = findVigentSealedVerdict({ pipelineDir, issue, cwd });
   if (!vig.vigente) return { ok: false, ...vig, ordenes: [] };
   const issueNum = normalizeIssueNumber(issue);
+  // El consumidor puede tomar las órdenes inmediatamente: la auditoría es previa.
+  const audited = appendAudit(pipelineDir, CADUCIDAD_AUDIT_FILE, {
+    ts: new Date().toISOString(), issue: issueNum, evento: 're-ratificado', ...vig,
+  });
+  if (!audited) return { ...vig, ok: false, reratificado: false, escalado: false,
+    reintentable: true, motivo: 'auditoria-no-persistida', ordenes: [] };
   const stamp = nextGateStamp(pipelineDir, issueNum, ahora);
   const queue = path.join(pipelineDir, 'servicios', 'github', 'pendiente');
   const ordenes = [];
@@ -1455,7 +1461,6 @@ function reratifySealedVerdict({ pipelineDir, issue, cwd, prNumber, ahora } = {}
     action: 'comment', issue: issueNum,
     body: `QA re-ratificado por sello vigente (${vig.frescura}): ${vig.head_sellado} / árbol ${vig.tree_sellado} → ${vig.head_actual} / árbol ${vig.tree_actual}. Fuente: verificacion/${path.basename(path.dirname(vig.fuente))}/${issueNum}.qa. Sin nueva escalada.`,
   }));
-  appendAudit(pipelineDir, CADUCIDAD_AUDIT_FILE, { ts: new Date().toISOString(), issue: issueNum, evento: 're-ratificado', ...vig });
   return { ...vig, ok: true, escalado: false, reratificado: true, motivo: 'sello-vigente', ordenes };
 }
 
@@ -1693,7 +1698,7 @@ function requeueVerification({ root, pipelineDir, issue, motivo, headSellado, he
   // CA-9 — el contador se lee ANTES de re-encolar.
   const previo = readSealRetries({ pipelineDir: dir, issue: issueNum });
   const reratificado = reratifySealedVerdict({ pipelineDir: dir, issue: issueNum, cwd, ahora });
-  if (reratificado.ok) return { ...reratificado, intentos: previo.intentos };
+  if (reratificado.ok || reratificado.reintentable) return { ...reratificado, intentos: previo.intentos };
   const stamp = nextGateStamp(dir, issueNum, ts);
 
   // rev-4 (D3) — el testigo de un solo uso (`writeStaleStamp`) ya NO se escribe
