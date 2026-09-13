@@ -4782,7 +4782,11 @@ function brazoBarrido(config) {
           try {
             reencoladoAbierto = qaEvidenceSeal.hasOpenRequeue({ pipelineDir: PIPELINE, issue }) === true;
           } catch { reencoladoAbierto = true; }
-          log('barrido', reencoladoAbierto
+          const sealCwd = sealedVerdictWorktree(issue, config);
+          const vigente = sealCwd && qaEvidenceSeal.findVigentSealedVerdict({ pipelineDir: PIPELINE, issue, cwd: sealCwd }).vigente;
+          log('barrido', vigente
+            ? `#${issue} entrega frenada por veredicto caduco pero con sello vigente — sin nueva escalada.`
+            : reencoladoAbierto
             ? `♻️ #${issue} entrega frenada por veredicto de QA caduco — sin rebote ni rev++: la re-verificación ya está encolada.`
             : `⛔ #${issue} entrega frenada por veredicto de QA caduco AGOTADO — sin rebote ni rev++: escalado a needs-human con ficha de decisión (no hay re-verificación encolada).`);
           continue;
@@ -6359,6 +6363,17 @@ function brazoBarrido(config) {
               ? ' [degradado infra→codigo: la accion pedida no la puede ejecutar ningun skill de esta fase]'
               : (infraDowngradedByFinal ? ` [infra descartado: ${infraDowngradedByFinal}]` : '');
             log('barrido', `#${issue} RECHAZADO en ${fase} → devuelto a ${faseDestino} (rebote ${nuevoReboteNumero}/${MAX_REBOTES})${porDegradado}`);
+            // #7206: el destino ya existe. El movimiento común a procesado/
+            // preserva este recibo; infra no pasa por esta rama.
+            for (const a of archivos) {
+              try {
+                const prev = readYamlSafe(a.path);
+                if (prev?.resultado === 'rechazado') writeYaml(a.path, { ...prev,
+                  rebote_emitido_por: 'barrido', rebote_emitido_ts: new Date().toISOString(),
+                  rebote_emitido_destino: faseDestino, rebote_emitido_numero: nuevoReboteNumero,
+                });
+              } catch (e) { log('barrido', `#${issue}: no se pudo persistir recibo de rebote: ${e.message}`); }
+            }
           }
 
           // CLEANUP DOWNSTREAM: limpiar archivos residuales del issue en fases posteriores.
@@ -8988,7 +9003,14 @@ function reboteVerificacionABuild(issue, pipelineName, preflightResult) {
 // `comentar` para que los tests pasen un stub que sólo acumule llamadas en vez
 // de publicar en el issue público real. El default sigue siendo el canal real,
 // así que producción no cambia de comportamiento.
-function drenarRequeueVerificacion(config, { comentar = ghCommentOnIssue } = {}) {
+function sealedVerdictWorktree(issue, config) {
+  try {
+    const resolution = resolveExistingWorktree({ ROOT, issue: String(issue), skill: 'pipeline-dev', config, allowAutoRecovery: false });
+    return resolution.found ? resolution.worktreePath : null;
+  } catch { return null; }
+}
+
+function drenarRequeueVerificacion(config, { comentar = ghCommentOnIssue, resolveCwd = sealedVerdictWorktree, resolvePr = null } = {}) {
   const pendDir = path.join(PIPELINE, ...qaEvidenceSeal.REQUEUE_QUEUE_DIR);
   const doneDir = path.join(PIPELINE, ...qaEvidenceSeal.REQUEUE_DONE_DIR);
   let ordenes;
@@ -9055,6 +9077,36 @@ function drenarRequeueVerificacion(config, { comentar = ghCommentOnIssue } = {})
     }
 
     try {
+      const cwd = resolveCwd(issue, config);
+      if (cwd && qaEvidenceSeal.findVigentSealedVerdict({ pipelineDir: PIPELINE, issue, cwd }).vigente) {
+        let prNumber = null;
+        try {
+          if (resolvePr) prNumber = resolvePr(issue, cwd);
+          else {
+            const branch = require('./lib/worktree-resolver').resolveDevBranch(ROOT, issue, { config });
+            if (branch.ok) {
+              const prs = JSON.parse(execFileSync('gh', ['pr', 'list', '--head', branch.branch, '--json', 'number'],
+                { cwd, encoding: 'utf8', timeout: 10000, windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] }));
+              prNumber = prs[0]?.number;
+            }
+          }
+        } catch { /* El delivery propaga el gate al PR cuando vuelve a correr. */ }
+        const ratified = qaEvidenceSeal.reratifySealedVerdict({ pipelineDir: PIPELINE, issue, cwd, prNumber });
+        if (ratified.reintentable) {
+          log('caducidad', `#${issue}: auditoría no persistida; orden conservada para reintentar.`);
+          continue;
+        }
+        if (ratified.ok) {
+          fs.mkdirSync(doneDir, { recursive: true });
+          const donePath = path.join(doneDir, fname);
+          fs.writeFileSync(`${donePath}.tmp`, JSON.stringify({ ...orden, descartada: 'sello-vigente' }));
+          fs.renameSync(`${donePath}.tmp`, donePath);
+          fs.unlinkSync(ordenPath);
+          log('caducidad', `#${issue}: sello vigente (${ratified.frescura}) — orden descartada, qa:passed re-ratificado. Sello ${ratified.head_sellado}/tree ${ratified.tree_sellado}; HEAD ${ratified.head_actual}/tree ${ratified.tree_actual}`);
+          drenadas += 1;
+          continue;
+        }
+      }
       const faseDir = fasePath('desarrollo', 'verificacion');
       // SEC (#6496, rebote security — A03: prompt injection de segundo orden).
       // `motivo_legible` era texto libre del JSON de la cola (hasta 400 chars) y
@@ -9073,6 +9125,8 @@ function drenarRequeueVerificacion(config, { comentar = ghCommentOnIssue } = {})
       const motivoLegible = qaEvidenceSeal.describeFreshnessFailure(orden.motivo);
       const headSellado = /^[0-9a-f]{40}$/.test(String(orden.head_sellado || '')) ? String(orden.head_sellado) : 'desconocido';
       const headActual = /^[0-9a-f]{40}$/.test(String(orden.head_actual || '')) ? String(orden.head_actual) : 'desconocido';
+      const treeSellado = /^[0-9a-f]{40}$/.test(String(orden.tree_sellado || '')) ? orden.tree_sellado : 'desconocido';
+      const treeActual = /^[0-9a-f]{40}$/.test(String(orden.tree_actual || '')) ? orden.tree_actual : 'desconocido';
       const motivoRechazo = [
         `${motivoLegible}`,
         '',
@@ -9137,6 +9191,7 @@ function drenarRequeueVerificacion(config, { comentar = ghCommentOnIssue } = {})
       }
 
       if (encoladas > 0) {
+        log('caducidad', `#${issue}: sello ${headSellado}/tree ${treeSellado}; HEAD ${headActual}/tree ${treeActual}`);
         log('caducidad', `♻️ #${issue}: veredicto de QA caduco (${qaEvidenceSeal.sanitizeFreshnessReason(orden.motivo)}) → verificación re-encolada (${encoladas} skill(s), intento ${intentoDeclarado}/${qaEvidenceSeal.MAX_SEAL_REQUEUES}). Sello ${headSellado.slice(0, 8)} ≠ HEAD ${headActual.slice(0, 8)}.`);
         comentar(issue, `♻️ La entrega se frenó sola: el veredicto de QA se había emitido contra el commit \`${headSellado.slice(0, 8)}\` y la rama ya está en \`${headActual.slice(0, 8)}\`. El pipeline volvió a pedir la verificación del código actual en vez de integrar algo que nadie revisó. No hace falta que hagas nada.`);
       } else {
