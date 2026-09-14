@@ -366,14 +366,85 @@ siempre. El cron de recordatorio lo cubre **sin relajar aquel gate**:
 
 ### Bloqueos reales vs recomendaciones
 
-El label `needs-human` se usa para dos cosas distintas, y mezclarlas mata la
-señal. Medición del 2026-08-01:
+El label `needs-human` se usó durante mucho tiempo para dos cosas distintas, y
+mezclarlas mata la señal. #5678 las separó en **tres** labels con roles
+disjuntos. Medición del **2026-09-09** (día del cambio de código de #5691; se
+re-mide el día del `--apply`, ver más abajo):
 
 ```
-needs-human total ................. 880
-de esos tipo:recomendacion ........ 865
-bloqueos reales ...................  15   (1,7%)
+needs-human total ................. 27
+de esos tipo:recomendacion ........ 27   <- candidate set legacy a migrar
+bloqueos reales ...................  0
+tipo:recomendacion (universo) ..... 2143
+needs:triage-backlog .............. 751
 ```
+
+> La población es **móvil**: la medición del 2026-08-01 daba `880 / 865 / 15` y
+> la del 2026-08-07, `950 / 935 / 15`. Ninguna decisión del pipeline debe fijar
+> estas cifras como constante.
+
+#### Los tres labels
+
+| Label | Qué significa | ¿Bloquea? | ¿Notifica? | Quién lo aplica |
+|---|---|---|---|---|
+| `needs-human` | **Bloqueo real**: hay un agente frenado atrás esperando una acción del operador. | Sí — frena la ola activa. | **Sí**, Telegram + panel de bloqueados con pulso rojo. | El pipeline, vía `reportHumanBlock()` (marker en disco), o el operador a mano. Removerlo exige **origen autorizado declarado** ante `lib/label-guardrail.js` (#5690). |
+| `tipo:recomendacion` | **Discriminador de backlog**: el issue es una recomendación de `guru`/`security`/`po`/`ux`/`review`. Es lo que frena al pulpo mientras falta `recommendation:approved`. | Sí, al **intake** — el issue no entra a la ola. | No. | El agente que emite la recomendación. |
+| `needs:triage-backlog` | **Cola de triaje**: la recomendación espera que un humano la mire, sin nadie frenado atrás. | **No.** | **No.** | El agente que emite la recomendación (los 5 roles lo emiten junto con `tipo:recomendacion`), y el migrador de #5691 sobre el backlog legacy. |
+
+`recommendation:approved` es el **gate único** post-migración: es lo que un
+humano agrega desde el dashboard para que la recomendación entre al pipeline.
+`approve()` (`lib/recommendations.js`) agrega `recommendation:approved` +
+`needs-definition` y remueve los dos labels que frenan —`needs-human` y
+`needs:triage-backlog`—, **un label por invocación**.
+
+#### La migración del backlog legacy (#5691)
+
+`.pipeline/migrate-recomendaciones-legacy.js` mueve el candidate set legacy
+(`needs-human` + `tipo:recomendacion` sin `recommendation:approved`) a
+`needs:triage-backlog`. Puntos operativos:
+
+- **Dry-run por default.** `--apply` exige, además del flag, una confirmación
+  fuera de banda (`MIGRATE_5678_CONFIRM`, contrastada contra un secreto guardado
+  **fuera del repo**). Sin ella degrada a dry-run — fail-closed.
+  La **ubicación** del secreto es fija y la resuelve el sistema operativo
+  (`<home del SO>/.claude/secrets/migrate-5678-confirm.txt`, vía
+  `os.userInfo().homedir`): **no** la elige el entorno del invocador — ni por
+  una variable propia ni por `HOME`/`USERPROFILE`. Quien puede exportar
+  variables no puede proveer los dos lados de la comparación; su único grado de
+  libertad es el valor del secreto (hallazgo A01 de `security`, 2026-09-09).
+- **Write-ahead log** en `.pipeline/audit/migrate-5678-<ts>.jsonl` (append, dos
+  registros por mutación). Habilita reanudar (`--resume`) y revertir
+  (`--revert`). El directorio está gitignoreado y el repo sufre `reset --hard`
+  en cada respawn: **el WAL se copia fuera del árbol del repo** al terminar.
+- **Declara procedencia** ante el guardrail de #5690 antes de cada remoción de
+  `needs-human`, y persiste el `authorized_by` en el WAL. El módulo es un
+  **bypass auditado** del choke point de `servicio-github.js`; el porqué está en
+  su header.
+- **La reversión pasa por los mismos tres controles** que la migración:
+  confirmación fuera de banda (sin ella, dry-run), `--repo` validado, y guardrail
+  de #5690 consultado con procedencia por cada label que repone — evaluado en
+  secuencia sobre el estado simulado, así el orden de aplicación no lo esquiva.
+  El WAL **no es entrada confiable**: sólo se acepta desde `.pipeline/audit/`,
+  con nombre `migrate-5678-*.jsonl`, con `run-start` del mismo repo y con
+  `labels_antes` dentro del candidate set (uno con `recommendation:approved`
+  es fabricado → aborto). Consecuencia deliberada: como el estado legacy **es**
+  la mezcla que #5690 prohíbe por construcción, la reversión completa de un
+  candidato es irrealizable desde el script y aborta antes de escribir. La
+  migración es de un solo sentido; reponer `needs-human` sobre una
+  recomendación es una decisión humana, y `--revert --apply` la completa
+  (saca `needs:triage-backlog`, repone lo no sensible que falte).
+- **Alerta de pérdida del gate** (cableada en `run()`): antes de mutar se captura
+  la lista de bloqueos reales (`needs-human` sin `tipo:recomendacion`) y se
+  congela en el `run-start`; al cerrar la corrida se relee y se compara. Se
+  dispara si desaparece un elemento de esa lista (o el canario de
+  `--canario <N>`), no si el total llega a 0: con la lista previa vacía, 0 es
+  el resultado esperado. Queda persistida como registro `gate-check` del WAL y
+  el proceso sale con código **2** (también si la relectura falla: un gate no
+  verificable no sale en 0). Sin lista previa capturable, no se muta.
+- **Fuera de alcance**: las recomendaciones abiertas sin ninguna etiqueta de cola
+  (ni `needs-human` ni `needs:triage-backlog`) no son parte del candidate set y
+  no rompen nada hoy, porque `refreshCache()` lista por `tipo:recomendacion` a
+  secas. Ese backfill vive en **#7061**.
 
 Un **bloqueo real** tiene un agente frenado atrás. Una **recomendación** de
 `guru`/`security`/`po`/`ux`/`review` es backlog esperando triaje: nadie está
