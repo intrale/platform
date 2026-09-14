@@ -71,20 +71,23 @@ Este runbook se escribe **antes** de ejecutar el cutover. La distinción no es
 cosmética: un runbook que se lee como registro de una corrida que nunca ocurrió
 es peor que no tenerlo.
 
-| Bloque | Qué es | Estado |
-|---|---|---|
-| **Bloque A** — backend + guardrails | `lib/operational-state-backend.js`, CAS con `expectedVersion` **propagado desde los mutadores de los dos estados** (allowlist vía `readAllowlistSnapshot`, registro de olas vía la versión adosada al snapshot de `loadWaves`), cotas de payload, redacción, gate `boolean` estricto, regla `async-gate` del lint, `partial-pause` en `SOURCES` y en `DEFAULT_KNOWN_KEYS`, driver Dynamo síncrono | ✅ **Implementado, con el flag APAGADO.** Sin impacto operativo: con `durable: false` no se construye driver ni se hace una sola llamada a AWS |
-| **Bloque B** — precondiciones (CA-B1…CA-B5) | strict auth, `atomicUpdate` por sonda, identidad del runtime, audit trail multi-instancia, namespaceado ON | ⏳ **PENDIENTE de ejecución real — vive en la hija #7189.** Los comandos de §4 están verificados contra el código; **no fueron corridos contra AWS** |
-| **Bloque C** — cutover, sondas y rollback | migración, sonda positiva no-vacía, ensayo de rollback, ensayo de aborto, multi-instancia | ⏳ **PENDIENTE — vive en la hija #7189.** Nada de §2, §5, §8 y §9 fue ejecutado todavía |
-| **CA-UX1…CA-UX5** — lo que ve el operador | chip de procedencia en el header, causa propia en el enum de no-despacho, canal único de alerta, rollback en la primera pantalla, copy que nombra la acción | ✅ **Implementado y verificado en el render real**, con el flag apagado. El chip muestra `filesystem local` hoy; los otros tres estados se capturaron hidratando la bandeja del header contra el dashboard servido |
+| Bloque | Qué es | Ensayado en seco | Ejecutado |
+|---|---|---|---|
+| **Bloque A** — backend + guardrails | `lib/operational-state-backend.js`, CAS con `expectedVersion` **propagado desde los mutadores de los dos estados** (allowlist vía `readAllowlistSnapshot`, registro de olas vía la versión adosada al snapshot de `loadWaves`), cotas de payload, redacción, gate `boolean` estricto, regla `async-gate` del lint, `partial-pause` en `SOURCES` y en `DEFAULT_KNOWN_KEYS`, driver Dynamo síncrono | — | ✅ **Implementado, con el flag APAGADO.** Sin impacto operativo: con `durable: false` no se construye driver ni se hace una sola llamada a AWS |
+| **Bloque B** — precondiciones (CA-B1…CA-B5) | strict auth, `atomicUpdate` por sonda, identidad del runtime, audit trail (single-host, D-8), namespaceado ON | ✅ **#7189 (2026-09-14)** · sonda `--preconditions` ejecutada contra el host real: CA-B2 y CA-B3 en verde; **CA-B1 y CA-B5 en rojo diagnóstico** (`strict_auth_apagado`, `namespaceado_apagado` / `migrated:false`). Ver §10 | ⏳ **PENDIENTE de ejecución real — vive en H0 (#7194).** Los rojos de la sonda son exactamente lo que H0 tiene que poner en verde antes de la ventana |
+| **Bloque C** — cutover, sondas y rollback | migración, sonda positiva no-vacía, ensayo de rollback, ensayo de aborto, multi-instancia | ✅ **#7189 (2026-09-14)** · CAS contra AWS real en verde (`--cas-probe`); sonda positiva ejecutada contra la tabla real ⇒ **rojo `estado_vacio`** (fail-closed sobre vacío demostrado); dry-run + backup verificado (`olas: 12 · allowlist: 54`); export store→FS y aborto ensayados contra fake / sandbox. Ver §10 | ⏳ **PENDIENTE — vive en H0 (#7194).** `apply` contra AWS, sonda positiva en verde, R8 medido y aborto en ventana real no ocurrieron. Multi-instancia (CA-C6) es H4 (#7198), fuera de H0 (D-6) |
+| **CA-UX1…CA-UX5** — lo que ve el operador | chip de procedencia en el header, causa propia en el enum de no-despacho, canal único de alerta, rollback en la primera pantalla, copy que nombra la acción | — | ✅ **Implementado y verificado en el render real**, con el flag apagado. El chip muestra `filesystem local` hoy; los otros tres estados se capturaron hidratando la bandeja del header contra el dashboard servido |
 
-> **Ningún tramo de este documento afirma haber sido ensayado.** Donde hay
-> evidencia, es del cutover del kernel (#5208/#5209) y está marcada como tal.
-> Cuando #7189 ejecute los Bloques B y C, la evidencia redactada se agrega acá,
-> en su propia sección, como hizo §8 del runbook del kernel. Las dos decisiones
-> que #7189 tiene que cerrar antes (CA-C6 por dos hosts reales o por singleton
-> `(projectId, host)` sobre el lease; quién ejecuta el cutover bajo la política
-> de firma del operador) no las decide este runbook.
+> **"Ensayado en seco" y "ejecutado" son dos estados distintos, a propósito.**
+> #7189 corrió cada paso con el flag apagado (tests contra driver fake +
+> corridas de sólo lectura / idempotentes contra AWS real con la identidad del
+> runtime) y dejó la evidencia redactada en §10 y en
+> `docs/pipeline/evidence/7189/`. Nada de eso movió un flag ni migró un byte:
+> los Bloques B y C se marcan ✅ en la columna "Ejecutado" recién cuando H0
+> (#7194) los corra bajo firma del operador. Las dos decisiones que estaban
+> abiertas las cerró el PO en `criterios` de #7189: **CA-C6** sale a una hija de
+> ejecución (H4, #7198) que depende de código de coordinación nuevo (D-6, §9), y
+> **el operador ejecuta** todo lo irreversible siguiendo este runbook (D-7).
 
 ### Léxico único
 
@@ -330,32 +333,36 @@ levantes sin revisar antes por qué estaba puesta.
 
 Apagar el flag no reintegra al filesystem lo que se escribió en el store. Si la
 ventana duró lo suficiente como para que el pipeline avanzara olas o tocara la
-allowlist, hay que **exportar antes de apagar**:
+allowlist, hay que **exportar antes de apagar**. El export está **scripteado**
+(#7189, CA-5) y se niega a correr sin el freno puesto:
 
 ```bash
-node -e "
-process.env.PIPELINE_OPSTATE_DURABLE='1';
-const b=require('./.pipeline/lib/operational-state-backend');
-const fs=require('node:fs');
-for (const key of [b.KEYS.WAVES, b.KEYS.PARTIAL_PAUSE]) {
-  const r=b.readKeyWithVersion(key);
-  if (!r.value) { console.log('[FALLA] ' + key + ' vacío o degradado:', r.error && r.error.message); continue; }
-  fs.writeFileSync(b.fileFor(key), JSON.stringify(r.value,null,2));
-  console.log('[OK] ' + key + ' → ' + b.fileFor(key) + ' (version ' + r.version + ')');
-}
-"
+# 1) Freno (D-3): sin `.pipeline/.paused` el export NO corre — el pipeline seguiría
+#    escribiendo en el store mientras exportás. Por Telegram `/pausar`, o a mano:
+node -e "require('fs').writeFileSync('.pipeline/.paused', JSON.stringify({source:'manual', ts:new Date().toISOString(), reason:'export store→FS'}))"
+
+# 2) Export (fija PIPELINE_OPSTATE_DURABLE=1 sólo en su propio proceso; no toca el config)
+node .pipeline/scripts/opstate-cutover-probe.js --export-to-fs
+# → [OK] lectura:waves · lectura:partial-pause · escritura:waves · escritura:partial-pause
+# → R8 (tramo export) · olas: <n> · allowlist: <m> · avance perdido: 0
 ```
 
-`fileFor(key)` resuelve al path **namespaceado** vigente
-(`project-context.stateDir()`), así que escribe donde el modo filesystem va a
-leer. Verificá el resultado con `git status --short` y mirando los dos archivos
-antes de reiniciar.
+Lee las **dos** claves antes de escribir nada (nada queda a medias), escribe con
+el write atómico del sustrato en `backend.fileFor(key)` —el path **namespaceado**
+vigente (`project-context.stateDir()`), donde el modo filesystem va a leer— y
+verifica releyendo cada archivo: `sha256Canonical(filesystem) === sha256Canonical(store)`.
+Cualquier diferencia es `avance perdido > 0` y el veredicto es ROJO
+(`export_hash_distinto`): **no reinicies** hasta resolverlo. Si el store no
+tiene una clave (`estado_vacio`) o degrada (`lectura_degradada`) tampoco escribe.
 
-> ⚠️ **Este export no fue ensayado todavía.** Está construido con la API pública
-> del backend (`readKeyWithVersion` + `fileFor`) y es coherente con el modo
-> filesystem, pero hasta que el ensayo de CA-C4 se corra de verdad, tratalo como
-> un procedimiento propuesto: corrélo **con el pipeline pausado** (`.paused`
-> presente) y revisá los archivos a ojo antes de reiniciar.
+> **Estado del ensayo (#7189, 2026-09-14):** el camino verde (freno puesto,
+> estado sembrado, conteos correctos, sha256 FS = store, `avance perdido: 0`) y
+> los negativos (sin `.paused` ⇒ `freno_ausente` sin leer el store; clave
+> ausente ⇒ nada escrito) están ensayados **contra el driver fake** en
+> `opstate-cutover-probe-7189.test.js`. Contra el host real sólo se corrió el
+> rechazo sin freno (`docs/pipeline/evidence/7189/export-drill.txt`): el store
+> está vacío hoy. El export contra el store real es parte del ensayo de rollback
+> de **H0 (#7194)**.
 
 **R8** es el tiempo desde que arranca el rollback hasta que el pipeline completa
 una fase leyendo desde filesystem. Se registra en el issue del cutover **con los
@@ -538,6 +545,15 @@ console.log('driver.kind =', d.kind, '| tabla =', cfg.kernel.coordinationTableNa
 
 `driver.kind = in-memory` ⇒ **frená**: lo que estés por migrar no sale del proceso.
 
+> **Dos `kind` válidos, no uno (precisión del PO en `validacion` de #7189,
+> 2026-09-14).** El snippet de arriba arma el driver **async** (`aws-cli`). El
+> backend del estado operativo (`operational-state-backend.resolveDriver()`) usa
+> `createAwsCliDynamoDriverSync` ⇒ **`aws-cli-sync`** (`provisioner-infra.js`).
+> Los dos son el cableado real; la sonda de #7189 acepta `aws-cli` **o**
+> `aws-cli-sync` y rechaza `in-memory`, `fake-sync` y cualquier valor
+> desconocido (`driver_no_aws_cli`). Un chequeo literal `kind === 'aws-cli'`
+> daría **falso rojo** contra AWS real.
+
 ### 2.6 · Cómo se lee el reporte (y por qué `migrated_count: 0` no importa acá)
 
 La paridad de **este** cutover es la sección
@@ -577,7 +593,7 @@ comentario, manda el config.
 | # | Paso | Verificación |
 |---|---|---|
 | 1 | `operational_state.namespaced.enabled: true` **y sonda de aislamiento en verde** | `node --test .pipeline/lib/__tests__/operational-state-isolation.test.js` + `migrate-operational-state-namespace.js --status` con `migrated: true` |
-| 2 | `kernel.durable: true` (el cutover del kernel, ya ejecutado en #5208/#5209) | `docs/pipeline/runbook-cutover-durable.md` §0 y §8 |
+| 2 | **Cutover del kernel ensayado** (tablas, CMK, IAM y credenciales del runtime probadas en #5207/#5208/#5209) — **no** "`kernel.durable: true` obligatorio" (D-9) | `docs/pipeline/runbook-cutover-durable.md` §0 y §8. La sonda `--preconditions` **reporta** el valor efectivo de `kernel.durable` (hoy `false`: estado terminal del ensayo de rollback #5209, runbook durable §8.6) y no lo exige; re-encenderlo es trabajo aparte (runbook durable §1), fuera de #7189 y de H0 |
 | 3 | **Migración** con backup y **paridad SHA-256 en verde** (§2) | sección de checksums del reporte, sin `integrity_mismatch` |
 | 4 | **Sonda positiva NO VACÍA** por dos caminos disjuntos (§8) | reporte de la sonda + `get-item --consistent-read` |
 | 5 | **Ensayo de rollback ejecutado** (§1) y **ensayo de aborto** (§5) | R8 medido con conteos + `.paused` escrito por el sink |
@@ -605,8 +621,20 @@ comentario, manda el config.
 
 ## 4 · Precondiciones del Bloque B — verificadas por sonda, no por supuesto
 
-Los cinco CA se verifican **ejecutando**, no leyendo el código. Ninguno de estos
-comandos fue corrido todavía contra el entorno real.
+Los cinco CA se verifican **ejecutando**, no leyendo el código. Desde #7189 los
+cubre una sola sonda, idempotente y de sólo lectura, con exit ≠ 0 si alguna está
+en rojo:
+
+```bash
+node .pipeline/scripts/opstate-cutover-probe.js --preconditions          # texto para el operador
+node .pipeline/scripts/opstate-cutover-probe.js --preconditions --json   # evidencia redactada
+```
+
+Corrida contra el host real el 2026-09-14 (§10, `evidence/7189/preconditions.json`):
+CA-B2 y CA-B3 **verdes**; CA-B1 y CA-B5 **rojos diagnóstico**. Cada `[FALLA]`
+trae su causa (`strict_auth_apagado`, `namespaceado_apagado`, …) y el paso de
+H0 que la pone en verde. Los comandos sueltos de abajo siguen valiendo para
+mirar cada CA por separado.
 
 ### CA-B1 · `PARTIAL_PAUSE_STRICT_AUTH=1` activo
 
@@ -616,12 +644,32 @@ significa que cualquier proceso con la credencial saca issues de la ola **sin
 identidad** y el audit trail queda con un agujero.
 
 ```bash
-node -e "console.log('strict:', process.env.PARTIAL_PAUSE_STRICT_AUTH === '1')"
+node .pipeline/scripts/opstate-cutover-probe.js --preconditions --json
 grep -n "PARTIAL_PAUSE_STRICT_AUTH" .pipeline/lib/partial-pause.js
 ```
 
-Tiene que estar `1` en el entorno del pipeline **antes** de la ventana. Ver
-#5165 (salida del grace mode). Con `strict: false` ⇒ **no arranques el cutover**.
+Tiene que estar `1` en el entorno del pipeline **antes** de la ventana. Con
+`strict: false` ⇒ **no arranques el cutover**.
+
+**Cómo se cierra (D-10, cerrada por el PO en `criterios` de #7189):**
+
+- Se satisface con `PARTIAL_PAUSE_STRICT_AUTH=1` **en el entorno del servicio**
+  (launcher / `restart.js`), leído desde el proceso del Pulpo — **no** desde una
+  shell suelta (SEC-1). La sonda lee `last-tick.json` emitido por el Pulpo:
+  `runtimeAuth.version: 1`, strict booleano y marca de inicio del proceso.
+  Exige antiguedad entre 0 y 120 segundos, mismo checkout y PID vivo con
+  comando absoluto de `pulpo.js` e identidad de inicio coincidente en el SO.
+  Si falta cualquiera de esas pruebas (incluido un servicio anterior al cambio),
+  CA-B1 falla cerrado: `datos.serviceAuth.reason` identifica el impedimento.
+  Exportar la variable en la shell de la sonda no modifica el resultado.
+  El campo del heartbeat es opcional para lectores anteriores; no migra estado.
+- La sonda además cuenta las entradas `gate_grace: true` de los **últimos 30
+  días** en el audit local y da rojo si hay alguna (`gate_grace_reciente`): un
+  removal sin autoría reciente es un caller sin migrar, no ruido. Estado al
+  2026-09-14: 214 entradas, **0** `gate_grace` en 30 días (la última es del
+  2026-08-13).
+- **#5165 no es dependencia de #7189 ni de H0** (single-host); **sí lo es de H4**
+  (#7198): la amenaza T-2 sólo se materializa con varios hosts.
 
 ### CA-B2 · `atomicUpdate === true` verificado por sonda EJECUTADA
 
@@ -640,9 +688,13 @@ console.log('atomicUpdate=false ->', JSON.stringify(c.buildCasWriteOptions(7, fa
 ```
 
 En el camino síncrono del estado operativo, `resolveDriver()` fija
-`atomicUpdate: true` explícito (no lo deriva de `!isInMemory`). La sonda que
-cierra este CA es la de §8.3: **dos escrituras con la misma `expectedVersion`,
-la segunda rechazada por conflicto**.
+`atomicUpdate: true` explícito (no lo deriva de `!isInMemory`). La sonda
+`--preconditions` lo verifica sobre el driver **realmente resuelto** por el
+backend (`_describeDriver()`: `kind`, `atomicUpdate`, tabla, partición — nunca
+el driver en sí) y da rojo con `atomic_update_falso` o `driver_no_aws_cli`. La
+sonda que cierra este CA contra AWS es la de §8.3: **dos escrituras con la misma
+`expectedVersion`, la segunda rechazada por conflicto** — ejecutada en #7189
+(`--cas-probe`, verde; §10).
 
 ### CA-B3 · Identidad efectiva del runtime
 
@@ -673,7 +725,12 @@ console.log(JSON.stringify(p.verifyRuntimeIdentity({
 
 ### CA-B4 · Dónde vive el audit trail en multi-instancia
 
-**Estado: hueco conocido, documentado acá porque el CA exige que esté definido.**
+**Estado: definido, no externalizado (D-8, cerrada por el PO en `criterios` de
+#7189).** El régimen vigente es **single-host**: el trail local con cadena de
+hash es el audit trail del cutover, y se verifica con `verifyChain()` **antes y
+después** de la ventana. La externalización a la tabla append-only de no-repudio
+(SEC-3) es la hija **H2 (#7196)**, prerrequisito de H4 (#7198). **No se enciende
+multi-host con trail particionado.**
 
 Hoy el audit trail de mutaciones de allowlist es un JSONL **local, con cadena de
 hash**:
@@ -695,9 +752,10 @@ Qué significa para la ventana de cutover, en concreto:
   `partial-pause-audit.verifyChain()`.
 - **El multi-instancia real (CA-C6) no se habilita hasta cerrar esto**: sería un
   audit log particionado por host, que no es un audit log.
-- La externalización del trail **no está en el alcance de #5113** (el issue mueve
-  registro de olas y allowlist, no la auditoría). Queda como precondición
-  explícita del multi-host, no como detalle de implementación.
+- La externalización del trail **no está en el alcance de #5113 ni de #7189**
+  (mueven registro de olas y allowlist, no la auditoría). Es **H2 (#7196)**:
+  ítems `audit#` append-only vía `kernel-store.appendAuditEntry`, IAM por ARN
+  explícito. Precondición explícita de H4, no detalle de implementación.
 
 Verificación de integridad del trail local, antes y después de la ventana:
 
@@ -719,6 +777,12 @@ node --test .pipeline/lib/__tests__/operational-state-isolation.test.js
 Verde es `enabled: true`, `migrated: true` y el test de aislamiento en verde.
 Con `migrated: false` y `enabled: true` estás en la peor combinación posible: el
 runtime lee de `projects/<id>/` y el estado sigue en el layout plano.
+
+La sonda `--preconditions` compara además el `stateDir` que reporta `--status`
+con `project-context.stateDir()` y da rojo si difieren (`state_dir_divergente`,
+trampa §2.4). Estado al 2026-09-14: `namespaceEnabled(): false`,
+`migrated: false`, layout plano con `waves.json`, `.partial-pause.json`,
+`archived/` y `audit/` ⇒ `namespaceado_apagado`. Es el **paso 1 de H0**.
 
 > `strict_context` es un flag **aparte** y **no** es precondición de este
 > cutover: se enciende recién con dos proyectos reales, después de #5164.
@@ -759,9 +823,35 @@ como cerrada). **La ventana la abre y la cierra el mismo operador**, y el cierre
 es parte del cutover, no limpieza posterior: dejarla abierta es un estado de
 mantenimiento permanente que nadie mira.
 
-### Cómo se verifica el aborto (ensayo pendiente)
+### Cómo se verifica el aborto (ensayado en seco en #7189; en ventana real, H0)
 
-El ensayo de CA-C5 se hace **provocando** la degradación, no esperándola:
+El ensayo de CA-C5 se hace **provocando** la degradación, no esperándola. Desde
+#7189 está scripteado con el **sink real** y un `halt` inyectado que escribe el
+marker en un **sandbox temporal** (nunca en el `.pipeline/` real, nunca manda
+Telegram):
+
+```bash
+node .pipeline/scripts/opstate-cutover-probe.js --abort-drill --window true
+# → [OK] sin-throw · sin-exit · sin-fallback · ventana · sink-aborto · paused
+# → paused: <sandbox>/.paused · {"source":"kernel-cutover-degraded-halt","cause":"red",...}
+
+node .pipeline/scripts/opstate-cutover-probe.js --abort-drill --window '"true"'   # string
+node .pipeline/scripts/opstate-cutover-probe.js --abort-drill --window 1          # número
+node .pipeline/scripts/opstate-cutover-probe.js --abort-drill --window absent     # clave ausente
+node .pipeline/scripts/opstate-cutover-probe.js --abort-drill                     # valor EFECTIVO del config
+# → [FALLA] ventana · ventana CERRADA: cutover_window = "true" (string) — sólo el booleano true abre la ventana
+# → [OK] sec-4 · .paused ausente (correcto)
+```
+
+El drill intercepta `process.exit` durante la corrida (si alguien lo llama, es
+rojo `process_exit_llamado`), trata cualquier excepción como rojo
+(`throw_propagado`) y exige `value: null` + `degraded: true` + `remote: true` en
+la lectura (`fallback_a_filesystem` si el backend devolviera contenido). Con la
+ventana cerrada reporta el literal **con su tipo** (SEC-4) y verifica que **no**
+se escribió `.paused`. Evidencia: `docs/pipeline/evidence/7189/abort-drill.txt`.
+
+El snippet manual de abajo cubre sólo el tramo del backend (sink inyectado, sin
+marker); sigue siendo útil para aislar ese tramo:
 
 ```bash
 node -e "
@@ -790,10 +880,11 @@ Con el sink real y la ventana abierta, el mismo camino tiene que dejar el
 ls -la .pipeline/.paused && cat .pipeline/.paused
 ```
 
-> ⚠️ El ensayo con el sink real **no fue ejecutado**. El snippet de arriba usa el
-> sink inyectado, que prueba el camino del backend pero **no** la escritura del
-> marker. Los dos tramos hay que correrlos: el aborto sin `.paused` en disco no
-> cierra CA-C5.
+> **Lo que queda para H0:** el drill escribe el marker en un sandbox. El aborto
+> **en la ventana real** —con `kernel.cutover_window: true` en el config, el sink
+> cableado por el Pulpo y el `.pipeline/.paused` de verdad— es CA-C5b y lo
+> ejecuta el operador en H0 (#7194). El drill en verde es la precondición para
+> abrir esa ventana, no su reemplazo.
 
 ---
 
@@ -902,9 +993,25 @@ falta: comparar cero contra cero da verde y no prueba absolutamente nada. Las
 tres sondas de abajo exigen contenido, y la comparación se hace por **dos
 caminos disjuntos**.
 
-> ⚠️ **Ninguna fue ejecutada todavía.** Son el contenido del Bloque C.
+> **Estado (#7189, 2026-09-14):** 8.1 está scripteada (`--positive`) y **se
+> ejecutó contra la tabla real: ROJO con causa `estado_vacio`** por los dos
+> caminos, porque nada migró todavía — ésa es la evidencia de fail-closed sobre
+> vacío que exige CA-3. 8.3 está scripteada (`--cas-probe`) y **verde contra AWS
+> real**. Su verde en 8.1 y 8.2 contra el store real es de H0 (#7194).
 
 ### 8.1 · Sonda positiva no-vacía, por dos caminos disjuntos
+
+Scripteada en #7189 (los comandos manuales de abajo siguen valiendo para mirar
+cada camino por separado):
+
+```bash
+node .pipeline/scripts/opstate-cutover-probe.js --positive          # fija PIPELINE_OPSTATE_DURABLE=1 sólo en su proceso
+node .pipeline/scripts/opstate-cutover-probe.js --positive --json   # evidencia
+# verde ⇔ por CADA clave: A (backend) y B (get-item --consistent-read) con contenido NO vacío
+#         (olas > 0, allowlist > 0), body.version entero ≥ 1 y sha256Canonical idéntico.
+# causas: estado_vacio · hash_distinto_por_camino · version_invalida · item_ausente_camino_b ·
+#         clave_distinta · lectura_degradada · driver_no_aws_cli (kind ∉ {aws-cli, aws-cli-sync})
+```
 
 Camino A — la **API del driver** (el mismo cableado que usa el runtime):
 
@@ -980,6 +1087,20 @@ Los tests prueban la **semántica**; la sonda contra AWS prueba que el
 `ConditionExpression` viaja de verdad. Las dos, no una: un test verde con
 `atomicUpdate: false` pasaría igual y el CAS no existiría.
 
+La sonda contra AWS está scripteada y **ejecutada en #7189** (§10):
+
+```bash
+node .pipeline/scripts/opstate-cutover-probe.js --cas-probe [--json]
+# identidad (SEC-2) → driver.kind ∈ {aws-cli, aws-cli-sync} → buildCasWriteOptions no vacío →
+# 1ª compareAndSet(expectedVersion = v) ok, v+1 → 2ª con la MISMA v ⇒ conflict:true →
+# readback get-item --consistent-read: versión v+1 y sha256 de la 1ª escritura.
+```
+
+Escribe **una** clave de sonda (`coord#opstate-cas-probe`) por `compareAndSet`
+—nunca `put-item` a mano (SEC-9), nunca `coord#waves` / `coord#partial-pause`—
+y es idempotente: cada corrida parte de la versión vigente. Sin coincidencia de
+identidad no escribe nada.
+
 #### Y el CAS del CAMINO REAL, que es otra cosa
 
 Los dos de arriba prueban que el backend hace CAS **cuando alguien le pasa
@@ -1036,6 +1157,204 @@ cubre el test de concurrencia, valida el CAS y **no** valida el multi-instancia.
 Hasta cerrar los dos puntos, el cutover se opera **desde un solo host**. Eso no
 invalida el resto del cutover —el estado ya vive afuera, que es la precondición—
 pero sí impide declarar el multi-instancia como entregado.
+
+**Decisión D-6 (PO, `criterios` de #7189, 2026-09-11) y cómo se reparte:**
+
+Hay un tercer punto que ninguno de los dos anteriores cubre, verificado en
+`main` y en la rama de #5113: el dispatch del Pulpo **no reclama trabajo por
+lease** (`grep -c '\.claim(' .pipeline/pulpo.js` ⇒ `0`), y las colas de fase
+(`pendiente/`, `trabajando/`, `listo/`) son filesystem local que no migra. Dos
+hosts compartirían registro de olas y allowlist, pero cada uno haría **su propio
+intake desde GitHub** ⇒ dispatch duplicado **por diseño**, no por bug. Ni (a)
+dos hosts reales ni (b) singleton por lease prueban "se lo lleva una sola" sin
+código nuevo. Por eso CA-C6 **sale de #7189 y de H0** y se acepta en una hija de
+ejecución con tres hijas de código por delante:
+
+| Hija | Issue | Qué cierra | Depende de |
+|---|---|---|---|
+| **H1** · lease de dispatch por issue | #7195 | `claim('dispatch#<issue>', { owner, leaseMs })` / `release` en el punto de intake/dispatch del Pulpo, sobre la primitiva que ya existe (`kernel-coordination-store.claim` / `release`) | #5113 |
+| **H2** · audit trail de allowlist append-only (SEC-3) | #7196 | externaliza el trail de CA-B4 a ítems `audit#` vía `kernel-store.appendAuditEntry`, IAM por ARN explícito | #5113 |
+| **H3** · halt compartido entre instancias (SEC-5) | #7197 | que `.paused` de una instancia frene a las demás | #5113 |
+| **H4** · ensayo multi-instancia en dos hosts (CA-C6) | #7198 | la prueba real de "se lo lleva una sola", con audit y halt compartidos | #7194 (H0), #7195, #7196, #7197, #5165 |
+
+La opción (b) "singleton por lease `(projectId, host)`" **no reemplaza** a H1: es
+opcional y la decide el planner. **No se acepta** degradar a `fork`. Hasta H4,
+"multi-instancia" **no está entregado** y este runbook no lo afirma.
+
+---
+
+## 10 · Ensayo en seco (#7189) — evidencia y lo que queda para H0
+
+**Fecha:** 2026-09-14 · **Rama:** `agent/7189-pipeline-dev` sobre
+`origin/main @ fe48aefe0` · **Flag:** `operational_state.durable: false` (no se
+tocó `config.yaml`; `git diff --stat origin/main -- .pipeline/config.yaml` ⇒
+vacío) · **Identidad:** `kernel.runtimePrincipal` con el perfil
+`kernel.runtimeProfile` · **Herramienta:** `.pipeline/scripts/opstate-cutover-probe.js`
+· **Evidencia completa:** `docs/pipeline/evidence/7189/` (README con el índice).
+
+Regla del ensayo, heredada de D-7: el agente corre **todo lo idempotente y de
+sólo lectura** (sondas, tests, dry-run, backup, sonda del CAS, export y aborto
+contra fake/sandbox); **el operador** corre en H0 (#7194) los flips, la
+migración `apply`, los reinicios, CA-C9b, CA-C4 (R8) y CA-C5b. Todo output de
+esta sección pasó por `redactAll` (secretos + account-ids), y el chequeo
+`grep -nE "[0-9]{12}|arn:aws[:]|AKIA[0-9A-Z]{16}|ASIA[0-9A-Z]{16}"` sobre la
+evidencia y este archivo es **vacío** (`evidence/7189/redaction-check.txt`).
+
+Formato de conteos, único en todo el ensayo: `olas: n · allowlist: m` (+ `· avance perdido: k` donde aplica).
+
+### 10.0 · Identidad del runtime (SEC-2, paso 0 de todo)
+
+```
+$ node .pipeline/scripts/opstate-cutover-probe.js --preconditions
+[OK]    CA-B3 · identidad efectiva = `kernel.runtimePrincipal` — principal efectivo: intrale-kernel-runtime (coincide con config)
+```
+
+Todas las corridas contra AWS de esta sección (CAS, sonda positiva) verifican la
+identidad **antes** de tocar nada y abortan con `identidad_inesperada` si el
+principal efectivo no es el declarado. No se corrió nada con un perfil administrativo.
+
+### 10.1 · CA-1 — Sonda de precondiciones (`evidence/7189/preconditions.json`)
+
+```
+$ node .pipeline/scripts/opstate-cutover-probe.js --preconditions --pipeline-dir <host>/.pipeline
+naturaleza: sonda de sólo lectura — segura de re-ejecutar
+
+[FALLA] CA-B1 · PARTIAL_PAUSE_STRICT_AUTH=1 + sin `gate_grace` en 30 días — strict: false (servicio: no acreditado: heartbeat_no_acreditado) · gate_grace en 30 días: 0 (audit: 214 entradas, último gate_grace 2026-08-13T18:16:22.173Z)
+        causa: strict_auth_apagado
+        → H0 paso 0 · exportá PARTIAL_PAUSE_STRICT_AUTH=1 en el entorno del SERVICIO (launcher / restart.js) y reiniciá (D-10)
+[OK]    CA-B2 · `atomicUpdate === true` en el driver real + `buildCasWriteOptions` no vacío — buildCasWriteOptions(7,true): "#b.#v = :ev" · driver: kind=aws-cli-sync atomicUpdate=true tabla=intrale-kernel-coordination partición=intrale-platform
+[OK]    CA-B3 · identidad efectiva = `kernel.runtimePrincipal` — principal efectivo: intrale-kernel-runtime (coincide con config)
+[FALLA] CA-B5 · namespaceado encendido + `--status` ⇒ migrated:true + stateDir coincidente — namespaceEnabled(): false · --status: migrated=false stateDir=<host>/.pipeline/projects/intrale-platform · project-context.stateDir(): <host>/.pipeline
+        causa: namespaceado_apagado
+        → H0 paso 1 · encendé `operational_state.namespaced.enabled: true` y corré `migrate-operational-state-namespace.js` (D-4 / CA-B5)
+[OK]    D-9 · valor efectivo de `kernel.durable` (se reporta, no se exige) (informativo) — kernel.durable = false (boolean)
+[OK]    modo · `describeMode()` del backend (informativo) — mode: fs · source: config · degraded: false · observed: false
+
+VEREDICTO: ROJO — 2 en rojo (CA-B1, CA-B5) · causas: strict_auth_apagado, namespaceado_apagado.      exit=1
+```
+
+**Lectura:** el rojo es **diagnóstico, no falso verde** —exactamente lo que
+CA-1 anticipaba para hoy (`migrated: false`, layout plano) más el grace mode de
+CA-B1. Los dos son pasos de H0. `describeMode()` devuelve el literal `mode: fs`
+(el texto de CA-9 dice "filesystem": es el mismo estado, el token del backend es
+`fs`).
+
+### 10.2 · CA-2 — Sonda del CAS contra AWS real (`evidence/7189/cas-probe.json`)
+
+```
+$ node .pipeline/scripts/opstate-cutover-probe.js --cas-probe --pipeline-dir <host>/.pipeline
+naturaleza: escribe UNA clave de sonda (coord#opstate-cas-probe) por compareAndSet — idempotente
+
+[OK]    identidad · principal efectivo = `kernel.runtimePrincipal` (SEC-2) — principal efectivo: intrale-kernel-runtime
+[OK]    driver · driver.kind ∈ {aws-cli, aws-cli-sync} — kind=aws-cli-sync · credenciales: perfil AWS "kernel-runtime"
+[OK]    cas-options · `buildCasWriteOptions(1, true)` no vacío — "#b.#v = :ev"
+[OK]    cas-1 · 1ª escritura con expectedVersion=1 — ok · versión 1 → 2
+[OK]    cas-2 · 2ª escritura con la MISMA expectedVersion=1 ⇒ conflict:true — rechazada como corresponde · conflict:true · versión vigente 2
+[OK]    readback · lectura consistente cruda coincide con la 1ª escritura (versión + sha256) — PK=intrale-platform SK=coord#opstate-cas-probe body.version=2
+
+VEREDICTO: VERDE — 6 verificación(es) en verde.      exit=0
+```
+
+La primera corrida del día creó la clave (`v0 → v1`, conflicto sobre `0`); la
+de la evidencia partió de `v1`: la sonda es idempotente y cada corrida vuelve a
+demostrar el conflicto. La clave queda en la tabla (ítem chico; purga manual
+excepcional según `kernel-tablas-cutover-5210.md`, nunca desde la sonda).
+
+### 10.3 · CA-3 — Sonda positiva por dos caminos (`evidence/7189/positive-probe.json`)
+
+```
+$ node .pipeline/scripts/opstate-cutover-probe.js --positive --pipeline-dir <host>/.pipeline
+naturaleza: sonda de sólo lectura — backend con PIPELINE_OPSTATE_DURABLE=1 en este proceso vs `get-item --consistent-read`
+
+[OK]    driver · driver del backend ∈ {aws-cli, aws-cli-sync} — kind=aws-cli-sync tabla=intrale-kernel-coordination partición=intrale-platform
+[FALLA] A:waves · camino A · backend.readKeyWithVersion('waves') — remote=true degraded=false version=null (null) olas=0     causa: estado_vacio
+[FALLA] B:waves · camino B · get-item --consistent-read coord#waves — ítem AUSENTE (sin `Item` en la respuesta)                causa: estado_vacio
+[FALLA] A:partial-pause · camino A · backend.readKeyWithVersion('partial-pause') — remote=true degraded=false version=null allowlist=0   causa: estado_vacio
+[FALLA] B:partial-pause · camino B · get-item --consistent-read coord#partial-pause — ítem AUSENTE                             causa: estado_vacio
+
+conteos: olas: 0 · allowlist: 0
+VEREDICTO: ROJO — 4 en rojo · causas: estado_vacio.      exit=1
+```
+
+**Lectura:** ningún camino da verde leyendo vacío: es el fail-closed sobre vacío
+que CA-3 exige demostrar contra la tabla real (como #5208 §8 con la partición
+vacía). El verde con estado sembrado y los negativos (hash distinto por camino
+⇒ `hash_distinto_por_camino`; `driver.kind === 'in-memory'` ⇒ `driver_no_aws_cli`
+sin leer nada; degradación ⇒ `lectura_degradada`; 0 olas / allowlist vacía ⇒
+`estado_vacio`) están en la suite contra el fake.
+
+### 10.4 · CA-4 — Migración en seco (`evidence/7189/migration-dry-run.txt`)
+
+```
+$ node .pipeline/scripts/opstate-cutover-probe.js --migration-dry-run --pipeline-dir <host>/.pipeline
+[OK]    fuentes · waves.json: presente (olas 12, 7 claves top-level) · .partial-pause.json: presente (allowlist 54, 3 claves top-level)
+[OK]    dry-run · migrateState({ apply:false }) — ok · backup en <host>/.pipeline/backup/2026-09-14T03-15-59-072Z
+[OK]    backup · backup coincide con su propio manifest.json (sha256 + conteo por archivo)
+conteos: olas: 12 · allowlist: 54
+VEREDICTO: VERDE      exit=0
+```
+
+`apply` **no se ejecutó contra AWS** (D-4: con el namespaceado apagado migraría
+al layout plano, trampa §2.4). `migrateState({ apply: true, store })` está
+probado contra el driver fake en la suite: paridad SHA-256 + conteo, segunda
+pasada `noop` (idempotencia) y un store que miente ⇒ `integrity_mismatch` con el
+comando de rollback en el resultado.
+
+### 10.5 · CA-5 — Export store→FS (`evidence/7189/export-drill.txt`)
+
+Contra el host real, sin freno: `[FALLA] freno · AUSENTE (marker_ausente)` ⇒
+`freno_ausente`, **antes** de leer el store, con el comando exacto para frenar.
+Contra el fake con `.paused` presente y estado sembrado: dos lecturas, dos
+escrituras atómicas en `stateDir()`, `sha256(filesystem) = sha256(store)` en
+ambas, y `R8 (tramo export) · olas: 2 · allowlist: 3 · avance perdido: 0`. Los
+minutos del R8 los mide el operador en H0.
+
+### 10.6 · CA-6 — Ensayo de aborto (`evidence/7189/abort-drill.txt`)
+
+```
+$ node .pipeline/scripts/opstate-cutover-probe.js --abort-drill --window true
+[OK]    sin-throw · sin-exit · sin-fallback (value=null degraded=true remote=true)
+[OK]    ventana · cutover_window = true (boolean)
+[OK]    sink-aborto · aborted=true causas=["red"]
+[OK]    paused · <sandbox>/.paused · {"source":"kernel-cutover-degraded-halt","cause":"red","correlationId":"kdeg-drill-…"}
+VEREDICTO: VERDE      exit=0
+
+$ node .pipeline/scripts/opstate-cutover-probe.js --abort-drill --window '"true"'   (ídem con 1, absent y el config efectivo = false)
+[FALLA] ventana · ventana CERRADA: cutover_window = "true" (string) — sólo el booleano true abre la ventana     causa: ventana_cerrada
+[OK]    sec-4 · .paused ausente (correcto) · sink.aborted=false
+VEREDICTO: ROJO      exit=1
+```
+
+### 10.7 · CA-7 — Tests y regresión (`evidence/7189/tests.txt`, `tests-final.txt`)
+
+- `node --test .pipeline/lib/__tests__/opstate-cutover-probe-7189.test.js` ⇒ **62/62**: caso verde de cada subcomando + un test por cada causa `[FALLA]` de la sonda.
+- Regresión §8.4 **sin editar un solo test existente**: `operational-state*` 263/263 · `partial-pause*` 169/169 · `waves*` 167/167 · `kernel-store-migrate` 47/47 · `kernel-coordination-store` 34/34.
+- `node .pipeline/lib/operational-state-lint.js --check` ⇒ 0 violaciones (una entry nueva en la allowlist, anclada al único literal `.paused` de la sonda: el marker del **sandbox** del drill; el freno real se consulta por `readFullPauseOrigin()`).
+- Redacción: grep vacío sobre `evidence/7189/*` y este runbook.
+
+### 10.8 · Qué queda para H0 (#7194) — operador, un comando por paso
+
+Placeholders como en `runbook-cutover-durable.md`: `<perfil-runtime>` = `kernel.runtimeProfile`,
+`<projectId>` = partición del contexto (hoy `intrale-platform`). Todo con el
+pipeline **pausado** (`/pausar`) salvo donde se indica.
+
+| # | Paso | Comando exacto | Verde esperado | Evidencia a pegar | Quién |
+|---|---|---|---|---|---|
+| 0 | `PARTIAL_PAUSE_STRICT_AUTH=1` en el entorno del **servicio** y reinicio (D-10) | exportar la variable en el launcher / `restart.js` → `node .pipeline/restart.js` (PowerShell) → `node .pipeline/scripts/opstate-cutover-probe.js --preconditions` con heartbeat nuevo del servicio | `[OK] CA-B1 … strict: true · gate_grace en 30 días: 0` | salida de `--preconditions --json` | operador |
+| 1 | Namespaceado ON + layout migrado (D-4 / CA-B5) | `operational_state.namespaced.enabled: true` (commit a `main`, no sólo local: el respawn hace `reset --hard`) → `node .pipeline/scripts/migrate-operational-state-namespace.js --dry-run` → sin `--dry-run` → `--status` → `node .pipeline/scripts/opstate-cutover-probe.js --preconditions` | `--status` ⇒ `migrated: true`; sonda ⇒ `[OK] CA-B5` y **VEREDICTO: VERDE** (exit 0) | `--status` + `--preconditions --json` | operador |
+| 2 | Cutover del kernel **ensayado** (D-9) | nada que encender acá: la sonda ya reporta `kernel.durable = false (boolean)`; si se decide re-encenderlo, es runbook durable §1, fuera de H0 | `D-9` informativo en la sonda | — | operador (decisión) |
+| 3 | Dry-run + backup, y recién ahí `apply` por API (§2.3) | `node .pipeline/scripts/opstate-cutover-probe.js --migration-dry-run` → `node -e` de §2.3 con `migrateState({ apply:true, store, sourceDir: pc.stateDir(), sources: SOURCES.filter(waves\|partial-pause) })` con `driver.kind` verificado (§2.5) | dry-run VERDE con `olas: n · allowlist: m`; `apply` ⇒ `ok:true`, `actions: created/created`, sin `integrity_mismatch` | reporte del migrador (backup dir + checksums) | operador |
+| 4 | Sonda positiva por dos caminos (CA-C3) | `node .pipeline/scripts/opstate-cutover-probe.js --positive --json` | **VEREDICTO: VERDE**: `A:*`, `B:*` y `A=B:*` en verde para `waves` y `partial-pause`, conteos = los del paso 3 | `positive-probe.json` de H0 | operador |
+| 5 | Ventana abierta + drill en la ventana real (CA-C5b) | `kernel.cutover_window: true` → `node .pipeline/restart.js` → provocar degradación según §5 (o `--abort-drill` como control previo) | `.pipeline/.paused` escrito con `source: kernel-cutover-degraded-halt`, alerta Telegram con `PIPELINE PAUSADO`; después `/reanudar` (§1.6) | `cat .pipeline/.paused` + captura de la alerta | operador |
+| 6 | Encendido: `operational_state.durable: true` + reinicio (paso 6 de §3) | editar config (commit) → `node .pipeline/restart.js` → `node -e "console.log(JSON.stringify(require('./.pipeline/lib/operational-state-backend').describeMode()))"` | `{"mode":"remote","source":"config","degraded":false,...}`; chip del dashboard en `store durable` | `describeMode()` + captura del chip | operador |
+| 7 | CA-C9b: una fase completa despachada leyendo del store | operar normal una fase (issue chico de la ola) con `PIPELINE_OPSTATE_DURABLE` **sin** override | fase en `procesado/` con `describeMode().observed: true` y `degraded: false` | log del Pulpo + `describeMode()` | operador |
+| 8 | Ensayo de rollback con R8 medido (CA-C4) | `/pausar` → `node .pipeline/scripts/opstate-cutover-probe.js --export-to-fs` → `operational_state.durable: false` → `node .pipeline/restart.js` → `/reanudar` → una fase completa desde filesystem | export VERDE con `avance perdido: 0`; `describeMode()` ⇒ `mode: fs`; **`R8 = <min> min · olas: n · allowlist: m · avance perdido: 0`** | línea R8 en el issue + salida del export | operador |
+| 9 | Cerrar la ventana | `kernel.cutover_window: false` (commit) → reinicio → `grep -n "cutover_window" .pipeline/config.yaml` | `cutover_window: false` | diff del config | operador |
+| 10 | Cierre de H0 | marcar Bloques B y C como ✅ **Ejecutado** en §0 con la fecha y pegar la evidencia redactada en una `§11` de este runbook | `grep -nE "[0-9]{12}\|arn:aws[:]\|AKIA[0-9A-Z]{16}\|ASIA[0-9A-Z]{16}"` vacío | PR de H0 | operador |
+
+**Fuera de H0, a propósito:** multi-instancia (CA-C6 → H4 #7198, con H1 #7195,
+H2 #7196, H3 #7197 y #5165 por delante, D-6); externalizar el audit trail (H2);
+re-encender `kernel.durable` (D-9).
 
 ---
 
@@ -1170,7 +1489,9 @@ sin halt total
 - **#5113** — esta historia: backend del estado operativo, flag único, migración, rollback y este runbook (CA-C8).
 - **#5107** — épico de la Ola 9.4 · E2. Cadena `#5108 → #5109 → #5110 → #5113`.
 - **#5110** — namespaceado por `projectId`. Precondición de D-4 / CA-B5.
-- **#5165** — salida del grace mode del gate de autoría. Precondición de CA-B1.
+- **#7189** — ensayo en seco del cutover (sondas, dry-run, export, aborto) con el flag apagado; §10 y `docs/pipeline/evidence/7189/`.
+- **#7194 (H0)** — ejecución supervisada del cutover, con gate humano (flips, `apply`, R8, aborto en ventana real). **#7195 (H1)** lease de dispatch · **#7196 (H2)** audit trail append-only · **#7197 (H3)** halt compartido · **#7198 (H4)** ensayo multi-instancia (CA-C6).
+- **#5165** — salida del grace mode del gate de autoría. Con D-10: no es dependencia de #7189 ni de H0 (single-host); sí de H4.
 - **#5119** — procedencia del estado y sus degradaciones en el dashboard (CA-UX1).
 - **#5116** — hash de integridad de la allowlist efectiva.
 - `docs/pipeline/runbook-cutover-durable.md` — cutover del kernel (`kernel.durable`). Prerrequisito y espejo estructural de este documento.
@@ -1181,4 +1502,5 @@ sin halt total
 - `.pipeline/lib/kernel-coordination-store.js` — `skFor`, envelope, `buildCasWriteOptions`, `DEFAULT_KNOWN_KEYS`.
 - `.pipeline/lib/kernel-store-migrate.js` — migración, backup, paridad SHA-256, `rollbackState`.
 - `.pipeline/scripts/migrate-operational-state-namespace.js` — migración del layout local al namespaceado (#5110).
+- `.pipeline/scripts/opstate-cutover-probe.js` — sondas del cutover del estado operativo (#7189): `--preconditions`, `--cas-probe`, `--positive`, `--migration-dry-run`, `--export-to-fs`, `--abort-drill`.
 - `.pipeline/lib/kernel-degradation-alert.js` — sink de degradación y aborto con `.paused`.

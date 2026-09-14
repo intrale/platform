@@ -1,0 +1,77 @@
+{
+  "subcomando": "--cas-probe",
+  "naturaleza": "escribe UNA clave de sonda (coord#opstate-cas-probe) por compareAndSet — idempotente: cada corrida incrementa su versión; nunca toca coord#waves ni coord#partial-pause",
+  "generadoEn": "2026-09-14T03:24:04.030Z",
+  "pipelineDir": "C:\\Workspaces\\Intrale\\platform\\.pipeline",
+  "checks": [
+    {
+      "id": "identidad",
+      "etapa": "principal efectivo = `kernel.runtimePrincipal` (SEC-2)",
+      "ok": true,
+      "detalle": "principal efectivo: intrale-kernel-runtime"
+    },
+    {
+      "id": "driver",
+      "etapa": "driver.kind ∈ {aws-cli, aws-cli-sync}",
+      "ok": true,
+      "detalle": "kind=aws-cli-sync · credenciales: perfil AWS \"kernel-runtime\""
+    },
+    {
+      "id": "cas-options",
+      "etapa": "`buildCasWriteOptions(1, true)` no vacío",
+      "ok": true,
+      "detalle": "\"#b.#v = :ev\""
+    },
+    {
+      "id": "cas-1",
+      "etapa": "1ª escritura con expectedVersion=1",
+      "ok": true,
+      "detalle": "ok · versión 1 → 2",
+      "datos": {
+        "expectedVersion": 1,
+        "result": {
+          "ok": true,
+          "version": 2
+        }
+      }
+    },
+    {
+      "id": "cas-2",
+      "etapa": "2ª escritura con la MISMA expectedVersion=1 ⇒ conflict:true",
+      "ok": true,
+      "detalle": "rechazada como corresponde · conflict:true · versión vigente 2",
+      "datos": {
+        "expectedVersion": 1,
+        "result": {
+          "ok": false,
+          "conflict": true,
+          "version": 2
+        }
+      }
+    },
+    {
+      "id": "readback",
+      "etapa": "lectura consistente cruda coincide con la 1ª escritura (versión + sha256)",
+      "ok": true,
+      "detalle": "PK=intrale-platform SK=coord#opstate-cas-probe body.version=2 sha256(body.value)=f458e1431892caeb8e9da58b1fb81f460bbf3d06e1a8bc4b17d1ef18e62d6bef",
+      "datos": {
+        "version": 2,
+        "sha256": "f458e1431892caeb8e9da58b1fb81f460bbf3d06e1a8bc4b17d1ef18e62d6bef",
+        "esperado": {
+          "version": 2,
+          "sha256": "f458e1431892caeb8e9da58b1fb81f460bbf3d06e1a8bc4b17d1ef18e62d6bef"
+        }
+      }
+    }
+  ],
+  "contexto": {
+    "tabla": "intrale-kernel-coordination",
+    "region": "us-east-2",
+    "particion": "intrale-platform",
+    "claveDeSonda": "coord#opstate-cas-probe"
+  },
+  "ok": true,
+  "causas": [],
+  "veredicto": "VERDE",
+  "exitCode": 0
+}

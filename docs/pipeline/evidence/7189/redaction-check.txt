@@ -1,0 +1,7 @@
+# SEC-7 · chequeo de redacción (CA-7) — 2026-09-14
+# La expresión escribe el prefijo de ARN como `arn:aws[:]` (misma semántica regex) para que el propio comando no se matchee a sí mismo dentro de los archivos que audita.
+
+$ grep -rnE "[0-9]{12}|arn:aws[:]|AKIA[0-9A-Z]{16}|ASIA[0-9A-Z]{16}" docs/pipeline/evidence/7189/ docs/pipeline/runbook-cutover-estado-operativo.md
+exit=1 (1 = sin coincidencias)
+
+# Placeholders admitidos por el runbook: `<ACCT>`, `<perfil-runtime>`, `<projectId>`, `<host>`, `<sandbox>` — ninguno matchea la expresión.
