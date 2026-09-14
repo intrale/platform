@@ -1,0 +1,21 @@
+$ node .pipeline/scripts/opstate-cutover-probe.js --export-to-fs --pipeline-dir <host>/.pipeline   # sin .paused: debe negarse ANTES de leer nada
+===== SONDA DEL ESTADO OPERATIVO · --export-to-fs =====
+naturaleza: escribe waves.json y .partial-pause.json en C:\Workspaces\Intrale\platform\.pipeline — exige .pipeline/.paused (el freno del cutover, D-3)
+stateDir: C:\Workspaces\Intrale\platform\.pipeline
+
+[FALLA] freno · `.pipeline/.paused` presente (readFullPauseOrigin) — AUSENTE (marker_ausente) — el pipeline seguiría escribiendo en el store mientras se exporta
+        causa: freno_ausente
+        → runbook §1.5 · poné el freno ANTES de exportar: por Telegram `/pausar`, o a mano `node -e "require('fs').writeFileSync('.pipeline/.paused', JSON.stringify({source:'manual', ts:new Date().toISOString(), reason:'export store→FS #7189'}))"`.
+
+--- VEREDICTO ---
+VEREDICTO: ROJO — 1 en rojo (freno) · causas: freno_ausente.
+           Qué hacer ahora: NO enciendas ningún flag. Resolvé cada causa con su línea "→" y volvé a correr la sonda.
+exit=1
+
+# El camino verde (con .paused presente y estado sembrado) se ensaya contra el driver fake en
+# .pipeline/lib/__tests__/opstate-cutover-probe-7189.test.js (CA-5):
+ok 41 - CA-5 rojo: sin `.paused` el export se NIEGA (freno_ausente) y no lee ni escribe nada
+ok 42 - CA-5 verde: con `.paused` presente reintegra olas + allowlist al stateDir, conteos correctos, sha256 del FS = del store, R8 con avance perdido 0
+ok 43 - CA-5 rojo: store sin contenido para una clave ⇒ estado_vacio y NO se escribe NINGÚN archivo (nada a medias)
+ok 44 - CA-5 rojo: store degradado ⇒ lectura_degradada; driver in-memory ⇒ driver_no_aws_cli; backend en fs ⇒ modo_no_remoto
+ok 45 - CA-5 rojo: el archivo escrito no coincide con el store ⇒ export_hash_distinto y avance perdido > 0; fallo de escritura ⇒ export_escritura_fallida

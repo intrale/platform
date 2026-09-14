@@ -637,6 +637,29 @@ function _setDriverForTests(fake) {
     invalidateReadCache();
 }
 
+/**
+ * #7189 · Metadatos del driver que el backend resolvió, para las sondas del
+ * operador (`scripts/opstate-cutover-probe.js`). Devuelve SÓLO descripción
+ * (`kind`, `atomicUpdate`, tabla, partición): NUNCA el driver, para que ninguna
+ * herramienta pueda hacer `putItem` por afuera del CAS (SEC-9 / D-5).
+ *
+ * Resuelve el driver real si todavía no está construido: eso spawnea
+ * `aws configure get` para las claves del perfil runtime, pero NO hace ninguna
+ * llamada a DynamoDB. Lanza lo mismo que `resolveDriver()` (config o
+ * credenciales incompletas): el caller lo trata como dato.
+ *
+ * @returns {{kind:string|null, atomicUpdate:boolean, tableName:string|null, projectId:string|null}}
+ */
+function _describeDriver() {
+    const { driver, spec, projectId, atomicUpdate } = resolveDriver();
+    return {
+        kind: driver && typeof driver.kind === 'string' ? driver.kind : null,
+        atomicUpdate: atomicUpdate === true,
+        tableName: spec && typeof spec.tableName === 'string' ? spec.tableName : null,
+        projectId: typeof projectId === 'string' ? projectId : null,
+    };
+}
+
 // ─── Validación del payload remoto (CA-A5) ──────────────────────────────────
 
 /**
@@ -1219,4 +1242,5 @@ module.exports = {
     isDegraded,
     invalidateConfigCache,
     _setDriverForTests,
+    _describeDriver,
 };

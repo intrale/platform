@@ -1,0 +1,83 @@
+{
+  "subcomando": "--positive",
+  "naturaleza": "sonda de sólo lectura — segura de re-ejecutar (backend con PIPELINE_OPSTATE_DURABLE=1 en este proceso vs `get-item --consistent-read`)",
+  "generadoEn": "2026-09-14T03:24:16.240Z",
+  "pipelineDir": "C:\\Workspaces\\Intrale\\platform\\.pipeline",
+  "checks": [
+    {
+      "id": "driver",
+      "etapa": "driver del backend ∈ {aws-cli, aws-cli-sync}",
+      "ok": true,
+      "detalle": "kind=aws-cli-sync tabla=intrale-kernel-coordination partición=intrale-platform"
+    },
+    {
+      "id": "A:waves",
+      "etapa": "camino A · backend.readKeyWithVersion('waves')",
+      "ok": false,
+      "detalle": "remote=true degraded=false version=null (null) olas=0 sha256=n/a",
+      "causa": "estado_vacio",
+      "siguiente": "H0 paso 3 · el store no tiene contenido para esta clave (0 olas / allowlist vacía no cierran la sonda): migrá primero (runbook §2) y volvé a correr.",
+      "datos": {
+        "version": null,
+        "count": 0,
+        "sha256": null,
+        "degraded": false
+      }
+    },
+    {
+      "id": "B:waves",
+      "etapa": "camino B · get-item --consistent-read coord#waves",
+      "ok": false,
+      "detalle": "ítem AUSENTE (sin `Item` en la respuesta)",
+      "causa": "estado_vacio",
+      "siguiente": "H0 paso 3 · el store no tiene contenido para esta clave (0 olas / allowlist vacía no cierran la sonda): migrá primero (runbook §2) y volvé a correr.",
+      "datos": {
+        "version": null,
+        "count": 0,
+        "sha256": null
+      }
+    },
+    {
+      "id": "A:partial-pause",
+      "etapa": "camino A · backend.readKeyWithVersion('partial-pause')",
+      "ok": false,
+      "detalle": "remote=true degraded=false version=null (null) allowlist=0 sha256=n/a",
+      "causa": "estado_vacio",
+      "siguiente": "H0 paso 3 · el store no tiene contenido para esta clave (0 olas / allowlist vacía no cierran la sonda): migrá primero (runbook §2) y volvé a correr.",
+      "datos": {
+        "version": null,
+        "count": 0,
+        "sha256": null,
+        "degraded": false
+      }
+    },
+    {
+      "id": "B:partial-pause",
+      "etapa": "camino B · get-item --consistent-read coord#partial-pause",
+      "ok": false,
+      "detalle": "ítem AUSENTE (sin `Item` en la respuesta)",
+      "causa": "estado_vacio",
+      "siguiente": "H0 paso 3 · el store no tiene contenido para esta clave (0 olas / allowlist vacía no cierran la sonda): migrá primero (runbook §2) y volvé a correr.",
+      "datos": {
+        "version": null,
+        "count": 0,
+        "sha256": null
+      }
+    }
+  ],
+  "contexto": {
+    "tabla": "intrale-kernel-coordination",
+    "region": "us-east-2",
+    "particion": "intrale-platform"
+  },
+  "conteos": "olas: 0 · allowlist: 0",
+  "ok": false,
+  "causas": [
+    "estado_vacio",
+    "estado_vacio",
+    "estado_vacio",
+    "estado_vacio"
+  ],
+  "veredicto": "ROJO",
+  "exitCode": 1
+}
