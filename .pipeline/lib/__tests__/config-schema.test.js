@@ -899,28 +899,51 @@ test('#5801 el config.yaml de HEAD trae el umbral calibrado y su ventana', () =>
     assert.strictEqual(audit.burst_threshold, 360);
     // CA-1 — supera el pico observado convertido a la unidad de la ventana.
     assert.ok(audit.burst_threshold > picoVentana);
-    // El gate de rollout NO se toca en esta entrega: sigue siendo decisión del
-    // operador, y ahora encenderlo ya no puede dejar la ráfaga sin umbral.
-    assert.strictEqual(audit.enabled, false);
+    // #5563 — El gate quedó ENCENDIDO con el prerrequisito humano cumplido
+    // (CA-0: `cloudtrail:LookupEvents` otorgado a `claude-code`, 2026-09-14).
+    // Encenderlo no pudo dejar la ráfaga sin umbral: es lo que #5801 garantizó.
+    assert.strictEqual(audit.enabled, true);
     assert.ok(validateConfig(realConfig()).valid);
 });
 
-test('#5801 las 7 claves de access_audit están declaradas en el esquema', () => {
+test('#5801 las 8 claves de access_audit están declaradas en el esquema', () => {
     // Trampa conocida de `additionalProperties: false`: omitir UNA de las claves
     // que ya viven en el YAML deja el pipeline arrancando pausado por
     // ConfigSchemaViolation. El config real es la guarda.
+    // #5563 sumó `expected_principals_from_hosts` (allowlist derivada por host).
     const CLAVES = [
         'enabled', 'poll_interval_min', 'lookback_min', 'expected_principals',
+        'expected_principals_from_hosts',
         'burst_threshold', 'authorization_failure_threshold', 'cooldown_min',
     ];
     const audit = realConfig().vault.access_audit;
     assert.deepEqual(Object.keys(audit).sort(), [...CLAVES].sort(),
-        'el YAML real trae exactamente estas 7 claves');
+        'el YAML real trae exactamente estas 8 claves');
     for (const clave of CLAVES) {
         const cfg = { vault: { access_audit: { burst_threshold: 360 } } };
         cfg.vault.access_audit[clave] = audit[clave];
         assert.ok(validateConfig(cfg).valid, `la clave ${clave} debe estar declarada`);
     }
+});
+
+test('#5563 vault.access_audit.expected_principals_from_hosts es booleano EXACTO, como hostIdFromHostname', () => {
+    // La allowlist se DERIVA en runtime cuando la señal es `true`. Un string
+    // `"true"` sería truthy para el YAML y dejaría la allowlist vacía (o
+    // derivada por accidente) según quién lo lea: el esquema lo rechaza.
+    const con = (valor) => ({ vault: { access_audit: { burst_threshold: 360, expected_principals_from_hosts: valor } } });
+    assert.ok(validateConfig(con(true)).valid, '`true` se acepta');
+    assert.ok(validateConfig(con(false)).valid, '`false` se acepta');
+    assert.ok(!validateConfig(con('true')).valid, '`"true"` string se rechaza');
+    assert.ok(!validateConfig(con(1)).valid, '`1` se rechaza');
+    // Una clave desconocida bajo `access_audit` sigue rechazada.
+    const typo = { vault: { access_audit: { burst_threshold: 360, expected_principals_from_host: true } } };
+    assert.ok(!validateConfig(typo).valid, 'un typo de la clave no puede pasar en silencio');
+    // El YAML real la trae encendida junto con el gate y sin ARN literal.
+    const audit = realConfig().vault.access_audit;
+    assert.strictEqual(audit.expected_principals_from_hosts, true);
+    assert.deepEqual(audit.expected_principals, []);
+    const yamlText = fs.readFileSync(path.join(__dirname, '..', '..', 'config.yaml'), 'utf8');
+    assert.doesNotMatch(yamlText, /arn:aws:iam::\d{12}/, 'CA-1: ningún ARN literal con account id en el repo público');
 });
 
 test('#5801 el TTL de la caché del vault sigue topado en 300 y el config real lo respeta', () => {

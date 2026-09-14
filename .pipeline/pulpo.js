@@ -26476,13 +26476,19 @@ async function mainLoop() {
         const result = vaultAccessAudit.runAccessAuditTick({
           pipelineDir: PIPELINE,
           config: auditCfg,
+          // #5563 · CA-1 — la derivación de la allowlist necesita `hostId` /
+          // `hostIdFromHostname`, que viven en `vault`, no en `access_audit`.
+          vaultConfig: cfgRoot.vault,
           region: cfgRoot.kernel && cfgRoot.kernel.region,
           sourceEnv: process.env,
           sendTelegramFn: sendTelegram,
           log: (msg) => log('vault-access-audit', msg.replace(/^\[vault-access-audit\] /, '')),
         });
         if (!result.skipped) {
-          log('vault-access-audit', `Tick: ${result.records.length} acceso(s), ${result.notifications.length} alerta(s)`);
+          // #5563 · UX-C — una línea por tick, greppable: `DEGRADADO` al
+          // principio cuando alguna consulta falló, duración siempre en ms.
+          // Los números los decide el módulo (`resumen`); acá sólo se formatean.
+          log('vault-access-audit', vaultAccessAudit.formatTickLogLine(result));
         }
         for (const err of result.errors || []) log('vault-access-audit', `WARN ${err.stage}: ${err.message}`);
       } catch (err) {

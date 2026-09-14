@@ -642,12 +642,19 @@ const SCHEMA = {
                 access_audit: {
                     type: 'object',
                     additionalProperties: false,
-                    // Las 7 claves que ya viven en el YAML se enumeran COMPLETAS:
+                    // Las 8 claves que ya viven en el YAML se enumeran COMPLETAS:
                     // con `additionalProperties: false`, omitir una dejaría el
                     // pipeline arrancando pausado por `ConfigSchemaViolation`.
                     required: ['burst_threshold'],
                     properties: {
                         enabled: { type: 'boolean' },
+                        // #5563 · CA-1 — deriva en runtime el ARN del rol de
+                        // lectura del host (`intrale-vault-runtime-<hostId>`)
+                        // y lo suma a la allowlist. Booleano EXACTO como
+                        // `hostIdFromHostname`: `"true"` string no deriva y
+                        // el esquema lo rechaza, para que la allowlist no
+                        // quede vacía por un typo que el YAML lee como truthy.
+                        expected_principals_from_hosts: { type: 'boolean' },
                         poll_interval_min: { type: 'integer', minimum: 1, maximum: 1440 },
                         // CAMBIAR ESTE VALOR INVALIDA `burst_threshold`: el umbral
                         // está expresado en `physical_read` por ventana de
