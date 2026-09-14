@@ -75,7 +75,13 @@ function readCache(cacheFile = CACHE_FILE) {
 }
 
 function emptyCache() {
-    return { items: [], updatedAt: 0, error: null };
+    // #5691 E3 — `totalAbiertas` es el universo real de recomendaciones abiertas,
+    // computado en runtime para el banner de truncamiento. Campo ADITIVO y
+    // opcional: los caches escritos antes de #5691 lo reciben en `null` por el
+    // `Object.assign(emptyCache(), parsed)` de `readCache()`, y el banner
+    // simplemente no se emite. Nunca una constante: la población se movió ~34×
+    // en un mes.
+    return { items: [], updatedAt: 0, error: null, totalAbiertas: null };
 }
 
 function writeCache(cache, cacheFile = CACHE_FILE) {
@@ -163,10 +169,30 @@ async function refreshCache({ ghRunner = defaultGhRunner, repo = 'intrale/platfo
         return cache;
     }
     cache.items = parseIssues(r.stdout);
+    cache.totalAbiertas = contarAbiertas({ ghRunner, repo });
     cache.updatedAt = Date.now();
     cache.error = null;
     writeCache(cache, cacheFile);
     return cache;
+}
+
+// #5691 E3 — universo de recomendaciones abiertas, para poder DECLARAR el
+// truncamiento del `--limit 200` de arriba (hoy la vista muestra una fracción y
+// no lo dice). Devuelve `null` si la consulta falla: en ese caso el banner no se
+// emite y la vista queda como antes, nunca con una cifra inventada. Resolver el
+// límite estructural es #5685, fuera del alcance de #5691.
+function contarAbiertas({ ghRunner = defaultGhRunner, repo = 'intrale/platform' } = {}) {
+    try {
+        const q = `repo:${repo} is:open is:issue label:${TIPO_LABEL}`;
+        // `-X GET` es obligatorio: `gh api` con `-f` hace POST por default y la
+        // Search API responde 404 a un POST (verificado, no asumido).
+        const r = ghRunner(['api', '-X', 'GET', 'search/issues', '-f', `q=${q}`, '--jq', '.total_count']);
+        if (!r || !r.ok) return null;
+        const n = Number(String(r.stdout).trim());
+        return Number.isFinite(n) && n >= 0 ? n : null;
+    } catch {
+        return null;
+    }
 }
 
 // #5689 REQ-SEC-4 — labels que `approve()` debe SACAR para que la recomendación
@@ -292,6 +318,7 @@ module.exports = {
     isFresh,
     parseIssues,
     refreshCache,
+    contarAbiertas,
     approve,
     reject,
     isLabelAusenteError,

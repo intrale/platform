@@ -1,0 +1,33 @@
+{
+  "info": {
+    "label": "Triaje de backlog",
+    "valor": "2222",
+    "valorColor": "rgb(188, 140, 255)",
+    "trend": "no frenan ninguna ola",
+    "accent": "#BC8CFF",
+    "animation": "none",
+    "borderLeft": "rgb(137, 87, 229)",
+    "icono": {
+      "href": "#ic-triage-backlog",
+      "w": 22,
+      "h": 22,
+      "visible": true
+    },
+    "pegadaARoja": true,
+    "onclick": "recoIrATriaje()",
+    "recoCount": "200",
+    "bannerTrunc": "Mostrando 200 de 2222 — la lista está truncada",
+    "nhAnimation": "none",
+    "nhAccent": "#B60205"
+  },
+  "before": {
+    "recoOpen": true,
+    "nhCollapsed": false
+  },
+  "after": {
+    "recoOpen": true,
+    "nhCollapsed": false,
+    "recoTop": 27.71875
+  },
+  "pageerrors": []
+}

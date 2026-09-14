@@ -1,0 +1,12 @@
+{
+  "degraded": true,
+  "queued": 1,
+  "paused": {
+    "source": "kernel-cutover-degraded-halt",
+    "ts": "2026-09-10T04:17:39.047Z",
+    "cause": "red",
+    "correlationId": "kdeg-1789013859046-a648b393"
+  },
+  "text": "🚨 operational-state: Estado externo sin respuesta - dispatch denegado\n\nSe frena a propósito. El estado local está obsoleto: no se usa.\n\nCausa: \\`red\\` — no hubo respuesta de red al consultar la tabla\n\nQué hacer: Volvé \\`operational\\_state.durable\\` a \\`false\\` siguiendo el rollback de \\`docs/pipeline/runbook-cutover-estado-operativo.md\\`.\n\nid: kdeg-1789013859046-a648b393\n\nemisor: pid=19940 host=DESKTOP-TOTQAUE ts=2026-09-10T04:17:39.074Z\n",
+  "delivery": "Cola aislada; sin entrega a Telegram."
+}

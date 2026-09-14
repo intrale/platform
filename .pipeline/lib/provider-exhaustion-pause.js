@@ -820,8 +820,17 @@ function formatResumedMessage(payload) {
     const issue = isValidIssue(payload.issue) ? Number(payload.issue) : null;
     const title = payload.title ? String(payload.title) : '';
     const provider = String(payload.provider_recovered || 'unknown');
+    // #5571 · Mismo patrón que formatExhaustionMessage (#5467): el texto del
+    // link es FIJO (`#N`, sólo dígitos validados por `isValidIssue`) y el
+    // título va AFUERA del link, escapado. Con el título adentro de `[...]`,
+    // un `](` en el título (input externo: viene de GitHub, repo público)
+    // cerraba el link antes de tiempo y rebindeaba el destino a un sitio
+    // hostil. El `\` se saca ANTES de escapar para no comerse el escape del
+    // carácter siguiente.
+    const rawTitle = title ? title.slice(0, 80).replace(/\\/g, '') : '';
+    const safeTitle = rawTitle ? escapeMarkdownLegacy(rawTitle) : '';
     const issueLink = issue
-        ? `[#${issue}${title ? ' — ' + title.slice(0, 80) : ''}](https://github.com/${GH_REPO}/issues/${issue})`
+        ? `[#${issue}](https://github.com/${GH_REPO}/issues/${issue})${safeTitle ? ' — ' + safeTitle : ''}`
         : '(sin issue)';
     const lines = [
         `🟩 *Pipeline destrabado — provider recuperado*`,

@@ -2612,6 +2612,14 @@ function renderInfraHealth(state) {
 </section>`;
 }
 
+// #5691 (E2/E3) — banners de la vista de recomendaciones. El render vive en
+// `lib/reco-banners.js` para ser testeable con `node --test` sin levantar el
+// servidor; ahí también está documentado por qué el banner de transición va acá
+// y NO sobre el KPI `kpi-needs-human` (ese KPI lee markers del filesystem, no el
+// label de GitHub, así que la migración de #5678 no lo mueve).
+let recoBanners = null;
+try { recoBanners = require('./lib/reco-banners'); } catch { /* opcional */ }
+
 // --- Recomendaciones de agentes (issue #2653) ---
 function renderRecommendationsSection() {
   if (!recommendationsLib) return '';
@@ -2624,9 +2632,16 @@ function renderRecommendationsSection() {
     ? new Date(cache.updatedAt).toLocaleString('es-AR', { timeZone: 'America/Argentina/Buenos_Aires' })
     : 'nunca';
   const errorTxt = cache.error ? `<div class="reco-err">⚠ ${escapeHtml(cache.error)}</div>` : '';
+  // #5691 E2 — banner de transición del modelo de labels de #5678 (descartable,
+  // una sola vez). #5691 E3 — banner ámbar de truncamiento, con el total
+  // computado en runtime (`cache.totalAbiertas`), nunca una constante.
+  const transicion = recoBanners ? recoBanners.renderTransitionBanner() : '';
+  const truncado = recoBanners
+    ? recoBanners.renderTruncationBanner({ mostrando: items.length, total: cache.totalAbiertas })
+    : '';
   const summary = `<summary>💡 Recomendaciones pendientes <span class="reco-count" data-count="${items.length}">${items.length}</span> <span class="reco-meta">· última sync: ${updatedAtTxt}</span></summary>`;
   if (items.length === 0) {
-    return `<details class="collapse-section reco-section">${summary}<div class="collapse-body">${errorTxt}<p class="dim" style="margin:6px 0">Sin recomendaciones pendientes. Los agentes guru/security/po/ux/review crean issues con label <code>tipo:recomendacion</code> + <code>needs:triage-backlog</code> que aparecen acá hasta que las apruebes o rechaces.</p><div style="margin-top:8px"><button class="reco-btn" onclick="recoRefresh()">🔄 Refrescar desde GitHub</button></div></div></details>`;
+    return `<details id="reco-section" class="collapse-section reco-section">${summary}<div class="collapse-body">${errorTxt}${transicion}<p class="dim" style="margin:6px 0">Sin recomendaciones pendientes. Los agentes guru/security/po/ux/review crean issues con label <code>tipo:recomendacion</code> + <code>needs:triage-backlog</code> que aparecen acá hasta que las apruebes o rechaces.</p><div style="margin-top:8px"><button class="reco-btn" onclick="recoRefresh()">🔄 Refrescar desde GitHub</button></div></div></details>`;
   }
   const rows = items.map(it => {
     const fromTxt = it.fromIssue ? `desde #${it.fromIssue}` : '';
@@ -2646,7 +2661,7 @@ function renderRecommendationsSection() {
       </td>
     </tr>`;
   }).join('');
-  return `<details class="collapse-section reco-section" open>${summary}<div class="collapse-body">${errorTxt}<div style="margin:6px 0 10px"><button class="reco-btn" onclick="recoRefresh()">🔄 Refrescar</button></div><table class="reco-table"><thead><tr><th>Issue</th><th>Agente</th><th>Título</th><th>Origen</th><th>Creado</th><th>Acciones</th></tr></thead><tbody>${rows}</tbody></table></div></details>`;
+  return `<details id="reco-section" class="collapse-section reco-section" open>${summary}<div class="collapse-body">${errorTxt}${transicion}${truncado}<div style="margin:6px 0 10px"><button class="reco-btn" onclick="recoRefresh()">🔄 Refrescar</button></div><table class="reco-table"><thead><tr><th>Issue</th><th>Agente</th><th>Título</th><th>Origen</th><th>Creado</th><th>Acciones</th></tr></thead><tbody>${rows}</tbody></table></div></details>`;
 }
 
 const { escapeHtmlAttr: __escapeHtmlAttrShared } = require('./lib/escape-html');
@@ -4077,6 +4092,17 @@ function generateHTML(state) {
 
   // V3 — Bloqueados esperando humano (issue #2478, refuerzo visual #2549)
   const bloqueados = Array.isArray(state.bloqueados) ? state.bloqueados : [];
+  // #5691 E6-a / UX-2 — tarjeta "Triaje de backlog" al lado de "Necesitan
+  // humano" (mockup 48, superficie A: dos KPI, dos urgencias, dos destinos de
+  // click). El valor es `cache.totalAbiertas` — el MISMO total que el banner E3,
+  // computado en runtime — y nunca `items.length`, que está truncado por el
+  // `--limit` del listado. Render puro en lib/reco-banners.js (testeable).
+  const recoKpiTriajeHTML = (() => {
+    if (!recoBanners || typeof recoBanners.renderTriageBacklogKpi !== 'function') return '';
+    let total = null;
+    try { total = recommendationsLib ? recommendationsLib.readCache().totalAbiertas : null; } catch { total = null; }
+    return recoBanners.renderTriageBacklogKpi({ total });
+  })();
   // #3729 — el panel se extrajo a views/dashboard/bloqueados.js (split de #3715).
   // El dashboard legacy delega el render al módulo (renderBloqueadosSsr); si el
   // require falló, degrada a string vacío (CA-A3) sin romper la página. Los
@@ -5215,10 +5241,24 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
   gap:8px;margin-bottom:0;padding:6px;
   background:var(--sf);border:1px solid var(--bd);border-radius:var(--radius);
 }
-.kpis.kpis-5 .kpi,.kpis.kpis-6 .kpi{padding:10px 12px;min-width:0}
-.kpis.kpis-5 .kpi-value,.kpis.kpis-6 .kpi-value{font-size:1.7em}
-.kpis.kpis-5 .kpi-label,.kpis.kpis-6 .kpi-label{margin-bottom:4px;font-size:0.64em}
+/* #5691 E6-a — la fila suma la tarjeta "Triaje de backlog" (mockup 48, superficie A). */
+.kpis.kpis-7{
+  grid-template-columns:repeat(7,minmax(0,1fr));
+  gap:8px;margin-bottom:0;padding:6px;
+  background:var(--sf);border:1px solid var(--bd);border-radius:var(--radius);
+}
+.kpis.kpis-5 .kpi,.kpis.kpis-6 .kpi,.kpis.kpis-7 .kpi{padding:10px 12px;min-width:0}
+.kpis.kpis-5 .kpi-value,.kpis.kpis-6 .kpi-value,.kpis.kpis-7 .kpi-value{font-size:1.7em}
+.kpis.kpis-5 .kpi-label,.kpis.kpis-6 .kpi-label,.kpis.kpis-7 .kpi-label{margin-bottom:4px;font-size:0.64em}
 .kpi.kpi-needs-human{--kpi-accent:#B60205}
+/* #5691 E6-a / UX-2 — KPI "Triaje de backlog": contador, NO alarma. Acento del
+   token --purple (design-tokens.css), sin pulso, sin #B60205. Dual-encoding:
+   ícono ic-triage-backlog (bandeja) + texto. El click abre la vista de triaje
+   (reco-section); el KPI rojo de al lado abre el panel de incidentes. */
+.kpi.kpi-triage-backlog{--kpi-accent:var(--purple,var(--pu));border-color:var(--purple-dim,rgba(137,87,229,0.6))}
+.kpi.kpi-triage-backlog .kpi-icon-svg{width:22px;height:22px;color:var(--purple,var(--pu));opacity:0.55;fill:none}
+.kpi.kpi-triage-backlog .kpi-label{padding-right:28px} /* el label nunca corre debajo del ícono */
+.kpi.kpi-triage-backlog:focus-visible{outline:2px solid var(--purple,var(--pu));outline-offset:2px}
 .kpi.kpi-needs-human.has-blocked{
   background:linear-gradient(135deg,rgba(182,2,5,0.18),rgba(182,2,5,0.04));
   border-color:rgba(182,2,5,0.55);
@@ -6962,6 +7002,26 @@ body.standalone .section-collapsed .section-body{display:block !important}
 .reco-btn-approve:hover{background:rgba(63,185,80,0.12)}
 .reco-btn-reject{border-color:#f85149;color:#f85149}
 .reco-btn-reject:hover{background:rgba(248,81,73,0.12)}
+/* #5691 (E2/E3) — banners de la vista de triaje. Jerarquía deliberadamente NO
+   de alarma: sin rojo #B60205, sin pulso, sin badge de incidente. El acento del
+   banner de transición sale del token --purple de assets/design-tokens.css
+   (rama "definición/backlog"), no de un color hardcodeado; el de truncamiento
+   usa la familia ámbar --retry. Dual-encoding: ícono ic-triage-backlog (bandeja
+   horizontal estable) + texto, para que un operador con deuteranopia separe
+   bloqueo de backlog sin depender del color. */
+.reco-banner{display:flex;align-items:flex-start;gap:10px;margin:8px 0;padding:10px 12px;border-radius:8px;border:1px solid;line-height:1.45}
+/* El display:flex de arriba tiene más especificidad que el [hidden]{display:none}
+   del user-agent: sin esta regla el banner descartable se ve aunque nazca con
+   el atributo hidden (medido por QA en el rebote 1 de #5691). */
+.reco-banner[hidden]{display:none !important}
+.reco-banner-transicion{background:var(--purple-bg,rgba(188,140,255,0.14));border-color:var(--purple-dim,#8957e5)}
+.reco-banner-truncado{background:var(--retry-bg,rgba(245,158,11,0.14));border-color:var(--retry-dim,#b8730a)}
+.reco-banner-ic{flex:0 0 auto;margin-top:2px;color:var(--purple,#bc8cff)}
+.reco-banner-txt{flex:1 1 auto;min-width:0}
+.reco-banner-tit{font-size:0.85em;font-weight:700;color:var(--fg,#e0e6ed)}
+.reco-banner-sub{font-size:0.8em;color:var(--dim,#8b949e);margin-top:3px}
+.reco-banner-sub code,.reco-banner-tit code{font-size:0.95em}
+.reco-banner-cerrar,.reco-banner-link{flex:0 0 auto;align-self:center;text-decoration:none}
 
 /* ============================================================
  * #3625 CA-5 — Widget de Audit trail · Allowlist mutations
@@ -7222,7 +7282,8 @@ body.standalone .section-collapsed .section-body{display:block !important}
 
   <div id="kpi-tooltip" class="kpi-tooltip"></div>
   <div class="kpis-row">
-    <div class="kpis kpis-6">
+    <!-- #5691 E6-a: 7 columnas con la tarjeta de triaje; si el módulo de banners no cargó, la fila queda de 6 sin hueco. -->
+    <div class="kpis kpis-${recoKpiTriajeHTML ? 7 : 6}">
       <div class="kpi kpi-definidos" data-tt='${ttDefinidos}'>
         <div class="kpi-label">Definidos</div>
         <div class="kpi-value" style="color:var(--pu)">${definidos}</div>
@@ -7253,6 +7314,7 @@ body.standalone .section-collapsed .section-body{display:block !important}
         <div class="kpi-value ${bloqueados.length > 0 ? 'danger' : 'muted'}">${bloqueados.length}</div>
         <div class="kpi-trend">${bloqueados.length > 0 ? 'click para colapsar/expandir' : 'pipeline fluido'}</div>
       </div>
+      ${recoKpiTriajeHTML}
     </div>
     ${(() => {
       const scoreCls = healthScore > 60 ? 'ok' : healthScore > 30 ? 'warn' : 'crit';
@@ -8288,7 +8350,12 @@ function showAllowlistPromoteModal(issue, preview) {
     : toAdd.map(function(d) {
         const c = chains[String(d)] || {};
         const t = c.title ? ' — ' + _aclEsc(String(c.title).slice(0, 70)) : '';
-        return '<li><a href="https://github.com/intrale/platform/issues/' + d + '" target="_blank" style="color:#58a6ff;font-family:\'SF Mono\',Consolas,monospace">#' + d + '</a>' + t + '</li>';
+        // #7233 — estamos DENTRO del template literal que sirve el <script>
+        // cliente: una barra + comilla simple se resuelve a comilla sola del
+        // lado del servidor y el navegador recibe una comilla sin escapar →
+        // SyntaxError que mata el bloque entero (144 funciones). Por eso el
+        // escape va doble acá y en el modal de abajo. (Sin backticks acá.)
+        return '<li><a href="https://github.com/intrale/platform/issues/' + d + '" target="_blank" style="color:#58a6ff;font-family:\\'SF Mono\\',Consolas,monospace">#' + d + '</a>' + t + '</li>';
       }).join('');
 
   const overlay = document.createElement('div');
@@ -8297,7 +8364,7 @@ function showAllowlistPromoteModal(issue, preview) {
   overlay.innerHTML = '<div role="dialog" aria-modal="true" aria-labelledby="acl-promote-title" style="background:#161b22;border:1px solid rgba(63,185,80,0.5);border-radius:10px;padding:20px;max-width:620px;width:92%;color:#c9d1d9;box-shadow:0 10px 40px rgba(0,0,0,0.6);">'
     + '<h3 id="acl-promote-title" style="margin:0 0 10px;color:#3fb950;display:flex;align-items:center;gap:8px;">➕ Promover #' + issue + ' a allowlist activa</h3>'
     + '<div style="margin-bottom:10px;padding:8px 12px;background:rgba(188,140,255,0.08);border-left:3px solid #bc8cff;border-radius:4px;">'
-      + '<strong>Candidato:</strong> <a href="https://github.com/intrale/platform/issues/' + issue + '" target="_blank" style="color:#58a6ff;font-family:\'SF Mono\',Consolas,monospace">#' + issue + '</a>'
+      + '<strong>Candidato:</strong> <a href="https://github.com/intrale/platform/issues/' + issue + '" target="_blank" style="color:#58a6ff;font-family:\\'SF Mono\\',Consolas,monospace">#' + issue + '</a>'
     + '</div>'
     + '<div style="margin-bottom:8px;font-size:0.88rem;">Se sumarán <strong>' + toAdd.length + '</strong> issue' + (toAdd.length === 1 ? '' : 's') + ' a la allowlist activa (incluyendo deps recursivas abiertas):</div>'
     + '<ul style="margin:0 0 12px;padding-left:22px;font-size:0.82rem;max-height:240px;overflow-y:auto;">' + toAddList + '</ul>'
@@ -8838,9 +8905,13 @@ async function restartOperativoConfirm() {
   var detalle = _robItems.map(function(it) {
     var issue = (it && Number.isInteger(it.issue)) ? ('#' + it.issue) : '(sin issue)';
     return '  • ' + issue + ' — ' + (it && it.componente || 'pipeline');
-  }).join('\n');
-  var msg = 'Reiniciar el modelo operativo (Pulpo) para aplicar estos cambios entregados?\n\n'
-    + detalle + '\n\nEl reinicio es selectivo (no mata agentes vivos). ¿Continuar?';
+  }).join('\\n');
+  // #7233 — mismo caso que el modal de allowlist: el salto de línea va con
+  // barra doble porque este código vive dentro del template literal del
+  // servidor; con barra simple se sirve un salto real dentro del string y
+  // el bloque cliente entero deja de parsear.
+  var msg = 'Reiniciar el modelo operativo (Pulpo) para aplicar estos cambios entregados?\\n\\n'
+    + detalle + '\\n\\nEl reinicio es selectivo (no mata agentes vivos). ¿Continuar?';
   if (!window.confirm(msg)) return; // Cancelar no reinicia nada (CA-5).
   var btn = document.getElementById('rob-btn');
   if (btn) { btn.disabled = true; btn.textContent = 'Reiniciando…'; }
@@ -9586,6 +9657,45 @@ document.addEventListener('keydown', function(e) {
   }
 });
 
+// #5691 E2 — banner de transición descartable. El localStorage es entrada NO
+// confiable (REQ-SEC-C): sólo se compara contra el literal '1' y el valor leído
+// jamás se inyecta en el DOM. El banner nace oculto (atributo hidden) y se
+// muestra sólo si no fue descartado, para que no parpadee en cada render.
+// OJO: este bloque vive DENTRO del template literal que sirve el <script> del
+// cliente — nada de backticks acá adentro, ni siquiera en los comentarios.
+function recoInitBanners() {
+  try {
+    document.querySelectorAll('.reco-banner-transicion[data-banner-key]').forEach(function (el) {
+      var k = el.getAttribute('data-banner-key') || '';
+      var visto = '1';
+      try { visto = window.localStorage.getItem('reco-banner:' + k); } catch (e) { visto = '1'; }
+      if (visto !== '1') el.hidden = false;
+    });
+  } catch (e) { /* sin localStorage: el banner queda oculto, nunca roto */ }
+}
+function recoDescartarBanner(btn) {
+  try {
+    var el = btn && btn.closest ? btn.closest('.reco-banner-transicion') : null;
+    if (!el) return;
+    var k = el.getAttribute('data-banner-key') || '';
+    try { window.localStorage.setItem('reco-banner:' + k, '1'); } catch (e) { /* modo privado */ }
+    el.hidden = true;
+  } catch (e) { /* nunca romper el dashboard por un banner */ }
+}
+if (document.readyState === 'loading') window.addEventListener('DOMContentLoaded', recoInitBanners);
+else recoInitBanners();
+// #5691 E6-a — click del KPI "Triaje de backlog": abre la vista de triaje
+// (reco-section) y la trae a la vista. NO toca el panel de incidentes ni
+// dispara ninguna notificación: es un contador, no una alarma.
+function recoIrATriaje() {
+  try {
+    var sec = document.getElementById('reco-section') || document.querySelector('.reco-section');
+    if (!sec) return;
+    if ('open' in sec) sec.open = true;
+    sec.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  } catch (e) { /* nunca romper el dashboard por un KPI */ }
+}
+
 // Recomendaciones de agentes (issue #2653)
 async function recoRefresh() {
   try {
@@ -9927,9 +10037,9 @@ function _wpRender() {
       + '<span class="wave-prio-meta" style="color:var(--dim);font-size:0.9em">' + st + '</span>'
       + '<span class="wave-prio-spacer"></span>'
       + '<button class="wave-prio-btn wave-prio-up" type="button" title="Subir una posición"'
-      + ' aria-label="Subir #' + num + ' una posición" onclick="wavePrioMove(\'' + num + '\',-1)"' + upDis + '>▲</button>'
+      + ' aria-label="Subir #' + num + ' una posición" onclick="wavePrioMove(\\'' + num + '\\',-1)"' + upDis + '>▲</button>'
       + '<button class="wave-prio-btn wave-prio-down" type="button" title="Bajar una posición"'
-      + ' aria-label="Bajar #' + num + ' una posición" onclick="wavePrioMove(\'' + num + '\',1)"' + downDis + '>▼</button>'
+      + ' aria-label="Bajar #' + num + ' una posición" onclick="wavePrioMove(\\'' + num + '\\',1)"' + downDis + '>▼</button>'
       + '</li>';
   }).join('');
 }

@@ -52,10 +52,137 @@ const DEFAULT_INMEMORY_TABLE = 'kernel-coordination-local';
 
 // Claves de coordinación reconocidas por el kernel (dato de config confiable —
 // NUNCA se deriva del ítem leído). Ampliable por config.
-const DEFAULT_KNOWN_KEYS = Object.freeze(['waves', 'blocked', 'health']);
+//
+// #5113 CA-A8 — `partial-pause` (la allowlist de ejecución) entra a la
+// allowlist de claves: es estado operativo mutable de alta frecuencia, del
+// mismo tenor que `waves`. Sumarla acá la convierte en clave RESERVADA para
+// `claim`/`release` (`assertSafeKey`), que es exactamente lo que se quiere:
+// nadie puede pedirla como lease.
+//
+// (rev-6) PRECISIÓN: `assertKnownKey` es del camino ASYNC de este módulo; el
+// backend síncrono del estado operativo NO lo invoca. Su allowlist de claves
+// es propia y cerrada (`FILE_FOR_KEY` + `assertKnownKey` en
+// `operational-state-backend.js`), y se aplica ANTES de bifurcar entre
+// filesystem y remoto. Son dos guardas distintas sobre el mismo vocabulario,
+// no una sola compartida.
+//
+// `.paused` NO está ni estará acá (D-3 / SEC-7): es el halt de último recurso y
+// el mecanismo de aborto del propio cutover. Si viviera en DynamoDB, una
+// degradación del store dejaría al operador sin freno justo en el peor momento.
+const DEFAULT_KNOWN_KEYS = Object.freeze(['waves', 'blocked', 'health', 'partial-pause']);
 
 function skFor(key) {
   return `coord#${key}`;
+}
+
+// -----------------------------------------------------------------------------
+// #5113 — Helpers PUROS del envelope y del CAS, exportados
+// -----------------------------------------------------------------------------
+//
+// El backend síncrono del estado operativo (`operational-state-backend.js`) no
+// puede consumir la API async de este módulo, pero TAMPOCO puede reimplementar
+// la semántica del envelope ni la del `ConditionExpression`: dos definiciones
+// del mismo CAS derivan y una de las dos pierde la garantía. Se extraen acá
+// como funciones puras y el camino async las usa a través de las mismas.
+
+/**
+ * Envelope canónico de un ítem de coordinación. PURO: no toca driver ni reloj.
+ *
+ * @param {object} p
+ * @param {string} p.projectId   partición (PK) — el contexto de la instancia.
+ * @param {string} p.key         clave de coordinación.
+ * @param {object} p.value       payload.
+ * @param {number} p.version     versión entera del ítem.
+ * @param {string} p.instanceId  quién escribe.
+ * @param {number} p.updatedAt   epoch ms (entero).
+ * @param {object} [p.extra]     { owner, expiresAt } de los claims.
+ */
+function buildCoordinationEnvelope({ projectId, key, value, version, instanceId, updatedAt, extra = {} }) {
+  const body = { key, value, version, updatedBy: instanceId, updatedAt: Math.floor(updatedAt) };
+  if (extra.owner !== undefined) body.owner = extra.owner;
+  if (extra.expiresAt !== undefined) body.expiresAt = extra.expiresAt;
+  return {
+    PK: projectId,
+    SK: skFor(key),
+    entityType: ENTITY_COORDINATION,
+    projectId,
+    schemaVersion: SCHEMA_VERSION,
+    body,
+  };
+}
+
+/**
+ * Opciones de escritura condicional del CAS sobre `body.version`. PURO.
+ * Devuelve `{}` cuando el driver no soporta condición atómica (in-memory
+ * single-instance), preservando la semántica histórica.
+ */
+function buildCasWriteOptions(expectedVersion, atomicUpdate) {
+  if (!atomicUpdate) return {};
+  return {
+    conditionExpression: '#b.#v = :ev',
+    expressionAttributeNames: { '#b': 'body', '#v': 'version' },
+    expressionAttributeValues: { ':ev': expectedVersion },
+  };
+}
+
+/**
+ * Opciones de escritura del CAS de CREACIÓN (`create-once`): la condición que
+ * garantiza un único ganador cuando la clave todavía no existe. PURA.
+ *
+ * #5113 (rev-6) — vive acá y NO duplicada en `operational-state-backend.js`.
+ * La condición `attribute_not_exists(#pk)` es la que decide, entre N instancias
+ * arrancando a la vez, cuál crea el registro de olas; dos copias de la misma
+ * expresión son exactamente el riesgo de divergencia que el issue manda evitar
+ * (una se corrige, la otra no, y el estado se pisa en silencio).
+ *
+ * A diferencia del CAS por versión, esta condición NO depende de que el driver
+ * declare `atomicUpdate`: sin condición la creación deja de tener ganador
+ * único, así que se emite siempre y el driver in-memory la evalúa igual.
+ */
+function buildCreateOnceWriteOptions() {
+  return {
+    conditionExpression: 'attribute_not_exists(#pk)',
+    expressionAttributeNames: { '#pk': 'PK' },
+  };
+}
+
+/**
+ * Validación fail-closed de un ítem crudo leído del store: schema + aislamiento
+ * + entityType. PURA (no lee ni escribe). Devuelve el ítem o lanza.
+ *
+ * @param {object|null} raw
+ * @param {string} contextProjectId
+ * @param {function} [onAlert]
+ */
+function validateCoordinationRawItem(raw, contextProjectId, onAlert = () => {}) {
+  if (!raw) return null;
+  if (!validateItemSchema(raw)) {
+    const errors = (validateItemSchema.errors || []).map((e) => ({ path: e.instancePath || '(root)', detail: e.message }));
+    onAlert({ projectId: raw.projectId, entityType: raw.entityType, sk: raw.SK, stage: 'schema', errors });
+    throw new KernelStoreValidationError('ítem de coordinación rechazado (fail-closed): schema', { stage: 'schema', errors });
+  }
+  if (raw.projectId !== contextProjectId || raw.PK !== contextProjectId) {
+    onAlert({ projectId: raw.projectId, entityType: raw.entityType, sk: raw.SK, stage: 'isolation' });
+    throw new KernelStoreIsolationError('ítem de coordinación de otra partición (anti-IDOR)', {
+      requested: contextProjectId, found: raw.projectId,
+    });
+  }
+  if (raw.entityType !== ENTITY_COORDINATION) {
+    throw new KernelStoreValidationError('entityType inesperado en store de coordinación', {
+      stage: 'entityType', found: raw.entityType,
+    });
+  }
+  return raw;
+}
+
+/** Valida que un ítem esté bien formado ANTES de escribirlo. PURO. */
+function assertCoordinationWritable(item) {
+  if (!validateItemSchema(item)) {
+    throw new KernelStoreValidationError('ítem de coordinación no cumple el schema al escribir', {
+      stage: 'schema',
+      errors: (validateItemSchema.errors || []).map((e) => ({ path: e.instancePath || '(root)', detail: e.message })),
+    });
+  }
 }
 
 // -----------------------------------------------------------------------------
@@ -214,52 +341,23 @@ function createCoordinationStore(deps = {}) {
   // `extra` transporta los campos del claim (owner/expiresAt). Sólo se agregan
   // al body cuando vienen definidos, para no ensuciar el estado de coordinación
   // clásico (waves/blocked/health) ni forzar cambios en ítems que no son claims.
+  // #5113 — envelope/validación delegados a los helpers PUROS de arriba, que son
+  // los MISMOS que consume el backend síncrono del estado operativo.
   function envelope(key, value, version, extra = {}) {
-    const body = { key, value, version, updatedBy: instanceId, updatedAt: Math.floor(now()) };
-    if (extra.owner !== undefined) body.owner = extra.owner;
-    if (extra.expiresAt !== undefined) body.expiresAt = extra.expiresAt;
-    return {
-      PK: contextProjectId,
-      SK: skFor(key),
-      entityType: ENTITY_COORDINATION,
-      projectId: contextProjectId,
-      schemaVersion: SCHEMA_VERSION,
-      body,
-    };
+    return buildCoordinationEnvelope({
+      projectId: contextProjectId, key, value, version, instanceId, updatedAt: now(), extra,
+    });
   }
 
   function assertWritable(item) {
-    if (!validateItemSchema(item)) {
-      throw new KernelStoreValidationError('ítem de coordinación no cumple el schema al escribir', {
-        stage: 'schema',
-        errors: (validateItemSchema.errors || []).map((e) => ({ path: e.instancePath || '(root)', detail: e.message })),
-      });
-    }
+    assertCoordinationWritable(item);
   }
 
   // Lectura fail-closed: schema + aislamiento + entityType.
   async function readValidated(key) {
     await ensureTable();
     const res = await driver.getItem(spec, { PK: contextProjectId, SK: skFor(key) });
-    const raw = res && res.item;
-    if (!raw) return null;
-    if (!validateItemSchema(raw)) {
-      const errors = (validateItemSchema.errors || []).map((e) => ({ path: e.instancePath || '(root)', detail: e.message }));
-      onAlert({ projectId: raw.projectId, entityType: raw.entityType, sk: raw.SK, stage: 'schema', errors });
-      throw new KernelStoreValidationError(`ítem de coordinación rechazado (fail-closed): schema`, { stage: 'schema', errors });
-    }
-    if (raw.projectId !== contextProjectId || raw.PK !== contextProjectId) {
-      onAlert({ projectId: raw.projectId, entityType: raw.entityType, sk: raw.SK, stage: 'isolation' });
-      throw new KernelStoreIsolationError('ítem de coordinación de otra partición (anti-IDOR)', {
-        requested: contextProjectId, found: raw.projectId,
-      });
-    }
-    if (raw.entityType !== ENTITY_COORDINATION) {
-      throw new KernelStoreValidationError('entityType inesperado en store de coordinación', {
-        stage: 'entityType', found: raw.entityType,
-      });
-    }
-    return raw;
+    return validateCoordinationRawItem(res && res.item, contextProjectId, onAlert);
   }
 
   // ---- API -------------------------------------------------------------------
@@ -286,10 +384,7 @@ function createCoordinationStore(deps = {}) {
     const item = envelope(key, value, 1, extra);
     assertWritable(item);
     try {
-      await driver.putItem(spec, item, {
-        conditionExpression: 'attribute_not_exists(#pk)',
-        expressionAttributeNames: { '#pk': 'PK' },
-      });
+      await driver.putItem(spec, item, buildCreateOnceWriteOptions());
       return { ok: true, created: true, version: 1 };
     } catch (e) {
       if (e instanceof ConditionalCheckFailedError) return { ok: false, exists: true };
@@ -324,13 +419,7 @@ function createCoordinationStore(deps = {}) {
     // condición se evalúa en el write y cierra el TOCTOU read→write. Sin
     // `atomicUpdate` (in-memory single-instance por default) la consistencia se
     // apoya en la lectura previa monohilo (determinística offline).
-    const opts = atomicUpdate
-      ? {
-        conditionExpression: '#b.#v = :ev',
-        expressionAttributeNames: { '#b': 'body', '#v': 'version' },
-        expressionAttributeValues: { ':ev': expectedVersion },
-      }
-      : {};
+    const opts = buildCasWriteOptions(expectedVersion, atomicUpdate);
     try {
       await driver.putItem(spec, item, opts);
       return { ok: true, version: nextVersion };
@@ -550,4 +639,14 @@ module.exports = {
   describeClaimFailure,
   DEFAULT_KNOWN_KEYS,
   SCHEMA_PATH,
+  // #5113 — helpers puros compartidos con el backend SÍNCRONO del estado
+  // operativo (`operational-state-backend.js`). Se exportan para que exista UNA
+  // sola definición del envelope y del ConditionExpression del CAS.
+  skFor,
+  buildCoordinationEnvelope,
+  buildCasWriteOptions,
+  buildCreateOnceWriteOptions,
+  validateCoordinationRawItem,
+  assertCoordinationWritable,
+  ENTITY_COORDINATION,
 };
