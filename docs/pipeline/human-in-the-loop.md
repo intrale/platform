@@ -406,6 +406,12 @@ humano agrega desde el dashboard para que la recomendación entre al pipeline.
 - **Dry-run por default.** `--apply` exige, además del flag, una confirmación
   fuera de banda (`MIGRATE_5678_CONFIRM`, contrastada contra un secreto guardado
   **fuera del repo**). Sin ella degrada a dry-run — fail-closed.
+  La **ubicación** del secreto es fija y la resuelve el sistema operativo
+  (`<home del SO>/.claude/secrets/migrate-5678-confirm.txt`, vía
+  `os.userInfo().homedir`): **no** la elige el entorno del invocador — ni por
+  una variable propia ni por `HOME`/`USERPROFILE`. Quien puede exportar
+  variables no puede proveer los dos lados de la comparación; su único grado de
+  libertad es el valor del secreto (hallazgo A01 de `security`, 2026-09-09).
 - **Write-ahead log** en `.pipeline/audit/migrate-5678-<ts>.jsonl` (append, dos
   registros por mutación). Habilita reanudar (`--resume`) y revertir
   (`--revert`). El directorio está gitignoreado y el repo sufre `reset --hard`
@@ -414,9 +420,27 @@ humano agrega desde el dashboard para que la recomendación entre al pipeline.
   `needs-human`, y persiste el `authorized_by` en el WAL. El módulo es un
   **bypass auditado** del choke point de `servicio-github.js`; el porqué está en
   su header.
-- **Alerta de pérdida del gate**: se dispara si desaparece un elemento de la
-  lista de bloqueos reales capturada antes de la corrida (más el canario), no si
-  el total llega a 0. Con la lista previa vacía, 0 es el resultado esperado.
+- **La reversión pasa por los mismos tres controles** que la migración:
+  confirmación fuera de banda (sin ella, dry-run), `--repo` validado, y guardrail
+  de #5690 consultado con procedencia por cada label que repone — evaluado en
+  secuencia sobre el estado simulado, así el orden de aplicación no lo esquiva.
+  El WAL **no es entrada confiable**: sólo se acepta desde `.pipeline/audit/`,
+  con nombre `migrate-5678-*.jsonl`, con `run-start` del mismo repo y con
+  `labels_antes` dentro del candidate set (uno con `recommendation:approved`
+  es fabricado → aborto). Consecuencia deliberada: como el estado legacy **es**
+  la mezcla que #5690 prohíbe por construcción, la reversión completa de un
+  candidato es irrealizable desde el script y aborta antes de escribir. La
+  migración es de un solo sentido; reponer `needs-human` sobre una
+  recomendación es una decisión humana, y `--revert --apply` la completa
+  (saca `needs:triage-backlog`, repone lo no sensible que falte).
+- **Alerta de pérdida del gate** (cableada en `run()`): antes de mutar se captura
+  la lista de bloqueos reales (`needs-human` sin `tipo:recomendacion`) y se
+  congela en el `run-start`; al cerrar la corrida se relee y se compara. Se
+  dispara si desaparece un elemento de esa lista (o el canario de
+  `--canario <N>`), no si el total llega a 0: con la lista previa vacía, 0 es
+  el resultado esperado. Queda persistida como registro `gate-check` del WAL y
+  el proceso sale con código **2** (también si la relectura falla: un gate no
+  verificable no sale en 0). Sin lista previa capturable, no se muta.
 - **Fuera de alcance**: las recomendaciones abiertas sin ninguna etiqueta de cola
   (ni `needs-human` ni `needs:triage-backlog`) no son parte del candidate set y
   no rompen nada hoy, porque `refreshCache()` lista por `tipo:recomendacion` a
