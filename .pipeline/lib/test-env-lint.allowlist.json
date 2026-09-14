@@ -5051,6 +5051,12 @@
             "reason": "PULPO_NO_AUTOSTART escrita en el sentido seguro (apagar)"
         },
         {
+            "file": "tests/opstate-dispatch-cause-5113.test.js",
+            "line": 23,
+            "kind": "deuda",
+            "reason": "PULPO_NO_AUTOSTART escrita en el sentido seguro (apagar)"
+        },
+        {
             "file": "tests/partial-pause-deps.test.js",
             "line": 216,
             "kind": "deuda",

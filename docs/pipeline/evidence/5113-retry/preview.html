@@ -1,0 +1,22 @@
+<!doctype html><meta charset="utf-8"><h1>Ensayo aislado #5113: alerta de estado operativo</h1><p>Vista del texto encolado; no es una captura del cliente Telegram.</p><pre>🚨 operational-state: Estado externo sin respuesta - dispatch denegado
+
+Se frena a propósito. El estado local está obsoleto: no se usa.
+
+Causa: `red` — no hubo respuesta de red al consultar la tabla
+
+Qué hacer: Volvé `operational_state.durable` a `false` siguiendo el rollback de `docs/pipeline/runbook-cutover-estado-operativo.md`.
+
+id: kdeg-1789013859046-a648b393
+
+emisor: pid=19940 host=DESKTOP-TOTQAUE ts=2026-09-10T04:17:39.074Z
+</pre><h2>Resultado observado</h2><pre>{
+  "degraded": true,
+  "queued": 1,
+  "paused": {
+    "source": "kernel-cutover-degraded-halt",
+    "ts": "2026-09-10T04:17:39.047Z",
+    "cause": "red",
+    "correlationId": "kdeg-1789013859046-a648b393"
+  },
+  "delivery": "Cola aislada; sin entrega a Telegram."
+}</pre>
