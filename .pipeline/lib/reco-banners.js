@@ -19,6 +19,18 @@
 // Por eso se toma la opción (a) del CA E2: el banner se coloca en la VISTA DE
 // RECOMENDACIONES, que es la que efectivamente cambia el día de la migración.
 //
+// E6-a / UX-2 · Tarjeta de KPI "Triaje de backlog"
+// ------------------------------------------------
+// Superficie A del mockup 48: "Dos KPI, dos urgencias, dos destinos de click".
+// La tarjeta va en la fila de KPI, al lado de `kpi-needs-human`, y es un
+// CONTADOR, no una alarma: tokens `--purple`, sin pulso, sin #B60205 y sin
+// notificación a Telegram. Su valor es `cache.totalAbiertas` (el mismo universo
+// que el banner E3), NUNCA `items.length`, que está truncado por el `--limit`
+// del listado. Si el total no se conoce, la tarjeta muestra "—" y lo dice: no
+// se inventa una cifra ni se degrada al conteo truncado. El click abre la
+// vista de triaje (`reco-section`); el KPI rojo abre el panel de incidentes.
+// Ningún click lleva al otro lado.
+//
 // E3 · Banner de truncamiento
 // ---------------------------
 // `lib/recommendations.js` lista con `--limit 200` contra un universo de
@@ -119,8 +131,41 @@ function renderTruncationBanner({ mostrando, total, repo = 'intrale/platform' } 
 </div>`;
 }
 
+/**
+ * Tarjeta de KPI "Triaje de backlog" (E6-a / UX-2). Contador no-alarma.
+ *
+ * @param {{total:(number|null), onclick?:string}} params
+ *   - total: `cache.totalAbiertas` computado en runtime; null si no se conoce.
+ *   - onclick: handler cliente que abre la vista de triaje (default
+ *     `recoIrATriaje()`). Sólo se acepta un identificador simple seguido de
+ *     `()`: cualquier otra cosa cae al default (no se interpola JS arbitrario).
+ * @returns {string} HTML
+ */
+function renderTriageBacklogKpi({ total, onclick = 'recoIrATriaje()' } = {}) {
+    // `null`/`undefined`/'' significan "total desconocido" (cache pre-#5691 o
+    // consulta fallida): NO se convierten en 0 — `Number(null)` daría 0 y la
+    // tarjeta mentiría "cero recomendaciones" con 2.000 abiertas.
+    const desconocido = total === null || total === undefined || String(total).trim() === '';
+    const m = desconocido ? null : conteoSeguro(total);
+    const handler = /^[A-Za-z_$][\w$]*\(\)$/.test(String(onclick || '')) ? onclick : 'recoIrATriaje()';
+    const conocido = m !== null;
+    const valor = conocido ? escapeHtmlText(String(m)) : '&mdash;';
+    const valorCls = conocido && m > 0 ? '' : ' muted';
+    const trend = conocido ? 'no frenan ninguna ola' : 'total sin sincronizar';
+    const title = conocido
+        ? 'Click para abrir la vista de triaje de backlog'
+        : 'Total sin sincronizar — click para abrir la vista de triaje y refrescar';
+    return `<div class="kpi kpi-triage-backlog kpi-clickable" data-total="${conocido ? m : ''}" onclick="${escapeHtmlAttr(handler)}" title="${escapeHtmlAttr(title)}" role="button" tabindex="0" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();this.click();}">
+        <svg class="kpi-icon kpi-icon-svg" aria-hidden="true"><use href="#ic-triage-backlog"/></svg>
+        <div class="kpi-label">Triaje de backlog</div>
+        <div class="kpi-value${valorCls}">${valor}</div>
+        <div class="kpi-trend">${trend}</div>
+      </div>`;
+}
+
 module.exports = {
     TRANSITION_BANNER_KEY,
+    renderTriageBacklogKpi,
     conteoSeguro,
     urlBusquedaCompleta,
     renderTransitionBanner,

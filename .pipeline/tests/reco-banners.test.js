@@ -1,6 +1,6 @@
 // =============================================================================
 // Tests de la vista de recomendaciones del dashboard tras #5678 (issue #5691).
-// Cubre los CA E1 · E2 · E3 · E4 · E5.
+// Cubre los CA E1 · E2 · E3 · E4 · E5 · E6-a (UX-2).
 //
 // Regla transversal del issue: ningún CA se verifica por número de línea (las
 // anclas del cuerpo están corridas ~130 commits) ni fija una constante numérica
@@ -166,6 +166,91 @@ test('E4b · la vista de triaje no toma el lenguaje visual de alarma', () => {
 
     const tokens = fs.readFileSync(path.join(RAIZ, 'assets', 'design-tokens.css'), 'utf8');
     assert.match(tokens, /--purple:/, 'el token existe en el design system');
+});
+
+// =============================================================================
+// E6-a / UX-2 · Tarjeta de KPI "Triaje de backlog" en la fila de KPI
+// (mockup 48, superficie A: "Dos KPI, dos urgencias, dos destinos de click")
+// =============================================================================
+
+test('E6-a · la tarjeta kpi-triage-backlog es un contador no-alarma con ícono + texto', () => {
+    const html = banners.renderTriageBacklogKpi({ total: 2222 });
+    assert.match(html, /class="kpi kpi-triage-backlog kpi-clickable"/, 'es una tarjeta de la fila de KPI');
+    assert.match(html, /Triaje de backlog/, 'texto del label (dual-encoding)');
+    assert.match(html, /ic-triage-backlog/, 'ícono del sprite (dual-encoding)');
+    assert.ok(html.includes('<div class="kpi-value">2222</div>'), 'el valor es el total recibido');
+    assert.match(html, /no frenan ninguna ola/, 'copy del mockup: no es urgencia');
+    assert.ok(html.includes('onclick="recoIrATriaje()"'), 'destino de click: la vista de triaje');
+    assert.ok(!/toggleNeedsHumanPanel/.test(html), 'ningún click lleva al panel de incidentes');
+    assert.ok(!/#B60205/i.test(html), 'sin rojo de incidente');
+    assert.ok(!/pulse/i.test(html), 'sin pulso');
+    assert.ok(!/danger|has-blocked|INCIDENTE/i.test(html), 'sin lenguaje visual de alarma');
+    assert.ok(!/telegram/i.test(html), 'sin notificación');
+});
+
+test('E6-a-b · sin total conocido la tarjeta muestra "—" y lo dice; nunca degrada al conteo truncado', () => {
+    for (const total of [null, undefined, '', 'x', -1, '12<script>']) {
+        const html = banners.renderTriageBacklogKpi({ total });
+        assert.match(html, /&mdash;/, 'valor desconocido → guion, no 0 (total=' + String(total) + ')');
+        assert.match(html, /total sin sincronizar/);
+        assert.ok(!html.includes('<script>'), 'nada crudo llega al DOM');
+    }
+    // 0 real sí es 0 (es distinto de "no sé").
+    assert.ok(banners.renderTriageBacklogKpi({ total: 0 }).includes('<div class="kpi-value muted">0</div>'));
+    // El onclick no interpola JS arbitrario.
+    assert.ok(banners.renderTriageBacklogKpi({ total: 1, onclick: 'alert(1)//' }).includes('onclick="recoIrATriaje()"'));
+});
+
+test('E6-a-c · la tarjeta vive en la fila de KPI, pegada a NECESITAN HUMANO, y su valor es totalAbiertas (no items.length)', () => {
+    const src = dashboardSrc();
+    // 1) La fila pasa a 7 tarjetas y la de triaje va inmediatamente después de la roja.
+    const iFila = src.indexOf('<div class="kpis kpis-' + String.fromCharCode(36) + '{recoKpiTriajeHTML ? 7 : 6}">');
+    assert.ok(iFila > 0, 'la fila de KPI declara 7 columnas');
+    const iRoja = src.indexOf('class="kpi kpi-needs-human', iFila);
+    assert.ok(iRoja > iFila, 'NECESITAN HUMANO está en la fila');
+    const iTriaje = src.indexOf(String.fromCharCode(36) + '{recoKpiTriajeHTML}', iRoja);
+    assert.ok(iTriaje > iRoja && iTriaje - iRoja < 900, 'la tarjeta de triaje va justo al lado de NECESITAN HUMANO');
+    const iCierre = src.indexOf('</div>', iTriaje);
+    assert.ok(iCierre - iTriaje < 40, 'y cierra la fila: no hay otra tarjeta entre medio');
+    assert.ok(src.includes('.kpis.kpis-7{') && src.includes('grid-template-columns:repeat(7,'), 'CSS de la fila de 7');
+
+    // 2) El valor sale de cache.totalAbiertas — el mismo total que el banner E3.
+    const iCalc = src.indexOf('const recoKpiTriajeHTML');
+    assert.ok(iCalc > 0);
+    const calc = src.slice(iCalc, iCalc + 600);
+    assert.ok(calc.includes('readCache().totalAbiertas'), 'lee totalAbiertas del cache en runtime');
+    assert.ok(calc.includes('renderTriageBacklogKpi({ total })'));
+    assert.ok(!calc.includes('items.length'), 'NUNCA el conteo truncado del listado');
+
+    // 3) Estética del token, no hardcodeada; sin alarma.
+    const iCss = src.indexOf('.kpi.kpi-triage-backlog{');
+    assert.ok(iCss > 0, 'CSS de la tarjeta');
+    const css = src.slice(iCss, iCss + 500);
+    assert.ok(css.includes('--kpi-accent:var(--purple'), 'acento del token --purple');
+    assert.ok(!/#B60205/i.test(css), 'sin rojo de incidente');
+    assert.ok(!/pulse/i.test(css), 'sin pulso');
+
+    // 4) Destino del click: la vista de triaje, que ahora tiene id.
+    assert.ok(src.includes('function recoIrATriaje()'), 'handler cliente definido');
+    const iH = src.indexOf('function recoIrATriaje()');
+    const handler = src.slice(iH, iH + 500);
+    assert.ok(handler.includes("getElementById('reco-section')"));
+    assert.match(handler, /scrollIntoView/);
+    assert.ok(!/toggleNeedsHumanPanel|bloqueados-humano/.test(handler), 'ningún click lleva al otro lado');
+    assert.ok(!handler.includes('`'), 'el handler vive dentro del script del cliente: sin backticks');
+    assert.ok(src.includes('<details id="reco-section" class="collapse-section reco-section">'), 'reco-section (empty state) tiene id');
+    assert.ok(src.includes('<details id="reco-section" class="collapse-section reco-section" open>'), 'reco-section (con items) tiene id');
+
+    // 5) La tarjeta no dispara Telegram: el render puro no importa ni llama al
+    //    notificador. Se mira el CÓDIGO sin comentarios: la cabecera del módulo
+    //    sí nombra a Telegram, justamente para explicar que la tarjeta NO lo usa.
+    const lib = fs.readFileSync(path.join(RAIZ, 'lib', 'reco-banners.js'), 'utf8')
+        .replace(/^\s*\/\/.*$/gm, '')
+        .replace(/\/\*[\s\S]*?\*\//g, '');
+    //    (el copy del banner E2 dice "no notifican": se buscan símbolos, no palabras)
+    assert.ok(!/require\(['"][^'"]*(telegram|notif)/i.test(lib), 'no importa ningún notificador');
+    assert.ok(!/\b(sendTelegram|sendMessage|notify\w*|telegram\w*)\s*\(/i.test(lib), 'no llama a ningún notificador');
+    assert.ok(!/child_process|spawn|exec/.test(lib), 'render puro: no ejecuta nada');
 });
 
 // =============================================================================

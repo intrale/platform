@@ -2641,7 +2641,7 @@ function renderRecommendationsSection() {
     : '';
   const summary = `<summary>💡 Recomendaciones pendientes <span class="reco-count" data-count="${items.length}">${items.length}</span> <span class="reco-meta">· última sync: ${updatedAtTxt}</span></summary>`;
   if (items.length === 0) {
-    return `<details class="collapse-section reco-section">${summary}<div class="collapse-body">${errorTxt}${transicion}<p class="dim" style="margin:6px 0">Sin recomendaciones pendientes. Los agentes guru/security/po/ux/review crean issues con label <code>tipo:recomendacion</code> + <code>needs:triage-backlog</code> que aparecen acá hasta que las apruebes o rechaces.</p><div style="margin-top:8px"><button class="reco-btn" onclick="recoRefresh()">🔄 Refrescar desde GitHub</button></div></div></details>`;
+    return `<details id="reco-section" class="collapse-section reco-section">${summary}<div class="collapse-body">${errorTxt}${transicion}<p class="dim" style="margin:6px 0">Sin recomendaciones pendientes. Los agentes guru/security/po/ux/review crean issues con label <code>tipo:recomendacion</code> + <code>needs:triage-backlog</code> que aparecen acá hasta que las apruebes o rechaces.</p><div style="margin-top:8px"><button class="reco-btn" onclick="recoRefresh()">🔄 Refrescar desde GitHub</button></div></div></details>`;
   }
   const rows = items.map(it => {
     const fromTxt = it.fromIssue ? `desde #${it.fromIssue}` : '';
@@ -2661,7 +2661,7 @@ function renderRecommendationsSection() {
       </td>
     </tr>`;
   }).join('');
-  return `<details class="collapse-section reco-section" open>${summary}<div class="collapse-body">${errorTxt}${transicion}${truncado}<div style="margin:6px 0 10px"><button class="reco-btn" onclick="recoRefresh()">🔄 Refrescar</button></div><table class="reco-table"><thead><tr><th>Issue</th><th>Agente</th><th>Título</th><th>Origen</th><th>Creado</th><th>Acciones</th></tr></thead><tbody>${rows}</tbody></table></div></details>`;
+  return `<details id="reco-section" class="collapse-section reco-section" open>${summary}<div class="collapse-body">${errorTxt}${transicion}${truncado}<div style="margin:6px 0 10px"><button class="reco-btn" onclick="recoRefresh()">🔄 Refrescar</button></div><table class="reco-table"><thead><tr><th>Issue</th><th>Agente</th><th>Título</th><th>Origen</th><th>Creado</th><th>Acciones</th></tr></thead><tbody>${rows}</tbody></table></div></details>`;
 }
 
 const { escapeHtmlAttr: __escapeHtmlAttrShared } = require('./lib/escape-html');
@@ -4092,6 +4092,17 @@ function generateHTML(state) {
 
   // V3 — Bloqueados esperando humano (issue #2478, refuerzo visual #2549)
   const bloqueados = Array.isArray(state.bloqueados) ? state.bloqueados : [];
+  // #5691 E6-a / UX-2 — tarjeta "Triaje de backlog" al lado de "Necesitan
+  // humano" (mockup 48, superficie A: dos KPI, dos urgencias, dos destinos de
+  // click). El valor es `cache.totalAbiertas` — el MISMO total que el banner E3,
+  // computado en runtime — y nunca `items.length`, que está truncado por el
+  // `--limit` del listado. Render puro en lib/reco-banners.js (testeable).
+  const recoKpiTriajeHTML = (() => {
+    if (!recoBanners || typeof recoBanners.renderTriageBacklogKpi !== 'function') return '';
+    let total = null;
+    try { total = recommendationsLib ? recommendationsLib.readCache().totalAbiertas : null; } catch { total = null; }
+    return recoBanners.renderTriageBacklogKpi({ total });
+  })();
   // #3729 — el panel se extrajo a views/dashboard/bloqueados.js (split de #3715).
   // El dashboard legacy delega el render al módulo (renderBloqueadosSsr); si el
   // require falló, degrada a string vacío (CA-A3) sin romper la página. Los
@@ -5230,10 +5241,24 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
   gap:8px;margin-bottom:0;padding:6px;
   background:var(--sf);border:1px solid var(--bd);border-radius:var(--radius);
 }
-.kpis.kpis-5 .kpi,.kpis.kpis-6 .kpi{padding:10px 12px;min-width:0}
-.kpis.kpis-5 .kpi-value,.kpis.kpis-6 .kpi-value{font-size:1.7em}
-.kpis.kpis-5 .kpi-label,.kpis.kpis-6 .kpi-label{margin-bottom:4px;font-size:0.64em}
+/* #5691 E6-a — la fila suma la tarjeta "Triaje de backlog" (mockup 48, superficie A). */
+.kpis.kpis-7{
+  grid-template-columns:repeat(7,minmax(0,1fr));
+  gap:8px;margin-bottom:0;padding:6px;
+  background:var(--sf);border:1px solid var(--bd);border-radius:var(--radius);
+}
+.kpis.kpis-5 .kpi,.kpis.kpis-6 .kpi,.kpis.kpis-7 .kpi{padding:10px 12px;min-width:0}
+.kpis.kpis-5 .kpi-value,.kpis.kpis-6 .kpi-value,.kpis.kpis-7 .kpi-value{font-size:1.7em}
+.kpis.kpis-5 .kpi-label,.kpis.kpis-6 .kpi-label,.kpis.kpis-7 .kpi-label{margin-bottom:4px;font-size:0.64em}
 .kpi.kpi-needs-human{--kpi-accent:#B60205}
+/* #5691 E6-a / UX-2 — KPI "Triaje de backlog": contador, NO alarma. Acento del
+   token --purple (design-tokens.css), sin pulso, sin #B60205. Dual-encoding:
+   ícono ic-triage-backlog (bandeja) + texto. El click abre la vista de triaje
+   (reco-section); el KPI rojo de al lado abre el panel de incidentes. */
+.kpi.kpi-triage-backlog{--kpi-accent:var(--purple,var(--pu));border-color:var(--purple-dim,rgba(137,87,229,0.6))}
+.kpi.kpi-triage-backlog .kpi-icon-svg{width:22px;height:22px;color:var(--purple,var(--pu));opacity:0.55;fill:none}
+.kpi.kpi-triage-backlog .kpi-label{padding-right:28px} /* el label nunca corre debajo del ícono */
+.kpi.kpi-triage-backlog:focus-visible{outline:2px solid var(--purple,var(--pu));outline-offset:2px}
 .kpi.kpi-needs-human.has-blocked{
   background:linear-gradient(135deg,rgba(182,2,5,0.18),rgba(182,2,5,0.04));
   border-color:rgba(182,2,5,0.55);
@@ -7257,7 +7282,8 @@ body.standalone .section-collapsed .section-body{display:block !important}
 
   <div id="kpi-tooltip" class="kpi-tooltip"></div>
   <div class="kpis-row">
-    <div class="kpis kpis-6">
+    <!-- #5691 E6-a: 7 columnas con la tarjeta de triaje; si el módulo de banners no cargó, la fila queda de 6 sin hueco. -->
+    <div class="kpis kpis-${recoKpiTriajeHTML ? 7 : 6}">
       <div class="kpi kpi-definidos" data-tt='${ttDefinidos}'>
         <div class="kpi-label">Definidos</div>
         <div class="kpi-value" style="color:var(--pu)">${definidos}</div>
@@ -7288,6 +7314,7 @@ body.standalone .section-collapsed .section-body{display:block !important}
         <div class="kpi-value ${bloqueados.length > 0 ? 'danger' : 'muted'}">${bloqueados.length}</div>
         <div class="kpi-trend">${bloqueados.length > 0 ? 'click para colapsar/expandir' : 'pipeline fluido'}</div>
       </div>
+      ${recoKpiTriajeHTML}
     </div>
     ${(() => {
       const scoreCls = healthScore > 60 ? 'ok' : healthScore > 30 ? 'warn' : 'crit';
@@ -9657,6 +9684,17 @@ function recoDescartarBanner(btn) {
 }
 if (document.readyState === 'loading') window.addEventListener('DOMContentLoaded', recoInitBanners);
 else recoInitBanners();
+// #5691 E6-a — click del KPI "Triaje de backlog": abre la vista de triaje
+// (reco-section) y la trae a la vista. NO toca el panel de incidentes ni
+// dispara ninguna notificación: es un contador, no una alarma.
+function recoIrATriaje() {
+  try {
+    var sec = document.getElementById('reco-section') || document.querySelector('.reco-section');
+    if (!sec) return;
+    if ('open' in sec) sec.open = true;
+    sec.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  } catch (e) { /* nunca romper el dashboard por un KPI */ }
+}
 
 // Recomendaciones de agentes (issue #2653)
 async function recoRefresh() {
