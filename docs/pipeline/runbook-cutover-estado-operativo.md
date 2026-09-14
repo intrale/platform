@@ -644,7 +644,7 @@ significa que cualquier proceso con la credencial saca issues de la ola **sin
 identidad** y el audit trail queda con un agujero.
 
 ```bash
-node -e "console.log('strict:', process.env.PARTIAL_PAUSE_STRICT_AUTH === '1')"
+node .pipeline/scripts/opstate-cutover-probe.js --preconditions --json
 grep -n "PARTIAL_PAUSE_STRICT_AUTH" .pipeline/lib/partial-pause.js
 ```
 
@@ -655,10 +655,14 @@ Tiene que estar `1` en el entorno del pipeline **antes** de la ventana. Con
 
 - Se satisface con `PARTIAL_PAUSE_STRICT_AUTH=1` **en el entorno del servicio**
   (launcher / `restart.js`), leído desde el proceso del Pulpo — **no** desde una
-  shell suelta (SEC-1). La sonda `--preconditions` lee el valor del entorno de
-  **su propio** proceso y lo dice en el detalle: para que la evidencia sea la
-  del servicio, correla desde el mismo entorno que lanza al Pulpo (o después de
-  reiniciar con la variable exportada).
+  shell suelta (SEC-1). La sonda lee `last-tick.json` emitido por el Pulpo:
+  `runtimeAuth.version: 1`, strict booleano y marca de inicio del proceso.
+  Exige antiguedad entre 0 y 120 segundos, mismo checkout y PID vivo con
+  comando absoluto de `pulpo.js` e identidad de inicio coincidente en el SO.
+  Si falta cualquiera de esas pruebas (incluido un servicio anterior al cambio),
+  CA-B1 falla cerrado: `datos.serviceAuth.reason` identifica el impedimento.
+  Exportar la variable en la shell de la sonda no modifica el resultado.
+  El campo del heartbeat es opcional para lectores anteriores; no migra estado.
 - La sonda además cuenta las entradas `gate_grace: true` de los **últimos 30
   días** en el audit local y da rojo si hay alguna (`gate_grace_reciente`): un
   removal sin autoría reciente es un caller sin migrar, no ruido. Estado al
@@ -1215,7 +1219,7 @@ principal efectivo no es el declarado. No se corrió nada con un perfil administ
 $ node .pipeline/scripts/opstate-cutover-probe.js --preconditions --pipeline-dir <host>/.pipeline
 naturaleza: sonda de sólo lectura — segura de re-ejecutar
 
-[FALLA] CA-B1 · PARTIAL_PAUSE_STRICT_AUTH=1 + sin `gate_grace` en 30 días — strict: false (leído del entorno de ESTE proceso: ausente) · gate_grace en 30 días: 0 (audit: 214 entradas, último gate_grace 2026-08-13T18:16:22.173Z)
+[FALLA] CA-B1 · PARTIAL_PAUSE_STRICT_AUTH=1 + sin `gate_grace` en 30 días — strict: false (servicio: no acreditado: heartbeat_no_acreditado) · gate_grace en 30 días: 0 (audit: 214 entradas, último gate_grace 2026-08-13T18:16:22.173Z)
         causa: strict_auth_apagado
         → H0 paso 0 · exportá PARTIAL_PAUSE_STRICT_AUTH=1 en el entorno del SERVICIO (launcher / restart.js) y reiniciá (D-10)
 [OK]    CA-B2 · `atomicUpdate === true` en el driver real + `buildCasWriteOptions` no vacío — buildCasWriteOptions(7,true): "#b.#v = :ev" · driver: kind=aws-cli-sync atomicUpdate=true tabla=intrale-kernel-coordination partición=intrale-platform
@@ -1336,7 +1340,7 @@ pipeline **pausado** (`/pausar`) salvo donde se indica.
 
 | # | Paso | Comando exacto | Verde esperado | Evidencia a pegar | Quién |
 |---|---|---|---|---|---|
-| 0 | `PARTIAL_PAUSE_STRICT_AUTH=1` en el entorno del **servicio** y reinicio (D-10) | exportar la variable en el launcher / `restart.js` → `node .pipeline/restart.js` (PowerShell) → `node .pipeline/scripts/opstate-cutover-probe.js --preconditions` desde ese entorno | `[OK] CA-B1 … strict: true · gate_grace en 30 días: 0` | salida de `--preconditions --json` | operador |
+| 0 | `PARTIAL_PAUSE_STRICT_AUTH=1` en el entorno del **servicio** y reinicio (D-10) | exportar la variable en el launcher / `restart.js` → `node .pipeline/restart.js` (PowerShell) → `node .pipeline/scripts/opstate-cutover-probe.js --preconditions` con heartbeat nuevo del servicio | `[OK] CA-B1 … strict: true · gate_grace en 30 días: 0` | salida de `--preconditions --json` | operador |
 | 1 | Namespaceado ON + layout migrado (D-4 / CA-B5) | `operational_state.namespaced.enabled: true` (commit a `main`, no sólo local: el respawn hace `reset --hard`) → `node .pipeline/scripts/migrate-operational-state-namespace.js --dry-run` → sin `--dry-run` → `--status` → `node .pipeline/scripts/opstate-cutover-probe.js --preconditions` | `--status` ⇒ `migrated: true`; sonda ⇒ `[OK] CA-B5` y **VEREDICTO: VERDE** (exit 0) | `--status` + `--preconditions --json` | operador |
 | 2 | Cutover del kernel **ensayado** (D-9) | nada que encender acá: la sonda ya reporta `kernel.durable = false (boolean)`; si se decide re-encenderlo, es runbook durable §1, fuera de H0 | `D-9` informativo en la sonda | — | operador (decisión) |
 | 3 | Dry-run + backup, y recién ahí `apply` por API (§2.3) | `node .pipeline/scripts/opstate-cutover-probe.js --migration-dry-run` → `node -e` de §2.3 con `migrateState({ apply:true, store, sourceDir: pc.stateDir(), sources: SOURCES.filter(waves\|partial-pause) })` con `driver.kind` verificado (§2.5) | dry-run VERDE con `olas: n · allowlist: m`; `apply` ⇒ `ok:true`, `actions: created/created`, sin `integrity_mismatch` | reporte del migrador (backup dir + checksums) | operador |

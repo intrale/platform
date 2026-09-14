@@ -1,18 +1,24 @@
 {
   "subcomando": "--preconditions",
   "naturaleza": "sonda de sólo lectura — segura de re-ejecutar (no escribe en el store ni en el filesystem)",
-  "generadoEn": "2026-09-14T03:24:00.270Z",
+  "generadoEn": "2026-09-14T03:56:46.205Z",
   "pipelineDir": "C:\\Workspaces\\Intrale\\platform\\.pipeline",
   "checks": [
     {
       "id": "CA-B1",
       "etapa": "PARTIAL_PAUSE_STRICT_AUTH=1 + sin `gate_grace` en 30 días",
       "ok": false,
-      "detalle": "strict: false (leído del entorno de ESTE proceso: ausente) · gate_grace en 30 días: 0 (audit: 214 entradas, último gate_grace 2026-08-13T18:16:22.173Z)",
+      "detalle": "strict: false (servicio: no acreditado: heartbeat_no_acreditado) / gate_grace en 30 días: 0 (audit: 214 entradas, último gate_grace 2026-08-13T18:16:22.173Z)",
       "causa": "strict_auth_apagado",
       "siguiente": "H0 paso 0 · exportá PARTIAL_PAUSE_STRICT_AUTH=1 en el entorno del SERVICIO (launcher / restart.js) y reiniciá; verificalo desde el proceso del Pulpo, no desde una shell suelta (D-10, runbook §4 CA-B1).",
       "datos": {
         "strict": false,
+        "serviceAuth": {
+          "ok": false,
+          "strict": false,
+          "source": "C:\\Workspaces\\Intrale\\platform\\.pipeline\\last-tick.json",
+          "reason": "heartbeat_no_acreditado"
+        },
         "gateGrace30d": 0,
         "auditEntries": 214,
         "lastGateGrace": "2026-08-13T18:16:22.173Z",

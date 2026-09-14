@@ -426,10 +426,10 @@ async function runPreconditions(opts = {}) {
     const kernel = cfg.kernel || {};
     const backend = backendOf(deps);
     const pc = projectContextOf(deps);
-    const env = deps.env || process.env;
 
     // CA-B1 · strict auth + gate_grace en 30 días (D-10)
-    const strict = env.PARTIAL_PAUSE_STRICT_AUTH === '1';
+    const serviceAuth = (deps.readServiceAuth || lib('pulpo-runtime-auth').read)(pipelineDir());
+    const strict = serviceAuth.ok === true && serviceAuth.strict === true;
     const auditPath = deps.auditFile || lib('partial-pause-audit')._paths().AUDIT_FILE;
     const grace = countGateGrace({ file: auditPath, now: deps.now ? deps.now() : Date.now() });
     {
@@ -439,10 +439,10 @@ async function runPreconditions(opts = {}) {
         else if (!grace.ok) causa = 'audit_ilegible';
         else if (grace.count > 0) causa = 'gate_grace_reciente';
         result.checks.push(check('CA-B1', 'PARTIAL_PAUSE_STRICT_AUTH=1 + sin `gate_grace` en 30 días', ok,
-            `strict: ${strict} (leído del entorno de ESTE proceso: ${env.PARTIAL_PAUSE_STRICT_AUTH === undefined ? 'ausente' : JSON.stringify(env.PARTIAL_PAUSE_STRICT_AUTH)}) · `
+            `strict: ${strict} (servicio: ${serviceAuth.ok ? `PID ${serviceAuth.pid}` : `no acreditado: ${serviceAuth.reason}`}) / `
             + `gate_grace en 30 días: ${grace.ok ? grace.count : 'ilegible'} (audit: ${grace.exists ? `${grace.total} entradas` : 'sin archivo'}`
             + `${grace.last ? `, último gate_grace ${grace.last}` : ''})`,
-            { causa, datos: { strict, gateGrace30d: grace.count, auditEntries: grace.total, lastGateGrace: grace.last, auditExists: grace.exists } }));
+            { causa, datos: { strict, serviceAuth, gateGrace30d: grace.count, auditEntries: grace.total, lastGateGrace: grace.last, auditExists: grace.exists } }));
     }
 
     // CA-B2 · CAS declarado por el helper compartido + por el driver REAL resuelto

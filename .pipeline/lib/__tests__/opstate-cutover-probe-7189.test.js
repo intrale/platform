@@ -127,7 +127,7 @@ function depsPreconditions(dir, backend, over = {}) {
     if (!fs.existsSync(auditFile)) fs.writeFileSync(auditFile, '');
     return {
         config: CFG,
-        env: { PARTIAL_PAUSE_STRICT_AUTH: '1' },
+        readServiceAuth: () => ({ ok: true, strict: true, pid: 123 }),
         backend,
         verifyRuntimeIdentity: identidadOk,
         namespaceStatus: () => ({ projectId: PROJECT_ID, migrated: true, stateDir: dir, flatLayoutItems: [] }),
@@ -154,13 +154,13 @@ test('CA-1 verde: las cuatro precondiciones en verde ⇒ VERDE, exit 0, D-9 y mo
 
 test('CA-1 · CA-B1 rojo: strict apagado ⇒ strict_auth_apagado y exit ≠ 0', () => enTmp({}, async (dir) => {
     const { backend } = remoteBackend({ kind: 'aws-cli-sync' });
-    const r = await probe.runPreconditions({ deps: depsPreconditions(dir, backend, { env: {} }) });
+    const r = await probe.runPreconditions({ deps: depsPreconditions(dir, backend, { readServiceAuth: () => ({ ok: true, strict: false, pid: 123 }) }) });
     assert.equal(r.ok, false);
     assert.equal(r.exitCode, 1);
     assert.deepEqual(causasDe(r), ['strict_auth_apagado']);
     const b1 = r.checks.find((c) => c.id === 'CA-B1');
     assert.match(b1.siguiente, /H0 paso 0/);
-    assert.match(b1.detalle, /leído del entorno de ESTE proceso: ausente/);
+    assert.match(b1.detalle, /servicio: PID 123/);
 }));
 
 test('CA-1 · CA-B1 rojo: una entrada gate_grace:true dentro de los 30 días ⇒ gate_grace_reciente', () => enTmp({}, async (dir) => {
@@ -775,7 +775,7 @@ test('CLI: --window parsea el literal como JSON y `absent` lo omite (SEC-4)', ()
 
 test('CLI: exit code coherente con el VEREDICTO por run() y --json termina en salto de línea', () => enTmp({}, async (dir) => {
     const { backend } = remoteBackend({ kind: 'aws-cli-sync' });
-    const deps = depsPreconditions(dir, backend, { env: {} }); // strict apagado ⇒ ROJO
+    const deps = depsPreconditions(dir, backend, { readServiceAuth: () => ({ ok: true, strict: false, pid: 123 }) }); // strict apagado ⇒ ROJO
     const r = await withEnv({ PIPELINE_OPSTATE_DURABLE: undefined }, () => probe.run(['--preconditions', '--json'], deps));
     assert.equal(r.exitCode, 1);
     assert.ok(r.text.endsWith('\n'));

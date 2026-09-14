@@ -888,6 +888,8 @@ function writeHeartbeat(iterationMs) {
       pid: process.pid,
       timestamp: new Date().toISOString(),
     };
+    // #7189: el diagnostico nunca impide publicar el heartbeat base.
+    try { payload.runtimeAuth = require('./lib/pulpo-runtime-auth').snapshot(PIPELINE); } catch {}
     // #5821 CA-1 — Duración REAL de la iteración anterior del loop.
     // El watchdog necesita esta magnitud (no la edad del heartbeat) para
     // dimensionar su umbral: `hbAge` es la EDAD medida en un instante arbitrario
