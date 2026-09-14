@@ -348,6 +348,28 @@ function resolveMarkerFile(blocked) {
     return null;
 }
 
+/**
+ * #7240 — CONTRATO DE UBICACIÓN Y CICLO DE VIDA de la orientación de destrabe.
+ * Vale para los dos canales (`guidanceFilePath` y `guidanceAgentFilePath`).
+ *
+ *   1. ESCRITURA — se escribe en `<pipeline>/<fase>/pendiente/<marker><sufijo>`,
+ *      JUNTO al marker `<issue>.<skill>` que se re-encola. Escritores:
+ *      `unblockIssue` (humano, más abajo) y `stuck-reconciler-deps.js` (agente,
+ *      carril de rebote #6296). Ninguno escribe en `trabajando/`.
+ *   2. TRANSPORTE — `pulpo.moveFile(pendiente/<marker>, trabajando/)` lo
+ *      traslada a `trabajando/` con el marker, cada archivo con su propio
+ *      nombre (`lib/guidance-injection.transportGuidanceArtifacts`). Es el
+ *      único punto por el que pasan todos los lanzamientos.
+ *   3. CONSUMO — `lanzarAgenteClaude` lo lee one-shot en `trabajando/`
+ *      (`lib/guidance-injection.buildGuidanceBlocks`), lo inyecta al prompt y
+ *      lo borra. Nunca sobrevive a un lanzamiento.
+ *
+ * Nunca se despacha como work-item: `isMarkerArtifact` lo filtra en todo
+ * listado de markers. Los sufijos salen de `GUIDANCE_SUFFIXES`
+ * (`lib/marker-artifact`), fuente única compartida con transporte, lector y
+ * el cleaner de huérfanos. Hasta #7240 escritor y lector divergían (escribía
+ * `pendiente/`, leía `trabajando/`) y toda orientación se perdía.
+ */
 function guidanceFilePath(targetDir, marker) {
     return path.join(targetDir, marker + '.guidance.txt');
 }
@@ -364,6 +386,10 @@ function guidanceFilePath(targetDir, marker) {
  * Por eso la extensión es distinta y NO hay forma de confundirlos ni por
  * accidente: son dos lecturas separadas, con dos headers separados, y el header
  * de este declara explícitamente que NO es autoritativo.
+ *
+ * Ubicación y ciclo de vida: el mismo contrato de `guidanceFilePath` (#7240):
+ * se escribe en `pendiente/` junto al marker, `pulpo.moveFile` lo transporta a
+ * `trabajando/` y `buildGuidanceBlocks` lo consume one-shot.
  */
 function guidanceAgentFilePath(targetDir, marker) {
     return path.join(targetDir, marker + '.guidance.agent.txt');

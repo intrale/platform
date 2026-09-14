@@ -311,3 +311,145 @@ test('runOnce: respeta walk timeout sin colgar el pulpo', async () => {
     assert.equal(result.aborted, false);
     assert.ok(result.durationMs < 60_000);
 });
+
+// ─── #7240 — guidance huérfana (CA-6, CA-11, CA-12) ─────────────────────────
+
+const { GUIDANCE_SUFFIXES } = require('../marker-artifact');
+
+/** Deja el archivo con un mtime `minutos` atrás. */
+function envejecer(full, minutos) {
+    const t = new Date(Date.now() - minutos * 60 * 1000);
+    fs.utimesSync(full, t, t);
+}
+
+test('#7240 CA-12: FILENAME_REGEX acepta .guidance.agent.txt y rechaza variantes maliciosas (SEC-5)', () => {
+    assert.equal(_internal.safeIssueFromFilename('1732.po.guidance.agent.txt'), '1732');
+    assert.equal(_internal.safeIssueFromFilename('1.po.guidance.agent.txt;rm'), null);
+    assert.equal(_internal.safeIssueFromFilename('1.po.guidance.agent.txt.evil'), null);
+    assert.equal(_internal.safeIssueFromFilename('1.po.guidance.xxx'), null);
+    assert.equal(_internal.safeIssueFromFilename('1.po.guidance.agent.txt '), null);
+    assert.equal(_internal.safeIssueFromFilename('$(x).po.guidance.agent.txt'), null);
+});
+
+test('#7240 CA-12: isCandidateFilename es true para .guidance.agent.txt; ARTIFACT_SUFFIXES sale de GUIDANCE_SUFFIXES', () => {
+    assert.equal(_internal.isCandidateFilename('1732.po.guidance.agent.txt'), true);
+    assert.equal(_internal.isGuidanceFilename('1732.po.guidance.agent.txt'), true);
+    assert.equal(_internal.isGuidanceFilename('1732.po.guidance.txt'), true);
+    assert.equal(_internal.isGuidanceFilename('1732.po.comment.md'), false);
+    for (const s of GUIDANCE_SUFFIXES) assert.ok(_internal.ARTIFACT_SUFFIXES.includes(s), `falta ${s}`);
+    assert.equal(_internal.GUIDANCE_ORPHAN_GRACE_MS, 15 * 60 * 1000);
+});
+
+test('#7240 CA-6 (Gherkin 4): guidance sin marker hermano, issue OPEN y mtime > gracia → se archiva sin consultar gh', async () => {
+    const { root, pipelineRoot } = makeTmpRepo();
+    const agente = placeFile(pipelineRoot, 'desarrollo/dev/pendiente/5113.pipeline-dev.guidance.agent.txt', 'motivo secreto del validador');
+    const humana = placeFile(pipelineRoot, 'desarrollo/entrega/pendiente/5113.delivery.guidance.txt', 'orientación secreta del operador');
+    envejecer(agente, 20);
+    envejecer(humana, 20);
+    let ghCalls = 0;
+    const result = await cleaner.runOnce({
+        mode: 'execute',
+        repoRoot: root,
+        pipelineRoot,
+        logger: silentLogger(),
+        issueStateFn: () => { ghCalls++; return { ok: true, state: 'OPEN' }; },
+    });
+    assert.equal(result.archived, 2);
+    assert.equal(ghCalls, 0, 'la guidance no consulta gh');
+    assert.equal(fs.existsSync(agente), false);
+    assert.equal(fs.existsSync(humana), false);
+    const buckets = fs.readdirSync(path.join(pipelineRoot, 'archivado')).filter(b => b.startsWith('ghost-'));
+    assert.equal(buckets.length, 1);
+    assert.ok(fs.existsSync(path.join(pipelineRoot, 'archivado', buckets[0], 'desarrollo/dev/pendiente/5113.pipeline-dev.guidance.agent.txt')), 'se mueve, no se borra');
+    // CA-11: el audit registra path y razón, jamás el contenido.
+    const audit = readAuditLines(pipelineRoot);
+    assert.equal(audit.length, 2);
+    for (const line of audit) {
+        assert.equal(line.action, 'cleanup');
+        assert.match(line.reason, /orphaned guidance/);
+        const raw = JSON.stringify(line);
+        assert.equal(raw.includes('secreto'), false, 'el audit no lleva contenido');
+        assert.equal(raw.includes('secreta'), false, 'el audit no lleva contenido');
+    }
+});
+
+test('#7240 CA-6: guidance sin marker hermano pero mtime < gracia → NO se archiva (ventana write→move)', async () => {
+    const { root, pipelineRoot } = makeTmpRepo();
+    const reciente = placeFile(pipelineRoot, 'desarrollo/dev/pendiente/5563.pipeline-dev.guidance.txt', 'x');
+    const result = await cleaner.runOnce({
+        mode: 'execute',
+        repoRoot: root,
+        pipelineRoot,
+        logger: silentLogger(),
+        issueStateFn: () => ({ ok: true, state: 'CLOSED' }),
+    });
+    assert.equal(result.archived, 0);
+    assert.equal(result.skipped, 1);
+    assert.ok(fs.existsSync(reciente));
+});
+
+test('#7240 CA-6: override guidanceGraceMs para tests', async () => {
+    const { root, pipelineRoot } = makeTmpRepo();
+    const f = placeFile(pipelineRoot, 'desarrollo/dev/pendiente/6191.pipeline-dev.guidance.agent.txt', 'x');
+    envejecer(f, 1);
+    const result = await cleaner.runOnce({
+        mode: 'execute',
+        repoRoot: root,
+        pipelineRoot,
+        logger: silentLogger(),
+        guidanceGraceMs: 30 * 1000,
+        issueStateFn: () => ({ ok: true, state: 'OPEN' }),
+    });
+    assert.equal(result.archived, 1);
+});
+
+test('#7240 CA-6 (Gherkin 6): guidance con marker hermano vivo NO se archiva, esté el issue OPEN o CLOSED', async () => {
+    for (const state of ['OPEN', 'CLOSED']) {
+        const { root, pipelineRoot } = makeTmpRepo();
+        const g = placeFile(pipelineRoot, 'desarrollo/dev/pendiente/2021.android-dev.guidance.txt', 'continuar');
+        placeFile(pipelineRoot, 'desarrollo/dev/pendiente/2021.android-dev', 'issue: 2021\n');
+        envejecer(g, 60 * 24 * 100);
+        const result = await cleaner.runOnce({
+            mode: 'execute',
+            repoRoot: root,
+            pipelineRoot,
+            logger: silentLogger(),
+            issueStateFn: () => ({ ok: true, state }),
+        });
+        assert.equal(result.archived, 0, `issue ${state}`);
+        assert.ok(fs.existsSync(g), `issue ${state}: la guidance sigue junto a su marker`);
+    }
+});
+
+test('#7240 CA-6: dry-run lista la guidance huérfana sin tocarla', async () => {
+    const { root, pipelineRoot } = makeTmpRepo();
+    const f = placeFile(pipelineRoot, 'desarrollo/dev/pendiente/6239.pipeline-dev.guidance.agent.txt', 'x');
+    envejecer(f, 20);
+    const lines = [];
+    const result = await cleaner.runOnce({
+        mode: 'dry-run',
+        repoRoot: root,
+        pipelineRoot,
+        logger: { info: (m) => lines.push(m), warn() {}, error() {} },
+        issueStateFn: () => ({ ok: true, state: 'OPEN' }),
+    });
+    assert.equal(result.candidates, 1);
+    assert.equal(result.archived, 0);
+    assert.ok(fs.existsSync(f));
+    assert.ok(lines.some(l => /DRY-RUN candidate/.test(l) && /guidance sin marker hermano/.test(l)));
+});
+
+test('#7240 CA-6 (regresión): .comment.md con issue OPEN y mtime viejo sigue sin archivarse (CLOSED sigue vigente)', async () => {
+    const { root, pipelineRoot } = makeTmpRepo();
+    const c = placeFile(pipelineRoot, 'definicion/criterios/pendiente/4444.po.comment.md', 'x');
+    envejecer(c, 60 * 24);
+    const result = await cleaner.runOnce({
+        mode: 'execute',
+        repoRoot: root,
+        pipelineRoot,
+        logger: silentLogger(),
+        issueStateFn: () => ({ ok: true, state: 'OPEN' }),
+    });
+    assert.equal(result.archived, 0);
+    assert.ok(fs.existsSync(c));
+});

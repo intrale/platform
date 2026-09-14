@@ -36,8 +36,15 @@ agentes y operadores producen como metadata:
 | Sufijo            | Productor          | Significado                                            |
 |-------------------|--------------------|--------------------------------------------------------|
 | `.comment.md`     | PO/UX/Guru/Security/etc. | Criterios de aceptación o análisis técnico volcados a archivo. |
-| `.guidance.txt`   | `/destrabar` (humano) | Texto de destrabe humano para `bloqueado-humano/`.    |
+| `.guidance.txt`   | `/unblock` (humano) | Orientación de destrabe humana. Viaja con el marker a `trabajando/` y se consume one-shot (#7240). |
+| `.guidance.agent.txt` | Carril de rebote #6296 (agente) | Motivo del validador que rechazó, citado como DATO. Mismo ciclo que el anterior. |
 | `.reason.json`    | Pulpo / agentes    | Motivo de rechazo, error, o decisión operativa.        |
+
+Los sufijos de orientación salen de **`GUIDANCE_SUFFIXES`**
+(`lib/marker-artifact.js`), fuente única compartida por el escritor
+(`human-block.js`), el transporte y lector (`lib/guidance-injection.js`) y el
+cleaner (`ARTIFACT_SUFFIXES`). Agregar un sufijo ahí lo vuelve artifact,
+transportable y candidato a limpieza en el mismo acto.
 
 Estos archivos **NO son markers** y por lo tanto NO deben aparecer en los
 listados que el Pulpo, el dashboard, `wave-state`, `human-block`, etc.,
@@ -61,6 +68,15 @@ Dos consecuencias:
    CLOSED + sin actividad en la carpeta padre) deben archivarse —
    **nunca eliminarse** — a `.pipeline/archivado/ghost-<timestamp>/` y
    registrarse en el audit log JSONL.
+3. **Orientación huérfana (#7240)**: para los sufijos de `GUIDANCE_SUFFIXES`
+   la regla es distinta. Una guidance **sin marker hermano `<issue>.<skill>`
+   en el mismo directorio** ya no tiene quién la consuma (el marker se fue a
+   `trabajando/` o a otra fase), así que es huérfana **aunque el issue esté
+   OPEN**: el cleaner **no consulta `gh`** y en cambio exige que el `mtime`
+   supere la gracia `GUIDANCE_ORPHAN_GRACE_MS` (15 min), que cubre la ventana
+   entre la escritura y el `moveFile` cuando el cleaner corre por CLI en
+   paralelo. Con marker hermano vivo **nunca** se archiva, esté el issue como
+   esté. `.comment.md` / `.reason.json` siguen exigiendo CLOSED.
 
 ## 3. Capas de defensa
 
@@ -107,6 +123,25 @@ Salida CLI: 1 línea `[ghost-artifact] mode=... done: { scanned, candidates,
 archived, skipped, errors, durationMs, bucket }`. Exit code `0` si OK,
 `1` si hubo errores, `2` si crash interno.
 
+#### Limpieza de la orientación huérfana acumulada (#7240)
+
+Antes de #7240 toda orientación quedaba abandonada en `pendiente/` (se
+escribía ahí y el Pulpo la buscaba en `trabajando/`). El cleaner las archiva
+solo en su primer tick (2 min después del boot del Pulpo) o a mano:
+
+```bash
+node .pipeline/lib/ghost-artifact-cleaner.js --dry-run    # lista "guidance sin marker hermano"
+node .pipeline/lib/ghost-artifact-cleaner.js --execute
+```
+
+Al cerrar #7240 el resultado esperado en producción era **7 archivados**
+(`dev/pendiente/5113.pipeline-dev.guidance.agent.txt`,
+`entrega/pendiente/5113.delivery.guidance.txt`, `5563.pipeline-dev` ×2,
+`6191`, `6192`, `6239`) y **ninguno** de `dev/pendiente/2021.android-dev.guidance.txt`
+ni `validacion/bloqueado-dependencias/6116.po.guidance.txt`, que conviven con
+su marker vivo y se inyectan en el próximo lanzamiento (el vencimiento por
+TTL de una guidance vieja es #7241).
+
 ### Cron automático
 
 El boot de `pulpo.js` arranca el cleaner como `setTimeout(2min)` +
@@ -127,7 +162,11 @@ Formato: 1 línea JSON por evento.
 - `cleanup`: archivo movido a `archivado/`.
 - `no-op`: archivo ya fue archivado en una corrida previa (idempotencia).
 - `skip`: archivo NO archivado por razón explícita (gh down, symlink,
-  sibling activo, etc.).
+  sibling activo, guidance dentro de la gracia, etc.).
+
+Para la orientación huérfana el `reason` es
+`orphaned guidance (no active marker in parent, mtime older than grace)`. El
+audit registra **sólo el path**: nunca el contenido de la orientación.
 - `error`: hubo un fallo durante el ciclo (no archivó nada).
 
 ## 5. Protocolo de recuperación
@@ -187,13 +226,14 @@ Formato: 1 línea JSON por evento.
 | Componente | Archivo | CA |
 |------------|---------|----|
 | Filtro canónico | `.pipeline/lib/marker-artifact.js` | F-1 |
-| Garbage collector | `.pipeline/lib/ghost-artifact-cleaner.js` | F-2..F-8, SEC-1..7, OPS-1..4 |
+| Garbage collector | `.pipeline/lib/ghost-artifact-cleaner.js` | F-2..F-8, SEC-1..7, OPS-1..4; #7240 CA-6/CA-12 |
+| Transporte e inyección de guidance | `.pipeline/lib/guidance-injection.js` (cableado en `pulpo.moveFile` / `lanzarAgenteClaude`) | #7240 CA-1..4, CA-8..11 |
 | Linter | `.pipeline/lib/ghost-artifact-lint.js` | F-9..F-11 |
 | Hook pre-commit | `.husky/pre-commit` (suffix new) | F-11 |
 | CI job | `.github/workflows/ghost-artifact-lint.yml` | SEC-8 |
 | Widget dashboard | `dashboard.js` `renderGhostArtifactsWidget` | F-12, SEC-9 |
 | Gitignore | `.gitignore` (`.pipeline/archivado/`, `.pipeline/audit/`) | SEC-6 |
-| Tests | `.pipeline/lib/__tests__/marker-artifact.test.js`, `ghost-artifact-cleaner.test.js`, `ghost-artifact-lint.test.js` | F-10 |
+| Tests | `.pipeline/lib/__tests__/marker-artifact.test.js`, `ghost-artifact-cleaner.test.js`, `ghost-artifact-lint.test.js`, `guidance-injection.test.js`, `pulpo-guidance-transport-7240.test.js` | F-10, #7240 |
 | Allowlist | `.pipeline/lib/ghost-artifact-lint.allowlist.json` | F-11 |
 
 ## 8. Referencias
