@@ -417,8 +417,11 @@ despachando con el sistema "pausado" y el operador creería que frenó todo. Que
 en la raíz física, con precedencia máxima. Una eventual pausa por proyecto es
 **aditiva**: `pausaEfectiva = globalPaused || projectPaused`.
 
-Tampoco entran los ~30 JSON de `.pipeline/state/` (quedan para **#5113**) ni
+Tampoco entran los ~30 JSON de `.pipeline/state/` ni
 `waves.json.template`, que es un artefacto versionado del repo.
+
+> #5113 tampoco los mueve: su alcance son el registro de olas y la allowlist
+> (ver §13). Los JSON de `.pipeline/state/` siguen sin dueño declarado.
 
 ### 12.3 Precedencia de resolución del contexto
 
@@ -536,3 +539,299 @@ para inspeccionar el plan **antes** de pausar el pipeline.
   emite binding; dashboard, hooks y skills caen a `single-project`/`host-fallback`.
   Lo que #5110 sí deja listo es el **interruptor** que vuelve eso un error
   (`strict_context`, §12.3) — default OFF hasta que #5164 complete el cableado.
+
+---
+
+## 13. Sustrato de persistencia: filesystem o store durable (#5113, Ola 9.4 · E2)
+
+La §12 resolvió **cómo se particiona** el estado operativo (por `projectId`).
+Esta sección resuelve la dimensión ortogonal: **dónde vive físicamente**.
+
+Hasta #5113 la respuesta era única — archivos locales. Eso alcanza mientras el
+pipeline corre en un solo host, y deja de alcanzar en el momento en que dos
+instancias tienen que compartir el registro de olas y la allowlist. La
+coordinación por leases ya existía (`lib/kernel-coordination-store.js`); lo que
+faltaba era que el estado que se disputa estuviera afuera.
+
+La dimensión de sustrato es **`operational_state.durable`**, y es **ortogonal** a
+`namespaced`: el namespaceado decide la clave, el sustrato decide el medio.
+
+> **Estado al cerrar #5113:** el mecanismo descrito en esta sección está
+> implementado y probado con el flag en `false`. El cutover ejecutado (migración
+> con paridad, rollback ensayado, multi-instancia en dos hosts) es alcance de la
+> historia hija #7189 `[Split de #5113]`; hasta que cierre, el sustrato efectivo
+> en producción es filesystem.
+
+### 13.1 Quién conoce el flag
+
+**Un solo archivo: `lib/operational-state-backend.js`.** Es la capa de storage y
+la única que sabe si está hablando con un archivo o con DynamoDB.
+
+```
+setPartialPauseAtomic() / saveState()      <- dominio: autoria, auditoria, validacion
+  |- evaluateAndAudit()                    <- gate de #3625 (D-5)
+       |- backend.writeKey(k, v, expectedVersion)   <- UNICO punto que conoce el flag
+            |- modo fs      -> atomicWriteFile(...)
+            |- modo remoto  -> putItem(..., ConditionExpression)
+```
+
+El orden importa y no es negociable: **el store es sustrato de persistencia, no
+API de mutación**. Llamar `compareAndSet` directo saltearía el gate de autoría de
+#3625 y lo dejaría decorativo. Toda escritura de allowlist entra por
+`setPartialPauseAtomic`.
+
+**"Un solo archivo conoce el flag" implica que ningún otro toca el disco.** No es
+lo mismo que "ningún otro lee `config.yaml`": lo que rompe CA-C1 no es conocer el
+flag, es acceder al sustrato sin pasar por el backend. La lista de accesos que se
+migraron en #5113 incluye tres que **no aparecían en ningún grep de literales**:
+
+| acceso | dónde vivía | por qué era invisible |
+|---|---|---|
+| `ensureWavesFile()` | `lib/waves.js` (bootstrap del boot) | usaba `wavesFile()`, no el literal |
+| `initWavesFromPartial()` | `scripts/init-waves-from-partial.js` | pedía el path con `_paths()`, y el grep de control corría sólo sobre `lib/*.js` |
+| `readWavesAllowlist()` | `lib/desync-detector.js` | estaba **allowlisteado** (#5176) por razones que eran razones para no usar la FACHADA, no para hablarle al disco |
+
+Los tres leían y/o escribían `waves.json` local con el flag encendido, mientras
+el resto del pipeline leía el store. El bootstrap además lo hacía en el **boot
+del Pulpo**, así que el pipeline arrancaba con dos fuentes de verdad y logueaba
+"waves.json sembrado" sobre una ola que nadie iba a ver.
+
+Dos controles cierran la clase entera, y hacen falta los dos:
+
+- **`paths-indirect`** (regla 4 del guardrail): pedir `_paths()` desde fuera del
+  sustrato es violation. Un `grep` de literales no puede ver esa forma — no hay
+  literal.
+- **`operational-state-boot-no-fs-5113.test.js`**: corre el camino de boot
+  completo con el flag en `1` **espiando `fs`** y exige cero contacto con los dos
+  archivos. Es la prueba que no depende de que el grep esté bien escrito.
+
+Si el caso legítimo es sólo mostrarle un path al operador, `backend.fileFor(key)`
+lo da sin abrir la introspección del sustrato.
+
+**Corolario para quien agregue una clave nueva:** el bootstrap de esa clave
+también es acceso al sustrato. Un `ensureXFile()` que cree el archivo "porque
+todavía no existe" es, en régimen remoto, un escritor que pisa estado migrado con
+un template vacío — y `existsSync` no puede distinguir "no existe" de "no pude
+leer". Por eso `ensureWavesFile()` corta contra `readKeyWithVersion` y **no
+siembra nada** cuando el store degradó.
+
+### 13.2 Layout
+
+```
+durable: false (DEFAULT)              durable: true
+──────────────────────────            ──────────────────────────────────────────
+<stateDir>/waves.json                 tabla intrale-kernel-coordination, key `waves`
+<stateDir>/.partial-pause.json        tabla intrale-kernel-coordination, key `partial-pause`
+
+.pipeline/.paused                     .pipeline/.paused      <- FILESYSTEM en ambos
+```
+
+`<stateDir>` sale de la §12: la ruta local ya viene namespaceada cuando
+`namespaced.enabled` está en `true`. Las dos dimensiones se componen sin
+conocerse.
+
+### 13.3 Qué queda en filesystem, y por qué
+
+`.pipeline/.paused` **nunca** migra (D-3 / SEC-7). Es el halt de último recurso y
+además el mecanismo de aborto del propio cutover: si viviera en el store, una
+degradación dejaría al operador sin freno justo en el peor momento. El criterio
+es el mismo por el que la §12.2 lo dejó global — un control de seguridad no puede
+depender del subsistema que está fallando.
+
+Hay un test negativo que se pone en rojo si alguien lo suma a `SOURCES` o a
+`knownKeys` "por consistencia".
+
+### 13.4 El flag es único, y gatea lectura y escritura juntas
+
+No hay un flag de lectura y otro de escritura. Es deliberado: dos flags permiten
+un estado intermedio donde se lee de un lado y se escribe del otro, que es
+exactamente la coexistencia de dos fuentes de verdad que este trabajo existe para
+prohibir.
+
+Fail-closed con `=== true` exacto, mismo criterio que `namespaced.enabled` y
+`kernel.durable`: `"true"`, `1` o `"1"` **no encienden nada**. Un flag que mueve
+dónde vive el registro de olas no se prende por coerción accidental.
+
+`PIPELINE_OPSTATE_DURABLE=1|0` lo fuerza en caliente sin tocar el archivo —
+override pensado para el ensayo de rollback y para los tests.
+
+### 13.5 La exclusión mutua cambia de primitiva
+
+| Régimen | Primitiva de exclusión | Alcance real |
+|---------|------------------------|--------------|
+| `durable: false` | `withLockSync` (archivo + PID) | Un host |
+| `durable: true` | **CAS con `expectedVersion`** | Todos los hosts |
+
+`withLockSync` resuelve locks stale preguntando si el PID sigue vivo **en el SO
+local**. Entre dos hosts eso no excluye nada. Dejarlo como única garantía en
+régimen remoto sería peor que no tener ninguna: simula una protección
+inexistente.
+
+El lock local **se conserva** en modo remoto, pero como optimización intra-host
+(evita que dos procesos del mismo host se peleen y gasten reintentos de CAS), no
+como la garantía. La garantía es la escritura condicional.
+
+#### El `expectedVersion` sale del snapshot del DOMINIO, no de una relectura
+
+Es la parte que se puede escribir mal creyendo que está bien, así que queda
+explícita: **el `expectedVersion` de un mutador es la versión que estaba vigente
+cuando ese mutador leyó el estado que alimentó su decisión.** No es una versión
+releída al momento de escribir.
+
+Un `writeKey(key, value)` sin `expectedVersion` **no es un write sin CAS: es un
+write efectivamente incondicional**. El backend rellena el hueco con la versión
+que él mismo releyó un instante antes del `putItem`, así que la
+`ConditionExpression` que viaja al driver se cumple siempre. Lo único que queda
+protegido es la ventana interna `getItem → putItem` del backend — no la ventana
+del dominio, que es donde ocurre la carrera:
+
+```
+leer previous  ->  evaluateAndAudit()  ->  writeKey()
+^-------------- la carrera vive ACA --------------^
+```
+
+El vector concreto sobre la allowlist, que es el **único estado del pipeline que
+es un control de acceso**:
+
+1. El host A lee la allowlist `[1, 2]`.
+2. El host B agrega el issue 3 **con autoría válida** → `[1, 2, 3]`.
+3. El host A escribe la foto que leyó en el paso 1 → `[1, 2]`.
+
+Sin `expectedVersion`, el paso 3 pasa: el alta autorizada de B desaparece y A
+ejecutó un **removal sin `authorizedBy`**, porque `evaluateAndAudit` comparó
+contra un `previous` stale y no vio removal alguno. El gate de autoría de #3625
+queda evadible por carrera y el audit trail registra "sin cambios" mientras hubo
+un removal efectivo — sobre el gate que decide qué issues se entregan a agentes
+con capacidad de escribir código, abrir PRs y tocar AWS (precedente #5060: ~320
+agentes despachados).
+
+Por eso todos los mutadores de la allowlist toman el snapshot con
+`readAllowlistSnapshot()` (`lib/partial-pause.js`), que devuelve `previous` y
+`expectedVersion` **del mismo instante**, y lo propagan al write:
+
+| convención de `expectedVersion` | significado | condición que viaja al driver |
+|---|---|---|
+| `0` | la clave no existía | `attribute_not_exists(#pk)` — un solo ganador en la creación |
+| entero `n` | versión leída | `#b.#v = :ev` con `:ev = n` |
+| `null` + `degraded` | la lectura falló | **no se escribe** (ver §13.6) |
+
+En modo `fs` el `expectedVersion` se ignora (la exclusión la sigue dando
+`withLockSync`, que entre procesos del mismo host sí excluye), así que
+propagarlo es inocuo y el comportamiento local no cambia.
+
+El control es un **test sobre el camino real de mutación**
+(`lib/__tests__/partial-pause-allowlist-cas-5113.test.js`: dos instancias contra
+el mismo store, más el caso negativo que falla si el write sale sin condición
+por versión), no un test del backend con el `expectedVersion` pasado a mano: ese
+prueba que el CAS funciona cuando alguien se lo pide, no que los mutadores se lo
+pidan.
+
+#### El registro de olas: la versión viaja adosada al snapshot
+
+CA-A4 alcanza a la allowlist **y al registro de olas**, y el registro tiene una
+diferencia de forma que obliga a una solución distinta: sus ~17 mutadores
+comparten un mismo patrón (`invalidateCache() → loadWaves() → mutar →
+saveState(state, meta)`) y no hay un único punto de lectura al que agregarle un
+segundo valor de retorno. Pedirle a cada mutador que propague la versión a mano
+es un control que se rompe con el primer mutador nuevo que se olvide — y ese
+olvido es silencioso, porque escribir sin condición **no falla**: pisa.
+
+Por eso la versión no se devuelve aparte: viaja **pegada al objeto `state`**, en
+una propiedad de símbolo que `loadWaves()` estampa una vez y
+`saveStateLocked()` lee al final del recorrido. Los mutadores no cambian y no
+pueden olvidarse.
+
+- Es un `Symbol`, no un campo: `JSON.stringify` lo ignora, `Object.keys` no lo
+  lista, `validateStateStrict` no lo ve como campo desconocido y
+  `computeIntegrityHash` no lo mete en el hash. **El estado que se persiste es
+  byte a byte el mismo que antes.**
+- El caché de 2 s la transporta explícitamente (`deepClone` es un round-trip
+  JSON y la perdería). Sin eso, un `state` servido desde el TTL llegaría al
+  write sin versión y el write volvería a salir incondicional, encubierto por
+  el caché.
+- El vector es el mismo de la allowlist, con otra consecuencia: A lee la ola
+  `[1]`; B agrega el issue 200 → `[1, 200]`; A agrega el 100 escribiendo su foto
+  vieja → `[1, 100]`. **El alta de B desaparece sin que nadie se entere.** Toca
+  el camino que ejercitan `pulpo.js` y `wave-dispatch.js` en cada tick
+  (`addIssueToWave`, `markIssuesCompletedInActiveWave`, `setWaveStalled`), que
+  es justo el que activa el multi-instancia de CA-C6.
+
+Precedencia en `saveStateLocked` (`resolveCasVersion`):
+
+1. `metadata.expectedVersion` — el If-Match **opcional del dominio** (#4372),
+   que sólo pasan la API HTTP y el rollback del commander. Es más estricto y
+   gana si está.
+2. La versión adosada por `loadWaves()` — la que cubre a los mutadores calientes
+   del Pulpo, que nunca pasaron If-Match.
+
+Y dos rechazos explícitos, en modo remoto:
+
+| situación | qué pasa | por qué |
+|---|---|---|
+| versión adosada `null` (la lectura degradó) | `EWAVES_STORE`, no se escribe | `loadWaves()` degrada a `emptyState()`: el write persistiría un registro **vacío** encima del real |
+| sin versión adosada (state armado a mano) | `EWAVES_NO_CAS_VERSION` | escribir sin condición es el defecto, no el default: un mutador futuro falla ruidoso en vez de reintroducir el lost update |
+
+La única excepción deliberada es `restoreFromSnapshots()`: es el rollback de
+emergencia de una transacción que ya falló a mitad de camino, corre bajo el lock
+de la transacción y **tiene que ganar** — restaurar el backup condicionado a una
+versión que la propia transacción fallida movió lo dejaría sin poder revertir.
+
+El control es `lib/__tests__/waves-registro-cas-5113.test.js`: dos instancias con
+carpetas locales distintas (⇒ lockfiles distintos, o sea dos hosts) contra el
+mismo store, más el caso negativo que falla si el `putItem` sale con la versión
+**releída** por el backend en vez de la del snapshot.
+
+El token de versión del registro de olas es `meta.updated_at` (ISO) y se mapea
+bidireccionalmente al entero incremental del coordination store. En modo remoto
+**el entero es el autoritativo**; el ISO se preserva en el envelope para no
+romper a los callers que lo devuelven en `version`.
+
+### 13.6 Degradación: denegar, nunca leer el archivo local
+
+Ante error de red o store caído, `readKey` devuelve `null`, `getPipelineMode()`
+cae en `mode: 'running'` y el gate **deniega** (fail-closed post-#5060).
+
+**Está prohibido el fallback silencioso a filesystem.** Una allowlist local stale
+no es "un dato viejo": es una autorización revocada que vuelve a estar vigente.
+Leerla reabriría la ola con los permisos de ayer, en silencio, justo cuando el
+sistema está degradado.
+
+La contracara de un buen fail-closed es un mal síntoma, así que la degradación
+tiene causa de dispatch propia (`estado_remoto_degradado`) y es **alertable**: sin
+eso el operador leería "causa no determinable" en el momento en que la causa se
+conoce con precisión absoluta.
+
+Durante la ventana de cutover, además, el aborto se hace **escribiendo
+`.pipeline/.paused`** — nunca `process.exit`, nunca `throw`, nunca degradar a FS.
+
+### 13.7 El gate no cambia de tipo. Nunca.
+
+`isIssueAllowed()`, `isSkillAllowed()` y sus variantes `...InState` devuelven
+**`boolean` estricto** en los dos regímenes. Por eso el backend es **síncrono de
+punta a punta** (`spawnSync`), y no por gusto: convertir la cadena a `async`
+obligaría a `await` en todos los consumidores, y `if (unaPromesa)` es **siempre
+`true`**. Un solo caller que se olvide convierte el gate en fail-**open**
+silencioso — el incidente #5060 reproducido por un refactor que parece inocente.
+
+El control es mecánico, no de code review: test de contrato (`typeof === 'boolean'`,
+incluso con el store caído) **más** la regla `async-gate` de
+`lib/operational-state-lint.js` en modo enforce.
+
+El costo del `spawnSync` (~1 s) ya está absorbido por el caché de 2 s de
+`waves.js` y por `isIssueAllowedInState(issue, state)`, que lee el estado una vez
+por tick y lo reusa para N issues.
+
+### 13.8 Reversibilidad (R8)
+
+Bajar `operational_state.durable` a `false` + `/restart` devuelve el pipeline a
+filesystem en **minutos**. Lo escrito en el store no se borra: simplemente deja de
+leerse.
+
+El orden de encendido, en cambio, **no es negociable** (D-4): namespaceado ON y
+verificado → `kernel.durable` ON → migración con backup y paridad SHA-256 en verde
+→ sonda positiva no-vacía por dos caminos disjuntos → ensayo de rollback → recién
+ahí `durable: true`. Migrar con el namespaceado apagado deja el estado en el store
+con layout plano y obliga a re-migrar.
+
+Procedimiento completo, con comandos y criterio de aborto:
+[`runbook-cutover-estado-operativo.md`](runbook-cutover-estado-operativo.md).

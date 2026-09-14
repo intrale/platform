@@ -1,0 +1,97 @@
+$ node .pipeline/scripts/opstate-cutover-probe.js --abort-drill --window true
+===== SONDA DEL ESTADO OPERATIVO · --abort-drill =====
+naturaleza: ensayo del aborto con el sink REAL y un halt inyectado que escribe .paused en un SANDBOX (C:\Users\ADMINI~1\AppData\Local\Temp\opstate-abort-drill-DKqf7G) — nunca en el .pipeline/ real; no envía Telegram
+sandbox: C:\Users\ADMINI~1\AppData\Local\Temp\opstate-abort-drill-DKqf7G
+cutover_window: true (boolean)
+origen: argumento --window
+
+[OK]    sin-throw · la degradación NO propagó excepción — readKeyWithVersion devolvió un resultado (error como dato)
+[OK]    sin-exit · nadie llamó a process.exit — process.exit intacto
+[OK]    sin-fallback · value:null + degraded:true (el gate deniega; nunca lee filesystem) — value=null degraded=true remote=true
+[OK]    ventana · kernel.cutover_window === true (booleano exacto) — cutover_window = true (boolean) · argumento --window
+[OK]    sink-aborto · el sink marcó `aborted` con la ventana abierta — aborted=true causas=["red"]
+[OK]    paused · `.paused` escrito en disco por el halt (source kernel-cutover-degraded-halt) — C:\Users\ADMINI~1\AppData\Local\Temp\opstate-abort-drill-DKqf7G\.paused · {"source":"kernel-cutover-degraded-halt","ts":"2026-09-14T03:24:25.624Z","cause":"red","correlationId":"kdeg-drill-bfb54431","drill":"#7189 --abort-drill"}
+
+--- VEREDICTO ---
+VEREDICTO: VERDE — 6 verificación(es) en verde.
+exit=0
+
+$ node .pipeline/scripts/opstate-cutover-probe.js --abort-drill --window '"true"'
+===== SONDA DEL ESTADO OPERATIVO · --abort-drill =====
+naturaleza: ensayo del aborto con el sink REAL y un halt inyectado que escribe .paused en un SANDBOX (C:\Users\ADMINI~1\AppData\Local\Temp\opstate-abort-drill-SAwgLt) — nunca en el .pipeline/ real; no envía Telegram
+sandbox: C:\Users\ADMINI~1\AppData\Local\Temp\opstate-abort-drill-SAwgLt
+cutover_window: "true" (string)
+origen: argumento --window
+
+[OK]    sin-throw · la degradación NO propagó excepción — readKeyWithVersion devolvió un resultado (error como dato)
+[OK]    sin-exit · nadie llamó a process.exit — process.exit intacto
+[OK]    sin-fallback · value:null + degraded:true (el gate deniega; nunca lee filesystem) — value=null degraded=true remote=true
+[FALLA] ventana · kernel.cutover_window === true (booleano exacto) — ventana CERRADA: cutover_window = "true" (string) — sólo el booleano true abre la ventana · argumento --window
+        causa: ventana_cerrada
+        → H0 paso 5 · sólo el booleano `true` exacto en `kernel.cutover_window` abre la ventana (SEC-4). El drill se corre con `--window true`; en H0 el operador lo pone en el config durante la ventana.
+[OK]    sec-4 · con la ventana cerrada NO se escribe `.paused` (SEC-4) (informativo) — .paused ausente (correcto) · sink.aborted=false
+
+--- VEREDICTO ---
+VEREDICTO: ROJO — 1 en rojo (ventana) · causas: ventana_cerrada.
+           Qué hacer ahora: NO enciendas ningún flag. Resolvé cada causa con su línea "→" y volvé a correr la sonda.
+exit=1
+
+$ node .pipeline/scripts/opstate-cutover-probe.js --abort-drill --window 1
+===== SONDA DEL ESTADO OPERATIVO · --abort-drill =====
+naturaleza: ensayo del aborto con el sink REAL y un halt inyectado que escribe .paused en un SANDBOX (C:\Users\ADMINI~1\AppData\Local\Temp\opstate-abort-drill-0lcROp) — nunca en el .pipeline/ real; no envía Telegram
+sandbox: C:\Users\ADMINI~1\AppData\Local\Temp\opstate-abort-drill-0lcROp
+cutover_window: 1 (number)
+origen: argumento --window
+
+[OK]    sin-throw · la degradación NO propagó excepción — readKeyWithVersion devolvió un resultado (error como dato)
+[OK]    sin-exit · nadie llamó a process.exit — process.exit intacto
+[OK]    sin-fallback · value:null + degraded:true (el gate deniega; nunca lee filesystem) — value=null degraded=true remote=true
+[FALLA] ventana · kernel.cutover_window === true (booleano exacto) — ventana CERRADA: cutover_window = 1 (number) — sólo el booleano true abre la ventana · argumento --window
+        causa: ventana_cerrada
+        → H0 paso 5 · sólo el booleano `true` exacto en `kernel.cutover_window` abre la ventana (SEC-4). El drill se corre con `--window true`; en H0 el operador lo pone en el config durante la ventana.
+[OK]    sec-4 · con la ventana cerrada NO se escribe `.paused` (SEC-4) (informativo) — .paused ausente (correcto) · sink.aborted=false
+
+--- VEREDICTO ---
+VEREDICTO: ROJO — 1 en rojo (ventana) · causas: ventana_cerrada.
+           Qué hacer ahora: NO enciendas ningún flag. Resolvé cada causa con su línea "→" y volvé a correr la sonda.
+exit=1
+
+$ node .pipeline/scripts/opstate-cutover-probe.js --abort-drill --window absent
+===== SONDA DEL ESTADO OPERATIVO · --abort-drill =====
+naturaleza: ensayo del aborto con el sink REAL y un halt inyectado que escribe .paused en un SANDBOX (C:\Users\ADMINI~1\AppData\Local\Temp\opstate-abort-drill-OdF18z) — nunca en el .pipeline/ real; no envía Telegram
+sandbox: C:\Users\ADMINI~1\AppData\Local\Temp\opstate-abort-drill-OdF18z
+cutover_window: ausente
+origen: argumento --window
+
+[OK]    sin-throw · la degradación NO propagó excepción — readKeyWithVersion devolvió un resultado (error como dato)
+[OK]    sin-exit · nadie llamó a process.exit — process.exit intacto
+[OK]    sin-fallback · value:null + degraded:true (el gate deniega; nunca lee filesystem) — value=null degraded=true remote=true
+[FALLA] ventana · kernel.cutover_window === true (booleano exacto) — ventana CERRADA: cutover_window = ausente — sólo el booleano true abre la ventana · argumento --window
+        causa: ventana_cerrada
+        → H0 paso 5 · sólo el booleano `true` exacto en `kernel.cutover_window` abre la ventana (SEC-4). El drill se corre con `--window true`; en H0 el operador lo pone en el config durante la ventana.
+[OK]    sec-4 · con la ventana cerrada NO se escribe `.paused` (SEC-4) (informativo) — .paused ausente (correcto) · sink.aborted=false
+
+--- VEREDICTO ---
+VEREDICTO: ROJO — 1 en rojo (ventana) · causas: ventana_cerrada.
+           Qué hacer ahora: NO enciendas ningún flag. Resolvé cada causa con su línea "→" y volvé a correr la sonda.
+exit=1
+
+$ node .pipeline/scripts/opstate-cutover-probe.js --abort-drill   # valor efectivo del config (kernel.cutover_window: false)
+===== SONDA DEL ESTADO OPERATIVO · --abort-drill =====
+naturaleza: ensayo del aborto con el sink REAL y un halt inyectado que escribe .paused en un SANDBOX (C:\Users\ADMINI~1\AppData\Local\Temp\opstate-abort-drill-N3CDs6) — nunca en el .pipeline/ real; no envía Telegram
+sandbox: C:\Users\ADMINI~1\AppData\Local\Temp\opstate-abort-drill-N3CDs6
+cutover_window: false (boolean)
+origen: config efectivo (kernel.cutover_window)
+
+[OK]    sin-throw · la degradación NO propagó excepción — readKeyWithVersion devolvió un resultado (error como dato)
+[OK]    sin-exit · nadie llamó a process.exit — process.exit intacto
+[OK]    sin-fallback · value:null + degraded:true (el gate deniega; nunca lee filesystem) — value=null degraded=true remote=true
+[FALLA] ventana · kernel.cutover_window === true (booleano exacto) — ventana CERRADA: cutover_window = false (boolean) — sólo el booleano true abre la ventana · config efectivo (kernel.cutover_window)
+        causa: ventana_cerrada
+        → H0 paso 5 · sólo el booleano `true` exacto en `kernel.cutover_window` abre la ventana (SEC-4). El drill se corre con `--window true`; en H0 el operador lo pone en el config durante la ventana.
+[OK]    sec-4 · con la ventana cerrada NO se escribe `.paused` (SEC-4) (informativo) — .paused ausente (correcto) · sink.aborted=false
+
+--- VEREDICTO ---
+VEREDICTO: ROJO — 1 en rojo (ventana) · causas: ventana_cerrada.
+           Qué hacer ahora: NO enciendas ningún flag. Resolvé cada causa con su línea "→" y volvé a correr la sonda.
+exit=1

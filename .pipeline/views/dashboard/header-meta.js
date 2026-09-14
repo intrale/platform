@@ -36,6 +36,11 @@
 // Contratos preservados (no romper):
 //   - IDs literales hdr-resources / hdr-pulpo / hdr-clock / hdr-mode
 //     (snapshot R-G1 en __tests__/home.test.js; tickers de home y satélites).
+//   - #5113 CA-UX1 — hdr-opstate / hdr-opstate-symbol / hdr-opstate-label:
+//     procedencia del estado operativo (filesystem local vs store externo).
+//     Va en la bandeja compartida y no sólo en el home a propósito: durante una
+//     ventana de cutover el operador mira la pantalla que tiene abierta, no la
+//     que nosotros suponemos.
 // ============================================================================
 
 // renderHeaderMetaSsr(opts)
@@ -73,6 +78,9 @@ function renderHeaderMetaSsr(opts) {
         <span id="hdr-resources-disk">Disco …</span>
       </span>
       <span class="in-pill" id="hdr-pulpo" aria-label="Estado del pulpo">…</span>
+      <span class="in-pill" id="hdr-opstate"
+            title="Procedencia del estado operativo (registro de olas + allowlist): filesystem local o store externo."
+            aria-label="Procedencia del estado operativo"><span id="hdr-opstate-symbol" aria-hidden="true">…</span><span id="hdr-opstate-label">Estado …</span></span>
       <span class="in-pill in-clock" id="hdr-clock" aria-label="Fecha y hora local">…</span>
     </div>`;
 }
@@ -191,6 +199,41 @@ if (typeof window !== 'undefined' && !window.__hydrateHeaderPills) {
             pulpoPill.classList.remove('in-pill-ok', 'in-pill-bad');
             pulpoPill.classList.add(d.pulpoAlive ? 'in-pill-ok' : 'in-pill-bad');
             pulpoPill.textContent = (d.pulpoAlive ? '🟢' : '🔴') + ' Pulpo · ' + __fmtUptime(d.pulpoUptimeMs);
+        }
+        // #5113 CA-UX1 — Pill de PROCEDENCIA del estado operativo.
+        //
+        // Responde "¿de dónde sale el estado que estoy mirando?" sin abrir una
+        // terminal. El dato viene ya resuelto del slice (resolveOpstateProvenance,
+        // mapeo cerrado del mockup 60 seccion 4): el cliente NO re-deriva la
+        // condicion, solo pinta. Un mapeo duplicado aca es exactamente como el
+        // chip y el banner terminan diciendo cosas distintas del mismo hecho.
+        //
+        // Regla de diseño 1 (mockup 49): ningún estado se codifica sólo por
+        // color — siempre símbolo + etiqueta textual. Regla 3: el chip INFORMA,
+        // no muta; no hay handler de click.
+        // SEC-1: sólo textContent / classList / title, como el resto de la bandeja.
+        var opstatePill = document.getElementById('hdr-opstate');
+        if (opstatePill) {
+            var op = d.opstate || {};
+            var toneCls = { ok: 'in-pill-ok', warn: 'in-pill-warn', bad: 'in-pill-bad' };
+            opstatePill.classList.remove('in-pill-ok', 'in-pill-warn', 'in-pill-bad', 'in-pill-info');
+            // 'neutral' (filesystem local) se queda con la pill base a propósito:
+            // es el estado esperado del 100% de los días y no debe competir por
+            // atención con las pills que sí señalan algo.
+            if (toneCls[op.tone]) opstatePill.classList.add(toneCls[op.tone]);
+            var opSym = document.getElementById('hdr-opstate-symbol');
+            var opLbl = document.getElementById('hdr-opstate-label');
+            var opLabel = op.label || 'Estado: filesystem local';
+            if (opSym) opSym.textContent = op.symbol || '#';
+            if (opLbl) opLbl.textContent = opLabel;
+            var opDetail = op.detail ? ' — ' + op.detail : '';
+            // source=env es la trampa que el runbook nombra: el YAML dice
+            // una cosa y el runtime otra. Si el modo lo forzó una variable de
+            // entorno, el operador tiene que verlo acá y no deducirlo.
+            var opSource = op.source === 'env' ? ' (forzado por env)' : '';
+            opstatePill.title = 'Procedencia del estado operativo (registro de olas + allowlist): '
+                + opLabel + opSource + opDetail;
+            opstatePill.setAttribute('aria-label', opLabel + opSource + opDetail);
         }
         // Pill de recursos: CPU/RAM con coloreo semántico por umbrales.
         var res = d.resources;

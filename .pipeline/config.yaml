@@ -2610,6 +2610,37 @@ waves:
 # código no lee: editarlo daría un no-op silencioso, justo lo contrario de la
 # tesis de #5110 ("el contexto debe ser explícito, no inferido"). Se eliminó.
 operational_state:
+  # #5113 CA-C1 — Flag ÚNICO de cutover del ESTADO OPERATIVO (registro de olas +
+  # allowlist de ejecución) al store durable. Lo lee un solo archivo:
+  # `lib/operational-state-backend.js`.
+  #
+  # Es ÚNICO a propósito: gatea LECTURA y ESCRITURA a la vez. No hay un flag de
+  # lectura y otro de escritura, justamente para que no puedan coexistir dos
+  # fuentes de verdad ni por un instante. Con `false` (default) el pipeline
+  # opera exactamente como siempre: cero llamadas a DynamoDB, cero driver
+  # construido, el archivo local es la fuente.
+  #
+  # Fail-closed con `=== true` exacto (mismo criterio que `namespaced.enabled` y
+  # que `kernel.durable`): `"true"`, `1` o `"1"` NO encienden nada. Un flag que
+  # mueve dónde vive el registro de olas no se prende por coerción accidental.
+  #
+  # ORDEN DE ENCENDIDO NO NEGOCIABLE (D-4 / CA-B5), en este orden:
+  #   1. `namespaced.enabled: true` + sonda de aislamiento en verde
+  #   2. `kernel.durable: true`
+  #   3. migración (`node .pipeline/lib/kernel-store-migrate.js`) con backup y
+  #      paridad SHA-256 en verde
+  #   4. sonda positiva NO VACÍA por dos caminos disjuntos
+  #   5. ensayo de rollback ejecutado
+  #   6. recién ahí `durable: true` acá
+  # Encender esto con el namespaceado apagado deja el estado en el store con
+  # layout plano y obliga a re-migrar.
+  #
+  # ROLLBACK (R8, minutos): poner `false` + `node .pipeline/restart.js`. Lo
+  # escrito en el store no se borra; simplemente deja de leerse.
+  # `PIPELINE_OPSTATE_DURABLE=0` lo fuerza en caliente sin tocar este archivo.
+  #
+  # Runbook completo: docs/pipeline/runbook-cutover-estado-operativo.md
+  durable: false
   namespaced:
     enabled: false
     # true → el contexto de proyecto debe venir DECLARADO (projectId explícito

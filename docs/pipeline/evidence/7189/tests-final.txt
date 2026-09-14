@@ -1,0 +1,67 @@
+# Re-corrida final de la suite con la evidencia escrita — 2026-09-14T03:39:06Z
+$ node --test .pipeline/lib/__tests__/opstate-cutover-probe-7189.test.js
+ok 1 - CA-1 verde: las cuatro precondiciones en verde ⇒ VERDE, exit 0, D-9 y modo informativos
+ok 2 - CA-1 · CA-B1 rojo: strict apagado ⇒ strict_auth_apagado y exit ≠ 0
+ok 3 - CA-1 · CA-B1 rojo: una entrada gate_grace:true dentro de los 30 días ⇒ gate_grace_reciente
+ok 4 - CA-1 · CA-B1: un gate_grace de hace más de 30 días NO cuenta (la ventana es de 30 días)
+ok 5 - CA-1 · CA-B1 rojo: una línea del audit que no parsea ⇒ audit_ilegible (no se ignora en silencio)
+ok 6 - CA-1 · CA-B2 rojo: el driver resuelto NO declara atomicUpdate:true ⇒ atomic_update_falso
+ok 7 - CA-1 · CA-B2 rojo: driver in-memory ⇒ driver_no_aws_cli aunque el test amplíe la lista (trampa §2.5)
+ok 8 - CA-1 · CA-B2 rojo: el backend no puede construir el driver (config/credenciales) ⇒ driver_no_resuelto
+ok 9 - CA-1 · CA-B3 rojo: identidad efectiva distinta del principal declarado ⇒ identidad_inesperada
+ok 10 - CA-1 · CA-B3 rojo: falta kernel.runtimePrincipal ⇒ runtime_principal_ausente (pass-through de la sonda del kernel)
+ok 11 - CA-1 · CA-B3 rojo: la AWS CLI falla ⇒ aws_cli_failed, y un código desconocido cae a aws_cli_failed
+ok 12 - CA-1 · CA-B5 rojo (el caso esperado HOY): namespaceado apagado + migrated:false ⇒ namespaceado_apagado, exit ≠ 0
+ok 13 - CA-1 · CA-B5 rojo: namespaceado encendido pero layout sin migrar ⇒ layout_no_migrado
+ok 14 - CA-1 · CA-B5 rojo: `--status` y `project-context.stateDir()` divergen ⇒ state_dir_divergente (trampa §2.4)
+ok 15 - CA-1 · CA-B5 rojo: `--status` no devuelve JSON ⇒ status_ilegible
+ok 16 - CA-1 · D-9: kernel.durable se REPORTA con su tipo y no cambia el veredicto
+ok 17 - CA-2 verde: dos escrituras con la misma expectedVersion — la 2ª vuelve conflict:true; readback crudo coincide
+ok 18 - CA-2 idempotente: una segunda corrida parte de la versión vigente y vuelve a demostrar el conflicto
+ok 19 - CA-2 rojo (SEC-2): identidad distinta del runtime ⇒ identidad_inesperada y NO se escribe nada
+ok 20 - CA-2 rojo: driver.kind in-memory ⇒ driver_no_aws_cli (trampa §2.5), sin escribir
+ok 21 - CA-2 rojo: fuera de tests `fake-sync` tampoco pasa — sólo aws-cli / aws-cli-sync
+ok 22 - CA-2 rojo: un store que acepta la 2ª escritura con la MISMA expectedVersion ⇒ cas_sin_conflicto
+ok 23 - CA-2 rojo: la 1ª escritura falla (permisos) ⇒ cas_primera_escritura_fallida
+ok 24 - CA-2 rojo: el readback crudo no coincide con lo escrito ⇒ readback_distinto; ausente ⇒ item_ausente_camino_b
+ok 25 - CA-2: la única escritura es la clave de sonda por compareAndSet — coord\#waves y coord\#partial-pause intactas
+ok 26 - CA-3 verde: estado sembrado NO vacío, version ≥ 1 y sha256 idéntico por los dos caminos
+ok 27 - CA-3 rojo (fail-closed sobre vacío): store sin coord\#waves ni coord\#partial-pause ⇒ estado_vacio por los dos caminos, ningún verde
+ok 28 - CA-3 rojo: 0 olas y allowlist vacía NO cierran la sonda (presente pero vacío ⇒ estado_vacio)
+ok 29 - CA-3 rojo: hash distinto por camino ⇒ hash_distinto_por_camino
+ok 30 - CA-3 rojo: driver.kind in-memory ⇒ driver_no_aws_cli antes de leer nada (trampa §2.5)
+ok 31 - CA-3 rojo: el store degrada ⇒ lectura_degradada (nunca fallback a filesystem)
+ok 32 - CA-3 rojo: ítem crudo de otra partición ⇒ clave_distinta; versión no entera ⇒ version_invalida; backend en fs ⇒ modo_no_remoto
+ok 33 - CA-3 rojo: la lectura cruda falla (CLI) ⇒ aws_cli_failed
+ok 34 - CA-4 verde: dry-run contra las fuentes con backup verificado contra su manifest y conteos `olas: n · allowlist: m`
+ok 35 - CA-4 rojo: falta una fuente ⇒ fuentes_ausentes y NO se crea backup
+ok 36 - CA-4 rojo: un backup alterado NO coincide con su manifest ⇒ backup_no_verificado
+ok 37 - CA-4 rojo: namespaceado ON con sourceDir distinto del de `--status` ⇒ state_dir_divergente (trampa §2.4)
+ok 38 - CA-4 rojo: el migrador devuelve error ⇒ dry_run_fallido
+ok 39 - CA-4 (apply SÓLO en test): migrateState({apply:true, store}) contra el fake con paridad sha256 + conteo
+ok 40 - CA-4 (apply SÓLO en test): integrity_mismatch aborta con el rollback a mano
+ok 41 - CA-5 rojo: sin `.paused` el export se NIEGA (freno_ausente) y no lee ni escribe nada
+ok 42 - CA-5 verde: con `.paused` presente reintegra olas + allowlist al stateDir, conteos correctos, sha256 del FS = del store, R8 con avance perdido 0
+ok 43 - CA-5 rojo: store sin contenido para una clave ⇒ estado_vacio y NO se escribe NINGÚN archivo (nada a medias)
+ok 44 - CA-5 rojo: store degradado ⇒ lectura_degradada; driver in-memory ⇒ driver_no_aws_cli; backend en fs ⇒ modo_no_remoto
+ok 45 - CA-5 rojo: el archivo escrito no coincide con el store ⇒ export_hash_distinto y avance perdido > 0; fallo de escritura ⇒ export_escritura_fallida
+ok 46 - CA-6 verde: sink real + halt inyectado + cutover_window:true (booleano) ⇒ `.paused` en disco; sin exit, sin throw, sin fallback
+ok 47 - CA-6 rojo (SEC-4): cutover_window = "true" (string) ⇒ ventana_cerrada, sin `.paused`, literal y tipo en el detalle
+ok 48 - CA-6 rojo (SEC-4): cutover_window = 1 (number) ⇒ ventana_cerrada, sin `.paused`, literal y tipo en el detalle
+ok 49 - CA-6 rojo (SEC-4): cutover_window = ausente ⇒ ventana_cerrada, sin `.paused`, literal y tipo en el detalle
+ok 50 - CA-6: sin --window el drill usa el valor EFECTIVO del config (hoy false ⇒ ventana_cerrada)
+ok 51 - CA-6 rojo: el backend en modo filesystem no ejercita el sink ⇒ modo_no_remoto
+ok 52 - CA-6 rojo: una pausa preexistente en el sandbox no se pisa ⇒ paused_no_escrito (el halt reporta preexisting)
+ok 53 - CA-6 rojo: un backend que propaga la excepción del store ⇒ throw_propagado; uno que devuelve contenido ⇒ fallback_a_filesystem; uno que llama process.exit ⇒ process_exit_llamado
+ok 54 - CA-6 rojo: un sink que no marca aborted con la ventana abierta ⇒ sink_no_aborto (cableado roto se detecta)
+ok 55 - CLI: un solo subcomando por invocación, argumento desconocido ⇒ exit 2 con uso; --help ⇒ exit 0
+ok 56 - CLI: --window parsea el literal como JSON y `absent` lo omite (SEC-4)
+ok 57 - CLI: exit code coherente con el VEREDICTO por run() y --json termina en salto de línea
+ok 58 - CLI: --positive / --export-to-fs / --abort-drill fijan PIPELINE_OPSTATE_DURABLE=1 sólo en este proceso y el config no se toca
+ok 59 - Redacción: account-ids de 12 dígitos y secretos NO llegan ni al texto ni al JSON
+ok 60 - CA-7 / SEC-7: la evidencia commiteada en docs/pipeline/evidence/7189/ no contiene account-ids, ARNs ni claves
+ok 61 - Conteos: `countOperational` cuenta olas (activa + planificadas + archivadas) y la allowlist; el formato es único
+ok 62 - Contrato: toda causa que emite la sonda existe en CAUSAS con su línea "→", y `_describeDriver` del backend nunca devuelve el driver
+# tests 62
+# pass 62
+# fail 0

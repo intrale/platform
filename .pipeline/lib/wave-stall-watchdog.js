@@ -116,6 +116,9 @@ const CAUSE_LABELS = Object.freeze({
   'blocked-dependencies': 'issues bloqueados por dependencia',
   deadlock: 'deadlock del gate predictivo',
   'cb-infra': 'circuit breaker de infraestructura abierto',
+  // #5113 CA-UX2/CA-UX5 — nombra que esta frenado y por que; el proximo paso
+  // (volver a filesystem) viaja en el label de `dispatch-cause`.
+  'opstate-remote-degraded': 'estado operativo remoto no responde (dispatch denegado, fail-closed)',
   declared: 'causa declarada sin clasificar',
 });
 
