@@ -69,6 +69,8 @@ function resetDeps() {
     listener.deps.operatorGate = null;
     listener.deps.operationalExecutorOptions = null;
     listener.deps.commanderRouter = null;
+    // #6207 — el handler de la firma de GATE 1 también es inyectable.
+    listener.deps.gate1SignatureHandler = null;
     listener.deps.telegramRequest = async () => ({ ok: true });
     delete process.env.TELEGRAM_LEO_OPERATOR_CHAT_ID;
 }
@@ -610,4 +612,126 @@ test('#5458 el footer SÍ dice "Confirmado por" cuando el corte se aplicó', asy
   assert.match(edit.params.text, /✅ Confirmado por Leo/);
   assert.doesNotMatch(edit.params.text, /No aplicado/);
   resetDeps();
+});
+
+
+// =============================================================================
+// #6207 — RUTEO DE LA FIRMA DE GATE 1.
+//
+// Un binding con `channel_gate: 'definicion'` clasifica como `gate-signature` y
+// tiene que derivarse a su handler dedicado, CORTANDO el flujo antes de
+// `handleSignature()`. Si llegara ahí, el click del operador terminaría en
+// `applyTransition()` —el ejecutor de GATE 0/2— moviendo work-files de
+// `waiting-operator/` en vez de escribir una firma. Ese es el confused deputy
+// que la rama viene a cerrar, y es lo que estos tests cementan.
+// =============================================================================
+
+/**
+ * Gate + handler de firma fakes. `kind` decide la clasificación; el gate expone
+ * `handleSignature` para poder afirmar que NO se lo llama.
+ */
+function installFakeGate1(kind, sigResult) {
+    const calls = { classify: [], signature: [], gate1: [] };
+    listener.deps.operatorGate = {
+        classifyCallback: (data) => { calls.classify.push(data); return kind; },
+        handleSignature: (args) => {
+            calls.signature.push(args);
+            return { ok: true, editMessage: true, toast: 'lifecycle', action: 'approve', issue: 6207 };
+        },
+        handleOperationalCallback: () => ({ ok: false, toast: 'op', editMessage: false }),
+    };
+    listener.deps.gate1SignatureHandler = {
+        handleGate1Signature: (args) => {
+            calls.gate1.push(args);
+            return sigResult;
+        },
+    };
+    return calls;
+}
+
+const FIRMA_OK = {
+    ok: true, editMessage: true, issue: 6207, verdict: 'signed',
+    action: 'approve', toast: '✅ Firmado — #6207 avanza a desarrollo',
+};
+
+test('#6207 un callback de GATE 1 va al handler de firma y NUNCA a handleSignature', async () => {
+    const calls = installFakeTransport();
+    const gateCalls = installFakeGate1('gate-signature', FIRMA_OK);
+
+    await listener.handleCallbackQuery({ ...CBQ, data: 'a1a1a1a1a1a1a1a1' });
+
+    assert.equal(gateCalls.gate1.length, 1, 'debe usar el handler de firma de GATE 1');
+    assert.equal(gateCalls.signature.length, 0, 'NO puede pasar por el camino de lifecycle');
+    // Autorización por `from.id` (nunca `chat.id`) y `callback_data` crudo.
+    assert.equal(gateCalls.gate1[0].operatorId, 111222333);
+    assert.equal(gateCalls.gate1[0].callbackData, 'a1a1a1a1a1a1a1a1');
+
+    // Respuesta terminal: spinner cortado + botones quitados + constancia.
+    const methods = calls.map(c => c.method);
+    assert.ok(methods.includes('answerCallbackQuery'), 'CA-9');
+    assert.ok(methods.includes('editMessageText'), 'CA-10');
+    const edit = calls.find(c => c.method === 'editMessageText');
+    assert.deepEqual(edit.params.reply_markup, { inline_keyboard: [] });
+    assert.match(edit.params.text, /Firmado por Leo/);
+    assert.match(edit.params.text, /avanza a desarrollo/);
+    resetDeps();
+});
+
+test('#6207 un rechazo de firma corta el spinner y DEJA los botones vivos', async () => {
+    const calls = installFakeTransport();
+    const gateCalls = installFakeGate1('gate-signature', {
+        ok: false, editMessage: false, reason: 'unauthorized',
+        toast: '🔒 No autorizado para firmar este issue',
+    });
+
+    await listener.handleCallbackQuery({ ...CBQ, data: 'a2a2a2a2a2a2a2a2' });
+
+    assert.equal(gateCalls.signature.length, 0);
+    const methods = calls.map(c => c.method);
+    assert.ok(methods.includes('answerCallbackQuery'), 'CA-9: siempre corta el spinner');
+    assert.ok(!methods.includes('editMessageText'),
+        'los botones quedan para el reintento del operador legítimo');
+    const answer = calls.find(c => c.method === 'answerCallbackQuery');
+    assert.match(answer.params.text, /No autorizado/);
+    resetDeps();
+});
+
+test('#6207 si el handler de firma explota, el spinner se corta y no filtra el error', async () => {
+    const calls = installFakeTransport();
+    listener.deps.operatorGate = {
+        classifyCallback: () => 'gate-signature',
+        handleSignature: () => { throw new Error('no debería llamarse'); },
+    };
+    listener.deps.gate1SignatureHandler = {
+        handleGate1Signature: () => { throw new Error('boom C:\Users\Administrator\secreto'); },
+    };
+
+    await listener.handleCallbackQuery({ ...CBQ, data: 'a3a3a3a3a3a3a3a3' });
+
+    const answer = calls.find(c => c.method === 'answerCallbackQuery');
+    assert.ok(answer, 'CA-9: responde aunque el handler explote');
+    assert.doesNotMatch(answer.params.text, /boom|Administrator/);
+    assert.ok(!calls.some(c => c.method === 'editMessageText'), 'no se edita nada ante un fallo');
+    resetDeps();
+});
+
+test('#6207 un callback de lifecycle SIGUE yendo a handleSignature (sin regresión)', async () => {
+    installFakeTransport();
+    const gateCalls = installFakeGate1('gate', FIRMA_OK);
+
+    await listener.handleCallbackQuery(CBQ);
+
+    assert.equal(gateCalls.signature.length, 1, 'GATE 0/2 no cambia de camino');
+    assert.equal(gateCalls.gate1.length, 0);
+    resetDeps();
+});
+
+test('#6207 una clasificación `null` NO cae al handler de firma', async () => {
+    installFakeTransport();
+    const gateCalls = installFakeGate1(null, FIRMA_OK);
+
+    await listener.handleCallbackQuery({ ...CBQ, data: 'a4a4a4a4a4a4a4a4' });
+
+    assert.equal(gateCalls.gate1.length, 0, 'sólo `gate-signature` entra acá');
+    resetDeps();
 });

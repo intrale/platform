@@ -2017,11 +2017,38 @@ vault:
   # no crea trails ni modifica event selectors y una allowlist vacía saltea el
   # tick para evitar una tormenta de alertas durante el rollout.
   access_audit:
+    # #5801 — Declarar este bloque EXIGE `burst_threshold` entero positivo en el
+    # mismo commit: el esquema lo pide INCONDICIONALMENTE (`config-schema.js`,
+    # `required: ['burst_threshold']` bajo `vault.access_audit`), o sea también
+    # con `enabled: false`. Es a propósito y más estricto que atarlo al gate:
+    # así el umbral no puede quedar sin calibrar mientras la auditoría está
+    # apagada, para que encenderla nunca sea el momento en que se descubre que
+    # falta. No hay forma de dejar la auditoría corriendo con la detección de
+    # ráfagas apagada y que el pipeline arranque igual.
     enabled: false
     poll_interval_min: 10
     lookback_min: 30
     expected_principals: []
-    burst_threshold: 0
+    # #5801 — Umbral de ráfaga CALIBRADO.
+    #
+    # UNIDAD: `physical_read` por ventana de `lookback_min` minutos (NO por
+    # minuto). El pico que publica la corrida de #5800 viene en
+    # `physical_read/minuto`, así que la conversión es explícita y obligatoria:
+    #
+    #   peak_physical_reads_per_minute = 6      (corrida productiva de #5800)
+    #   lookback_min                   = 30
+    #   pico_ventana    = ceil(6 * 30)          = 180  physical_read/ventana
+    #   margen          = 1.0                          (100 %, ver la doc)
+    #   burst_threshold = ceil(180 * (1 + 1.0)) = 360  physical_read/ventana
+    #
+    # CAMBIAR `lookback_min` INVALIDA este número: hay que recalcularlo con la
+    # fórmula, no ajustarlo a ojo. Si la alerta suena, se RECALIBRA — no se sube
+    # a mano (el propio copy de la alerta lo dice).
+    #
+    # Escenario, procedencia del pico y justificación del margen en
+    # `docs/pipeline/vault-rotacion-auditoria.md` §Calibración del umbral de
+    # ráfaga.
+    burst_threshold: 360
     authorization_failure_threshold: 3
     cooldown_min: 10
   # D5 — El vault resuelve SÓLO los scopes declarados acá. No existe un camino
@@ -2583,6 +2610,37 @@ waves:
 # código no lee: editarlo daría un no-op silencioso, justo lo contrario de la
 # tesis de #5110 ("el contexto debe ser explícito, no inferido"). Se eliminó.
 operational_state:
+  # #5113 CA-C1 — Flag ÚNICO de cutover del ESTADO OPERATIVO (registro de olas +
+  # allowlist de ejecución) al store durable. Lo lee un solo archivo:
+  # `lib/operational-state-backend.js`.
+  #
+  # Es ÚNICO a propósito: gatea LECTURA y ESCRITURA a la vez. No hay un flag de
+  # lectura y otro de escritura, justamente para que no puedan coexistir dos
+  # fuentes de verdad ni por un instante. Con `false` (default) el pipeline
+  # opera exactamente como siempre: cero llamadas a DynamoDB, cero driver
+  # construido, el archivo local es la fuente.
+  #
+  # Fail-closed con `=== true` exacto (mismo criterio que `namespaced.enabled` y
+  # que `kernel.durable`): `"true"`, `1` o `"1"` NO encienden nada. Un flag que
+  # mueve dónde vive el registro de olas no se prende por coerción accidental.
+  #
+  # ORDEN DE ENCENDIDO NO NEGOCIABLE (D-4 / CA-B5), en este orden:
+  #   1. `namespaced.enabled: true` + sonda de aislamiento en verde
+  #   2. `kernel.durable: true`
+  #   3. migración (`node .pipeline/lib/kernel-store-migrate.js`) con backup y
+  #      paridad SHA-256 en verde
+  #   4. sonda positiva NO VACÍA por dos caminos disjuntos
+  #   5. ensayo de rollback ejecutado
+  #   6. recién ahí `durable: true` acá
+  # Encender esto con el namespaceado apagado deja el estado en el store con
+  # layout plano y obliga a re-migrar.
+  #
+  # ROLLBACK (R8, minutos): poner `false` + `node .pipeline/restart.js`. Lo
+  # escrito en el store no se borra; simplemente deja de leerse.
+  # `PIPELINE_OPSTATE_DURABLE=0` lo fuerza en caliente sin tocar este archivo.
+  #
+  # Runbook completo: docs/pipeline/runbook-cutover-estado-operativo.md
+  durable: false
   namespaced:
     enabled: false
     # true → el contexto de proyecto debe venir DECLARADO (projectId explícito

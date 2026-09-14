@@ -178,6 +178,11 @@ const fileLock = require('./lib/file-lock');
 const dispatchCause = require('./lib/dispatch-cause');
 // #5400 — traducción enum de causa → `kind` del watchdog (pura, testeable).
 const dispatchCauseKind = require('./lib/dispatch-cause-kind');
+// #5113 CA-UX2 — sustrato del estado operativo (registro de olas + allowlist).
+// El pulpo lo usa SÓLO para introspección (`describeMode`): quién lee y escribe
+// el estado sigue siendo `waves.js` / `partial-pause.js`. Con el flag apagado
+// (default) `describeMode()` devuelve `{mode:'fs'}` y no toca red ni driver.
+const opstateBackend = require('./lib/operational-state-backend');
 // #5400 rev-3 — brazo de RECOLECCIÓN de hechos del watchdog de despacho.
 // Vive en lib/ y con dependencias inyectadas porque era el único tramo del
 // circuito sin test, y ahí se colaron los tres bloqueantes de la review rev-2
@@ -235,6 +240,16 @@ const modelPropagationRollout = require('./lib/model-propagation-rollout'); // #
 // Expone isWorkaroundEnabled, recordHit, checkTtlAlert, formatStartupLogLine,
 // formatHitExtension, formatTtlAlertMessage, sanitizeHitLog.
 const oneMWorkaround = require('./lib/commander/anthropic-1m-workaround');
+// #6239 — Chequeo de vigencia de la sesión de Claude Code. Requires
+// DEFENSIVOS: es un aviso best-effort, jamás una razón para que el Pulpo no
+// arranque. Si alguno no carga, el cron no se enciende (se loguea) y todo lo
+// demás sigue igual.
+let oauthSessionExpiry = null;
+try { oauthSessionExpiry = require('./lib/oauth-session-expiry'); } catch (_) { /* sin chequeo de sesión */ }
+let oauthSessionCopy = null;
+let runOAuthExpiryTick = null;
+try { ({ runOAuthExpiryTick } = require('./lib/oauth-session-expiry-tick')); } catch (_) { /* sin coordinador */ }
+try { oauthSessionCopy = require('./assets/copy/oauth-session-expiry/render'); } catch (_) { /* sin chequeo de sesión */ }
 // #3950 (EP7-H3) — política PURA de auto-retry del glitch 1M del CLI Anthropic.
 // Decide retry_same | retry_standard | give_up, backoff acotado, validación del
 // modelo (whitelist SR-A) y formato del log por intento. Sin side effects.
@@ -873,6 +888,8 @@ function writeHeartbeat(iterationMs) {
       pid: process.pid,
       timestamp: new Date().toISOString(),
     };
+    // #7189: el diagnostico nunca impide publicar el heartbeat base.
+    try { payload.runtimeAuth = require('./lib/pulpo-runtime-auth').snapshot(PIPELINE); } catch {}
     // #5821 CA-1 — Duración REAL de la iteración anterior del loop.
     // El watchdog necesita esta magnitud (no la edad del heartbeat) para
     // dimensionar su umbral: `hbAge` es la EDAD medida en un instante arbitrario
@@ -4772,7 +4789,11 @@ function brazoBarrido(config) {
           try {
             reencoladoAbierto = qaEvidenceSeal.hasOpenRequeue({ pipelineDir: PIPELINE, issue }) === true;
           } catch { reencoladoAbierto = true; }
-          log('barrido', reencoladoAbierto
+          const sealCwd = sealedVerdictWorktree(issue, config);
+          const vigente = sealCwd && qaEvidenceSeal.findVigentSealedVerdict({ pipelineDir: PIPELINE, issue, cwd: sealCwd }).vigente;
+          log('barrido', vigente
+            ? `#${issue} entrega frenada por veredicto caduco pero con sello vigente — sin nueva escalada.`
+            : reencoladoAbierto
             ? `♻️ #${issue} entrega frenada por veredicto de QA caduco — sin rebote ni rev++: la re-verificación ya está encolada.`
             : `⛔ #${issue} entrega frenada por veredicto de QA caduco AGOTADO — sin rebote ni rev++: escalado a needs-human con ficha de decisión (no hay re-verificación encolada).`);
           continue;
@@ -6349,6 +6370,17 @@ function brazoBarrido(config) {
               ? ' [degradado infra→codigo: la accion pedida no la puede ejecutar ningun skill de esta fase]'
               : (infraDowngradedByFinal ? ` [infra descartado: ${infraDowngradedByFinal}]` : '');
             log('barrido', `#${issue} RECHAZADO en ${fase} → devuelto a ${faseDestino} (rebote ${nuevoReboteNumero}/${MAX_REBOTES})${porDegradado}`);
+            // #7206: el destino ya existe. El movimiento común a procesado/
+            // preserva este recibo; infra no pasa por esta rama.
+            for (const a of archivos) {
+              try {
+                const prev = readYamlSafe(a.path);
+                if (prev?.resultado === 'rechazado') writeYaml(a.path, { ...prev,
+                  rebote_emitido_por: 'barrido', rebote_emitido_ts: new Date().toISOString(),
+                  rebote_emitido_destino: faseDestino, rebote_emitido_numero: nuevoReboteNumero,
+                });
+              } catch (e) { log('barrido', `#${issue}: no se pudo persistir recibo de rebote: ${e.message}`); }
+            }
           }
 
           // CLEANUP DOWNSTREAM: limpiar archivos residuales del issue en fases posteriores.
@@ -7030,14 +7062,24 @@ function brazoBarrido(config) {
                 const authorizedSigners = [...resolveOperatorAllowlist(process.env)];
                 let opIssueJson = null;
                 try {
-                  const raw = execSync(`${GH_BIN} issue view ${issue} --json number,body,createdAt,labels`,
+                  // #6192 — `title` alimenta el «qué está frenado» de la ficha
+                  // de decisión: sin él el operador lee un número pelado.
+                  const raw = execSync(`${GH_BIN} issue view ${issue} --json number,title,body,createdAt,labels`,
                     { cwd: ROOT, encoding: 'utf8', timeout: 8000, windowsHide: true });
                   opIssueJson = JSON.parse(raw);
                 } catch (e) {
                   log('barrido', `#${issue} operator-signoff-gate: ERROR cargando issue (${e.message}) — mode=${opSignoffCfg.gate_mode}`);
                   if (opSignoffCfg.gate_mode === 'enforce') {
                     operatorSignoffBlocked = true;
-                    sendTelegram(`🛑 #${issue} GATE 1 (firma definición, enforce) bloqueó promoción por error de carga: ${e.message}`);
+                    // #6192 — la retención YA está marcada; el aviso nunca la
+                    // levanta. Sin el issue cargado no se sabe qué se firmaría:
+                    // la ficha sale `indeterminado` y sin botones.
+                    notifyGate1Retention({
+                      issue,
+                      caso: 'load-error',
+                      reason: `no pude leer el issue en GitHub: ${e.message}`,
+                      firmantesAutorizados: authorizedSigners.length,
+                    });
                   }
                 }
                 if (opIssueJson) {
@@ -7056,9 +7098,61 @@ function brazoBarrido(config) {
                     operatorSignoffBlocked = true;
                     const routeTag = opGateResult.route ? ` [${opGateResult.route}]` : '';
                     log('barrido', `#${issue} GATE 1 firma-definición BLOQUEÓ promoción (mode=${opGateResult.gate_mode})${routeTag}: ${opGateResult.reason}`);
-                    sendTelegram(`🛑 #${issue} GATE 1 (firma de definición) retuvo admisión a desarrollo${routeTag}: ${opGateResult.reason}`);
+                    // #6192 — el detalle técnico (`reason`, `route`) queda en el
+                    // log, que es donde se diagnostica. Al operador le va la
+                    // ficha: qué issue es, qué se pide firmar y desde cuándo.
+                    const opSig = (opGateResult.condition_results && opGateResult.condition_results.signature) || {};
+                    // #6207 (D-3) — DEPOSITAR ANTES DE AVISAR, fuera del dedupe.
+                    //
+                    // El pedido de firma se deja en el canal de aprobación para
+                    // que los medios lo presenten: los botones de Telegram (acá
+                    // abajo) y la bandeja del dashboard. Va en la rama `block` y
+                    // NO colgado del `emit` de `notifyGate1Retention` porque el
+                    // aviso está deduplicado: de N barridos retenidos se emite
+                    // uno, y un depósito que colgara de ese `emit` existiría
+                    // sólo en ese barrido — la bandeja mostraría "nada que
+                    // firmar" con el issue frenado. La idempotencia por ancla
+                    // del propio módulo evita el spam de audit.
+                    //
+                    // try/catch de última red: esto NUNCA puede tumbar el
+                    // barrido ni —sobre todo— LEVANTAR la retención, que ya
+                    // quedó puesta arriba. El peor caso es un pendiente que no
+                    // llega a la bandeja; el issue sigue retenido igual.
+                    try {
+                      const dep = require('./lib/gate1-signature-deposit').depositGate1Request(
+                        { issue, body: opIssueJson.body, title: opIssueJson.title },
+                        { log: (m) => log('barrido', m) },
+                      );
+                      if (dep.ok && dep.deposited) {
+                        log('barrido', `#${issue} GATE 1: pedido de firma depositado en el canal de aprobación`);
+                      } else if (!dep.ok) {
+                        log('barrido', `#${issue} GATE 1: no pude depositar el pedido de firma (${dep.reason}) — el issue queda retenido igual`);
+                      }
+                    } catch (e) {
+                      log('barrido', `#${issue} GATE 1: fallo inesperado depositando el pedido de firma (${e.message}) — el issue queda retenido igual`);
+                    }
+                    notifyGate1Retention({
+                      issue,
+                      caso: 'block',
+                      titulo: opIssueJson.title,
+                      reason: opGateResult.reason,
+                      firmantesAutorizados: authorizedSigners.length,
+                      // "Ya lo habías firmado, pero los criterios cambiaron
+                      // después": es el rechazo anti-TOCTOU (A08), no una firma
+                      // ausente. Lo distingue el hash, no el texto del motivo.
+                      firmaVencida: opSig.hash_ok === false && !!opSig.signed_by,
+                      criteriaHash: operatorSignoffGate.computeCriteriaHash(opIssueJson.body),
+                    });
                   } else {
                     log('barrido', `#${issue} GATE 1 firma-definición ${opGateResult.gate_mode}: ${opGateResult.original_decision} (efectivo=${opGateResult.decision}) — ${opGateResult.reason}`);
+                    // #6192 — el gate dejó de retener de verdad (no por
+                    // dry-run): se olvida el sello para que, si el issue
+                    // volviera a quedar retenido por lo mismo, el aviso vuelva
+                    // a salir en vez de quedar silenciado para siempre.
+                    if (opGateResult.original_decision === 'approve') {
+                      try { require('./lib/gate1-notify-dedup').getDefault().forget(issue); }
+                      catch (e) { log('barrido', `#${issue} GATE 1: no pude limpiar el dedupe del aviso (${e.message})`); }
+                    }
                   }
                 }
               }
@@ -7070,7 +7164,14 @@ function brazoBarrido(config) {
               log('barrido', `#${issue} GATE 1 firma-definición ERROR inesperado: ${e.message} (mode=${opMode})`);
               if (opMode === 'enforce') {
                 operatorSignoffBlocked = true;
-                sendTelegram(`🛑 #${issue} GATE 1 firma-definición ERROR inesperado (enforce → bloquea): ${e.message}`);
+                // #6192 — el gate reventó: no se sabe qué se estaría firmando,
+                // así que ficha `indeterminado` y sin botones. La retención ya
+                // quedó puesta arriba: el aviso no la toca.
+                notifyGate1Retention({
+                  issue,
+                  caso: 'gate-error',
+                  reason: `el gate de firma falló al evaluar: ${e.message}`,
+                });
               }
             }
 
@@ -8909,7 +9010,14 @@ function reboteVerificacionABuild(issue, pipelineName, preflightResult) {
 // `comentar` para que los tests pasen un stub que sólo acumule llamadas en vez
 // de publicar en el issue público real. El default sigue siendo el canal real,
 // así que producción no cambia de comportamiento.
-function drenarRequeueVerificacion(config, { comentar = ghCommentOnIssue } = {}) {
+function sealedVerdictWorktree(issue, config) {
+  try {
+    const resolution = resolveExistingWorktree({ ROOT, issue: String(issue), skill: 'pipeline-dev', config, allowAutoRecovery: false });
+    return resolution.found ? resolution.worktreePath : null;
+  } catch { return null; }
+}
+
+function drenarRequeueVerificacion(config, { comentar = ghCommentOnIssue, resolveCwd = sealedVerdictWorktree, resolvePr = null } = {}) {
   const pendDir = path.join(PIPELINE, ...qaEvidenceSeal.REQUEUE_QUEUE_DIR);
   const doneDir = path.join(PIPELINE, ...qaEvidenceSeal.REQUEUE_DONE_DIR);
   let ordenes;
@@ -8976,6 +9084,36 @@ function drenarRequeueVerificacion(config, { comentar = ghCommentOnIssue } = {})
     }
 
     try {
+      const cwd = resolveCwd(issue, config);
+      if (cwd && qaEvidenceSeal.findVigentSealedVerdict({ pipelineDir: PIPELINE, issue, cwd }).vigente) {
+        let prNumber = null;
+        try {
+          if (resolvePr) prNumber = resolvePr(issue, cwd);
+          else {
+            const branch = require('./lib/worktree-resolver').resolveDevBranch(ROOT, issue, { config });
+            if (branch.ok) {
+              const prs = JSON.parse(execFileSync('gh', ['pr', 'list', '--head', branch.branch, '--json', 'number'],
+                { cwd, encoding: 'utf8', timeout: 10000, windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] }));
+              prNumber = prs[0]?.number;
+            }
+          }
+        } catch { /* El delivery propaga el gate al PR cuando vuelve a correr. */ }
+        const ratified = qaEvidenceSeal.reratifySealedVerdict({ pipelineDir: PIPELINE, issue, cwd, prNumber });
+        if (ratified.reintentable) {
+          log('caducidad', `#${issue}: auditoría no persistida; orden conservada para reintentar.`);
+          continue;
+        }
+        if (ratified.ok) {
+          fs.mkdirSync(doneDir, { recursive: true });
+          const donePath = path.join(doneDir, fname);
+          fs.writeFileSync(`${donePath}.tmp`, JSON.stringify({ ...orden, descartada: 'sello-vigente' }));
+          fs.renameSync(`${donePath}.tmp`, donePath);
+          fs.unlinkSync(ordenPath);
+          log('caducidad', `#${issue}: sello vigente (${ratified.frescura}) — orden descartada, qa:passed re-ratificado. Sello ${ratified.head_sellado}/tree ${ratified.tree_sellado}; HEAD ${ratified.head_actual}/tree ${ratified.tree_actual}`);
+          drenadas += 1;
+          continue;
+        }
+      }
       const faseDir = fasePath('desarrollo', 'verificacion');
       // SEC (#6496, rebote security — A03: prompt injection de segundo orden).
       // `motivo_legible` era texto libre del JSON de la cola (hasta 400 chars) y
@@ -8994,6 +9132,8 @@ function drenarRequeueVerificacion(config, { comentar = ghCommentOnIssue } = {})
       const motivoLegible = qaEvidenceSeal.describeFreshnessFailure(orden.motivo);
       const headSellado = /^[0-9a-f]{40}$/.test(String(orden.head_sellado || '')) ? String(orden.head_sellado) : 'desconocido';
       const headActual = /^[0-9a-f]{40}$/.test(String(orden.head_actual || '')) ? String(orden.head_actual) : 'desconocido';
+      const treeSellado = /^[0-9a-f]{40}$/.test(String(orden.tree_sellado || '')) ? orden.tree_sellado : 'desconocido';
+      const treeActual = /^[0-9a-f]{40}$/.test(String(orden.tree_actual || '')) ? orden.tree_actual : 'desconocido';
       const motivoRechazo = [
         `${motivoLegible}`,
         '',
@@ -9058,6 +9198,7 @@ function drenarRequeueVerificacion(config, { comentar = ghCommentOnIssue } = {})
       }
 
       if (encoladas > 0) {
+        log('caducidad', `#${issue}: sello ${headSellado}/tree ${treeSellado}; HEAD ${headActual}/tree ${treeActual}`);
         log('caducidad', `♻️ #${issue}: veredicto de QA caduco (${qaEvidenceSeal.sanitizeFreshnessReason(orden.motivo)}) → verificación re-encolada (${encoladas} skill(s), intento ${intentoDeclarado}/${qaEvidenceSeal.MAX_SEAL_REQUEUES}). Sello ${headSellado.slice(0, 8)} ≠ HEAD ${headActual.slice(0, 8)}.`);
         comentar(issue, `♻️ La entrega se frenó sola: el veredicto de QA se había emitido contra el commit \`${headSellado.slice(0, 8)}\` y la rama ya está en \`${headActual.slice(0, 8)}\`. El pipeline volvió a pedir la verificación del código actual en vez de integrar algo que nadie revisó. No hace falta que hagas nada.`);
       } else {
@@ -9371,11 +9512,72 @@ function brazoLanzamiento(config) {
   }
 }
 
+/**
+ * #5113 CA-UX2 — Decisión PURA: ¿el sustrato del estado operativo explica el
+ * no-despacho de este ciclo?
+ *
+ * Sólo bloquea cuando se dan las DOS condiciones a la vez: el estado vive en el
+ * store remoto **y** el store degradó. En modo filesystem nunca bloquea, aunque
+ * haya un rastro viejo de degradación: en `fs` el estado se lee del disco local
+ * y una falla del store no frena nada (sería nombrar una causa falsa, que es el
+ * error opuesto y igual de caro).
+ *
+ * @param {{mode?:string, degraded?:boolean, lastError?:string|null}} desc
+ *        salida de `operational-state-backend.describeMode()`.
+ * @returns {{blocked:boolean, detalle:string}}
+ */
+function opstateDispatchGate(desc) {
+  const d = desc && typeof desc === 'object' ? desc : {};
+  if (d.mode !== 'remote' || d.degraded !== true) return { blocked: false, detalle: '' };
+  // CA-UX5 — qué está frenado, por qué, y cuál es el próximo paso. El label del
+  // enum (`dispatch-cause.js`) ya trae la acción de rollback; acá va la causa
+  // técnica concreta que el operador necesita para decidir si reintenta o vuelve.
+  const causa = typeof d.lastError === 'string' && d.lastError ? d.lastError : 'sin detalle';
+  return {
+    blocked: true,
+    detalle: `Estado operativo en el store remoto y el store no responde (${causa}) — `
+      + 'dispatch DENEGADO por fail-closed, no se degrada a filesystem. '
+      + 'Rollback: operational_state.durable: false + reinicio.',
+  };
+}
+
+/**
+ * `describeMode()` envuelto: la introspección del sustrato JAMÁS puede tumbar el
+ * brazo de lanzamiento. Ante cualquier error se devuelve el modo conocido y sin
+ * degradación, que es el que NO bloquea (fail-open de la CAUSA, no del gate: el
+ * gate real sigue siendo `isIssueAllowed`, que deniega por su cuenta).
+ */
+function safeDescribeOpstateMode() {
+  try {
+    return opstateBackend.describeMode();
+  } catch (e) {
+    log('lanzamiento', `[WARN] no se pudo describir el modo del estado operativo: ${e.message}`);
+    return { mode: 'fs', source: 'config', degraded: false, lastError: null };
+  }
+}
+
 function brazoLanzamientoImpl(config, _dcMark, _dcState) {
   // Circuit breaker de infra (#2305): si está abierto, no tomar nuevos issues.
   // Se reabre manualmente con `node .pipeline/resume.js` una vez validada la red.
   if (cbInfra.isOpen()) {
     _dcMark(dispatchCause.CAUSAS.CB_INFRA, 'Circuit breaker de infra abierto — dispatch suspendido hasta validar red');
+    _dcState.hayPendientes = countPendientesGlobal(config) > 0;
+    return;
+  }
+
+  // #5113 CA-UX2 — El estado operativo vive en el store remoto y el store no
+  // responde. El gate YA deniega solo (fail-closed de CA-A7: `isIssueAllowed`
+  // devuelve `false` cuando no puede leer la allowlist, y tiene prohibido
+  // degradar a filesystem). Lo que falta sin esto es el NOMBRE: la cola queda
+  // ociosa, ninguna causa conocida aplica y `resolveCause` cae en
+  // `anomalia_no_determinable` — "no sé por qué no despacho" justo en el
+  // momento en que la causa se conoce con precisión absoluta.
+  //
+  // Es introspección pura: no lee estado, no toca red. Con el flag apagado
+  // (default) `describeMode()` corta en `mode: 'fs'` y esto es un no-op.
+  const _opstate = opstateDispatchGate(safeDescribeOpstateMode());
+  if (_opstate.blocked) {
+    _dcMark(dispatchCause.CAUSAS.ESTADO_REMOTO_DEGRADADO, _opstate.detalle);
     _dcState.hayPendientes = countPendientesGlobal(config) > 0;
     return;
   }
@@ -9534,8 +9736,28 @@ function brazoLanzamientoImpl(config, _dcMark, _dcState) {
 
     // 0a. PARTIAL PAUSE (#2490): si hay allowlist activa, saltar issues fuera de ella.
     // El archivo se queda en pendiente/ — no se archiva ni penaliza.
-    if (!partialPause.isIssueAllowed(issue)) {
-      const mode = partialPause.getPipelineMode();
+    //
+    // #5113 (rev-12, R-6) — UNA lectura del estado por TICK, reusando el
+    // snapshot que ya tomó el cálculo de prioridades (`ppStateForPriority`,
+    // arriba en esta misma función). rev-6 bajó de 2N a N lecturas; el objetivo
+    // real es 1.
+    //
+    // Por qué importa: en modo remoto cada `getPipelineMode()` es un `spawnSync`
+    // BLOQUEANTE de la AWS CLI (`timeout: 20000`), y las lecturas degradadas
+    // NUNCA se memoizan (decisión explícita del backend: un fallo no se cachea).
+    // Con la cola real (~200 pendientes) eso eran hasta 200 spawns bloqueantes
+    // por tick; en un blackhole de red el tick supera los 180 s del watchdog de
+    // liveness → respawn en frío → el bucle de muerte documentado arriba.
+    //
+    // La política del gate no cambia: `isIssueAllowedInState` es la variante
+    // PURA de la misma tabla de verdad — mismo fail-closed de #5060 sobre
+    // `running` — y es exactamente el snapshot con el que ya se ordenó el lote,
+    // así que gate y prioridad quedan además coherentes entre sí. Un cambio de
+    // allowlist a mitad de tick se ve en el tick siguiente, igual que antes lo
+    // veían de forma inconsistente unos candidatos sí y otros no.
+    const modeState = ppStateForPriority;
+    if (!partialPause.isIssueAllowedInState(issue, modeState)) {
+      const mode = modeState;
       if (mode.mode === 'partial_pause') {
         log('lanzamiento', `#${issue} skipped by partial_pause (allowed: ${mode.allowedIssues.map(i => `#${i}`).join(', ')})`);
         // #4751 — el modo de ejecución en olas (allowlist) es un estado ESPERADO
@@ -11140,6 +11362,13 @@ async function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, 
   // (b) la env var PROVIDER_RESOLUTION_LOG del child (visible desde el agente).
   let providerResolutionLog = null;
   try {
+    // #7188 — re-verificación del flag de cuota (#7181) ANTES de honrar el gate.
+    // Vive acá (único sitio de spawn real) y NO dentro de `shouldGateSpawn`: ese
+    // predicado lo consultan sondas read-only (#4565) y no puede escribir disco.
+    // Trae throttle propio (5 min). Best-effort: si falla, el flag manda (fail-closed).
+    try {
+      require('./lib/quota-reset-reconcile').reconcileCodexReset({});
+    } catch { /* best-effort */ }
     dispatchResolution = resolveSpawnWithFallback({
       skill,
       issue,
@@ -20091,6 +20320,172 @@ function sendTelegramWithMarkup(text, replyMarkup, opts) {
   }
 }
 
+// #6192 — Botones de firma del GATE 1 (parte 3 del split de #6173).
+//
+// La capability la emite `operator-gate.register()`: firma un token HMAC
+// {issue, action}, genera un id opaco de 16 hex y persiste el binding
+// SERVER-SIDE en disco. El `callback_data` es ESE id y nada más — no lleva
+// issue, ni acción, ni tenant adentro. Está prohibido armar un `callback_data`
+// propio: sería un dato client-controlled decidiendo qué se firma.
+//
+// La autorización NO se decide acá: `operator-gate.handleSignature()` valida
+// `from.id` contra la allowlist resuelta server-side y es fail-closed si está
+// vacía (`operator-gate.js:337`). Este helper sólo dibuja el teclado.
+//
+// LÍMITE CONOCIDO (declarado, no descubierto): la transición que aplica el
+// botón vive en `operator-gate.applyTransition` y opera sobre work-files de
+// `waiting-operator/`. El write path de la firma de definición es
+// `approval-channel` (#6206) y su carrier de Telegram es #6207, que todavía no
+// existe: hasta entonces el botón firma en el audit chain de `operator-gate`
+// pero NO levanta la retención de GATE 1 por sí solo. El pie de la ficha sigue
+// ofreciendo `/unblock`, que sí es un camino completo. No se simula lo que no
+// está: prometer con un botón lo que el pipeline no puede cumplir es peor que
+// no ofrecerlo.
+// La implementación vive en `lib/gate1-signature-keyboard.js`. Acá quedó sólo
+// el cableado: como función privada del monolito su test la REPLICABA en vez de
+// invocarla, y esa réplica dejó pasar que el camino real devolvía `null` en
+// todos los barridos con la suite en verde. Movida al módulo, el test ejercita
+// la misma función que corre acá.
+const gate1Keyboard = require('./lib/gate1-signature-keyboard');
+
+function buildGate1SignatureKeyboard(issue) {
+  return gate1Keyboard.buildGate1SignatureKeyboard(issue, {
+    log: (m) => log('barrido', m),
+  });
+}
+
+// #6192 — Aviso del GATE 1 · Firma de Definición: ficha de decisión + botones +
+// UNA SOLA emisión por estado.
+//
+// Antes de este issue los tres avisos de GATE 1 eran una línea técnica que
+// interpolaba `opGateResult.reason` crudo en un mensaje con
+// `parse_mode: 'Markdown'` (R1/#5421: un `_` en el motivo → HTTP 400 → alerta
+// perdida sin rastro) y se repetían en CADA barrido mientras el issue siguiera
+// retenido (R-GATE). Ahora: copy de `decision-card` (#6190), transporte
+// `{ plain: true }` explícito y dedupe persistente por `(issue, hash)`.
+//
+// FAIL-CLOSED: esta función NUNCA lanza y NUNCA levanta la retención — el
+// caller ya marcó `operatorSignoffBlocked` antes de invocarla. Si todo el
+// armado falla, sale un aviso crudo en texto plano; el issue queda retenido
+// igual.
+function notifyGate1Retention(input) {
+  const i = input && typeof input === 'object' ? input : {};
+  const issue = Number(i.issue);
+  const caso = i.caso || 'block';
+  try {
+    const gate1Notify = require('./lib/gate1-notify');
+    const dedup = require('./lib/gate1-notify-dedup').getDefault();
+    const nowMs = Date.now();
+
+    // ORDEN DELIBERADO: primero se pregunta si HAY firma posible, después se
+    // redacta. Al revés —redactar y recién entonces intentar los botones— el
+    // aviso ya había prometido "elegí una opción" cuando se descubría que no
+    // había ninguna capability que emitir, y salía pidiendo firmar sin dar con
+    // qué. El sondeo no registra nada: sólo responde si la firma es posible.
+    const cap = gate1Keyboard.probeGate1SignatureCapability();
+    if (!cap.ok) {
+      log('barrido', `#${issue} GATE 1: la firma por botón no está disponible (${cap.code}) — el aviso sale como indeterminado`);
+    }
+
+    const avisoInput = {
+      issue,
+      titulo: i.titulo,
+      reason: i.reason,
+      caso,
+      firmantesAutorizados: i.firmantesAutorizados,
+      firmaVencida: i.firmaVencida,
+      capacidadFirma: cap.ok,
+      // El aviso sólo se emite cuando cambia el estado firmable, así que el
+      // "desde cuándo" es el instante en que se detectó ESTA retención.
+      blockedAt: new Date(nowMs).toISOString(),
+      fechaCorta: fechaCortaLocal(nowMs),
+    };
+    const aviso = gate1Notify.buildGate1Notice(avisoInput, nowMs);
+
+    // La clave del dedupe incluye el hash de los criterios (misma primitiva que
+    // usa el gate para detectar firma stale), el motivo y el caso: si cambia
+    // cualquiera de los tres, cambió lo que hay que firmar y el aviso vuelve.
+    // El body NUNCA entra al estado: entra su digest y se descarta.
+    const hash = dedup.computeHash([caso, aviso.tipo, i.criteriaHash || '', i.reason || '']);
+
+    // El log tiene que contar lo que SALIÓ, no lo que se pensaba mandar. En la
+    // primera pasada convivían en la misma corrida "no pude registrar los
+    // botones de firma" y "aviso emitido (firma, con botones)", porque el
+    // detalle se armaba con `aviso.ofreceBotones` —la intención— en vez del
+    // teclado efectivamente construido. Un log que miente sobre si el operador
+    // recibió los botones es peor que no loguear: convierte un defecto visible
+    // en uno invisible.
+    const emitido = { conBotones: false, reclasificado: false };
+
+    const res = dedup.notifyOnce({
+      issue,
+      hash,
+      emit: () => {
+        // El registro real de las capabilities ocurre acá y no antes: el dedupe
+        // silencia casi todos los barridos, y registrar en cada uno dejaría
+        // tres bindings huérfanos en disco por barrido silenciado.
+        let texto = aviso.texto;
+        let keyboard = null;
+        if (aviso.ofreceBotones) {
+          const kb = buildGate1SignatureKeyboard(issue);
+          if (kb.ok) {
+            keyboard = kb.keyboard;
+            emitido.conBotones = true;
+          } else {
+            emitido.reclasificado = true;
+            // La capability se cayó entre el sondeo y el registro. El texto ya
+            // redactado ofrece firmar, así que se REARMA como indeterminado en
+            // vez de mandarlo pelado: un aviso que ofrece opciones sin botones
+            // es el defecto que este orden vino a cerrar, y no lo arregla que
+            // la ventana sea chica.
+            texto = gate1Notify.buildGate1Notice(
+              { ...avisoInput, capacidadFirma: false }, nowMs,
+            ).texto;
+          }
+        }
+        sendTelegramWithMarkup(texto, keyboard, { plain: true });
+      },
+    });
+
+    if (res.notified) {
+      const detalle = [
+        emitido.reclasificado ? 'indeterminado' : aviso.tipo,
+        aviso.degradado ? 'degradado' : null,
+        // `emitido.conBotones` es el teclado que se le pasó al transporte, no
+        // el que la ficha se proponía ofrecer: si el registro de capabilities
+        // falló entre el sondeo y el envío, acá dice "sin botones".
+        emitido.conBotones ? 'con botones' : 'sin botones',
+        emitido.reclasificado ? 'reclasificado: la firma se cayó entre el sondeo y el registro' : null,
+        res.sealed ? null : 'SIN sellar (se repetirá el próximo barrido)',
+      ].filter(Boolean).join(', ');
+      log('barrido', `#${issue} GATE 1 aviso emitido (${detalle})`);
+    } else {
+      log('barrido', `#${issue} GATE 1 aviso NO emitido (${res.reason}${res.error ? `: ${res.error}` : ''})`);
+    }
+  } catch (e) {
+    // Última red. Nunca un `catch {}` vacío: el operador se entera igual, en
+    // texto plano (jamás Markdown: acá no se interpola nada externo, pero el
+    // dialecto plano es el contrato del canal desde #5421).
+    log('barrido', `#${issue} GATE 1 aviso: fallo armando/emitiendo (${e.message}) — se emite crudo`);
+    try {
+      sendTelegramPlain(`#${issue} sigue retenido esperando tu firma de definición. No pude armar el aviso completo; mirá el tablero.`);
+    } catch (e2) {
+      log('barrido', `#${issue} GATE 1 aviso crudo también falló: ${e2.message}`);
+    }
+  }
+}
+
+/** Fecha legible corta del momento del aviso. Degrada a '' si el locale falla. */
+function fechaCortaLocal(ms) {
+  try {
+    return new Date(ms).toLocaleString('es-AR', {
+      day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit',
+    });
+  } catch (_) {
+    return '';
+  }
+}
+
 // #6460 — Encola el AVISO DE RESPUESTA PERDIDA en la misma cola de filesystem
 // que cualquier respuesta del Commander.
 //
@@ -20704,6 +21099,28 @@ function brazoIntake(config) {
   // Si es pausa completa, no hacer intake.
   const pipelineMode = partialPause.getPipelineMode();
   if (pipelineMode.mode === 'paused') return;
+
+  // #5113 rev-12 (R-5) — FAIL-CLOSED bajo degradación del estado operativo.
+  //
+  // `allowlistSet` es `null` para TODO lo que no sea `partial_pause`, y con el
+  // store caído el modo colapsa a `'running'` por diseño (`partial-pause.js`:
+  // el estado local stale es una autorización revocada, no un dato viejo). El
+  // resultado era `null` ⇒ sin filtro ⇒ el intake ingiriendo el backlog `Ready`
+  // COMPLETO: workfiles en `pendiente/` y mutaciones de labels en GitHub, sin
+  // saber cuál es la ola vigente. No dispara agentes (el gate por issue aguanta
+  // más abajo), pero es la forma de #5060 una capa más arriba y ensucia la cola
+  // justo durante el incidente — trabajo que después hay que deshacer a mano.
+  //
+  // El issue endureció los dos gates PUROS (`isIssueAllowedInState` /
+  // `isSkillAllowedInState`) y no revisó a los consumidores que miran sólo
+  // `mode`. Éste MUTA estado, así que la degradación tiene que frenarlo.
+  if (pipelineMode.degraded === true) {
+    log('intake', 'estado operativo DEGRADADO — intake omitido (fail-closed). '
+      + 'No se puede determinar la ola vigente: ingerir el backlog Ready ensuciaría la cola '
+      + 'y mutaría labels en GitHub. Se reintenta en el próximo ciclo.');
+    return;
+  }
+
   const allowlistSet = pipelineMode.mode === 'partial_pause'
     ? new Set(pipelineMode.allowedIssues.map(String))
     : null;
@@ -24336,6 +24753,18 @@ async function brazoDesbloqueoImpl(config) {
   // ciclo consultando sus dependencias en GitHub.
   const pipelineMode = partialPause.getPipelineMode();
   if (pipelineMode.mode === 'paused') return;
+
+  // #5113 rev-12 (R-5, hermano del intake) — mismo fail-closed, misma razón:
+  // con el store degradado `allowlistSet` queda `null` y los reaps de este brazo
+  // dejan de acotarse a la ola vigente. Estos reaps QUITAN labels de bloqueo en
+  // GitHub: aplicados sobre todo el universo de markers destraban issues que no
+  // son de la ola. Bajo degradación no se toca nada; se reintenta al próximo tick.
+  if (pipelineMode.degraded === true) {
+    log('desbloqueo', 'estado operativo DEGRADADO — brazo omitido (fail-closed): '
+      + 'sin ola vigente conocida, los reaps mutarían labels fuera de alcance.');
+    return;
+  }
+
   const allowlistSet = pipelineMode.mode === 'partial_pause'
     ? new Set(pipelineMode.allowedIssues.map(String))
     : null;
@@ -25524,6 +25953,12 @@ async function mainLoop() {
       log('pulpo', `WARN [init-waves] fail-closed: .partial-pause.json malformado. ${(initResult.errors || []).slice(0, 3).join('; ')}`);
     } else if (initResult.action === 'aborted_waves_corrupt') {
       log('pulpo', `WARN [init-waves] fail-closed: waves.json corrupto. ${(initResult.errors || []).slice(0, 3).join('; ')}`);
+    } else if (initResult.action === 'aborted_remote_degraded') {
+      // #5113 rev-12 — Antes caía en el `else` genérico y se logueaba como
+      // "noop", indistinguible de un boot sano. Es lo contrario: el registro de
+      // olas NO quedó sembrado y la causa es el sustrato externo, no el archivo.
+      log('pulpo', `WARN [init-waves] fail-closed: estado operativo externo degradado — el registro de olas NO se sembró. `
+        + `NO restaurar desde archived/ (el registro local no está corrupto). ${(initResult.errors || []).slice(0, 3).join('; ')}`);
     } else if (initResult.action === 'noop_already_seeded') {
       log('pulpo', `[init-waves] noop — active_wave #${initResult.waveNumber} ya existente.`);
     } else {
@@ -26495,6 +26930,42 @@ async function mainLoop() {
     log('commander', `[anthropic-1m] no pude iniciar cron TTL: ${e.message}`);
   }
 
+  // #6239 — Vigencia de la sesión Claude. Best-effort y sin datos sensibles:
+  // el módulo sólo devuelve fechas derivadas y el copy visible es el asset UX.
+  const OAUTH_EXPIRY_CHECK_INTERVAL_MIN = 5;
+  // El marker vive FUERA del arbol del repo (~/.claude/pipeline-state/), igual
+  // que el del cron de rotacion: el calendario de vencimiento de la credencial
+  // del operador no se publica en un repo PUBLICO (#5901 REQ-SEC-1).
+  const OAUTH_EXPIRY_STATE_FILE = oauthSessionExpiry
+    ? oauthSessionExpiry.defaultStateFilePath()
+    : null;
+  try {
+    if (!oauthSessionExpiry || !oauthSessionCopy || !runOAuthExpiryTick) throw new Error('oauth_expiry_modules_unavailable');
+    // Barrido del marker que haya dejado una corrida anterior al fix.
+    if (oauthSessionExpiry.purgeLegacyStateFile(PIPELINE)) {
+      log('commander', '[oauth-expiry] marker legacy dentro del repo eliminado');
+    }
+    const tickOAuthExpiry = () => {
+      try {
+        runOAuthExpiryTick({
+          evaluate: oauthSessionExpiry.evaluate,
+          notify: notifyTelegramFn,
+          render: oauthSessionCopy.renderTelegram,
+          recordEmitted: oauthSessionExpiry.recordEmitted,
+          statePath: OAUTH_EXPIRY_STATE_FILE,
+        });
+      } catch (_) {
+        // No interpolar el error: podría originarse al leer la credencial.
+        log('commander', '[oauth-expiry] tick error (best-effort)');
+      }
+    };
+    setTimeout(tickOAuthExpiry, 60 * 1000);
+    setInterval(tickOAuthExpiry, OAUTH_EXPIRY_CHECK_INTERVAL_MIN * 60 * 1000);
+    log('commander', `[oauth-expiry] cron iniciado: cada ${OAUTH_EXPIRY_CHECK_INTERVAL_MIN}min`);
+  } catch (_) {
+    log('commander', '[oauth-expiry] no pude iniciar el cron');
+  }
+
   // #3638 CA-F-7 — Ghost-artifact cleaner: barre carpetas operacionales en
   // busca de artifacts huérfanos (.comment.md/.guidance.txt/.reason.json de
   // issues CERRADOS sin marker activo) y los archiva en
@@ -26892,6 +27363,8 @@ if (process.env.PULPO_NO_AUTOSTART === '1') {
     resolveIntakeRepo,
     setMultiInstanceRouter,
     getMultiInstanceRouter,
+    // #5113 CA-UX2 — decisión pura del gate de sustrato del estado operativo.
+    opstateDispatchGate,
     // #4136 — brazo de archivado (frontera activo/histórico).
     brazoArchivado,
     // Incidente 2026-09-08 — expuestos para el test de regresión que ejercita el

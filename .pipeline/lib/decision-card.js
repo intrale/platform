@@ -152,7 +152,39 @@ const CITA_ISSUE_OVERHEAD = CITA_ISSUE_PREFIJO.length + 2;
 // 512 sigue siendo 2,3x el campo más largo que existe (`MAX_CAMPO` = 220, y
 // toda superficie corta la SALIDA en 220 o menos), así que no recorta nada
 // real, y al ser cuadrático el costo baja ~60x: la misma bomba queda en ~16ms.
-const MAX_ENTRADA_SANEO = 512;  // tope duro de texto externo antes de sanear
+const MAX_ENTRADA_SANEO = 512;  // tope de PRESENTACIÓN, se aplica ya redactado
+
+// #6191 / SEC-F rev-2. Hay DOS techos, y confundirlos fue justo la regresión que
+// esta revisión corrige:
+//
+//   - `MAX_ENTRADA_REDACCION` (acá) es el techo ANTI-DoS: lo máximo que puede
+//     ver `redactAll`, que es cuadrático.
+//   - `MAX_ENTRADA_SANEO` (512) es el techo de PRESENTACIÓN: lo máximo que ven
+//     las clases ambiguas de `URL_RE`, y se aplica DESPUÉS de redactar.
+//
+// La primera versión de SEC-F usó 512 para las dos cosas, moviéndolo delante de
+// `redactAll`. Eso arregla el DoS y rompe la redacción: toda credencial más
+// larga que el techo queda partida por el corte, `redactAll` ya no matchea el
+// token completo y el prefijo sale visible. El caso canónico es un JWT de
+// Cognito —el mecanismo de auth de este proyecto—: 1,5 KB, sin un solo
+// separador donde el retroceso pueda apoyarse, y el payload en base64 decodifica
+// a `sub`, `email` y `cognito_groups`. Y la ficha alimenta el aviso de Telegram,
+// así que ese fragmento se va del equipo.
+//
+// 4096 es holgado para contener entera cualquier credencial de los patrones
+// vigentes (`redact.js`: jwt, google_refresh_token y telegram_bot_token no
+// tienen tope superior) y coincide con `MAX_EVIDENCE_PERSISTIDA` de
+// `human-block.js`, que es lo máximo que el pipeline llega a guardar de un
+// `evidence`. El costo medido de `redactAll` con 4096 chars es ~10 ms: lejos del
+// techo de 200 ms del test de DoS, y ~58x por debajo de los 581 ms que costaba
+// la entrada de 30 KB que motivó SEC-F.
+const MAX_ENTRADA_REDACCION = 4096;
+
+// #6191 / SEC-F. Cuánto puede retroceder el corte de PRESENTACIÓN para no partir
+// una palabra por la mitad (ver `topearEntradaSaneo`). 256 deja siempre >= 256
+// caracteres, que es más que `MAX_CAMPO` (220): el retroceso NUNCA puede
+// recortar texto que la ficha llegue a mostrar.
+const MAX_RETROCESO_CORTE = 256;
 
 const TIPOS = Object.freeze([
     'dependencia', 'circuit', 'firma', 'infra', 'rebote', 'pregunta', 'indeterminado',
@@ -430,6 +462,73 @@ function limpiarMarkup(s) {
 }
 
 /**
+ * Techo ANTI-DoS de la redacción (#6191 / SEC-F rev-2). Es lo PRIMERO que corre
+ * sobre el texto externo y acota lo que van a ver `redactAll` y todo lo que
+ * sigue.
+ *
+ * Existe porque el saneamiento es CUADRÁTICO en el largo de la entrada
+ * (`redactAll` y las clases ambiguas de `URL_RE`), y el dashboard lo ejecuta
+ * en el mismo hilo que sirve la pantalla, `/api/state` y el healthcheck. Sin
+ * tope, un `evidence` de 30 KB —el output de un comando que un agente pega
+ * como evidencia, sin ninguna intención maliciosa— congela el proceso durante
+ * segundos. La regla #1 del pipeline es que no se muere, y un `try/catch` no
+ * ataja un cuelgue: sólo atrapa excepciones.
+ *
+ * Y es SEPARADO del techo de presentación (`MAX_ENTRADA_SANEO`, 512) porque
+ * cortar antes de redactar es lo que parte credenciales: `redactAll` deja de
+ * matchear el token completo y el prefijo queda visible. Por eso este techo es
+ * holgado (4096) y por eso el corte NO es duro:
+ *
+ *   - Retrocede hasta el último separador del prefijo, SIN piso. El piso de
+ *     `MAX_RETROCESO_CORTE` que usa el corte de presentación no sirve acá: un
+ *     JWT no tiene un solo separador donde apoyarse en 1,5 KB, así que un
+ *     retroceso acotado degrada al corte duro justo en el caso que importa.
+ *   - Si no hay NINGÚN separador en el prefijo, devuelve vacío. Un token
+ *     indivisible de más de 4096 caracteres no es texto que un operador vaya a
+ *     leer, y sí es la forma exacta que tiene una credencial larga: mostrar su
+ *     prefijo es la fuga. Fail-closed — se pierde evidencia ilegible, no se
+ *     filtra medio secreto.
+ */
+function topearEntradaRedaccion(value) {
+    const s = String(value == null ? '' : value);
+    if (s.length <= MAX_ENTRADA_REDACCION) return s;
+    const corte = s.slice(0, MAX_ENTRADA_REDACCION);
+    for (let i = corte.length - 1; i >= 0; i -= 1) {
+        const c = corte.charCodeAt(i);
+        // Espacio, tab, LF, CR, FF, VT: los separadores que puede haber acá.
+        if (c === 32 || (c >= 9 && c <= 13)) return corte.slice(0, i);
+    }
+    return '';
+}
+
+/**
+ * Techo de PRESENTACIÓN (rev-10 / SEC-D; re-encuadrado en #6191 / SEC-F rev-2).
+ * Descarta el excedente: lo que se corta acá NUNCA se muestra, porque toda
+ * superficie recorta la SALIDA en `MAX_CAMPO` (220) o menos y este techo es
+ * 2,3x más alto. Acota el trabajo de las clases ambiguas de `URL_RE`, que es
+ * donde SEC-E midió el costo cuadrático del saneamiento de markup.
+ *
+ * Corre SIEMPRE sobre texto YA redactado (`sec()` y `sanearMinimo()` del
+ * renderer degradado llaman a `redactAll` antes). Por eso acá el corte duro no
+ * puede filtrar nada: no quedan credenciales que partir, sólo `[REDACTED]`. El
+ * retroceso a separador se mantiene para no cortar una palabra al medio.
+ *
+ * La protección de credenciales NO vive acá: vive en `topearEntradaRedaccion`.
+ */
+function topearEntradaSaneo(value) {
+    const s = String(value == null ? '' : value);
+    if (s.length <= MAX_ENTRADA_SANEO) return s;
+    const corte = s.slice(0, MAX_ENTRADA_SANEO);
+    const piso = MAX_ENTRADA_SANEO - MAX_RETROCESO_CORTE;
+    for (let i = corte.length - 1; i >= piso; i -= 1) {
+        const c = corte.charCodeAt(i);
+        // Espacio, tab, LF, CR, FF, VT: los separadores que puede haber acá.
+        if (c === 32 || (c >= 9 && c <= 13)) return corte.slice(0, i);
+    }
+    return corte;
+}
+
+/**
  * rev-9 / SEC-C. Neutralización de markup y de enlaces, en el ÚNICO orden que
  * no se puede esquivar, y expuesta como función compartida: hasta rev-8 cada
  * superficie tenía su propia copia de la secuencia y el defecto vivía en el
@@ -455,14 +554,12 @@ function limpiarMarkup(s) {
 function neutralizarMarkupYEnlaces(value) {
     let s = String(value == null ? '' : value);
     if (!s) return '';
-    // rev-10 / SEC-D. Tope duro de entrada ANTES de cualquier regex. El campo
-    // más largo de una ficha son 220 caracteres (`MAX_CAMPO`), así que este
-    // techo no recorta nada real; está para que un texto externo enorme —que
-    // llega de un issue público— no pueda convertir el saneamiento en trabajo
-    // cuadrático y colgar al proceso que arma el aviso. La regla #1 del
-    // pipeline es que no se muere: un saneador es una superficie de DoS tanto
-    // como de inyección.
-    if (s.length > MAX_ENTRADA_SANEO) s = s.slice(0, MAX_ENTRADA_SANEO);
+    // Techo de PRESENTACIÓN. Acá y no antes: los dos llamadores (`sec()` y el
+    // `sanearMinimo()` del renderer degradado) ya corrieron `redactAll`, así que
+    // este corte no puede partir una credencial. El techo anti-DoS que sí las
+    // protege es `topearEntradaRedaccion`, y lo aplica cada llamador antes de
+    // redactar. Es idempotente sobre una entrada ya topeada.
+    s = topearEntradaSaneo(s);
     for (let i = 0; i < 2; i += 1) {
         s = limpiarMarkup(s);
         s = s.replace(URL_RE, URL_MARCA);
@@ -480,6 +577,23 @@ function sec(value, max = MAX_CAMPO) {
     if (value == null) return '';
     let s = String(value);
     if (!s) return '';
+    // #6191 / SEC-F rev-2 — DOS techos, en este orden exacto:
+    //
+    //   1. `topearEntradaRedaccion` (4096) va PRIMERO, antes de `sinControles`
+    //      y de `redactAll`. Es el techo anti-DoS: `redactAll` es cuadrático y
+    //      sin esto corría sobre el string COMPLETO (un `evidence` de 30 KB
+    //      colgaba el hilo del dashboard). Es holgado a propósito, para que
+    //      cualquier credencial de los patrones vigentes entre ENTERA y
+    //      `redactAll` pueda matchearla completa.
+    //   2. `topearEntradaSaneo` (512) va DESPUÉS, dentro de
+    //      `neutralizarMarkupYEnlaces`. Es el techo de presentación, y sólo
+    //      puede aplicarse sobre texto ya redactado.
+    //
+    // La rev-1 de SEC-F usó el techo de 512 para las dos cosas y adelantó ese:
+    // arregló el DoS y rompió la redacción de todo secreto más largo que el
+    // techo (JWT de Cognito → payload visible). Los dos techos son cosas
+    // distintas y no se pueden fusionar.
+    s = topearEntradaRedaccion(s);
     s = sinControles(s);
     s = String(redactAll(s));
     s = neutralizarMarkupYEnlaces(s);
@@ -735,6 +849,13 @@ function normalizar(raw, nowMs) {
         criteriosTotal: entero(d.criterios_total),
         firmaVencida: booleano(d.firma_vencida) === true,
         firmantesAutorizados: d.firmantes_autorizados == null ? null : Number(d.firmantes_autorizados),
+        // #6192 — ¿el pipeline PUEDE emitir hoy una capability de firma? Es una
+        // condición distinta de "hay quien firme": la allowlist puede estar
+        // poblada y aun así no haber forma de firmar (el firmador de tokens
+        // resuelve su material sólo desde el vault, y con el vault cerrado no
+        // hay token que emitir). `null` = no se preguntó (call-sites que no
+        // participan del gate); sólo el `false` EXPLÍCITO reclasifica.
+        capacidadFirma: booleano(d.capacidad_firma_disponible),
         autores: (Array.isArray(d.autores) ? d.autores : []).map((x) => rolLegible(x)).filter(Boolean),
         fechaCorta: sec(d.fecha_corta, 40),
         reasonCategory: String(d.reason_category || '').trim().toLowerCase(),
@@ -810,7 +931,16 @@ function clasificar(n) {
     if (RE_FIRMA.test(txt) || n.labels.includes('needs-definition')) {
         // CA-A3 — si el gate retiene porque NO HAY firmante autorizado, pedirle
         // al operador que firme no tiene sentido: ninguna firma sería válida.
-        return n.firmantesAutorizados === 0 ? 'indeterminado' : 'firma';
+        //
+        // #6192 — MISMA REGLA, otra causa: si el pipeline no puede emitir la
+        // capability de firma, tampoco hay firma posible. La ficha `firma` es
+        // la única que ofrece los botones, así que clasificar acá `firma` sin
+        // capability produce exactamente lo que el módulo se propuso evitar:
+        // un aviso que pide firmar y no da con qué. El principio ya estaba
+        // escrito ("un botón que no puede cumplir lo que promete es peor que no
+        // tenerlo"); sólo le faltaba esta entrada.
+        const hayFirmaPosible = n.firmantesAutorizados !== 0 && n.capacidadFirma !== false;
+        return hayFirmaPosible ? 'firma' : 'indeterminado';
     }
     if (RE_REBOTE.test(txt)) {
         // Rebotes agotados vs. una vuelta más: el contador decide.
@@ -951,6 +1081,11 @@ const COPY = deepFreeze({
         falta_sin_motivo: 'El motivo del bloqueo. Quien lo frenó no dejó texto; el dato está en la actividad reciente del issue.',
         falta_dep_sin_numero: 'Qué trabajo está esperando: dice que espera algo pero no dice cuál.',
         falta_sin_firmante: 'No hay ningún firmante autorizado configurado: sin eso ninguna firma vale.',
+        // #6192 — NO dice "vault", ni "token", ni "HMAC": el operador no
+        // remedia eso desde el chat, y nombrar la pieza interna sería filtrar
+        // configuración de seguridad a un canal. Dice qué no se puede hacer y
+        // por dónde sigue, que es lo accionable.
+        falta_sin_capability: 'La firma por botón no está disponible en este momento: el pipeline no puede emitir una firma válida. Queda frenado hasta que se destrabe a mano.',
         falta_ilegible: 'El motivo del bloqueo llegó ilegible o no entra en un aviso.',
         // Sin valor de ejemplo A PROPÓSITO: si no supe clasificar el bloqueo,
         // menos puedo proponer qué hacer con él. Ver `ORIENTACION_LIBRE`.
@@ -1411,31 +1546,87 @@ function fichaPregunta(n) {
 /** Qué dato falta, según el caso. Nunca un genérico vacío. */
 function faltaDe(n) {
     const txt = `${n.reason} ${n.question}`.trim();
+    // #6192 — La ILEGIBILIDAD manda sobre las dos causas de firma. Si el motivo
+    // llegó ilegible (el gate no pudo leer el issue, o reventó) no se puede
+    // afirmar que lo que falta sea la firma: se sabe que hay una retención y no
+    // se sabe de qué. Nombrar la firma ahí sería inventar la causa.
+    if (n.reasonCategory === 'unknown') return COPY.indeterminado.falta_ilegible;
+    // Orden deliberado: "no hay quien firme" antes que "no se puede firmar".
+    // Si faltan las dos, la primera es la que el operador puede resolver por su
+    // cuenta (configurar el firmante), así que es la que conviene nombrar.
     if (n.firmantesAutorizados === 0) return COPY.indeterminado.falta_sin_firmante;
+    if (n.capacidadFirma === false) return COPY.indeterminado.falta_sin_capability;
     if (!txt) return COPY.indeterminado.falta_sin_motivo;
     if (RE_DEP.test(txt) && n.deps.length === 0) return COPY.indeterminado.falta_dep_sin_numero;
-    if (n.reasonCategory === 'unknown') return COPY.indeterminado.falta_ilegible;
     if (n.question && !esPreguntaUsable(n)) return COPY.indeterminado.falta_ilegible;
     return COPY.indeterminado.falta_sin_motivo;
+}
+
+/**
+ * ¿Este `indeterminado` lo es porque NO HAY FIRMA POSIBLE, sabiendo perfectamente
+ * qué se estaba por firmar? (#6192, precisión de CA-1 del `po`.)
+ *
+ * Son las dos causas que el gate de firma ya distingue: no hay firmante
+ * autorizado configurado (`firmantesAutorizados === 0`) o el pipeline no puede
+ * emitir la capability de firma (`capacidadFirma === false`). En los dos casos
+ * la reclasificación saca las OPCIONES —ninguna firma sería válida— pero NO los
+ * HECHOS: se sabe qué issue es, qué se pide firmar y desde cuándo.
+ *
+ * `reasonCategory === 'unknown'` lo excluye a propósito: ése es el caso en que
+ * el motivo llegó ilegible (el gate no pudo leer el issue, o reventó). Ahí el
+ * desconocimiento es real y el copy genérico dice la verdad.
+ */
+function esIndeterminadoPorFaltaDeFirma(n) {
+    if (n.reasonCategory === 'unknown') return false;
+    return n.firmantesAutorizados === 0 || n.capacidadFirma === false;
 }
 
 function fichaIndeterminado(n) {
     // Evidencia: SÓLO lo afirmable. Si no hay nada, lista vacía — vacía es
     // honesta, rellena es ruido (UX §1.5).
+    //
+    // CA-1.a (#6192) — la fecha CONCRETA no se cae por reclasificar. La ficha
+    // `firma` la imprime (`fichaFirma`) y la `indeterminado` la descartaba, así
+    // que el mismo bloqueo perdía el "desde cuándo" exacto justo en el camino
+    // que corre en producción. La edad relativa no se pierde: sigue saliendo en
+    // `que_esta_frenado.desde`, que es la primera línea de la ficha.
     const evidencia = [];
-    if (n.edad) evidencia.push(`Frenado ${n.edad}`);
+    if (n.fechaCorta) evidencia.push(`Retenido desde el ${n.fechaCorta}`);
+    else if (n.edad) evidencia.push(`Frenado ${n.edad}`);
     if (n.rol) evidencia.push(`Último que lo tocó: ${n.rol}`);
+
+    // CA-1.b/c/d (#6192) — cuando la causa SE CONOCE, el copy genérico de
+    // `indeterminado` miente: dice "no supe clasificar" y "no tengo el dato"
+    // en el mismo aviso que imprime la causa exacta en `falta`, y degrada el
+    // pie a `/unblock <issue> seguido de qué querés que se haga` cuando la
+    // acción se conoce. Se toman los textos de `COPY.firma` —ya validados por
+    // `ux` para EXACTAMENTE esta decisión— en vez de redactar copy nuevo: lo
+    // que cambia es que no hay botones, no lo que hay que decidir.
+    const causaConocida = esIndeterminadoPorFaltaDeFirma(n);
+    const vars = { issue: n.issue, ref: refIssue(n.issue) };
 
     // `opciones` VACÍA SIEMPRE (CA-A5). Cero es mejor que tres inventadas: una
     // opción genérica que el operador no puede ejecutar es peor que decir "no sé".
     return {
-        por_que: COPY.indeterminado.por_que,
-        que_se_decide: interp(COPY.indeterminado.que_se_decide, { issue: n.issue, ref: refIssue(n.issue) }),
+        por_que: causaConocida
+            ? (n.firmaVencida ? COPY.firma.por_que_vencida : COPY.firma.por_que)
+            : COPY.indeterminado.por_que,
+        que_se_decide: interp(
+            causaConocida
+                ? (n.firmaVencida ? COPY.firma.que_se_decide_vencida : COPY.firma.que_se_decide)
+                : COPY.indeterminado.que_se_decide,
+            vars,
+        ),
+        corto: causaConocida ? CORTO.firma : CORTO.indeterminado,
         opciones: [],
         evidencia,
         costo: COPY.indeterminado.costo,
         sin_reco: '',
-        ejemplo: COPY.indeterminado.ejemplo,
+        // CA-1.d — con causa conocida la acción también se conoce: el pie sigue
+        // siendo `/unblock <issue> aprobar`, que es un comando ejecutable, y no
+        // el molde que le pide al operador que invente la orientación.
+        ejemplo: causaConocida ? COPY.firma.ejemplo : COPY.indeterminado.ejemplo,
+        causa_conocida: causaConocida,
     };
 }
 
@@ -1632,7 +1823,7 @@ function buildDecisionCard(raw, nowMs) {
         // (UX §1.5). No es una versión propia del renderer: si no entrara y
         // cada canal la reescribiera ad hoc, volveríamos al problema que este
         // issue cierra.
-        que_se_decide_corto: sec(CORTO[tipo] || CORTO.indeterminado, MAX_CAMPO),
+        que_se_decide_corto: sec(f.corto || CORTO[tipo] || CORTO.indeterminado, MAX_CAMPO),
         opciones,
         evidencia_minima: evidencia,
         costo_de_no_decidir: sec(f.costo, MAX_CAMPO),
@@ -1640,6 +1831,12 @@ function buildDecisionCard(raw, nowMs) {
         sin_recomendacion_porque: sinRecoPorque,
         indeterminado,
         falta: indeterminado ? sec(faltaDe(n), MAX_CAMPO) : '',
+        // #6192 CA-1.c — ¿este `indeterminado` sabe POR QUÉ no hay opciones?
+        // Si lo sabe, el renderer no puede decir "no las puedo justificar": la
+        // justificación está impresa dos líneas más arriba, en `falta`. Es un
+        // dato de la ficha, no una decisión de layout, porque quien conoce la
+        // causa es el clasificador y no el que dibuja.
+        causa_conocida: indeterminado && f.causa_conocida === true,
         // H-UX-3 — el pie deja de ser un molde. `/unblock <issue> <orientación>`
         // con `<issue>` literal obliga al operador a ir a buscar el número
         // arriba, y con 3 fichas agrupadas ni siquiera sabe cuál poner.
@@ -1680,6 +1877,10 @@ module.exports = {
     // duplicada diverge igual que una tabla duplicada; esta función es la
     // única definición del orden para las DOS superficies de texto.
     neutralizarMarkupYEnlaces,
+    topearEntradaSaneo,
+    MAX_ENTRADA_SANEO,
+    topearEntradaRedaccion,
+    MAX_ENTRADA_REDACCION,
     // rev-7 / SEC-B: misma razón que URL_RE. El camino degradado no puede
     // quedar más flojo que el principal —esa asimetría ya se pagó en rev-2/
     // SEC-A con las URLs— y una copia del regex diverge; esta, no.

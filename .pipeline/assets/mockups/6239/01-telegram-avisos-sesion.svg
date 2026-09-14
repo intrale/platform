@@ -1,0 +1,247 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Mockup 01 - Canal Telegram: los 5 avisos de vencimiento de sesion (#6239)
+  =============================================================================
+  Demuestra:
+    - LO QUE NO SALE (columna izquierda): los 4 silencios normativos de
+      copy.json -> silencios. El caso normal - la sesion renovandose sola -
+      NO emite ningun mensaje. El silencio es la regla, no la excepcion, y por
+      eso ocupa la misma jerarquia visual que los mensajes.
+        renovacion_normal · primera_lectura · ya_vencida · sesion_sana
+    - LO QUE SALE (columna derecha): los 5 mensajes normativos, con el copy
+      LITERAL de copy.json -> telegram, renderizados tal como los compone
+      notifyTelegram (emoji del level + component + message / linea emisor /
+      action):
+        A1 por vencer            warn   (CA-1 reescrito por UX-1)
+        A2 urgente               error  (CA-2 reescrito por UX-1)
+        A3 chequeo sin datos     warn   (RS-7, NO es aviso de vencimiento)
+        A4 chequeo recuperado    info   (cierre de A3, UX-3)
+        A5 renovada              info   (cierre de A1/A2, UX-3)
+    - UX-7: la escalada de nivel entre A1 (warn) y A2 (error) marcada de forma
+      explicita entre las dos burbujas, con banda propia y flecha de tono.
+    - La plantilla de render de notifyTelegram desglosada, para que quede claro
+      que el copy NO pone el emoji ni la linea "emisor:".
+
+  Superficie de implementacion:
+    - Emision: chequeo de vigencia de sesion invocado por el Pulpo.
+    - Canal:   notifyTelegram() - .pipeline/lib/notify-telegram.js (escapa el
+               texto entero antes de encolar, parse_mode Markdown).
+    - Copy:    .pipeline/assets/copy/oauth-session-expiry/copy.json (fuente
+               unica, UX-5). Validador: validate-copy.js.
+    - Formato del tiempo: formatDurationEs(ms) de
+               .pipeline/lib/wave-stall-watchdog.js:137 (UX-12).
+    - Slots de la lamina: A1 27 min · A2 8 min · A3 18 min · A5 7 h 52 min.
+
+  Sistema visual:
+    - 100% reuso de design-tokens.css, cero tonos nuevos.
+    - Fondo de la lamina:  surface-0     #0D1117
+    - Cajas y bandas:      surface-1     #161B22 / borde border-subtle #21262D
+    - Burbuja de bot:      surface-2     #1C2128 / borde border #30363D, radio 10
+    - Texto:               text-primary  #E6EDF3 (message)
+                           text-secondary#B1BAC4 (action)
+                           text-dim      #8B949E (secundario)
+                           text-disabled #6E7681 (linea emisor, monospace 11px)
+    - Acentos por level:   warning #D29922 · danger #F85149 · info #58A6FF
+      usados SOLO en el borde izquierdo de 3px y en la etiqueta del mensaje.
+      Nunca como color del texto del message ni del action.
+    - Tipografia: Segoe UI / system-ui, la del dashboard. Monospace solo en la
+      linea "emisor:" y en la plantilla de render.
+
+  Reglas de copy fijadas por UX (UX-6, vinculantes para implementacion):
+    R1 · Sin Markdown: notifyTelegram escapa el texto entero antes de encolar.
+    R2 · Sin emoji propio en el texto: el emoji lo pone notifyTelegram por level.
+    R3 · Un solo slot interpolado, y siempre salida de formatDurationEs(ms).
+    R4 · Sin payload.context: la linea "emisor:" ya la agrega notifyTelegram.
+    R5 · message = que pasa · action = que hacer. Nunca la accion en el message.
+    R6 · Vocabulario cerrado: "la sesion de Claude Code", nunca "el token".
+    R7 · "Reautenticar", nunca "rotar" (rotar es el cron de API keys).
+    R8 · Nunca pedir credenciales por el chat: la accion es "desde una terminal".
+    R9 · message <= 200 chars · action <= 320 chars.
+
+  Accesibilidad:
+    - Contraste sobre surface-2 #1C2128: primario 13.9:1 · secundario 9.2:1 ·
+      dim 4.9:1 · warning 6.4:1 · danger 5.9:1 · info 6.6:1 - todos >= WCAG AA
+      para el tamano en que se usan (13px y 11px en texto no esencial).
+    - Ninguna informacion transmitida solo por color: cada burbuja combina
+      acento + emoji del level + etiqueta textual del nivel (warn/error/info).
+    - La columna de silencio no depende del gris para leerse: dice "Silencio"
+      de forma explicita en cada caso.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1210" viewBox="0 0 1600 1210" font-family="Segoe UI, system-ui, -apple-system, sans-serif">
+
+  <rect width="1600" height="1210" fill="#0D1117"/>
+
+  <!-- ===================== TITULO ===================== -->
+  <text x="40" y="52" fill="#E6EDF3" font-size="26" font-weight="600">#6239 · Aviso anticipado de vencimiento de la sesión — copy normativo del canal</text>
+  <text x="40" y="80" fill="#8B949E" font-size="15">Los 5 mensajes que puede emitir el chequeo. El caso normal — la sesión renovándose sola — no emite ninguno.</text>
+  <line x1="40" y1="102" x2="1560" y2="102" stroke="#21262D" stroke-width="1"/>
+
+  <!-- ===================== COLUMNA IZQUIERDA: EL SILENCIO ===================== -->
+  <g transform="translate(40,130)">
+
+    <rect x="0" y="0" width="520" height="36" rx="8" fill="rgba(139, 148, 158, 0.10)"/>
+    <circle cx="20" cy="18" r="6" fill="#8B949E"/>
+    <text x="38" y="23" fill="#8B949E" font-size="14" font-weight="600" letter-spacing="0.5">LO QUE NO SALE</text>
+    <text x="182" y="23" fill="#6E7681" font-size="13">SILENCIO · el 99% del tiempo</text>
+
+    <!-- caja de silencios (atenuada) -->
+    <g transform="translate(0,54)">
+      <rect x="0" y="0" width="520" height="400" rx="10" fill="#161B22" stroke="#21262D"/>
+
+      <!-- 1 · renovacion_normal -->
+      <text x="20" y="32" fill="#B1BAC4" font-size="13.5" font-weight="600">Renovación normal</text>
+      <text x="180" y="32" fill="#6E7681" font-size="11" font-family="Consolas, Menlo, monospace">renovacion_normal</text>
+      <text x="20" y="54" fill="#8B949E" font-size="12.5">El vencimiento cruza los 30 o los 10 minutos pero saltó hacia</text>
+      <text x="20" y="72" fill="#8B949E" font-size="12.5">adelante respecto de la lectura anterior. Es la cadena de refresh</text>
+      <text x="20" y="90" fill="#8B949E" font-size="12.5">haciendo su trabajo: pasa varias veces por día y no requiere</text>
+      <text x="20" y="108" fill="#8B949E" font-size="12.5">ninguna acción humana. Silencio.</text>
+      <line x1="20" y1="122" x2="500" y2="122" stroke="#21262D" stroke-width="1"/>
+
+      <!-- 2 · primera_lectura -->
+      <text x="20" y="146" fill="#B1BAC4" font-size="13.5" font-weight="600">Primera lectura</text>
+      <text x="180" y="146" fill="#6E7681" font-size="11" font-family="Consolas, Menlo, monospace">primera_lectura</text>
+      <text x="20" y="168" fill="#8B949E" font-size="12.5">No hay lectura previa persistida (arranque del Pulpo, estado</text>
+      <text x="20" y="186" fill="#8B949E" font-size="12.5">borrado). No se puede afirmar que la sesión NO se está renovando</text>
+      <text x="20" y="204" fill="#8B949E" font-size="12.5">con una sola muestra. Silencio: se persiste la lectura y se</text>
+      <text x="20" y="222" fill="#8B949E" font-size="12.5">decide en la evaluación siguiente.</text>
+      <line x1="20" y1="236" x2="500" y2="236" stroke="#21262D" stroke-width="1"/>
+
+      <!-- 3 · ya_vencida -->
+      <text x="20" y="260" fill="#B1BAC4" font-size="13.5" font-weight="600">Ya vencida</text>
+      <text x="180" y="260" fill="#6E7681" font-size="11" font-family="Consolas, Menlo, monospace">ya_vencida</text>
+      <text x="20" y="282" fill="#8B949E" font-size="12.5">Quedan 0 minutos o menos. El aviso anticipado ya no tiene</text>
+      <text x="20" y="300" fill="#8B949E" font-size="12.5">sentido y ese caso es de #6238. Silencio.</text>
+      <line x1="20" y1="314" x2="500" y2="314" stroke="#21262D" stroke-width="1"/>
+
+      <!-- 4 · sesion_sana -->
+      <text x="20" y="338" fill="#B1BAC4" font-size="13.5" font-weight="600">Sesión sana</text>
+      <text x="180" y="338" fill="#6E7681" font-size="11" font-family="Consolas, Menlo, monospace">sesion_sana</text>
+      <text x="20" y="360" fill="#8B949E" font-size="12.5">Queda más de media hora. Silencio. El dato está en el dashboard</text>
+      <text x="20" y="378" fill="#8B949E" font-size="12.5">para quien lo quiera mirar.</text>
+    </g>
+
+    <!-- plantilla de render de notifyTelegram -->
+    <g transform="translate(0,478)">
+      <rect x="0" y="0" width="520" height="210" rx="10" fill="#161B22" stroke="#21262D"/>
+      <text x="20" y="28" fill="#E6EDF3" font-size="13.5" font-weight="600">Cómo compone notifyTelegram cada burbuja</text>
+      <text x="20" y="54" fill="#B1BAC4" font-size="11.5" font-family="Consolas, Menlo, monospace">&lt;emoji del level&gt; sesion-claude: &lt;message&gt;</text>
+      <text x="20" y="74" fill="#6E7681" font-size="10.5" font-style="italic">(línea en blanco)</text>
+      <text x="20" y="94" fill="#6E7681" font-size="11" font-family="Consolas, Menlo, monospace">emisor: pid=13244 host=INTRALE-OPS ts=2026-08-20T18:12:41.204Z</text>
+      <text x="20" y="114" fill="#6E7681" font-size="10.5" font-style="italic">(línea en blanco)</text>
+      <text x="20" y="134" fill="#B1BAC4" font-size="11.5" font-family="Consolas, Menlo, monospace">&lt;action&gt;</text>
+      <line x1="20" y1="152" x2="500" y2="152" stroke="#21262D" stroke-width="1"/>
+      <text x="20" y="174" fill="#8B949E" font-size="12.5">Emoji por level:</text>
+      <text x="150" y="174" fill="#D29922" font-size="12.5">⚠️ warn</text>
+      <text x="228" y="174" fill="#F85149" font-size="12.5">🚨 error</text>
+      <text x="312" y="174" fill="#58A6FF" font-size="12.5">ℹ️ info</text>
+      <text x="20" y="196" fill="#6E7681" font-size="12">El copy no repite el emoji ni usa Markdown (UX-6.1 / UX-6.2).</text>
+    </g>
+
+    <!-- nota: por que el silencio es la regla -->
+    <g transform="translate(0,712)">
+      <rect x="0" y="0" width="520" height="110" rx="10" fill="#161B22" stroke="#21262D"/>
+      <text x="20" y="28" fill="#E6EDF3" font-size="13.5" font-weight="600">Por qué el silencio es la regla</text>
+      <text x="20" y="52" fill="#B1BAC4" font-size="12.5">UX-1 · El aviso sólo sale si el vencimiento NO saltó hacia adelante.</text>
+      <text x="20" y="72" fill="#B1BAC4" font-size="12.5">UX-2 · Nunca se afirma "no se está renovando" con una sola muestra.</text>
+      <text x="20" y="92" fill="#B1BAC4" font-size="12.5">UX-3 · Todo aviso que abre, cierra: A1/A2 → A5, A3 → A4.</text>
+    </g>
+  </g>
+
+  <!-- ===================== COLUMNA DERECHA: LOS 5 MENSAJES ===================== -->
+  <g transform="translate(600,130)">
+
+    <rect x="0" y="0" width="960" height="36" rx="8" fill="rgba(230, 237, 243, 0.06)"/>
+    <circle cx="20" cy="18" r="6" fill="#E6EDF3"/>
+    <text x="38" y="23" fill="#E6EDF3" font-size="14" font-weight="600" letter-spacing="0.5">LO QUE SALE</text>
+    <text x="160" y="23" fill="#8B949E" font-size="13">los 5 mensajes normativos, con el copy literal de copy.json</text>
+
+    <!-- ========== A1 · por vencer (warn) ========== -->
+    <text x="0" y="68" fill="#D29922" font-size="11.5" font-weight="600" letter-spacing="0.6">A1 · POR VENCER</text>
+    <text x="155" y="68" fill="#6E7681" font-size="11">Quedan 30 minutos o menos, la sesión NO se está renovando sola, y ya se observó al menos dos lecturas del mismo vencimiento.</text>
+    <g transform="translate(0,78)">
+      <rect x="0" y="0" width="960" height="112" rx="10" fill="#1C2128" stroke="#30363D"/>
+      <rect x="0" y="0" width="3" height="112" rx="1.5" fill="#D29922"/>
+      <text x="22" y="28" fill="#E6EDF3" font-size="13">⚠️ sesion-claude: La sesión de Claude Code vence en 27 min y no se está renovando sola.</text>
+      <text x="22" y="52" fill="#6E7681" font-size="11" font-family="Consolas, Menlo, monospace">emisor: pid=13244 host=INTRALE-OPS ts=2026-08-20T18:12:41.204Z</text>
+      <text x="22" y="76" fill="#B1BAC4" font-size="13">Reautenticá la sesión desde una terminal antes de que se venza. Si llega a vencerse, los agentes que</text>
+      <text x="22" y="95" fill="#B1BAC4" font-size="13">arranquen después mueren al primer intento y lo vas a ver como una lluvia de rebotes.</text>
+    </g>
+
+    <!-- ========== UX-7 · escalada de nivel ========== -->
+    <g transform="translate(0,200)">
+      <rect x="0" y="0" width="960" height="32" rx="8" fill="rgba(210, 153, 34, 0.14)"/>
+      <path d="M 18 8 L 18 20 L 13 20 L 22 28 L 31 20 L 26 20 L 26 8 Z" fill="#D29922"/>
+      <text x="44" y="21" fill="#D29922" font-size="12.5" font-weight="600">UX-7 · ESCALADA DE NIVEL</text>
+      <text x="228" y="21" fill="#B1BAC4" font-size="12.5">A1 va como ⚠️ warn y A2 como 🚨 error —</text>
+      <text x="520" y="21" fill="#F85149" font-size="12.5" font-weight="600">con el mismo tratamiento el segundo pierde la urgencia.</text>
+    </g>
+
+    <!-- ========== A2 · urgente (error) ========== -->
+    <text x="0" y="262" fill="#F85149" font-size="11.5" font-weight="600" letter-spacing="0.6">A2 · URGENTE</text>
+    <text x="155" y="262" fill="#6E7681" font-size="11">Quedan 10 minutos o menos, misma condición de no-renovación.</text>
+    <g transform="translate(0,272)">
+      <rect x="0" y="0" width="960" height="112" rx="10" fill="#1C2128" stroke="#30363D"/>
+      <rect x="0" y="0" width="3" height="112" rx="1.5" fill="#F85149"/>
+      <text x="22" y="28" fill="#E6EDF3" font-size="13">🚨 sesion-claude: Quedan 8 min de sesión de Claude Code y sigue sin renovarse sola.</text>
+      <text x="22" y="52" fill="#6E7681" font-size="11" font-family="Consolas, Menlo, monospace">emisor: pid=13244 host=INTRALE-OPS ts=2026-08-20T18:12:41.204Z</text>
+      <text x="22" y="76" fill="#B1BAC4" font-size="13">Reautenticá ahora desde una terminal. Apenas se venza, todo agente nuevo falla al arrancar hasta que</text>
+      <text x="22" y="95" fill="#B1BAC4" font-size="13">vuelvas a iniciar sesión.</text>
+    </g>
+
+    <!-- ========== A3 · chequeo sin datos (warn) ========== -->
+    <text x="0" y="414" fill="#D29922" font-size="11.5" font-weight="600" letter-spacing="0.6">A3 · CHEQUEO SIN DATOS</text>
+    <text x="185" y="414" fill="#6E7681" font-size="11">El chequeo no pudo leer la vigencia durante 3 evaluaciones seguidas (RS-7). NO es un aviso de vencimiento.</text>
+    <g transform="translate(0,424)">
+      <rect x="0" y="0" width="960" height="112" rx="10" fill="#1C2128" stroke="#30363D"/>
+      <rect x="0" y="0" width="3" height="112" rx="1.5" fill="#D29922"/>
+      <text x="22" y="28" fill="#E6EDF3" font-size="13">⚠️ sesion-claude: Hace 18 min que no puedo verificar cuánto le queda a la sesión de Claude Code.</text>
+      <text x="22" y="52" fill="#6E7681" font-size="11" font-family="Consolas, Menlo, monospace">emisor: pid=13244 host=INTRALE-OPS ts=2026-08-20T18:12:41.204Z</text>
+      <text x="22" y="76" fill="#B1BAC4" font-size="13">No es que esté por vencerse: es el chequeo el que no está leyendo el dato. Mientras siga así no te</text>
+      <text x="22" y="95" fill="#B1BAC4" font-size="13">va a llegar el aviso anticipado, así que si la sesión se cae te vas a enterar por los rebotes.</text>
+    </g>
+
+    <!-- ========== A4 · chequeo recuperado (info) ========== -->
+    <text x="0" y="566" fill="#58A6FF" font-size="11.5" font-weight="600" letter-spacing="0.6">A4 · CHEQUEO RECUPERADO</text>
+    <text x="195" y="566" fill="#6E7681" font-size="11">Se había avisado A3 y el chequeo volvió a leer la vigencia.</text>
+    <g transform="translate(0,576)">
+      <rect x="0" y="0" width="960" height="94" rx="10" fill="#1C2128" stroke="#30363D"/>
+      <rect x="0" y="0" width="3" height="94" rx="1.5" fill="#58A6FF"/>
+      <text x="22" y="28" fill="#E6EDF3" font-size="13">ℹ️ sesion-claude: Volví a poder verificar la vigencia de la sesión de Claude Code.</text>
+      <text x="22" y="52" fill="#6E7681" font-size="11" font-family="Consolas, Menlo, monospace">emisor: pid=13244 host=INTRALE-OPS ts=2026-08-20T18:12:41.204Z</text>
+      <text x="22" y="76" fill="#B1BAC4" font-size="13">El aviso anticipado vuelve a estar activo. No hace falta que hagas nada.</text>
+    </g>
+
+    <!-- ========== A5 · renovada (info) ========== -->
+    <text x="0" y="700" fill="#58A6FF" font-size="11.5" font-weight="600" letter-spacing="0.6">A5 · RENOVADA</text>
+    <text x="155" y="700" fill="#6E7681" font-size="11">Se había avisado A1 o A2 y el vencimiento saltó hacia adelante (la sesión se renovó, sola o porque el operador reautenticó).</text>
+    <g transform="translate(0,710)">
+      <rect x="0" y="0" width="960" height="94" rx="10" fill="#1C2128" stroke="#30363D"/>
+      <rect x="0" y="0" width="3" height="94" rx="1.5" fill="#58A6FF"/>
+      <text x="22" y="28" fill="#E6EDF3" font-size="13">ℹ️ sesion-claude: La sesión de Claude Code se renovó — quedan 7 h 52 min.</text>
+      <text x="22" y="52" fill="#6E7681" font-size="11" font-family="Consolas, Menlo, monospace">emisor: pid=13244 host=INTRALE-OPS ts=2026-08-20T18:12:41.204Z</text>
+      <text x="22" y="76" fill="#B1BAC4" font-size="13">Se cerró solo el aviso de recién. No hace falta que hagas nada.</text>
+    </g>
+  </g>
+
+  <!-- ===================== BANDA DE REGLAS DE COPY (UX-6) ===================== -->
+  <g transform="translate(40,985)">
+    <rect x="0" y="0" width="1520" height="190" rx="10" fill="#161B22" stroke="#21262D"/>
+    <text x="24" y="32" fill="#E6EDF3" font-size="15" font-weight="600">UX-6 · Reglas de copy vinculantes (verificables por validate-copy.js)</text>
+    <line x1="24" y1="46" x2="1496" y2="46" stroke="#30363D" stroke-width="1"/>
+
+    <text x="24" y="72" fill="#B1BAC4" font-size="13">R1 · Sin Markdown: notifyTelegram escapa el texto entero antes de encolar.</text>
+    <text x="24" y="98" fill="#B1BAC4" font-size="13">R2 · Sin emoji propio en el texto: el emoji lo pone notifyTelegram por level.</text>
+    <text x="24" y="124" fill="#B1BAC4" font-size="13">R3 · Un solo slot interpolado, y siempre salida de formatDurationEs(ms).</text>
+    <text x="24" y="150" fill="#B1BAC4" font-size="13">R4 · Sin payload.context: la línea "emisor:" ya la agrega notifyTelegram sola.</text>
+    <text x="24" y="176" fill="#B1BAC4" font-size="13">R5 · message = qué pasa · action = qué hacer. Nunca la acción dentro del message.</text>
+
+    <line x1="760" y1="58" x2="760" y2="182" stroke="#30363D" stroke-width="1"/>
+
+    <text x="790" y="72" fill="#B1BAC4" font-size="13">R6 · Vocabulario cerrado: "la sesión de Claude Code", nunca "el token".</text>
+    <text x="790" y="98" fill="#B1BAC4" font-size="13">R7 · "Reautenticar", nunca "rotar" (rotar es el vocabulario del cron de API keys).</text>
+    <text x="790" y="124" fill="#B1BAC4" font-size="13">R8 · Nunca pedir credenciales por el chat: la acción es siempre "desde una terminal".</text>
+    <text x="790" y="150" fill="#B1BAC4" font-size="13">R9 · message ≤ 200 chars · action ≤ 320 chars.</text>
+    <text x="790" y="176" fill="#6E7681" font-size="13">Fuente única del texto: .pipeline/assets/copy/oauth-session-expiry/copy.json (UX-5).</text>
+  </g>
+
+</svg>

@@ -46,6 +46,10 @@ const READS_FILE_RE = /readFileSync/;
 /** Ya pasa por el chokepoint o por el cliente que lo usa: esta instrumentado. */
 const INSTRUMENTED_RE = /require\([^)]*telegram-(client|secrets)/;
 
+/** Exit codes del CLI (#5215). 0 = medido; !=0 = el numero impreso NO es una medicion. */
+const EXIT_NO_MEDIDO = 2;
+const EXIT_NO_PERSISTIDO = 3;
+
 /**
  * Archivos de codigo trackeados por git. Se usa `git ls-files` (no un walk del
  * filesystem) para no contar `node_modules/`, worktrees anidados ni artefactos.
@@ -64,26 +68,40 @@ function listTrackedCodeFiles({ cwd = REPO_ROOT, spawnImpl } = {}) {
 }
 
 /**
- * Cuenta los lectores directos NO instrumentados.
+ * Cuenta los lectores directos NO instrumentados y reporta si pudo medir.
  *
  * Nunca devuelve paths: el resultado viaja a `.pipeline/secrets-health.json`,
  * y aunque ese archivo es gitignored, el criterio de #5245 es que la metrica
- * sea numerica y nada mas (el repo es publico).
+ * sea numerica y nada mas (el repo es publico). Por la misma razon `error`
+ * lleva la causa tecnica del fallo de `git`, jamas contenido de un archivo.
  *
  * @param {object} [opts]
  * @param {string} [opts.cwd]
  * @param {function} [opts.spawnImpl] inyectable para tests
  * @param {object}   [opts.fsImpl]    inyectable para tests
- * @returns {number}
+ * @param {function} [opts.onError]   destino del diagnostico (default: stderr)
+ * @returns {{count: number, measured: boolean, error: (string|null)}}
+ *          `measured:false` ⇒ `count:-1` ("no medido"), que NO es cero.
  */
-function countUninstrumentedReaders({ cwd = REPO_ROOT, spawnImpl, fsImpl = fs } = {}) {
+function measureUninstrumentedReaders({ cwd = REPO_ROOT, spawnImpl, fsImpl = fs, onError } = {}) {
+    const report = typeof onError === 'function'
+        ? onError
+        : (msg) => { try { process.stderr.write(msg); } catch { /* stderr cerrado */ } };
+
     let files;
     try {
         files = listTrackedCodeFiles({ cwd, spawnImpl });
-    } catch {
+    } catch (err) {
         // Sin `git ls-files` no hay denominador. Se devuelve -1 ("no medido"),
         // que es un numero distinto de cero y por lo tanto NO habilita el corte.
-        return -1;
+        //
+        // #5215: este `catch` degradaba EN SILENCIO. La falla real fue ENOBUFS
+        // por el `maxBuffer` de 1 MB que `spawnSync` usa por default, invisible
+        // durante semanas porque el CLI imprimia "-1" y salia con codigo 0.
+        // Un censo no medido tiene que decir POR QUE no midio.
+        const causa = (err && err.message) ? err.message : String(err);
+        report('[secrets-census] censo NO MEDIDO (git ls-files fallo): ' + causa + '\n');
+        return { count: -1, measured: false, error: causa };
     }
 
     let count = 0;
@@ -99,11 +117,23 @@ function countUninstrumentedReaders({ cwd = REPO_ROOT, spawnImpl, fsImpl = fs } 
         if (INSTRUMENTED_RE.test(source)) continue;
         count += 1;
     }
-    return count;
+    return { count, measured: true, error: null };
+}
+
+/**
+ * Fachada historica: devuelve solo el numero. `-1` sigue significando
+ * "no medido" (ver `measureUninstrumentedReaders`).
+ *
+ * @param {object} [opts] mismas opciones que `measureUninstrumentedReaders`
+ * @returns {number}
+ */
+function countUninstrumentedReaders(opts = {}) {
+    return measureUninstrumentedReaders(opts).count;
 }
 
 module.exports = {
     countUninstrumentedReaders,
+    measureUninstrumentedReaders,
     listTrackedCodeFiles,
     REPO_ROOT,
 };
@@ -113,16 +143,27 @@ module.exports = {
 // -----------------------------------------------------------------------------
 
 if (require.main === module) {
-    const total = countUninstrumentedReaders();
-    if (process.argv.includes('--write')) {
+    const medicion = measureUninstrumentedReaders();
+    process.stdout.write(medicion.count + '\n');
+
+    if (!medicion.measured) {
+        // #5215: un censo no medido NO puede parecerse a un censo en cero. El CLI
+        // sale distinto de cero para que ningun script de rollout tome el "-1"
+        // por bueno y encienda `PIPELINE_SECRETS_GUARD_STRICT` sobre una base sin
+        // medir. Tampoco se persiste: un `-1` en el JSON de salud es una
+        // no-medicion disfrazada de metrica.
+        process.stderr.write('[secrets-census] no se persiste el resultado: la medicion fallo\n');
+        process.exitCode = EXIT_NO_MEDIDO;
+    } else if (process.argv.includes('--write')) {
         // Require diferido: el CLI es la unica rama que necesita el guard.
         const guard = require('./secrets-guard');
-        const res = guard.flushCounters({ uninstrumentedReaders: total, counters: guard.getCounters() });
-        process.stdout.write(`${total}\n`);
+        const res = guard.flushCounters({
+            uninstrumentedReaders: medicion.count,
+            counters: guard.getCounters(),
+        });
         process.stdout.write(res.ok
-            ? `persistido en ${res.path} (migration.uninstrumented_readers=${total})\n`
-            : `no se pudo persistir: ${res.error}\n`);
-    } else {
-        process.stdout.write(`${total}\n`);
+            ? 'persistido en ' + res.path + ' (migration.uninstrumented_readers=' + medicion.count + ')\n'
+            : 'no se pudo persistir: ' + res.error + '\n');
+        if (!res.ok) process.exitCode = EXIT_NO_PERSISTIDO;
     }
 }

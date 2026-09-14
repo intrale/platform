@@ -320,6 +320,26 @@ const SENSITIVE_PATHS = Object.freeze([
         motivo: 'Estado del cron de rotación: nombres de variables de secretos, su proyecto y su calendario de vencimiento. El repo es público.',
         test: (p) => p === '.pipeline/credential-reminder-state.json',
     },
+    {
+        id: 'pipeline-oauth-session-expiry-state',
+        clase: 'estado',
+        reglas: ['.pipeline/oauth-session-expiry-state.json'],
+        muestras: ['.pipeline/oauth-session-expiry-state.json'],
+        pathspecs: ['.pipeline/oauth-session-expiry-state.json'],
+        requiereIgnore: true,
+        escaneaContenido: true,
+        // #6239. Mismo criterio que `pipeline-credential-reminder-state`: el
+        // marker NO contiene el token (CA-11 lo prohíbe) pero sí persiste
+        // `expires_at_epoch` / `refresh_expires_at_epoch`, o sea el calendario
+        // de vencimiento de la credencial del operador. El estado canónico ya
+        // vive fuera del árbol (`~/.claude/pipeline-state/`); esta regla es la
+        // red que impide que un marker de una corrida vieja entre por un
+        // `git add .`. Publicado, le regala a un tercero la ventana exacta en
+        // la que la infra se queda sin poder lanzar agentes, sin que tenga que
+        // probar nada ni dejar rastro.
+        motivo: 'Marker de vigencia de la sesión OAuth: calendario de vencimiento de la credencial del operador. El repo es público.',
+        test: (p) => p === '.pipeline/oauth-session-expiry-state.json',
+    },
 ]);
 
 /**

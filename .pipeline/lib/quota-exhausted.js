@@ -126,6 +126,10 @@ function auditLogFile(now = new Date()) {
 // CA-5: cap del `resets_at`. Mínimo 5 min para que un flag con drift de unos
 // segundos no se borre instantáneamente; máximo configurable (default 7 días).
 const MIN_RESETS_AT_MS = 5 * 60 * 1000;
+// #7181 — Delta mínimo para reescribir el flag al acortar su ventana. Sin él,
+// una diferencia de segundos entre el reset anunciado y el observado dispararía
+// un write atómico por cada reconciliación.
+const MIN_SHORTEN_DELTA_MS = 60 * 1000;
 const DEFAULT_MAX_RESETS_AT_DAYS = 7;
 
 // CA-7: cap de raw_excerpt en log (defensa anti DoS de log size).
@@ -522,6 +526,22 @@ function sanitizeRawExcerpt(raw) {
  * @param {number} opts.now Date.now() override (para tests)
  * @returns {{ ms: number, iso: string, source: 'input'|'fallback'|'cap_max' }}
  */
+/**
+ * #7161 — normaliza a epoch ms los tres shapes que puede traer un `resets_at`
+ * (número, Date, ISO string). Mismo criterio que usa `capResetsAt` puertas
+ * adentro; se extrae para que otros puntos puedan VALIDAR el candidato antes de
+ * delegarle el clamp. Devuelve `NaN` si no es parseable.
+ */
+function toEpochMs(input) {
+    if (typeof input === 'number' && Number.isFinite(input)) return input;
+    if (input instanceof Date) return input.getTime();
+    if (typeof input === 'string') {
+        const parsed = Date.parse(input);
+        if (Number.isFinite(parsed)) return parsed;
+    }
+    return NaN;
+}
+
 function capResetsAt(input, opts = {}) {
     const maxDays = Number.isFinite(opts.maxDays) && opts.maxDays > 0
         ? opts.maxDays
@@ -980,6 +1000,83 @@ const RECONCILE_PROVIDER_ALIAS = Object.freeze({
 });
 
 /**
+ * #7181 — ACORTA la ventana de un slot activo al reset REAL observado.
+ *
+ * Por qué sólo acorta. El flag se escribe desde la evidencia de un spawn que
+ * falló; cuando esa evidencia no trae fecha, el escritor cae a un cap por
+ * proveedor. Ese cap es una COTA SUPERIOR, no una medición: puede sobrar horas
+ * (el incidente #7161 gateó 24h sobre una ventana de 5h). El reset observado en
+ * los rollouts del propio Codex sí es una medición, y siempre que sea ANTERIOR
+ * al persistido lo reemplaza.
+ *
+ * Alargar, en cambio, jamás: extender el gate desde un dato observado convierte
+ * un error de lectura en horas de apagón, y no hace falta — si el provider
+ * sigue capado, el próximo spawn vuelve a escribir el flag. Acortar es
+ * auto-corrector; alargar no tiene vuelta atrás automática.
+ *
+ * No crea slots: si el provider no tiene uno activo, no hace nada.
+ *
+ * @param {object} opts
+ * @param {string} opts.provider
+ * @param {number} opts.resetsAtMs   reset observado (epoch ms).
+ * @param {string} [opts.source]     de dónde salió el dato (para el audit).
+ * @param {number} [opts.now]
+ * @returns {{adjusted:boolean, reason:string, from?:string, to?:string}}
+ */
+function shortenResetsAt(opts = {}) {
+    const provider = canonicalProvider(opts.provider);
+    const observed = toEpochMs(opts.resetsAtMs);
+    const now = Number.isFinite(opts.now) ? opts.now : Date.now();
+    const auditEnabled = opts.auditLogEnabled !== false;
+    if (!provider) return { adjusted: false, reason: 'provider_missing' };
+    if (!Number.isFinite(observed)) return { adjusted: false, reason: 'observed_invalid' };
+
+    const map = readCurrentMap();
+    const slot = map[provider];
+    if (!slot) return { adjusted: false, reason: 'no_active_slot' };
+
+    const current = toEpochMs(slot.resets_at);
+    if (!Number.isFinite(current)) return { adjusted: false, reason: 'slot_resets_at_invalid' };
+    // Sólo hacia abajo, y sólo si la diferencia es real (evita reescribir el
+    // archivo por ruido de segundos).
+    if (observed >= current - MIN_SHORTEN_DELTA_MS) {
+        return { adjusted: false, reason: 'observed_not_earlier' };
+    }
+
+    const fromIso = new Date(current).toISOString();
+    const toIso = new Date(observed).toISOString();
+    map[provider] = { ...slot, resets_at: toIso };
+
+    if (auditEnabled) {
+        appendAudit({
+            event: 'resets_at_shortened',
+            agent: null,
+            provider,
+            model: slot.model || null,
+            error_type: slot.pattern_matched || null,
+            raw_excerpt: `source=${opts.source || 'unknown'} from=${fromIso} to=${toIso}`,
+            flag_set: true,
+        }, { now });
+    }
+
+    // Si el reset real ya venció, el slot no tiene por qué seguir vivo: lo
+    // drenamos acá mismo en vez de esperar al próximo `readDefensive`.
+    if (observed <= now) {
+        clearFlag({
+            provider,
+            event: 'observed_reset_elapsed',
+            reason: `reset real ${toIso} ya vencido (source=${opts.source || 'unknown'})`,
+            auditLogEnabled: auditEnabled,
+        });
+        return { adjusted: true, reason: 'cleared_elapsed', from: fromIso, to: toIso };
+    }
+
+    const payload = buildHybridPayload(map);
+    if (payload) writeJsonAtomic(flagFile(), payload);
+    return { adjusted: true, reason: 'shortened', from: fromIso, to: toIso };
+}
+
+/**
  * #5455 — Normaliza un id de provider al canónico del adapter.
  */
 function canonicalProvider(provider) {
@@ -1206,8 +1303,29 @@ function setFlag(opts = {}) {
     // aportó un `resets_at` (el CLI lo emite como texto libre, sin campo
     // estructurado), gateamos por una ventana corta en vez del fallback semanal.
     let effectiveResetsAt = opts.resetsAt;
-    if (effectiveResetsAt == null && errorType === 'usage_limit_reached') {
-        effectiveResetsAt = now + CODEX_USAGE_LIMIT_RESET_MS;
+    // #7161 CA-4 — para el cap rolling de codex, el `resets_at` NUNCA puede
+    // degradar al fallback semanal ni al cap por proveedor (24h). Hay tres
+    // caminos y los tres terminan en una ventana corta:
+    //   a) el caller trajo el reset ANUNCIADO por el propio frame de control
+    //      ("try again at ...") y es usable → se respeta tal cual;
+    //   b) no vino ninguno → ventana fija de 1h (comportamiento previo);
+    //   c) vino pero no es usable (basura, pasado, o más lejos que el techo de
+    //      sanidad de 24h) → también ventana fija de 1h.
+    // El caso (c) importa: `capResetsAt` descarta un input fuera de rango
+    // cayendo al próximo reset SEMANAL, que luego se clampea al cap del
+    // proveedor — es decir, exactamente el apagón de 24h que este issue corrige.
+    //   d) #7183 — vino y cae en el pasado reciente (dentro de la gracia) o
+    //      más cerca que `MIN_RESETS_AT_MS`: el cap se liberó o está por
+    //      liberarse → gate MÍNIMO (5 min), no la ventana fija de 1h. Es
+    //      auto-corrector: si el próximo spawn vuelve a chocar, re-setea.
+    if (errorType === 'usage_limit_reached') {
+        const announced = toEpochMs(effectiveResetsAt);
+        const inRange = Number.isFinite(announced)
+            && announced >= now - CODEX_ANNOUNCED_RESET_GRACE_MS
+            && announced <= now + CODEX_USAGE_LIMIT_MAX_ANNOUNCED_MS;
+        effectiveResetsAt = inRange
+            ? Math.max(announced, now + MIN_RESETS_AT_MS)
+            : now + CODEX_USAGE_LIMIT_RESET_MS;
     }
     // #4731 — TTL configurable por proveedor (clampeado). Prioriza opts.maxDays.
     let maxDays = resolveMaxDays(provider, opts);
@@ -1336,6 +1454,97 @@ const _CODEX_USAGE_LIMIT_PATTERN =
 // desperdiciamos el fallback pago durante días. Es auto-corrector: si al drenar
 // la cuota sigue agotada, el próximo intento re-setea el flag (idempotente).
 const CODEX_USAGE_LIMIT_RESET_MS = 60 * 60 * 1000; // 1h
+
+// #7161 — El propio mensaje de control de codex ANUNCIA cuándo se libera el cap
+// ("...or try again at Sep 10th, 2026 1:00 AM."). Antes se ignoraba: sólo se
+// hacía `.test()` del patrón y el gate duraba la ventana fija de 1h (o, cuando
+// el error_type llegaba pisado, el cap por proveedor de 24h). Capturar la fecha
+// hace que el gate dure lo que dura de verdad.
+//
+// Se aceptan las dos formas que emite el CLI:
+//   a) fecha completa  — "Sep 10th, 2026 1:00 AM"  (con o sin ordinal/coma)
+//   b) sólo hora       — "6:02 AM"                 (mismo día o el siguiente)
+// El mensaje NO trae zona horaria: se interpreta en la hora LOCAL del host, que
+// es la del usuario de la cuenta ChatGPT que corre el CLI.
+// ReDoS-safe: clases restringidas, cuantificadores acotados, sin anidamiento.
+const _CODEX_TRY_AGAIN_AT_PATTERN =
+    /\btry\s+again\s+at\s+(?:([A-Za-z]{3,9})\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+(\d{4})\s+)?(\d{1,2}):(\d{2})\s*([AaPp])\.?[Mm]\.?/i;
+
+// Techo de sanidad para la fecha anunciada. Un cap ROLLING de la cuenta ChatGPT
+// se libera en minutos u horas; nunca en días. Si el texto anuncia algo más
+// lejano (o una fecha del pasado, o basura), lo descartamos y caemos a la
+// ventana corta de 1h — que es auto-correctora: si al drenar sigue capado, el
+// próximo intento re-setea el flag. NUNCA se degrada al cap de 24h por esta vía.
+const CODEX_USAGE_LIMIT_MAX_ANNOUNCED_MS = 24 * 60 * 60 * 1000; // 24h
+
+// #7183 — Gracia para un reset anunciado que YA PASÓ. El CLI redondea el reset
+// al minuto ("try again at 9:18 PM") y el pipeline lee el frame segundos
+// después: el 2026-09-10 llegó a las 21:18:21 un "9:18 PM" y la forma
+// "sólo hora" lo interpretó como "ya pasó hoy → mañana", sumando 24h justo por
+// debajo del techo de sanidad. Un anuncio dentro de esta gracia significa
+// "el cap se liberó recién", no "vuelvo mañana a esta hora". Se devuelve la
+// hora anunciada tal cual y `setFlag` gatea el mínimo (auto-corrector).
+const CODEX_ANNOUNCED_RESET_GRACE_MS = 10 * 60 * 1000; // 10 min
+
+const _MONTH_BY_PREFIX = Object.freeze({
+    jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5,
+    jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11,
+});
+
+/**
+ * Extrae el `try again at <fecha>` del mensaje de control de codex.
+ *
+ * @param {string} message texto del frame de control (NUNCA canal de contenido)
+ * @param {{now?: number}} [opts]
+ * @returns {string|null} ISO 8601 del reset anunciado, o `null` si no hay fecha
+ *                        usable (no matcheó, quedó en el pasado más allá de la
+ *                        gracia o excede el techo de sanidad). Un reset dentro
+ *                        de la gracia (#7183) se devuelve tal cual aunque sea
+ *                        anterior a `now`: significa "recién liberado".
+ */
+function _parseCodexUsageLimitResetAt(message, opts = {}) {
+    if (typeof message !== 'string' || message.length === 0) return null;
+    // Cap de input: el mensaje de control es corto; recortamos por las dudas.
+    const text = message.length > 512 ? message.slice(0, 512) : message;
+    const m = _CODEX_TRY_AGAIN_AT_PATTERN.exec(text);
+    if (!m) return null;
+
+    const now = Number.isFinite(opts.now) ? opts.now : Date.now();
+    const [, monthName, dayStr, yearStr, hourStr, minuteStr, meridiem] = m;
+
+    let hour = Number(hourStr);
+    const minute = Number(minuteStr);
+    if (!Number.isFinite(hour) || !Number.isFinite(minute)) return null;
+    if (hour < 1 || hour > 12 || minute > 59) return null;
+    const isPm = meridiem.toLowerCase() === 'p';
+    if (hour === 12) hour = 0;
+    if (isPm) hour += 12;
+
+    let ts;
+    if (monthName) {
+        const month = _MONTH_BY_PREFIX[monthName.slice(0, 3).toLowerCase()];
+        if (month == null) return null;
+        const day = Number(dayStr);
+        const year = Number(yearStr);
+        if (!Number.isFinite(day) || day < 1 || day > 31) return null;
+        if (!Number.isFinite(year) || year < 2000 || year > 2100) return null;
+        ts = new Date(year, month, day, hour, minute, 0, 0).getTime();
+    } else {
+        // Sólo hora: el próximo cruce de esa hora local a partir de `now`.
+        // #7183 — salvo que ese cruce haya pasado hace instantes: entonces es
+        // el reset que acaba de vencer (redondeo al minuto + lag), NO el de
+        // mañana. Sumar 24h acá es el apagón de un día que este issue cierra.
+        const base = new Date(now);
+        base.setHours(hour, minute, 0, 0);
+        ts = base.getTime();
+        if (ts < now - CODEX_ANNOUNCED_RESET_GRACE_MS) ts += 24 * 60 * 60 * 1000;
+    }
+
+    if (!Number.isFinite(ts)) return null;
+    if (ts < now - CODEX_ANNOUNCED_RESET_GRACE_MS) return null;
+    if (ts - now > CODEX_USAGE_LIMIT_MAX_ANNOUNCED_MS) return null;
+    return new Date(ts).toISOString();
+}
 
 // #4731 — TTL (cap de `resets_at`) configurable POR PROVEEDOR. Fuente:
 // `config.yaml:quota_detector.ttl_by_provider.<id>` (en días) con default
@@ -1696,7 +1905,7 @@ function _detectAnthropic(evt, allowlist, opts = {}) {
  * modelo (canal de contenido). El match sigue siendo fail-closed: `type`/`code`
  * sólo cuentan si el provider DECLARÓ ese error_type en su allowlist.
  */
-function _detectOpenAI(evt, allowlist) {
+function _detectOpenAI(evt, allowlist, opts = {}) {
     if (!evt || typeof evt !== 'object') return { matched: false };
 
     // Shape SSE canónico: { event: 'error', data: { error: { type, message } } }
@@ -1745,7 +1954,12 @@ function _detectOpenAI(evt, allowlist) {
             ? evt.error.message
             : (typeof evt.message === 'string' ? evt.message : '');
         if (msg && _CODEX_USAGE_LIMIT_PATTERN.test(msg)) {
-            return { matched: true, errorType: 'usage_limit_reached' };
+            // #7161 — el mismo frame anuncia el reset ("try again at ..."). Se
+            // propaga como `resetsAt` para que el gate dure lo real. Si no se
+            // puede parsear, viaja `null` y el escritor del flag cae a la
+            // ventana corta de 1h (comportamiento previo).
+            const resetsAt = _parseCodexUsageLimitResetAt(msg, { now: opts.now });
+            return { matched: true, errorType: 'usage_limit_reached', resetsAt };
         }
     }
 
@@ -1856,6 +2070,14 @@ function isDeterministicSkill(skill) {
  */
 function shouldGateSpawn(skill, opts = {}) {
     if (isDeterministicSkill(skill)) return false;
+    // #7188 — Este es un PREDICADO y no escribe disco. La re-verificación del
+    // flag contra el reset real de Codex (#7181, `quota-reset-reconcile`) vivió
+    // un tiempo acá adentro, pero este predicado lo consultan sondas read-only
+    // (`isCommanderChainGated`, `isLlmGated`, `failover-probe`, todas con
+    // `recordEpisode: false`) y el reconcile creaba `state/` como efecto
+    // colateral, violando el contrato que #4565 protege con test. Hoy el
+    // reconcile corre en el ÚNICO sitio de spawn real (`pulpo.js`, justo antes
+    // de `resolveSpawnWithFallback`), que es donde el flag hace daño.
     const flag = readDefensive(opts);
     if (flag.exhausted !== true) return false;
     // #3077 CA-7 / #4731: si el caller pasó provider, gatear SOLO si ese
@@ -1929,6 +2151,8 @@ module.exports = {
     appendAudit,
     // #4865 — reconciliación contra la fuente única de verdad por proveedor.
     reconcileWithCanonicalSource,
+    // #7181 — acorta la ventana de un slot activo al reset real observado.
+    shortenResetsAt,
     // #5455 — predicado exacto de la única excepción al veto (SET + GET).
     isWeeklyLimitContentChannel,
     canonicalProvider,
@@ -1956,11 +2180,14 @@ module.exports = {
     DEFAULT_MAX_RESETS_AT_DAYS,
     DEFAULT_PROVIDER,
     MIN_RESETS_AT_MS,
+    MIN_SHORTEN_DELTA_MS,
     RAW_EXCERPT_MAX_CHARS,
     PATTERN_MATCHED_MAX_CHARS,
     DETERMINISTIC_SKILLS,
     KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER,
     CODEX_USAGE_LIMIT_RESET_MS,
+    CODEX_USAGE_LIMIT_MAX_ANNOUNCED_MS,
+    CODEX_ANNOUNCED_RESET_GRACE_MS,
     // #5455 — canal de contenido (excepción acotada Anthropic-only).
     WEEKLY_LIMIT_CONTENT_ERROR_TYPE,
     WEEKLY_LIMIT_CONTENT_SOURCE,
@@ -1982,6 +2209,9 @@ module.exports = {
     _detectOpenAI,
     _CLI_1M_CONTEXT_GLITCH_PATTERN,
     _CODEX_USAGE_LIMIT_PATTERN,
+    // #7161 — reset anunciado por el propio mensaje de control de codex.
+    _CODEX_TRY_AGAIN_AT_PATTERN,
+    _parseCodexUsageLimitResetAt,
     // #5455
     _detectAnthropicContentChannel,
     _normalizeAnthropicResultContent,

@@ -28,7 +28,8 @@
 //
 // Credenciales (#5217): todas se resuelven con el mismo resolvedor generico,
 // precedencia env > store canonico (~/.claude/secrets/credentials.json) > legacy
-// (.claude/hooks/telegram-config.json, SOLO LECTURA — nunca destino de escritura).
+// (~/.claude/secrets/telegram-config.json, SOLO LECTURA — nunca destino de
+// escritura). El legacy tambien vive fuera del arbol del repo desde #5215.
 //   Telegram → telegram.bot_token / telegram.chat_id
 //   Drive    → google_drive.oauth_client_id / oauth_client_secret /
 //              oauth_refresh_token / drive_folder_id
@@ -38,6 +39,7 @@
 
 const fs = require("fs");
 const path = require("path");
+const os = require("os");
 const https = require("https");
 const crypto = require("crypto");
 const {
@@ -66,13 +68,10 @@ const ASSET_MIME = {
 
 // --- Config ---
 
-const HOOKS_DIR = path.resolve(__dirname, "../../.claude/hooks");
-const CONFIG_PATH = path.join(HOOKS_DIR, "telegram-config.json");
-
 // #4907: el store unificado (~/.claude/secrets/credentials.json) es la fuente
-// canonica de bot_token/chat_id. El archivo versionado telegram-config.json
-// quedo con placeholders tras la unificacion (#3311) y solo sirve de fallback
-// (y como unica fuente de la config de Google Drive).
+// canonica de bot_token/chat_id. El archivo telegram-config.json quedo con
+// placeholders tras la unificacion (#3311) y solo sirve de fallback (y como
+// unica fuente de la config de Google Drive).
 const CREDENTIALS_LIB_PATH = path.resolve(__dirname, "../../.pipeline/lib/credentials.js");
 let credentialsLib = null;
 try {
@@ -81,6 +80,16 @@ try {
     console.error("[qa-video-share] WARN: no se pudo cargar el store unificado de credenciales (" + e.message + ")");
     credentialsLib = null;
 }
+
+// #5215 (CA-1): el fallback legacy vive FUERA del arbol del repo. Antes apuntaba
+// a `<repo>/.claude/hooks/telegram-config.json`, que un `reset --hard` + `clean`
+// o un respawn del worktree se lleva puesto: por eso se perdio el refresh_token
+// de Drive y 15 jobs de evidencia de QA fallaron con "Google Drive no
+// configurado". El path canonico lo define `lib/credentials.js` (LEGACY_PATH);
+// el `||` cubre el caso en que el require de arriba haya fallado, resolviendo
+// exactamente el mismo valor sin depender del modulo.
+const CONFIG_PATH = (credentialsLib && credentialsLib.LEGACY_PATH)
+    || path.join(os.homedir(), ".claude", "secrets", "telegram-config.json");
 
 // Formato real de un bot token de Telegram: "<bot_id>:<secreto>".
 const TELEGRAM_TOKEN_RE = /^\d{5,}:[A-Za-z0-9_-]{30,}$/;
@@ -1735,4 +1744,7 @@ module.exports = {
     DRIVE_SPEC,
     R2_SPEC,
     STORE_REF,
+    // #5215 · CA-1 — el default del fallback legacy se exporta para que el test
+    // pueda afirmar que NO cae bajo el arbol del repo. Es un path, no un secreto.
+    LEGACY_CONFIG_PATH: CONFIG_PATH,
 };

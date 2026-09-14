@@ -90,6 +90,24 @@ try {
     escapeHtmlAttr = (s) => (s == null ? '' : String(s).replace(/[&<>"'`]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;', '`': '&#96;' }[c])));
 }
 
+// #6191 CA-4 — FUENTE ÚNICA del copy de decisión de la tarjeta. Esta vista NO
+// redacta texto de decisión: le pide la ficha a `decision-card.js` (#6190), el
+// mismo módulo que alimenta el aviso de Telegram, para que el mismo bloqueo no
+// produzca dos redacciones distintas según por dónde lo mire el operador.
+// Degradación defensiva (regla "el pipeline no puede morir"): si el módulo no
+// carga o la ficha falla, `buildCardSafe()` devuelve null y la tarjeta cae al
+// bloque técnico, que sigue siendo información real.
+let decisionCardLib = null;
+try { decisionCardLib = require('../../lib/decision-card'); } catch { decisionCardLib = null; }
+
+function buildCardSafe(b, nowMs) {
+    if (!decisionCardLib || typeof decisionCardLib.buildDecisionCard !== 'function') return null;
+    try {
+        const card = decisionCardLib.buildDecisionCard(b, nowMs);
+        return (card && typeof card === 'object') ? card : null;
+    } catch { return null; }
+}
+
 const THEME_CSS_PATH = path.join(__dirname, 'theme.css');
 function loadTheme() {
     try { return fs.readFileSync(THEME_CSS_PATH, 'utf8'); } catch { return ''; }
@@ -498,26 +516,127 @@ function renderRowSsr(b, nowMs, ctx) {
         ? `<a class="v3-bloqueados-tg" data-tg="1" href="${escapeHtmlAttr(tgUrl)}" target="_blank" rel="noopener noreferrer" title="${escapeHtmlAttr('Abrir #' + issueNum + ' en Telegram para responder')}" aria-label="${escapeHtmlAttr('Responder #' + issueNum + ' por Telegram')}">✉ Telegram</a>`
         : '';
 
-    return `<div class="v3-bloqueados-row needs-human-row v3-bloqueados-sev-${sev}" id="bloqueados-row-${issueNum}" data-issue="${issueNum}" data-severity="${sev}" data-skill="${escapeHtmlAttr(skillTxt)}" data-phase="${escapeHtmlAttr(phaseTxt)}">
+    // =========================================================================
+    // #6191 — La tarjeta encabeza con la DECISIÓN, no con el dato técnico.
+    //
+    // Todo el copy sale de `decision-card.js` (CA-4). Esta función aporta
+    // jerarquía, orden y estado de colapso; no redacta ni una frase de decisión.
+    // Los rótulos estructurales («Si no decidís:», «Falta el dato…», el summary
+    // del detalle) son los del contrato de UX (`assets/mockups/6191/`), que es
+    // quien tiene la firma sobre el layout — no copy de decisión inventado acá.
+    // =========================================================================
+    const card = buildCardSafe(b, nowMs);
+
+    // CA-1 / CA-UX-1 — `que_se_decide` es el encabezado semántico de la tarjeta
+    // y su primer elemento (CA-UX-5: el lector de pantalla arranca por acá).
+    const decisionHtml = (card && card.que_se_decide)
+        ? `<h3 class="v3-bloqueados-decision">${escapeHtmlText(card.que_se_decide)}</h3>`
+        : '';
+
+    // El `#N «título»` baja a subtítulo (CA-UX-1). El texto viene armado por la
+    // ficha; sin ficha se degrada al par número + título de siempre.
+    const subtitleHtml = (card && card.que_esta_frenado && card.que_esta_frenado.titulo)
+        ? `<span class="v3-bloqueados-subtitle" title="${escapeHtmlAttr(card.que_esta_frenado.titulo)}">${escapeHtmlText(card.que_esta_frenado.titulo)}</span>`
+        : `<span class="v3-bloqueados-subtitle"><b>#${issueNum}</b></span>${titleHtml}`;
+
+    // Antigüedad: la dice la ficha (`desde`), no un formateador propio. Sin
+    // ficha cae a `fmtAge`, que es de donde salía antes.
+    const desdeTxt = (card && card.que_esta_frenado && card.que_esta_frenado.desde)
+        ? String(card.que_esta_frenado.desde)
+        : ('hace ' + ageTxt);
+    const ageHtml = `<span class="v3-bloqueados-age v3-bloqueados-age-${sev}" title="${escapeHtmlAttr('Bloqueado ' + desdeTxt + ' · severidad ' + sev)}" aria-label="${escapeHtmlAttr('Bloqueado ' + desdeTxt)}">⏱ ${escapeHtmlText(desdeTxt)}</span>`;
+
+    const porqueHtml = (card && card.por_que_esta_frenado)
+        ? `<p class="v3-bloqueados-porque">${escapeHtmlText(card.por_que_esta_frenado)}</p>`
+        : '';
+
+    // CA-2 / CA-6 / CA-UX-3 — las opciones son INFORMACIÓN, no botones: lista de
+    // texto (etiqueta + consecuencia), fuera de todo `<details>`. La ficha no
+    // trae identificador de acción, así que mapear etiqueta→handler sería un
+    // heurístico por texto (prohibido). La recomendada se marca con TRES señales
+    // —glifo ★, barra de acento y la razón visible— para no depender del color.
+    const opciones = (card && Array.isArray(card.opciones)) ? card.opciones : [];
+    const opcionesHtml = opciones.length
+        ? ('<ul class="v3-bloqueados-opciones">'
+            + opciones.map(o => {
+                const reco = o && o.es_recomendada === true;
+                const razon = (reco && o.razon_recomendacion)
+                    ? `<span class="v3-bloqueados-opcion-razon"><span class="v3-bloqueados-opcion-razon-rotulo">Recomendada:</span> ${escapeHtmlText(o.razon_recomendacion)}</span>`
+                    : '';
+                const glifo = reco ? '<span class="v3-bloqueados-opcion-star" aria-hidden="true">★</span>' : '';
+                return `<li class="v3-bloqueados-opcion${reco ? ' v3-bloqueados-opcion-reco' : ''}">`
+                    + `<span class="v3-bloqueados-opcion-etq">${glifo}${escapeHtmlText((o && o.etiqueta) || '')}</span>`
+                    + `<span class="v3-bloqueados-opcion-cons">${escapeHtmlText((o && o.consecuencia) || '')}</span>`
+                    + razon
+                    + '</li>';
+            }).join('')
+            + '</ul>')
+        // CA-UX-2 — cero opciones NO es un hueco: es el caso más frecuente y se
+        // explica con `card.falta`, que la ficha trae justamente para esto.
+        : ((card && card.falta)
+            ? `<div class="v3-bloqueados-falta"><span class="v3-bloqueados-falta-rotulo">Falta el dato para proponer opciones:</span> <span class="v3-bloqueados-falta-txt">${escapeHtmlText(card.falta)}</span></div>`
+            : '');
+
+    // CA-UX-3 — sin recomendada, la ficha DICE por qué no la hay. Se renderiza
+    // tal cual; jamás se inventa una estrella que la ficha no trae.
+    const sinRecoHtml = (card && card.sin_recomendacion_porque)
+        ? `<p class="v3-bloqueados-sinreco">${escapeHtmlText(card.sin_recomendacion_porque)}</p>`
+        : '';
+
+    // CA-UX-4 — «¿y si no hago nada?» siempre visible, fuera del `<details>`.
+    const costoHtml = (card && card.costo_de_no_decidir)
+        ? `<p class="v3-bloqueados-costo"><span class="v3-bloqueados-costo-rotulo">Si no decidís:</span> ${escapeHtmlText(card.costo_de_no_decidir)}</p>`
+        : '';
+
+    const evidencias = (card && Array.isArray(card.evidencia_minima)) ? card.evidencia_minima : [];
+    const evidenciaHtml = evidencias.length
+        ? ('<ul class="v3-bloqueados-evidencia">'
+            + evidencias.map(e => `<li class="v3-bloqueados-evidencia-item">${escapeHtmlText(e)}</li>`).join('')
+            + '</ul>')
+        : '';
+
+    // CA-3 — el bloque técnico crudo (motivo completo, resumen, actividad
+    // reciente y accesos) va dentro de un `<details>` NATIVO y SIN `open`
+    // (CA-UX-5: nada de div + onclick). CA-6 — Ver issue / Ver logs / Telegram
+    // viven acá adentro; CTA, Destrabar y Desestimar quedan visibles arriba.
+    const reasonHtml = reasonTxt
+        ? `<div class="v3-bloqueados-reason needs-human-reason">❓ ${escapeHtmlText(reasonTxt)}${reasonTrunc ? '…' : ''}</div>`
+        : '';
+    const issueHref = `https://github.com/intrale/platform/issues/${issueNum}`;
+
+    return `<article class="v3-bloqueados-row needs-human-row v3-bloqueados-sev-${sev}" id="bloqueados-row-${issueNum}" data-issue="${issueNum}" data-severity="${sev}" data-skill="${escapeHtmlAttr(skillTxt)}" data-phase="${escapeHtmlAttr(phaseTxt)}">
       <span class="v3-bloqueados-rail" aria-hidden="true"></span>
+      ${decisionHtml}
       <div class="v3-bloqueados-row-head needs-human-row-head">
         <div class="v3-bloqueados-row-info needs-human-row-info">
-          <a href="https://github.com/intrale/platform/issues/${issueNum}" target="_blank" rel="noopener noreferrer"><b>#${issueNum}</b></a>${titleHtml}${skillPhase}
-          <span class="v3-bloqueados-age v3-bloqueados-age-${sev}" title="${escapeHtmlAttr('Bloqueado hace ' + ageTxt + ' · severidad ' + sev)}" aria-label="${escapeHtmlAttr('Bloqueado hace ' + ageTxt)}">⏱ hace ${escapeHtmlText(ageTxt)}</span>
-        </div>
-        <div class="v3-bloqueados-row-actions needs-human-row-actions">
-          ${ctaHtml}
-          ${tgHtml}
-          <button class="v3-bloqueados-btn nh-btn nh-btn-reactivate" onclick="needsHumanReactivate(${issueNum})" title="${escapeHtmlAttr('Destrabar #' + issueNum + ': override manual — quita el bloqueo (label needs-human) y devuelve el issue a la cola del pipeline')}" aria-label="${escapeHtmlAttr('Destrabar issue #' + issueNum)}">🔓 Destrabar</button>
-          <a class="v3-bloqueados-act v3-bloqueados-act-issue" href="https://github.com/intrale/platform/issues/${issueNum}" target="_blank" rel="noopener noreferrer" title="${escapeHtmlAttr('Abrir #' + issueNum + ' en GitHub')}" aria-label="${escapeHtmlAttr('Ver issue #' + issueNum + ' en GitHub')}">🔗 Ver issue ↗</a>
-          <a class="v3-bloqueados-act v3-bloqueados-act-logs" href="/historial?q=${issueNum}" target="_blank" rel="noopener noreferrer" title="${escapeHtmlAttr('Ver logs del agente que ejecutó #' + issueNum + ' (timeline del Historial filtrado por el issue)')}" aria-label="${escapeHtmlAttr('Ver logs del agente de #' + issueNum)}">📄 Ver logs</a>
-          <button class="v3-bloqueados-btn nh-btn nh-btn-dismiss" onclick="needsHumanDismiss(${issueNum})" title="${escapeHtmlAttr('Desestimar #' + issueNum + ': cierra el issue como no planificado y lo quita del panel')}" aria-label="${escapeHtmlAttr('Desestimar issue #' + issueNum)}">✕ Desestimar</button>
+          ${subtitleHtml}${skillPhase}
+          ${ageHtml}
         </div>
       </div>
-      ${summaryHtml}
-      ${reasonTxt ? `<div class="v3-bloqueados-reason needs-human-reason">❓ ${escapeHtmlText(reasonTxt)}${reasonTrunc ? '…' : ''}</div>` : ''}
-      ${eventsHtml}
-    </div>`;
+      ${porqueHtml}
+      ${opcionesHtml}
+      ${sinRecoHtml}
+      ${costoHtml}
+      ${evidenciaHtml}
+      <div class="v3-bloqueados-row-actions v3-bloqueados-actions-bar needs-human-row-actions">
+        ${ctaHtml}
+        <button class="v3-bloqueados-btn nh-btn nh-btn-reactivate" onclick="needsHumanReactivate(${issueNum})" title="${escapeHtmlAttr('Destrabar #' + issueNum + ': override manual — quita el bloqueo (label needs-human) y devuelve el issue a la cola del pipeline')}" aria-label="${escapeHtmlAttr('Destrabar issue #' + issueNum)}">🔓 Destrabar</button>
+        <button class="v3-bloqueados-btn nh-btn nh-btn-dismiss" onclick="needsHumanDismiss(${issueNum})" title="${escapeHtmlAttr('Desestimar #' + issueNum + ': cierra el issue como no planificado y lo quita del panel')}" aria-label="${escapeHtmlAttr('Desestimar issue #' + issueNum)}">✕ Desestimar</button>
+      </div>
+      <details class="v3-bloqueados-tech">
+        <summary class="v3-bloqueados-tech-summary">Detalle técnico del bloqueo · motivo completo, actividad reciente y accesos</summary>
+        <div class="v3-bloqueados-tech-body">
+          ${summaryHtml}
+          ${reasonHtml}
+          ${eventsHtml}
+          <div class="v3-bloqueados-tech-links">
+            ${tgHtml}
+            <a class="v3-bloqueados-act v3-bloqueados-act-issue" href="${issueHref}" target="_blank" rel="noopener noreferrer" title="${escapeHtmlAttr('Abrir #' + issueNum + ' en GitHub')}" aria-label="${escapeHtmlAttr('Ver issue #' + issueNum + ' en GitHub')}">🔗 Ver issue ↗</a>
+            <a class="v3-bloqueados-act v3-bloqueados-act-logs" href="/historial?q=${issueNum}" target="_blank" rel="noopener noreferrer" title="${escapeHtmlAttr('Ver logs del agente que ejecutó #' + issueNum + ' (timeline del Historial filtrado por el issue)')}" aria-label="${escapeHtmlAttr('Ver logs del agente de #' + issueNum)}">📄 Ver logs</a>
+          </div>
+        </div>
+      </details>
+    </article>`;
 }
 
 // CA-1 (#4193) — barra de marca MIZPÁ del shell standalone (marca + tagline

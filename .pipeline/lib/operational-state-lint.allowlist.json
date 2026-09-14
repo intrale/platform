@@ -14,16 +14,16 @@
   "files": [],
   "rules": [
     {
-      "file": "lib/desync-detector.js",
-      "anchor": "const wavesPath = path.join(pipelineDir(), 'waves.json');",
-      "line": 122,
-      "reason": "#5176 A-2: el detector necesita distinguir 'sin active_wave' (null, NO es desync) de 'ola vacia' ([]), no puede lanzar ante waves.json corrupto y no debe disparar la alerta dedupada de waves.getAllowlist (#3616). Ningun lector del envoltorio cumple las tres. Version estructural: #5191."
-    },
-    {
       "file": "pulpo.js",
       "anchor": "const PAUSE_FILE = path.join(PIPELINE, '.paused');",
-      "line": 18315,
-      "reason": "#5179 D3: const de modulo PAUSE_FILE (21 refs), no un call site. Lo usan 3 halts de ultimo recurso -el fallback de setFullPause- y el seam de test SEC-3 (#4832). Version estructural: #6104."
+      "line": 21001,
+      "reason": "#5179 D3: const de modulo PAUSE_FILE (21 refs), no un call site. Lo usan 3 halts de ultimo recurso -el fallback de setFullPause- y el seam de test SEC-3 (#4832). Version estructural: #6104. Linea reubicada por los brazos credential-death de #6238 y oauth-session-expiry de #6239 (mismo call site, sin cambio de semantica)."
+    },
+    {
+      "file": "scripts/opstate-cutover-probe.js",
+      "anchor": "const sandboxHaltMarker = (sandboxDir) => path.join(sandboxDir, '.paused');",
+      "line": 854,
+      "reason": "#7189 CA-6: marker de halt del --abort-drill, escrito por el halt INYECTADO al sink real dentro de un directorio temporal (mkdtemp) — nunca en el .pipeline/ real. No es un acceso al estado del pipeline (ese va por readFullPauseOrigin() en --export-to-fs): es el artefacto que el aborto bajo prueba tiene que dejar en disco, con el mismo shape que haltCutoverDegraded de pulpo.js. Único literal .paused del archivo; helper único para escritura y verificación. Version estructural: exponer un halt inyectable con destino parametrizable desde operational-state-backend (#7194 H0 puede pedirlo si el drill se repite en ventana real)."
     }
   ]
 }

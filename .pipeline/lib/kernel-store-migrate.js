@@ -55,6 +55,16 @@ const SOURCES = Object.freeze([
   { file: 'blocked-issues.json', key: 'blocked' },
   { file: 'blocked-by-infra.json', key: 'blocked-by-infra' },
   { file: 'infra-health.json', key: 'health' },
+  // #5113 CA-A8 — la allowlist de ejecución entra al alcance de la migración.
+  // Es la otra mitad del estado operativo (junto con el registro de olas) y sin
+  // ella el cutover dejaría el gate de dispatch leyendo filesystem mientras el
+  // resto del estado ya vive en el store: exactamente las dos fuentes de verdad
+  // que CA-C1 prohíbe.
+  //
+  // `.paused` NO está ni puede estar acá (D-3 / SEC-7): es el halt de último
+  // recurso y el mecanismo de aborto del propio cutover. Hay un test negativo
+  // que falla si aparece en `SOURCES` o en `MIGRATION_KNOWN_KEYS`.
+  { file: '.partial-pause.json', key: 'partial-pause' },
 ]);
 
 // Allowlist de claves que el store de coordinación debe aceptar para esta
@@ -79,7 +89,7 @@ const DESCRIPTOR_NAME_RE = /^[A-Za-z0-9._-]+\.json$/;
 //
 // Estas son las entidades que el cutover realmente tiene que dejar en el store
 // durable. NINGUNA tiene ruta de migración en este módulo (D-4 / #5136): el
-// migrador sólo sabe mover las 4 fuentes de coordinación, que son justo las que
+// migrador sólo sabe mover las fuentes de coordinación de `SOURCES`, que son justo las que
 // #5112 PROHÍBE migrar. Por eso `migrated_count` es 0 por CONSTRUCCIÓN y no por
 // "no había nada": es un diagnóstico con causa, nunca evidencia de paridad.
 //
@@ -118,18 +128,25 @@ function errSourcesInvalidas(received) {
 // ve, porque `--apply` corta antes con `alcance_no_implementado`. Por eso el
 // mensaje NO menciona ningún flag `--sources` (no existe) ni manda a reintentar
 // `--apply` de otra forma: no hay tal camino.
+// #5113 — La enumeracion de las fuentes se DERIVA de `SOURCES`, nunca se
+// escribe a mano. Estaba hardcodeada como "las 4 fuentes (waves, blocked,
+// blocked-by-infra, health)" y al sumar la allowlist quedo mintiendole al
+// operador en el mensaje de error, que es justo donde mas caro sale.
+const SOURCE_KEYS_TXT = SOURCES.map((x) => x.key).join(', ');
+const SOURCE_COUNT_TXT = `${SOURCES.length} fuentes`;
+
 const ERR_SOURCES_NO_EXPLICITAS =
   "sources_no_explicitas: migrateState({ apply: true }) requiere declarar 'sources' " +
-  'explícitamente. No pases SOURCES: son las 4 fuentes operativas (waves, blocked, ' +
-  'blocked-by-infra, health) que #5112 prohíbe migrar. Para ver el reporte sin mutar ' +
+  `explícitamente. No pases SOURCES: son las ${SOURCE_COUNT_TXT} operativas (${SOURCE_KEYS_TXT}) ` +
+  'que #5112 prohíbe migrar. Para ver el reporte sin mutar ' +
   'nada, invocá con apply: false.';
 
 const ERR_ALCANCE_NO_IMPLEMENTADO =
   'alcance_no_implementado: --apply no puede migrar nada todavía, así que no toca nada.\n' +
   '\n' +
   'Qué pasó: el alcance real del cutover (descriptor#self, product#<id>, catalog#index, ' +
-  'signature#, audit#, claim#) todavía NO tiene ruta de migración en este módulo. Las 4 ' +
-  'fuentes que este migrador sí sabe mover (waves, blocked, blocked-by-infra, health) son ' +
+  `signature#, audit#, claim#) todavía NO tiene ruta de migración en este módulo. Las ${SOURCE_COUNT_TXT} ` +
+  `que este migrador sí sabe mover (${SOURCE_KEYS_TXT}) son ` +
   'justo las que #5112 prohíbe migrar.\n' +
   '\n' +
   'Qué hacer ahora: los descriptores y el catálogo se pueblan por durableRegisterProduct ' +
@@ -137,7 +154,7 @@ const ERR_ALCANCE_NO_IMPLEMENTADO =
   'del estado de coordinación sin mutar nada, corré este mismo comando SIN flags (dry-run).\n' +
   '\n' +
   'La trampa: no "destrabes" esto pasando SOURCES al migrador. Eso migraría exactamente las ' +
-  '4 fuentes operativas prohibidas, que es el falso verde que #5136 existe para evitar.';
+  `${SOURCE_COUNT_TXT} operativas prohibidas, que es el falso verde que #5136 existe para evitar.`;
 
 // -----------------------------------------------------------------------------
 // Utilidades puras
@@ -194,6 +211,45 @@ function defaultPipelineDir() {
   return path.resolve(__dirname, '..');
 }
 
+/**
+ * Directorio donde vive REALMENTE el estado operativo.
+ *
+ * #5113 rev-12 (R-1) — El migrador leía y restauraba contra `.pipeline/` PLANO.
+ * Pero `operational_state.namespaced.enabled: true` es el **paso 1 del orden de
+ * encendido no negociable** del cutover, y con él el estado vive en
+ * `.pipeline/projects/<projectId>/`. Con el layout namespaceado activo, el
+ * rollback escribía en el directorio equivocado y devolvía `ok: true`: un falso
+ * verde en la ÚNICA ruta de recuperación del cutover, que además re-creaba los
+ * archivos del layout plano (el estado obsoleto que el propio runbook §2.4
+ * advierte que después hay que re-migrar).
+ *
+ * `project-context.stateDir()` es la misma función que consumen `waves.js` y
+ * `partial-pause.js`: con el flag apagado devuelve la raíz plana, con el flag
+ * encendido el directorio del proyecto. Una sola definición de "dónde vive el
+ * estado" para el sustrato y para el migrador — que diverjan es justamente el
+ * defecto.
+ *
+ * LANZA si no puede resolver el contexto, a propósito: caer al layout plano
+ * "por las dudas" es reintroducir el mismo defecto por la puerta de atrás — con
+ * el namespaceado encendido y el contexto roto, restaurar al plano vuelve a dar
+ * un falso verde. Los dos call-sites lo atrapan y devuelven el fallo COMO DATO
+ * (fail-closed), con la salida manual (`--target-dir`) en el mensaje.
+ */
+function defaultStateDir() {
+  return require('./project-context').stateDir();
+}
+
+/** Mensaje único para los dos call-sites que resuelven el layout. */
+function stateDirUnresolved(e, flag) {
+  return {
+    ok: false,
+    code: 'state_dir_unresolved',
+    error: `no se pudo resolver dónde vive el estado operativo: ${e.message}. `
+      + 'Fail-closed: NO se opera sobre un directorio adivinado — con el namespaceado '
+      + `encendido, el layout plano es el lugar equivocado. Pasá \`${flag}\` explícito.`,
+  };
+}
+
 // Valida que `fromDir` (input del operador en --rollback) resuelva DENTRO de
 // `backupRoot`. Rechaza traversal (`..`, symlinks fuera, paths absolutos ajenos).
 function assertWithin(rootDir, candidate) {
@@ -211,7 +267,7 @@ function assertWithin(rootDir, candidate) {
 // Lectura de las fuentes JSON
 // -----------------------------------------------------------------------------
 
-// Lee y parsea las 4 fuentes desde `sourceDir`. Errores como dato. Una fuente
+// Lee y parsea las fuentes de `SOURCES` desde `sourceDir`. Errores como dato. Una fuente
 // ausente NO es fatal por sí sola (estado que aún no existe): se reporta como
 // `present:false` y se excluye de la migración, pero se registra para el
 // reporte del operador.
@@ -424,7 +480,7 @@ function buildScopeDiagnostic(opts = {}) {
     causes.push('no hay ningún descriptor legible en .pipeline/descriptors/, así que no hay alcance que migrar.');
   }
   causes.push(
-    'las 4 fuentes de coordinación (waves, blocked, blocked-by-infra, health) están EXCLUIDAS del cutover por #5112: '
+    `las ${SOURCE_COUNT_TXT} de coordinación (${SOURCE_KEYS_TXT}) están EXCLUIDAS del cutover por #5112: `
     + 'este módulo sabe moverlas, pero no pertenecen al alcance del cutover y no cuentan para `migrated_count`.',
   );
 
@@ -550,7 +606,7 @@ function buildReport({ mode, items, before, after, actions, backupDir, integrity
     // #5208 · GAP-UX-2 — El texto viejo mandaba a `--apply`, que hoy corta
     // SIEMPRE con `alcance_no_implementado`. Decírselo al operador en plena
     // ventana lo manda a un comando que no puede funcionar.
-    lines.push('           `--apply` está bloqueado a propósito (alcance_no_implementado): las 4 fuentes que');
+    lines.push(`           \`--apply\` está bloqueado a propósito (alcance_no_implementado): las ${SOURCE_COUNT_TXT} que`);
     lines.push('           este módulo sabe mover son las que #5112 prohíbe migrar en el cutover.');
   } else if (integrity && !integrity.ok) {
     lines.push('[FALLA] verificación de integridad detectó discrepancias:');
@@ -605,7 +661,7 @@ function buildReport({ mode, items, before, after, actions, backupDir, integrity
  * `descriptor#self` sigue siendo uno solo por partición. Por eso el backup del
  * alcance real es `backupDescriptors()` (CA-13′) y no `createBackup()`.
  *
- * `SOURCES` (arriba, la constante) son las 4 fuentes OPERATIVAS de coordinación
+ * `SOURCES` (arriba, la constante) son las fuentes OPERATIVAS de coordinación
  * —waves, blocked, blocked-by-infra, health— que #5112 **prohíbe migrar** en el
  * cutover. Son justamente lo que esta función sabe mover, y por eso el CLI
  * `--apply` está bloqueado con `alcance_no_implementado` (D-4).
@@ -614,7 +670,7 @@ function buildReport({ mode, items, before, after, actions, backupDir, integrity
  * @param {object}  opts.store        instancia de `createCoordinationStore` (#4744). REQUERIDA para --apply.
  * @param {boolean} [opts.apply=false] false = dry-run (no escribe); true = persiste.
  * @param {string}  [opts.projectId]   identidad del descriptor (default 'intrale-platform').
- * @param {string}  [opts.sourceDir]   dir de las 4 fuentes JSON (default `.pipeline/`).
+ * @param {string}  [opts.sourceDir]   dir de las fuentes JSON de `SOURCES` (default `.pipeline/`).
  * @param {string}  [opts.backupRoot]  raíz de backups (default `.pipeline/backup/`).
  * @param {number}  [opts.now]         epoch ms para el <timestamp> del backup (default Date.now()).
  * @param {Array}   [opts.sources]     DECLARACIÓN DE ALCANCE (ya no es un "override para tests").
@@ -626,7 +682,12 @@ function buildReport({ mode, items, before, after, actions, backupDir, integrity
  */
 async function migrateState(opts = {}) {
   const apply = opts.apply === true;
-  const sourceDir = opts.sourceDir || defaultPipelineDir();
+  let sourceDir;
+  try {
+    sourceDir = opts.sourceDir || defaultStateDir();
+  } catch (e) {
+    return stateDirUnresolved(e, '--source-dir/sourceDir');
+  }
   const backupRoot = opts.backupRoot || path.join(defaultPipelineDir(), 'backup');
 
   // CA-11′ (D-7 / GURU-10) — `sources` tiene TRES casos, no dos. El guard
@@ -642,7 +703,7 @@ async function migrateState(opts = {}) {
   }
   // ⚠️ NO reintroducir `&& opts.sources.length`: ésa es exactamente la trampa de
   // CA-11′ — un array vacío es falsy por `.length` y caía al default, migrando
-  // las 4 fuentes que #5112 prohíbe migrar. Un `[]` llega tal cual a
+  // las fuentes de `SOURCES` que #5112 prohíbe migrar. Un `[]` llega tal cual a
   // `readSources`, que devuelve `items = []` ⇒ `no_sources`, que es la semántica
   // correcta de "no migres nada".
   const sources = opts.sources !== undefined ? opts.sources : SOURCES;
@@ -687,9 +748,25 @@ async function migrateState(opts = {}) {
     if (!it.present) continue;
     const res = await writeThroughStore(opts.store, it);
     if (!res.ok) {
+      // #5113 rev-12 — El apply es multi-clave y aborta en el primer fallo: el
+      // store queda A MEDIAS. Sin `actions` el operador no sabe cuál entró y
+      // cuál no, y el único remedio ofrecido (`rollbackCmd`) restaura
+      // filesystem — no toca el store. `partial: true` + el detalle de qué se
+      // escribió es la diferencia entre un rollback informado y uno a ciegas.
+      const escritas = Object.keys(actions);
       return {
         ok: false, code: res.code || 'write_failed', error: res.error,
+        partial: escritas.length > 0,
+        failedKey: it.key,
+        actions,
         backupDir: backup.dir, rollbackCmd: rollbackCommand(backup.dir),
+        remediation: escritas.length > 0
+          ? `Migración PARCIAL: ya entraron al store [${escritas.join(', ')}] y falló '${it.key}'. `
+            + 'El store tiene esas claves nuevas y el filesystem sigue siendo la fuente vigente '
+            + '(el flag no se encendió todavía). Corregí la causa y reintentá `--apply`: la '
+            + 'escritura es idempotente por clave. NO enciendas `operational_state.durable` con '
+            + 'la migración a medias.'
+          : `Ninguna clave entró al store: falló la primera ('${it.key}'). Corregí la causa y reintentá.`,
       };
     }
     actions[it.key] = res.action;
@@ -713,6 +790,51 @@ async function migrateState(opts = {}) {
 }
 
 /**
+ * Escritura de UN archivo restaurado, con la misma garantía que usa el sustrato
+ * en caliente: lock del archivo + write atómico + modo 0600.
+ *
+ * El lock importa porque el rollback corre sobre un pipeline que puede seguir
+ * vivo. Si no se puede tomar (pulpo colgado sosteniéndolo), NO se escribe a
+ * ciegas: se devuelve un error accionable y el operador decide con `--force`,
+ * que es exactamente la decisión que un write pelado tomaba sola y en silencio.
+ *
+ * @param {string} dst        destino ya validado dentro de targetDir.
+ * @param {object} value      contenido verificado por checksum.
+ * @param {object} [opts]     `{ force?:boolean, lockTimeoutMs?:number }`.
+ * @returns {{ok:boolean, code?:string, error?:string}}
+ */
+function restoreOneFile(dst, value, opts = {}) {
+  const data = JSON.stringify(value, null, 2);
+  const write = () => {
+    require('./waves').atomicWriteFile(dst, data);
+    try { fs.chmodSync(dst, 0o600); } catch { /* FS sin modos (Windows): no es fatal */ }
+  };
+  try {
+    if (opts.force === true) {
+      write();
+    } else {
+      const { withLockSync } = require('./file-lock');
+      withLockSync(dst, write, {
+        component: 'kernel-store-migrate',
+        timeoutMs: Number.isFinite(opts.lockTimeoutMs) ? opts.lockTimeoutMs : 10000,
+      });
+    }
+    return { ok: true };
+  } catch (e) {
+    const esLock = /lock/i.test(String(e && e.message));
+    return {
+      ok: false,
+      code: esLock ? 'restore_locked' : 'restore_write_failed',
+      error: esLock
+        ? `no se pudo tomar el lock de ${path.basename(dst)}: ${e.message}. `
+          + 'Qué hacer ahora: verificá que el pipeline esté detenido (o el lock stale) y reintentá; '
+          + 'si el proceso que lo sostiene está muerto, repetí con `--force`.'
+        : `no se pudo restaurar ${path.basename(dst)}: ${e.message}`,
+    };
+  }
+}
+
+/**
  * Restaura las fuentes JSON desde un backup, verificando PRIMERO el checksum de
  * cada archivo del backup contra su manifest (no reintroducir estado corrupto).
  * Fail-closed, errores como dato.
@@ -725,7 +847,16 @@ async function migrateState(opts = {}) {
  */
 function rollbackState(opts = {}) {
   const backupRoot = opts.backupRoot || path.join(defaultPipelineDir(), 'backup');
-  const targetDir = opts.targetDir || defaultPipelineDir();
+  // #5113 rev-12 (R-1) — restaurar DONDE vive el estado, no donde vivía antes
+  // del namespaceado. Un `targetDir` explícito sigue mandando (lo usan los tests
+  // y el operador vía `--target-dir`); la contención del input de LÍNEA DE
+  // COMANDOS se valida en el CLI, que es donde el path deja de ser confiable.
+  let targetDir;
+  try {
+    targetDir = opts.targetDir || defaultStateDir();
+  } catch (e) {
+    return stateDirUnresolved(e, '--target-dir');
+  }
 
   if (!opts.fromDir || typeof opts.fromDir !== 'string') {
     return { ok: false, code: 'from_required', error: '--from <backupDir> requerido' };
@@ -752,6 +883,15 @@ function rollbackState(opts = {}) {
   // (quien controla el backup controla la clave y su checksum). El checksum NO
   // frena un Zip-Slip porque se recalcula sobre el value provisto.
   const allowedFiles = new Set(SOURCES.map((s) => s.file));
+
+  // El layout namespaceado puede no existir todavía en la máquina que restaura
+  // (`.pipeline/projects/<projectId>/`). Sin esto el write falla con ENOENT
+  // justo en la ruta de emergencia.
+  try {
+    fs.mkdirSync(targetDir, { recursive: true });
+  } catch (e) {
+    return { ok: false, code: 'target_unwritable', error: `no se pudo preparar el destino ${targetDir}: ${e.message}` };
+  }
 
   // Verificar checksum de CADA archivo del backup ANTES de restaurar.
   const restored = [];
@@ -793,12 +933,16 @@ function rollbackState(opts = {}) {
       };
     }
     // Checksum OK → restaurar (dst validado dentro de targetDir).
-    try {
-      fs.writeFileSync(dst, JSON.stringify(value, null, 2));
-      restored.push(file);
-    } catch (e) {
-      return { ok: false, code: 'restore_write_failed', error: `no se pudo restaurar ${file}: ${e.message}` };
-    }
+    //
+    // #5113 rev-12 — Antes era un `fs.writeFileSync` pelado sobre
+    // `.partial-pause.json`, el archivo que controla el acceso al dispatch: sin
+    // lock (el pulpo podía estar leyéndolo/escribiéndolo en el mismo instante),
+    // sin atomicidad (un write truncado deja la allowlist ilegible → el gate
+    // deniega todo) y sin fijar modo. Se usa la MISMA primitiva que el sustrato:
+    // `withLockSync` + `atomicWriteFile` (tmp + fsync + rename con reintentos).
+    const escritura = restoreOneFile(dst, value, opts);
+    if (!escritura.ok) return escritura;
+    restored.push(file);
   }
 
   const report = buildReport({
@@ -812,7 +956,7 @@ function rollbackState(opts = {}) {
 // -----------------------------------------------------------------------------
 // Backup / restore de DESCRIPTORES (CA-13′ / CA-13b · #5136)
 //
-// `createBackup` respalda las 4 fuentes OPERATIVAS de coordinación, que son
+// `createBackup` respalda las fuentes OPERATIVAS de coordinación de `SOURCES`, que son
 // justo las que #5112 prohíbe migrar. El origen del ALCANCE REAL del cutover es
 // `.pipeline/descriptors/` (1:N con `product#<id>`), que NO está en `SOURCES` —
 // o sea que hoy el alcance real no tiene ni backup ni ruta de restauración.
@@ -1125,12 +1269,18 @@ function restoreDescriptors(opts = {}) {
 // -----------------------------------------------------------------------------
 
 function parseArgs(argv) {
-  const args = { apply: false, rollback: false, from: null };
+  const args = { apply: false, rollback: false, from: null, targetDir: null, force: false };
   for (let i = 0; i < argv.length; i += 1) {
     const a = argv[i];
     if (a === '--apply' || a === '--commit') args.apply = true;
     else if (a === '--rollback') args.rollback = true;
     else if (a === '--from') { args.from = argv[i + 1]; i += 1; }
+    // #5113 rev-12 (R-1) — destino explícito de la restauración. Sin el flag el
+    // default ya es el layout vigente (`defaultStateDir()`); esto existe para
+    // restaurar a un layout que NO es el que la config declara hoy (p. ej.
+    // volver al plano después de apagar el namespaceado).
+    else if (a === '--target-dir') { args.targetDir = argv[i + 1]; i += 1; }
+    else if (a === '--force') args.force = true;
   }
   return args;
 }
@@ -1139,7 +1289,21 @@ async function main() {
   const args = parseArgs(process.argv.slice(2));
 
   if (args.rollback) {
-    const res = rollbackState({ fromDir: args.from });
+    // El `--target-dir` viene de la línea de comandos: se exige contenido dentro
+    // de `.pipeline/` antes de usarlo como destino de escritura (anti-traversal,
+    // fail-closed — mismo criterio que `--from`).
+    let targetDir = null;
+    if (args.targetDir) {
+      targetDir = assertWithin(defaultPipelineDir(), args.targetDir);
+      if (!targetDir) {
+        process.stdout.write(
+          `--target-dir fuera de ${defaultPipelineDir()} (posible path-traversal, rechazado)
+`);
+        process.exit(1);
+        return;
+      }
+    }
+    const res = rollbackState({ fromDir: args.from, targetDir, force: args.force });
     process.stdout.write((res.report || res.error || '') + '\n');
     process.exit(res.ok ? 0 : 1);
     return;
@@ -1158,7 +1322,7 @@ async function main() {
   //
   // El alcance real del cutover (descriptor#self / product#<id> / catalog#index /
   // signature# / audit# / claim#) todavía NO tiene ruta de migración en este
-  // módulo, y `SOURCES` son justo las 4 fuentes operativas que #5112 prohíbe
+  // módulo, y `SOURCES` son justo las fuentes operativas que #5112 prohíbe
   // migrar. Hasta que esa ruta exista, `--apply` dice la verdad y no toca nada.
   //
   // Va ACÁ, y no más abajo, por dos motivos duros (AD-2):

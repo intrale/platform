@@ -354,3 +354,44 @@ test('CA-24: la reconciliación sólo se dispara por remoción VERIFICADA EN VIV
     assert.match(bloqueGate, /reconcileBlockedMarkers\(/,
         'el gate destraba el marker que él mismo puso, en vez de saltarlo para siempre');
 });
+
+// =============================================================================
+// #6191 / SEC-F — tope de `evidence` al persistir el marker.
+//
+// `evidence` lo escribe un agente, y un agente que pega el output de un comando
+// llega a decenas de KB sin ninguna intención maliciosa. El marker en disco lo
+// lee TODO consumidor del bloqueo: sin techo, un archivo de estado crece sin
+// límite y le carga el mismo blob a cada lector. Es defensa en profundidad — la
+// ficha ya topea la entrada de su saneador, que es cuadrático (ver
+// `decision-card-dos-6191.test.js`) — y es corte de ENTRADA, no una redacción.
+// =============================================================================
+
+test('#6191 SEC-F un `evidence` gigante se persiste topeado, sin perder lo visible', () => {
+    resetFs();
+    const cita = 'Salida del comando que el agente pego como evidencia: ';
+    const r = hb.reportHumanBlock({
+        issue: 7003, skill: 'pipeline-dev', phase: 'dev', pipeline: 'desarrollo',
+        reason: 'motivo', question: '¿pregunta?', skipGithubLabel: true, moveFromActive: false,
+        evidence: cita + 'x'.repeat(200 * 1024),
+    });
+    const meta = JSON.parse(fs.readFileSync(`${r.marker_path}.reason.json`, 'utf8'));
+    assert.ok(meta.evidence.length <= 4096,
+        'evidence se persistio con ' + meta.evidence.length + ' caracteres, sin techo');
+    // El techo es holgado: lo que el operador ve (los primeros ~100 caracteres)
+    // sale intacto.
+    assert.ok(meta.evidence.startsWith(cita), 'el tope se comio el arranque de la cita');
+    resetFs();
+});
+
+test('#6191 SEC-F un `evidence` de tamano normal se persiste tal cual', () => {
+    resetFs();
+    const cita = 'El issue pide confirmar si el rebote sigue o para.';
+    const r = hb.reportHumanBlock({
+        issue: 7004, skill: 'pipeline-dev', phase: 'dev', pipeline: 'desarrollo',
+        reason: 'motivo', question: '¿pregunta?', skipGithubLabel: true, moveFromActive: false,
+        evidence: cita,
+    });
+    const meta = JSON.parse(fs.readFileSync(`${r.marker_path}.reason.json`, 'utf8'));
+    assert.equal(meta.evidence, cita);
+    resetFs();
+});

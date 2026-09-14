@@ -86,7 +86,14 @@ function renderFichaCompleta(card, indice, total, nivel = 0) {
         // propuesta. Tres opciones genéricas que el operador no puede ejecutar
         // son peores que ninguna.
         if (card.falta) l.push(`Qué me falta: ${card.falta}`);
-        l.push('No te propongo opciones porque no las puedo justificar.');
+        // #6192 CA-1.c — la línea sólo sale cuando el desconocimiento es REAL.
+        // Con causa conocida (no hay firmante, no se puede emitir la firma) el
+        // aviso ya imprimió la causa exacta en `Qué me falta`, y agregar "no
+        // las puedo justificar" lo hace contradecirse consigo mismo en el mismo
+        // mensaje. La ficha dice cuál de los dos casos es; acá no se adivina.
+        if (!card.causa_conocida) {
+            l.push('No te propongo opciones porque no las puedo justificar.');
+        }
     } else if (card.opciones.length) {
         // La recomendada NUNCA se recorta: es la única que trae razón, y una
         // ficha degradada que se queda sin la opción que el pipeline sugiere
@@ -336,6 +343,14 @@ function sanearMinimo(v, max) {
     // Saltos y controles a espacio: sin esto un título hostil fabrica líneas
     // falsas que imitan la estructura del mensaje.
     s = s.replace(CONTROL_MINIMO_RE, ' ');
+    // #6191 / SEC-F rev-2 — techo ANTI-DoS antes de redactar, igual que `sec()`.
+    // `redactAll` es cuadrático y este camino también corre en el hilo único del
+    // dashboard; es más, corre justo cuando el armador de fichas YA falló, que
+    // es el peor momento para colgar el proceso. El techo es holgado (4096) a
+    // propósito: cortar más abajo partiría credenciales y `redactAll` dejaría el
+    // prefijo visible. El techo de presentación (512) lo aplica después
+    // `neutralizarMarkupYEnlaces`, ya sobre texto redactado.
+    s = decisionCard.topearEntradaRedaccion(s);
     s = String(redactAll(s));
     // rev-9 / SEC-C: markup y enlaces se neutralizan con la MISMA función del
     // armador, no con una copia de la secuencia.

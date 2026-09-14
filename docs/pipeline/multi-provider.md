@@ -805,6 +805,32 @@ El **quota-detector cross-provider** ([`.pipeline/lib/quota-exhausted.js`](../..
 6. **Scope per-provider** ([#3077](https://github.com/intrale/platform/issues/3077) SEC-1): si el flag activo es del provider X y un skill corre con provider Y, el spawn pasa. **Cuando Anthropic se agota, los skills configurados con OpenAI siguen corriendo.**
 7. Cuando `Date.now() > resets_at`, la lectura defensiva devuelve `exhausted: false` y el módulo borra el flag (drenado natural).
 
+#### 5.3.1 El `pattern_matched` es lo que REPORTÓ el provider, no una adivinanza ([#7161](https://github.com/intrale/platform/issues/7161))
+
+El `error_type` que resuelve el detector (`_detectAnthropic` / `_detectOpenAI`) **viaja en el veredicto del parser** (`errorType`) hasta el punto que persiste el flag. El escritor lo revalida contra la allowlist del provider (SR-7 no se relaja) y recién ahí lo escribe.
+
+Sólo cuando **no** hay tipo propagado ni tipo re-derivable del `evidence` se cae al *default safe* = `allowlist[0]`, y ese degradado **deja traza** en el log (`error_type degradado a default (<tipo>) para <provider> — motivo=<...>`). Un `pattern_matched` sin esa traza es un tipo que el provider reportó de verdad.
+
+> **Incidente que fija la regla.** El frame de control de codex con cuenta ChatGPT (`turn.failed` con el límite en `error.message`) no trae `error.type`. Antes se descartaba el tipo correcto (`usage_limit_reached`), el escritor lo re-adivinaba, no encontraba candidato y caía a `insufficient_quota` — que significa "sin crédito/billing" y gatea 24h. Resultado: codex apagado ~19h de más sobre un cap rolling que se libera en una hora.
+
+#### 5.3.2 Cap rolling de codex: el gate dura lo que el CLI anuncia
+
+El límite de la cuenta ChatGPT es **rolling**, y el propio mensaje de control dice cuándo se libera:
+
+```
+You've hit your usage limit. Upgrade to Pro ... or try again at Sep 10th, 2026 1:00 AM.
+```
+
+Esa fecha se parsea (hora **local** del host: el mensaje no trae zona horaria) y viaja como `resetsAt` hasta `setFlag`. Para `usage_limit_reached` el escritor garantiza que el gate **nunca** degrada al fallback semanal ni al cap por proveedor:
+
+| Caso | `resets_at` persistido |
+|---|---|
+| Fecha anunciada y usable (entre +5 min y +24 h) | la anunciada |
+| Sin fecha en el mensaje | `now + 1 h` |
+| Fecha basura, en el pasado o a más de 24 h | `now + 1 h` |
+
+La ventana de 1 h es auto-correctora: si al drenarla codex sigue capado, el próximo intento vuelve a setear el flag.
+
 **Kill-switch operacional** (si por bug el flag queda persistente):
 
 ```bash

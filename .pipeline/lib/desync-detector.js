@@ -113,21 +113,32 @@ function normalizeIssue(issue) {
  *      dedupada por boot (#3616). El detector corre en loop → migrarlo
  *      cambiaría el comportamiento observable, contra CA-8.
  *
- * Por eso el acceso queda registrado en
- * `lib/operational-state-lint.allowlist.json` con su razón, en vez de
- * "migrarse" rompiendo la semántica. La versión estructural (exponer una
- * lectura tolerante de alcance de ola en el envoltorio) es #5191.
+ * #5113 CA-C1 (rebote rev-1) — Lo que NO puede seguir siendo es un lector
+ * FISICO. Las tres razones de arriba son razones para no usar la FACHADA
+ * (`waves.getAllowlist` / `readWaveStateStrict`), no para hablarle al disco: con
+ * el flag de cutover encendido el registro de olas vive en el store remoto y
+ * este `readFileSync` comparaba la allowlist efectiva contra un `waves.json`
+ * local stale — una segunda fuente de verdad, y encima la que alimenta el
+ * human-block del detector.
+ *
+ * La capa de storage (`operational-state-backend`) da exactamente el contrato
+ * que el detector pide y que ningun lector de la fachada daba: crudo, tolerante
+ * (devuelve `{ error }` en vez de lanzar) y sin efectos colaterales de alerta.
+ * La entrada de `operational-state-lint.allowlist.json` deja de hacer falta.
+ *
+ * Degradacion del store: `value === null` ⇒ mismo trato que "no hay canonica"
+ * ⇒ `null` ⇒ NO es desync. Es la respuesta correcta: sin poder leer la ola no
+ * hay comparacion posible, y afirmar un desync a ciegas dispararia human-block
+ * durante un incidente de red. La causa `estado_remoto_degradado` (CA-UX2) es
+ * la que le pone nombre a ese silencio en el tablero.
  */
 function readWavesAllowlist(opts = {}) {
-    const wavesPath = path.join(pipelineDir(), 'waves.json');
-    if (!fs.existsSync(wavesPath)) return null;
-    let parsed;
-    try {
-        parsed = JSON.parse(fs.readFileSync(wavesPath, 'utf8'));
-    } catch {
-        return null;
-    }
-    if (!parsed || typeof parsed !== 'object') return null;
+    // eslint-disable-next-line global-require
+    const backend = require('./operational-state-backend');
+    const res = backend.readKeyWithVersion(backend.KEYS.WAVES);
+    if (res.error) return null;      // ilegible/corrupto → igual que antes: no lanza.
+    const parsed = res.value;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
     const active = parsed.active_wave;
     // active_wave === null/undefined: no hay ola promovida vía Commander todavía
     // (estado inicial o legacy con allowlist seteado manualmente). NO es desync,

@@ -139,7 +139,7 @@ const CAUSE_PRIORITY = Object.freeze({
 const REASON_LABEL_DEFAULT = 'motivo desconocido';
 
 /**
- * Tabla de copy CERRADA — UX-3, los 15 códigos de `ALLOWED_REASON_CODES` + default.
+ * Tabla de copy CERRADA — UX-3, los 18 códigos de `ALLOWED_REASON_CODES` + default.
  *
  * Reglas de redacción (UX-3):
  *   - minúscula inicial (la línea ya arranca con el nombre del proveedor),
@@ -165,6 +165,18 @@ const REASON_TABLE = Object.freeze({
     },
     quota_exhausted: {
         text: () => 'el proveedor la reporta agotada (sin medición)',
+        cause: CAUSE_CUOTA,
+    },
+    // #7188 — `quota_flag_active` (#7181) NO mide cuota: dice que hay un slot
+    // vigente en `quota-exhausted.json` porque un spawn REAL falló por cuota.
+    // Por eso no puede decir "agotada" (UX-2) y tiene que distinguirse a simple
+    // vista de `quota_exhausted_real` (medido, con %) y de `quota_exhausted`
+    // (reportado por el adapter). Copy acordado con `ux`: mismo verbo que
+    // `rate_limited` ("frenado") porque la acción correcta es ESPERAR, no
+    // reautenticar. `CAUSE_CUOTA` y no transitoria: el titular de Telegram
+    // subestimaba la causa cuando caía al default.
+    quota_flag_active: {
+        text: () => 'frenado por un fallo reciente de cuota (sin medición)',
         cause: CAUSE_CUOTA,
     },
     rate_limited: { text: () => 'frenado por límite de frecuencia', cause: CAUSE_CUOTA },
@@ -215,6 +227,7 @@ const ACTION_SHORT = Object.freeze({
     unknown_provider: 'sin declarar en la configuración',
     quota_exhausted_real: 'con la cuota agotada',
     quota_exhausted: 'reportando la cuota agotada',
+    quota_flag_active: 'frenado por un fallo reciente de cuota', // #7188
     rate_limited: 'frenado por rate limit',
 });
 
@@ -235,6 +248,8 @@ const ACTION_FULL = Object.freeze({
     unknown_provider: (l) => `${l} no está declarado en la configuración. Revisalo en agent-models.json.`,
     quota_exhausted_real: (l) => `${l} agotó la cuota. Esperá el reset o sacalo de la cadena.`,
     quota_exhausted: (l) => `${l} reporta la cuota agotada. Esperá el reset o sacalo de la cadena.`,
+    // #7188 — misma acción que `quota_exhausted`: el flag se va solo al reset.
+    quota_flag_active: (l) => `${l} está frenado por un fallo reciente de cuota. Esperá el reset o sacalo de la cadena.`,
     rate_limited: (l) => `${l} está frenado por rate limit. Esperá o sacalo de la cadena.`,
 });
 

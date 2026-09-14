@@ -87,6 +87,39 @@ function readAgentModelsConfig() {
 // normalizando para no flipear a rojo al primario si fuera Codex.
 const DEFAULT_PROVIDER_ALIAS = Object.freeze({ openai: 'openai-codex' });
 
+/**
+ * #7181 — ¿Hay un slot de cuota ACTIVO para este provider?
+ *
+ * Lee el mismo `quota-exhausted.json` que gatea los spawns, para que el panel y
+ * el pipeline no puedan contradecirse. `readDefensive` drena los slots vencidos,
+ * así que un `true` de acá significa "gateado AHORA", no "estuvo gateado".
+ *
+ * Fail-open (devuelve false ante cualquier error): un problema leyendo el flag
+ * no debe pintar de rojo a un provider sano.
+ *
+ * @param {string} cronProvider  id del provider como lo nombra el cron ('openai').
+ * @param {number} nowMs
+ * @returns {boolean}
+ */
+function quotaFlagState(cronProvider, nowMs) {
+    let quotaModule;
+    try {
+        quotaModule = require('../quota-exhausted');
+    } catch {
+        return false;
+    }
+    const normalized = DEFAULT_PROVIDER_ALIAS[cronProvider] || cronProvider;
+    let snapshot;
+    try {
+        snapshot = quotaModule.readDefensive({ now: nowMs });
+    } catch {
+        return false;
+    }
+    if (!snapshot || snapshot.exhausted !== true) return false;
+    const slots = Array.isArray(snapshot.providers) ? snapshot.providers : [];
+    return slots.some(s => s && s.provider === normalized);
+}
+
 // Resolver paths según el contexto. En tests/CLI se pueden inyectar.
 function defaultStateDir() {
     return process.env.PIPELINE_STATE_DIR
@@ -552,6 +585,26 @@ async function pingAllProviders({ providers, prevSnapshot, secretsPath, fsImpl =
             } catch { /* fail-open: mantenemos el estado login-based */ }
         }
 
+        // #7181 — CUARTO INSUMO: el flag de cuota vigente.
+        //
+        // Para los providers CLI-OAuth el ping es `isBinaryOnPath`: confirma que
+        // el binario está INSTALADO, no que responda. Es incapaz, por
+        // construcción, de virar a rojo por cuota — así que codex podía figurar
+        // `green / cli_oauth_ok` mientras el pipeline lo tenía gateado y todo
+        // spawn suyo rebotaba. El operador leía "sano" y el flag decía "agotado":
+        // el panel contradecía al pipeline y ganaba la lectura equivocada.
+        //
+        // El flag es evidencia dura (lo escribió un spawn real que falló), así
+        // que manda sobre un ping que no mide cuota. Fail-open: si no se puede
+        // leer, queda el estado previo.
+        try {
+            const flagged = quotaFlagState(spec.provider, nowMs);
+            if (flagged && state !== 'red') {
+                state = 'red';
+                reasonCode = healthAlerts.sanitizeReasonCode('quota_flag_active');
+            }
+        } catch { /* fail-open */ }
+
         // #5888 R-E — CARRY-OVER obligatorio. El health-ping corre cada 5 min y
         // el cruce de catálogo cada 6h: sin esto, los ~71 ticks intermedios
         // resetearían la celda del panel a "nunca verificada" y el operador
@@ -969,6 +1022,8 @@ module.exports = {
     LOCK_FILENAME,
     AUDIT_FILENAME,
     runOnce,
+    // #7181 — expuesto para tests: el flag de cuota como insumo del estado.
+    quotaFlagState,
     tickIfDue,
     isTickDue,
     isWeeklyDue,

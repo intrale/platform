@@ -1281,6 +1281,10 @@ function stripProcedenciaAgente(data) {
     if (!data || typeof data !== 'object') return { falsificada: false, campos: [] };
 
     const campos = [];
+    for (const field of ['rebote_emitido_por', 'rebote_emitido_ts', 'rebote_emitido_destino', 'rebote_emitido_numero']) {
+        if (Object.prototype.hasOwnProperty.call(data, field)) campos.push(field);
+        delete data[field];
+    }
     if (data.veredicto_sintetizado_por !== undefined) campos.push('veredicto_sintetizado_por');
     if (data.agente_exit_code !== undefined) campos.push('agente_exit_code');
 

@@ -49,6 +49,14 @@ const ALLOWED_REASON_CODES = Object.freeze(new Set([
     'forbidden',
     'quota_exhausted',
     'quota_exhausted_real',   // #4283 — cuota REAL agotada (≥90%, #4202), distinto del flag reactivo binario
+    // #7181 — hay un slot ACTIVO en `quota-exhausted.json` para este provider.
+    // Es el único código que puede virar a rojo a un provider CLI-OAuth por
+    // cuota: su ping (`isBinaryOnPath`) sólo ve si el binario está instalado, y
+    // sin esto el panel mostraba `green` mientras el gate rebotaba cada spawn.
+    // Deliberadamente FUERA de `DURABLE_RED_REASONS` (dispatch-with-fallback):
+    // el flag ya gatea el spawn por su cuenta y se drena solo al vencer, así que
+    // no hace falta que además saque al provider de la cascada.
+    'quota_flag_active',
     'rate_limited',
     'unknown',
     'timeout',

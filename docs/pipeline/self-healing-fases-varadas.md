@@ -326,3 +326,19 @@ node --test .pipeline/lib/__tests__/servicio-reconciler.test.js
 real** de `buildStuckReconcilerDeps` (no un `allowed: true` mockeado). El objeto
 `deps` se extrajo de `pulpo.js` a `lib/stuck-reconciler-deps.js` justamente para
 que ese test sea posible sin cargar 16k líneas con side-effects.
+# Recibo de consumo del rebote
+
+Desde #7206, un rechazo ya materializado conserva `rebote_emitido_por`
+(`barrido` o `reconciler`), `rebote_emitido_ts`, `rebote_emitido_destino` y
+`rebote_emitido_numero`. Los escribe el orquestador después de crear el destino;
+un fallo de estampado se registra sin deshacer el rebote. El estado `procesado/`
+por sí solo no distingue un rechazo pendiente de uno ya atendido.
+
+El detector clasifica ese recibo como `consumed` y responde
+`none/rechazo-ya-rebotado`. Un rechazo sin recibo válido conserva su prioridad;
+no se convierte en aprobado ni en skill faltante. `listo/` también cuenta como
+estado vivo en otra fase, cubriendo la ventana antes del barrido.
+
+El on-exit elimina los cuatro campos si los declara un agente. El recibo legítimo
+se escribe después de esa limpieza y se conserva al mover el archivo; no debe
+volver a tratarse como declaración del agente al releer `procesado/`.

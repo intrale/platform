@@ -52,6 +52,14 @@ const { worktreeNeedle, worktreeBasename, branchToWorktreeBase } = require('./wo
 
 const DEFAULT_EXEC_OPTS = { encoding: 'utf8', timeout: 15000, windowsHide: true };
 
+// Tope de captura de stdout para `git` (#5215). `spawnSync` usa 1 MB por default
+// y `git ls-files` sobre este repo (>20.000 archivos) lo supera, abortando con
+// ENOBUFS. El censo de secretos era el consumidor afectado: degradaba a "-1"
+// (no medido) sin que nadie lo notara. Subir el tope es estrictamente permisivo
+// —ningun llamador que hoy funciona cambia de comportamiento— y acota igual el
+// consumo de memoria ante una salida patologica.
+const MAX_GIT_BUFFER_BYTES = 64 * 1024 * 1024;
+
 // Allowlist de autores aceptables para branches remotas creadas por el pipeline.
 // Se compara contra `git log --format=%ae -1 <rev-list-root>`. Cualquier email
 // que NO esté en esta lista hace que la verificación de procedencia falle.
@@ -112,6 +120,7 @@ function gitSpawn(args, opts = {}) {
         timeout,
         windowsHide: true,
         shell: false,
+        maxBuffer: MAX_GIT_BUFFER_BYTES,
     });
     if (res.error) throw res.error;
     if (typeof res.status === 'number' && res.status !== 0) {
@@ -754,4 +763,5 @@ module.exports = {
     MAX_RECOVERY_SUFFIX,
     MAX_EMAIL_LENGTH,
     SAFE_EMAIL_RE,
+    MAX_GIT_BUFFER_BYTES,
 };

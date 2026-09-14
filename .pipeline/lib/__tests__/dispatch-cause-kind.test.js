@@ -29,6 +29,8 @@ test('cada causa de despacho conocida se traduce a un kind del watchdog', () => 
         [dc.CAUSAS.CB_INFRA]: 'cb-infra',
         [dc.CAUSAS.PRESION_RECURSOS]: 'resource-pressure',
         [dc.CAUSAS.DISCO_LLENO]: 'disk-pressure',
+        // #5113 CA-UX2 — degradacion del estado operativo remoto.
+        [dc.CAUSAS.ESTADO_REMOTO_DEGRADADO]: 'opstate-remote-degraded',
     };
     assert.deepEqual({ ...dck.DISPATCH_CAUSE_TO_WATCHDOG_KIND }, esperado);
 });

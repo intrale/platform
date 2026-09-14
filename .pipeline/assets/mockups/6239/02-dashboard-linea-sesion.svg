@@ -1,0 +1,388 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Mockup 02 = Panel de Proveedores: linea de estado de sesion (#6239 · UX-8..UX-12)
+  =============================================================================
+  NOTA DE FORMATO: los tokens CSS se citan SIN su prefijo de dos guiones
+  (in-fg-dim, in-warn, in-info, in-bg-3, in-bad, provider-anthropic) porque XML
+  prohibe esa secuencia dentro de un comentario. En codigo van con el prefijo.
+
+  Demuestra:
+    - Estado ACTUAL (arriba): la fila de Claude tal como se ve hoy. La columna de
+      salud tiene badges, razon y barra de cuota. La vigencia de la sesion no
+      esta en ninguna pantalla: el operador se entera de que se vencio por la
+      lluvia de rebotes de los agentes que arrancan y mueren al primer intento.
+    - Estado ESPERADO (abajo): la MISMA fila con una tercera linea en
+      .prov-col-health, clase .prov-session, insertada entre .prov-health-reason
+      y la barra de cuota. Es informacion de contexto, no una alerta: no cambia
+      el badge de salud, no cambia el acento de la fila, no agrega panel nuevo.
+    - Los 5 estados de la linea: vigente, por vencer, urgente, vencida, sin datos.
+    - La decision de accesibilidad (UX-11) y la regla anti-colision (UX-9).
+
+  Superficie de implementacion (vinculante):
+    .pipeline/views/dashboard/providers.js
+      buildProvidersModel()  = expone el dato de vigencia de sesion en el modelo,
+                               solo para el provider anthropic.
+      renderProviderRow()    = pinta la linea dentro de la columna
+                               .prov-col-health, tercera posicion.
+    El copy sale de .pipeline/assets/copy/oauth-session-expiry/copy.json
+    (bloque dashboard.estados + dashboard.titles). La vista NO redacta copy
+    propio: UX-5 es verificable por la fase de validacion.
+
+  Sistema visual (seccion 2 de ux-criterios-6239.md):
+    - 100% reuso de design-tokens.css / theme.css. CERO tonos nuevos, CERO
+      iconos nuevos, CERO componentes nuevos. El sprite se queda en 123 simbolos.
+    - Fila .prov-row: fondo in-bg-3 #1f2937, borde in-border #30363d, acento
+      izquierdo de 4px provider-anthropic #E5946B.
+    - Linea nueva .prov-session: 11px, hereda el gap 6px de la columna, mismo
+      peso visual que .prov-health-reason.
+    - Tonos: in-fg-dim #8b949e (vigente) · in-warn #d29922 (por vencer, urgente,
+      vencida) · in-info #58a6ff (sin datos). Peso 600 normal, 700 en urgente y
+      vencida.
+    - Sin sprite: la linea no lleva icono, igual que .prov-health-reason y
+      .prov-vigencia. El unico glifo es el simbolo de atencion textual de los
+      dos estados fuertes.
+
+  Reglas vinculantes:
+    P1 · UX-8  = la linea NUNCA se oculta para la fila de Claude. La ausencia de
+                 dato es dato; una linea que aparece y desaparece hace dudar de
+                 la lectura.
+    P2 · UX-8  = el estado "vencida" EXISTE. Sin el, minutesLeft es negativo y el
+                 render literal muestra "vence en -37 min". RS-8 cubre la
+                 emision del aviso, no la vista.
+    P3 · UX-9  = clase propia .prov-session. Prohibido reusar prov-vigencia /
+                 renderVigenciaLine (providers.js:478-513), que significan
+                 "vigencia del cruce contra el catalogo de modelos" y viven en
+                 .prov-col-models. Anti-colision por vocabulario: todo texto de
+                 la linea nueva contiene "sesion"; todo texto de la de catalogo
+                 contiene "modelo" o "catalogo".
+    P4 · UX-10 = es METADATO, no alerta. Nunca cambia el badge de salud del
+                 provider (lo escribe el health-cron), nunca dispara el
+                 kill-switch, nunca cambia el acento de la fila. Solo sube de
+                 jerarquia (peso 700 + glifo textual) en urgente y vencida.
+    P5 · UX-12 = el tiempo se formatea con formatDurationEs(ms) de
+                 lib/wave-stall-watchdog.js:137. Un formateador nuevo daria dos
+                 redacciones distintas para la misma magnitud en la misma
+                 pantalla.
+
+  Accesibilidad (UX-11, contrastes medidos sobre el fondo REAL de la fila
+  #1f2937, que no es #161b22):
+    in-fg-dim #8b949e = 4.77:1  AA ok
+    in-warn   #d29922 = 5.82:1  AA ok
+    in-info   #58a6ff = 5.81:1  AA ok
+    in-bad    #f85149 = 4.38:1  AA NO  -> por eso urgente y vencida NO usan rojo
+    in-fg-soft #6e7681 = 3.20:1 AA NO  -> no se usa en esta linea
+    - Sin informacion solo por color (WCAG 1.4.1): cada estado cambia de palabra
+      (vigente / vence en / vencida / no verificable). El color es refuerzo.
+    - role="status" (polite). Es contexto, nunca interrumpe al lector de
+      pantalla. El unico role="alert" de la vista sigue siendo el que ya existe.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="1660" height="1510" viewBox="0 0 1660 1510" font-family="Segoe UI, system-ui, -apple-system, sans-serif">
+
+  <rect width="1660" height="1510" fill="#0D1117"/>
+
+  <text x="40" y="52" fill="#E6EDF3" font-size="26" font-weight="600">#6239 · Panel de Proveedores — la vigencia de la sesión se consulta, ya no se descubre</text>
+  <text x="40" y="80" fill="#8B949E" font-size="15">Una línea de metadato en la columna de salud, sólo en la fila de Claude. Es contexto, no alerta.</text>
+  <line x1="40" y1="100" x2="1620" y2="100" stroke="#21262D" stroke-width="1"/>
+
+  <!-- =================== ACTUAL · HEAD =================== -->
+  <g transform="translate(40,124)">
+    <rect x="0" y="0" width="1180" height="28" rx="8" fill="#1C2128"/>
+    <text x="16" y="19" fill="#8B949E" font-size="12.5" font-weight="600" letter-spacing="0.6">ACTUAL · HEAD — .prov-row del panel de Proveedores</text>
+
+    <g transform="translate(0,42)">
+      <rect x="0" y="0" width="1180" height="96" rx="12" fill="#1f2937" stroke="#30363d"/>
+      <rect x="0" y="0" width="4" height="96" rx="2" fill="#E5946B"/>
+
+      <!-- col 1 · prov-id -->
+      <circle cx="24" cy="48" r="10" fill="#E5946B" opacity="0.18"/>
+      <circle cx="24" cy="48" r="6" fill="#E5946B"/>
+      <text x="42" y="42" fill="#e6edf3" font-size="15" font-weight="800">Claude</text>
+      <rect x="42" y="50" width="86" height="18" rx="7" fill="rgba(52,217,224,0.14)" stroke="rgba(52,217,224,0.4)"/>
+      <text x="50" y="63" fill="#9fe9ee" font-size="9.5" font-weight="800" letter-spacing="0.5">🟦PLAN MAX</text>
+
+      <!-- col 2 · prov-col-key -->
+      <text x="234" y="52" fill="#8b949e" font-size="11.5" font-weight="600" font-family="ui-monospace, SFMono-Regular, Consolas, monospace">🔒 OAuth / MAX · sin API key</text>
+
+      <!-- col 3 · prov-col-health -->
+      <rect x="494" y="18" width="66" height="22" rx="11" fill="rgba(63,185,80,0.18)" stroke="#3fb950"/>
+      <circle cx="507" cy="29" r="7" fill="none" stroke="#3fb950" stroke-width="1.3"/>
+      <path d="M 503.5 29 L 506 31.5 L 510.5 26.3" fill="none" stroke="#3fb950" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+      <text x="518" y="33" fill="#3fb950" font-size="11" font-weight="600">SANO</text>
+      <rect x="568" y="19" width="80" height="20" rx="10" fill="rgba(63,185,80,0.18)" stroke="#3fb950"/>
+      <text x="578" y="33" fill="#3fb950" font-size="10.5" font-weight="700">CON CUOTA</text>
+      <text x="494" y="57" fill="#8b949e" font-size="11">OAuth CLI OK</text>
+      <rect x="494" y="66" width="170" height="7" rx="4" fill="#161b22" stroke="#30363d"/>
+      <rect x="494" y="66" width="73" height="7" rx="4" fill="#3fb950"/>
+      <text x="674" y="74" fill="#8b949e" font-size="10.5">43% carga 24h</text>
+
+      <!-- col 4 · prov-col-models -->
+      <rect x="773" y="38" width="117" height="20" rx="6" fill="#161b22" stroke="#30363d"/>
+      <text x="780" y="52" fill="#e6edf3" font-size="11" font-family="ui-monospace, SFMono-Regular, Consolas, monospace">claude-opus-4-6</text>
+      <text x="896" y="52" fill="#6e7681" font-size="11">·</text>
+      <rect x="910" y="38" width="130" height="20" rx="6" fill="#161b22" stroke="#30363d"/>
+      <text x="917" y="52" fill="#e6edf3" font-size="11" font-family="ui-monospace, SFMono-Regular, Consolas, monospace">claude-sonnet-4-7</text>
+
+      <!-- col 5 · prov-col-kill -->
+      <rect x="1070" y="33" width="92" height="30" rx="9" fill="rgba(63,185,80,0.18)" stroke="#3fb950"/>
+      <circle cx="1084" cy="48" r="4.5" fill="#3fb950"/>
+      <text x="1095" y="52" fill="#3fb950" font-size="11" font-weight="800">ACTIVO</text>
+
+      <!-- hueco donde deberia estar el dato -->
+      <text x="494" y="90" fill="#6e7681" font-size="10" font-style="italic">— sin rastro de la vigencia de la sesión —</text>
+    </g>
+  </g>
+
+  <g transform="translate(1244,166)">
+    <rect x="0" y="0" width="376" height="96" rx="10" fill="#161B22" stroke="#21262D"/>
+    <rect x="0" y="0" width="3" height="96" rx="1.5" fill="#F85149"/>
+    <text x="16" y="24" fill="#F85149" font-size="11.5" font-weight="700" letter-spacing="0.5">HOY NO SE VE EN NINGÚN LADO</text>
+    <text x="16" y="46" fill="#8B949E" font-size="12">El operador se entera de que la sesión</text>
+    <text x="16" y="64" fill="#8B949E" font-size="12">venció por la lluvia de rebotes: los</text>
+    <text x="16" y="82" fill="#8B949E" font-size="12">agentes nuevos mueren al arrancar.</text>
+  </g>
+
+  <!-- =================== ESPERADO =================== -->
+  <g transform="translate(40,292)">
+    <rect x="0" y="0" width="1180" height="28" rx="8" fill="rgba(63,185,80,0.14)"/>
+    <text x="16" y="19" fill="#3FB950" font-size="12.5" font-weight="600" letter-spacing="0.6">ESPERADO · #6239 — misma fila, tercera línea en .prov-col-health</text>
+
+    <g transform="translate(0,42)">
+      <rect x="0" y="0" width="1180" height="116" rx="12" fill="#1f2937" stroke="#30363d"/>
+      <rect x="0" y="0" width="4" height="116" rx="2" fill="#E5946B"/>
+
+      <!-- col 1 · prov-id (acento SIN cambios) -->
+      <circle cx="24" cy="58" r="10" fill="#E5946B" opacity="0.18"/>
+      <circle cx="24" cy="58" r="6" fill="#E5946B"/>
+      <text x="42" y="52" fill="#e6edf3" font-size="15" font-weight="800">Claude</text>
+      <rect x="42" y="60" width="86" height="18" rx="7" fill="rgba(52,217,224,0.14)" stroke="rgba(52,217,224,0.4)"/>
+      <text x="50" y="73" fill="#9fe9ee" font-size="9.5" font-weight="800" letter-spacing="0.5">🟦PLAN MAX</text>
+
+      <!-- col 2 · prov-col-key -->
+      <text x="234" y="62" fill="#8b949e" font-size="11.5" font-weight="600" font-family="ui-monospace, SFMono-Regular, Consolas, monospace">🔒 OAuth / MAX · sin API key</text>
+
+      <!-- col 3 · prov-col-health -->
+      <rect x="494" y="18" width="66" height="22" rx="11" fill="rgba(63,185,80,0.18)" stroke="#3fb950"/>
+      <circle cx="507" cy="29" r="7" fill="none" stroke="#3fb950" stroke-width="1.3"/>
+      <path d="M 503.5 29 L 506 31.5 L 510.5 26.3" fill="none" stroke="#3fb950" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+      <text x="518" y="33" fill="#3fb950" font-size="11" font-weight="600">SANO</text>
+      <rect x="568" y="19" width="80" height="20" rx="10" fill="rgba(63,185,80,0.18)" stroke="#3fb950"/>
+      <text x="578" y="33" fill="#3fb950" font-size="10.5" font-weight="700">CON CUOTA</text>
+
+      <text x="494" y="57" fill="#8b949e" font-size="11">OAuth CLI OK</text>
+
+      <!-- LA LINEA NUEVA · .prov-session -->
+      <rect x="488" y="64" width="198" height="19" rx="5" fill="none" stroke="#3fb950" stroke-width="1" stroke-dasharray="3 3" opacity="0.85"/>
+      <text x="494" y="78" fill="#8b949e" font-size="11" font-weight="600">sesión vigente · quedan 5 h 20 min</text>
+      <rect x="696" y="66" width="56" height="15" rx="7" fill="rgba(63,185,80,0.16)" stroke="#3fb950"/>
+      <text x="704" y="77" fill="#3fb950" font-size="8.5" font-weight="800" letter-spacing="0.5">NUEVO</text>
+
+      <rect x="494" y="90" width="170" height="7" rx="4" fill="#161b22" stroke="#30363d"/>
+      <rect x="494" y="90" width="73" height="7" rx="4" fill="#3fb950"/>
+      <text x="674" y="98" fill="#8b949e" font-size="10.5">43% carga 24h</text>
+
+      <!-- col 4 · prov-col-models -->
+      <rect x="773" y="48" width="117" height="20" rx="6" fill="#161b22" stroke="#30363d"/>
+      <text x="780" y="62" fill="#e6edf3" font-size="11" font-family="ui-monospace, SFMono-Regular, Consolas, monospace">claude-opus-4-6</text>
+      <text x="896" y="62" fill="#6e7681" font-size="11">·</text>
+      <rect x="910" y="48" width="130" height="20" rx="6" fill="#161b22" stroke="#30363d"/>
+      <text x="917" y="62" fill="#e6edf3" font-size="11" font-family="ui-monospace, SFMono-Regular, Consolas, monospace">claude-sonnet-4-7</text>
+
+      <!-- col 5 · prov-col-kill (SIN cambios) -->
+      <rect x="1070" y="43" width="92" height="30" rx="9" fill="rgba(63,185,80,0.18)" stroke="#3fb950"/>
+      <circle cx="1084" cy="58" r="4.5" fill="#3fb950"/>
+      <text x="1095" y="62" fill="#3fb950" font-size="11" font-weight="800">ACTIVO</text>
+    </g>
+  </g>
+
+  <g transform="translate(1244,334)">
+    <rect x="0" y="0" width="376" height="116" rx="10" fill="#161B22" stroke="#21262D"/>
+    <rect x="0" y="0" width="3" height="116" rx="1.5" fill="#3FB950"/>
+    <text x="16" y="24" fill="#3FB950" font-size="11.5" font-weight="700" letter-spacing="0.5">ES METADATO, NO ALERTA</text>
+    <text x="16" y="46" fill="#8B949E" font-size="12">Entre .prov-health-reason y la barra de</text>
+    <text x="16" y="64" fill="#8B949E" font-size="12">cuota, con el mismo peso visual que la</text>
+    <text x="16" y="82" fill="#8B949E" font-size="12">línea de razón. El operador la consulta</text>
+    <text x="16" y="100" fill="#8B949E" font-size="12">cuando la busca; nadie lo interrumpe.</text>
+  </g>
+
+  <!-- =================== LOS 5 ESTADOS =================== -->
+  <text x="40" y="500" fill="#E6EDF3" font-size="19" font-weight="600">Los 5 estados de la línea (UX-8) — textos literales de copy.json</text>
+  <line x1="40" y1="514" x2="1620" y2="514" stroke="#21262D"/>
+
+  <text x="60" y="534" fill="#6E7681" font-size="10.5" font-weight="600" letter-spacing="0.6">ESTADO · TEXTO LITERAL SOBRE EL FONDO REAL #1f2937</text>
+  <text x="520" y="534" fill="#6E7681" font-size="10.5" font-weight="600" letter-spacing="0.6">TOKEN</text>
+  <text x="740" y="534" fill="#6E7681" font-size="10.5" font-weight="600" letter-spacing="0.6">PESO</text>
+  <text x="870" y="534" fill="#6E7681" font-size="10.5" font-weight="600" letter-spacing="0.6">CONTRASTE</text>
+  <text x="1120" y="534" fill="#6E7681" font-size="10.5" font-weight="600" letter-spacing="0.6">CUÁNDO</text>
+
+  <!-- E1 · vigente -->
+  <g transform="translate(40,544)">
+    <rect x="0" y="0" width="1580" height="62" rx="10" fill="#161B22" stroke="#21262D"/>
+    <rect x="0" y="0" width="4" height="62" rx="2" fill="#8B949E"/>
+    <text x="20" y="22" fill="#8B949E" font-size="10.5" font-weight="600" letter-spacing="0.6">E1 · VIGENTE</text>
+    <rect x="20" y="30" width="430" height="24" rx="6" fill="#1f2937" stroke="#30363d"/>
+    <text x="32" y="46" fill="#8b949e" font-size="11" font-weight="600">sesión vigente · quedan 5 h 20 min</text>
+    <text x="480" y="46" fill="#8B949E" font-size="11.5" font-family="ui-monospace, SFMono-Regular, Consolas, monospace">in-fg-dim · #8b949e</text>
+    <text x="700" y="46" fill="#8B949E" font-size="11.5">600</text>
+    <text x="830" y="46" fill="#3FB950" font-size="11.5" font-weight="600">4.77:1 ✓ AA</text>
+    <text x="1080" y="46" fill="#6E7681" font-size="11.5">más de 30 minutos</text>
+  </g>
+
+  <!-- E2 · por vencer -->
+  <g transform="translate(40,616)">
+    <rect x="0" y="0" width="1580" height="62" rx="10" fill="#161B22" stroke="#21262D"/>
+    <rect x="0" y="0" width="4" height="62" rx="2" fill="#D29922"/>
+    <text x="20" y="22" fill="#8B949E" font-size="10.5" font-weight="600" letter-spacing="0.6">E2 · POR VENCER</text>
+    <rect x="20" y="30" width="430" height="24" rx="6" fill="#1f2937" stroke="#30363d"/>
+    <text x="32" y="46" fill="#d29922" font-size="11" font-weight="600">la sesión vence en 27 min</text>
+    <text x="480" y="46" fill="#8B949E" font-size="11.5" font-family="ui-monospace, SFMono-Regular, Consolas, monospace">in-warn · #d29922</text>
+    <text x="700" y="46" fill="#8B949E" font-size="11.5">600</text>
+    <text x="830" y="46" fill="#3FB950" font-size="11.5" font-weight="600">5.82:1 ✓ AA</text>
+    <text x="1080" y="46" fill="#6E7681" font-size="11.5">30 minutos o menos</text>
+  </g>
+
+  <!-- E3 · urgente -->
+  <g transform="translate(40,688)">
+    <rect x="0" y="0" width="1580" height="62" rx="10" fill="#161B22" stroke="#30363D"/>
+    <rect x="0" y="0" width="4" height="62" rx="2" fill="#D29922"/>
+    <text x="20" y="22" fill="#8B949E" font-size="10.5" font-weight="600" letter-spacing="0.6">E3 · URGENTE — sube de jerarquía con copy y peso, NO con color</text>
+    <rect x="20" y="30" width="430" height="24" rx="6" fill="#1f2937" stroke="#30363d"/>
+    <text x="32" y="46" fill="#d29922" font-size="11" font-weight="700">⚠ la sesión vence en 8 min</text>
+    <text x="480" y="46" fill="#8B949E" font-size="11.5" font-family="ui-monospace, SFMono-Regular, Consolas, monospace">in-warn · #d29922</text>
+    <text x="700" y="46" fill="#E6EDF3" font-size="11.5" font-weight="700">700</text>
+    <text x="830" y="46" fill="#3FB950" font-size="11.5" font-weight="600">5.82:1 ✓ AA</text>
+    <text x="1080" y="46" fill="#6E7681" font-size="11.5">10 minutos o menos</text>
+  </g>
+
+  <!-- E4 · vencida -->
+  <g transform="translate(40,760)">
+    <rect x="0" y="0" width="1580" height="62" rx="10" fill="#161B22" stroke="#30363D"/>
+    <rect x="0" y="0" width="4" height="62" rx="2" fill="#D29922"/>
+    <text x="20" y="22" fill="#8B949E" font-size="10.5" font-weight="600" letter-spacing="0.6">E4 · VENCIDA — no está en el issue; sin este estado el render dice «vence en -37 min»</text>
+    <rect x="20" y="30" width="430" height="24" rx="6" fill="#1f2937" stroke="#30363d"/>
+    <text x="32" y="46" fill="#d29922" font-size="11" font-weight="700">⚠ sesión vencida</text>
+    <text x="480" y="46" fill="#8B949E" font-size="11.5" font-family="ui-monospace, SFMono-Regular, Consolas, monospace">in-warn · #d29922</text>
+    <text x="700" y="46" fill="#E6EDF3" font-size="11.5" font-weight="700">700</text>
+    <text x="830" y="46" fill="#3FB950" font-size="11.5" font-weight="600">5.82:1 ✓ AA</text>
+    <text x="1080" y="46" fill="#6E7681" font-size="11.5">0 minutos o menos</text>
+  </g>
+
+  <!-- E5 · sin datos -->
+  <g transform="translate(40,832)">
+    <rect x="0" y="0" width="1580" height="62" rx="10" fill="#161B22" stroke="#21262D"/>
+    <rect x="0" y="0" width="4" height="62" rx="2" fill="#58A6FF"/>
+    <text x="20" y="22" fill="#8B949E" font-size="10.5" font-weight="600" letter-spacing="0.6">E5 · SIN DATOS — dice «de la sesión» porque «vigencia no verificable» ya es del catálogo</text>
+    <rect x="20" y="30" width="430" height="24" rx="6" fill="#1f2937" stroke="#30363d"/>
+    <text x="32" y="46" fill="#58a6ff" font-size="11" font-weight="600">vigencia de la sesión no verificable</text>
+    <text x="480" y="46" fill="#8B949E" font-size="11.5" font-family="ui-monospace, SFMono-Regular, Consolas, monospace">in-info · #58a6ff</text>
+    <text x="700" y="46" fill="#8B949E" font-size="11.5">600</text>
+    <text x="830" y="46" fill="#3FB950" font-size="11.5" font-weight="600">5.81:1 ✓ AA</text>
+    <text x="1080" y="46" fill="#6E7681" font-size="11.5">no se pudo leer el dato</text>
+  </g>
+
+  <!-- =================== UX-11 · ACCESIBILIDAD =================== -->
+  <g transform="translate(40,924)">
+    <rect x="0" y="0" width="780" height="300" rx="10" fill="#161B22" stroke="#21262D"/>
+    <text x="24" y="32" fill="#E6EDF3" font-size="15.5" font-weight="600">UX-11 · Por qué el estado urgente NO usa rojo</text>
+    <text x="24" y="55" fill="#8B949E" font-size="12">Contrastes medidos sobre el fondo real de la fila, #1f2937 — no sobre #161b22.</text>
+    <line x1="24" y1="68" x2="756" y2="68" stroke="#30363D"/>
+
+    <text x="24" y="88" fill="#6E7681" font-size="10.5" font-weight="600" letter-spacing="0.6">TOKEN</text>
+    <text x="150" y="88" fill="#6E7681" font-size="10.5" font-weight="600" letter-spacing="0.6">MUESTRA A 11px SOBRE #1f2937</text>
+    <text x="520" y="88" fill="#6E7681" font-size="10.5" font-weight="600" letter-spacing="0.6">RATIO</text>
+    <text x="620" y="88" fill="#6E7681" font-size="10.5" font-weight="600" letter-spacing="0.6">WCAG AA</text>
+
+    <text x="24" y="119" fill="#F85149" font-size="11.5" font-family="ui-monospace, SFMono-Regular, Consolas, monospace">in-bad #f85149</text>
+    <rect x="150" y="102" width="350" height="26" rx="6" fill="#1f2937" stroke="#30363d"/>
+    <text x="162" y="119" fill="#f85149" font-size="11" font-weight="700">⚠ la sesión vence en 8 min</text>
+    <text x="520" y="119" fill="#F85149" font-size="12.5" font-weight="700">4.38:1</text>
+    <text x="620" y="119" fill="#F85149" font-size="12.5" font-weight="600">✗ no pasa</text>
+
+    <text x="24" y="161" fill="#D29922" font-size="11.5" font-family="ui-monospace, SFMono-Regular, Consolas, monospace">in-warn #d29922</text>
+    <rect x="150" y="144" width="350" height="26" rx="6" fill="#1f2937" stroke="#30363d"/>
+    <text x="162" y="161" fill="#d29922" font-size="11" font-weight="700">⚠ la sesión vence en 8 min</text>
+    <text x="520" y="161" fill="#D29922" font-size="12.5" font-weight="700">5.82:1</text>
+    <text x="620" y="161" fill="#3FB950" font-size="12.5" font-weight="600">✓ pasa</text>
+
+    <line x1="24" y1="190" x2="756" y2="190" stroke="#30363D" stroke-dasharray="4 4"/>
+
+    <text x="24" y="214" fill="#B1BAC4" font-size="12.5" font-style="italic">«La jerarquía entre "por vencer" y "urgente" se construye con copy y peso</text>
+    <text x="24" y="234" fill="#B1BAC4" font-size="12.5" font-style="italic">tipográfico, no subiendo la saturación a un tono que no pasa AA en 11px.»</text>
+
+    <text x="24" y="262" fill="#8B949E" font-size="11.5">Si en el futuro hiciera falta rojo, las salidas válidas son subir el texto a ≥14px</text>
+    <text x="24" y="280" fill="#8B949E" font-size="11.5">en negrita (AA large, 3:1) o dejar el rojo sólo en un indicador no textual.</text>
+  </g>
+
+  <!-- =================== UX-9 · ANTI-COLISIÓN =================== -->
+  <g transform="translate(840,924)">
+    <rect x="0" y="0" width="780" height="300" rx="10" fill="#161B22" stroke="#21262D"/>
+    <text x="24" y="32" fill="#E6EDF3" font-size="15.5" font-weight="600">UX-9 · Anti-colisión con la línea de catálogo que ya existe</text>
+    <text x="24" y="55" fill="#8B949E" font-size="12">Conviven en la misma fila, en columnas distintas. Se distinguen por vocabulario.</text>
+    <line x1="24" y1="68" x2="756" y2="68" stroke="#30363D"/>
+
+    <g transform="translate(24,80)">
+      <rect x="0" y="0" width="350" height="98" rx="8" fill="#0D1117" stroke="#21262D"/>
+      <text x="12" y="20" fill="#6E7681" font-size="10.5" font-weight="700" letter-spacing="0.5">YA EXISTE · .prov-vigencia</text>
+      <text x="12" y="36" fill="#6E7681" font-size="10">columna de modelos (.prov-col-models)</text>
+      <rect x="12" y="44" width="326" height="22" rx="5" fill="#1f2937" stroke="#30363d"/>
+      <text x="22" y="59" fill="#8b949e" font-size="11">verificado hace 2 h</text>
+      <rect x="12" y="70" width="326" height="22" rx="5" fill="#1f2937" stroke="#30363d"/>
+      <text x="22" y="85" fill="#d29922" font-size="11">modelo fuera de catálogo · verificado hace 2 h</text>
+    </g>
+
+    <g transform="translate(406,80)">
+      <rect x="0" y="0" width="350" height="98" rx="8" fill="#0D1117" stroke="#3FB950" stroke-opacity="0.4"/>
+      <text x="12" y="20" fill="#3FB950" font-size="10.5" font-weight="700" letter-spacing="0.5">NUEVA · .prov-session</text>
+      <text x="12" y="36" fill="#6E7681" font-size="10">columna de salud (.prov-col-health)</text>
+      <rect x="12" y="44" width="326" height="22" rx="5" fill="#1f2937" stroke="#30363d"/>
+      <text x="22" y="59" fill="#8b949e" font-size="11" font-weight="600">sesión vigente · quedan 5 h 20 min</text>
+      <rect x="12" y="70" width="326" height="22" rx="5" fill="#1f2937" stroke="#30363d"/>
+      <text x="22" y="85" fill="#d29922" font-size="11" font-weight="700">⚠ la sesión vence en 8 min</text>
+    </g>
+
+    <text x="24" y="200" fill="#B1BAC4" font-size="12.5">Regla: todo texto de la línea nueva contiene la palabra «sesión»; todo texto de la</text>
+    <text x="24" y="218" fill="#B1BAC4" font-size="12.5">de catálogo contiene «modelo» o «catálogo». Eso las hace distinguibles.</text>
+
+    <rect x="24" y="232" width="732" height="54" rx="8" fill="rgba(248,81,73,0.08)" stroke="rgba(248,81,73,0.35)"/>
+    <path d="M 46 244 L 56 262 L 36 262 Z" fill="none" stroke="#F85149" stroke-width="1.5" stroke-linejoin="round"/>
+    <path d="M 46 250 L 46 255" stroke="#F85149" stroke-width="1.5" stroke-linecap="round"/>
+    <circle cx="46" cy="258.5" r="0.9" fill="#F85149"/>
+    <text x="70" y="253" fill="#F85149" font-size="12" font-weight="600">NO reusar prov-vigencia ni renderVigenciaLine (providers.js:478-513):</text>
+    <text x="70" y="271" fill="#F85149" font-size="12">ya significan «vigencia del cruce contra el catálogo de modelos».</text>
+  </g>
+
+  <!-- =================== REGLAS DE PRESENTACIÓN =================== -->
+  <g transform="translate(40,1254)">
+    <rect x="0" y="0" width="1580" height="220" rx="10" fill="#1C2128" stroke="#21262D"/>
+    <text x="24" y="30" fill="#E6EDF3" font-size="15" font-weight="600">Reglas de presentación — vinculantes</text>
+    <line x1="24" y1="44" x2="1556" y2="44" stroke="#30363D"/>
+
+    <circle cx="32" cy="68" r="2.5" fill="#3FB950"/>
+    <text x="46" y="72" fill="#8B949E" font-size="12" font-weight="700">UX-8</text>
+    <text x="112" y="72" fill="#B1BAC4" font-size="13">La línea nunca se oculta para la fila de Claude: la ausencia de dato también es dato, y una línea que aparece y desaparece hace dudar de la lectura.</text>
+
+    <circle cx="32" cy="90" r="2.5" fill="#3FB950"/>
+    <text x="46" y="94" fill="#8B949E" font-size="12" font-weight="700">UX-8</text>
+    <text x="112" y="94" fill="#B1BAC4" font-size="13">El estado «vencida» existe, o el render muestra literalmente «vence en -37 min» cuando minutesLeft es negativo. RS-8 cubre la emisión, no la vista.</text>
+
+    <circle cx="32" cy="112" r="2.5" fill="#D29922"/>
+    <text x="46" y="116" fill="#8B949E" font-size="12" font-weight="700">UX-10</text>
+    <text x="112" y="116" fill="#B1BAC4" font-size="13">Nunca cambia el badge de salud del provider: ese badge lo escribe el health-cron, y decir «CAÍDO» por una sesión que vence sería mentir sobre la cadena.</text>
+
+    <circle cx="32" cy="134" r="2.5" fill="#D29922"/>
+    <text x="46" y="138" fill="#8B949E" font-size="12" font-weight="700">UX-10</text>
+    <text x="112" y="138" fill="#B1BAC4" font-size="13">Nunca dispara el kill-switch ni cambia el acento izquierdo de la fila (#E5946B se queda como está).</text>
+
+    <circle cx="32" cy="156" r="2.5" fill="#D29922"/>
+    <text x="46" y="160" fill="#8B949E" font-size="12" font-weight="700">UX-10</text>
+    <text x="112" y="160" fill="#B1BAC4" font-size="13">Sólo sube de jerarquía —peso 700 y el glifo ⚠ textual— en los estados urgente y vencida. En los otros tres es metadato plano.</text>
+
+    <circle cx="32" cy="178" r="2.5" fill="#58A6FF"/>
+    <text x="46" y="182" fill="#8B949E" font-size="12" font-weight="700">UX-11</text>
+    <text x="112" y="182" fill="#B1BAC4" font-size="13">role="status" (polite), nunca role="alert": es contexto y no interrumpe al lector de pantalla. El único role="alert" de la vista sigue siendo el que ya existe.</text>
+
+    <circle cx="32" cy="200" r="2.5" fill="#58A6FF"/>
+    <text x="46" y="204" fill="#8B949E" font-size="12" font-weight="700">UX-12</text>
+    <text x="112" y="204" fill="#B1BAC4" font-size="13">El tiempo se formatea con formatDurationEs(ms) reusado de lib/wave-stall-watchdog.js:137 — nunca un formateador nuevo con otra redacción.</text>
+  </g>
+
+</svg>

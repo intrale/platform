@@ -209,17 +209,43 @@ function readFileTail(filePath, maxBytes) {
 }
 
 /**
+ * ¿El objeto `rate_limits` trae al menos una ventana clasificable?
+ *
+ * #7181 — El CLI de Codex emite DOS formas de `rate_limits` y sólo una tiene
+ * ventanas. Con `limit_id:"codex"` vienen `primary`/`secondary` pobladas
+ * (`used_percent` + `window_minutes` + `resets_at`); con `limit_id:"premium"`
+ * —el frame que acompaña al tope de créditos— vienen ambas en `null` y el único
+ * campo con contenido es `credits`. Un frame sin ventanas NO es un dato de
+ * cuota: es la ausencia de ese dato, y por eso no puede desplazar a la última
+ * medición real (ver `readLatestEvent`).
+ *
+ * @param {Object} rateLimits
+ * @returns {boolean}
+ */
+function hasUsableWindows(rateLimits) {
+    const { session, weekly } = classifyBuckets(rateLimits);
+    return !!(session || weekly);
+}
+
+/**
  * Extrae de un contenido JSONL el ÚLTIMO objeto `rate_limits` (el más reciente),
  * escaneando de la última línea hacia atrás. Cada evento del rollout es un JSON
  * por línea; los que traen cuota exponen `payload.rate_limits`. Devuelve el
  * objeto de cuota + el timestamp ISO del evento (en ms). NO lanza: `null` si no
  * hay ninguno legible.
  *
+ * #7181 — `opts.requireWindows` restringe el barrido a eventos con ventanas
+ * clasificables, para que un frame `premium` (todo `null`) no tape la última
+ * medición real que quedó unas líneas más arriba en el MISMO rollout.
+ *
  * @param {string} content  Texto JSONL (puede ser una cola parcial del archivo).
+ * @param {object} [opts]
+ * @param {boolean} [opts.requireWindows=false]
  * @returns {{tsMs:(number|null), rateLimits:Object}|null}
  */
-function extractLatestRateLimits(content) {
+function extractLatestRateLimits(content, opts = {}) {
     if (typeof content !== 'string' || content.length === 0) return null;
+    const requireWindows = opts.requireWindows === true;
     const lines = content.split('\n');
     for (let i = lines.length - 1; i >= 0; i--) {
         const line = lines[i].trim();
@@ -236,6 +262,7 @@ function extractLatestRateLimits(content) {
             ? obj.payload.rate_limits
             : null;
         if (!rl || typeof rl !== 'object') continue;
+        if (requireWindows && !hasUsableWindows(rl)) continue;
         const tsMs = typeof obj.timestamp === 'string' ? Date.parse(obj.timestamp) : NaN;
         return { tsMs: Number.isFinite(tsMs) ? tsMs : null, rateLimits: rl };
     }
@@ -253,13 +280,14 @@ function extractLatestRateLimits(content) {
  * @param {string} sessionsDir  Directorio de sesiones (`~/.codex/sessions`).
  * @returns {{tsMs:(number|null), rateLimits:Object}|null}
  */
-function readLatestEvent(sessionsDir) {
+function readLatestEvent(sessionsDir, opts = {}) {
+    const requireWindows = opts.requireWindows !== false;
     const files = listRecentRolloutFiles(sessionsDir, MAX_ROLLOUTS_TO_SCAN);
     let latest = null;
     for (const file of files) {
         const content = readFileTail(file, ROLLOUT_TAIL_BYTES);
         if (content == null) continue;
-        const event = extractLatestRateLimits(content);
+        const event = extractLatestRateLimits(content, { requireWindows });
         if (!event) continue;
         // Conservar un evento sin timestamp sólo como fallback degradado. Un
         // evento fechado siempre es preferible y, entre fechados, gana el más
@@ -426,7 +454,55 @@ function openaiCodexAdapter(sessionData) {
     return result;
 }
 
+/**
+ * Ventanas OBSERVADAS por Codex, sin gatear por frescura (#7181).
+ *
+ * Por qué existe aparte del adapter: el adapter mide "cuánto queda AHORA", y
+ * para eso un dato viejo no sirve — con >1h de antigüedad degrada a `unknown`.
+ * Pero el `resets_at` de una ventana NO envejece: es una fecha futura anunciada
+ * por el propio servidor, y sigue siendo cierta aunque el porcentaje que la
+ * acompañaba ya no lo sea. La reconciliación del flag de cuota necesita
+ * exactamente ese dato y no el porcentaje, así que lo lee por acá en vez de
+ * relajar el umbral de staleness del adapter (que protege otra decisión).
+ *
+ * @param {object} [opts]
+ * @param {string} [opts.sessionsDir]
+ * @param {Function} [opts.readEventImpl]  inyectable para tests.
+ * @returns {{tsMs:(number|null), session:(Object|null), weekly:(Object|null)}|null}
+ */
+function readObservedWindows(opts = {}) {
+    // Misma prioridad que el adapter: override explícito → env
+    // `CODEX_SESSIONS_DIR` → default. Resolverlo distinto haría que esta lectura
+    // ignore la redirección que el resto del adapter sí respeta.
+    const envDir = typeof process.env.CODEX_SESSIONS_DIR === 'string'
+        && process.env.CODEX_SESSIONS_DIR.length > 0
+        ? process.env.CODEX_SESSIONS_DIR
+        : null;
+    const sessionsDir = (typeof opts.sessionsDir === 'string' && opts.sessionsDir.length > 0)
+        ? opts.sessionsDir
+        : (envDir || defaultCodexSessionsDir());
+    const readEvent = typeof opts.readEventImpl === 'function'
+        ? opts.readEventImpl
+        : readLatestEvent;
+    let event;
+    try {
+        event = readEvent(sessionsDir, { requireWindows: true });
+    } catch {
+        return null; // fail-secure: sin dato, el caller no reconcilia nada.
+    }
+    if (!event) return null;
+    const { session, weekly } = classifyBuckets(event.rateLimits);
+    if (!session && !weekly) return null;
+    return {
+        tsMs: Number.isFinite(event.tsMs) ? event.tsMs : null,
+        session,
+        weekly,
+    };
+}
+
 // Exponer helpers puros + constantes para tests y consumidores.
+openaiCodexAdapter.readObservedWindows = readObservedWindows;
+openaiCodexAdapter.hasUsableWindows = hasUsableWindows;
 openaiCodexAdapter.classifyBuckets = classifyBuckets;
 openaiCodexAdapter.extractLatestRateLimits = extractLatestRateLimits;
 openaiCodexAdapter.listRecentRolloutFiles = listRecentRolloutFiles;

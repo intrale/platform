@@ -271,6 +271,19 @@ function deriveHead(cwd) {
   return output.toLowerCase();
 }
 
+// Sólo acepta commits completos y nunca confía en refs/replace ni en sello.tree.
+function deriveTree(cwd, sha) {
+  if (typeof sha !== 'string' || !HEX40.test(sha)) throw new SealError('head-invalido');
+  const options = { encoding: 'utf8', timeout: 10000, windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] };
+  try {
+    const commit = execFileSync('git', ['--no-replace-objects', '-C', cwd, 'rev-parse', '--verify', '--end-of-options', sha + '^{commit}'], options).trim();
+    if (commit !== sha) throw new SealError('head-no-resoluble');
+    const tree = execFileSync('git', ['--no-replace-objects', '-C', cwd, 'rev-parse', '--verify', '--end-of-options', sha + '^{tree}'], options).trim();
+    if (!HEX40.test(tree)) throw new SealError('head-no-resoluble');
+    return tree.toLowerCase();
+  } catch { throw new SealError('head-no-resoluble'); }
+}
+
 /**
  * Compila el basename de un glob a matcher. Lo comparten `expandGlob` (camino
  * autoritativo) y `resolvesToExistingFile` (sonda de existencia): si divergieran,
@@ -875,7 +888,7 @@ function sealQaVerdict({ root, issue, data, cwd, workspaces, declared: declaredP
       // Sin `delete` aca: `stripDeclaredSeal` ya lo saco de `data` al entrar.
     }
 
-    const manifest = { version: 1, derivado_por: 'qa-evidence-seal', head, artefactos: artifacts, descartes: discards };
+    const manifest = { version: 1, derivado_por: 'qa-evidence-seal', head, tree: deriveTree(cwd, head), artefactos: artifacts, descartes: discards };
     data.sello = manifest;
     return { sealed: true, manifest, descartes: discards, reason: null };
   } catch (error) {
@@ -1024,6 +1037,7 @@ const FRESHNESS_REASONS = new Set([
   'sin-sello',
   'head-no-resoluble',
   'head-desincronizado',
+  'arbol-distinto',
   'sellado-invalido',
 ]);
 
@@ -1035,6 +1049,7 @@ const FRESHNESS_MESSAGES = {
   'sin-sello': 'El veredicto aprobado de QA no tiene sello: no hay contra qué verificar el commit',
   'head-no-resoluble': 'No se pudo determinar el commit actual de la rama',
   'head-desincronizado': 'La rama avanzó después de que QA aprobó: el commit verificado ya no es el que se iba a integrar',
+  'arbol-distinto': 'La rama cambió de contenido después de que QA aprobó: el árbol verificado no es el que se iba a integrar',
   'sellado-invalido': 'No se pudo establecer la frescura del veredicto de QA',
 };
 
@@ -1243,9 +1258,10 @@ function hasMigrationExemption(data) {
 function sealHeadOnly({ data, cwd, motivo, modo } = {}) {
   if (!data || typeof data !== 'object') return { sealed: false, manifest: null, reason: 'no-aplica' };
   if (data.resultado !== 'aprobado') return { sealed: false, manifest: null, reason: 'no-aplica' };
-  let head;
+  let head, tree;
   try {
     head = deriveHead(cwd);
+    tree = deriveTree(cwd, head);
   } catch (error) {
     const safeError = error instanceof SealError ? error : new SealError('head-invalido');
     logFailure(safeError);
@@ -1255,6 +1271,7 @@ function sealHeadOnly({ data, cwd, motivo, modo } = {}) {
     version: 1,
     derivado_por: 'qa-evidence-seal',
     head,
+    tree,
     artefactos: [],
     sin_artefactos: { motivo: sanitizeReason(motivo), modo: safeSlug(modo) },
   };
@@ -1351,10 +1368,100 @@ function checkVerdictFreshness({ root, pipelineDir, issue, cwd } = {}) {
   } catch {
     return { ...vacio, motivo: 'head-no-resoluble', head_sellado: sellado, fuente };
   }
-  if (actual !== sellado) {
-    return { caduco: true, motivo: 'head-desincronizado', head_sellado: sellado, head_actual: actual, fuente };
+  return compareSealedContent({ dir, issueNum, cwd, sellado, actual, fuente });
+}
+
+function compareSealedContent({ dir, issueNum, cwd, sellado, actual, fuente }) {
+  const base = { head_sellado: sellado, head_actual: actual, fuente };
+  if (actual === sellado) return { ...base, caduco: false, motivo: null, frescura: 'head-identico' };
+  let treeSellado, treeActual;
+  try { treeSellado = deriveTree(cwd, sellado); treeActual = deriveTree(cwd, actual); }
+  catch { return { ...base, caduco: true, motivo: 'head-desincronizado' }; }
+  const ids = { ...base, tree_sellado: treeSellado, tree_actual: treeActual };
+  if (treeSellado !== treeActual) return { ...ids, caduco: true, motivo: 'arbol-distinto' };
+  const audited = appendAudit(dir, CADUCIDAD_AUDIT_FILE, {
+    ts: new Date().toISOString(), issue: issueNum, evento: 'aceptado-arbol-identico', ...ids,
+  });
+  if (!audited) return { ...ids, caduco: true, motivo: 'sellado-invalido' };
+  return { ...ids, caduco: false, motivo: null, frescura: 'arbol-identico' };
+}
+
+function findVigentSealedVerdict({ pipelineDir, issue, cwd } = {}) {
+  const issueNum = normalizeIssueNumber(issue);
+  if (issueNum === null) return { vigente: false, motivo: 'issue-invalido' };
+  if (!pipelineDir || !cwd) return { vigente: false, motivo: 'head-no-resoluble' };
+  for (const state of ['listo', 'procesado', 'archivado']) {
+    const fuente = path.join(verificacionFasePath(pipelineDir), state, `${issueNum}.qa`);
+    let data;
+    try { data = loadYamlFile(fuente); } catch { continue; }
+    if (!data || data.resultado !== 'aprobado' || data.cancelado_por || data.sello?.derivado_por !== 'qa-evidence-seal') continue;
+    const sellado = sealedHeadOf(data);
+    if (!sellado) continue;
+    let actual;
+    try { actual = deriveHead(cwd); } catch { return { vigente: false, motivo: 'head-no-resoluble' }; }
+    const result = compareSealedContent({ dir: pipelineDir, issueNum, cwd, sellado, actual, fuente });
+    if (result.caduco) return { ...result, vigente: false };
+    // La re-ratificación siempre audita los cuatro ids, incluso con HEAD igual.
+    try {
+      const tree = result.tree_actual || deriveTree(cwd, actual);
+      return { ...result, vigente: true, tree_actual: tree, tree_sellado: result.tree_sellado || tree };
+    } catch { return { vigente: false, motivo: 'head-desincronizado' }; }
   }
-  return { caduco: false, motivo: null, head_sellado: sellado, head_actual: actual, fuente };
+  return { vigente: false, motivo: 'sin-sello' };
+}
+
+// Un productor persiste la generación antes de encolar. Evita empates en el
+// mismo milisegundo; los retries del consumidor conservan el nombre original.
+function nextGateStamp(dir, issueNum, ahora, target = 'issue') {
+  const file = path.join(verificacionFasePath(dir), `.${issueNum}.${target === 'pr' ? 'pr-' : ''}gate-generation`);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const lock = `${file}.lock`;
+  // Contención => el llamador conserva el gate cerrado y puede reintentar.
+  // Un lock abandonado queda visible en disco para diagnóstico operacional.
+  const fd = fs.openSync(lock, 'wx');
+  try {
+    fs.writeFileSync(fd, String(process.pid));
+    let previous = 0;
+    try { previous = Number(fs.readFileSync(file, 'utf8')); if (!Number.isSafeInteger(previous)) throw new Error('Generación inválida'); }
+    catch (e) { if (e.code !== 'ENOENT') throw e; }
+    const now = ahora ? Date.parse(ahora) : Date.now();
+    if (!Number.isFinite(now)) throw new Error('Timestamp inválido');
+    const generation = Math.max(now, previous + 1);
+    const tmp = `${file}.${process.pid}.tmp`;
+    fs.writeFileSync(tmp, String(generation));
+    fs.renameSync(tmp, file);
+    return new Date(generation).toISOString().replace(/[^0-9]/g, '');
+  } finally {
+    fs.closeSync(fd);
+    try { fs.unlinkSync(lock); } catch (e) { if (e.code !== 'ENOENT') throw e; }
+  }
+}
+
+function reratifySealedVerdict({ pipelineDir, issue, cwd, prNumber, ahora } = {}) {
+  const vig = findVigentSealedVerdict({ pipelineDir, issue, cwd });
+  if (!vig.vigente) return { ok: false, ...vig, ordenes: [] };
+  const issueNum = normalizeIssueNumber(issue);
+  // El consumidor puede tomar las órdenes inmediatamente: la auditoría es previa.
+  const audited = appendAudit(pipelineDir, CADUCIDAD_AUDIT_FILE, {
+    ts: new Date().toISOString(), issue: issueNum, evento: 're-ratificado', ...vig,
+  });
+  if (!audited) return { ...vig, ok: false, reratificado: false, escalado: false,
+    reintentable: true, motivo: 'auditoria-no-persistida', ordenes: [] };
+  const stamp = nextGateStamp(pipelineDir, issueNum, ahora);
+  const queue = path.join(pipelineDir, 'servicios', 'github', 'pendiente');
+  const ordenes = [];
+  for (const [target, number] of [['issue', issueNum], ['pr', normalizeIssueNumber(prNumber)]]) {
+    if (!number) continue;
+    const targetStamp = target === 'pr' ? nextGateStamp(pipelineDir, number, ahora, target) : stamp;
+    ordenes.push(enqueueJsonOrder(queue, `${number}-reratificado-${target}-gate-${targetStamp}.json`, {
+      action: 'label', issue: number, target, label: 'qa:passed', origen: 'gate-caducidad-sello',
+    }));
+  }
+  ordenes.push(enqueueJsonOrder(queue, `${issueNum}-reratificado-comment-${stamp}.json`, {
+    action: 'comment', issue: issueNum,
+    body: `QA re-ratificado por sello vigente (${vig.frescura}): ${vig.head_sellado} / árbol ${vig.tree_sellado} → ${vig.head_actual} / árbol ${vig.tree_actual}. Fuente: verificacion/${path.basename(path.dirname(vig.fuente))}/${issueNum}.qa. Sin nueva escalada.`,
+  }));
+  return { ...vig, ok: true, escalado: false, reratificado: true, motivo: 'sello-vigente', ordenes };
 }
 
 /**
@@ -1450,7 +1557,7 @@ function retractPrGateLabels({ root, pipelineDir, prNumber, prLabels, ahora } = 
   let dir;
   try { dir = resolvePipelineDir(root, pipelineDir); } catch { return { ok: false, ordenes: [] }; }
   const ts = typeof ahora === 'string' && ahora ? ahora : new Date().toISOString();
-  const stamp = ts.replace(/[^0-9]/g, '');
+  const stamp = nextGateStamp(dir, pr, ts, 'pr');
   const ghQueue = path.join(dir, 'servicios', 'github', 'pendiente');
   const ordenes = [];
 
@@ -1495,7 +1602,8 @@ function appendAudit(pipelineDir, file, entry) {
     const logDir = path.join(pipelineDir, 'logs');
     fs.mkdirSync(logDir, { recursive: true });
     fs.appendFileSync(path.join(logDir, file), `${JSON.stringify(entry)}\n`);
-  } catch { /* la auditoría es best-effort: nunca frena la reparación */ }
+    return true;
+  } catch { return false; /* La aceptación por árbol exige auditoría durable. */ }
 }
 
 /**
@@ -1576,7 +1684,7 @@ function buildEscalationBody({ motivo, headSellado, headActual, intentos }) {
  * @param {{root?: string, pipelineDir?: string, issue: string|number, motivo: string, headSellado?: string|null, headActual?: string|null, ahora?: string}} params
  * @returns {{ok: boolean, escalado: boolean, intentos: number, motivo: string, ordenes: string[]}}
  */
-function requeueVerification({ root, pipelineDir, issue, motivo, headSellado, headActual, ahora } = {}) {
+function requeueVerification({ root, pipelineDir, issue, motivo, headSellado, headActual, treeSellado, treeActual, cwd, ahora } = {}) {
   const issueNum = normalizeIssueNumber(issue);
   if (issueNum === null) {
     return { ok: false, escalado: false, intentos: 0, motivo: 'issue-invalido', ordenes: [] };
@@ -1584,12 +1692,14 @@ function requeueVerification({ root, pipelineDir, issue, motivo, headSellado, he
   const dir = resolvePipelineDir(root, pipelineDir);
   const motivoSeguro = sanitizeFreshnessReason(motivo);
   const ts = typeof ahora === 'string' && ahora ? ahora : new Date().toISOString();
-  const stamp = ts.replace(/[^0-9]/g, '');
   const ghQueue = path.join(dir, 'servicios', 'github', 'pendiente');
   const ordenes = [];
 
   // CA-9 — el contador se lee ANTES de re-encolar.
   const previo = readSealRetries({ pipelineDir: dir, issue: issueNum });
+  const reratificado = reratifySealedVerdict({ pipelineDir: dir, issue: issueNum, cwd, ahora });
+  if (reratificado.ok || reratificado.reintentable) return { ...reratificado, intentos: previo.intentos };
+  const stamp = nextGateStamp(dir, issueNum, ts);
 
   // rev-4 (D3) — el testigo de un solo uso (`writeStaleStamp`) ya NO se escribe
   // acá arriba: se escribe AL FINAL de cada rama, recién cuando todas las
@@ -1695,6 +1805,8 @@ function requeueVerification({ root, pipelineDir, issue, motivo, headSellado, he
     motivo_legible: describeFreshnessFailure(motivoSeguro),
     head_sellado: HEX40.test(String(headSellado || '')) ? String(headSellado) : null,
     head_actual: HEX40.test(String(headActual || '')) ? String(headActual) : null,
+    tree_sellado: HEX40.test(String(treeSellado || '')) ? String(treeSellado) : null,
+    tree_actual: HEX40.test(String(treeActual || '')) ? String(treeActual) : null,
     intentos,
     ts,
   }));
@@ -1840,6 +1952,8 @@ function migratePreSealBacklog({ root, pipelineDir, ahora } = {}) {
 }
 
 module.exports = {
+  findVigentSealedVerdict, reratifySealedVerdict,
+  __test__: { deriveTree },
   sealQaVerdict, stripDeclaredSeal, mergeDeclaredSnapshots, normalizeHash, resolveConfined, deriveHead, sanitizeLogField,
   normalizeWorkspaces, MAX_WORKSPACES,
   describeSealFailure, degradeVerdictForSeal, isSkipSentinel, looksLikeArtifactRef,

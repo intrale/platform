@@ -1,0 +1,109 @@
+{
+  "subcomando": "--preconditions",
+  "naturaleza": "sonda de sólo lectura — segura de re-ejecutar (no escribe en el store ni en el filesystem)",
+  "generadoEn": "2026-09-14T03:56:46.205Z",
+  "pipelineDir": "C:\\Workspaces\\Intrale\\platform\\.pipeline",
+  "checks": [
+    {
+      "id": "CA-B1",
+      "etapa": "PARTIAL_PAUSE_STRICT_AUTH=1 + sin `gate_grace` en 30 días",
+      "ok": false,
+      "detalle": "strict: false (servicio: no acreditado: heartbeat_no_acreditado) / gate_grace en 30 días: 0 (audit: 214 entradas, último gate_grace 2026-08-13T18:16:22.173Z)",
+      "causa": "strict_auth_apagado",
+      "siguiente": "H0 paso 0 · exportá PARTIAL_PAUSE_STRICT_AUTH=1 en el entorno del SERVICIO (launcher / restart.js) y reiniciá; verificalo desde el proceso del Pulpo, no desde una shell suelta (D-10, runbook §4 CA-B1).",
+      "datos": {
+        "strict": false,
+        "serviceAuth": {
+          "ok": false,
+          "strict": false,
+          "source": "C:\\Workspaces\\Intrale\\platform\\.pipeline\\last-tick.json",
+          "reason": "heartbeat_no_acreditado"
+        },
+        "gateGrace30d": 0,
+        "auditEntries": 214,
+        "lastGateGrace": "2026-08-13T18:16:22.173Z",
+        "auditExists": true
+      }
+    },
+    {
+      "id": "CA-B2",
+      "etapa": "`atomicUpdate === true` en el driver real + `buildCasWriteOptions` no vacío",
+      "ok": true,
+      "detalle": "buildCasWriteOptions(7,true): \"#b.#v = :ev\" · driver: kind=aws-cli-sync atomicUpdate=true tabla=intrale-kernel-coordination partición=intrale-platform",
+      "datos": {
+        "casOptions": true,
+        "driver": {
+          "kind": "aws-cli-sync",
+          "atomicUpdate": true,
+          "tableName": "intrale-kernel-coordination",
+          "projectId": "intrale-platform"
+        }
+      }
+    },
+    {
+      "id": "CA-B3",
+      "etapa": "identidad efectiva = `kernel.runtimePrincipal`",
+      "ok": true,
+      "detalle": "principal efectivo: intrale-kernel-runtime (coincide con config)",
+      "datos": {
+        "expected": "intrale-kernel-runtime",
+        "profile": "kernel-runtime",
+        "principal": "intrale-kernel-runtime",
+        "code": null
+      }
+    },
+    {
+      "id": "CA-B5",
+      "etapa": "namespaceado encendido + `--status` ⇒ migrated:true + stateDir coincidente",
+      "ok": false,
+      "detalle": "namespaceEnabled(): false · --status: migrated=false stateDir=C:\\Workspaces\\Intrale\\platform\\.pipeline\\projects\\intrale-platform · project-context.stateDir(): C:\\Workspaces\\Intrale\\platform\\.pipeline",
+      "causa": "namespaceado_apagado",
+      "siguiente": "H0 paso 1 · encendé `operational_state.namespaced.enabled: true` y corré `migrate-operational-state-namespace.js` (D-4 / CA-B5).",
+      "datos": {
+        "namespaceEnabled": false,
+        "migrated": false,
+        "statusStateDir": "C:\\Workspaces\\Intrale\\platform\\.pipeline\\projects\\intrale-platform",
+        "stateDir": "C:\\Workspaces\\Intrale\\platform\\.pipeline",
+        "flatLayoutItems": [
+          "waves.json",
+          ".partial-pause.json",
+          "archived",
+          "audit\\partial-pause-mutations.jsonl"
+        ]
+      }
+    },
+    {
+      "id": "D-9",
+      "etapa": "valor efectivo de `kernel.durable` (se reporta, no se exige)",
+      "ok": true,
+      "detalle": "kernel.durable = false (boolean) — \"cutover del kernel ensayado\" (#5207/#5208/#5209); re-encenderlo es trabajo aparte, fuera de #7189 y de H0",
+      "informativo": true,
+      "datos": {
+        "kernelDurable": false,
+        "tipo": "boolean"
+      }
+    },
+    {
+      "id": "modo",
+      "etapa": "`describeMode()` del backend",
+      "ok": true,
+      "detalle": "mode: fs · source: config · degraded: false · observed: false",
+      "informativo": true,
+      "datos": {
+        "mode": "fs",
+        "source": "config",
+        "degraded": false,
+        "lastError": null,
+        "degradedKeys": [],
+        "observed": false
+      }
+    }
+  ],
+  "ok": false,
+  "causas": [
+    "strict_auth_apagado",
+    "namespaceado_apagado"
+  ],
+  "veredicto": "ROJO",
+  "exitCode": 1
+}

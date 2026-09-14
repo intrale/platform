@@ -761,3 +761,173 @@ test('#5173 §2.4 del contrato usa vocabulario único kernel/producto/autoridad'
         assert.ok(s24.includes('`' + sec + '`'), '§2.4 no clasifica la sección ' + sec);
     }
 });
+
+// --- 12 · #5801: el umbral de ráfaga del vault no admite coerción -----------
+
+test('#5801 vault.access_audit rechaza sin coerción toda clase inválida de burst_threshold', () => {
+    const base = () => ({
+        vault: {
+            access_audit: {
+                enabled: false,
+                poll_interval_min: 10,
+                lookback_min: 30,
+                expected_principals: [],
+                burst_threshold: 0,
+                authorization_failure_threshold: 3,
+                cooldown_min: 10,
+            },
+        },
+    });
+
+    // Un umbral que el esquema deja pasar por coerción es una alerta apagada:
+    // `"40"`, `true` o `40.5` se leerían como configurados y no lo están.
+    const invalidos = [
+        ['null', null],
+        ['booleano', true],
+        ['string numérico', '40'],
+        ['string vacío', ''],
+        ['negativo', -1],
+        ['fraccionario', 40.5],
+        ['NaN', NaN],
+        ['infinito', Infinity],
+        ['entero inseguro', Number.MAX_SAFE_INTEGER + 2],
+        ['objeto', {}],
+        ['arreglo', [40]],
+    ];
+    for (const [nombre, valor] of invalidos) {
+        const cfg = base();
+        cfg.vault.access_audit.burst_threshold = valor;
+        assert.ok(!validateConfig(cfg).valid, `burst_threshold ${nombre} debe fallar cerrado`);
+    }
+
+    // Y una clave desconocida se rechaza explícitamente: un typo en el nombre
+    // deja el umbral real ausente sin que nadie lo note.
+    const conTypo = base();
+    conTypo.vault.access_audit.burst_threshhold = 40;
+    assert.ok(!validateConfig(conTypo).valid, 'una clave desconocida debe rechazarse');
+
+    // El caso válido sigue validando.
+    const valido = base();
+    valido.vault.access_audit.burst_threshold = 40;
+    assert.ok(validateConfig(valido).valid);
+});
+
+test('#5801 el error del umbral no vuelca el valor crudo configurado', () => {
+    const CANARIO = 'sk-token-que-no-debe-viajar-1234567890';
+    const { errors } = validateConfig({
+        vault: { access_audit: { burst_threshold: CANARIO } },
+    });
+    const serializado = JSON.stringify(errors) + '|' + formatErrors(errors)
+        + '|' + formatErrorsForHuman(errors);
+    assert.ok(!serializado.includes(CANARIO), 'el valor crudo NO debe aparecer');
+});
+
+test('#5801 no se puede ENCENDER la auditoría de acceso con la ráfaga apagada', () => {
+    // El estado peligroso no es «apagado sin umbral» — es «encendido sin umbral
+    // válido»: el tick corre, deja rastro, y el operador cree que la detección
+    // de ráfagas está cubierta mientras el evaluador ni siquiera puede comparar
+    // contra nada. El esquema lo vuelve imposible al arrancar, y en runtime
+    // `evaluateAccessEvents` lanza en vez de degradar a «no hay ráfaga».
+    const encendido = (extra) => ({
+        vault: {
+            access_audit: Object.assign({
+                enabled: true,
+                poll_interval_min: 10,
+                lookback_min: 30,
+                expected_principals: [],
+                authorization_failure_threshold: 3,
+                cooldown_min: 10,
+            }, extra),
+        },
+    });
+
+    assert.ok(!validateConfig(encendido({})).valid,
+        'encendido SIN burst_threshold debe fallar cerrado');
+    assert.ok(!validateConfig(encendido({ burst_threshold: 0 })).valid,
+        'encendido con burst_threshold 0 debe fallar cerrado');
+    assert.ok(!validateConfig(encendido({ burst_threshold: -1 })).valid,
+        'encendido con burst_threshold negativo debe fallar cerrado');
+    assert.ok(validateConfig(encendido({ burst_threshold: 1 })).valid,
+        'encendido con un entero positivo es el único modo operativo admitido');
+
+    // Las clases inválidas por TIPO se rechazan en cualquier modo: `type:
+    // 'integer'` sin `coerceTypes` no deja pasar ninguna.
+    for (const invalido of ['40', true, 40.5, NaN, Infinity, null, {}, [40]]) {
+        assert.ok(!validateConfig(encendido({ burst_threshold: invalido })).valid,
+            'encendido con umbral no entero debe fallar cerrado');
+    }
+});
+
+test('#5801 el cero deja de ser representable, aun con la auditoría apagada', () => {
+    // Antes de tener el pico medido, el `minimum: 1` vivía en una rama
+    // condicional y el cero se admitía como DECLARACIÓN de «todavía no está
+    // calibrado». Con el umbral ya derivado ese estado desaparece: un cero
+    // guardado esperando a que alguien encienda el gate es exactamente la forma
+    // silenciosa de dejar la detección apagada, y el `required` incondicional lo
+    // vuelve irrepresentable.
+    const apagado = (extra) => ({
+        vault: { access_audit: Object.assign({ enabled: false }, extra) },
+    });
+    assert.ok(!validateConfig(apagado({ burst_threshold: 0 })).valid,
+        'el cero ya no es un umbral admisible, ni siquiera con el gate cerrado');
+    assert.ok(!validateConfig(apagado({})).valid,
+        'la clave es REQUERIDA: su ausencia no puede leerse como apagado');
+    assert.ok(validateConfig(apagado({ burst_threshold: 360 })).valid,
+        'apagado CON umbral calibrado es el estado válido de hoy');
+    // Sin la clave `enabled` el requisito es el mismo: el `required` ya no
+    // depende del gate.
+    assert.ok(!validateConfig({ vault: { access_audit: { burst_threshold: 0 } } }).valid);
+    assert.ok(!validateConfig({ vault: { access_audit: { burst_threshold: '360' } } }).valid);
+    assert.ok(validateConfig({ vault: { access_audit: { burst_threshold: 360 } } }).valid);
+});
+
+test('#5801 el config.yaml de HEAD trae el umbral calibrado y su ventana', () => {
+    // Regresión del número entregado. El umbral está expresado en
+    // `physical_read` por ventana de `lookback_min` minutos, así que los dos se
+    // fijan JUNTOS: cambiar la ventana sin recalcular el umbral lo
+    // sobredimensiona y apaga el control de hecho, sin que nada lo avise.
+    //
+    //   peak_physical_reads_per_minute = 6      (corrida productiva de #5800)
+    //   pico_ventana    = ceil(6 * 30)          = 180
+    //   margen          = 1.0
+    //   burst_threshold = ceil(180 * (1 + 1.0)) = 360
+    const audit = realConfig().vault.access_audit;
+    assert.strictEqual(audit.lookback_min, 30,
+        'cambiar la ventana INVALIDA el umbral: hay que recalcularlo');
+    const picoVentana = Math.ceil(6 * audit.lookback_min);
+    assert.strictEqual(audit.burst_threshold, Math.ceil(picoVentana * 2));
+    assert.strictEqual(audit.burst_threshold, 360);
+    // CA-1 — supera el pico observado convertido a la unidad de la ventana.
+    assert.ok(audit.burst_threshold > picoVentana);
+    // El gate de rollout NO se toca en esta entrega: sigue siendo decisión del
+    // operador, y ahora encenderlo ya no puede dejar la ráfaga sin umbral.
+    assert.strictEqual(audit.enabled, false);
+    assert.ok(validateConfig(realConfig()).valid);
+});
+
+test('#5801 las 7 claves de access_audit están declaradas en el esquema', () => {
+    // Trampa conocida de `additionalProperties: false`: omitir UNA de las claves
+    // que ya viven en el YAML deja el pipeline arrancando pausado por
+    // ConfigSchemaViolation. El config real es la guarda.
+    const CLAVES = [
+        'enabled', 'poll_interval_min', 'lookback_min', 'expected_principals',
+        'burst_threshold', 'authorization_failure_threshold', 'cooldown_min',
+    ];
+    const audit = realConfig().vault.access_audit;
+    assert.deepEqual(Object.keys(audit).sort(), [...CLAVES].sort(),
+        'el YAML real trae exactamente estas 7 claves');
+    for (const clave of CLAVES) {
+        const cfg = { vault: { access_audit: { burst_threshold: 360 } } };
+        cfg.vault.access_audit[clave] = audit[clave];
+        assert.ok(validateConfig(cfg).valid, `la clave ${clave} debe estar declarada`);
+    }
+});
+
+test('#5801 el TTL de la caché del vault sigue topado en 300 y el config real lo respeta', () => {
+    // Regresión explícita: el cambio de umbral no puede tocar el TTL ni el
+    // resto de la postura de autenticación del vault.
+    const cfg = realConfig();
+    assert.equal(cfg.vault.cache_ttl_seconds, 300);
+    assert.ok(!validateConfig({ vault: { cache_ttl_seconds: 301 } }).valid);
+    assert.ok(validateConfig({ vault: { cache_ttl_seconds: 300 } }).valid);
+});
