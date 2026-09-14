@@ -603,8 +603,10 @@ function reconcileLabelToFilesystem(ghIssues, blockedByIssue, opts = {}) {
     return created;
 }
 
-function reconcileMarkerToLabel(blockedMarkers, ghIssueSet, getStateFn = getIssueState) {
+function reconcileMarkerToLabel(blockedMarkers, ghIssueSet, getStateFn = getIssueState, opts = {}) {
+    const now = opts.now || Date.now();
     let enqueued = 0;
+    let skippedBackoff = 0;
     const seenIssue = new Set();
     for (const m of blockedMarkers) {
         if (ghIssueSet.has(m.issue)) continue;
@@ -617,6 +619,24 @@ function reconcileMarkerToLabel(blockedMarkers, ghIssueSet, getStateFn = getIssu
             // reconcileClosedMarkers() para mantener responsabilidades separadas.
             continue;
         }
+
+        // #7232 (REQ-SEC-3) — sin amplificación: un marker SIN evidencia de
+        // label aplicado (`needs_human_seen_at`) que ya tiene una orden
+        // encolada hace menos de `LABEL_REENQUEUE_BACKOFF_MS` no se re-encola.
+        // Los markers CON evidencia no llegan acá (los mueve el destrabe) y,
+        // si llegaran, no aplican backoff: perder el label con evidencia es
+        // destrabe humano, no re-aplicación.
+        const markerPath = path.join(
+            PIPELINE, m.pipeline, m.phase, humanBlock.BLOCK_SUBDIR, `${m.issue}.${m.skill}`,
+        );
+        const reason = readMarkerReason(markerPath);
+        if (reason && !reason.needs_human_seen_at) {
+            const enqueuedAt = Date.parse(reason.label_enqueued_at);
+            if (Number.isFinite(enqueuedAt) && (now - enqueuedAt) < LABEL_REENQUEUE_BACKOFF_MS) {
+                skippedBackoff++;
+                continue;
+            }
+        }
         try {
             // #2994 — Persistir snapshot del marker que justificó la orden.
             // El worker valida en O(1) que el marker sigue existiendo y no
@@ -626,9 +646,16 @@ function reconcileMarkerToLabel(blockedMarkers, ghIssueSet, getStateFn = getIssu
             const meta = buildMarkerMeta(m);
             enqueueLabelApply(m.issue, RECONCILER_LABEL, meta);
             enqueued++;
+            // #7232 — se escribe DESPUÉS de encolar: `buildMarkerMeta` tomó el
+            // mtime del marker (no del `reason.json`), así que esto no vuelve
+            // stale la orden recién encolada.
+            updateMarkerReason(markerPath, { label_enqueued_at: new Date(now).toISOString() });
         } catch (e) {
             log(`Error encolando label #${m.issue}: ${e.message.slice(0, 120)}`);
         }
+    }
+    if (skippedBackoff > 0) {
+        log(`Skipped ${skippedBackoff} markers sin evidencia de label con orden reciente (backoff ${Math.round(LABEL_REENQUEUE_BACKOFF_MS / 3600000)}h, #7232)`);
     }
     return enqueued;
 }
@@ -795,30 +822,99 @@ function listClosedIssueNumbers(opts = {}) {
 //                          ya hubiera tenido tiempo de aplicar el label)
 //   ∧  blocked_by ≠ 'svc-reconciler'  (no deshacer placeholders recién
 //                                        creados por el propio reconciler)
+//   ∧  el label estuvo ALGUNA VEZ en GitHub (`needs_human_seen_at` en el
+//        `reason.json`, evidencia positiva propia — #7232)
 //   ⇒ asumimos destrabe humano → mover marker a `pendiente/`.
+//
+// #7232 — Antes la regla era fail-open: "no está el label" se leía como "un
+// humano lo quitó". Pero el label puede no haber llegado nunca (el guardrail
+// descartó la orden `needs-human` sobre una recomendación, `gh` caído,
+// `INDETERMINADO`): el marker quedaba sin respaldo, el reconciler lo movía a
+// `pendiente/` y el intake relanzaba el skill en bucle (#5570: 3 corridas de
+// `guru` en 20 min con el mismo veredicto). Ahora sólo destraba con evidencia
+// POSITIVA: el reconciler persiste `needs_human_seen_at` cuando VE el label en
+// GitHub, y sin ese campo no mueve nada (fail-closed, REQ-SEC-2): registra
+// `human-block-sin-label` en `stale-orders.log` y alerta UNA vez por marker
+// (`sin_label_alertado_at`). El operador destraba por `/bloqueados`, botones
+// de Telegram o brazo de desbloqueo, que mueven el marker directamente.
 //
 // Esta regla corre ANTES de `reconcileMarkerToLabel` para evitar encolar la
 // orden que después tendríamos que descartar como stale.
 
 const HUMAN_UNBLOCK_GRACE_MS = 60 * 1000; // 60s
 
+// #7232 (REQ-SEC-3) — backoff de re-encolado de `needs-human` para markers SIN
+// evidencia de label aplicado. Sin esto, un marker huérfano (guardrail lo
+// descarta cada vez) generaba una orden + un `gh issue view` por ciclo de 5 min
+// (288/día, a perpetuidad). Con 6 h son 4 reintentos/día, y cada uno es útil:
+// si el humano aprobó la recomendación en el ínterin, el label ahora se aplica.
+const LABEL_REENQUEUE_BACKOFF_MS = 6 * 60 * 60 * 1000; // 6h
+
+/**
+ * #7232 — Lee el `<marker>.reason.json`. Devuelve `null` si no existe, es
+ * ilegible o no es JSON válido (el llamador trata `null` como "sin evidencia").
+ */
+function readMarkerReason(markerPath) {
+    try {
+        const parsed = JSON.parse(fs.readFileSync(markerPath + '.reason.json', 'utf8'));
+        return parsed && typeof parsed === 'object' ? parsed : null;
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * #7232 — Mergea `patch` sobre el `<marker>.reason.json` con escritura ATÓMICA
+ * (`.tmp` + `renameSync`). Nunca toca el marker en sí: `validateOrderFresh`
+ * (servicio-github) compara el mtime del MARKER, no del `reason.json`, así que
+ * escribir acá no vuelve stale una orden ya encolada. Un `.tmp` residual es
+ * `<issue>.<skill>.reason.json.tmp` (más de 2 segmentos) y `isMarkerArtifact`
+ * lo clasifica como artefacto: nunca aparece como marker en `listBlockedIssues`.
+ * Best-effort: devuelve `false` ante cualquier error, sin tirar.
+ */
+function updateMarkerReason(markerPath, patch) {
+    const reasonPath = markerPath + '.reason.json';
+    try {
+        let cur = {};
+        try {
+            const parsed = JSON.parse(fs.readFileSync(reasonPath, 'utf8'));
+            cur = parsed && typeof parsed === 'object' ? parsed : {};
+        } catch { cur = {}; }
+        const tmp = reasonPath + '.tmp';
+        fs.writeFileSync(tmp, JSON.stringify({ ...cur, ...patch }, null, 2));
+        fs.renameSync(tmp, reasonPath);
+        return true;
+    } catch {
+        return false;
+    }
+}
+
 function reconcileHumanUnblockDetected(blockedMarkers, ghIssueSet, opts = {}) {
     const now = opts.now || Date.now();
     const logFn = opts.logStaleOrder || appendStaleOrderLog;
+    const notifyFn = opts.notifyTelegram || notifyTelegram;
     let detected = 0;
     const movedIssues = new Set();
+    // #7232 — markers retenidos por falta de evidencia (fail-closed).
+    const heldIssues = new Set();
 
     for (const m of blockedMarkers) {
-        if (ghIssueSet.has(m.issue)) continue; // label sigue presente: nada que hacer
-
-        // Leer reason.json para inspeccionar blocked_at y blocked_by.
         const markerPath = path.join(
             PIPELINE, m.pipeline, m.phase, humanBlock.BLOCK_SUBDIR, `${m.issue}.${m.skill}`,
         );
         const reasonPath = markerPath + '.reason.json';
-        let reason;
-        try { reason = JSON.parse(fs.readFileSync(reasonPath, 'utf8')); }
-        catch { reason = null; }
+        // #7232 — se lee UNA vez, antes de mirar GitHub: sirve tanto para
+        // persistir la evidencia (label presente) como para decidir el destrabe.
+        const reason = readMarkerReason(markerPath);
+
+        if (ghIssueSet.has(m.issue)) {
+            // #7232 — evidencia POSITIVA: el label existe en GitHub ahora. Se
+            // persiste una sola vez; es lo único que habilita un destrabe futuro.
+            if (!reason || !reason.needs_human_seen_at) {
+                updateMarkerReason(markerPath, { needs_human_seen_at: new Date(now).toISOString() });
+            }
+            continue; // label sigue presente: nada más que hacer
+        }
 
         if (reason && reason.blocked_by === 'svc-reconciler') continue; // placeholder propio
 
@@ -833,6 +929,46 @@ function reconcileHumanUnblockDetected(blockedMarkers, ghIssueSet, opts = {}) {
             let mtime;
             try { mtime = fs.statSync(markerPath).mtimeMs; } catch { mtime = NaN; }
             if (!Number.isFinite(mtime) || (now - mtime) < HUMAN_UNBLOCK_GRACE_MS) continue;
+        }
+
+        // #7232 — fail-closed: "no está el label" ≠ "un humano lo quitó". Sin
+        // evidencia de que el label se aplicó alguna vez (`reason.json` ausente,
+        // corrupto o sin `needs_human_seen_at`) el marker NO se mueve. Se deja
+        // traza en `stale-orders.log` cada ciclo y una alerta ÚNICA por marker.
+        if (!reason || !reason.needs_human_seen_at) {
+            heldIssues.add(m.issue);
+            try {
+                logFn({
+                    reason: 'human-block-sin-label',
+                    issue: m.issue,
+                    label: RECONCILER_LABEL,
+                    snapshot_at: null,
+                    current_mtime: null,
+                    detail: `marker en ${m.pipeline}/${m.phase}/bloqueado-humano/ sin evidencia de label aplicado — no se destraba (fail-closed)`,
+                });
+            } catch {}
+            if (!reason || !reason.sin_label_alertado_at) {
+                const pregunta = reason && typeof reason.question === 'string'
+                    ? reason.question.replace(/\s+/g, ' ').trim().slice(0, 140)
+                    : null;
+                try {
+                    notifyFn({
+                        level: 'warn',
+                        component: 'human-block-sin-label',
+                        message: `#${m.issue} quedó esperando una decisión tuya (${m.skill}, ${m.pipeline}/${m.phase}), pero el label needs-human no llegó a GitHub, así que no lo vas a ver en el issue. Está en /bloqueados: destrabalo desde ahí, con los botones de Telegram o con el brazo de desbloqueo. Poner o quitar el label en GitHub no lo destraba.`,
+                        context: {
+                            issue: m.issue,
+                            skill: m.skill,
+                            fase: `${m.pipeline}/${m.phase}`,
+                            ...(pregunta ? { pregunta } : {}),
+                            causa: 'label needs-human ausente en GitHub (guardrail o gh)',
+                        },
+                    });
+                } catch {}
+                updateMarkerReason(markerPath, { sin_label_alertado_at: new Date(now).toISOString() });
+                log(`#${m.issue} bloqueado por ${m.skill} sin label needs-human en GitHub — retenido en bloqueado-humano/ (fail-closed, alerta enviada)`);
+            }
+            continue;
         }
 
         // Mover marker a `pendiente/` de la misma fase. Mantenemos el reason.json
@@ -862,7 +998,7 @@ function reconcileHumanUnblockDetected(blockedMarkers, ghIssueSet, opts = {}) {
             log(`Error procesando destrabe humano #${m.issue}: ${e.message.slice(0, 120)}`);
         }
     }
-    return { detected, movedIssues };
+    return { detected, movedIssues, heldIssues };
 }
 
 // -----------------------------------------------------------------------------
@@ -1498,6 +1634,8 @@ function reconcileOnce() {
     // descartar como stale por GitHub-autoritativo.
     const unblockResult = reconcileHumanUnblockDetected(afterResolved, ghIssueSet);
     const detected = unblockResult.detected;
+    // #7232 — markers retenidos por falta de evidencia de label (fail-closed).
+    const held = unblockResult.heldIssues ? unblockResult.heldIssues.size : 0;
     // Filtrar markers ya movidos para que reconcileMarkerToLabel/Closed
     // no vuelvan a procesarlos en este mismo ciclo.
     const remaining = unblockResult.movedIssues.size > 0
@@ -1588,8 +1726,8 @@ function reconcileOnce() {
     const phaseSummary = archivedPhase ? `, +${archivedPhase} markers de fase archivados (closed)` : '';
     const stateLabelsRemoved = stateLabelResult && stateLabelResult.removed ? stateLabelResult.removed : 0;
     const stateLabelSummary = stateLabelsRemoved ? `, -${stateLabelsRemoved} labels stale` : '';
-    if (created || enqueued || archived || archivedPhase || detected || resolved || stateLabelsRemoved || (admissionResult && admissionResult.appliedCount) || (screenshotsResult && screenshotsResult.appliedCount) || waveCompletionSummary) {
-        log(`Ciclo ${cycleCount} (${elapsed}ms): GH=${ghIssues.length} markers=${blockedMarkers.length} → +${created} placeholders, +${enqueued} labels encolados, +${archived} archivados (closed), +${detected} destrabes humanos, +${resolved} resueltos por guardian/TTL (-${resolvedRemovedLabels} labels removidos)${stateLabelSummary}${phaseSummary}${admissionSummary}${screenshotsSummary}${waveCompletionSummary}`);
+    if (created || enqueued || archived || archivedPhase || detected || held || resolved || stateLabelsRemoved || (admissionResult && admissionResult.appliedCount) || (screenshotsResult && screenshotsResult.appliedCount) || waveCompletionSummary) {
+        log(`Ciclo ${cycleCount} (${elapsed}ms): GH=${ghIssues.length} markers=${blockedMarkers.length} → +${created} placeholders, +${enqueued} labels encolados, +${archived} archivados (closed), +${detected} destrabes humanos, ${held} retenidos sin label, +${resolved} resueltos por guardian/TTL (-${resolvedRemovedLabels} labels removidos)${stateLabelSummary}${phaseSummary}${admissionSummary}${screenshotsSummary}${waveCompletionSummary}`);
     } else {
         log(`Ciclo ${cycleCount} (${elapsed}ms): GH=${ghIssues.length} markers=${blockedMarkers.length} — sincronizado`);
     }
@@ -1670,6 +1808,10 @@ module.exports = {
     loadSplitChildrenMap,
     loadIssueStateCache,
     HUMAN_UNBLOCK_GRACE_MS,
+    // #7232 — evidencia positiva del label + backoff anti-amplificación
+    LABEL_REENQUEUE_BACKOFF_MS,
+    updateMarkerReason,
+    readMarkerReason,
     RESOLVED_TTL_MS,
     // #3175 — Admission gate sweep
     reconcileAdmissionOrphans,
