@@ -13,7 +13,7 @@ const { buildAwsScopedEnv } = require('./kernel-provision');
 // `single_flight_join` es exactamente la deriva que ese enum vino a frenar, y
 // una divergencia haría que el umbral se calibre contra un contador y se
 // evalúe contra otro.
-const { VAULT_TELEMETRY_CATEGORIES, VAULT_TELEMETRY } = require('./secret-vault');
+const { VAULT_TELEMETRY_CATEGORIES, VAULT_TELEMETRY, resolveVaultHostId } = require('./secret-vault');
 
 const ACCESS_EVENT_NAMES = Object.freeze([
   'GetSecretValue',
@@ -26,10 +26,33 @@ const CAUSAS = Object.freeze({
   IDENTIDAD_NO_ESPERADA: 'Un principal fuera de la allowlist leyó un secreto del vault.',
   AUTORIZACION_RECHAZADA: 'Se repitieron rechazos de autorización contra el vault.',
   RAFAGA_DE_LECTURAS: 'El volumen de lecturas superó el umbral de la ventana.',
+  // #5563 · CA-2 — la auditoría NO pudo observar la ventana. No es "alguien
+  // accedió": es "no estamos viendo". Sin esta causa, un fallo de recolección
+  // se leía como `0 acceso(s)` limpio (#7067).
+  RECOLECCION_FALLIDA: 'La consulta al Event history de CloudTrail falló; la auditoría no pudo observar la ventana.',
 });
 const UNKNOWN_SCOPE = 'desconocido';
 const UNKNOWN_PRINCIPAL = 'desconocido';
 const DEFAULT_AUTH_FAILURE_THRESHOLD = 3;
+
+// #5563 · CA-1 — Convención del rol de lectura del vault POR HOST. Hasta acá la
+// convención sólo existía en IAM (guru la observó con `aws iam list-roles`);
+// ahora vive en código porque la allowlist se DERIVA de ella en runtime. Lo
+// que se commitea es el mecanismo (prefijo + `hostIdFromHostname`), nunca el
+// ARN: el repo es público y #5426 decidió no publicar ni account id ni hostId.
+const HOST_ROLE_PREFIX = 'intrale-vault-runtime-';
+// Mismo criterio de segmento que el vault (`secret-vault.js` · SEGMENT_RE):
+// un hostId que no lo cumple no produce un ARN a medias, produce `null`.
+const HOST_ID_RE = /^[A-Za-z0-9_-]+$/;
+const ACCOUNT_ID_RE = /^\d{12}$/;
+
+/**
+ * Memo por proceso del account id, keyed por región: evita sumar una 6ª
+ * llamada síncrona (`sts`) a cada tick (#5776). Se invalida cuando la
+ * derivación falla, para que el próximo tick vuelva a preguntar en vez de
+ * arrastrar una identidad que quizá ya no es la del ambiente.
+ */
+const ACCOUNT_ID_MEMO = new Map();
 
 function asMillis(value) {
   const n = value instanceof Date ? value.getTime() : new Date(value).getTime();
@@ -40,6 +63,82 @@ function normalizePrincipal(value) {
   if (typeof value !== 'string' || !value) return null;
   const assumed = /^arn:aws[^:]*:sts::(\d{12}):assumed-role\/([^/]+)\/[^/]+$/.exec(value);
   return assumed ? `arn:aws:iam::${assumed[1]}:role/${assumed[2]}` : value;
+}
+
+/**
+ * ARN del rol de lectura del vault para un host (CA-1). Pura, sin I/O.
+ * Devuelve `null` si alguno de los dos segmentos no valida: NUNCA un ARN a
+ * medias, porque un ARN mal formado en la allowlist no matchea nada y el
+ * resultado sería idéntico a "el host no está autorizado" — con alertas
+ * `IDENTIDAD_NO_ESPERADA` sobre el propio pipeline.
+ *
+ * @param {string} accountId 12 dígitos
+ * @param {string} hostId    segmento válido del vault
+ * @returns {string|null}
+ */
+function buildHostRoleArn(accountId, hostId) {
+  if (typeof accountId !== 'string' || !ACCOUNT_ID_RE.test(accountId)) return null;
+  if (typeof hostId !== 'string' || !HOST_ID_RE.test(hostId)) return null;
+  return `arn:aws:iam::${accountId}:role/${HOST_ROLE_PREFIX}${hostId}`;
+}
+
+/**
+ * Resuelve la allowlist EFECTIVA del tick: literales de `expected_principals`
+ * ∪ derivadas por host. La derivación es una señal POSITIVA y exacta
+ * (`expected_principals_from_hosts === true`, como `hostIdFromHostname`): sin
+ * ella el comportamiento es el de siempre y `"true"` string no deriva.
+ *
+ * Cuando la derivación se pidió y falla (sin `sts`, sin `hostId`, account id
+ * ilegible), el resultado lo DICE (`derivation.ok === false` + `reason`) para
+ * que el tick salga por `allowlist-no-derivable` y no por `empty-allowlist`
+ * mudo: una allowlist que no se pudo armar es un fallo de recolección, no una
+ * configuración vacía.
+ *
+ * @param {object} p
+ * @param {object} p.config            sección `vault.access_audit`
+ * @param {object} [p.vaultConfig]     sección `vault` completa (para `hostId`)
+ * @param {Function|null} [p.getCallerIdentity] runner de `sts get-caller-identity`
+ * @param {Function} [p.hostname]      inyectable para tests
+ * @param {Map} [p.cache]              memo del account id (default: por proceso)
+ * @param {string} [p.region]          clave de la memo
+ * @returns {{principals: string[], derivation: {requested: boolean, ok: boolean, reason: string|null}}}
+ */
+function resolveExpectedPrincipals({ config, vaultConfig, getCallerIdentity, hostname, cache, region } = {}) {
+  const cfg = config && typeof config === 'object' ? config : {};
+  const literales = (Array.isArray(cfg.expected_principals) ? cfg.expected_principals : [])
+    .filter((p) => typeof p === 'string' && p !== '');
+  const requested = cfg.expected_principals_from_hosts === true;
+  if (!requested) return { principals: literales, derivation: { requested: false, ok: true, reason: null } };
+
+  const memo = cache instanceof Map ? cache : ACCOUNT_ID_MEMO;
+  const memoKey = String(region || 'default');
+  const fail = (reason) => {
+    memo.delete(memoKey);
+    return { principals: literales, derivation: { requested: true, ok: false, reason } };
+  };
+
+  const hostId = resolveVaultHostId(vaultConfig || {}, hostname ? { hostname } : {});
+  if (!hostId || !HOST_ID_RE.test(hostId)) return fail('host-id-no-resuelto');
+
+  let accountId = memo.get(memoKey) || null;
+  if (!accountId) {
+    if (typeof getCallerIdentity !== 'function') return fail('sts-no-disponible');
+    try {
+      const identity = JSON.parse(getCallerIdentity() || '{}');
+      accountId = identity && typeof identity.Account === 'string' ? identity.Account : null;
+    } catch (_err) {
+      return fail('sts-fallo');
+    }
+    if (!accountId || !ACCOUNT_ID_RE.test(accountId)) return fail('account-id-ilegible');
+    memo.set(memoKey, accountId);
+  }
+
+  const derivado = buildHostRoleArn(accountId, hostId);
+  if (!derivado) return fail('arn-no-derivable');
+  return {
+    principals: [...new Set([...literales, derivado])],
+    derivation: { requested: true, ok: true, reason: null },
+  };
 }
 
 function hashPrincipal(value) {
@@ -213,7 +312,7 @@ function emptyCounters() {
  *   `detections` son TODAS las detecciones de la pasada, cada una con si se
  *   notificó o si el cooldown suprimió el aviso.
  */
-function evaluateAccessEvents({ now, events, state, config }) {
+function evaluateAccessEvents({ now, events, state, config, recoleccion }) {
   const nowMs = asMillis(now);
   const cfg = config && typeof config === 'object' ? config : {};
   const expected = new Set((cfg.expected_principals || []).map(normalizePrincipal).filter(Boolean));
@@ -335,6 +434,22 @@ function evaluateAccessEvents({ now, events, state, config }) {
     });
   }
 
+  // #5563 · CA-2 — Un fallo de recolección es UNA detección por tick (no una
+  // por `event_name`, UX-B): cinco consultas fallidas del mismo tick son un
+  // hecho, no cinco. Pasa por `candidates` para heredar el cooldown y la
+  // persistencia de las otras causas, sin un segundo mecanismo.
+  const fallidas = recoleccion && Number.isFinite(recoleccion.fallidas) ? recoleccion.fallidas : 0;
+  if (fallidas > 0) {
+    candidates.push({
+      causa: 'RECOLECCION_FALLIDA',
+      principal_hash: 'pipeline',
+      scope_logico: 'vault',
+      consultas_fallidas: fallidas,
+      consultas_total: Number.isFinite(recoleccion.total) ? recoleccion.total : ACCESS_EVENT_NAMES.length,
+      ventana_min: Number.isFinite(recoleccion.ventana_min) ? recoleccion.ventana_min : ventanaMin,
+    });
+  }
+
   // Detección y notificación son DOS cosas (SEC-4/SEC-5): el cooldown decide si
   // se vuelve a molestar al operador, nunca si la detección queda registrada.
   // Sin esta separación, una ráfaga sostenida dejaba de existir en el rastro
@@ -373,6 +488,11 @@ function evaluateAccessEvents({ now, events, state, config }) {
 // ("acceso al vault"), no el módulo (UX-3).
 // -----------------------------------------------------------------------------
 const HEADER_ALERTA = '⚠️ *Acceso al vault fuera de lo esperado* — el pipeline sigue operativo';
+// #5563 · UX-B — La alerta "a oscuras" NO reusa `HEADER_ALERTA`: el operador
+// leería un acceso anómalo que no existió. Mismo glifo y misma cláusula de
+// estado, distinto sujeto: "no estamos viendo", no "alguien accedió".
+const HEADER_OSCURAS = '⚠️ *Auditoría del vault a oscuras* — el pipeline sigue operativo, '
+  + 'pero nadie está mirando quién lee los secretos';
 
 const CONSECUENCIA = Object.freeze({
   IDENTIDAD_NO_ESPERADA: 'alguien que no está en la lista de identidades autorizadas leyó credenciales '
@@ -382,17 +502,31 @@ const CONSECUENCIA = Object.freeze({
     + 'van a fallar al arrancar',
   RAFAGA_DE_LECTURAS: 'el volumen de lecturas se salió del patrón normal de la ventana: puede ser un '
     + 'lazo de reintentos del propio pipeline o un uso que no debería estar ocurriendo',
+  RECOLECCION_FALLIDA: 'desde el último tick exitoso no hay garantía de que una lectura no autorizada '
+    + 'hubiera sido detectada: la auditoría no pudo consultar el Event history y la ventana quedó sin observar',
 });
 
 const ACCION = Object.freeze({
-  IDENTIDAD_NO_ESPERADA: 'revisá el Event history de CloudTrail para la ventana informada y confirmá si '
-    + 'ese acceso era legítimo. Si no lo era, rotá los secretos del scope afectado siguiendo '
-    + '`docs/pipeline/vault-rotacion-auditoria.md`. Si lo era, sumá el rol a '
-    + '`vault.access_audit.expected_principals` en `.pipeline/config.yaml`.',
+  // #5563 · UX-A — Con la allowlist DERIVADA (CA-1) mandar a editar
+  // `expected_principals` en `config.yaml` era una trampa: llevaba al operador
+  // a commitear el account id y el hostId en un repo público. La acción ahora
+  // distingue los tres casos de D1/D2 y nunca pide tocar `config.yaml`.
+  IDENTIDAD_NO_ESPERADA: 'si fue una lectura manual tuya, es la alerta esperada: el control detecta '
+    + 'lecturas humanas y no hay que agregarte a la allowlist. Si fue un host nuevo del pipeline, verificá '
+    + `que su rol siga la convención \`${HOST_ROLE_PREFIX}<hostId>\` — la allowlist se deriva sola, no se `
+    + 'edita el archivo de configuración. Si no fue ninguna de las dos, rotá los secretos del scope '
+    + 'afectado siguiendo `docs/pipeline/vault-rotacion-auditoria.md`.',
   AUTORIZACION_RECHAZADA: 'revisá en el Event history quién recibió los rechazos y contrastá la policy '
     + 'del rol del host contra `docs/pipeline/vault-rotacion-auditoria.md`.',
   RAFAGA_DE_LECTURAS: 'revisá el detalle del rastro antes de subir `vault.access_audit.burst_threshold`: '
     + 'si el volumen viene del propio pipeline, el umbral está mal calibrado y hay que recalibrarlo, no silenciarlo.',
+  // Sin el literal del error de AWS a propósito: el copy es cerrado (CA-6) y
+  // ningún texto del driver cruza al canal.
+  RECOLECCION_FALLIDA: 'confirmá que el usuario de auditoría `user/claude-code` conserva '
+    + '`cloudtrail:LookupEvents` (Sid `VaultAuditReadEventHistory`) corriendo '
+    + '`aws cloudtrail lookup-events --region us-east-2 --max-items 1`; si la respuesta es un rechazo de '
+    + 'permisos, el grant se perdió. Si el permiso está, buscá `DEGRADADO` en `pulpo.log` para ver si '
+    + 'la CLI está agotando el tiempo de espera.',
 });
 
 /**
@@ -410,7 +544,11 @@ function formatAccessAlert(findings, correlationId) {
     .map((f) => f && f.causa).filter((c) => Object.hasOwn(CAUSAS, c)))];
   const scopes = [...new Set((Array.isArray(findings) ? findings : [])
     .map((f) => (f && f.scope_logico) || UNKNOWN_SCOPE))].slice(0, 5);
-  const lines = [HEADER_ALERTA, ''];
+  // #5563 · UX-B — Header "a oscuras" SÓLO cuando todas las causas son de
+  // recolección. Si se mezclara con un acceso real gana el header de acceso:
+  // el tick las envía por separado justamente para que esto no ocurra.
+  const soloOscuras = causas.length > 0 && causas.every((c) => c === 'RECOLECCION_FALLIDA');
+  const lines = [soloOscuras ? HEADER_OSCURAS : HEADER_ALERTA, ''];
   for (const causa of causas) {
     lines.push(CONSECUENCIA[causa], '', `Causa: \`${causa}\` — ${CAUSAS[causa]}`, '',
       `Qué hacer: ${ACCION[causa]}`, '');
@@ -436,6 +574,15 @@ function formatAccessAlert(findings, correlationId) {
     lines.push('Contexto que NO cuenta para el umbral: '
       + `${VAULT_TELEMETRY.CACHE_HIT}=${Number(ctx[VAULT_TELEMETRY.CACHE_HIT]) || 0}, `
       + `${VAULT_TELEMETRY.SINGLE_FLIGHT_JOIN}=${Number(ctx[VAULT_TELEMETRY.SINGLE_FLIGHT_JOIN]) || 0}`);
+  }
+  // #5563 · UX-B — Diagnóstico de la recolección con etiqueta y unidad, como
+  // el de la ráfaga. Enteros del pipeline; nada del driver.
+  const oscuras = (Array.isArray(findings) ? findings : [])
+    .find((f) => f && f.causa === 'RECOLECCION_FALLIDA' && Number.isFinite(f.consultas_fallidas));
+  if (oscuras) {
+    const total = Number.isFinite(oscuras.consultas_total) ? oscuras.consultas_total : ACCESS_EVENT_NAMES.length;
+    lines.push(`Consultas fallidas: ${oscuras.consultas_fallidas}/${total}`);
+    lines.push(`Ventana no observada: ${Number.isFinite(oscuras.ventana_min) ? oscuras.ventana_min : 30} minutos`);
   }
   lines.push(`Scopes afectados: ${scopes.join(', ') || UNKNOWN_SCOPE}`);
   lines.push(`id: ${correlationId}`);
@@ -469,20 +616,59 @@ function createCloudTrailRunner(sourceEnv, region, deps = {}) {
   };
 }
 
+/**
+ * #5563 · CA-1 — Runner de `sts get-caller-identity`, espejo exacto del de
+ * CloudTrail: sin shell, env por allowlist, timeout. Sólo se usa para leer el
+ * account id con el que se deriva la allowlist; inyectable vía
+ * `opts.getCallerIdentity` con el mismo contrato que `opts.lookupEvents`.
+ */
+function createStsIdentityRunner(sourceEnv, region, deps = {}) {
+  const runFile = deps.execFileSync || execFileSync;
+  const env = buildAwsScopedEnv(sourceEnv, region);
+  return () => runFile('aws', ['sts', 'get-caller-identity', '--output', 'json', '--no-cli-pager'], {
+    env,
+    shell: false,
+    timeout: 20_000,
+    maxBuffer: 1024 * 1024,
+    encoding: 'utf8',
+    windowsHide: true,
+  });
+}
+
 function readJson(file, fsImpl) {
   try { return fsImpl.existsSync(file) ? JSON.parse(fsImpl.readFileSync(file, 'utf8')) : {}; }
   catch { return {}; }
 }
 
+/**
+ * Entrada encadenada de un fallo de recolección (CA-2). Espejo de la de
+ * `NOTIFICACION_NO_ENVIADA`: marcador cerrado del pipeline, nunca el error del
+ * driver. `event_name` + `stage` dicen QUÉ consulta no se pudo hacer.
+ */
+function recoleccionFallidaEntry(now, eventName, stage) {
+  return {
+    timestamp: now.toISOString(),
+    principal_logico: 'pipeline',
+    principal_hash: hashPrincipal('pipeline'),
+    scope_logico: 'vault',
+    almacen: 'pipeline',
+    event_name: eventName,
+    resultado: 'error',
+    causa: 'RECOLECCION_FALLIDA',
+    evidencia: 'RECOLECCION_FALLIDA',
+    stage,
+  };
+}
+
 function runAccessAuditTick(opts = {}) {
+  const startedAt = Date.now();
   const fsImpl = opts.fsImpl || fs;
   const config = opts.config && typeof opts.config === 'object' ? opts.config : {};
   const log = typeof opts.log === 'function' ? opts.log : () => {};
-  if (config.enabled !== true) return { skipped: true, reason: 'disabled', records: [], notifications: [], errors: [] };
-  if (!Array.isArray(config.expected_principals) || config.expected_principals.length === 0) {
-    log('[vault-access-audit] tick omitido: expected_principals está vacía');
-    return { skipped: true, reason: 'empty-allowlist', records: [], notifications: [], errors: [] };
-  }
+  const omitido = (reason, extra = {}) => ({
+    skipped: true, reason, records: [], notifications: [], errors: [], duration_ms: Date.now() - startedAt, ...extra,
+  });
+  if (config.enabled !== true) return omitido('disabled');
 
   // La región sale SÓLO de `kernel.region` (pulpo.js la pasa en opts.region), que
   // es la misma fuente que documenta el runbook. NO se cae a AWS_REGION /
@@ -497,7 +683,7 @@ function runAccessAuditTick(opts = {}) {
   // aparenta estar prendido. Se prefiere no correr y decirlo (R-H).
   if (!opts.lookupEvents && !region) {
     log('[vault-access-audit] tick omitido: falta kernel.region');
-    return { skipped: true, reason: 'sin-region', records: [], notifications: [], errors: [] };
+    return omitido('sin-region');
   }
 
   const now = opts.now instanceof Date ? opts.now : new Date();
@@ -505,11 +691,71 @@ function runAccessAuditTick(opts = {}) {
   const statePath = opts.statePath || path.join(pipelineDir, 'vault-access-audit-state.json');
   const auditPath = opts.auditPath || path.join(pipelineDir, 'logs', 'vault-access-audit.jsonl');
   const lookbackMin = Math.max(1, Number(config.lookback_min || 30));
-  const start = new Date(now.getTime() - lookbackMin * 60 * 1000).toISOString();
-  const runner = opts.lookupEvents
-    || createCloudTrailRunner(opts.sourceEnv || process.env, region, opts);
-  const events = [];
+  const sourceEnv = opts.sourceEnv || process.env;
   const errors = [];
+
+  // #5563 · CA-1 — Allowlist EFECTIVA = literales ∪ derivadas por host. La
+  // derivación necesita `sts`: sin región y sin runner inyectado no hay forma
+  // de preguntar, y eso es `allowlist-no-derivable`, no `empty-allowlist`.
+  const getCallerIdentity = typeof opts.getCallerIdentity === 'function'
+    ? opts.getCallerIdentity
+    : (region ? createStsIdentityRunner(sourceEnv, region, opts) : null);
+  const allowlist = resolveExpectedPrincipals({
+    config,
+    vaultConfig: opts.vaultConfig,
+    getCallerIdentity,
+    hostname: opts.hostname,
+    cache: opts.accountIdCache,
+    region,
+  });
+  const state = readJson(statePath, fsImpl);
+  const ticksDegradadosPrevios = Number.isSafeInteger(state.ticks_degradados_consecutivos)
+    ? state.ticks_degradados_consecutivos : 0;
+
+  if (allowlist.derivation.requested && !allowlist.derivation.ok) {
+    // NO es silenciosa: cuenta como fallo de recolección (CA-2). Rastro
+    // encadenado ANTES de notificar, y la notificación pasa por el mismo
+    // cooldown que las demás causas (evaluador sin eventos, sólo la detección).
+    log(`[vault-access-audit] tick omitido: allowlist-no-derivable (${allowlist.derivation.reason})`);
+    errors.push({ stage: 'derive-allowlist', message: 'no se pudo derivar la allowlist por host' });
+    const entry = recoleccionFallidaEntry(now, 'VaultAuditAllowlist', 'derive-allowlist');
+    try { appendChained({ file: auditPath, entry, fsImpl }); }
+    catch (_err) { errors.push({ stage: 'append-audit', message: 'no se pudo escribir el rastro encadenado' }); }
+    const result = evaluateAccessEvents({
+      now, events: [], state, config: { ...config, expected_principals: allowlist.principals },
+      recoleccion: { fallidas: ACCESS_EVENT_NAMES.length, total: ACCESS_EVENT_NAMES.length, ventana_min: lookbackMin },
+    });
+    result.records.push(entry);
+    persistDetections({ result, now, auditPath, fsImpl, errors });
+    notifyFindings({ result, now, auditPath, fsImpl, errors, log, sendTelegramFn: opts.sendTelegramFn });
+    persistState({
+      statePath, fsImpl, errors,
+      nextState: { ...result.nextState, ticks_degradados_consecutivos: ticksDegradadosPrevios + 1 },
+    });
+    return {
+      ...omitido('allowlist-no-derivable'),
+      records: result.records,
+      notifications: result.notifications,
+      detections: result.detections,
+      errors,
+      resumen: {
+        consultas_total: ACCESS_EVENT_NAMES.length,
+        consultas_fallidas: ACCESS_EVENT_NAMES.length,
+        accesos_observados: 0,
+        degradado: true,
+      },
+      duration_ms: Date.now() - startedAt,
+    };
+  }
+  if (allowlist.principals.length === 0) {
+    log('[vault-access-audit] tick omitido: expected_principals está vacía');
+    return omitido('empty-allowlist');
+  }
+
+  const start = new Date(now.getTime() - lookbackMin * 60 * 1000).toISOString();
+  const runner = opts.lookupEvents || createCloudTrailRunner(sourceEnv, region, opts);
+  const events = [];
+  const consultasFallidas = [];
 
   for (const eventName of ACCESS_EVENT_NAMES) {
     try {
@@ -517,20 +763,66 @@ function runAccessAuditTick(opts = {}) {
       events.push(...(Array.isArray(payload.Events) ? payload.Events : []));
     } catch (_err) {
       errors.push({ stage: 'lookup-events', event_name: eventName, message: 'consulta CloudTrail falló' });
+      consultasFallidas.push(eventName);
       log(`[vault-access-audit] WARN lookup-events falló para ${eventName}`);
     }
   }
 
-  const state = readJson(statePath, fsImpl);
-  const result = evaluateAccessEvents({ now, events, state, config });
+  // #5563 · CA-2 — Lo que no se pudo observar se DICE: una detección por tick
+  // (misma causa, mismo cooldown) y una entrada encadenada por consulta.
+  const recoleccion = consultasFallidas.length
+    ? { fallidas: consultasFallidas.length, total: ACCESS_EVENT_NAMES.length, ventana_min: lookbackMin }
+    : null;
+  const result = evaluateAccessEvents({
+    now, events, state, recoleccion,
+    config: { ...config, expected_principals: allowlist.principals },
+  });
+  const accesosObservados = result.records.length;
   for (const entry of result.records) {
     try { appendChained({ file: auditPath, entry, fsImpl }); }
     catch (_err) { errors.push({ stage: 'append-audit', message: 'no se pudo escribir el rastro encadenado' }); }
   }
+  for (const eventName of consultasFallidas) {
+    const entry = recoleccionFallidaEntry(now, eventName, 'lookup-events');
+    try { appendChained({ file: auditPath, entry, fsImpl }); }
+    catch (_err) { errors.push({ stage: 'append-audit', message: 'no se pudo registrar la consulta fallida' }); }
+    result.records.push(entry);
+  }
 
-  // #5801 · SEC-4/SEC-5 — Cada detección deja entrada encadenada ANTES de
-  // intentar notificar, y también cuando el cooldown suprime el aviso: si el
-  // registro dependiera del envío, silenciar el canal borraría la evidencia.
+  persistDetections({ result, now, auditPath, fsImpl, errors });
+  notifyFindings({ result, now, auditPath, fsImpl, errors, log, sendTelegramFn: opts.sendTelegramFn });
+
+  // #5563 · UX-B — Contador de ticks degradados consecutivos. Al recuperarse,
+  // UNA línea en el log y nada por Telegram: cero ruido en el camino feliz.
+  const degradado = consultasFallidas.length > 0;
+  const ticksDegradados = degradado ? ticksDegradadosPrevios + 1 : 0;
+  if (!degradado && ticksDegradadosPrevios > 0) {
+    log(`[vault-access-audit] Tick recuperado tras ${ticksDegradadosPrevios} tick(s) degradado(s)`);
+  }
+  persistState({
+    statePath, fsImpl, errors,
+    nextState: { ...result.nextState, ticks_degradados_consecutivos: ticksDegradados },
+  });
+  return {
+    ...result,
+    errors,
+    skipped: false,
+    resumen: {
+      consultas_total: ACCESS_EVENT_NAMES.length,
+      consultas_fallidas: consultasFallidas.length,
+      accesos_observados: accesosObservados,
+      degradado,
+    },
+    duration_ms: Date.now() - startedAt,
+  };
+}
+
+/**
+ * #5801 · SEC-4/SEC-5 — Cada detección deja entrada encadenada ANTES de
+ * intentar notificar, y también cuando el cooldown suprime el aviso: si el
+ * registro dependiera del envío, silenciar el canal borraría la evidencia.
+ */
+function persistDetections({ result, now, auditPath, fsImpl, errors }) {
   for (const deteccion of result.detections || []) {
     const entry = {
       timestamp: now.toISOString(),
@@ -553,10 +845,21 @@ function runAccessAuditTick(opts = {}) {
     try { appendChained({ file: auditPath, entry, fsImpl }); }
     catch (_err) { errors.push({ stage: 'append-audit', message: 'no se pudo registrar la detección' }); }
   }
+}
 
-  if (result.notifications.length && typeof opts.sendTelegramFn === 'function') {
+/**
+ * Envía las alertas del tick. #5563 · UX-B — las de recolección viajan en una
+ * llamada SEPARADA de las de acceso, para que nunca se mezclen headers: "a
+ * oscuras" y "acceso fuera de lo esperado" son dos hechos distintos.
+ */
+function notifyFindings({ result, now, auditPath, fsImpl, errors, log, sendTelegramFn }) {
+  if (!result.notifications.length || typeof sendTelegramFn !== 'function') return;
+  const accesos = result.notifications.filter((n) => n.causa !== 'RECOLECCION_FALLIDA');
+  const oscuras = result.notifications.filter((n) => n.causa === 'RECOLECCION_FALLIDA');
+  for (const grupo of [accesos, oscuras]) {
+    if (!grupo.length) continue;
     const correlationId = `vault-${now.getTime().toString(36)}-${crypto.randomBytes(3).toString('hex')}`;
-    try { opts.sendTelegramFn(formatAccessAlert(result.notifications, correlationId)); }
+    try { sendTelegramFn(formatAccessAlert(grupo, correlationId)); }
     catch (_err) {
       // R-D · El canal de la alerta depende del propio vault que la alerta
       // vigila. Fail-SOFT en la notificación, fail-CLOSED en el rastro: si no
@@ -581,19 +884,47 @@ function runAccessAuditTick(opts = {}) {
       result.records.push(failure);
     }
   }
+}
 
+/**
+ * #5563 · UX-C — Línea de `pulpo.log` de un tick que corrió. Formato estable y
+ * greppable, `DEGRADADO` al principio cuando alguna consulta falló, duración
+ * siempre en `ms` con unidad. Los números salen de `resumen` (los decide el
+ * módulo); acá sólo se formatean.
+ *
+ *   Tick OK: 0 acceso(s), 0 alerta(s), 5/5 consultas, 1834 ms
+ *   Tick DEGRADADO: 5/5 consultas fallaron, 0 acceso(s) observados, 20012 ms
+ */
+function formatTickLogLine(result) {
+  const r = (result && result.resumen) || {};
+  const total = Number.isFinite(r.consultas_total) ? r.consultas_total : ACCESS_EVENT_NAMES.length;
+  const fallidas = Number.isFinite(r.consultas_fallidas) ? r.consultas_fallidas : 0;
+  const accesos = Number.isFinite(r.accesos_observados) ? r.accesos_observados
+    : (result && Array.isArray(result.records) ? result.records.length : 0);
+  const alertas = result && Array.isArray(result.notifications) ? result.notifications.length : 0;
+  const ms = Number.isFinite(result && result.duration_ms) ? result.duration_ms : 0;
+  if (r.degradado === true || fallidas > 0) {
+    return `Tick DEGRADADO: ${fallidas}/${total} consultas fallaron, ${accesos} acceso(s) observados, ${ms} ms`;
+  }
+  return `Tick OK: ${accesos} acceso(s), ${alertas} alerta(s), ${total - fallidas}/${total} consultas, ${ms} ms`;
+}
+
+function persistState({ statePath, fsImpl, errors, nextState }) {
   try {
-    fsImpl.writeFileSync(statePath, JSON.stringify(result.nextState, null, 2));
+    fsImpl.writeFileSync(statePath, JSON.stringify(nextState, null, 2));
   } catch (_err) {
     errors.push({ stage: 'persist-state', message: 'no se pudo persistir el cursor de auditoría' });
   }
-  return { ...result, errors, skipped: false };
 }
 
 module.exports = {
   ACCESS_EVENT_NAMES,
   BURST_UNIT,
   CAUSAS,
+  HOST_ROLE_PREFIX,
+  buildHostRoleArn,
+  resolveExpectedPrincipals,
+  createStsIdentityRunner,
   classifyAccessEvent,
   readBurstThreshold,
   UNKNOWN_SCOPE,
@@ -604,6 +935,7 @@ module.exports = {
   normalizeEvent,
   evaluateAccessEvents,
   formatAccessAlert,
+  formatTickLogLine,
   createCloudTrailRunner,
   runAccessAuditTick,
 };

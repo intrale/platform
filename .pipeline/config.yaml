@@ -2025,9 +2025,29 @@ vault:
     # apagada, para que encenderla nunca sea el momento en que se descubre que
     # falta. No hay forma de dejar la auditoría corriendo con la detección de
     # ráfagas apagada y que el pipeline arranque igual.
-    enabled: false
+    # #5563 — ENCENDIDO. Prerrequisito humano cumplido (CA-0, 2026-09-14): el
+    # usuario de auditoría `claude-code` tiene `cloudtrail:LookupEvents` (Sid
+    # `VaultAuditReadEventHistory`). Sin ese permiso el tick no falla ruidoso:
+    # con `enabled: true` el propio módulo lo dice (`RECOLECCION_FALLIDA`,
+    # alerta "auditoría del vault a oscuras"), nunca `0 acceso(s)` limpio.
+    enabled: true
     poll_interval_min: 10
     lookback_min: 30
+    # #5563 · CA-1 — La allowlist se DERIVA en runtime, espejo de
+    # `hostIdFromHostname`: se commitea el MECANISMO, nunca el VALOR. Este
+    # archivo vive en un repo PÚBLICO y un ARN literal publicaría el account id
+    # y el hostId que #5426 (CA-12b) decidió no exponer. Con la señal en `true`
+    # el tick arma `arn:aws:iam::<account>:role/intrale-vault-runtime-<hostId>`
+    # con el account id de `sts get-caller-identity` y el `hostId` que resuelve
+    # `hostIdFromHostname`; la allowlist efectiva es derivadas ∪ literales.
+    # El alta de un host nuevo NO toca este archivo. Es una señal POSITIVA y
+    # exacta: `"true"` string no deriva y el esquema lo rechaza.
+    # Si la derivación falla, el tick sale por `allowlist-no-derivable` y lo
+    # cuenta como fallo de recolección (CA-2) — no queda mudo.
+    expected_principals_from_hosts: true
+    # Literales adicionales (ARN completos). Se deja VACÍA a propósito: el admin
+    # NO va en la allowlist (D2) — una lectura manual dispara
+    # `IDENTIDAD_NO_ESPERADA`, y esa alerta es la esperada, no un defecto.
     expected_principals: []
     # #5801 — Umbral de ráfaga CALIBRADO.
     #

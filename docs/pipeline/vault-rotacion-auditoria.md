@@ -93,14 +93,98 @@ T-7, T-3, T-1 y T-0. Reglas del inventario:
 
 ## Auditoría y alertas
 
-`vault.access_audit` está apagado por defecto. Para el rollout se completa
-`expected_principals` con los roles IAM de los hosts y luego se habilita el gate.
-Una lista vacía omite el tick y lo registra en `pulpo.log`; no interpreta a todo
-el mundo como atacante. `burst_threshold` ya está **calibrado** (`360
-physical_read/ventana`, derivado del pico medido por la corrida de #5800): el
-esquema lo exige como entero positivo siempre, así que encender el gate no puede
-dejar la detección de ráfagas apagada — ver §Calibración del umbral de ráfaga
-más abajo.
+`vault.access_audit` está **encendido** desde #5563 (2026-09-14). La allowlist
+de principals **no se escribe en `config.yaml`**: se **deriva en runtime**, con
+el mismo patrón que `hostIdFromHostname` (#5426 · CA-12b). La clave
+`expected_principals_from_hosts: true` es una señal positiva y exacta (un
+`"true"` string no deriva y el esquema lo rechaza) que hace que cada tick arme
+
+```
+arn:aws:iam::<account>:role/intrale-vault-runtime-<hostId>
+```
+
+con el account id de `sts get-caller-identity` (mismo ambiente por allowlist
+que usa la consulta a CloudTrail, memoizado por proceso) y el `hostId` que
+resuelve `resolveVaultHostId` — el mismo mecanismo del namespace del vault. La
+allowlist **efectiva** es derivadas ∪ `expected_principals` (literales, hoy
+vacía a propósito). Así el repo público no publica ni account id ni hostId, y el
+alta de un host nuevo no toca este archivo. `burst_threshold` ya está
+**calibrado** (`360 physical_read/ventana`, derivado del pico medido por la
+corrida de #5800): el esquema lo exige como entero positivo siempre, así que
+encender el gate no pudo dejar la detección de ráfagas apagada — ver
+§Calibración del umbral de ráfaga más abajo.
+
+Si la derivación falla (sin `sts`, hostname que no resuelve a un segmento
+válido, account id ilegible), el tick sale por `allowlist-no-derivable` y lo
+trata como **fallo de recolección** (ver la alerta "a oscuras" más abajo): no
+queda mudo. Una allowlist literal vacía **sin** la señal de derivación sigue
+omitiendo el tick por `empty-allowlist` y lo registra en `pulpo.log`; no
+interpreta a todo el mundo como atacante.
+
+### Alta de un host nuevo (sin tocar `config.yaml`)
+
+1. Crear el rol IAM de lectura del host con la convención
+   `intrale-vault-runtime-<hostId>`, donde `<hostId>` es **exactamente** el
+   `os.hostname()` de la máquina (sin normalizar: la comparación es string
+   exacta tras colapsar la sesión STS al rol).
+2. Confirmar que el rol existe: `aws iam get-role --role-name
+   "intrale-vault-runtime-$(hostname)"` devuelve `RoleName` (no pegar el ARN).
+3. Arrancar el Pulpo en el host: `vault.hostIdFromHostname: true` y
+   `vault.access_audit.expected_principals_from_hosts: true` ya están
+   commiteados, así que no hay nada que editar.
+4. Verificar en `pulpo.log` que el primer tick loguea `Tick OK: … 5/5
+   consultas` (y **no** `tick omitido: allowlist-no-derivable`).
+5. Esperar la primera lectura del host: **no** llega ninguna alerta
+   `IDENTIDAD_NO_ESPERADA` sobre un principal de tipo rol. Si llega, el nombre
+   del rol no coincide con el hostname (paso 1): se corrige en IAM, no en código.
+
+### Qué significa cada alerta y qué hacer
+
+Toda alerta sigue el mismo template (severidad → consecuencia → causa como
+token → qué hacer → diagnóstico al final).
+
+**`IDENTIDAD_NO_ESPERADA`** — alguien fuera de la allowlist leyó un secreto.
+*Qué alerta esperar en una verificación manual:* el usuario administrativo
+**no** va en la allowlist (decisión D2 de #5563). Una lectura manual con la
+sesión del operador (`aws ssm get-parameter …` durante un runbook o un QA)
+dispara esta alerta con el principal lógico `user/<nombre>`, y esa es la
+**alerta esperada**: demuestra que el control detecta lecturas humanas. No hay
+que agregarse a la allowlist ni editar `config.yaml`. Si el principal es un
+**rol** (`role/intrale-vault-runtime-…`) y no la esperabas, es un host cuyo rol
+no sigue la convención (ver el alta de arriba). Si no fue ninguna de las dos,
+rotar los secretos del scope afectado (§Rotación manual).
+
+**`RECOLECCION_FALLIDA`** — alerta *"⚠️ Auditoría del vault a oscuras"*.
+- *Qué significa:* la consulta al Event history falló (permiso perdido, timeout
+  de la CLI, allowlist no derivable) y **la ventana quedó sin observar**. Desde
+  el último tick exitoso no hay garantía de que una lectura no autorizada
+  hubiera sido detectada. **No** es "alguien accedió": por eso tiene header
+  propio y nunca se mezcla en el mismo mensaje con una alerta de acceso.
+- *Qué hacer:* confirmar que `user/claude-code` conserva
+  `cloudtrail:LookupEvents` (Sid `VaultAuditReadEventHistory`) corriendo
+  `aws cloudtrail lookup-events --region us-east-2 --max-items 1`; si la
+  respuesta es un rechazo de permisos, el grant se perdió. Si el permiso está,
+  buscar `DEGRADADO` en `pulpo.log`: la línea del tick dice cuántas consultas
+  fallaron y cuánto tardó.
+- *Cómo se ve en el rastro:* una entrada por consulta fallida con
+  `causa: RECOLECCION_FALLIDA`, `evidencia: RECOLECCION_FALLIDA`,
+  `resultado: error`, el `event_name` consultado y `stage: lookup-events` (o
+  `stage: derive-allowlist` con `event_name: VaultAuditAllowlist` cuando lo que
+  falló fue la derivación), más la entrada `VaultAuditDetection` de la
+  detección. Es **una** detección por tick (no una por consulta) y respeta el
+  mismo `cooldown_min` que las demás causas. Cuando el tick vuelve a estar sano,
+  `pulpo.log` dice `Tick recuperado tras N tick(s) degradado(s)` — sin Telegram.
+
+La línea de `pulpo.log` de cada tick es fija y greppable:
+
+```
+[vault-access-audit] Tick OK: 0 acceso(s), 0 alerta(s), 5/5 consultas, 1834 ms
+[vault-access-audit] Tick DEGRADADO: 5/5 consultas fallaron, 0 acceso(s) observados, 20012 ms
+```
+
+`DEGRADADO` va al principio; la duración siempre en `ms`. Un tick que no corre
+mantiene el prefijo `tick omitido:` con su razón (`disabled`, `sin-region`,
+`empty-allowlist`, `allowlist-no-derivable`).
 
 El tick consulta lecturas de SSM y Secrets Manager. Cada entrada del registro
 tiene estos campos, y ninguno más:
@@ -412,6 +496,28 @@ justo el hueco por el que se esconden las ráfagas siguientes. Un fallo del cana
 de Telegram tampoco revierte ni borra lo ya registrado.
 
 ## Consultar Event history
+
+**Permiso requerido (usuario de auditoría, no rol de runtime).** El tick del
+Pulpo y los comandos de esta sección corren con la identidad `claude-code`, que
+desde #5563 (2026-09-14) tiene esta statement de sólo lectura. `LookupEvents`
+no admite resource-level permissions, por eso `Resource: "*"`:
+
+```json
+{
+  "Sid": "VaultAuditReadEventHistory",
+  "Effect": "Allow",
+  "Action": "cloudtrail:LookupEvents",
+  "Resource": "*"
+}
+```
+
+Aplica al **usuario de auditoría** (`user/claude-code`) y **no** al rol de
+runtime: `intrale-kernel-runtime` conserva su `Deny` explícito
+(`IntraleKernelStore`) a propósito — el runtime del kernel no debe leer su
+propia auditoría — y por eso la statement **no** va en
+`docs/pipeline/vault-iam-policy.json`, que es la policy del rol. Verificación
+del grant: `aws cloudtrail lookup-events --region us-east-2 --max-items 1`
+devuelve `{"Events": [...]}` (puede ser vacío) y no un rechazo de permisos.
 
 **Todo comando `aws` de este runbook va prefijado con `MSYS_NO_PATHCONV=1`.** Sin
 eso, Git Bash reescribe un argumento que arranca con `/` — por ejemplo

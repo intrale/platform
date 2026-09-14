@@ -645,7 +645,7 @@ Verificado empíricamente al aprovisionar el trail (2026-08-05):
 | Ver que el trail existe y loguea | `cloudtrail:DescribeTrails`, `GetTrailStatus` | ✅ permitido | — |
 | **Leer el trail en S3** (`--verify`) | `s3:ListBucket`, `s3:GetObject` | ✅ **permitido** | — |
 | Emitir uso de la CMK (`--emit-usage`) | `kms:Decrypt` vía DynamoDB | ❌ **denegado** | ✅ permitido |
-| Consultar Event history (`lookup-events`) | `cloudtrail:LookupEvents` | ❌ denegado | ❌ |
+| Consultar Event history (`lookup-events`) | `cloudtrail:LookupEvents` | ✅ **permitido** (Sid `VaultAuditReadEventHistory`, grant del 2026-09-14 · #5563) | ❌ |
 | Endurecer la policy del destino (`put-bucket-policy`) | `s3:PutBucketPolicy` | ✅ permitido | ❌ denegado |
 
 El aprovisionamiento es un **paso admin de una sola vez**: la identidad del
@@ -663,9 +663,14 @@ Verificado empíricamente (2026-08-05): `claude-code` recibe `AccessDenied` en
 `dynamodb:CreateTable` desde la policy `IntraleKernelStore`. Ambas denegaciones
 quedan registradas en el trail, que es exactamente para lo que sirve.
 
-`lookup-events` sigue denegado para el pipeline, pero **ya no bloquea la
-reconciliación**: el procedimiento de abajo lee el trail desde S3, que es la
-fuente con retención de 365 días.
+`lookup-events` está **permitido** para `claude-code` desde el 2026-09-14
+(#5563, Sid `VaultAuditReadEventHistory`, `Resource: "*"` porque la acción no
+admite resource-level permissions): es lo que necesita el tick de
+`vault.access_audit` para observar la ventana. El grant es de **sólo lectura**
+y va al **usuario de auditoría**, no al rol de runtime (`intrale-kernel-runtime`
+conserva su `Deny` explícito en `IntraleKernelStore`: el runtime del kernel no
+debe leer su propia auditoría). La reconciliación de abajo sigue leyendo el
+trail desde S3, que es la fuente con retención de 365 días.
 
 #### Consultar el rastro durante una reconciliación
 
