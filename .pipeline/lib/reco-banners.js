@@ -85,7 +85,7 @@ function urlBusquedaCompleta(repo) {
 function renderTransitionBanner({ key = TRANSITION_BANNER_KEY } = {}) {
     const k = escapeHtmlAttr(key);
     return `<div class="reco-banner reco-banner-transicion" data-banner-key="${k}" hidden>
-  <svg class="reco-banner-ic" width="20" height="20" viewBox="0 0 24 24" aria-hidden="true"><use href="/assets/icons/sprite.svg#ic-triage-backlog"></use></svg>
+  <svg class="reco-banner-ic" width="20" height="20" viewBox="0 0 24 24" aria-hidden="true"><use href="#ic-triage-backlog"></use></svg>
   <div class="reco-banner-txt">
     <div class="reco-banner-tit">Las recomendaciones ya no usan <code>needs-human</code> — es el efecto esperado de #5678</div>
     <div class="reco-banner-sub">Ahora esperan en <code>needs:triage-backlog</code>: siguen acá, no bloquean ninguna ola y no notifican. <code>needs-human</code> queda reservado para bloqueos reales, con un agente frenado atrás. <span class="dim">· Se muestra una sola vez y es descartable.</span></div>
