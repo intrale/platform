@@ -22,7 +22,10 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const mod = require('../provider-exhaustion-pause');
-const { getQuotaHint, sanitizeHintElement, formatExhaustionMessage, _resetQuotaHintsCache } = mod;
+const {
+    getQuotaHint, sanitizeHintElement, formatExhaustionMessage, formatResumedMessage,
+    _resetQuotaHintsCache,
+} = mod;
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -982,4 +985,88 @@ test('#5467 SEC · el escape del veredicto no altera los literales propios (INVA
                 `con labels limpios el escape debe ser no-op; ${code} x${n} dio: ${verdict}`);
         }
     }
+});
+
+// =============================================================================
+// #5571 SEC · formatResumedMessage — gemela de la inyección cerrada en #5467.
+//   El título del issue (input externo: GitHub, repo público) se interpolaba
+//   CRUDO y DENTRO del texto del link `[#N — <title>](url)`. Un `](` en el
+//   título cerraba el link antes de tiempo y rebindeaba el destino a un sitio
+//   hostil, en el mismo canal de Telegram que el operador usa para destrabar.
+//   Fix: texto del link fijo (`#N`) + título afuera, escapado (SEC-1/SEC-2).
+// =============================================================================
+
+function renderResumed5571(title) {
+    return formatResumedMessage({ issue: 5467, title, provider_recovered: 'anthropic' });
+}
+
+function issueLine(text) {
+    return text.split('\n').find(l => l.startsWith('Issue:'));
+}
+
+test('#5571 SEC · formatResumedMessage: un título con `](` no puede rebindear el destino del link', () => {
+    // Repro exacto del issue.
+    const line = issueLine(renderResumed5571('Bug](https://evil.example.com/phish) _x_'));
+
+    assert.deepEqual(linkTargets(line), [ISSUE_URL_5467],
+        `el único link debe apuntar al issue, salió: ${line}`);
+    // Salida literal esperada (CA-2): link fijo y título afuera, escapado.
+    assert.equal(line,
+        `Issue: [#5467](${ISSUE_URL_5467}) — Bug](https://evil.example.com/phish) \\_x\\_`);
+});
+
+test('#5571 SEC · formatResumedMessage: ningún payload en el título produce un link al sitio del atacante', () => {
+    // Misma batería que `#5467 SEC` para la gemela (SEC-1 + SEC-2 + SEC-3).
+    const BS = String.fromCharCode(92);
+    const payloads = [
+        'Bug](https://evil.example.com/phish)',
+        '](http://evil.test)',
+        '[x](http://evil.test)',
+        '](http://evil.test) y sigue](http://evil.test)',
+        'trailing backslash ' + BS,
+        BS + '](http://evil.test)',
+    ];
+    for (const title of payloads) {
+        const line = issueLine(renderResumed5571(title));
+        assert.deepEqual(linkTargets(line), [ISSUE_URL_5467],
+            `payload ${JSON.stringify(title)} generó links de más: ${line}`);
+    }
+});
+
+test('#5571 SEC · formatResumedMessage: el título legítimo sigue legible y va fuera del link', () => {
+    // SEC-5 / CA-3: el fix no puede costarle al operador el contexto del issue.
+    const line = issueLine(renderResumed5571('Fix snake_case'));
+    assert.ok(
+        line.includes(`[#5467](${ISSUE_URL_5467}) — Fix snake\\_case`),
+        `salió: ${line}`,
+    );
+});
+
+test('#5571 SEC · formatResumedMessage: los metacaracteres del título se escapan', () => {
+    // CA-4: espejo del test de la gemela.
+    const line = issueLine(renderResumed5571('under_score *bold* `code` [link'));
+    assert.ok(
+        line.includes('under\\_score \\*bold\\* \\`code\\` \\[link'),
+        `salió: ${line}`,
+    );
+});
+
+test('#5571 SEC · formatResumedMessage: los literales propios no se escapan (INVARIANTE)', () => {
+    // SEC-4 / CA-5: sólo se escapa el dato externo; los anclajes visuales del
+    // mensaje (encabezado, code spans de provider y label) quedan intactos.
+    const text = renderResumed5571('Bug](https://evil.example.com/phish) _x_ *y*');
+
+    assert.ok(text.includes('🟩 *Pipeline destrabado — provider recuperado*'), 'encabezado alterado');
+    assert.ok(text.includes('Provider: `anthropic`'), 'code span del provider alterado');
+    assert.ok(text.includes('Se quitó la label `provider-exhaustion-pause`'), 'code span de la label alterado');
+});
+
+test('#5571 SEC · formatResumedMessage: sin título o sin issue válido no rompe el formato', () => {
+    // Bordes: título vacío → link pelado sin ` — `; issue inválido → `(sin issue)`.
+    const sinTitulo = issueLine(formatResumedMessage({ issue: 5467, provider_recovered: 'anthropic' }));
+    assert.equal(sinTitulo, `Issue: [#5467](${ISSUE_URL_5467})`);
+
+    const sinIssue = issueLine(formatResumedMessage({ issue: 'abc](http://evil.test)', title: 'x', provider_recovered: 'anthropic' }));
+    assert.equal(sinIssue, 'Issue: (sin issue)');
+    assert.deepEqual(linkTargets(sinIssue), []);
 });
