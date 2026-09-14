@@ -326,10 +326,14 @@ function driverKindAllowed(kind, deps) {
  * (`kind: 'aws-cli-sync'`). Si la sonda armara el driver de otra forma,
  * probaría un cableado que producción no usa.
  */
-function buildSyncRuntimeDriver(kernelCfg, profile, deps = {}) {
+function resolveAwsContext(kernelCfg, profile, deps = {}) {
     const creds = lib('kernel-runtime-credentials');
     const kernel = profile ? { ...kernelCfg, runtimeProfile: profile } : kernelCfg;
-    const resolved = creds.resolveRuntimeAwsEnv({ kernel, deps: deps.credsDeps, env: deps.env });
+    return creds.resolveRuntimeAwsEnv({ kernel, deps: deps.credsDeps, env: deps.env });
+}
+
+function buildSyncRuntimeDriver(resolved) {
+    const creds = lib('kernel-runtime-credentials');
     if (!resolved.ok) return { ok: false, code: resolved.code, error: resolved.error };
     const { createAwsCliRunnerSync, createAwsCliDynamoDriverSync } = lib('provisioner-infra');
     const { runSync } = createAwsCliRunnerSync(resolved.env);
@@ -339,10 +343,13 @@ function buildSyncRuntimeDriver(kernelCfg, profile, deps = {}) {
 function verifyIdentity(cfg, deps) {
     const kernel = (cfg && cfg.kernel) || {};
     const fn = deps.verifyRuntimeIdentity || lib('kernel-cutover-probe').verifyRuntimeIdentity;
+    const resolved = deps.awsContext || (!deps.verifyRuntimeIdentity
+        ? resolveAwsContext(kernel, deps.profile, deps) : null);
+    if (resolved && !resolved.ok) return resolved;
     return fn({
         expectedPrincipal: kernel.runtimePrincipal,
-        profile: deps.profile || kernel.runtimeProfile,
-        env: deps.env,
+        profile: resolved ? undefined : deps.profile || kernel.runtimeProfile,
+        env: resolved ? resolved.env : deps.env,
         spawnSync: deps.spawnSync,
     });
 }
@@ -355,8 +362,8 @@ function consistentRead(cfg, deps, { pk, sk, tableName }) {
         region: kernel.region,
         pk,
         sk,
-        profile: deps.profile || kernel.runtimeProfile,
-        env: deps.env,
+        profile: deps.awsContext ? undefined : deps.profile || kernel.runtimeProfile,
+        env: deps.awsContext ? deps.awsContext.env : deps.env,
         spawnSync: deps.spawnSync,
     });
 }
@@ -504,7 +511,7 @@ async function runPreconditions(opts = {}) {
 // ─── CA-2 · --cas-probe ─────────────────────────────────────────────────────
 
 async function runCasProbe(opts = {}) {
-    const deps = opts.deps || {};
+    const deps = { ...opts.deps };
     const result = newResult('--cas-probe', `escribe UNA clave de sonda (coord#${PROBE_KEY}) por compareAndSet — idempotente: cada corrida incrementa su versión; nunca toca coord#waves ni coord#partial-pause`);
     let cfg;
     try { cfg = loadConfig(deps); } catch (e) {
@@ -516,6 +523,11 @@ async function runCasProbe(opts = {}) {
     const projectId = deps.projectId || pc.currentProjectIdOrNull();
     result.contexto = { tabla: kernel.coordinationTableName, region: kernel.region, particion: projectId, claveDeSonda: `coord#${PROBE_KEY}` };
 
+    // Resolver una sola vez: STS, escritor y readback usan las mismas claves,
+    // sin --profile que sustituya el entorno que realmente consume el driver.
+    if (!deps.driver) {
+        deps.awsContext = resolveAwsContext(kernel, deps.profile, deps);
+    }
     // 1 · identidad (SEC-2): sin coincidencia NO se escribe nada.
     const ident = verifyIdentity(cfg, deps);
     result.checks.push(check('identidad', 'principal efectivo = `kernel.runtimePrincipal` (SEC-2)', ident.ok,
@@ -527,7 +539,7 @@ async function runCasProbe(opts = {}) {
     let driver = deps.driver;
     let driverSource = 'inyectado';
     if (!driver) {
-        const built = buildSyncRuntimeDriver(kernel, deps.profile, deps);
+        const built = buildSyncRuntimeDriver(deps.awsContext);
         if (!built.ok) {
             result.checks.push(check('driver', 'driver DynamoDB del runtime', false, built.error, { causa: 'driver_no_resuelto' }));
             return finish(result);
