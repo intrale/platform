@@ -54,6 +54,7 @@ test('safeIssueFromFilename: acepta markers y artifacts válidos', () => {
     assert.equal(_internal.safeIssueFromFilename('1732.po.comment.md'), '1732');
     assert.equal(_internal.safeIssueFromFilename('3638.pipeline-dev.guidance.txt'), '3638');
     assert.equal(_internal.safeIssueFromFilename('2441.qa.reason.json'), '2441');
+    assert.equal(_internal.safeIssueFromFilename('2441.qa.reconciler.reason.json'), '2441'); // #7232 rev-1
     assert.equal(_internal.safeIssueFromFilename('5000.po'), '5000');
 });
 
@@ -69,6 +70,7 @@ test('isCandidateFilename: solo .comment.md / .guidance.txt / .reason.json', () 
     assert.equal(_internal.isCandidateFilename('1732.po.comment.md'), true);
     assert.equal(_internal.isCandidateFilename('1732.po.guidance.txt'), true);
     assert.equal(_internal.isCandidateFilename('1732.qa.reason.json'), true);
+    assert.equal(_internal.isCandidateFilename('1732.qa.reconciler.reason.json'), true); // #7232 rev-1
     assert.equal(_internal.isCandidateFilename('1732.po'), false); // marker válido
     assert.equal(_internal.isCandidateFilename('foo.bar.baz'), false); // > 2 segmentos pero sin sufijo conocido
 });

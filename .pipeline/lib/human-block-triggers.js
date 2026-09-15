@@ -673,7 +673,9 @@ function detectMergeStateBlock({
 // -----------------------------------------------------------------------------
 
 // Skills cuya devolución puede ser "necesito que decidas", no "arreglá el código".
-const DECISION_SKILLS = Object.freeze(['po', 'ux', 'qa', 'review', 'security', 'architect']);
+// #7231 — `guru` también devuelve pidiendo decisión (validación técnica en
+// `desarrollo/validacion`, caso #5570).
+const DECISION_SKILLS = Object.freeze(['po', 'ux', 'qa', 'review', 'security', 'architect', 'guru']);
 
 // Señales de que lo que se pide es una DECISIÓN del operador. Enumeradas y
 // explícitas a propósito (mismo criterio que CA-4a): una heurística amplia

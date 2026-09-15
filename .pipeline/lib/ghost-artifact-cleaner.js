@@ -72,7 +72,10 @@ const LOG_PREFIX = '[ghost-artifact]';
 // Regex estricta para extraer issue de filename: <digits>.<skill>[.suffix]
 // `skill` permite letras, dígitos y guiones. `suffix` es uno de los conocidos.
 // Esto previene command injection en `gh issue view`.
-const FILENAME_REGEX = /^(\d+)\.[a-z][a-z0-9-]*(?:\.(?:comment\.md|guidance\.txt|reason\.json|reason\.resolved(?:-\d+)?\.json))?$/;
+// #7232 rev-1 — `reconciler.reason.json` es el sidecar propio del reconciler
+// (`human-block.reconcilerSidecarPath`), sólo aparece cuando el `.reason.json`
+// estaba corrupto; se limpia igual que él.
+const FILENAME_REGEX = /^(\d+)\.[a-z][a-z0-9-]*(?:\.(?:comment\.md|guidance\.txt|reason\.json|reconciler\.reason\.json|reason\.resolved(?:-\d+)?\.json))?$/;
 
 // Sólo estos sufijos califican como artifact candidato a limpieza.
 const ARTIFACT_SUFFIXES = ['.comment.md', '.guidance.txt', '.reason.json'];

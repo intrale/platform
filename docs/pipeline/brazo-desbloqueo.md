@@ -309,8 +309,49 @@ Recorre los issues abiertos con `blocked:dependencies` y lista, por issue, cada
 referencia sospechosa **con la línea donde apareció**. Sólo lee: no edita
 issues, no toca labels, no repostea markers. La corrección es humana.
 
+## Me llegó `human-block-sin-label`, ¿qué hago? (#7232)
+
+La alerta `⚠️ human-block-sin-label: #N quedó esperando una decisión tuya…`
+significa que un agente pidió una decisión humana (marker en
+`<pipeline>/<fase>/bloqueado-humano/<N>.<skill>`), pero el label `needs-human`
+**no llegó a GitHub**: o el guardrail de labels descartó la orden (recomendación
+todavía no aprobada), o `gh` no respondió. En el issue **no vas a ver nada**;
+el bloqueo existe sólo en el filesystem. Llega **una sola vez por marker**: no
+hay recordatorios, el panel `/bloqueados` lleva la antigüedad.
+
+El `context` de la alerta trae `issue`, `skill`, `fase`, la `pregunta` que hay
+que responder (primeros 140 caracteres) y la `causa`.
+
+Tres caminos para destrabar, todos mueven el marker directamente (no dependen
+de la heurística del reconciler):
+
+1. **`/bloqueados` en el dashboard** — el panel lista desde el filesystem, así
+   que el marker aparece aunque no tenga label. Destrabar desde ahí invoca
+   `humanBlock.unblockIssue()` (marker → `pendiente/` + `guidance.txt` con tu
+   respuesta) y el skill re-corre con tu decisión.
+2. **Botones de Telegram** de la notificación original del bloqueo
+   (`buildBlockedActionMarkup` → `executeQuickAction`).
+3. **Brazo de desbloqueo** (este documento) si el bloqueo se resuelve por
+   dependencia declarada.
+
+> **Poner o quitar el label `needs-human` en GitHub NO destraba este marker.**
+> Es por diseño (fail-closed, REQ-SEC-2 de #7232): el reconciler sólo lee
+> "label ausente" como destrabe humano cuando tiene evidencia de que el label
+> existió (`needs_human_seen_at` en el `reason.json`). Sin esa evidencia el
+> marker se retiene aunque toques el label. Si la recomendación **se aprueba**
+> (`recommendation:approved`), el guardrail ahora sí acepta `needs-human` y el
+> reconciler lo re-encola solo en el próximo reintento (backoff de 6 h), con lo
+> que el bloqueo pasa a ser visible en el issue.
+
+Detalle de los campos del `reason.json` (`needs_human_seen_at`,
+`label_enqueued_at`, `sin_label_alertado_at`) en
+`self-healing-fases-varadas.md` → "Evidencia del label en el `reason.json`".
+
 ## Tests
 
+- `.pipeline/lib/__tests__/servicio-reconciler.test.js` (bloque `#7232`) —
+  evidencia positiva del label, fail-closed sin evidencia (secuencia de #5570),
+  dedupe de la alerta, backoff de re-encolado.
 - `.pipeline/lib/__tests__/dep-comment-parser-prosa-6902.test.js` — regla de
   declaración vs. prosa y regresión contra los markers reales de #6191, #6192,
   #6207 y #6209.
