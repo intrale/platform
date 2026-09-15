@@ -80,3 +80,19 @@ test('re-export desde human-block sigue funcionando (compat #2854)', () => {
     assert.equal(hb.isMarkerArtifact('1732.po.comment.md'), true);
     assert.equal(hb.isMarkerArtifact('1732.po'), false);
 });
+
+// ─── #7240 — GUIDANCE_SUFFIXES como fuente única ────────────────────────────
+
+test('#7240: GUIDANCE_SUFFIXES exportado, congelado, y cada sufijo es artifact', () => {
+    const { GUIDANCE_SUFFIXES } = require('../marker-artifact');
+    assert.deepEqual([...GUIDANCE_SUFFIXES], ['.guidance.txt', '.guidance.agent.txt']);
+    assert.ok(Object.isFrozen(GUIDANCE_SUFFIXES));
+    for (const s of GUIDANCE_SUFFIXES) {
+        assert.equal(isMarkerArtifact('1732.po' + s), true, `"${s}" debe ser artifact`);
+    }
+});
+
+test('#7240: sufijo .guidance.agent.txt es artifact (SEC-A)', () => {
+    assert.equal(isMarkerArtifact('1732.pipeline-dev.guidance.agent.txt'), true);
+    assert.equal(isMarkerArtifact('5113.delivery.guidance.agent.txt'), true);
+});

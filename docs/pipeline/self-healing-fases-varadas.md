@@ -109,6 +109,45 @@ una escalada de privilegio por artefacto. El texto pasa por
 se reemplaza por un texto degradado que lo declara — el defecto no desaparece
 porque el motivo sea sospechoso.
 
+#### Ciclo de vida de la orientación (#7240)
+
+Los dos canales comparten el mismo ciclo, con los sufijos de
+`GUIDANCE_SUFFIXES` (`lib/marker-artifact.js`) como fuente única:
+
+```
+escritor            transporte                       consumo one-shot
+────────────        ────────────────────────────     ──────────────────────────
+pendiente/<marker>.guidance[.agent].txt
+   │  human-block.guidanceFilePath /
+   │  guidanceAgentFilePath
+   ▼
+pulpo.moveFile(pendiente/<marker>, trabajando/)
+   │  lib/guidance-injection.transportGuidanceArtifacts
+   │  (DESPUÉS de mover el marker; el artifact nunca es corrida)
+   ▼
+trabajando/<marker>.guidance[.agent].txt
+   │  lanzarAgenteClaude → lib/guidance-injection.buildGuidanceBlocks
+   │  inyecta al prompt y borra el archivo
+   ▼
+prompt del agente (📋 INDICACIONES HUMANAS / 🤖 ORIENTACIÓN AUTOMÁTICA …)
+```
+
+- **Se escribe en `pendiente/`**, junto al marker que se re-encola. Ningún
+  escritor toca `trabajando/`.
+- **`moveFile` lo transporta a `trabajando/`** con el marker, cada archivo con
+  su propio nombre (nunca se colapsa `.guidance.agent.txt` en `.guidance.txt`).
+  Es best-effort: si el `rename` falla, el agente se lanza igual y el log
+  `lanzamiento` dice qué canal (`humana` / `del validador`), qué marker y qué
+  path no llegó — nunca el contenido.
+- **Se consume one-shot** al armar el prompt: caps de **8 KB** (humana) y
+  **4 KB** (agente) con el marcador `[… orientación truncada a N KB …]` al
+  final, en línea propia; después de leerlo el archivo se borra. Si el borrado
+  falla queda un warning con el path.
+- Hasta #7240 el paso de transporte no existía: la orientación se escribía en
+  `pendiente/` y se leía en `trabajando/`, así que **nunca llegaba** (dead
+  letter desde #2801). Las que quedan huérfanas en `pendiente/` las archiva
+  el cleaner de `ghost-artifact-invariant.md`.
+
 Como `pulpo.js` **borra** el guidance después de inyectarlo (one-shot), el
 comentario que el rebote deja en el issue **no es cosmético**: es el único rastro
 duradero de por qué el issue volvió a dev.
@@ -259,7 +298,7 @@ lo saca), y por eso importa quién lo quita y cuándo:
 | Vía | Quién la dispara | Efecto concreto al destrabar |
 |---|---|---|
 | Botones de la notificación (`buildBlockedActionMarkup`) | El operador, desde Telegram | `executeQuickAction` → `reactivateAllBlocked` → `unblockIssue` (misma mecánica que la fila siguiente). |
-| `humanBlock.unblockIssue({ issue, guidance, unlocker })` | Operador / brazo de desbloqueo | **`rename`** del marker a `<pipeline>/<fase>/pendiente/<issue>.<skill>` + `<marker>.guidance.txt` con la guía, y borra el `.reason.json`. El Pulpo lo despacha en el tick siguiente: el `<skill>` está en `skills_por_fase[fase]`, así que **pasa el invariante** y el agente re-corre. |
+| `humanBlock.unblockIssue({ issue, guidance, unlocker })` | Operador / brazo de desbloqueo | **`rename`** del marker a `<pipeline>/<fase>/pendiente/<issue>.<skill>` + `<marker>.guidance.txt` con la guía, y borra el `.reason.json`. El Pulpo lo despacha en el tick siguiente: el `<skill>` está en `skills_por_fase[fase]`, así que **pasa el invariante** y el agente re-corre. `moveFile` lleva el `.guidance.txt` a `trabajando/` junto con el marker y `lanzarAgenteClaude` lo inyecta one-shot (#7240; ver "Ciclo de vida de la orientación"). |
 | `humanBlock.dismissBlockedIssue({ issue })` | Operador | Borra marker + `.reason.json`. **No** reactiva: el issue no vuelve a la cola. |
 | Archivado por TTL del servicio-reconciler (#3186) | Automático | Poda markers vencidos. |
 | `reconcileLabelToFilesystem` (#4222) | Automático | **Sólo si NO hay marker**: limpia labels `needs-human` fantasma. |

@@ -10,11 +10,20 @@
 // Barre `.pipeline/definicion/**` y `.pipeline/desarrollo/**` buscando
 // archivos `.md`/`.txt`/`.json` que sean artifacts auxiliares según
 // `lib/marker-artifact.isMarkerArtifact` (sufijos `.comment.md`,
-// `.guidance.txt`, `.reason.json`) cuyo issue asociado:
+// `.guidance.txt`, `.guidance.agent.txt`, `.reason.json`) cuyo issue asociado:
 //
 //   (a) está CERRADO en GitHub,
 //   (b) NO tiene `.work`/`.build`/`<issue>.<skill>` (marker activo) en la
 //       carpeta padre.
+//
+// #7240 — excepción para la ORIENTACIÓN de destrabe (`GUIDANCE_SUFFIXES` de
+// `lib/marker-artifact`): una guidance sin marker hermano en el mismo
+// directorio es huérfana AUNQUE el issue esté OPEN — el marker ya se fue a
+// `trabajando/` (o a otra fase) y nadie la va a consumir. Para esos sufijos
+// NO se consulta `gh`; en su lugar se exige que el `mtime` supere la gracia
+// `GUIDANCE_ORPHAN_GRACE_MS` (cubre la ventana write → move de una corrida
+// CLI manual; el cron in-process no interleava con `moveFile`, que es
+// síncrono). `.comment.md` / `.reason.json` siguen exigiendo CLOSED.
 //
 // Si ambos se cumplen → archiva el archivo (mueve, NO elimina) a
 // `.pipeline/archivado/ghost-<timestamp>/<path relativo>` y registra una
@@ -57,7 +66,7 @@ const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
 const { withLock } = require('./file-lock');
-const { isMarkerArtifact } = require('./marker-artifact');
+const { isMarkerArtifact, GUIDANCE_SUFFIXES } = require('./marker-artifact');
 
 // ─── Constantes ─────────────────────────────────────────────────────────────
 
@@ -75,10 +84,22 @@ const LOG_PREFIX = '[ghost-artifact]';
 // #7232 rev-1 — `reconciler.reason.json` es el sidecar propio del reconciler
 // (`human-block.reconcilerSidecarPath`), sólo aparece cuando el `.reason.json`
 // estaba corrupto; se limpia igual que él.
-const FILENAME_REGEX = /^(\d+)\.[a-z][a-z0-9-]*(?:\.(?:comment\.md|guidance\.txt|reason\.json|reconciler\.reason\.json|reason\.resolved(?:-\d+)?\.json))?$/;
+// #7240 — la alternancia se EXTIENDE con `guidance\.agent\.txt` (SEC-5); no se
+// relaja con comodines: el issue extraído de acá va a `gh issue view`.
+const FILENAME_REGEX = /^(\d+)\.[a-z][a-z0-9-]*(?:\.(?:comment\.md|guidance\.txt|guidance\.agent\.txt|reason\.json|reconciler\.reason\.json|reason\.resolved(?:-\d+)?\.json))?$/;
 
-// Sólo estos sufijos califican como artifact candidato a limpieza.
-const ARTIFACT_SUFFIXES = ['.comment.md', '.guidance.txt', '.reason.json'];
+// Sólo estos sufijos califican como artifact candidato a limpieza. Los de
+// guidance salen de la fuente única `GUIDANCE_SUFFIXES` (#7240).
+const ARTIFACT_SUFFIXES = ['.comment.md', ...GUIDANCE_SUFFIXES, '.reason.json'];
+
+// #7240 — gracia por mtime para archivar guidance sin marker hermano. Cubre la
+// ventana entre `writeFileSync` del escritor y el `moveFile` del Pulpo cuando
+// el cleaner corre por CLI en paralelo. Override por `opts.guidanceGraceMs`.
+const GUIDANCE_ORPHAN_GRACE_MS = 15 * 60 * 1000;
+
+function isGuidanceFilename(name) {
+    return GUIDANCE_SUFFIXES.some((s) => name.endsWith(s));
+}
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -238,6 +259,7 @@ function alreadyArchived(archivadoRoot, relFromPipelineRoot) {
  * @param {string} [opts.repoRoot] — default: cwd
  * @param {number} [opts.ghTimeoutMs]
  * @param {function} [opts.issueStateFn] — override para tests (no llamar `gh`)
+ * @param {number} [opts.guidanceGraceMs] — gracia por mtime para `.guidance*` (#7240)
  * @param {Date|number} [opts.now]
  * @param {object} [opts.logger]
  * @returns {Promise<{scanned, candidates, archived, skipped, errors, durationMs, bucket}>}
@@ -251,6 +273,7 @@ async function runOnce(opts = {}) {
     const archivadoRoot = path.join(pipelineRoot, 'archivado');
     const auditFile = path.join(pipelineRoot, 'audit', 'ghost-artifacts-cleanup.jsonl');
     const issueStateFn = opts.issueStateFn || ((n) => issueState(n, opts));
+    const guidanceGraceMs = Number.isFinite(opts.guidanceGraceMs) ? opts.guidanceGraceMs : GUIDANCE_ORPHAN_GRACE_MS;
     const now = opts.now ? new Date(opts.now) : new Date();
     const isoNow = now.toISOString();
     const bucketStamp = isoNow.replace(/[-:]/g, '').replace(/\.\d+Z$/, '').replace('T', '-').slice(0, 15);
@@ -365,25 +388,42 @@ async function runOnce(opts = {}) {
                         continue;
                     }
 
-                    // CA-OPS-2: fail-safe gh down.
-                    const stateRes = issueStateFn(issue);
-                    if (!stateRes.ok) {
-                        skipped++;
-                        logger.warn(`gh fail para issue #${issue}: ${stateRes.reason} — skip`);
-                        if (mode === 'execute') {
-                            appendAudit(auditFile, {
-                                timestamp: new Date().toISOString(),
-                                action: 'skip',
-                                file: relFromRoot(pipelineRoot, srcAbs),
-                                reason: `gh unavailable (${stateRes.reason})`,
-                                context: 'fail-safe',
-                            });
+                    // #7240 — guidance sin marker hermano: huérfana aunque el
+                    // issue esté OPEN. Sin consulta `gh`; sólo gracia por mtime.
+                    const esGuidance = isGuidanceFilename(item.name);
+                    let orphanReason;
+                    if (esGuidance) {
+                        let ageMs;
+                        try { ageMs = now.getTime() - fs.statSync(srcAbs).mtimeMs; }
+                        catch (e) { skipped++; logger.warn(`stat fail ${srcAbs}: ${e.message} — skip`); continue; }
+                        if (!(ageMs >= guidanceGraceMs)) {
+                            skipped++;
+                            logger.info(`skip ${item.name}: guidance dentro de la gracia (${Math.round(ageMs / 1000)}s < ${Math.round(guidanceGraceMs / 1000)}s)`);
+                            continue;
                         }
-                        continue;
-                    }
-                    if (stateRes.state !== 'CLOSED') {
-                        skipped++;
-                        continue;
+                        orphanReason = 'orphaned guidance (no active marker in parent, mtime older than grace)';
+                    } else {
+                        // CA-OPS-2: fail-safe gh down.
+                        const stateRes = issueStateFn(issue);
+                        if (!stateRes.ok) {
+                            skipped++;
+                            logger.warn(`gh fail para issue #${issue}: ${stateRes.reason} — skip`);
+                            if (mode === 'execute') {
+                                appendAudit(auditFile, {
+                                    timestamp: new Date().toISOString(),
+                                    action: 'skip',
+                                    file: relFromRoot(pipelineRoot, srcAbs),
+                                    reason: `gh unavailable (${stateRes.reason})`,
+                                    context: 'fail-safe',
+                                });
+                            }
+                            continue;
+                        }
+                        if (stateRes.state !== 'CLOSED') {
+                            skipped++;
+                            continue;
+                        }
+                        orphanReason = `orphaned (issue #${issue} CLOSED, no active marker in parent)`;
                     }
 
                     // Orfandad confirmada → archivar (o reportar en dry-run).
@@ -395,7 +435,7 @@ async function runOnce(opts = {}) {
                     }
 
                     if (mode === 'dry-run') {
-                        logger.info(`DRY-RUN candidate: ${relFromPipe} (issue #${issue} CLOSED)`);
+                        logger.info(`DRY-RUN candidate: ${relFromPipe} (${esGuidance ? 'guidance sin marker hermano' : `issue #${issue} CLOSED`})`);
                         continue;
                     }
 
@@ -407,7 +447,7 @@ async function runOnce(opts = {}) {
                             timestamp: new Date().toISOString(),
                             action: 'cleanup',
                             file: relFromRoot(pipelineRoot, srcAbs),
-                            reason: `orphaned (issue #${issue} CLOSED, no active marker in parent)`,
+                            reason: orphanReason,
                             archived_to: path.relative(pipelineRoot, dstAbs).split(path.sep).join('/'),
                             context: 'runOnce',
                         });
@@ -514,8 +554,10 @@ module.exports = {
         verifyGitignore,
         alreadyArchived,
         walk,
+        isGuidanceFilename,
         FILENAME_REGEX,
         ARTIFACT_SUFFIXES,
+        GUIDANCE_ORPHAN_GRACE_MS,
         MAX_WALK_DEPTH,
         WALK_TIMEOUT_MS,
         GH_TIMEOUT_MS_DEFAULT,
