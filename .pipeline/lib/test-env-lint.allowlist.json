@@ -5004,19 +5004,19 @@
         },
         {
             "file": "tests/label-cache-invalidacion-5863.test.js",
-            "line": 403,
+            "line": 410,
             "kind": "deuda",
             "reason": "escritura de GH_BIN_OVERRIDE fuera del helper"
         },
         {
             "file": "tests/label-cache-invalidacion-5863.test.js",
-            "line": 412,
+            "line": 419,
             "kind": "deuda",
             "reason": "escritura de GH_BIN_OVERRIDE fuera del helper"
         },
         {
             "file": "tests/label-cache-invalidacion-5863.test.js",
-            "line": 413,
+            "line": 420,
             "kind": "deuda",
             "reason": "escritura de GH_BIN_OVERRIDE fuera del helper"
         },

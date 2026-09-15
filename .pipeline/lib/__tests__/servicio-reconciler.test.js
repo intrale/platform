@@ -465,25 +465,95 @@ test('#7232 CA-4/CA-7: secuencia #5570 — marker sin evidencia + label ausente 
     assert.equal(alertas.length, 1, 'dedupe por marker: una sola alerta');
 });
 
-test('#7232 CA-4: reason.json corrupto + label ausente ⇒ no mueve (fail-closed)', () => {
+test('#7232 CA-4 (rev-1): reason.json corrupto + label ausente ⇒ no mueve, conserva los BYTES del reason.json y deduplica vía sidecar', () => {
     clearAllMarkers();
-    const { markerFile, reasonFile } = plantarMarker7232(7302, 'po', {}, { rawReason: '{ esto no es json' });
+    const RAW = '{"question":"¿Qué decisión falta?", INVALIDO';
+    const { markerFile, reasonFile } = plantarMarker7232(7302, 'po', {}, { rawReason: RAW });
+    const sidecar = humanBlock.reconcilerSidecarPath(markerFile);
     // Sin blocked_at legible el proxy es el mtime del marker: lo envejecemos.
     const viejo = new Date(Date.now() - 10 * 60 * 1000);
     fs.utimesSync(markerFile, viejo, viejo);
     const markers = [{ issue: 7302, skill: 'po', phase: 'validacion', pipeline: 'desarrollo' }];
     const alertas = [];
-    const r = reconciler.reconcileHumanUnblockDetected(markers, new Set([]), {
+    const opts = {
         logStaleOrder: () => {},
         notifyTelegram: (p) => { alertas.push(p); return { ok: true }; },
-    });
+    };
+    const r = reconciler.reconcileHumanUnblockDetected(markers, new Set([]), opts);
     assert.equal(r.detected, 0);
     assert.equal(r.heldIssues.has(7302), true);
     assert.equal(fs.existsSync(markerFile), true, 'marker NO se mueve con reason ilegible');
     assert.equal(fs.existsSync(path.join(PEND_DIR_VAL, '7302.po')), false);
     assert.equal(alertas.length, 1);
-    // updateMarkerReason reemplaza el JSON corrupto por uno válido con el dedupe.
-    assert.ok(leerReason(reasonFile).sin_label_alertado_at);
+    // Conservación de bytes: el reason.json corrupto NO se sobrescribe (la pregunta sigue ahí).
+    assert.equal(fs.readFileSync(reasonFile, 'utf8'), RAW, 'reason.json byte-idéntico al original');
+    // El dedupe se registró aparte, en el sidecar del reconciler.
+    const meta = JSON.parse(fs.readFileSync(sidecar, 'utf8'));
+    assert.ok(Number.isFinite(Date.parse(meta.sin_label_alertado_at)));
+    assert.equal(meta.marker_mtime_ms, fs.statSync(markerFile).mtimeMs, 'sidecar atado al mtime del marker');
+    assert.deepEqual(reconciler.readMarkerMeta(markerFile), meta);
+
+    // Ciclos 2 y 3: sigue retenido, bytes intactos y la alerta NO se repite.
+    reconciler.reconcileHumanUnblockDetected(markers, new Set([]), opts);
+    const r3 = reconciler.reconcileHumanUnblockDetected(markers, new Set([]), opts);
+    assert.equal(r3.detected, 0);
+    assert.equal(r3.heldIssues.has(7302), true);
+    assert.equal(fs.readFileSync(reasonFile, 'utf8'), RAW);
+    assert.equal(alertas.length, 1, 'dedupe vía sidecar: una sola alerta');
+    // Y con evidencia positiva llegada después (label visto), el sidecar la guarda y el destrabe funciona.
+    reconciler.reconcileHumanUnblockDetected(markers, new Set([7302]), opts);
+    assert.equal(fs.readFileSync(reasonFile, 'utf8'), RAW, 'ni la evidencia positiva toca el reason.json corrupto');
+    assert.ok(JSON.parse(fs.readFileSync(sidecar, 'utf8')).needs_human_seen_at);
+    const r5 = reconciler.reconcileHumanUnblockDetected(markers, new Set([]), opts);
+    assert.equal(r5.detected, 1);
+    assert.equal(fs.existsSync(path.join(PEND_DIR_VAL, '7302.po')), true);
+    assert.equal(fs.existsSync(reasonFile), false, 'reason.json se borra sólo tras el rename exitoso');
+    assert.equal(fs.existsSync(sidecar), false, 'el sidecar del reconciler se limpia junto con el reason.json');
+});
+
+test('#7232 CA-4 (rev-1): si el encolador de Telegram falla NO se persiste el dedupe y el próximo ciclo reintenta hasta confirmar', () => {
+    clearAllMarkers();
+    const { markerFile, reasonFile } = plantarMarker7232(7311, 'guru');
+    const markers = [{ issue: 7311, skill: 'guru', phase: 'validacion', pipeline: 'desarrollo' }];
+    const intentos = [];
+    let respuesta = { ok: false, reason: 'mkdir_failed' };
+    const opts = {
+        logStaleOrder: () => {},
+        notifyTelegram: (p) => { intentos.push(p); return respuesta; },
+    };
+
+    // Ciclo 1: la cola de Telegram está caída (mismo `{ok:false}` que devuelve notifyTelegram real).
+    const r1 = reconciler.reconcileHumanUnblockDetected(markers, new Set([]), opts);
+    assert.equal(r1.detected, 0);
+    assert.equal(r1.heldIssues.has(7311), true);
+    assert.equal(intentos.length, 1);
+    assert.equal(leerReason(reasonFile).sin_label_alertado_at, undefined, 'sin encolado confirmado NO hay dedupe');
+    assert.equal(fs.existsSync(markerFile), true);
+
+    // Ciclo 2: el encolador tira una excepción ⇒ tampoco se marca.
+    opts.notifyTelegram = () => { intentos.push('throw'); throw new Error('ENOTDIR'); };
+    reconciler.reconcileHumanUnblockDetected(markers, new Set([]), opts);
+    assert.equal(intentos.length, 2);
+    assert.equal(leerReason(reasonFile).sin_label_alertado_at, undefined);
+
+    // Ciclo 3: el encolador devuelve algo sin `ok:true` (contrato no confirmado) ⇒ se sigue reintentando.
+    opts.notifyTelegram = (p) => { intentos.push(p); return undefined; };
+    reconciler.reconcileHumanUnblockDetected(markers, new Set([]), opts);
+    assert.equal(intentos.length, 3);
+    assert.equal(leerReason(reasonFile).sin_label_alertado_at, undefined);
+
+    // Ciclo 4: la cola se recuperó ⇒ se encola y recién ahí se persiste el dedupe.
+    respuesta = { ok: true, dropPath: '/fake/alert.json' };
+    opts.notifyTelegram = (p) => { intentos.push(p); return respuesta; };
+    reconciler.reconcileHumanUnblockDetected(markers, new Set([]), opts);
+    assert.equal(intentos.length, 4);
+    assert.equal(intentos[3].component, 'human-block-sin-label');
+    assert.ok(Number.isFinite(Date.parse(leerReason(reasonFile).sin_label_alertado_at)));
+
+    // Ciclo 5: ya alertado ⇒ no se repite.
+    reconciler.reconcileHumanUnblockDetected(markers, new Set([]), opts);
+    assert.equal(intentos.length, 4, 'una sola alerta confirmada, sin recordatorios');
+    assert.equal(fs.existsSync(markerFile), true, 'sigue retenido (fail-closed)');
 });
 
 test('#7232 CA-4: reason.json inexistente + marker viejo ⇒ no mueve (fail-closed)', () => {
@@ -603,10 +673,110 @@ test('#7232 CA-3: updateMarkerReason escribe atómico, mergea y nunca tira', () 
     assert.equal(reconciler.updateMarkerReason(path.join(TMP_DIR, 'no', 'existe', '1.po'), { a: 1 }), false);
 });
 
+test('#7232 CA-4 (rev-1): updateMarkerReason conserva los bytes de un reason.json corrupto y registra el patch en el sidecar', () => {
+    clearAllMarkers();
+    const RAW = '{"question":"¿Cerrás o reescribís?", ESTO NO PARSEA';
+    const { markerFile, reasonFile } = plantarMarker7232(7312, 'guru', {}, { rawReason: RAW });
+    const sidecar = humanBlock.reconcilerSidecarPath(markerFile);
+    assert.equal(sidecar, markerFile + '.reconciler.reason.json');
+
+    assert.equal(reconciler.updateMarkerReason(markerFile, { a: 'x' }), true);
+    assert.equal(reconciler.updateMarkerReason(markerFile, { b: 'y' }), true);
+    assert.equal(fs.readFileSync(reasonFile, 'utf8'), RAW, 'bytes del reason.json intactos');
+    const meta = JSON.parse(fs.readFileSync(sidecar, 'utf8'));
+    assert.equal(meta.a, 'x');
+    assert.equal(meta.b, 'y');
+    assert.equal(meta.marker_mtime_ms, fs.statSync(markerFile).mtimeMs);
+    assert.equal(fs.existsSync(sidecar + '.tmp'), false);
+    assert.equal(fs.existsSync(reasonFile + '.tmp'), false);
+    // readMarkerReason sigue devolviendo null (corrupto); readMarkerMeta cae al sidecar.
+    assert.equal(reconciler.readMarkerReason(markerFile), null);
+    assert.deepEqual(reconciler.readMarkerMeta(markerFile), meta);
+
+    // Un JSON válido pero que NO es objeto (array) también se conserva.
+    fs.writeFileSync(reasonFile, '[1,2,3]');
+    assert.equal(reconciler.updateMarkerReason(markerFile, { c: 'z' }), true);
+    assert.equal(fs.readFileSync(reasonFile, 'utf8'), '[1,2,3]');
+    assert.equal(JSON.parse(fs.readFileSync(sidecar, 'utf8')).c, 'z');
+
+    // Sidecar de OTRA vida del marker (mtime distinto) se ignora: no habilita nada.
+    const otro = new Date(Date.now() - 30 * 60 * 1000);
+    fs.utimesSync(markerFile, otro, otro);
+    assert.equal(reconciler.readReconcilerSidecar(markerFile), null);
+    assert.equal(reconciler.readMarkerMeta(markerFile), null);
+    // Y al escribir de nuevo se re-ata al mtime actual, partiendo de cero.
+    assert.equal(reconciler.updateMarkerReason(markerFile, { d: 1 }), true);
+    const meta2 = reconciler.readReconcilerSidecar(markerFile);
+    assert.equal(meta2.d, 1);
+    assert.equal(meta2.a, undefined, 'el sidecar viejo no se mergea');
+
+    // Sin marker (nada a qué atar el sidecar) ⇒ false, sin excepción, sin tocar el reason.json.
+    fs.unlinkSync(markerFile);
+    assert.equal(reconciler.updateMarkerReason(markerFile, { e: 1 }), false);
+    assert.equal(fs.readFileSync(reasonFile, 'utf8'), '[1,2,3]');
+});
+
+test('#7232 CA-4 (rev-1): reason.json ilegible (es un directorio) ⇒ no se destruye, el patch va al sidecar', () => {
+    clearAllMarkers();
+    const markerFile = path.join(BLOCKED_DIR_VAL, '7313.po');
+    fs.writeFileSync(markerFile, '');
+    fs.mkdirSync(markerFile + '.reason.json'); // EISDIR al leer
+    assert.equal(reconciler.updateMarkerReason(markerFile, { a: 1 }), true);
+    assert.equal(fs.statSync(markerFile + '.reason.json').isDirectory(), true);
+    assert.equal(reconciler.readMarkerMeta(markerFile).a, 1);
+    fs.rmSync(markerFile + '.reason.json', { recursive: true, force: true });
+});
+
+test('#7232 CA-4 (rev-1): reason.json inexistente ⇒ se crea (no hay nada que conservar) y no se usa sidecar', () => {
+    clearAllMarkers();
+    const markerFile = path.join(BLOCKED_DIR_VAL, '7314.ux');
+    fs.writeFileSync(markerFile, '');
+    assert.equal(reconciler.updateMarkerReason(markerFile, { a: 1 }), true);
+    assert.equal(leerReason(markerFile + '.reason.json').a, 1);
+    assert.equal(fs.existsSync(humanBlock.reconcilerSidecarPath(markerFile)), false);
+});
+
+test('#7232 CA-6 (rev-1): el backoff de reconcileMarkerToLabel también aplica con reason.json corrupto (vía sidecar)', () => {
+    clearAllMarkers();
+    clearGhQueue();
+    const RAW = '{ roto';
+    const { markerFile, reasonFile } = plantarMarker7232(7315, 'guru', {}, { rawReason: RAW });
+    const markers = [{ issue: 7315, skill: 'guru', phase: 'validacion', pipeline: 'desarrollo' }];
+    const t0 = Date.now();
+    assert.equal(reconciler.reconcileMarkerToLabel(markers, new Set(), () => 'OPEN', { now: t0 }), 1);
+    assert.equal(fs.readFileSync(reasonFile, 'utf8'), RAW);
+    assert.equal(reconciler.readMarkerMeta(markerFile).label_enqueued_at, new Date(t0).toISOString());
+    assert.equal(reconciler.reconcileMarkerToLabel(markers, new Set(), () => 'OPEN', { now: t0 + 5 * 60 * 1000 }), 0);
+    assert.equal(listGhQueueLabels().length, 1, 'una sola orden: el backoff no depende de que el reason.json parsee');
+});
+
+test('#7232 (rev-1): unblockIssue y dismissBlockedIssue limpian también el sidecar del reconciler', () => {
+    clearAllMarkers();
+    const a = plantarMarker7232(7316, 'guru', {}, { rawReason: '{ roto' });
+    assert.equal(reconciler.updateMarkerReason(a.markerFile, { x: 1 }), true);
+    const sidecarA = humanBlock.reconcilerSidecarPath(a.markerFile);
+    assert.equal(fs.existsSync(sidecarA), true);
+    const ru = humanBlock.unblockIssue({ issue: 7316, unlocker: 'test' });
+    assert.equal(ru.ok, true, JSON.stringify(ru));
+    assert.equal(fs.existsSync(sidecarA), false);
+    assert.equal(fs.existsSync(a.reasonFile), false);
+
+    clearAllMarkers();
+    const b = plantarMarker7232(7317, 'po', {}, { rawReason: '{ roto' });
+    assert.equal(reconciler.updateMarkerReason(b.markerFile, { x: 1 }), true);
+    const sidecarB = humanBlock.reconcilerSidecarPath(b.markerFile);
+    assert.equal(fs.existsSync(sidecarB), true);
+    const rd = humanBlock.dismissBlockedIssue({ issue: 7317, reason: 'test', unlocker: 'test' });
+    assert.equal(rd.ok, true, JSON.stringify(rd));
+    assert.equal(fs.existsSync(sidecarB), false);
+});
+
 test('#7232 CA-8: un .reason.json.tmp residual es artefacto, nunca un marker (isMarkerArtifact)', () => {
     const { isMarkerArtifact } = require('../marker-artifact');
     assert.equal(isMarkerArtifact('5570.guru.reason.json.tmp'), true);
     assert.equal(isMarkerArtifact('5570.guru.reason.json'), true);
+    assert.equal(isMarkerArtifact('5570.guru.reconciler.reason.json'), true, 'rev-1: sidecar del reconciler');
+    assert.equal(isMarkerArtifact('5570.guru.reconciler.reason.json.tmp'), true);
     assert.equal(isMarkerArtifact('5570.guru'), false);
     // Y listBlockedIssues no lo lista aunque quede en disco.
     clearAllMarkers();

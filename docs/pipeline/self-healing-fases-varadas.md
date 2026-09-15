@@ -315,7 +315,16 @@ stale ninguna orden encolada):
 |---|---|---|---|
 | `needs_human_seen_at` | `reconcileHumanUnblockDetected` | La primera vez que el reconciler **ve** el label `needs-human` en GitHub para ese marker (una sola escritura). | El label existió. Es lo **único** que habilita un destrabe futuro por "label ausente". |
 | `label_enqueued_at` | `reconcileMarkerToLabel` | Cada vez que encola una orden `needs-human` por ese marker. | Backoff anti-amplificación (REQ-SEC-3): un marker **sin** `needs_human_seen_at` no se re-encola hasta pasadas `LABEL_REENQUEUE_BACKOFF_MS` (6 h). Pasa de 288 órdenes/día a 4. Con evidencia no aplica backoff. |
-| `sin_label_alertado_at` | `reconcileHumanUnblockDetected` | Al emitir la alerta `human-block-sin-label` (una sola vez por marker). | Dedupe: la alerta no se repite en ciclos siguientes; el panel `/bloqueados` lleva el SLA. |
+| `sin_label_alertado_at` | `reconcileHumanUnblockDetected` | Al emitir la alerta `human-block-sin-label`, **sólo si el encolador de Telegram confirmó** (`notifyTelegram` devolvió `{ ok: true }`). | Dedupe: la alerta no se repite en ciclos siguientes; el panel `/bloqueados` lleva el SLA. Si el encolado falló (`mkdir_failed`, `no_operator_chat_id`, excepción), **no se persiste** y el ciclo siguiente reintenta: un bloqueo invisible no puede quedar además sin alerta. |
+
+**`reason.json` corrupto o ilegible.** `updateMarkerReason()` **nunca** lo
+sobrescribe: sus bytes se conservan tal cual (ahí puede estar la pregunta del
+agente aunque el JSON esté roto). En ese caso los tres campos van a un sidecar
+propio del reconciler, `<marker>.reconciler.reason.json`, atado al mtime del
+marker (`marker_mtime_ms`): si el marker cambió (otro bloqueo posterior), el
+sidecar es de otra vida y se ignora. Se limpia junto con el `reason.json`
+(destrabe, archivado, `unblockIssue`/`dismissBlockedIssue`, ghost-artifact
+cleaner). Sólo se crea un `reason.json` nuevo cuando **no existe ninguno**.
 
 Con esos campos, la regla queda:
 
