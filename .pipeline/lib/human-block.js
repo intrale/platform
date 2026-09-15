@@ -321,6 +321,24 @@ function reasonFilePath(blockedFile) {
 }
 
 /**
+ * #7232 rev-1 — Sidecar PROPIO del reconciler para sus campos de estado
+ * (`needs_human_seen_at`, `sin_label_alertado_at`, `label_enqueued_at`) cuando
+ * el `.reason.json` está corrupto/ilegible y NO puede tocarse (la pregunta del
+ * agente vive ahí y hay que conservar sus bytes). Termina en `.reason.json` a
+ * propósito: todos los filtros de artefactos (`isMarkerArtifact`,
+ * `pipeline-rewind`, `rebote-classifier`) ya lo excluyen como marker.
+ */
+function reconcilerSidecarPath(blockedFile) {
+    return blockedFile + '.reconciler.reason.json';
+}
+
+/** Borra los sidecars del marker (`.reason.json` + sidecar del reconciler). Best-effort. */
+function removeMarkerSidecars(blockedFile) {
+    try { fs.unlinkSync(reasonFilePath(blockedFile)); } catch {}
+    try { fs.unlinkSync(reconcilerSidecarPath(blockedFile)); } catch {}
+}
+
+/**
  * #6611 rev-1 — RUTA DEL MARKER, RESUELTA EN UN SOLO LUGAR.
  *
  * EL DEFECTO QUE ESTO CIERRA. Este módulo tiene DOS productores de entradas de
@@ -901,7 +919,7 @@ function unblockIssue(opts) {
     if (guidance) {
         try { fs.writeFileSync(guidanceFilePath(targetDir, marker), guidance); } catch {}
     }
-    try { fs.unlinkSync(reasonFilePath(sourceFile)); } catch {}
+    removeMarkerSidecars(sourceFile);
 
     // #6432 D11 / A-6 — la degradación del reclaim es pegajosa para todas las
     // vías automáticas. Sólo una intervención humana explícita (ver
@@ -945,7 +963,7 @@ function dismissBlockedIssue(opts) {
     }
 
     try { fs.unlinkSync(sourceFile); } catch {}
-    try { fs.unlinkSync(reasonFilePath(sourceFile)); } catch {}
+    removeMarkerSidecars(sourceFile);
 
     emitDismissed({
         issue, skill: blocked.skill, phase: blocked.phase, pipeline: blocked.pipeline,
@@ -1066,7 +1084,7 @@ function reconcileBlockedMarkers({ issue, unlocker = 'github:label-removed', ski
                 PIPELINE_DIR, m.pipeline, m.phase, 'pendiente', path.basename(m.file));
             if (fs.existsSync(destino)) {
                 try { fs.unlinkSync(m.file); } catch { /* best-effort */ }
-                try { fs.unlinkSync(reasonFilePath(m.file)); } catch { /* puede no existir */ }
+                removeMarkerSidecars(m.file); // puede no existir
                 action = 'residuo-eliminado';
             } else if (esMarkerSintetico(m, skillsPorFase)) {
                 // (2) MARKER SINTÉTICO — destrabarlo fabricaría un work-file
@@ -2028,6 +2046,9 @@ module.exports = {
     PIPELINE_DIR,
     PIPELINES,
     BLOCK_SUBDIR,
+    reasonFilePath,
+    reconcilerSidecarPath,
+    removeMarkerSidecars,
     NEEDS_HUMAN_LABEL,
     isMarkerArtifact,
     // #4068 — acciones rápidas de needs-human

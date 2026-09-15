@@ -358,8 +358,15 @@ test('CA-R4 la rama AUSENTE reconcilia el marker por la ruta de destrabe existen
     'debe buscar los markers previos antes de decidir qué hacer con ellos');
   assert.match(cuerpo, /unblockIssue\(/,
     'debe reusar la ruta de destrabe existente, no reimplementarla');
-  assert.match(cuerpo, /reasonFilePath\(/,
+  // #7232 rev-1 — la limpieza del `.reason.json` se encapsuló en
+  // `removeMarkerSidecars()` (borra también el sidecar del reconciler). La
+  // garantía es la misma: el `.reason.json` huérfano se limpia.
+  assert.match(cuerpo, /reasonFilePath\(|removeMarkerSidecars\(/,
     'el `.reason.json` huérfano también se limpia');
+  const helperDesde = lib.indexOf('function removeMarkerSidecars(');
+  assert.ok(helperDesde > 0, 'el helper removeMarkerSidecars tiene que existir en el lib');
+  const helper = lib.slice(helperDesde, lib.indexOf('\n}', helperDesde));
+  assert.match(helper, /reasonFilePath\(/, 'removeMarkerSidecars borra el `.reason.json`');
 });
 
 // -----------------------------------------------------------------------------

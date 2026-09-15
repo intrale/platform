@@ -1128,6 +1128,17 @@ function sanitizeKeyName(name) {
  * Escapar (y no colapsar) preserva el nombre real de la clave: Telegram renderiza
  * `\_` como `_`.
  *
+ * Por qué el `\` NO está en la clase escapada (#7227): en el parser real de
+ * Telegram (tdlib `parse_markdown` v1, `td/telegram/MessageEntity.cpp:1936`,
+ * el que el Bot API usa para `parse_mode: 'Markdown'`) el `\` sólo escapa si lo
+ * sigue `_`, `*`, `` ` `` o `[`; `\\`, `\x` y un `\` final son literales. Así la
+ * salida de esta función ya es parseable para TODO input, y escapar el `\`
+ * duplicaría visualmente cada backslash de los paths Windows en las alertas que
+ * lee el operador (`C:\Workspaces\x` se vería `C:\\Workspaces\\x`).
+ * El oráculo `contarSinEscapar` de `__tests__/config-schema.test.js` es el
+ * port fiel de ese bucle; si un análisis vuelve a ver un "bypass por
+ * backslash" (#5570), el bug está en el análisis. NO agregar `\` a la regex.
+ *
  * @param {*} s
  * @returns {string}
  */

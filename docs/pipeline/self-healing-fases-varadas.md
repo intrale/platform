@@ -333,6 +333,64 @@ bloqueado que ya no corresponde:
 node -e "console.log(require('./.pipeline/lib/human-block').listBlockedIssues())"
 ```
 
+### Evidencia del label en el `reason.json` (#7232)
+
+El `servicio-reconciler` tiene una regla de "destrabe humano detectado": si un
+marker sigue en `bloqueado-humano/` pero el label `needs-human` **no** está en
+GitHub, asume que un humano lo quitó y mueve el marker a `pendiente/`. Esa
+heurística era **fail-open**: el label puede no haber llegado nunca (el
+guardrail de labels descartó la orden sobre una recomendación, `gh` caído,
+veredicto `INDETERMINADO`), y en ese caso "sin label" **no** significa "un
+humano decidió". En #5570 el resultado fue un bucle: `guru` pedía decisión,
+el guardrail descartaba `needs-human`, el reconciler leía el vacío como
+destrabe y el intake relanzaba a `guru` cada ~3 minutos.
+
+Desde #7232 el reconciler sólo destraba con **evidencia positiva propia**, que
+persiste en `<marker>.reason.json` mediante `updateMarkerReason()` (escritura
+atómica `.tmp` + `rename`; nunca toca el mtime del marker, así que no vuelve
+stale ninguna orden encolada):
+
+| Campo | Quién lo escribe | Cuándo | Qué significa |
+|---|---|---|---|
+| `needs_human_seen_at` | `reconcileHumanUnblockDetected` | La primera vez que el reconciler **ve** el label `needs-human` en GitHub para ese marker (una sola escritura). | El label existió. Es lo **único** que habilita un destrabe futuro por "label ausente". |
+| `label_enqueued_at` | `reconcileMarkerToLabel` | Cada vez que encola una orden `needs-human` por ese marker. | Backoff anti-amplificación (REQ-SEC-3): un marker **sin** `needs_human_seen_at` no se re-encola hasta pasadas `LABEL_REENQUEUE_BACKOFF_MS` (6 h). Pasa de 288 órdenes/día a 4. Con evidencia no aplica backoff. |
+| `sin_label_alertado_at` | `reconcileHumanUnblockDetected` | Al emitir la alerta `human-block-sin-label`, **sólo si el encolador de Telegram confirmó** (`notifyTelegram` devolvió `{ ok: true }`). | Dedupe: la alerta no se repite en ciclos siguientes; el panel `/bloqueados` lleva el SLA. Si el encolado falló (`mkdir_failed`, `no_operator_chat_id`, excepción), **no se persiste** y el ciclo siguiente reintenta: un bloqueo invisible no puede quedar además sin alerta. |
+
+**`reason.json` corrupto o ilegible.** `updateMarkerReason()` **nunca** lo
+sobrescribe: sus bytes se conservan tal cual (ahí puede estar la pregunta del
+agente aunque el JSON esté roto). En ese caso los tres campos van a un sidecar
+propio del reconciler, `<marker>.reconciler.reason.json`, atado al mtime del
+marker (`marker_mtime_ms`): si el marker cambió (otro bloqueo posterior), el
+sidecar es de otra vida y se ignora. Se limpia junto con el `reason.json`
+(destrabe, archivado, `unblockIssue`/`dismissBlockedIssue`, ghost-artifact
+cleaner). Sólo se crea un `reason.json` nuevo cuando **no existe ninguno**.
+
+Con esos campos, la regla queda:
+
+- **label presente** → se persiste `needs_human_seen_at` si faltaba; nada más.
+- **label ausente + `needs_human_seen_at` presente** → destrabe humano legítimo:
+  marker → `pendiente/`, `reason.json` borrado **sólo después** del `rename`
+  (REQ-SEC-6), línea `human-unblock-detected` en `stale-orders.log`.
+- **label ausente + sin evidencia** (`reason.json` sin el campo, corrupto o
+  inexistente) → **no se mueve** (fail-closed). Línea `human-block-sin-label`
+  en `stale-orders.log` cada ciclo, alerta Telegram `⚠️ human-block-sin-label`
+  una vez, y el issue se cuenta como `retenidos sin label` en el log de
+  resumen del ciclo. Cómo actuar: ver "Me llegó `human-block-sin-label`" en
+  `brazo-desbloqueo.md`.
+
+Markers anteriores al deploy de #7232 que tengan el label reciben
+`needs_human_seen_at` en el primer ciclo; los que ya estaban sin label (los
+defectuosos) generan la alerta y se destraban a mano.
+
+> **Capa 1, en el guardrail.** El origen del bucle era que
+> `label-guardrail.js` rechazaba `needs-human` sobre cualquier
+> `tipo:recomendacion`, incluso **aprobada**. Ahora decide con
+> `isRecommendationIssue()` (`lib/recommendation-labels.js`, la fuente única):
+> una recomendación aprobada es trabajo real y el label se aplica; una
+> pendiente de triaje (`tipo:recomendacion` o `source:recommendation` sin
+> `recommendation:approved`) sigue rechazada. La capa 2 de arriba cubre lo
+> que la capa 1 no alcanza (`gh` caído, `INDETERMINADO`, caminos futuros).
+
 ## El defecto que esto arregla (#5396)
 
 Antes, el operador recibía cada 10 minutos escalaciones de issues de julio que

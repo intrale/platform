@@ -5243,21 +5243,15 @@ function brazoBarrido(config) {
           // detección de tests faltantes tiene precedencia y deja caer el motivo
           // al flujo normal de rebote `code` → faseRechazo (dev), propagando la
           // lista de lo que falta testear vía `motivo_rechazo`.
-          const motivosHumanos = motivosClasificados.filter(m => {
-            // #4767 — un bloqueo MECÁNICO ya auto-resuelto por el carril paralelo
-            // NO escala a humano (no congela). Los de DECISIÓN (no están en el
-            // set) caen fail-closed intactos por el resto del filtro.
-            if (mecanicoResueltos.has(m)) return false;
-            if (!humanBlock.isHumanBlockReason(m.motivo)) return false;
-            // Missing-tests gana sobre la heurística textual de human_block,
-            // salvo que el agente haya declarado `human_block` explícitamente
-            // (esa señal deliberada se respeta).
-            if (reboteClassifier.isMissingTestsReason(m.motivo)
-                && m.rebote_categoria !== 'human_block') {
-              return false;
-            }
-            return true;
-          });
+          // #7231 — el predicado vive en `reboteClassifier.esMotivoHumano`
+          // (testeable sin montar el Pulpo). Precedencia: carril mecánico
+          // #4767 → hint estructurado `rebote_categoria: human_block` (señal
+          // POSITIVA, no sólo excepción de missing-tests: #5570 declaró el
+          // hint, el texto no matcheó `isHumanBlockReason` y rebotó en bucle)
+          // → heurística textual con missing-tests (#4223) ganando.
+          const motivosHumanos = motivosClasificados.filter(
+            m => reboteClassifier.esMotivoHumano(m, mecanicoResueltos),
+          );
 
           // #5337 CA-3 — Triggers por ESTADO OBJETIVO, además de la heurística
           // textual de arriba. Cubren los casos del 2026-08-01 en que un gate
