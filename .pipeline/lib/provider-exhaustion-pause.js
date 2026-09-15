@@ -717,8 +717,13 @@ function formatExhaustionMessage(payload, opts = {}) {
     // `escapeMarkdownLegacy`.
     //
     // El `\` se saca ANTES de escapar (si se sacara después borraría los
-    // backslashes que el propio escape acaba de poner): un `\` al final del
-    // título se comería el escape del carácter siguiente.
+    // backslashes que el propio escape acaba de poner). Es defensa en
+    // profundidad, no una necesidad (#7227): en el parser real de Telegram
+    // (tdlib `parse_markdown` v1, `MessageEntity.cpp:1936`) un `\` sólo escapa
+    // si lo sigue `_ * ` [`, así que un `\` al final del título NO "se come"
+    // nada — y además en las plantillas de abajo al título le sigue `\n`, nunca
+    // un metacaracter. Se conserva por si una plantilla futura pega un
+    // delimitador propio justo después del título.
     const rawTitle = title ? title.slice(0, 80).replace(/\\/g, '') : '';
     const safeTitle = rawTitle ? escapeMarkdownLegacy(rawTitle) : '';
     const issueLink = issue
@@ -825,8 +830,8 @@ function formatResumedMessage(payload) {
     // título va AFUERA del link, escapado. Con el título adentro de `[...]`,
     // un `](` en el título (input externo: viene de GitHub, repo público)
     // cerraba el link antes de tiempo y rebindeaba el destino a un sitio
-    // hostil. El `\` se saca ANTES de escapar para no comerse el escape del
-    // carácter siguiente.
+    // hostil. El `\` se saca ANTES de escapar (defensa en profundidad, no una
+    // necesidad: ver el comentario de formatExhaustionMessage, #7227).
     const rawTitle = title ? title.slice(0, 80).replace(/\\/g, '') : '';
     const safeTitle = rawTitle ? escapeMarkdownLegacy(rawTitle) : '';
     const issueLink = issue

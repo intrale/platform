@@ -14,6 +14,7 @@ const {
     formatErrors,
     formatErrorsForHuman,
     sanitizeKeyName,
+    escapeMarkdownLegacy,
     resolveSide,
     describeConfigFailure,
     formatConfigFailureLog,
@@ -496,18 +497,46 @@ const METACHARS_MARKDOWN_LEGACY = [
     { nombre: 'guion bajo', re: /_/g },
 ];
 
+// Port fiel de tdlib `parse_markdown` v1 (`td/telegram/MessageEntity.cpp:1936`,
+// el parser que el Bot API usa para `parse_mode: 'Markdown'`): el `\` sólo
+// escapa si lo sigue `_`, `*`, `` ` `` o `[`. `\\`, `\x` y un `\` final son
+// literales. NO agregar reglas propias: un oráculo "mejorado" (el anterior
+// consumía CUALQUIER carácter tras el `\`) es lo que produjo el falso positivo
+// "bypass por backslash" de #5570, que no existe en el parser real (#7227).
+const ESCAPABLES_MARKDOWN_V1 = new Set(['_', '*', '`', '[']);
+
 /**
  * Cuenta ocurrencias NO escapadas (las precedidas por `\` ya no delimitan).
  * Telegram interpreta `\_` como un `_` literal, así que ese no cuenta.
+ *
+ * Regla de escape = la de tdlib `parse_markdown` v1 (`MessageEntity.cpp:1936`):
+ * el `\` consume el carácter siguiente SÓLO si es uno de `_ * ` [`. Con
+ * `texto[i + 1] === undefined` (backslash final) `Set.has` da `false` y el `\`
+ * queda literal sin consumir nada.
  */
 function contarSinEscapar(texto, re) {
     let n = 0;
     for (let i = 0; i < texto.length; i++) {
-        if (texto[i] === '\\') { i++; continue; }
+        if (texto[i] === '\\' && ESCAPABLES_MARKDOWN_V1.has(texto[i + 1])) { i++; continue; }
         re.lastIndex = 0;
         if (re.test(texto[i])) n++;
     }
     return n;
+}
+
+/**
+ * Render v1 de tdlib para texto SIN entidades: quita sólo los `\` que escapan
+ * (mismo bucle de `MessageEntity.cpp:1936`). Es lo que el operador termina
+ * viendo en Telegram cuando la salida de `escapeMarkdownLegacy` no forma
+ * ninguna entidad.
+ */
+function renderMarkdownV1(texto) {
+    let out = '';
+    for (let i = 0; i < texto.length; i++) {
+        if (texto[i] === '\\' && ESCAPABLES_MARKDOWN_V1.has(texto[i + 1])) { out += texto[i + 1]; i++; continue; }
+        out += texto[i];
+    }
+    return out;
 }
 
 /** Un mensaje sólo es entregable si cada delimitador queda balanceado. */
@@ -629,6 +658,52 @@ test('#5173 el copy de Telegram va acotado y el del log completo', () => {
 
     // CA-13: con la raíz cerrada, el copy apunta a declarar la sección nueva.
     assert.match(telegram, /config-schema\.js/);
+});
+
+// #7227 — el `\` queda FUERA de la clase escapada de `escapeMarkdownLegacy` a
+// propósito (SEC-1). Este test fija dos cosas contra el parser real de tdlib v1:
+// (a) la salida no deja ningún metacaracter activo para ningún input con
+// backslashes, y (b) el render es fiel al input — o sea, los backslashes del
+// input NO se duplican. Si este test sale rojo, el error está en el test (o en
+// el helper), NUNCA en `escapeMarkdownLegacy`: meter el `\` en la regex
+// duplicaría visualmente cada backslash de los paths Windows en las alertas.
+test('#7227 el escape legacy es fiel al parser de tdlib v1 y no duplica backslashes', () => {
+    // Backslashes construidos con fromCharCode para no pelear con el escaping
+    // del literal JS (mismo truco que provider-exhaustion-pause.test.js).
+    const BS = String.fromCharCode(92);
+    const inputs = [
+        // Los 4 del issue
+        'Gemini ' + BS + '*x',
+        BS + BS + '*x',
+        'C:' + BS + 'Workspaces' + BS + 'x',
+        'fin' + BS,
+        // SEC-4: backslash aislado, doble, final tras metacaracter y el vector
+        // de link de #5467 combinado con backslash.
+        'a' + BS + '_b',
+        BS,
+        BS + BS,
+        '*' + BS,
+        BS + '[x](http://evil)',
+        '](http://evil) [x',
+    ];
+    assert.strictEqual(inputs.length, 10);
+    const contarBS = (t) => t.split(BS).length - 1;
+    for (const input of inputs) {
+        const salida = escapeMarkdownLegacy(input);
+        const ctx = JSON.stringify(input);
+        // (a) cero metacaracteres activos según el oráculo corregido
+        for (const { nombre, re } of METACHARS_MARKDOWN_LEGACY) {
+            assert.strictEqual(contarSinEscapar(salida, re), 0, `${ctx}: ${nombre} activo`);
+        }
+        // (b) fidelidad de render: lo que Telegram muestra es exactamente el input.
+        assert.strictEqual(renderMarkdownV1(salida), input, `${ctx}: render infiel`);
+        // Equivalente contable: la salida suma EXACTAMENTE un `\` por metacaracter
+        // del input y conserva los que ya venían. (La igualdad ingenua
+        // count(\, input) === count(\, salida) falla por diseño en 6 de estos 10.)
+        assert.strictEqual(contarBS(salida),
+            contarBS(input) + (input.match(/[_*`\[]/g) || []).length,
+            `${ctx}: cantidad de backslashes inesperada`);
+    }
 });
 
 test('#5173 sanitizeKeyName acota a 64 chars y colapsa lo no imprimible', () => {
