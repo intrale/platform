@@ -292,7 +292,7 @@ const PROVIDER_STATIC_ENV = Object.freeze({
 //
 // Los nombres coinciden con lo que cada handler YA lee hoy:
 //   - openai-codex   → providers/openai-codex.js  (`env.CODEX_MODEL`)
-//   - gemini-google  → providers/gemini-google.js (`env.AGY_MODEL || env.GEMINI_MODEL`)
+//   - gemini-google  → providers/gemini-google.js (SÓLO `env.GEMINI_MODEL`; `AGY_MODEL` se ignora — #6858)
 //   - cerebras       → providers/cerebras.js      (`env.CEREBRAS_MODEL`)
 //   - nvidia-nim     → providers/nvidia-nim.js    (`env.NVIDIA_NIM_MODEL`)
 //

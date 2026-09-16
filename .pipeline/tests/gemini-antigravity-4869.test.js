@@ -26,11 +26,15 @@ test('agy reemplaza por completo la invocación del Gemini CLI retirado', () => 
             env: { GEMINI_MODEL: 'gemini-3.8-flash-low', AGY_PRINT_TIMEOUT: '30s' },
         });
         assert.equal(spawn.cmd, 'agy');
+        // #6857 — agy 1.2.x: prompt por stdin como NDJSON (`--input-format
+        // stream-json`); `--print` sin valor ya no existe.
         assert.deepEqual(spawn.args, [
-            '--print', '--dangerously-skip-permissions', '--print-timeout', '30s',
+            '--input-format', 'stream-json', '--output-format', 'stream-json',
+            '--dangerously-skip-permissions', '--print-timeout', '30s',
             '--model', 'gemini-3.8-flash-low',
         ]);
-        assert.equal(spawn.stdinPayload, 'hola');
+        assert.deepEqual(JSON.parse(spawn.stdinPayload), { event: 'user', message: { role: 'user', content: 'hola' } });
+        assert.ok(spawn.stdinPayload.endsWith('\n'), 'una línea NDJSON terminada en newline');
         assert.equal(spawn.spawnOpts.shell, false);
         // #6858 — el esfuerzo viaja SÓLO en el sufijo del id, nunca como flag.
         assert.ok(!spawn.args.includes('--effort'), 'un solo canal de esfuerzo: el sufijo del id');
@@ -106,31 +110,25 @@ test('auth de Gemini es OAuth XOR API key y declara el binario agy', () => {
     const spec = secrets.MANAGED_KEYS.find((entry) => entry.provider === 'gemini-google');
     assert.equal(spec.auth_mode, 'oauth');
     assert.equal(spec.cli_binary, 'agy');
-    assert.equal(spec.readiness_env, 'AGY_LICENSE_READY');
+    // #6857 — el flag `AGY_LICENSE_READY` desapareció del spec: el estado sale
+    // de un round-trip real (`catalog_probe: 'agy'`), no de una env var.
+    assert.equal(Object.hasOwn(spec, 'readiness_env'), false);
+    assert.equal(spec.catalog_probe, 'agy');
 });
 
-test('health de agy degrada fail-closed hasta habilitar la licencia', () => {
-    const spec = {
-        provider: 'gemini-google',
-        cli_binary: 'agy',
-        readiness_env: 'AGY_LICENSE_READY',
-    };
-    assert.deepEqual(
-        probeCliProvider(spec, { env: {}, cliProbe: () => true }),
-        {
-            ok: false,
-            reason: 'cli_license_unavailable',
-            provider: 'gemini-google',
-            cli_oauth: true,
-        },
-    );
-    assert.equal(
-        probeCliProvider(spec, {
-            env: { AGY_LICENSE_READY: '1' },
-            cliProbe: () => true,
-        }).ok,
-        true,
-    );
+// #6857 — reescrito: antes pineaba "rojo hasta AGY_LICENSE_READY=1". Ahora el
+// probe SIN round-trip ignora cualquier flag de entorno (ni lo lee), y el
+// veredicto de licencia lo da `probeCliProviderLive` con el catálogo real
+// (cubierto en tests/agy-catalog-probe-6857.test.js).
+test('health de agy ya no depende de AGY_LICENSE_READY (ni en 0 ni en 1)', () => {
+    const spec = { provider: 'gemini-google', cli_binary: 'agy' };
+    const sinFlag = probeCliProvider(spec, { env: {}, cliProbe: () => true });
+    const conFlag = probeCliProvider(spec, { env: { AGY_LICENSE_READY: '1' }, cliProbe: () => true });
+    assert.deepEqual(sinFlag, conFlag, 'el flag no cambia el veredicto');
+    assert.equal(sinFlag.ok, true);
+    // Y con un spec legacy que todavía declare `readiness_env`, tampoco.
+    const legacy = { ...spec, readiness_env: 'AGY_LICENSE_READY' };
+    assert.equal(probeCliProvider(legacy, { env: {}, cliProbe: () => true }).ok, true);
 });
 
 // #4869 rebote (verificacion→dev): "[security] Agente terminó con código 1".
@@ -188,5 +186,22 @@ test('#6858: parseTokensFromLog lee `usage` de agy 1.2.4 (output_tokens ya inclu
     }) };
     assert.deepEqual(provider.parseTokensFromLog('x', legacy), {
         input: 200, output: 20, cache_read: 5, cache_create: 0, tool_calls: 0,
+    });
+});
+
+// #6858 (rebote 1) — el transporte vigente es `--output-format stream-json`
+// (#7298): el log es NDJSON y `usage` viaja dentro del evento `result`.
+// Fixture capturado en vivo el 2026-09-16 con agy 1.2.4 y
+// `--model gemini-3.8-flash-low` (init recortado; los demás eventos son textuales).
+test('#6858: parseTokensFromLog lee `usage` del evento `result` NDJSON de --output-format stream-json (agy 1.2.4)', () => {
+    const fixture = path.join(ROOT, '.pipeline/lib/__tests__/fixtures/agy-stream-json-1.2.4.ndjson');
+    const raw = fs.readFileSync(fixture, 'utf8');
+    const events = raw.trim().split(/\r?\n/).map((l) => JSON.parse(l).event);
+    assert.deepEqual(events, ['init', 'step_update', 'step_update', 'step_update', 'result']);
+    const result = provider._parseGeminiJson(raw);
+    assert.equal(result.status, 'SUCCESS');
+    assert.equal(result.response, 'OK\n');
+    assert.deepEqual(provider.parseTokensFromLog(fixture), {
+        input: 13038, output: 13, cache_read: 0, cache_create: 0, tool_calls: 0,
     });
 });

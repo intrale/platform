@@ -26,6 +26,9 @@ function validConfig(overrides = {}) {
                 supports_tool_use: true,
                 prompt_caching: { supported: true, ttl_seconds_default: 300 },
                 credentials_env: ['ANTHROPIC_API_KEY'],
+                // #6562 — criterio de admisión: un provider ruteado declara las tres condiciones.
+                capabilities: ['agentic-tool-use'],
+                admission: { cli_edits_files: true, reports_usage: true, terms_no_training: true },
             },
             deterministic: {
                 launcher: 'node',
@@ -35,6 +38,7 @@ function validConfig(overrides = {}) {
                 quota_error_types: [],
                 supports_tool_use: false,
                 prompt_caching: { supported: false },
+                admission: { non_llm: true },
             },
         },
         skills: {

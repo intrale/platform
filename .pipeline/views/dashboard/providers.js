@@ -108,6 +108,45 @@ const PROVIDER_META = Object.freeze({
 const HEALTH_SEVERITY = Object.freeze({ green: 'ok', yellow: 'warn', red: 'bad', unknown: 'info' });
 const HEALTH_LABEL = Object.freeze({ green: 'SANO', yellow: 'DEGRADADO', red: 'CAÍDO', unknown: 'SIN DATOS' });
 
+// #6857 — Para un provider CLI-OAuth en rojo, "CAÍDO" miente: un CLI local no
+// es un servidor. El label del badge deriva del `reason_code` para que los
+// tres estados (sin instalar / sin licencia / con licencia) se distingan SIN
+// hover y sin depender del color (los dos rojos siguen siendo `bad`: ninguno
+// es elegible para dispatch; la distinción va por texto — accesibilidad).
+// Copy acordado con `ux` en la definición de #6857.
+const HEALTH_LABEL_BY_REASON = Object.freeze({
+    cli_unavailable: 'SIN INSTALAR',
+    cli_license_unavailable: 'SIN LICENCIA',
+});
+
+// #6857 — Frescura del round-trip. El probe cachea con TTL (15 min); un verde
+// más viejo que 2×TTL no puede leerse como verde fresco: se muestra
+// `info` · SIN DATOS, nunca verde. Aplica sólo a providers que exponen
+// `cli_probe` en el snapshot (los que hacen round-trip real).
+const CLI_PROBE_STALE_MS = 2 * 15 * 60 * 1000;
+
+/**
+ * Resuelve severidad + label del badge de salud de una fila.
+ * @param {object} p — fila del modelo (healthState, healthReason, authMode, cliProbe, lastChecked).
+ * @param {number} [now]
+ * @returns {{severity:string, label:string, stale:boolean}}
+ */
+function healthBadgeFor(p, now) {
+    const ref = Number.isFinite(now) ? now : Date.now();
+    if (p.cliProbe && p.lastChecked) {
+        const t = Date.parse(p.lastChecked);
+        if (Number.isFinite(t) && (ref - t) > CLI_PROBE_STALE_MS) {
+            return { severity: 'info', label: HEALTH_LABEL.unknown, stale: true };
+        }
+    }
+    const severity = HEALTH_SEVERITY[p.healthState] || 'info';
+    let label = HEALTH_LABEL[p.healthState] || HEALTH_LABEL.unknown;
+    if (p.healthState === 'red' && p.authMode === 'oauth' && HEALTH_LABEL_BY_REASON[p.healthReason]) {
+        label = HEALTH_LABEL_BY_REASON[p.healthReason];
+    }
+    return { severity, label, stale: false };
+}
+
 // Traducción legible de los reason_code del health-cron (allowlist; lo demás se
 // muestra tal cual, escapado).
 //
@@ -123,6 +162,7 @@ const HEALTH_LABEL = Object.freeze({ green: 'SANO', yellow: 'DEGRADADO', red: 'C
 // Copy acordado con `ux` — NO cambiar sin actualizar la tabla de la definición.
 const REASON_LABEL = Object.freeze({
     cli_oauth_ok: 'OAuth CLI OK',
+    cli_catalog_ok: 'catálogo verificado',      // #6857: round-trip real (`agy models`) con catálogo poblado
     authenticated: 'autenticado',
     timeout: 'timeout de red',
     forbidden: 'FORBIDDEN (403)',
@@ -468,6 +508,10 @@ function buildProvidersModel() {
                 ? { available: oauthSession.available, minutesLeft: oauthSession.minutesLeft }
                 : null,
             lastChecked: h.last_checked_at || null,
+            // #6857 — evidencia del round-trip al CLI (sólo gemini-google hoy):
+            // { model_count, checked_at, cached, detail }. `null` si el provider
+            // no hace round-trip; la fila no inventa una frescura que no midió.
+            cliProbe: (h.cli_probe && typeof h.cli_probe === 'object') ? h.cli_probe : null,
             loadPct,
             dispatches24h: disp,
             hasTraffic: dispatch.total > 0,
@@ -705,9 +749,22 @@ function renderKillSwitch(p) {
  * kill-switch — en una sola línea legible, sin solapas.
  */
 function renderProviderRow(p, now) {
-    const sev = HEALTH_SEVERITY[p.healthState] || 'info';
-    const healthLabel = HEALTH_LABEL[p.healthState] || 'SIN DATOS';
-    const reasonTxt = reasonHuman(p.healthReason);
+    const badge = healthBadgeFor(p, now);
+    const sev = badge.severity;
+    const healthLabel = badge.label;
+    // #6857 — con round-trip real la causa lleva el conteo del catálogo y la
+    // frescura ("catálogo verificado · 14 modelos · hace 12 min"). Si el
+    // snapshot quedó viejo, la línea lo dice en vez de repetir un verde rancio.
+    let reasonTxt = reasonHuman(p.healthReason);
+    if (p.cliProbe) {
+        const parts = [reasonTxt];
+        if (p.healthReason === 'cli_catalog_ok' && Number.isFinite(p.cliProbe.model_count) && p.cliProbe.model_count > 0) {
+            parts.push(p.cliProbe.model_count + ' modelos');
+        }
+        const rel = relativeTime(p.lastChecked, now);
+        if (rel) parts.push(rel);
+        reasonTxt = badge.stale ? ('sin verificar desde ' + (rel || 'hace rato')) : parts.join(' · ');
+    }
     // El renderer del copy es fail-closed (tira ante un estado que no conoce):
     // acá eso no puede costar la fila entera, así que degrada a "sin línea".
     let session = null;
@@ -1490,6 +1547,10 @@ module.exports = {
     renderCatalogCell,
     renderVigenciaLine,
     REASON_LABEL,
+    // #6857 — exportados para tests: mapeo de los tres estados y frescura.
+    HEALTH_LABEL_BY_REASON,
+    CLI_PROBE_STALE_MS,
+    healthBadgeFor,
     reasonHuman,
     slug: 'providers',
 };

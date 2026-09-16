@@ -73,6 +73,11 @@ const ALLOWED_REASON_CODES = Object.freeze(new Set([
     // dispatch lo trate como rojo DURABLE y saltee el provider (no lo colapses
     // a 'unknown', que el dispatch interpreta como rojo transitorio → fail-open).
     'cli_license_unavailable',
+    // #6857 — estado feliz del round-trip real al CLI (`agy models` devolvió
+    // un catálogo poblado). Distinto de `cli_oauth_ok` (que sólo dice "el
+    // binario está en el PATH") porque acá SÍ se observó al proveedor. Verde;
+    // nunca entra a DURABLE_RED_REASONS.
+    'cli_catalog_ok',
     // #5888 — eje de VIGENCIA DE MODELO, distinto del eje de salud del provider.
     //
     // Deben estar acá porque `sanitizeReasonCode` colapsa a `'unknown'` todo lo

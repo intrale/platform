@@ -19,6 +19,14 @@
 // SEGURIDAD (RS-5.1 / RS-5.2): este probe NUNCA lee ni devuelve la API key ni
 // el token OAuth. Sólo verifica la presencia del binario y devuelve un status
 // derivado (`cli_oauth_ok` / `cli_unavailable` / `cli_binary_undeclared`).
+//
+// #6857 — Providers con `catalog_probe` en el spec (hoy sólo `gemini-google`
+// → `'agy'`) tienen ADEMÁS un round-trip real al CLI (`agy models`) que
+// distingue "instalado sin licencia" de "instalado y con licencia". Ese camino
+// es async y vive en `probeCliProviderLive`; `probeCliProvider` (sync) sigue
+// existiendo para la presencia del binario y la back-compat de tests. El flag
+// `AGY_LICENSE_READY` (`readiness_env`) se ELIMINÓ: un flag de entorno local no
+// puede saber si la licencia está activa (#6225).
 // =============================================================================
 'use strict';
 
@@ -79,18 +87,106 @@ function probeCliProvider(spec, { env = process.env, fsImpl = fs, cliProbe } = {
     if (!available) {
         return { ok: false, reason: 'cli_unavailable', provider: spec.provider, cli_oauth: true };
     }
-    if (spec.readiness_env && env[spec.readiness_env] !== '1') {
-        return {
-            ok: false,
-            reason: 'cli_license_unavailable',
-            provider: spec.provider,
-            cli_oauth: true,
-        };
-    }
     return { ok: true, reason: 'cli_oauth_ok', provider: spec.provider, cli_oauth: true };
+}
+
+// Registro CERRADO de probes con round-trip por nombre de spec. Lazy require
+// para no cargar child_process ni el handler de Gemini en consumidores que
+// sólo necesitan `isBinaryOnPath`.
+const CATALOG_PROBES = Object.freeze({
+    agy: () => require('./agy-catalog-probe').probeAgyCatalog,
+});
+
+/**
+ * #6857 — Probe de salud CON round-trip para providers CLI-OAuth que lo
+ * declaran (`spec.catalog_probe`). Devuelve la misma forma que
+ * `probeCliProvider` más `cli_probe` con la evidencia del round-trip.
+ *
+ * Tres estados para `gemini-google`:
+ *   - binario ausente                → `{ ok:false, reason:'cli_unavailable' }`
+ *   - instalado, catálogo vacío/err  → `{ ok:false, reason:'cli_license_unavailable' }`
+ *   - instalado, catálogo poblado    → `{ ok:true,  reason:'cli_catalog_ok' }`
+ *
+ * Para specs SIN `catalog_probe` (anthropic / codex) se comporta exactamente
+ * igual que `probeCliProvider` (sin red, sin spawn).
+ *
+ * @param {object} spec — `{ provider, cli_binary, catalog_probe? }`.
+ * @param {object} [opts]
+ * @param {object}   [opts.env=process.env]
+ * @param {object}   [opts.fsImpl=fs]
+ * @param {Function} [opts.cliProbe]     — override de presencia del binario (tests).
+ * @param {Function} [opts.catalogProbe] — override del round-trip (tests). Recibe `opts`.
+ * @param {boolean}  [opts.force]        — ignora la cache del round-trip.
+ * @param {string}   [opts.stateDir] / [opts.cachePath] — ubicación de la cache.
+ * @returns {Promise<{ ok:boolean, reason:string, provider:string, cli_oauth:boolean,
+ *           latency_ms?:number|null, cli_probe?:object }>}
+ */
+async function probeCliProviderLive(spec, opts = {}) {
+    const { env = process.env, fsImpl = fs, cliProbe, catalogProbe } = opts;
+    const probeName = spec && spec.catalog_probe;
+    if (!probeName) {
+        return probeCliProvider(spec, { env, fsImpl, cliProbe });
+    }
+    if (!spec.cli_binary) {
+        return { ok: false, reason: 'cli_binary_undeclared', provider: spec.provider, cli_oauth: true };
+    }
+    // Con `cliProbe` inyectado (tests / consumers legacy) se respeta primero:
+    // si dice que el binario no está, no hay round-trip que hacer.
+    if (typeof cliProbe === 'function' && !cliProbe(spec.cli_binary)) {
+        return { ok: false, reason: 'cli_unavailable', provider: spec.provider, cli_oauth: true };
+    }
+    let probeFn = typeof catalogProbe === 'function' ? catalogProbe : null;
+    if (!probeFn) {
+        const factory = CATALOG_PROBES[probeName];
+        if (!factory) {
+            // Spec mal declarado: fail-closed, nunca verde por omisión.
+            return { ok: false, reason: 'cli_binary_undeclared', provider: spec.provider, cli_oauth: true };
+        }
+        probeFn = factory();
+    }
+    let r;
+    try {
+        r = await probeFn({
+            env, fsImpl,
+            force: opts.force === true,
+            stateDir: opts.stateDir,
+            cachePath: opts.cachePath,
+            nowMs: opts.nowMs,
+            ttlMs: opts.ttlMs,
+            timeoutMs: opts.timeoutMs,
+            spawnImpl: opts.spawnImpl,
+            noCache: opts.noCache,
+        });
+    } catch {
+        r = null;
+    }
+    if (!r || typeof r.reason !== 'string') {
+        // El probe no pudo observar nada: instalado (el binario pasó) pero no
+        // verificable → mismo tratamiento que "sin licencia" (fail-closed).
+        return { ok: false, reason: 'cli_license_unavailable', provider: spec.provider, cli_oauth: true };
+    }
+    return {
+        ok: r.ok === true,
+        reason: r.reason,
+        provider: spec.provider,
+        cli_oauth: true,
+        latency_ms: typeof r.latency_ms === 'number' ? r.latency_ms : null,
+        // Evidencia del round-trip para el snapshot / dashboard. Sólo datos
+        // derivados: conteo, ids saneados, timestamps. Nunca texto del CLI.
+        cli_probe: {
+            kind: probeName,
+            detail: r.detail || null,
+            model_count: Number.isFinite(r.model_count) ? r.model_count : 0,
+            models: Array.isArray(r.models) ? r.models.slice(0, 64) : [],
+            checked_at: r.checked_at || null,
+            cached: r.cached === true,
+            launcher_kind: r.launcher_kind || null,
+        },
+    };
 }
 
 module.exports = {
     isBinaryOnPath,
     probeCliProvider,
+    probeCliProviderLive,
 };

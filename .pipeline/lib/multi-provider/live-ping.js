@@ -33,7 +33,7 @@ const { URL } = require('node:url');
 const secretsRw = require('./secrets-rw');
 const httpClassifier = require('../http-error-classifier');
 // #4402 — fuente única de la lógica CLI-OAuth (compartida con health-cron.js).
-const { probeCliProvider } = require('./cli-oauth-probe');
+const { probeCliProvider, probeCliProviderLive } = require('./cli-oauth-probe');
 
 // -----------------------------------------------------------------------------
 // classifyForLivePing — adapta el output del clasificador al shape histórico
@@ -316,8 +316,17 @@ async function ping({ provider, secretsPath, fsImpl, httpImpl, nowMs, minInterva
     // RS-5.1/5.2 — este camino NUNCA lee ni devuelve la key/token: usa la misma
     // fuente única (`probeCliProvider`) que health-cron, garantizando el mismo
     // `reason_code` (`cli_oauth_ok` / `cli_unavailable`) en ping manual y tick.
+    //
+    // #6857 — para `gemini-google` (`catalog_probe: 'agy'`) esto hace un
+    // round-trip REAL (`agy models`). El ping manual del dashboard fuerza el
+    // re-probe (`force: true`) — el operador que aprieta "Probar ahora" quiere
+    // el estado de AHORA, no el cacheado; el tick del cron sí respeta el TTL.
     const managedSpec = secretsRw.MANAGED_KEYS.find(k => k.provider === provider);
     if (managedSpec && managedSpec.auth_mode === 'oauth') {
+        if (managedSpec.catalog_probe) {
+            const live = await probeCliProviderLive(managedSpec, { fsImpl, cliProbe, force: true });
+            return { ...live, provider };
+        }
         return { ...probeCliProvider(managedSpec, { fsImpl, cliProbe }), provider };
     }
     const key = secretsRw.getRawKey({ provider, secretsPath, fsImpl });

@@ -22,6 +22,8 @@
 12. [Sherlock verifier — timeout y providers (#3484)](#12-sherlock-verifier--timeout-y-providers-3484) — opción B spawn-CLI, timeout cap, soft-timeout, audit enriquecido. §12.8 cubre swap intra-provider para preservar adversariality (#3501).
 13. [Alerta y switch preventivo por cuota de proveedor (#4282)](#13-alerta-y-switch-preventivo-por-cuota-de-proveedor-4282) — resiliencia anticipatoria: avisa y degrada el primary antes de reventar la cuota.
 14. [Documentación operativa multi-provider (post-ola N+1)](#14-documentación-operativa-multi-provider-post-ola-n1) — smoke test reproducible, telemetría, health en vivo, failover con evidencia y comparación pre/post ola N+1 (#4405).
+15. [Criterio de permanencia de proveedores (#6145)](#15-criterio-de-permanencia-de-proveedores-6145) — quién se queda: marca candidatos a baja, nunca da de baja.
+16. [Criterio de admisión de proveedores (#6562)](#16-criterio-de-admisión-de-proveedores-6562) — quién entra: CLI que edita archivos + consumo verificable + términos sin entrenamiento, guardrail fail-closed en el boot y en el dashboard.
 
 > **Convención:** todos los paths `.pipeline/...` son relativos a la raíz del repo (`C:\Workspaces\Intrale\platform\`). Todos los comandos asumen Node.js 21 disponible en PATH.
 
@@ -47,6 +49,7 @@ Cada paso es **obligatorio**. Si saltás uno, el boot del pulpo aborta con mensa
 | 8 | `.pipeline/lib/quota-adapters/<provider>.js` | Implementar `quotaUsage(sessionData)` (cálculo offline, sin red). |
 | 9 | `.pipeline/lib/quota-adapters/index.js` | Sumar el nombre del provider a `ALLOWED_PROVIDERS`. |
 | 10 | `.pipeline/agent-models.json` | Declarar el bloque `providers.<name>` con `launcher`, `model`, `spawn_args_template`, `output_parser`, `quota_error_types`, `prompt_caching`, `credentials_env`, `permissions_mode`. |
+| 11 | `.pipeline/agent-models.json` | Declarar `admission` con las **tres condiciones de admisión** ([§16](#16-criterio-de-admisión-de-proveedores-6562)): `cli_edits_files`, `reports_usage`, `terms_no_training`. Si alguna no se cumple, el boot rechaza referenciarlo en el ruteo con un mensaje que nombra la condición. |
 
 > **Por qué tantos puntos de toque:** el pipeline aplica **defensa en profundidad** ([#3080](https://github.com/intrale/platform/issues/3080), [#3081](https://github.com/intrale/platform/issues/3081), [#3085](https://github.com/intrale/platform/issues/3085)). El JSON declara la intención, pero cada allowlist hardcoded existe para que un atacante con permiso de PR **no pueda** introducir un launcher arbitrario editando solo el JSON. Si querés evitar esta fricción, [#3197](https://github.com/intrale/platform/issues/3197) propone auto-generación de tablas; sigue abierto.
 
@@ -75,7 +78,13 @@ Estructura literal aceptada por el schema Ajv 2020-12 ([`.pipeline/agent-models.
     "ttl_seconds_extended": 3600
   },
   "credentials_env": ["ANTHROPIC_API_KEY"],
-  "permissions_mode": "bypassPermissions"
+  "permissions_mode": "bypassPermissions",
+  "capabilities": ["agentic-tool-use"],
+  "admission": {
+    "cli_edits_files": true,
+    "reports_usage": true,
+    "terms_no_training": true
+  }
 }
 ```
 
@@ -102,6 +111,7 @@ Estructura literal aceptada por el schema Ajv 2020-12 ([`.pipeline/agent-models.
 - `credentials_env` — env vars que **deben existir al boot del pulpo** si algún skill referencia este provider. Cada item validado contra `ALLOWED_CREDENTIAL_ENV_VARS` ([#3080](https://github.com/intrale/platform/issues/3080) SEC-3, anti-exfiltración de `PATH`/`AWS_SECRET_ACCESS_KEY` por declaración). **Cuando `auth_mode` es `"oauth"` este campo es opcional e informativo** — no se exige la key al boot ni se inyecta al child (ver abajo).
 - `auth_mode` — `"oauth"` | `"api_key"` (default `"api_key"` si está ausente). Declara **cómo** autentica el provider ([#3361](https://github.com/intrale/platform/issues/3361), generalizado por [#4306](https://github.com/intrale/platform/issues/4306)). Los providers OAuth/CLI login (`anthropic` → Claude Max, `openai-codex` → ChatGPT Plus vía `codex login`, `gemini-google` → cuenta Google) autentican vía login interactivo del CLI; su token vive en stores locales (`~/.claude/.credentials.json`, `~/.codex`, cuenta Google) y **nunca pasa por una env var**. Por eso, con `auth_mode: "oauth"`: (a) el pre-check de credenciales (`credentials-precheck.js`) y el boot validator (`agent-models-validate.js`) **bypassean** la exigencia de `credentials_env`; (b) `build-child-env.js` **no exige ni inyecta** la key al env del child (env-isolation). Los providers HTTP por API key pelada (`cerebras`, `nvidia-nim`) **NO** llevan `auth_mode` (quedan `api_key` por default) y siguen exigiendo su key. **Coherencia fail-closed:** `agent-models-validate.js` rechaza al cargar (`error`, no warning) un provider `oauth` cuyo `launcher` no sea de login CLI (`claude` / `codex` / `gemini-google`) — un provider HTTP/local marcado `oauth` correría sin credencial.
 - `permissions_mode` — modo de permisos del CLI. Mapeado a la matriz capability×(provider, mode) de [`docs/pipeline-multi-provider/permission-mapping.md`](../pipeline-multi-provider/permission-mapping.md).
+- `admission` — declaración de las **tres condiciones de admisión** ([#6562](https://github.com/intrale/platform/issues/6562), [§16](#16-criterio-de-admisión-de-proveedores-6562)): `cli_edits_files`, `reports_usage`, `terms_no_training`. Fail-closed: campo ausente = no cumple. `non_llm: true` exime a los ejecutores sin LLM; `exception { reason, until, issue }` mantiene temporalmente en el ruteo a uno que no cumple. Un proveedor referenciado por el ruteo que no declare las tres en `true` rompe el boot y el guardado desde el dashboard con un mensaje `[provider-admission]` que nombra la condición incumplida.
 
 ### 1.3 Dónde se inyectan las API keys y cómo rotarlas
 
@@ -1422,18 +1432,28 @@ ahí entraría en bucle de rollback sin arreglar nada.
 > `gemini-3-flash-preview` sí existe. Cruzar contra él es exactamente lo que
 > dejó pasar el defecto original (ver #7289 para migrar el cron de #5888).
 
-**Cómo medir un modelo nuevo antes de configurarlo** (CA-4 de #6858, con agy
-1.2.4 el prompt va en argv — por stdin no se lee, #7290):
+**Cómo medir un modelo nuevo antes de configurarlo** (CA-4 de #6858; desde #7298
+el transporte es `--input-format/--output-format stream-json` con el prompt por
+stdin como NDJSON — `--print` sin valor ya no existe en agy 1.2.x):
 
 ```bash
-"$LOCALAPPDATA/agy/bin/agy.exe" --print "Responde solo con la palabra OK" \
-  --dangerously-skip-permissions --print-timeout 120s --output-format json \
-  --model gemini-3.8-flash-low
-# → {"status":"SUCCESS","response":"OK\n","usage":{"input_tokens":13049,"output_tokens":22,"thinking_tokens":21,...}}
+printf '%s\n' '{"event":"user","message":{"role":"user","content":"Responde solo con la palabra OK"}}' \
+  | "$LOCALAPPDATA/agy/bin/agy.exe" --input-format stream-json --output-format stream-json \
+      --dangerously-skip-permissions --print-timeout 120s --model gemini-3.8-flash-low
+# → NDJSON: init, step_update×3, y al final
+# {"event":"result","result":{"status":"SUCCESS","response":"OK\n","usage":{"input_tokens":13038,"output_tokens":13,"thinking_tokens":12,"cache_read_tokens":0,"total_tokens":13051}}}
 ```
 
-`parseTokensFromLog` del handler lee ese `usage` (`output_tokens` ya incluye
-`thinking_tokens`) y cae al legacy `stats.models` de 1.1.x si no está.
+Re-medición del 2026-09-16 (rebote 1 de #6858, sobre el árbol integrado con
+#7298, spawn construido por `buildSpawn` del handler — mismos args y mismo
+payload que usa el pipeline): `gemini-3.8-flash-high` (30,6 s), `-medium`
+(20,4 s), `-low` (21,5 s) y `gemini-3.7-flash-medium` (5,3 s) → **4/4
+`status: SUCCESS`, rc=0, `modelTrace.applied=true`** con el id exacto en
+`--model`. Fixture del NDJSON real: `lib/__tests__/fixtures/agy-stream-json-1.2.4.ndjson`.
+
+`_parseGeminiJson` desenvuelve el objeto `result` del último evento
+`{"event":"result"}` y `parseTokensFromLog` lee su `usage` (`output_tokens` ya
+incluye `thinking_tokens`); cae al legacy `stats.models` de 1.1.x si no está.
 
 ---
 
@@ -2558,6 +2578,63 @@ no lleva material de auth):
 > no de la mera presencia de una key. Por eso `anthropic` figura `key_status:
 > absent` pero `state: green` (`reason_code: cli_oauth_ok`).
 
+#### 14.3.1 Gemini / Antigravity CLI: round-trip real y tres estados (#6857)
+
+Para `gemini-google` la presencia del binario no alcanza: un `agy` instalado puede
+estar deslogueado o sin licencia. Hasta #6857 eso se resolvía leyendo un flag de
+entorno local (`AGY_LICENSE_READY=1`) — sin round-trip al proveedor — y el flag
+estaba vacío en producción con la licencia paga activa: el provider figuraba rojo
+para siempre (#6225). El flag **ya no existe**. El estado sale de un round-trip
+real a `agy models` (`.pipeline/lib/multi-provider/agy-catalog-probe.js`):
+
+| Estado real | `state` | `reason_code` | Badge en `/providers` | Gatea el dispatch |
+|---|---|---|---|---|
+| Binario ausente (`AGY_BIN` inválido, no instalado) | `red` | `cli_unavailable` | **SIN INSTALAR** | sí (durable) |
+| Instalado, sin sesión/licencia (rc≠0, timeout, catálogo vacío) | `red` | `cli_license_unavailable` | **SIN LICENCIA** | sí (durable) |
+| Instalado y con licencia (catálogo poblado) | `green` | `cli_catalog_ok` | **SANO** · "catálogo verificado · N modelos · hace X" | no |
+
+Cómo funciona:
+
+- **Binario**: se resuelve con la misma función que el launcher
+  (`detectLauncher`: `AGY_BIN` → `%LOCALAPPDATA%\agy\bin\agy.exe` → PATH). Ese dir
+  está sólo en el PATH de **usuario**, por eso el fallback a `agy` pelado no sirve
+  desde los servicios y la ubicación oficial va antes.
+- **Round-trip**: `agy models` (no interactivo, no consume cuota de generación,
+  ~2 s). El CLI hace `loadCodeAssist` + `fetchAvailableModels` contra
+  `daily-cloudcode-pa.googleapis.com` con el token del keyring; sin red o sin
+  sesión sale con rc≠0. Sano = rc 0 **y** ≥1 línea `id<TAB>label` en stdout.
+  Timeout duro de 30 s (un `agy` deslogueado bloquea en OAuth, #4869).
+- **Cache con TTL** en `.pipeline/state/agy-catalog-probe.json`: 15 min para un
+  verde (5 min de tick × 3 < 20 min de frescura del dispatch), **4 min para un
+  rojo** (menos de un tick, para que reautenticar se refleje enseguida). El
+  binario se re-verifica en cada tick, con o sin cache. Un spawn real que
+  termine en `authentication_rejected` (#5795) invalida la cache. "Probar ahora"
+  en el dashboard fuerza el round-trip.
+- **Snapshot**: los providers con round-trip llevan además `cli_probe: { kind,
+  detail, model_count, models, checked_at, cached, launcher_kind }` (campo
+  opcional; ausente para el resto). El catálogo real alimenta también el cruce
+  de vigencia de #5888 (`catalog_check`), que antes quedaba `unavailable` por
+  el short-circuit OAuth.
+- **Frescura visible**: si el snapshot supera 2×TTL (30 min), el badge pasa a
+  `info` · **SIN DATOS**. Un verde viejo nunca se lee como verde fresco.
+
+Qué **no** dice el round-trip: no distingue plan pago de gratuito (#6564 sigue
+vivo en esa parte) — sólo que hay una sesión con licencia capaz de listar el
+catálogo. Y no valida que los modelos configurados en `agent-models.json`
+existan en Antigravity (#6858); eso se ve en la columna de vigencia.
+
+**Encendido y respawns**: no hay nada que configurar dentro del repo. La sesión
+OAuth de `agy` vive en el keyring de Windows del usuario del servicio y el
+binario en `%LOCALAPPDATA%`; ninguno se pierde con `reset` ni con el
+`git reset --hard` de cada respawn.
+
+**Launcher (agy ≥ 1.2)**: el prompt entra por stdin como una línea NDJSON
+(`--input-format stream-json --output-format stream-json`); `--print` sin valor
+dejó de existir en 1.2.x y un prompt en argv reventaría con ENAMETOOLONG
+(#4529). El log del agente es NDJSON y el objeto útil es el `result` del
+evento `{"event":"result"}`. La adaptación del parser de tokens/errores al
+shape real (`usage.*`, `error` string) es #7288.
+
 ### 14.4 Failover reproducible
 
 La cadena de fallback vive en
@@ -2642,6 +2719,9 @@ cadena me están costando más de lo que aportan?"* — incluida la respuesta le
 
 El criterio **marca candidatos**; **nunca da de baja a nadie**. La baja efectiva es
 siempre un PR de configuración trazable.
+
+> La contracara — **quién entra** al ruteo — es el [criterio de admisión (§16)](#16-criterio-de-admisión-de-proveedores-6562):
+> permanencia y admisión son las dos caras del mismo ciclo de vida de un proveedor.
 
 ### 15.1 Cómo se corre
 
@@ -2847,12 +2927,13 @@ hace"*:
 | `sin datos 24h` | no evaluable | no | Falta muestra. **Nunca** se degrada a "no aporta" |
 | ausente del panel | sin declarar | no | Despacha pero no está en config (#6153) |
 
-**Ejemplo canónico — `gemini-google`.** Figura `red` en el panel y `mantener` en el
-reporte, **simultáneamente, y eso es correcto**: el rojo lo produce
-`cli-oauth-probe.js:82` cuando `AGY_LICENSE_READY !== '1'`, un flag de entorno **sin
-round-trip al proveedor**. Mientras tanto el dispatcher lo eligió 277 veces en la misma
-ventana, porque el health-gate sólo aplica con rojo fresco (<20 min) y con snapshot viejo
-cae en `red_stale` → fail-open. Seguimiento de la corrección: **#6225**.
+**Ejemplo canónico — `gemini-google` (histórico, corregido en #6857).** Figuraba `red`
+en el panel y `mantener` en el reporte, **simultáneamente, y eso era correcto**: el rojo
+lo producía `cli-oauth-probe.js` cuando `AGY_LICENSE_READY !== '1'`, un flag de entorno
+**sin round-trip al proveedor**. Mientras tanto el dispatcher lo eligió 277 veces en la
+misma ventana, porque el health-gate sólo aplica con rojo fresco (<20 min) y con snapshot
+viejo cae en `red_stale` → fail-open. Desde #6857 el rojo/verde sale de `agy models`
+(§14.3.1) y #6225 quedó cerrado con esa entrega.
 
 ### 15.9 Registro de la decisión
 
@@ -2879,6 +2960,152 @@ dispatches en `chain_exhausted`.
 ```bash
 node --test .pipeline/lib/multi-provider/__tests__/provider-contribution.test.js   # 26 tests
 node --test .pipeline/tests/provider-permanence-6145.test.js                       # 12 tests
+```
+
+---
+
+## 16. Criterio de admisión de proveedores (#6562)
+
+Es la otra cara de [§15](#15-criterio-de-permanencia-de-proveedores-6145): la permanencia
+decide **quién se queda**; la admisión decide **quién entra**. El programa *Contabilidad y
+balanceo de cuota por proveedor* depende de que todos los proveedores activos sean
+contables: uno que no reporta consumo no sólo no aporta, **entorpece** la selección porque
+ocupa un lugar en la cadena sin que se sepa qué queda en él.
+
+### 16.1 La regla
+
+Un proveedor es admisible al ruteo sólo si cumple **las tres** condiciones. El vocabulario
+de esta tabla es el mismo que usa la declaración en `agent-models.json` y el mensaje del
+guardrail, para ir del error al campo y del campo a esta doc sin traducir.
+
+| # | Condición | Campo en `admission` | Rótulo cuando falla | Por qué |
+|---|---|---|---|---|
+| 1 | **CLI local capaz de editar archivos** — no una API pelada de chat | `cli_edits_files` | *su CLI no edita archivos* | Un proveedor que no puede editar el repo no puede ejecutar fases de desarrollo. |
+| 2 | **Reporta consumo verificable** — cuánto se lleva gastado del período, no sólo "te pasaste" | `reports_usage` | *no reporta consumo verificable* | Sin esto no hay contabilidad posible ni balanceo. |
+| 3 | **Términos que no entrenen con nuestro código** — política ya vigente ([data-residency](../pipeline-multi-provider/data-residency.md)) | `terms_no_training` | *sus términos entrenan con el código* | El código fuente y los secretos del pipeline no alimentan modelos de terceros. |
+
+**"Activo en el ruteo"** = referenciado por `default_provider`, por algún `skills.<s>.provider`
+o por algún `skills.<s>.fallbacks[]`. Un proveedor declarado en `providers` pero no
+referenciado puede no cumplir sin romper la carga; en cuanto se lo referencia, el guardrail
+lo evalúa.
+
+### 16.2 Declaración por proveedor
+
+Cada bloque `providers.<name>` declara las tres condiciones de forma **explícita y
+fail-closed**: un campo ausente vale *no declaró* (no cumple) y el mensaje lo distingue de
+*declaró false*. Nunca se infiere del launcher ni del nombre.
+
+```json
+"admission": {
+  "cli_edits_files": true,
+  "reports_usage": true,
+  "terms_no_training": true
+}
+```
+
+- `cli_edits_files: true` exige `capabilities: ["agentic-tool-use"]` en el mismo bloque:
+  declarar que edita archivos sin la capability de ejecución es una contradicción y rompe la
+  carga (una sola verdad, no dos).
+- Las condiciones **sin verificación documentada se declaran `false`**, nunca `true` por
+  omisión.
+- **Exención explícita para ejecutores sin LLM** (`deterministic`, launcher `node`):
+
+  ```json
+  "admission": { "non_llm": true }
+  ```
+
+  Sólo es válida con `output_parser: "none"`; un proveedor LLM no puede eximirse marcándose
+  `non_llm`. La exención vive en la declaración del proveedor, **no** en un caso especial
+  escondido en el código (`if (key === 'deterministic')` está prohibido).
+- **Excepción temporal** para mantener en el ruteo a un proveedor que hoy no cumple, con
+  motivo, vencimiento e issue que la resuelve:
+
+  ```json
+  "admission": {
+    "cli_edits_files": true,
+    "reports_usage": false,
+    "terms_no_training": false,
+    "exception": { "reason": "baja programada en #6563", "until": "2026-10-31", "issue": 6563 }
+  }
+  ```
+
+  `until` es inclusivo (UTC). **Vencida la fecha, el boot vuelve a rechazar** al proveedor.
+  La vigencia está capeada a `ADMISSION_EXCEPTION_MAX_DAYS` (120 días) desde el día de la
+  validación: no existe la excepción eterna. Una excepción malformada (motivo vacío, fecha
+  sin formato `YYYY-MM-DD`) es error y no habilita nada.
+
+### 16.3 Guardrail
+
+Vive en `validateProviderAdmission` ([`.pipeline/lib/agent-models-validate.js`](../../.pipeline/lib/agent-models-validate.js)),
+dentro de `validateCrossReferences`. Como ese mismo `validate()` lo invocan **el boot del
+Pulpo** (fail-fast, `exit 2`) y **el write path del dashboard** (`agent-models-rw.writeConfig`
+valida antes de tocar disco), las dos formas de "activar un proveedor" comparten el mismo
+gate sin duplicar lógica.
+
+Mensaje en tres partes, todas las condiciones incumplidas en **un solo error por proveedor**:
+
+```
+problema: #/providers/nvidia-nim/admission [provider-admission] el proveedor "nvidia-nim" no es
+          admisible en el ruteo: no reporta consumo verificable (admission.reports_usage: declaró
+          false); sus términos entrenan con el código (admission.terms_no_training: no declaró).
+          Está activado en #/skills/android-dev/fallbacks/2, #/skills/web-dev/fallbacks/2, …
+solución: en providers.nvidia-nim.admission declarar en true sólo las condiciones que de verdad
+          se cumplen (cli_edits_files, reports_usage, terms_no_training); si alguna no se cumple,
+          quitar "nvidia-nim" de default_provider / skills.*.provider / fallbacks[], o registrar
+          admission.exception { reason, until, issue } con vencimiento — ver docs/pipeline/multi-provider.md §16
+```
+
+Otros errores del mismo guardrail, todos con prefijo `[provider-admission]`:
+
+| Situación | Path del error |
+|---|---|
+| `non_llm: true` con `output_parser` distinto de `none` | `#/providers/<x>/admission/non_llm` |
+| `cli_edits_files: true` sin `agentic-tool-use` en `capabilities` | `#/providers/<x>/admission/cli_edits_files` |
+| Excepción malformada | `#/providers/<x>/admission/exception` |
+| Excepción más larga que el cap | `#/providers/<x>/admission/exception/until` |
+| Excepción vencida | `#/providers/<x>/admission` (el mensaje nombra la fecha de vencimiento) |
+
+Verificación manual:
+
+```bash
+node .pipeline/lib/agent-models-validate.js          # OK / lista de errores accionables
+node .pipeline/validate-agent-models.js              # CLI humanizado (#3089)
+```
+
+### 16.4 Evaluación vigente (medición 2026-09-16)
+
+Los proveedores configurados al momento de implementar el criterio, evaluados contra las
+tres condiciones. Las columnas repiten literalmente lo declarado en `agent-models.json`.
+Fuente de la medición: tabla del issue #6562 (estado al 25/08/2026), `capabilities` /
+`supports_tool_use` del JSON, los quota-adapters de `.pipeline/lib/quota-adapters/`
+(`gemini-google`, `nvidia-nim` y `cerebras` devuelven `not_implemented`; `kimi-moonshot` no
+tiene adapter) y la [tabla de TOS](../pipeline-multi-provider/data-residency.md).
+
+| Proveedor | Edita archivos | Reporta consumo | Términos sin entrenamiento | Veredicto | Cómo sigue |
+|---|---|---|---|---|---|
+| `anthropic` | sí | sí, real | sí | **admisible** | — |
+| `openai-codex` | sí | sí, real | sí | **admisible** | — |
+| `gemini-google` | sí (CLI propia) | no | no (TOS del tier free de AI Studio entrena con prompts) | no admisible — excepción vigente | baja en #6563; excepción hasta 2026-10-31 |
+| `nvidia-nim` | sí | no (adapter `not_implemented`) | no (sin verificación documentada → `false`) | no admisible — excepción vigente | baja en #6563; excepción hasta 2026-10-31 |
+| `cerebras` | **no** (API pelada sin tool_use) | no | no (sin verificación documentada → `false`) | no admisible — excepción vigente | baja en #6563; excepción hasta 2026-10-31 |
+| `kimi-moonshot` | **no** | no (sin adapter) | no (sin verificación documentada → `false`) | no admisible — excepción vigente | baja en #6563; excepción hasta 2026-10-31 |
+| `deterministic` | n/a | n/a | n/a | exento (sin LLM) | `non_llm: true` |
+
+**Decisión registrada:** los cuatro proveedores no admisibles siguen en las cadenas de 19 de
+23 skills **únicamente** por `admission.exception` con vencimiento e issue #6563. Este issue
+fija el criterio y lo hace cumplir; la remoción de las cadenas es alcance de #6563 (que
+depende de éste). Si #6563 no cierra antes del vencimiento, el boot del Pulpo rechaza la
+configuración con el mensaje de §16.3 — es fail-closed a propósito: la excepción se
+extiende editando la fecha en un PR trazable, nunca se ignora en silencio.
+
+**Pendiente (recomendación #7285):** cross-validar `reports_usage` contra el quota-adapter
+real (`not_implemented` ⇒ no puede declarar `true`). Hoy la declaración es manual.
+
+### 16.5 Tests
+
+```bash
+node --test .pipeline/tests/provider-admission-6562.test.js    # Gherkin 1:1 + fail-closed + excepción + policy JSON/doc
+node --test .pipeline/lib/__tests__/agent-models-validate.test.js
 ```
 
 ---

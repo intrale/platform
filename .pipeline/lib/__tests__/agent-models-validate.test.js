@@ -28,6 +28,24 @@ function tmpFile(content, ext = '.json') {
   return file;
 }
 
+// #6562 — Criterio de admisión de proveedores. Un provider "válido" para el
+// ruteo debe declarar las tres condiciones (fail-closed: ausente = no cumple).
+// Los helpers de abajo replican lo que declara el JSON canónico: los que
+// cumplen las tres van con capabilities agentic-tool-use (coherencia), y los
+// que no cumplen (cerebras: API pelada) entran sólo por excepción vigente.
+function admissionAdmitted() {
+  return { cli_edits_files: true, reports_usage: true, terms_no_training: true };
+}
+
+function admissionWithException(days = 30) {
+  const until = new Date(Date.now() + days * 86400000).toISOString().slice(0, 10);
+  return {
+    cli_edits_files: false,
+    reports_usage: false,
+    terms_no_training: false,
+    exception: { reason: 'fixture de test — baja programada en #6563', until, issue: 6563 },
+  };
+}
 function baseValid() {
   return {
     $schema: './agent-models.schema.json',
@@ -43,6 +61,8 @@ function baseValid() {
         prompt_caching: { supported: true, ttl_seconds_default: 300 },
         credentials_env: ['ANTHROPIC_API_KEY'],
         permissions_mode: 'bypassPermissions',
+        capabilities: ['agentic-tool-use'],
+        admission: admissionAdmitted(),
       },
       deterministic: {
         launcher: 'node',
@@ -52,6 +72,7 @@ function baseValid() {
         quota_error_types: [],
         supports_tool_use: false,
         prompt_caching: { supported: false },
+        admission: { non_llm: true },
       },
     },
     skills: {
@@ -728,6 +749,8 @@ function baseValidWithCodex() {
     supports_tool_use: true,
     prompt_caching: { supported: false },
     credentials_env: ['OPENAI_API_KEY'],
+    capabilities: ['agentic-tool-use'],
+    admission: admissionAdmitted(),
   };
   cfg.skills.qa.provider = 'openai-codex';
   delete cfg.skills.qa.model_override; // model_override era para anthropic
@@ -1025,6 +1048,8 @@ function providerGeminiGoogle() {
     prompt_caching: { supported: false },
     credentials_env: ['GEMINI_API_KEY'],
     permissions_mode: 'bypassPermissions',
+    capabilities: ['agentic-tool-use'],
+    admission: admissionAdmitted(),
   };
 }
 
@@ -1039,6 +1064,7 @@ function providerCerebras() {
     prompt_caching: { supported: false },
     credentials_env: ['CEREBRAS_API_KEY'],
     permissions_mode: 'bypassPermissions',
+    admission: admissionWithException(),
   };
 }
 
@@ -1270,6 +1296,8 @@ function providerOpenAICodex() {
     prompt_caching: { supported: true, auto: true },
     credentials_env: ['OPENAI_API_KEY'],
     permissions_mode: 'bypassPermissions',
+    capabilities: ['agentic-tool-use'],
+    admission: admissionAdmitted(),
   };
 }
 
@@ -1287,6 +1315,7 @@ function providerCerebrasEntry() {
     prompt_caching: { supported: false },
     credentials_env: ['CEREBRAS_API_KEY'],
     permissions_mode: 'bypassPermissions',
+    admission: admissionWithException(),
   };
 }
 
@@ -1301,6 +1330,8 @@ function providerGeminiEntry() {
     prompt_caching: { supported: false },
     credentials_env: ['GEMINI_API_KEY'],
     permissions_mode: 'bypassPermissions',
+    capabilities: ['agentic-tool-use'],
+    admission: admissionAdmitted(),
   };
 }
 

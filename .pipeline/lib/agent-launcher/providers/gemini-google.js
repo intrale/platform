@@ -9,19 +9,26 @@
 //      o fallback al PATH.
 //   2) buildSpawn — traduce los args legacy del pulpo (estilo Claude CLI:
 //      `-p`, `--system-prompt-file`, `--output-format stream-json`) al shape
-//      que entiende Antigravity (`--print --model <model>`).
+//      que entiende Antigravity. Desde agy 1.2.x (#6857) el prompt entra por
+//      STDIN como NDJSON (`--input-format stream-json`, que a su vez exige
+//      `--output-format stream-json`): `--print` ya NO admite ir sin valor y
+//      un prompt en argv reventaría con ENAMETOOLONG en Windows (#4529).
 //      Gemini NO tiene flag de system prompt, así que el contenido del
 //      `--system-prompt-file` se foldea al inicio del prompt.
-//   3) parseTokensFromLog — Gemini con `-o json` devuelve UN ÚNICO objeto JSON
-//      (no JSONL streaming como Codex). Agregamos los tokens de TODOS los
-//      modelos reportados en `stats.models.<model>.tokens` (router + main).
+//   3) parseTokensFromLog — agrega los tokens reportados por el CLI. Con
+//      `--output-format stream-json` el log es NDJSON y el objeto útil es el
+//      `result` del evento `{"event":"result"}`; `_parseGeminiJson` lo
+//      localiza. La adaptación del shape (`usage.*`, `error` string) es #7288.
 //   4) detectQuotaExhausted — inspecciona el objeto `error` del JSON y matchea
 //      por shape estructural (status/code/reason normalizados a lowercase)
 //      contra la allowlist canónica en `quota-exhausted.js`
 //      (`KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER['gemini-google']`).
 //
-// Auth: OAuth via `agy`; nunca API key. El health exige AGY_LICENSE_READY=1
-// para no declarar disponible una instalación sin licencia/billing.
+// Auth: OAuth via `agy`; nunca API key. El health (#6857) sale de un
+// round-trip real al CLI (`agy models`, ver multi-provider/agy-catalog-probe.js),
+// que spawnea EXACTAMENTE el `cmd` que devuelve `detectLauncher()`. Ya no
+// existe el flag `AGY_LICENSE_READY`: un flag local no puede saber si la
+// licencia está activa.
 //
 // Seguridad:
 //  - Ruta oficial hardcoded y override AGY_BIN, sin require dinámico.
@@ -39,13 +46,28 @@ const authRejection = require('../auth-rejection');
 
 // -----------------------------------------------------------------------------
 // detectLauncher — AGY_BIN, ubicación oficial Windows o PATH.
+//
+// #6857 — `env` / `fsImpl` / `platform` son inyectables para que el probe de
+// salud (`agy-catalog-probe.js`) resuelva el binario con LA MISMA función que
+// el launcher y ambos miren el mismo archivo. Sin argumentos se comporta igual
+// que siempre (process.env / fs / process.platform).
+//
+// Orden: `AGY_BIN` explícito → `%LOCALAPPDATA%\agy\bin\agy.exe` (ubicación
+// oficial; ese dir está sólo en el PATH de USUARIO, no en el de máquina, así
+// que desde los servicios del pipeline el fallback al PATH no lo encuentra) →
+// `agy` pelado en el PATH.
 // -----------------------------------------------------------------------------
-function detectLauncher() {
-    if (process.env.AGY_BIN) {
-        return { kind: 'configured-native', cmd: process.env.AGY_BIN, prefixArgs: [], shell: false };
+function detectLauncher(env, fsImpl, platform) {
+    const _env = env || process.env;
+    const _fs = fsImpl || fs;
+    const _platform = platform || process.platform;
+    if (_env.AGY_BIN) {
+        return { kind: 'configured-native', cmd: _env.AGY_BIN, prefixArgs: [], shell: false };
     }
-    const windowsBin = path.join(process.env.LOCALAPPDATA || '', 'agy', 'bin', 'agy.exe');
-    if (process.platform === 'win32' && fs.existsSync(windowsBin)) {
+    const windowsBin = path.join(_env.LOCALAPPDATA || '', 'agy', 'bin', 'agy.exe');
+    let officialExists = false;
+    try { officialExists = _platform === 'win32' && !!_fs.existsSync(windowsBin); } catch { officialExists = false; }
+    if (officialExists) {
         return { kind: 'native-exe', cmd: windowsBin, prefixArgs: [], shell: false };
     }
     return { kind: 'path-fallback', cmd: 'agy', prefixArgs: [], shell: false };
@@ -68,11 +90,29 @@ function _resetLauncherCacheForTesting() { cachedLauncher = null; }
 // Contrato de entrada (lo que el pulpo construye en pulpo.js:5846):
 //   ['-p', userPrompt, '--system-prompt-file', systemFile, ...]
 //
-// Contrato de salida (agy 1.1.x / 1.2.x — ver #7290 por el shape de --print):
-//   ['--print', '--dangerously-skip-permissions', '--print-timeout', timeout,
+// Contrato de salida (agy 1.2.x — #6857):
+//   ['--input-format', 'stream-json', '--output-format', 'stream-json',
+//    '--dangerously-skip-permissions', '--print-timeout', timeout,
 //    '--model', model?]
-// El payload real se pipea por STDIN para evitar ENAMETOOLONG en Windows.
+// El payload real se pipea por STDIN como UNA línea NDJSON
+// (`{"event":"user","message":{"role":"user","content":"<system+prompt>"}}`)
+// para evitar ENAMETOOLONG en Windows. Verificado en vivo contra agy 1.2.4:
+// `--print` sin valor es error (rc=2, "flag needs an argument"), `--print -`
+// manda el literal "-" como prompt, y `--input-format stream-json` rechaza
+// cualquier prompt en argv ("a prompt given on the command line would be
+// ignored"). Esta es la única vía documentada para stdin.
 // -----------------------------------------------------------------------------
+const AGY_STREAM_INPUT_ARGS = Object.freeze(['--input-format', 'stream-json', '--output-format', 'stream-json']);
+
+/**
+ * Serializa el prompt (system foldeado + mensaje) como la línea NDJSON que
+ * espera `--input-format stream-json`. Shape verificado en vivo (#6857):
+ * `{"event":"user","message":{"role":"user","content":"..."}}`. Sin el campo
+ * `event` el CLI corta con `stream input message is missing the "event" field`.
+ */
+function encodeStreamJsonPayload(prompt) {
+    return JSON.stringify({ event: 'user', message: { role: 'user', content: String(prompt == null ? '' : prompt) } }) + '\n';
+}
 function foldGeminiPayload(args, env, fsImpl) {
     const _fs = fsImpl || fs;
     let userPrompt = null;
@@ -135,7 +175,7 @@ function translateClaudeArgsToGemini(args, env) {
     // (propagación #6272) con el id resuelto para el skill (#6271).
     const { model } = resolveModelFromEnv(env);
     const timeout = (env && env.AGY_PRINT_TIMEOUT) || '5m';
-    const out = ['--print', '--dangerously-skip-permissions', '--print-timeout', timeout];
+    const out = [...AGY_STREAM_INPUT_ARGS, '--dangerously-skip-permissions', '--print-timeout', timeout];
     if (model) out.push('--model', model);
     return out;
 }
@@ -161,7 +201,9 @@ function buildSpawn({ args, cwd, env, interactive_supported }) {
     const geminiArgs = translateClaudeArgsToGemini(args || [], env || {});
     // #4529 — payload (system foldeado + mensaje) por STDIN, nunca por argv.
     // stdin SIEMPRE 'pipe'; el caller escribe `stdinPayload` y cierra stdin.
-    const stdinPayload = foldGeminiPayload(args || [], env || {});
+    // #6857 — serializado como NDJSON para `--input-format stream-json`.
+    const stdinPayload = encodeStreamJsonPayload(foldGeminiPayload(args || [], env || {}));
+    // #6334/#6858 — traza del modelo que realmente viaja en `--model`.
     const resolved = resolveModelFromEnv(env || {});
     let modelTrace = null;
     if (resolved.model) {
@@ -199,6 +241,10 @@ function buildSpawn({ args, cwd, env, interactive_supported }) {
 // Gemini escribe a stdout un único objeto JSON. El log puede tener prefijo o
 // sufijo basura (warnings residuales si stderr se mezcló, o líneas parciales).
 // Estrategia robusta:
+//   0. #6857 — Si el log es NDJSON (`--output-format stream-json`), devolver
+//      el objeto `result` del último evento `{"event":"result"}`: tiene el
+//      mismo shape que el JSON único de `--output-format json`
+//      (`conversation_id`, `status`, `response`, `error`, `usage`).
 //   1. Intentar JSON.parse del contenido completo trimmeado.
 //   2. Si falla, recortar del primer `{` al último `}` y reintentar.
 // Devuelve el objeto parseado o null.
@@ -206,6 +252,18 @@ function buildSpawn({ args, cwd, env, interactive_supported }) {
 function _parseGeminiJson(raw) {
     if (!raw || typeof raw !== 'string') return null;
     const trimmed = raw.trim();
+    // 0. NDJSON: buscar de atrás hacia adelante el evento `result`.
+    if (trimmed.includes('"event"')) {
+        const lines = trimmed.split(/\r?\n/);
+        for (let i = lines.length - 1; i >= 0; i--) {
+            const line = lines[i].trim();
+            if (!line.startsWith('{') || !line.includes('"result"')) continue;
+            try {
+                const evt = JSON.parse(line);
+                if (evt && evt.event === 'result' && evt.result && typeof evt.result === 'object') return evt.result;
+            } catch { /* línea parcial: seguir buscando */ }
+        }
+    }
     try { return JSON.parse(trimmed); } catch { /* sigue */ }
     const first = trimmed.indexOf('{');
     const last = trimmed.lastIndexOf('}');
@@ -233,8 +291,10 @@ function _parseGeminiJson(raw) {
 //   tool_calls: no hay un conteo de llamadas en el shape (el campo `tool` es
 //               cantidad de tokens de tooling, no número de calls) → 0.
 //
-// #6858 — Shape de agy 1.2.4 (medido en vivo el 2026-09-16 con
-// `--output-format json --model gemini-3.8-flash-low`):
+// #6858 — Shape de agy 1.2.4 (medido en vivo el 2026-09-16 con `--output-format
+// json` y re-medido con `--output-format stream-json` — #7298 — donde el mismo
+// objeto viaja dentro del evento `{"event":"result","result":{...}}` que
+// `_parseGeminiJson` desenvuelve; fixture agy-stream-json-1.2.4.ndjson):
 //   { "status": "SUCCESS", "response": "OK\n", "usage": {
 //       "input_tokens": 13049, "output_tokens": 22, "thinking_tokens": 21,
 //       "cache_read_tokens": 0, "total_tokens": 13071 } }
@@ -395,6 +455,8 @@ module.exports = {
     IGNORED_MODEL_ENV_VARS,
     resolveModelFromEnv,
     _foldGeminiPayload: foldGeminiPayload,
+    _encodeStreamJsonPayload: encodeStreamJsonPayload,
+    AGY_STREAM_INPUT_ARGS,
     _parseGeminiJson,
     _extractErrorTokens,
     _setLauncherForTesting,

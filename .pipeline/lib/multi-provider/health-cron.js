@@ -268,7 +268,7 @@ function readCatalogTtlMs({ configPath } = {}) {
 // (fuente única compartida con `live-ping.js`). Se re-exportan más abajo en
 // `module.exports` para no romper tests/consumers que referencian
 // `healthCron.probeCliProvider` / `healthCron.isBinaryOnPath`.
-const { isBinaryOnPath, probeCliProvider } = cliOauthProbe;
+const { isBinaryOnPath, probeCliProvider, probeCliProviderLive } = cliOauthProbe;
 
 function readJson(file, fsImpl = fs) {
     if (!fsImpl.existsSync(file)) return null;
@@ -505,7 +505,7 @@ function listManagedAndPingable() {
 // Snapshot build + alerts
 // -----------------------------------------------------------------------------
 
-async function pingAllProviders({ providers, prevSnapshot, secretsPath, fsImpl = fs, httpImpl, pingImpl, cliProbe, quotaAssessImpl, defaultProvider, now, checkCatalog = false, expectModelsByProvider = null } = {}) {
+async function pingAllProviders({ providers, prevSnapshot, secretsPath, fsImpl = fs, httpImpl, pingImpl, cliProbe, catalogProbe, stateDir, quotaAssessImpl, defaultProvider, now, checkCatalog = false, expectModelsByProvider = null } = {}) {
     const prevByProvider = {};
     if (prevSnapshot && Array.isArray(prevSnapshot.providers)) {
         for (const p of prevSnapshot.providers) prevByProvider[p.provider] = p;
@@ -534,7 +534,27 @@ async function pingAllProviders({ providers, prevSnapshot, secretsPath, fsImpl =
         // #3802 — Providers CLI-OAuth (Claude Code / Codex): validar la CLI, no
         // la API key. Pinear la key da falso rojo porque el pipeline NO la usa.
         if (spec.auth_mode === 'oauth') {
-            pingResult = probeCliProvider(spec, { fsImpl, cliProbe });
+            // #6857 — para specs con `catalog_probe` (gemini-google/agy) esto
+            // hace un round-trip REAL al CLI (con cache TTL en state/); para
+            // el resto es el scan de PATH de siempre. Fail-closed ante error.
+            try {
+                pingResult = await probeCliProviderLive(spec, { fsImpl, cliProbe, catalogProbe, stateDir, nowMs });
+            } catch {
+                pingResult = { ok: false, reason: 'cli_license_unavailable', provider: spec.provider, cli_oauth: true };
+            }
+            // #6857 / #7289 — si el round-trip trajo el catálogo real y toca el
+            // cruce de vigencia (#5888), lo alimentamos con esa lista en vez de
+            // dejarlo en `unavailable` para siempre por el short-circuit OAuth.
+            if (expectModels.length > 0 && pingResult && pingResult.cli_probe
+                && Array.isArray(pingResult.cli_probe.models) && pingResult.cli_probe.models.length > 0) {
+                const alive = new Set(pingResult.cli_probe.models.filter((x) => typeof x === 'string'));
+                pingResult.catalog_check = {
+                    ok: true,
+                    reason_code: null,
+                    detail: null,
+                    models: expectModels.map((id) => ({ model_id: id, alive: alive.has(id) })),
+                };
+            }
         } else if (keyInfo && keyInfo.status === 'present') {
             const _ping = pingImpl || livePing.ping;
             try {
@@ -645,9 +665,31 @@ async function pingAllProviders({ providers, prevSnapshot, secretsPath, fsImpl =
             // son la salud del PROVIDER y no los toca nadie desde acá: un modelo
             // muerto no pone rojo a NVIDIA, que sigue sirviendo su catálogo.
             ...(catalogCheck ? { catalog_check: catalogCheck } : {}),
+            // #6857 — evidencia del round-trip al CLI (sólo providers con
+            // `catalog_probe`). Campo OPCIONAL: ausente para el resto. El
+            // dashboard lo usa para "catálogo verificado · N modelos · hace X".
+            ...(pingResult && pingResult.cli_probe && typeof pingResult.cli_probe === 'object'
+                ? { cli_probe: sanitizeCliProbe(pingResult.cli_probe) }
+                : {}),
         });
     }
     return results;
+}
+
+// #6857 — el snapshot es contrato: sólo campos derivados, tipados y acotados.
+function sanitizeCliProbe(cp) {
+    const models = Array.isArray(cp.models)
+        ? cp.models.filter((m) => typeof m === 'string' && m.length <= 80).slice(0, 64)
+        : [];
+    return {
+        kind: typeof cp.kind === 'string' ? cp.kind.slice(0, 16) : null,
+        detail: typeof cp.detail === 'string' ? cp.detail.slice(0, 32) : null,
+        model_count: Number.isFinite(cp.model_count) ? cp.model_count : models.length,
+        models,
+        checked_at: typeof cp.checked_at === 'string' ? cp.checked_at : null,
+        cached: cp.cached === true,
+        launcher_kind: typeof cp.launcher_kind === 'string' ? cp.launcher_kind.slice(0, 32) : null,
+    };
 }
 
 function buildSnapshot({ providers, now = Date.now() } = {}) {
@@ -888,6 +930,8 @@ async function runOnce(opts = {}) {
         httpImpl: opts.httpImpl,
         pingImpl: opts.pingImpl,
         cliProbe: opts.cliProbe,
+        catalogProbe: opts.catalogProbe,
+        stateDir,
         quotaAssessImpl: opts.quotaAssessImpl,
         defaultProvider: opts.defaultProvider,
         now,
@@ -1044,6 +1088,7 @@ module.exports = {
     pingAllProviders,
     isBinaryOnPath,
     probeCliProvider,
+    probeCliProviderLive,
     buildSnapshot,
     emitAlerts,
     tryAcquireLock,

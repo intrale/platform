@@ -155,6 +155,7 @@ const REASON_LABEL_DEFAULT = 'motivo desconocido';
 const REASON_TABLE = Object.freeze({
     authenticated: { text: () => 'disponible', cause: CAUSE_DISPONIBLE },
     cli_oauth_ok: { text: () => 'disponible', cause: CAUSE_DISPONIBLE },
+    cli_catalog_ok: { text: () => 'disponible', cause: CAUSE_DISPONIBLE }, // #6857: catálogo verificado por round-trip
 
     quota_exhausted_real: {
         text: (entry) => {

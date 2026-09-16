@@ -1,0 +1,5 @@
+{"event":"init","conversation_id":"af12dca0-abdf-4338-9ee0-22b01d2bbdce","init":{"model":"gemini-3.8-flash-low","cwd":"C:\\repo","tools":["ask_custom_permission","ask_permission","ask_question","…"]}}
+{"event":"step_update","step_update":{"conversation_id":"af12dca0-abdf-4338-9ee0-22b01d2bbdce","step_index":0,"state":"DONE","step_type":"user_input"}}
+{"event":"step_update","step_update":{"conversation_id":"af12dca0-abdf-4338-9ee0-22b01d2bbdce","step_index":1,"state":"ACTIVE","step_type":"agent_response","text_delta":"OK"}}
+{"event":"step_update","step_update":{"conversation_id":"af12dca0-abdf-4338-9ee0-22b01d2bbdce","step_index":1,"state":"DONE","step_type":"agent_response","text_delta":"\n","duration_seconds":17.6038946,"usage":{"input_tokens":13038,"output_tokens":13,"thinking_tokens":12,"cache_read_tokens":0,"total_tokens":13051}}}
+{"event":"result","result":{"conversation_id":"af12dca0-abdf-4338-9ee0-22b01d2bbdce","status":"SUCCESS","response":"OK\n","duration_seconds":17.6621788,"num_turns":1,"usage":{"input_tokens":13038,"output_tokens":13,"thinking_tokens":12,"cache_read_tokens":0,"total_tokens":13051}}}
