@@ -1044,7 +1044,7 @@ const COPY = deepFreeze({
         por_que_vencida: 'Ya lo habías firmado, pero los criterios cambiaron después de tu firma.',
         que_se_decide: '¿Aprobás el alcance de {ref} para que arranque el desarrollo?',
         que_se_decide_vencida: '¿Confirmás el alcance nuevo de {ref}, o lo mandás a replantear?',
-        costo: 'Nada arranca. El trabajo queda listo pero parado, y no se te vuelve a avisar hasta que cambie lo que hay que firmar.',
+        costo: 'Nada arranca. El trabajo queda listo pero parado, y el recordatorio vuelve cada 6 horas mientras siga sin firmar.',
         sin_reco: 'No hay recomendación: la decisión es tuya.',
         ejemplo: 'aprobar',
     },
