@@ -80,11 +80,21 @@ const ALLOWED_ACTIONS = Object.freeze(['crear', 'redefinir', 'fusionar']);
 // Default provider/model del judge. anthropic/claude NO está en
 // PROVIDER_COMPLETION_ENDPOINTS (va por CLI launcher, no por el cliente HTTP),
 // así que el default es un provider de la allowlist HTTP. Free-tier por la
-// regla del proyecto (gemini/cerebras free). Overridable por env u opts.
-const DEFAULT_PROVIDER = process.env.SEMANTIC_DEDUP_PROVIDER || 'gemini-google';
-// #6858 — id del catálogo real de Antigravity (`agy models`), sincronizado con
-// PROVIDER_MODELS_ALLOWLIST['gemini-google']; el id viejo caía en invalid_model.
-const DEFAULT_MODEL = process.env.SEMANTIC_DEDUP_MODEL || 'gemini-3.8-flash-medium';
+// regla del proyecto (cerebras free). Overridable por env u opts.
+//
+// #6858 (rebote review) — el default era `gemini-google`, pero el endpoint
+// `gemini-google` de completion-client es el shim HTTP de AI Studio, NO el CLI
+// `agy`: desde #7298/#6858 su allowlist es el catálogo de Antigravity y AI
+// Studio no sirve ninguno de esos ids (404 medido con `gemini-3.8-flash-medium`).
+// Un default ahí caía SIEMPRE en fail-open + circuit breaker: el Commander
+// perdía el juez semántico en silencio. Por eso el default pasa a Cerebras con
+// `gpt-oss-120b` (modelo de producción del provider, presente en su
+// `GET /v1/models`). El par (provider, model) está fijado por test: debe pasar
+// `isAllowedModel` y tener endpoint en PROVIDER_COMPLETION_ENDPOINTS.
+const BUILTIN_DEFAULT_PROVIDER = 'cerebras';
+const BUILTIN_DEFAULT_MODEL = 'gpt-oss-120b';
+const DEFAULT_PROVIDER = process.env.SEMANTIC_DEDUP_PROVIDER || BUILTIN_DEFAULT_PROVIDER;
+const DEFAULT_MODEL = process.env.SEMANTIC_DEDUP_MODEL || BUILTIN_DEFAULT_MODEL;
 
 const DEFAULT_THRESHOLD = 0.7;
 
@@ -469,6 +479,10 @@ module.exports = {
     extractJson,
     rankByJaccard,
     // Constantes (testing).
+    BUILTIN_DEFAULT_PROVIDER,
+    BUILTIN_DEFAULT_MODEL,
+    DEFAULT_PROVIDER,
+    DEFAULT_MODEL,
     MAX_INPUT_CHARS,
     MAX_CANDIDATES,
     VALID_LEVELS,

@@ -387,7 +387,12 @@ function launchAgent({
     // #6272 — el handler es la última frontera antes de argv y revalida el id por
     // su cuenta (defensa en profundidad). Si ahí lo rechazó, dejamos traza: sin
     // esto un desacuerdo entre las dos validaciones sería invisible.
-    if (spawnDef.modelTrace && spawnDef.modelTrace.applied === false) {
+    // #6858 (review) — `agy_model_env_ignored` NO es un descarte: nunca hubo un
+    // `--model` propagado (sólo AGY_MODEL en el env, que el handler ignora por
+    // diseño). Ese caso ya lo narra el ℹ️ de abajo; sin esta exclusión salían
+    // los dos logs y el ⚠️ afirmaba un descarte que no ocurrió.
+    if (spawnDef.modelTrace && spawnDef.modelTrace.applied === false
+        && spawnDef.modelTrace.reason !== 'agy_model_env_ignored') {
         log('agent-launcher', `⚠️ ${skill}:#${issue} el handler ${effective.provider} descartó el flag --model `
             + `(razón: ${spawnDef.modelTrace.reason}); el agente arranca con el default del CLI. El spawn NO se aborta.`);
     }

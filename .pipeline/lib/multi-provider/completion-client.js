@@ -112,6 +112,18 @@ const PROVIDER_COMPLETION_ENDPOINTS = Object.freeze({
         // BETA shim. Documentado en el header del módulo. Riesgo aceptable
         // porque normaliza el body al schema OpenAI y nos evita maintain dos
         // mapeos distintos (`:generateContent` devuelve `usageMetadata`).
+        //
+        // ATENCIÓN (#6858 / #7298): este endpoint es el shim HTTP de **AI
+        // Studio** (`generativelanguage.googleapis.com`), NO el CLI `agy` de
+        // Antigravity que usa el launcher. Desde #6858 la allowlist de abajo es
+        // el catálogo de Antigravity y AI Studio NO sirve ninguno de esos ids
+        // (medido: `gemini-3.8-flash-medium` → HTTP 404 "is not found"). Hoy
+        // esta ruta no tiene ningún (provider, model) que responda ok=true:
+        // NO apuntarle un default (semantic-dedup ya se quemó con eso — su
+        // default es cerebras). El único caller que la recorre es la cascada
+        // del Sherlock (`HTTP_COMPLETION_PROVIDERS` en sherlock-verifier.js),
+        // que tolera el fallo y sigue al próximo provider. La entrada se
+        // conserva hasta que #6563 (baja de AI Studio) la reconcilie o retire.
         url: 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions',
         method: 'POST',
         // El shim OpenAI-compat de Google acepta Authorization Bearer.
@@ -132,8 +144,9 @@ const PROVIDER_COMPLETION_ENDPOINTS = Object.freeze({
 // Allowlist de modelos por provider — defensa-en-profundidad contra `model`
 // arbitrario que provoque 400 ruidosos con eco en el body (info leak menor).
 // El `model` viaja como field del body JSON (no en la URL) → NO abre SSRF, pero
-// igual filtramos. Los modelos en producción salen de `.pipeline/agent-models.json`
-// (snapshot 2026-05-19): cerebras=llama-3.3-70b, gemini-google=gemini-3.8-flash-medium
+// igual filtramos. Los modelos en producción salen de `.pipeline/agent-models.json`:
+// cerebras=gpt-oss-120b (#3794; los `llama-*` de abajo son legacy del snapshot
+// 2026-05-19 y el free tier ya no los sirve), gemini-google=gemini-3.8-flash-medium
 // (#6858), nvidia-nim=deepseek-ai/deepseek-v4-flash-0731 (#5887, 2026-08-13: el
 // modelo deepseek anterior llegó a end-of-life el 2026-08-07 y devolvía HTTP 410
 // — se reemplaza, no se deja al lado, para que ninguna reintroducción pase
@@ -141,6 +154,13 @@ const PROVIDER_COMPLETION_ENDPOINTS = Object.freeze({
 // acá + test.
 const PROVIDER_MODELS_ALLOWLIST = Object.freeze({
     cerebras: Object.freeze([
+        // #6858 (rebote review) — modelo de producción de Cerebras (mismo id
+        // que ALLOWED_MODELS_BY_LAUNCHER.cerebras y `providers.cerebras.model`
+        // de agent-models.json; presente en `GET /v1/models` el 2026-09-16).
+        // Hasta acá sólo entraba por la vía config-aware (MP-04); ahora es
+        // literal porque es el default HTTP de lib/semantic-dedup.js y el
+        // test de ese módulo exige `isAllowedModel` sin depender del JSON.
+        'gpt-oss-120b',
         'llama3.1-8b',
         'llama3.1-70b',
         'llama-3.3-70b',
@@ -153,6 +173,14 @@ const PROVIDER_MODELS_ALLOWLIST = Object.freeze({
     // ALLOWED_MODELS_BY_LAUNCHER['gemini-google'] (lib/agent-models-validate.js)
     // y del CATALOG de model-catalog.js; las tres se cruzan contra el CLI en
     // lib/multi-provider/agy-catalog.js.
+    //
+    // OJO: esta lista gobierna el shim HTTP de AI Studio de arriba
+    // (PROVIDER_COMPLETION_ENDPOINTS['gemini-google']), NO al CLI `agy`. AI
+    // Studio no sirve ninguno de estos ids → por esta ruta HTTP todo
+    // `complete({provider:'gemini-google'})` devuelve 404 hoy. Se mantiene el
+    // espejo del catálogo a propósito (agy-catalog.js cruza las tres barreras
+    // contra `agy models`; un id de AI Studio acá saldría como `dead`). Ningún
+    // default HTTP del pipeline debe apuntar acá (ver semantic-dedup.js).
     'gemini-google': Object.freeze([
         'gemini-3.8-flash-high',
         'gemini-3.8-flash-medium',

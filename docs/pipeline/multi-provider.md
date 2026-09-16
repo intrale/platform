@@ -1432,6 +1432,20 @@ ahí entraría en bucle de rollback sin arreglar nada.
 > `gemini-3-flash-preview` sí existe. Cruzar contra él es exactamente lo que
 > dejó pasar el defecto original (ver #7289 para migrar el cron de #5888).
 
+> **El shim HTTP `gemini-google` de `completion-client.js` es AI Studio, no
+> `agy`.** `PROVIDER_COMPLETION_ENDPOINTS['gemini-google']` apunta a
+> `generativelanguage.googleapis.com/v1beta/openai/chat/completions`, y su
+> allowlist (la 2ª barrera) es el catálogo de Antigravity: AI Studio no sirve
+> ninguno de esos ids (`gemini-3.8-flash-medium` → HTTP 404). Por esa ruta hoy
+> **ningún** `complete({provider:'gemini-google'})` responde `ok=true`. Ningún
+> default HTTP del pipeline debe apuntar ahí: el juez semántico de duplicados
+> (`lib/semantic-dedup.js`, usado por el Commander al crear issues) usa
+> `cerebras` + `gpt-oss-120b`, y un test fija que su default pasa
+> `isAllowedModel` y tiene endpoint. El único caller que recorre la entrada es
+> la cascada del Sherlock, que tolera el fallo y sigue al próximo provider. La
+> reconciliación o retiro de la entrada es alcance de la baja de AI Studio
+> (#6563).
+
 **Cómo medir un modelo nuevo antes de configurarlo** (CA-4 de #6858; desde #7298
 el transporte es `--input-format/--output-format stream-json` con el prompt por
 stdin como NDJSON — `--print` sin valor ya no existe en agy 1.2.x):
