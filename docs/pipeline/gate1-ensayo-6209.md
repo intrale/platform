@@ -5,6 +5,13 @@ Describe una operación futura: no acredita autorización, firma ni encendido.
 Desarrolla la receta de arquitectura publicada en `agent/6209-architect-ensayo`
 (commit `f95fd4677`) y las precisiones CA-D3.0–D3.7 del issue.
 
+> **Estado (2026-09-16):** el ensayo se ejecutó una vez con autorización del
+> operador y **falló por precondición**, no por un defecto del canal (ver
+> "Resultado del ensayo" al final). El encendido permanente (CA-D3.5–D3.7) se
+> trasladó a **#7273** (Ola Vault); #6209 cierra con GATE 1 en `enabled: false`
+> + `gate_mode: dry-run`, idéntico a `main`. Esta receta queda como insumo de
+> #7273: se reutiliza tal cual cuando el vault esté encendido.
+
 ## Autorización previa — CA-D3.0
 
 El operador autoriza explícitamente en #6209 una ventana temporal de máximo
@@ -125,3 +132,33 @@ archivos de prueba de esos tres árboles mediante globs, sin excluir tests:
 ```bash
 node --test ".pipeline/test/**/*.test.js" ".pipeline/tests/**/*.test.js" ".pipeline/lib/__tests__/**/*.test.js"
 ```
+
+## Resultado del ensayo del 2026-09-16 y traslado a #7273
+
+Registro observado (no un paso pendiente), redactado según las reglas de arriba:
+
+- **CA-D3.0** cumplido: ventana ≤ 30 minutos autorizada por el operador en #6209,
+  candidato real N = #7257 (posterior al `go_live_date`, sin preautorización ni
+  firma vigente), responsable presencial del rollback identificado, conjunto
+  afectado inventariado (sólo N).
+- **CA-D3.4a** cumplido: pausa total por API canónica, override local NO
+  commiteado (`enabled: true` + `gate_mode: enforce`), `clearFullPause` con la
+  allowlist de la ola intacta.
+- **Retención verificada**: el barrido real registró
+  `GATE 1 firma-definición BLOQUEÓ promoción (mode=enforce)` para N.
+- **Precondición incumplida**: el depósito del pedido falló con
+  `credentials: VAULT_DISABLED para telegram.bot_token`. La firma por botón
+  resuelve el token del bot **sólo desde el vault** (decisión de seguridad de
+  #5461) y el vault sigue apagado en producción. El aviso salió como
+  `indeterminado, sin botones`; el operador confirmó que no recibió ninguna ficha
+  accionable. No se pidió ningún click.
+- **CA-D3.4d** cumplido: rollback inmediato bajo pausa global, valores originales
+  de `operator_signoff` restaurados y verificados por lectura (diff vacío contra
+  `main`), pausa total levantada después con la allowlist conservada.
+
+Consecuencia: **un fallo del ensayo deja CA-D3 abierto y prohíbe el flip final**
+(regla de arriba). Por re-alcance del operador, CA-D3 vive ahora en **#7273**,
+con dependencia de #7117 (encendido del vault) y #7257 (completitud del vault).
+Precondición nueva para repetir el ensayo: **vault encendido y `telegram.bot_token`
+resoluble desde el vault** en el proceso que atiende el callback; sin eso, el
+resultado será el mismo `indeterminado` y no corresponde iniciar la ventana.

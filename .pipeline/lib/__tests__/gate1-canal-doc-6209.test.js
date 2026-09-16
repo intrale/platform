@@ -61,6 +61,23 @@ test('la receta separa autorización, observación, ensayo global y encendido pe
     ]) assert.match(ensayo, rule);
 });
 
+test('registra el ensayo fallido por precondición del vault y el traslado de CA-D3 a #7273', () => {
+    // Re-alcance del operador (2026-09-16): el flip a enforce vive en #7273 y este
+    // issue cierra con el gate idéntico a main. La doc no puede seguir presentando
+    // el commit definitivo como cierre de #6209 ni omitir por qué falló el ensayo.
+    for (const text of [ensayo, canal]) {
+        assert.match(text, /#7273/);
+        assert.match(text, /VAULT_DISABLED/);
+        assert.match(text, /telegram\.bot_token/);
+        assert.match(text, /`enabled: false`[\s\S]{0,40}`gate_mode: dry-run`/);
+    }
+    assert.match(ensayo, /falló por precondición/);
+    assert.match(ensayo, /indeterminado, sin botones/);
+    assert.match(ensayo, /#7117/);
+    // El registro es un resultado observado, no una autorización nueva ni una firma.
+    assert.doesNotMatch(ensayo, /firma (real|humana) (obtenida|registrada|verificada)/i);
+});
+
 test('la documentación pública no contiene identificadores secretos ni rutas privadas', () => {
     for (const text of [doc, ensayo]) {
         assert.doesNotMatch(text, /\b[0-9a-f]{16}\b|\b[0-9a-f]{64}\b/i);

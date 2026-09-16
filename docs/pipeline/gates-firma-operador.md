@@ -460,6 +460,14 @@ Sin autorización explícita de la ventana no se cambia configuración operativa
 Sin retención, ficha con botones, firma humana auténtica, admisión y rollback
 verificados no se prepara el commit definitivo de `enabled: true` + `enforce`.
 
+El ensayo del 2026-09-16 (candidato #7257) verificó la retención en `enforce`
+pero **falló por precondición**: la firma por botón resuelve `telegram.bot_token`
+sólo desde el vault (#5461) y el vault está apagado en producción
+(`VAULT_DISABLED`), así que la ficha salió `indeterminado`, sin botones, y se
+ejecutó el rollback. El encendido permanente de GATE 1 se trasladó a **#7273**
+(Ola Vault): GATE 1 sigue en `enabled: false` + `gate_mode: dry-run` hasta que el
+vault esté encendido y el ensayo se repita con una firma real.
+
 La evidencia pública omite chat id, contenido completo de callback, tokens,
 nonces, nombre privado del bot y paths absolutos de stores. Se documentan contrato
 y resultados redactados, nunca material criptográfico ni formatos de tokens.
