@@ -323,6 +323,10 @@ test('runOnce: CA-6 simulación — 2 free providers en rojo simultáneo (free c
             cerebras: { ok: false, reason: 'invalid_credentials', statusCode: 401 },
             'nvidia-nim': { ok: true, reason: 'authenticated', statusCode: 200 },
         }),
+        // #6857 — gemini-google es OAuth y su health hace round-trip REAL al
+        // CLI (`agy models`). Sin esto el test dependía del entorno (antes,
+        // del flag AGY_LICENSE_READY vacío) y ahora spawnearía el binario real.
+        cliProbe: () => false,
         telegramSender: () => true,
         dedupFile: path.join(dir, 'dedup.json'),
         skipAudit: true,
@@ -360,6 +364,7 @@ test('runOnce: 3+ free providers en rojo dispara alerta multi-down', async () =>
             cerebras: { ok: false, reason: 'invalid_credentials', statusCode: 401 },
             'nvidia-nim': { ok: false, reason: 'invalid_credentials', statusCode: 401 },
         }),
+        cliProbe: () => false, // #6857 — ver comentario del test anterior.
         telegramSender: () => true,
         dedupFile: path.join(dir, 'dedup.json'),
         skipAudit: true,
