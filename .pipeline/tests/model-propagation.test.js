@@ -76,7 +76,7 @@ function agentModels({ skill = 'guru', provider = 'anthropic', model = 'claude-s
         providers: {
             anthropic: { launcher: 'claude', model: 'claude-opus-4-7', permissions_mode: 'bypassPermissions' },
             'openai-codex': { launcher: 'codex', model: 'gpt-5.5', permissions_mode: 'bypassPermissions' },
-            'gemini-google': { launcher: 'gemini-google', model: 'gemini-3-flash-preview', permissions_mode: 'bypassPermissions' },
+            'gemini-google': { launcher: 'gemini-google', model: 'gemini-3.8-flash-medium', permissions_mode: 'bypassPermissions' },
             cerebras: { launcher: 'cerebras', model: 'gpt-oss-120b', permissions_mode: 'bypassPermissions' },
             'nvidia-nim': { launcher: 'nvidia-nim', model: 'deepseek-ai/deepseek-v4-flash-0731', permissions_mode: 'bypassPermissions' },
             'kimi-moonshot': { launcher: 'claude', model: 'kimi-k2-6', permissions_mode: 'bypassPermissions' },
@@ -321,7 +321,7 @@ test('CA-1: el flag encendido no altera el env del hijo en el canal argv', () =>
 
 const CASOS_ENV = [
     { provider: 'openai-codex', envVar: 'CODEX_MODEL', model: 'gpt-5.4' },
-    { provider: 'gemini-google', envVar: 'GEMINI_MODEL', model: 'gemini-2.5-flash' },
+    { provider: 'gemini-google', envVar: 'GEMINI_MODEL', model: 'gemini-3.7-flash-medium' },
     { provider: 'cerebras', envVar: 'CEREBRAS_MODEL', model: 'zai-glm-4.7' },
     { provider: 'nvidia-nim', envVar: 'NVIDIA_NIM_MODEL', model: 'moonshotai/kimi-k2-instruct' },
 ];
@@ -466,6 +466,43 @@ test('CA-3: buildSpawn de Anthropic revalida por su cuenta (defensa en profundid
 // =============================================================================
 // CA-5 — Dry-run: loguea lo que se habría pasado, sin alterar el comando.
 // =============================================================================
+
+// =============================================================================
+// #6858 (review) — con SÓLO `AGY_MODEL` en el env (sin GEMINI_MODEL propagado)
+// el handler de gemini-google devuelve `modelTrace.applied=false` con
+// `reason: 'agy_model_env_ignored'`. Eso NO es un descarte de `--model` (nunca
+// hubo uno): el launcher tiene que loguear únicamente el ℹ️ "IGNORÓ AGY_MODEL"
+// y NO el ⚠️ "descartó el flag --model", que afirmaba un descarte inexistente.
+// =============================================================================
+test('#6858: sólo AGY_MODEL en el env → ℹ️ IGNORÓ sin el ⚠️ de descarte del flag --model', () => {
+    const { spawnCall, spawnCalls, logs } = launch({
+        provider: 'gemini-google',
+        model: 'gemini-3.8-flash-medium',
+        config: undefined, // propagación apagada: no llega GEMINI_MODEL al hijo
+        env: { AGY_MODEL: 'gemini-1.0-legacy' },
+    });
+    assert.equal(spawnCalls.length, 1, 'el spawn ocurre igual');
+    assert.ok(!spawnCall.args.includes('--model'), 'sin GEMINI_MODEL no viaja --model');
+    assert.ok(!spawnCall.args.includes('gemini-1.0-legacy'), 'AGY_MODEL nunca llega a argv');
+
+    const log = logs.joined();
+    assert.ok(/IGNORÓ AGY_MODEL/.test(log), 'debe constar que AGY_MODEL se ignoró');
+    assert.ok(!/descartó el flag --model/.test(log),
+        'no hubo --model propagado: el ⚠️ de descarte es engañoso y no debe salir');
+});
+
+test('#6858: con GEMINI_MODEL propagado y AGY_MODEL presente, el --model viaja y no sale ningún ⚠️', () => {
+    const { spawnCall, logs } = launch({
+        provider: 'gemini-google',
+        model: 'gemini-3.8-flash-medium',
+        config: cfg({ enabled: true, default_mode: 'on' }),
+        env: { AGY_MODEL: 'gemini-1.0-legacy' },
+    });
+    assert.deepEqual(spawnCall.args.slice(-2), ['--model', 'gemini-3.8-flash-medium']);
+    const log = logs.joined();
+    assert.ok(!/descartó el flag --model/.test(log));
+    assert.ok(/IGNORÓ AGY_MODEL/.test(log), 'la sombra de AGY_MODEL se sigue reportando');
+});
 
 test('CA-5: en dry-run el comando es idéntico al de flag apagado y queda la traza', () => {
     const apagado = launch({ provider: 'anthropic', model: 'claude-sonnet-4-6', config: undefined });
@@ -634,7 +671,7 @@ for (const provider of PROVIDERS_LLM) {
             anthropic: 'claude-haiku-4-5',
             'kimi-moonshot': 'kimi-k2-6',
             'openai-codex': 'gpt-5.4-mini',
-            'gemini-google': 'gemini-2.0-flash',
+            'gemini-google': 'gemini-3.8-flash-medium',
             cerebras: 'zai-glm-4.7',
             'nvidia-nim': 'moonshotai/kimi-k2-instruct',
         }[provider];

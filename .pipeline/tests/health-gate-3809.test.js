@@ -135,7 +135,7 @@ function modelsWithChain(primary, fallbacks) {
         providers: {
             anthropic: { model: 'claude-opus-4-7' },
             'openai-codex': { model: 'gpt-5-codex' },
-            'gemini-google': { model: 'gemini-2.0-flash' },
+            'gemini-google': { model: 'gemini-3.8-flash-medium' },
             cerebras: { model: 'gpt-oss-120b' },
             'nvidia-nim': { model: 'deepseek-ai/deepseek-v4-flash-0731' },
         },
@@ -321,7 +321,7 @@ test('B3 · el primario NUNCA se health-gatea (aunque esté rojo-fresco)', () =>
 
 test('B5 · fallback rojo-fresco TRANSITORIO (timeout) se USA igual (caso Gemini en la cascada)', () => {
     const models = modelsWithChain('anthropic', [
-        { provider: 'gemini-google', model_override: 'gemini-2.0-flash' },
+        { provider: 'gemini-google', model_override: 'gemini-3.8-flash-medium' },
         { provider: 'cerebras', model_override: 'gpt-oss-120b' },
     ]);
     const audit = fakeAuditLog();

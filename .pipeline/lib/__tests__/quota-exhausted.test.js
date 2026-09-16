@@ -545,7 +545,7 @@ const PROVIDER_DEF_OPENAI = Object.freeze({
 
 const PROVIDER_DEF_GEMINI = Object.freeze({
     launcher: 'gemini-google',
-    model: 'gemini-2.0-flash',
+    model: 'gemini-3.8-flash-medium',
     output_parser: 'gemini-stream',
     quota_error_types: ['quota_exceeded', 'resource_exhausted'],
     resets_at_cap_max_days: 31,

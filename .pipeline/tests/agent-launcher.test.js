@@ -343,7 +343,7 @@ test('launchAgent con provider gemini-google spawnea agy con args traducidos', (
         [modelsPath]: JSON.stringify({
             defaults: { model: 'claude-opus-4-7' },
             skills: {
-                guru: { provider: 'gemini-google', model: 'gemini-3-flash-preview' },
+                guru: { provider: 'gemini-google', model: 'gemini-3.8-flash-medium' },
             },
         }),
     });
@@ -363,7 +363,7 @@ test('launchAgent con provider gemini-google spawnea agy con args traducidos', (
             issue: 1,
             args: ['-p', 'probe', '--system-prompt-file', '/tmp/sys.md'],
             cwd: ROOT,
-            env: { GEMINI_MODEL: 'gemini-3-flash-preview' },
+            env: { GEMINI_MODEL: 'gemini-3.8-flash-medium' },
             PIPELINE,
             ROOT,
             fsImpl: fsi,
@@ -380,7 +380,7 @@ test('launchAgent con provider gemini-google spawnea agy con args traducidos', (
         '--dangerously-skip-permissions', '--print-timeout', '5m',
     ]);
     assert.ok(call.args.includes('--model'));
-    assert.ok(call.args.includes('gemini-3-flash-preview'));
+    assert.ok(call.args.includes('gemini-3.8-flash-medium'));
     assert.ok(!call.args.includes('probe'));
     assert.ok(call.stdinData.includes('probe'));
 });
@@ -398,7 +398,7 @@ test('gemini-google parseTokensFromLog agrega tokens de todos los modelos', () =
         stats: {
             models: {
                 'gemini-3.1-flash-lite': { tokens: { input: 100, candidates: 5, cached: 10, thoughts: 2 } },
-                'gemini-3-flash-preview': { tokens: { input: 200, candidates: 8, cached: 0, thoughts: 0 } },
+                'gemini-3.8-flash-medium': { tokens: { input: 200, candidates: 8, cached: 0, thoughts: 0 } },
             },
         },
     });

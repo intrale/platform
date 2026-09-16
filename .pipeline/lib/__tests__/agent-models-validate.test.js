@@ -1040,7 +1040,7 @@ test('findHardcodedSecrets · ignora $schema en raíz (URL legítima)', () => {
 function providerGeminiGoogle() {
   return {
     launcher: 'gemini-google',
-    model: 'gemini-2.0-flash',
+    model: 'gemini-3.8-flash-medium',
     spawn_args_template: ['--model', '{model}', '--system', '{system_file}', '{user_prompt}'],
     output_parser: 'gemini-stream',
     quota_error_types: ['quota_exceeded', 'resource_exhausted'],
@@ -1096,12 +1096,21 @@ test('#3220 + #3353 + #3501 · ALLOWED_MODELS_BY_LAUNCHER declara modelos por pr
   // #3799 — Sherlock baja su fallback Codex de gpt-5.4 → gpt-5.4-mini (sign-off Leo
   // 2026-06-02), por lo que gpt-5.4-mini se suma a la allowlist del launcher codex.
   assert.deepEqual([...models.codex].sort(), ['gpt-5.4', 'gpt-5.4-mini', 'gpt-5.5']);
-  // #3501 — gemini-2.5-flash agregado como modelo alternativo para preservar
-  // adversariality intra-provider en Sherlock (ver
-  // sherlock-verifier.js::resolveSherlockProvider).
+  // #6858 — la allowlist de gemini-google es el catálogo COMPLETO de Antigravity
+  // (`agy models`, snapshot 2026-09-16) por reemplazo: ningún id del Gemini CLI
+  // gratuito retirado (gemini-2.0/2.5/3-flash-preview) puede volver. El espejo
+  // exacto contra el CLI real lo verifica lib/__tests__/agy-catalog.test.js.
   assert.deepEqual([...models['gemini-google']].sort(), [
-    'gemini-2.0-flash', 'gemini-2.5-flash', 'gemini-3-flash-preview',
+    'claude-opus-4-6-thinking', 'claude-sonnet-4-6',
+    'gemini-3.1-pro-high', 'gemini-3.1-pro-low',
+    'gemini-3.6-flash-high', 'gemini-3.6-flash-low', 'gemini-3.6-flash-medium',
+    'gemini-3.7-flash-high', 'gemini-3.7-flash-low', 'gemini-3.7-flash-medium',
+    'gemini-3.8-flash-high', 'gemini-3.8-flash-low', 'gemini-3.8-flash-medium',
+    'gpt-oss-120b-medium',
   ]);
+  for (const retirado of ['gemini-2.0-flash', 'gemini-2.5-flash', 'gemini-3-flash-preview']) {
+    assert.ok(!models['gemini-google'].includes(retirado), `${retirado} no puede reintroducirse`);
+  }
   // #3797 — Corrección free tier real de Cerebras: NO sirve modelos llama-*. Los
   // únicos servibles son gpt-oss-120b (default) y zai-glm-4.7 (alternativo #3501).
   assert.deepEqual([...models.cerebras].sort(), ['gpt-oss-120b', 'zai-glm-4.7']);
@@ -1313,7 +1322,7 @@ function providerCerebrasEntry() {
 function providerGeminiEntry() {
   return {
     launcher: 'gemini-google',
-    model: 'gemini-2.0-flash',
+    model: 'gemini-3.8-flash-medium',
     spawn_args_template: ['--model', '{model}', '--system', '{system_file}', '{user_prompt}'],
     output_parser: 'gemini-stream',
     quota_error_types: ['quota_exceeded', 'resource_exhausted'],
@@ -1365,7 +1374,7 @@ test('#3221 happy path · skill con fallbacks objects {provider, model_override}
     model_override: 'claude-opus-4-7',
     fallbacks: [
       { provider: 'openai-codex', model_override: 'gpt-5.5' },
-      { provider: 'gemini-google', model_override: 'gemini-2.0-flash' },
+      { provider: 'gemini-google', model_override: 'gemini-3.8-flash-medium' },
       { provider: 'cerebras', model_override: 'gpt-oss-120b' },
     ],
   };

@@ -134,12 +134,46 @@ function foldGeminiPayload(args, env, fsImpl) {
     return prompt;
 }
 
+// -----------------------------------------------------------------------------
+// MODEL_ENV_VAR / resolveModelFromEnv — precedencia EXPLÍCITA del modelo (#6334,
+// cerrado en #6858).
+//
+// El modelo llega al handler por UNA sola variable: `GEMINI_MODEL`, que es la
+// que declara `PROVIDER_MODEL_ENV['gemini-google']` en lib/build-child-env.js y
+// la que inyecta agent-launcher.js cuando la propagación (#6272) aplica. Hasta
+// #6858 el handler leía `env.AGY_MODEL || env.GEMINI_MODEL`: como el pulpo nunca
+// propaga `AGY_MODEL`, un valor exportado en el entorno del operador (o heredado
+// por un path sin aislar) PISABA al modelo propagado y la traza del launcher
+// afirmaba un modelo que no corrió.
+//
+// Regla: `AGY_MODEL` se IGNORA siempre. Si está presente se reporta en
+// `modelTrace.ignoredEnv` para que el launcher deje constancia en el log.
+// Sin `GEMINI_MODEL` no se pasa `--model` y el CLI usa su propio default.
+//
+// Canal de esfuerzo: el sufijo `-high/-medium/-low` del id es el ÚNICO canal.
+// Nunca se agrega `--effort` (agy lo expone como flag aparte): dos canales para
+// lo mismo harían que la traza no pudiera afirmar qué esfuerzo corrió.
+// -----------------------------------------------------------------------------
+const MODEL_ENV_VAR = 'GEMINI_MODEL';
+const IGNORED_MODEL_ENV_VARS = Object.freeze(['AGY_MODEL']);
+
+function resolveModelFromEnv(env) {
+    const e = env && typeof env === 'object' ? env : {};
+    const raw = e[MODEL_ENV_VAR];
+    const model = (typeof raw === 'string' && raw.length > 0) ? raw : null;
+    const ignoredEnv = IGNORED_MODEL_ENV_VARS.filter((k) => typeof e[k] === 'string' && e[k].length > 0);
+    return {
+        model,
+        source: model ? MODEL_ENV_VAR : 'cli-default',
+        ignoredEnv,
+    };
+}
+
 function translateClaudeArgsToGemini(args, env) {
-    // Modelo: env GEMINI_MODEL si fue explicitado, sino dejamos al CLI elegir
-    // su default (con OAuth gratuito el main es `gemini-3-flash-preview` y el
-    // router `gemini-3.1-flash-lite`). El pulpo inyecta GEMINI_MODEL via
-    // env-isolation cuando el skill resuelve un modelo específico.
-    const model = env && (env.AGY_MODEL || env.GEMINI_MODEL);
+    // Modelo: SÓLO `GEMINI_MODEL` (ver resolveModelFromEnv). Sin ella dejamos al
+    // CLI elegir su default. El pulpo inyecta GEMINI_MODEL desde agent-launcher.js
+    // (propagación #6272) con el id resuelto para el skill (#6271).
+    const { model } = resolveModelFromEnv(env);
     const timeout = (env && env.AGY_PRINT_TIMEOUT) || '5m';
     const out = [...AGY_STREAM_INPUT_ARGS, '--dangerously-skip-permissions', '--print-timeout', timeout];
     if (model) out.push('--model', model);
@@ -147,10 +181,20 @@ function translateClaudeArgsToGemini(args, env) {
 }
 
 // -----------------------------------------------------------------------------
-// buildSpawn — devuelve { cmd, args, spawnOpts } compatible con child_process.spawn
+// buildSpawn — devuelve { cmd, args, spawnOpts, modelTrace } compatible con
+// child_process.spawn.
 //
 // `args` vienen en formato Claude (ver pulpo.js:5846); acá los traducimos al
 // shape Gemini y prependemos el prefijo del launcher detectado.
+//
+// `modelTrace` (#6334/#6858) — misma forma que el handler de Anthropic para que
+// agent-launcher.js lo audite sin casos especiales:
+//   { applied: true,  model, source: 'GEMINI_MODEL', reason: 'ok', ignoredEnv }
+//   { applied: false, model: null, source: 'cli-default',
+//     reason: 'agy_model_env_ignored', ignoredEnv: ['AGY_MODEL'] }
+//     → sólo cuando NO hay GEMINI_MODEL pero sí un AGY_MODEL que se ignoró; el
+//       launcher loguea que el agente arranca con el default del CLI.
+// Sin ninguna de las dos variables NO se agrega la clave (regresión cero).
 // -----------------------------------------------------------------------------
 function buildSpawn({ args, cwd, env, interactive_supported }) {
     const launcher = getLauncher();
@@ -159,12 +203,27 @@ function buildSpawn({ args, cwd, env, interactive_supported }) {
     // stdin SIEMPRE 'pipe'; el caller escribe `stdinPayload` y cierra stdin.
     // #6857 — serializado como NDJSON para `--input-format stream-json`.
     const stdinPayload = encodeStreamJsonPayload(foldGeminiPayload(args || [], env || {}));
+    // #6334/#6858 — traza del modelo que realmente viaja en `--model`.
+    const resolved = resolveModelFromEnv(env || {});
+    let modelTrace = null;
+    if (resolved.model) {
+        modelTrace = {
+            applied: true, model: resolved.model, source: resolved.source,
+            reason: 'ok', ignoredEnv: resolved.ignoredEnv,
+        };
+    } else if (resolved.ignoredEnv.length > 0) {
+        modelTrace = {
+            applied: false, model: null, source: resolved.source,
+            reason: 'agy_model_env_ignored', ignoredEnv: resolved.ignoredEnv,
+        };
+    }
     return {
         cmd: launcher.cmd,
         args: [...launcher.prefixArgs, ...geminiArgs],
         kind: launcher.kind,
         // #4529 — payload grande por stdin (paridad con el path primario).
         stdinPayload,
+        ...(modelTrace ? { modelTrace } : {}),
         spawnOpts: {
             cwd,
             stdio: ['pipe', 'pipe', 'pipe'],
@@ -222,7 +281,7 @@ function _parseGeminiJson(raw) {
 //       "gemini-3.1-flash-lite": { "tokens": {
 //           "input": 2837, "prompt": 2837, "candidates": 36,
 //           "total": 2973, "cached": 0, "thoughts": 100, "tool": 0 } },
-//       "gemini-3-flash-preview": { "tokens": { ... } }
+//       "gemini-3.8-flash-medium": { "tokens": { ... } }
 //   } } }
 //
 // Mapeo al shape canónico del pulpo (agregando sobre todos los modelos):
@@ -231,6 +290,17 @@ function _parseGeminiJson(raw) {
 //   tokens.cached                  → cache_read
 //   tool_calls: no hay un conteo de llamadas en el shape (el campo `tool` es
 //               cantidad de tokens de tooling, no número de calls) → 0.
+//
+// #6858 — Shape de agy 1.2.4 (medido en vivo el 2026-09-16 con `--output-format
+// json` y re-medido con `--output-format stream-json` — #7298 — donde el mismo
+// objeto viaja dentro del evento `{"event":"result","result":{...}}` que
+// `_parseGeminiJson` desenvuelve; fixture agy-stream-json-1.2.4.ndjson):
+//   { "status": "SUCCESS", "response": "OK\n", "usage": {
+//       "input_tokens": 13049, "output_tokens": 22, "thinking_tokens": 21,
+//       "cache_read_tokens": 0, "total_tokens": 13071 } }
+// `output_tokens` YA incluye `thinking_tokens` (22 = 1 candidato + 21 thinking),
+// así que se mapea directo a `output` sin volver a sumar el thinking. Si el JSON
+// trae `usage` se usa ese (shape vigente); si no, se cae al legacy `stats.models`.
 // -----------------------------------------------------------------------------
 function parseTokensFromLog(logPath, fsImpl) {
     const _fs = fsImpl || fs;
@@ -238,7 +308,15 @@ function parseTokensFromLog(logPath, fsImpl) {
     let raw = '';
     try { raw = _fs.readFileSync(logPath, 'utf8'); } catch { return totals; }
     const obj = _parseGeminiJson(raw);
-    if (!obj || !obj.stats || typeof obj.stats !== 'object') return totals;
+    if (!obj || typeof obj !== 'object') return totals;
+    const usage = obj.usage;
+    if (usage && typeof usage === 'object') {
+        totals.input += Number(usage.input_tokens || 0) || 0;
+        totals.output += Number(usage.output_tokens || 0) || 0;
+        totals.cache_read += Number(usage.cache_read_tokens || 0) || 0;
+        return totals;
+    }
+    if (!obj.stats || typeof obj.stats !== 'object') return totals;
     const models = obj.stats.models;
     if (!models || typeof models !== 'object') return totals;
     for (const key of Object.keys(models)) {
@@ -372,6 +450,10 @@ module.exports = {
     // exports internos para tests
     _detectLauncherFresh: detectLauncher,
     _translateClaudeArgsToGemini: translateClaudeArgsToGemini,
+    // #6334/#6858 — precedencia explícita del modelo.
+    MODEL_ENV_VAR,
+    IGNORED_MODEL_ENV_VARS,
+    resolveModelFromEnv,
     _foldGeminiPayload: foldGeminiPayload,
     _encodeStreamJsonPayload: encodeStreamJsonPayload,
     AGY_STREAM_INPUT_ARGS,

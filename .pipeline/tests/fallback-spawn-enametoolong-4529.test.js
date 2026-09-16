@@ -120,7 +120,7 @@ test('#4529 gemini: system >32K va por stdin (NDJSON), argv chico, spawn real si
         const spawnDef = gemini.buildSpawn({
             args: ['-p', 'Contame el estado', '--system-prompt-file', sysFile],
             cwd: process.cwd(),
-            env: { GEMINI_MODEL: 'gemini-3-flash-preview' },
+            env: { GEMINI_MODEL: 'gemini-3.8-flash-medium' },
         });
         assert.ok(argvBytes(spawnDef.args) < 4096, `argv demasiado grande: ${argvBytes(spawnDef.args)}`);
         assert.ok(spawnDef.args.every((a) => !String(a).includes('Sos el Commander')));

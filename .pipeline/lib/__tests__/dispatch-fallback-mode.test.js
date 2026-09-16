@@ -36,7 +36,7 @@ function mkTmpPipelineDir(fallbacks) {
             anthropic: { launcher: 'claude', model: 'claude-opus-4-7', credentials_env: ['ANTHROPIC_API_KEY'] },
             'openai-codex': { launcher: 'codex', model: 'gpt-5-codex', credentials_env: ['OPENAI_API_KEY'] },
             cerebras: { launcher: 'cerebras', model: 'llama-3.3-70b', credentials_env: ['CEREBRAS_API_KEY'] },
-            'gemini-google': { launcher: 'gemini', model: 'gemini-2.5-pro', credentials_env: ['GEMINI_API_KEY'] },
+            'gemini-google': { launcher: 'gemini', model: 'gemini-3.1-pro-low', credentials_env: ['GEMINI_API_KEY'] },
             'nvidia-nim': { launcher: 'nvidia', model: 'deepseek-v4', credentials_env: ['NVIDIA_API_KEY'] },
         },
         skills: {

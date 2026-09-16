@@ -10,8 +10,8 @@
     },
     "gemini-google": {
       "_fuente": "1 (providers[].model) y 2 (alternative_models[])",
-      "model": "gemini-3-flash-preview",
-      "alternative_models": ["gemini-2.5-flash"]
+      "model": "gemini-3.8-flash-medium",
+      "alternative_models": ["gemini-3.7-flash-medium"]
     },
     "cerebras": {
       "_fuente": "1 + 2. `zai-glm-4.7` NO está en el catálogo del fixture: es el caso 'alternative_model muerto'.",
@@ -34,7 +34,7 @@
     "guru": {
       "_fuente": "3 (skills[].model_override) — sobre gemini-google.",
       "provider": "gemini-google",
-      "model_override": "gemini-2.5-pro",
+      "model_override": "gemini-3.1-pro-low",
       "fallbacks": []
     },
     "security": {

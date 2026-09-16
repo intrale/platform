@@ -22,6 +22,7 @@ const assert = require('node:assert/strict');
 
 const sd = require('../semantic-dedup');
 const dd = require('../duplicate-detector');
+const completion = require('../multi-provider/completion-client');
 
 // -----------------------------------------------------------------------------
 // Fixtures estáticos del par semántico #4098/#4099 (mismo problema, otras
@@ -63,6 +64,63 @@ test.beforeEach(() => {
 // -----------------------------------------------------------------------------
 // CA-1 — Detección por contenido (valor central)
 // -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+// #6858 (rebote review) — el default (provider, model) del judge tiene que ser
+// servible por el endpoint HTTP que lo recibe. La regresión fue apuntar el
+// default a `gemini-google` con un id de Antigravity: ese endpoint es el shim
+// de AI Studio y devolvía 404 por construcción → fail-open en cada llamada +
+// circuit breaker abierto → el Commander perdía el juez semántico en silencio.
+// Este test fija las dos condiciones estructurales, SIN red:
+//   (a) el default pasa `isAllowedModel` con la allowlist hardcoded (sin
+//       depender de agent-models.json ni de env);
+//   (b) el provider tiene endpoint HTTP en PROVIDER_COMPLETION_ENDPOINTS
+//       (anthropic/openai-codex van por CLI, no por este cliente).
+// -----------------------------------------------------------------------------
+test('#6858: el default (provider, model) de semantic-dedup es allowlisted y tiene endpoint HTTP', () => {
+    const provider = sd.BUILTIN_DEFAULT_PROVIDER;
+    const model = sd.BUILTIN_DEFAULT_MODEL;
+    assert.equal(typeof provider, 'string');
+    assert.equal(typeof model, 'string');
+    assert.ok(provider && model, 'default provider/model no pueden ser vacíos');
+
+    // (b) endpoint HTTP real en el cliente — hasOwnProperty para no aceptar
+    //     claves heredadas del prototipo.
+    assert.ok(
+        Object.prototype.hasOwnProperty.call(completion.PROVIDER_COMPLETION_ENDPOINTS, provider),
+        `provider default '${provider}' no tiene endpoint en PROVIDER_COMPLETION_ENDPOINTS`,
+    );
+    const spec = completion.PROVIDER_COMPLETION_ENDPOINTS[provider];
+    assert.match(spec.url, /^https:\/\//, 'el endpoint del default debe ser HTTPS literal');
+
+    // (a) allowlist hardcoded, sin `configuredByProvider` (tercer arg omitido a
+    //     propósito: el default no puede depender del JSON de config).
+    assert.equal(
+        completion.isAllowedModel(provider, model),
+        true,
+        `model default '${model}' no está en PROVIDER_MODELS_ALLOWLIST['${provider}']`,
+    );
+
+    // Guardia explícita contra la regresión puntual: el shim HTTP de AI Studio
+    // (`gemini-google`) no sirve ningún id de su allowlist Antigravity, así que
+    // NO puede ser el default del judge.
+    assert.notEqual(provider, 'gemini-google',
+        'gemini-google en completion-client es AI Studio HTTP: no sirve los ids de Antigravity (404)');
+});
+
+test('#6858: los defaults efectivos (con env) también son allowlisted y con endpoint', () => {
+    // Si un operador overridea por SEMANTIC_DEDUP_PROVIDER/MODEL, el override
+    // tiene que seguir siendo servible; si no, el judge vuelve a fail-open.
+    assert.ok(
+        Object.prototype.hasOwnProperty.call(completion.PROVIDER_COMPLETION_ENDPOINTS, sd.DEFAULT_PROVIDER),
+        `provider efectivo '${sd.DEFAULT_PROVIDER}' sin endpoint HTTP`,
+    );
+    assert.equal(
+        completion.isAllowedModel(sd.DEFAULT_PROVIDER, sd.DEFAULT_MODEL),
+        true,
+        `model efectivo '${sd.DEFAULT_MODEL}' no allowlisted para '${sd.DEFAULT_PROVIDER}'`,
+    );
+});
+
 test('CA-1: el LLM-judge marca alta donde Jaccard (findSimilar) deja pasar', async () => {
     const judge = spyComplete(
         okContent({

@@ -118,7 +118,7 @@ function defaultConfigLoader(over = {}) {
 
 const CHAIN_HTTP = [
     { provider: 'cerebras', model: 'llama-3.3-70b' },
-    { provider: 'gemini-google', model: 'gemini-2.0-flash' },
+    { provider: 'gemini-google', model: 'gemini-3.8-flash-medium' },
     { provider: 'nvidia-nim', model: 'deepseek-ai/deepseek-v4-flash-0731' },
 ];
 
@@ -127,7 +127,7 @@ const CHAIN_HTTP = [
 const CHAIN_ANTH_FIRST = [
     { provider: 'anthropic', model: 'claude-haiku-4-5' },
     { provider: 'openai-codex', model: 'gpt-5' },        // stub — Sherlock lo salta
-    { provider: 'gemini-google', model: 'gemini-2.0-flash' },
+    { provider: 'gemini-google', model: 'gemini-3.8-flash-medium' },
     { provider: 'cerebras', model: 'llama-3.3-70b' },
 ];
 
@@ -323,7 +323,7 @@ test('T-5: 5 turnos paralelos con commanderProvider variado — sameProvider cor
     };
     const chain = [
         { provider: 'cerebras', model: 'llama-3.3-70b' },
-        { provider: 'gemini-google', model: 'gemini-2.0-flash' },
+        { provider: 'gemini-google', model: 'gemini-3.8-flash-medium' },
         { provider: 'nvidia-nim', model: 'deepseek-ai/deepseek-v4-flash-0731' },
     ];
     // Mezcla de providers — los HTTP coinciden a veces con el primero
@@ -968,7 +968,7 @@ test('#3484 CA-SHERLOCK-3: Sherlock no excluye al commanderProvider (mismo provi
     // devuelve cerebras igualmente porque la exclusión cross-provider se quitó.
     const chain = [
         { provider: 'cerebras', model: 'llama-3.3-70b' },
-        { provider: 'gemini-google', model: 'gemini-2.0-flash' },
+        { provider: 'gemini-google', model: 'gemini-3.8-flash-medium' },
     ];
     const r = sherlock._resolveSherlockProvider({
         excludedProvider: 'cerebras',
@@ -1645,7 +1645,7 @@ function writeAgentModelsFixture(pipelineDir, providersOverride) {
             },
             'gemini-google': {
                 launcher: 'gemini-google',
-                model: 'gemini-2.0-flash',
+                model: 'gemini-3.8-flash-medium',
                 spawn_args_template: ['--model', '{model}'],
                 output_parser: 'gemini-stream',
                 quota_error_types: ['quota_exceeded'],
@@ -1653,7 +1653,7 @@ function writeAgentModelsFixture(pipelineDir, providersOverride) {
                 prompt_caching: { supported: false },
                 credentials_env: ['GEMINI_API_KEY'],
                 permissions_mode: 'bypassPermissions',
-                alternative_models: ['gemini-1.5-flash'],
+                alternative_models: ['gemini-3.7-flash-medium'],
             },
         }, providersOverride || {}),
         skills: {
@@ -1721,7 +1721,7 @@ test('#3766 CA-1: mismo provider+modelo entre Commander y Sherlock → veredicto
     const result = await sherlock.verify({
         analysis: 'a', originalRequest: '?', systemState: 's',
         commanderProvider: 'gemini-google',
-        commanderModel: 'gemini-2.0-flash',
+        commanderModel: 'gemini-3.8-flash-medium',
         pipelineDir: dir,
         configLoader: defaultConfigLoader(),
         completionClient: fakeCompletionClient(okResp),
@@ -1729,7 +1729,7 @@ test('#3766 CA-1: mismo provider+modelo entre Commander y Sherlock → veredicto
         // Chain devuelve gemini-google con el mismo modelo que el commander.
         // Post-#3766: NO se reescribe el modelo, el resolver lo respeta.
         dispatchModule: fakeDispatcher({ providerChain: [
-            { provider: 'gemini-google', model: 'gemini-2.0-flash' },
+            { provider: 'gemini-google', model: 'gemini-3.8-flash-medium' },
         ]}),
         residencyModule: fakeResidencyOk(),
     });
@@ -1744,7 +1744,7 @@ test('#3766 CA-1: mismo provider+modelo entre Commander y Sherlock → veredicto
     assert.notEqual(result.suggestedDisclaimer, sherlock.DISCLAIMER_TYPES.TIMEOUT_OR_NO_PROVIDER, 'sigue sin ser F-6 por adversariality reducida');
     // Provider+model conservados (no hubo swap).
     assert.equal(result.sherlockProvider, 'gemini-google');
-    assert.equal(result.sherlockModel, 'gemini-2.0-flash', 'el resolver respeta el modelo de la chain, no lo reescribe');
+    assert.equal(result.sherlockModel, 'gemini-3.8-flash-medium', 'el resolver respeta el modelo de la chain, no lo reescribe');
     // Audit JSONL forensics: sameProvider/sameModel se siguen calculando.
     assert.equal(result.sameProvider, true, 'forensics: sameProvider sigue persistiéndose en JSONL');
     assert.equal(result.sameModel, true, 'forensics: sameModel sigue persistiéndose en JSONL');
@@ -1931,10 +1931,10 @@ test('#3501 CA-11: formatVerifiedFooter incluye "(swap desde X)" cuando hubo swa
     // Caso swap.
     const withSwap = sherlock.formatVerifiedFooter({
         sherlockProvider: 'gemini-google',
-        sherlockModel: 'gemini-1.5-flash',
-        modelSwap: { swapped: true, originalModel: 'gemini-2.0-flash', reason: 'same_model_avoidance' },
+        sherlockModel: 'gemini-3.7-flash-medium',
+        modelSwap: { swapped: true, originalModel: 'gemini-3.8-flash-medium', reason: 'same_model_avoidance' },
     });
-    assert.equal(withSwap, 'Verificado por: gemini-google/gemini-1.5-flash (swap desde gemini-2.0-flash)');
+    assert.equal(withSwap, 'Verificado por: gemini-google/gemini-3.7-flash-medium (swap desde gemini-3.8-flash-medium)');
     // Sin emojis.
     assert.ok(!/[\u{1F300}-\u{1FAFF}]/u.test(withSwap), 'no debe contener emojis (UX-G1: tono natural, no celebratorio)');
 
@@ -2019,13 +2019,13 @@ test('#3766 CA-7: cascada multi-provider funciona — si primario gated, cae al 
         quotaModule: fakeQuotaGate(['cerebras']), // cerebras gated → cascada salta
         dispatchModule: fakeDispatcher({ providerChain: [
             { provider: 'cerebras', model: 'llama-3.3-70b' },
-            { provider: 'gemini-google', model: 'gemini-2.0-flash' },
+            { provider: 'gemini-google', model: 'gemini-3.8-flash-medium' },
         ]}),
         residencyModule: fakeResidencyOk(),
     });
     assert.equal(result.verdict, 'ok');
     assert.equal(result.sherlockProvider, 'gemini-google', 'cascada saltó cerebras y resolvió gemini-google');
-    assert.equal(result.sherlockModel, 'gemini-2.0-flash');
+    assert.equal(result.sherlockModel, 'gemini-3.8-flash-medium');
     // sameProvider=false porque commander=cerebras pero sherlock=gemini-google.
     assert.equal(result.sameProvider, false);
 });
@@ -2061,13 +2061,13 @@ test('#3766 CA-SEC-1 regresión: sanitizeUserPrompt corre con commanderProvider=
         systemState: 's',
         // Mismo provider+modelo que la chain (escenario pre-#3766 swap).
         commanderProvider: 'gemini-google',
-        commanderModel: 'gemini-2.0-flash',
+        commanderModel: 'gemini-3.8-flash-medium',
         pipelineDir: dir,
         configLoader: defaultConfigLoader(),
         completionClient: captureClient,
         quotaModule: fakeQuotaAllPass(),
         dispatchModule: fakeDispatcher({ providerChain: [
-            { provider: 'gemini-google', model: 'gemini-2.0-flash' },
+            { provider: 'gemini-google', model: 'gemini-3.8-flash-medium' },
         ]}),
         residencyModule: fakeResidencyOk(),
     });
@@ -2596,7 +2596,7 @@ test('#3921 CA-1: cross-provider por defecto — con >=1 alternativo sano el int
         quotaModule: fakeQuotaAllPass(),
         dispatchModule: fakeDispatcher({ providerChain: [
             { provider: 'cerebras', model: 'llama-3.3-70b' },
-            { provider: 'gemini-google', model: 'gemini-2.0-flash' },
+            { provider: 'gemini-google', model: 'gemini-3.8-flash-medium' },
         ]}),
         residencyModule: fakeResidencyOk(),
     });
@@ -2620,7 +2620,7 @@ test('#3921 CA-1/SEC-6: chain alternativa agotada -> fallback same-provider de u
         quotaModule: fakeQuotaAllPass(),
         dispatchModule: fakeDispatcher({ providerChain: [
             { provider: 'cerebras', model: 'llama-3.3-70b' },
-            { provider: 'gemini-google', model: 'gemini-2.0-flash' },
+            { provider: 'gemini-google', model: 'gemini-3.8-flash-medium' },
         ]}),
         residencyModule: fakeResidencyOk(),
     });
@@ -2646,7 +2646,7 @@ test('#3921 SEC-6: que falle el PRIMER alternativo NO alcanza para caer a same-p
         quotaModule: fakeQuotaAllPass(),
         dispatchModule: fakeDispatcher({ providerChain: [
             { provider: 'anthropic', model: 'claude-opus-4-7' },
-            { provider: 'gemini-google', model: 'gemini-2.0-flash' },
+            { provider: 'gemini-google', model: 'gemini-3.8-flash-medium' },
             { provider: 'nvidia-nim', model: 'deepseek-ai/deepseek-v4-flash-0731' },
         ]}),
         residencyModule: fakeResidencyOk(),
@@ -2683,7 +2683,7 @@ test('#3921 CA-4/SEC-1: alternativo residency-blocked recien priorizado se desca
         quotaModule: fakeQuotaAllPass(),
         dispatchModule: fakeDispatcher({ providerChain: [
             { provider: 'cerebras', model: 'llama-3.3-70b' },
-            { provider: 'gemini-google', model: 'gemini-2.0-flash' },
+            { provider: 'gemini-google', model: 'gemini-3.8-flash-medium' },
             { provider: 'nvidia-nim', model: 'deepseek-ai/deepseek-v4-flash-0731' },
         ]}),
         residencyModule: fakeResidencyBlockFor(['gemini-google']),
@@ -2708,7 +2708,7 @@ test('#3921 CA-5/SEC-5: cascada + fallback same-provider terminan dentro del cap
         quotaModule: fakeQuotaAllPass(),
         dispatchModule: fakeDispatcher({ providerChain: [
             { provider: 'cerebras', model: 'llama-3.3-70b' },
-            { provider: 'gemini-google', model: 'gemini-2.0-flash' },
+            { provider: 'gemini-google', model: 'gemini-3.8-flash-medium' },
             { provider: 'nvidia-nim', model: 'deepseek-ai/deepseek-v4-flash-0731' },
         ]}),
         residencyModule: fakeResidencyOk(),

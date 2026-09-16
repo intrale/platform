@@ -168,19 +168,46 @@ const ALLOWED_MODELS_BY_LAUNCHER = Object.freeze({
     'gpt-5.4',
     'gpt-5.4-mini',
   ]),
-  // #3501 — `gemini-1.5-flash` se agrega como modelo alternativo del provider
-  // gemini-google para que Sherlock pueda preservar adversariality parcial
-  // cuando coincide en provider con el Commander. La policy de swap intra-provider
-  // vive en lib/sherlock-verifier.js::resolveSherlockProvider (CA-3); la
-  // declaración del modelo como alternative_models vive en agent-models.json.
+  // #6858 (2026-09-16) — Catálogo REAL de Antigravity (`agy models`, CLI 1.2.4),
+  // por REEMPLAZO: los ids del Gemini CLI gratuito retirado (`gemini-2.0-flash`,
+  // `gemini-2.5-flash`, `gemini-3-flash-preview`) NO existen en Antigravity y
+  // hubieran matado sin trabajo a cualquier agente que cayera a este eslabón
+  // (mismo modo de falla que #5887). Se quitan, no se dejan al lado, para que
+  // ninguna reintroducción futura pase silenciosa.
+  //
+  // Esta lista es el catálogo COMPLETO del CLI (no sólo lo configurado) y se
+  // cruza automáticamente contra `agy models` en
+  // lib/multi-provider/agy-catalog.js (test agy-catalog.test.js + paso 4 del
+  // smoke-test.sh): un id acá que el CLI ya no devuelva hace fallar el cruce.
+  // Al editar: reemplazar, bumpear CATALOG_VERSION en model-catalog.js y
+  // sincronizar PROVIDER_MODELS_ALLOWLIST en completion-client.js.
+  //
+  // Canal de esfuerzo: el sufijo `-high/-medium/-low` del id es el ÚNICO canal
+  // (nunca se pasa `--effort` además), así la traza afirma exactamente lo que
+  // corrió. Pin al id explícito, nunca a un alias flotante.
+  //
+  // #3501 — `alternative_models` del provider (hoy `gemini-3.7-flash-medium`,
+  // familia distinta al primario) existe para que Sherlock preserve
+  // adversariality parcial cuando coincide en provider con el Commander. La
+  // policy de swap intra-provider vive en
+  // lib/sherlock-verifier.js::resolveSherlockProvider (CA-3).
   'gemini-google': Object.freeze([
-    'gemini-2.0-flash',
-    // 2026-06-04 — `gemini-1.5-flash` fue retirado del catálogo de Google
-    // (verificado en vivo: ya no aparece en GET /v1beta/models). Reemplazado por
-    // `gemini-2.5-flash`, free tier vigente, como modelo alternativo de Sherlock.
-    'gemini-2.5-flash',
-    // Antigravity CLI 1.1.x (migración #4869).
-    'gemini-3-flash-preview',
+    'gemini-3.8-flash-high',
+    'gemini-3.8-flash-medium',
+    'gemini-3.8-flash-low',
+    'gemini-3.7-flash-high',
+    'gemini-3.7-flash-medium',
+    'gemini-3.7-flash-low',
+    'gemini-3.6-flash-high',
+    'gemini-3.6-flash-medium',
+    'gemini-3.6-flash-low',
+    'gemini-3.1-pro-high',
+    'gemini-3.1-pro-low',
+    // Antigravity también sirve modelos de terceros bajo su propia licencia.
+    // Son ids del catálogo de `agy`, no de Anthropic/OpenAI directos.
+    'claude-sonnet-4-6',
+    'claude-opus-4-6-thinking',
+    'gpt-oss-120b-medium',
   ]),
   // 2026-06-02 — Corrección free tier real: el free tier de Cerebras NO sirve
   // modelos `llama-*` (verificado contra GET /v1/models). Los únicos servibles

@@ -387,8 +387,11 @@ test('launcher: buildSpawn usa --input-format stream-json y manda system+prompt 
         const plan = handler.buildSpawn({
             args: ['-p', 'hola mundo', '--system-prompt-file', sysFile],
             cwd: dir,
-            env: { AGY_MODEL: 'gemini-3.8-flash-low' },
+            // #6858 — el handler lee SÓLO GEMINI_MODEL (la variable que propaga
+            // PROVIDER_MODEL_ENV); AGY_MODEL se ignora y se reporta en modelTrace.
+            env: { GEMINI_MODEL: 'gemini-3.8-flash-low' },
         });
+        assert.equal(plan.modelTrace && plan.modelTrace.model, 'gemini-3.8-flash-low');
         assert.deepEqual(plan.args, [
             '--input-format', 'stream-json', '--output-format', 'stream-json',
             '--dangerously-skip-permissions', '--print-timeout', '5m', '--model', 'gemini-3.8-flash-low',

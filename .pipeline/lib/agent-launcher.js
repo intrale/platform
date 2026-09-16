@@ -387,9 +387,26 @@ function launchAgent({
     // #6272 — el handler es la última frontera antes de argv y revalida el id por
     // su cuenta (defensa en profundidad). Si ahí lo rechazó, dejamos traza: sin
     // esto un desacuerdo entre las dos validaciones sería invisible.
-    if (spawnDef.modelTrace && spawnDef.modelTrace.applied === false) {
+    // #6858 (review) — `agy_model_env_ignored` NO es un descarte: nunca hubo un
+    // `--model` propagado (sólo AGY_MODEL en el env, que el handler ignora por
+    // diseño). Ese caso ya lo narra el ℹ️ de abajo; sin esta exclusión salían
+    // los dos logs y el ⚠️ afirmaba un descarte que no ocurrió.
+    if (spawnDef.modelTrace && spawnDef.modelTrace.applied === false
+        && spawnDef.modelTrace.reason !== 'agy_model_env_ignored') {
         log('agent-launcher', `⚠️ ${skill}:#${issue} el handler ${effective.provider} descartó el flag --model `
             + `(razón: ${spawnDef.modelTrace.reason}); el agente arranca con el default del CLI. El spawn NO se aborta.`);
+    }
+    // #6334/#6858 — el handler ignoró una variable de modelo que NO es la que
+    // propaga PROVIDER_MODEL_ENV (ej. `AGY_MODEL` exportada por el operador).
+    // Se deja constancia para que la traza pueda afirmar qué modelo corrió y de
+    // qué fuente salió: nunca un "propagué X" que en runtime fue Y.
+    if (spawnDef.modelTrace && Array.isArray(spawnDef.modelTrace.ignoredEnv)
+        && spawnDef.modelTrace.ignoredEnv.length > 0) {
+        const efectivo = spawnDef.modelTrace.model
+            ? `modelo efectivo "${spawnDef.modelTrace.model}" (fuente: ${spawnDef.modelTrace.source})`
+            : 'el agente arranca con el default del CLI';
+        log('agent-launcher', `ℹ️ ${skill}:#${issue} el handler ${effective.provider} IGNORÓ `
+            + `${spawnDef.modelTrace.ignoredEnv.join(', ')} presente en el env; ${efectivo}.`);
     }
     const child = _spawn(spawnDef.cmd, spawnDef.args, spawnDef.spawnOpts);
 

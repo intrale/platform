@@ -1,27 +1,27 @@
 {
   "models": [
     {
-      "name": "models/gemini-3-flash-preview",
+      "name": "models/gemini-3.8-flash-medium",
       "version": "001",
-      "displayName": "Gemini 3 Flash Preview",
+      "displayName": "Gemini 3.8 Flash (Medium)",
       "description": "Modelo rapido multimodal.",
       "inputTokenLimit": 1048576,
       "outputTokenLimit": 65536,
       "supportedGenerationMethods": ["generateContent", "countTokens"]
     },
     {
-      "name": "models/gemini-2.5-flash",
+      "name": "models/gemini-3.7-flash-medium",
       "version": "001",
-      "displayName": "Gemini 2.5 Flash",
+      "displayName": "Gemini 3.7 Flash (Medium)",
       "description": "Modelo estable de generacion previa.",
       "inputTokenLimit": 1048576,
       "outputTokenLimit": 65536,
       "supportedGenerationMethods": ["generateContent", "countTokens"]
     },
     {
-      "name": "models/gemini-2.5-pro",
+      "name": "models/gemini-3.1-pro-low",
       "version": "001",
-      "displayName": "Gemini 2.5 Pro",
+      "displayName": "Gemini 3.1 Pro (Low)",
       "description": "Modelo de razonamiento.",
       "inputTokenLimit": 1048576,
       "outputTokenLimit": 65536,

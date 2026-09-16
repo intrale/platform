@@ -171,7 +171,7 @@ test('complete Gemini-Google éxito devuelve schema normalizado (shim OpenAI-com
     writeKeys(f, { gemini_google_api_key: 'AIzaSyTest_1234567890abcdef000' });
     const r = await completion.complete({
         provider: 'gemini-google',
-        model: 'gemini-2.0-flash',
+        model: 'gemini-3.8-flash-medium',
         prompt: 'ping',
         secretsPath: f,
         httpImpl: fakeHttp({
@@ -179,7 +179,7 @@ test('complete Gemini-Google éxito devuelve schema normalizado (shim OpenAI-com
             body: JSON.stringify({
                 choices: [{ message: { content: 'pong gemini' } }],
                 usage: { prompt_tokens: 7, completion_tokens: 4 },
-                model: 'gemini-2.0-flash',
+                model: 'gemini-3.8-flash-medium',
             }),
         }),
     });
@@ -377,7 +377,7 @@ test('complete con 2xx pero sin choices[0].message.content → invalid_response 
     writeKeys(f, { gemini_google_api_key: 'AIzaSyTest_1234567890abcdef000' });
     const r = await completion.complete({
         provider: 'gemini-google',
-        model: 'gemini-2.0-flash',
+        model: 'gemini-3.8-flash-medium',
         prompt: 'ping',
         secretsPath: f,
         httpImpl: fakeHttp({
@@ -551,10 +551,13 @@ test('PROVIDER_MODELS_ALLOWLIST incluye los modelos que usa producción (snapsho
     // Sanity check defensivo: los modelos en producción deben estar en la
     // allowlist. Si alguien cambia agent-models.json, este test pega antes
     // que el dashboard.
-    assert.ok(completion.isAllowedModel('cerebras', 'llama-3.3-70b'),
-        'cerebras/llama-3.3-70b en producción debe estar allowlisted');
-    assert.ok(completion.isAllowedModel('gemini-google', 'gemini-2.0-flash'),
-        'gemini-google/gemini-2.0-flash en producción debe estar allowlisted');
+    // #6858 — `gpt-oss-120b` es el `providers.cerebras.model` real de
+    // agent-models.json y el default HTTP de lib/semantic-dedup.js; debe pasar
+    // SIN la vía config-aware (por eso es literal en la allowlist).
+    assert.ok(completion.isAllowedModel('cerebras', 'gpt-oss-120b'),
+        'cerebras/gpt-oss-120b en producción debe estar allowlisted');
+    assert.ok(completion.isAllowedModel('gemini-google', 'gemini-3.8-flash-medium'),
+        'gemini-google/gemini-3.8-flash-medium en producción debe estar allowlisted');
     assert.ok(completion.isAllowedModel('nvidia-nim', 'deepseek-ai/deepseek-v4-flash-0731'),
         'nvidia-nim/deepseek-ai/deepseek-v4-flash-0731 en producción debe estar allowlisted');
 });
@@ -624,6 +627,10 @@ test('#3484: caller con timeoutMs negativo o inválido cae a DEFAULT_TIMEOUT_MS'
 // Un modelo declarado en agent-models.json pero ausente de la allowlist
 // hardcoded ANTES fallaba con invalid_model y mataba un eslabón sano de la
 // cascada (caso real: cerebras=gpt-oss-120b). Ahora se acepta.
+// #6858 — `gpt-oss-120b` pasó a ser literal de la allowlist (es el default de
+// semantic-dedup), así que estos tests ejercitan la vía config-aware con
+// `zai-glm-4.7` (el `alternative_models` real de Cerebras), que sigue fuera
+// de la lista hardcoded.
 
 function writeAgentModels(pipelineDir, json) {
     fs.writeFileSync(path.join(pipelineDir, 'agent-models.json'), JSON.stringify(json));
@@ -632,14 +639,14 @@ function writeAgentModels(pipelineDir, json) {
 test('MP-04 · modelo configurado en agent-models.json pero NO en allowlist hardcoded → aceptado', async () => {
     const pipelineDir = tmpDir();
     writeAgentModels(pipelineDir, {
-        providers: { cerebras: { model: 'gpt-oss-120b' } },
+        providers: { cerebras: { model: 'zai-glm-4.7' } },
         skills: {},
     });
     const f = path.join(pipelineDir, 'config.json');
     writeKeys(f, { cerebras_api_key: 'csk_test_1234567890abcdef0000' });
     const r = await completion.complete({
         provider: 'cerebras',
-        model: 'gpt-oss-120b', // NO está en PROVIDER_MODELS_ALLOWLIST
+        model: 'zai-glm-4.7', // NO está en PROVIDER_MODELS_ALLOWLIST
         prompt: 'ping',
         pipelineDir,
         secretsPath: f,
@@ -656,13 +663,13 @@ test('MP-04 · modelo declarado como model_override de un fallback también se a
     const pipelineDir = tmpDir();
     writeAgentModels(pipelineDir, {
         providers: { cerebras: { model: 'llama-3.3-70b' } },
-        skills: { qa: { provider: 'anthropic', fallbacks: [{ provider: 'cerebras', model_override: 'gpt-oss-120b' }] } },
+        skills: { qa: { provider: 'anthropic', fallbacks: [{ provider: 'cerebras', model_override: 'zai-glm-4.7' }] } },
     });
     const f = path.join(pipelineDir, 'config.json');
     writeKeys(f, { cerebras_api_key: 'csk_test_1234567890abcdef0000' });
     const r = await completion.complete({
         provider: 'cerebras',
-        model: 'gpt-oss-120b',
+        model: 'zai-glm-4.7',
         prompt: 'ping',
         pipelineDir,
         secretsPath: f,

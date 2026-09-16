@@ -223,7 +223,7 @@ test('CA-5 · fallbacks capaces (codex/gemini/nvidia declaran la capability) ⇒
   const cfg = baseConfig();
   cfg.providers.gemini = {
     launcher: 'gemini-google',
-    model: 'gemini-2.0-flash',
+    model: 'gemini-3.8-flash-medium',
     spawn_args_template: ['--model', '{model}', '{user_prompt}'],
     output_parser: 'gemini-stream',
     quota_error_types: ['quota_exceeded'],
@@ -234,7 +234,7 @@ test('CA-5 · fallbacks capaces (codex/gemini/nvidia declaran la capability) ⇒
     auth_mode: 'oauth',
     permissions_mode: 'bypassPermissions',
   };
-  cfg.skills['backend-dev'].fallbacks = [{ provider: 'gemini', model_override: 'gemini-2.0-flash' }];
+  cfg.skills['backend-dev'].fallbacks = [{ provider: 'gemini', model_override: 'gemini-3.8-flash-medium' }];
   const errs = capErrors(validateMod.validateExecutionCapabilities(cfg));
   assert.equal(errs.length, 0);
 });
