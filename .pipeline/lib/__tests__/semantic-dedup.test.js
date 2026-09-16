@@ -66,59 +66,101 @@ test.beforeEach(() => {
 // -----------------------------------------------------------------------------
 // -----------------------------------------------------------------------------
 // #6858 (rebote review) — el default (provider, model) del judge tiene que ser
-// servible por el endpoint HTTP que lo recibe. La regresión fue apuntar el
+// servible por el transporte que lo recibe. La regresión fue apuntar el
 // default a `gemini-google` con un id de Antigravity: ese endpoint es el shim
 // de AI Studio y devolvía 404 por construcción → fail-open en cada llamada +
 // circuit breaker abierto → el Commander perdía el juez semántico en silencio.
-// Este test fija las dos condiciones estructurales, SIN red:
-//   (a) el default pasa `isAllowedModel` con la allowlist hardcoded (sin
-//       depender de agent-models.json ni de env);
-//   (b) el provider tiene endpoint HTTP en PROVIDER_COMPLETION_ENDPOINTS
-//       (anthropic/openai-codex van por CLI, no por este cliente).
+//
+// #6563 — con la baja de los gratuitos ya no queda ningún provider HTTP con un
+// (provider, model) servible, así que el default pasa a `openai-codex` por
+// spawn del CLI. Estos tests fijan las condiciones estructurales, SIN red:
+//   (a) el default es un provider de `SPAWN_COMPLETION_PROVIDERS` (o, si algún
+//       día vuelve a HTTP, pasa `isAllowedModel` y tiene endpoint);
+//   (b) el modelo del default está en `ALLOWED_MODELS_BY_LAUNCHER.codex` del
+//       validador (sin depender de agent-models.json ni de env);
+//   (c) el default NO es un provider retirado ni el shim HTTP de gemini-google.
 // -----------------------------------------------------------------------------
-test('#6858: el default (provider, model) de semantic-dedup es allowlisted y tiene endpoint HTTP', () => {
-    const provider = sd.BUILTIN_DEFAULT_PROVIDER;
-    const model = sd.BUILTIN_DEFAULT_MODEL;
+const RETIRED_PROVIDERS = ['cerebras', 'nvidia-nim', 'kimi-moonshot', 'ollama', 'groq'];
+
+function assertServible(provider, model, label) {
     assert.equal(typeof provider, 'string');
     assert.equal(typeof model, 'string');
-    assert.ok(provider && model, 'default provider/model no pueden ser vacíos');
-
-    // (b) endpoint HTTP real en el cliente — hasOwnProperty para no aceptar
-    //     claves heredadas del prototipo.
+    assert.ok(provider && model, `${label}: provider/model no pueden ser vacíos`);
+    assert.ok(!RETIRED_PROVIDERS.includes(provider),
+        `${label}: '${provider}' fue dado de baja en #6563`);
+    if (sd.SPAWN_COMPLETION_PROVIDERS.has(provider)) {
+        if (provider === 'openai-codex') {
+            const { ALLOWED_MODELS_BY_LAUNCHER } = require('../agent-models-validate');
+            assert.ok(ALLOWED_MODELS_BY_LAUNCHER.codex.includes(model),
+                `${label}: model '${model}' no está en ALLOWED_MODELS_BY_LAUNCHER.codex`);
+        }
+        return;
+    }
+    // Camino HTTP: endpoint literal HTTPS + allowlist hardcoded (tercer arg
+    // omitido a propósito: el default no puede depender del JSON de config).
     assert.ok(
         Object.prototype.hasOwnProperty.call(completion.PROVIDER_COMPLETION_ENDPOINTS, provider),
-        `provider default '${provider}' no tiene endpoint en PROVIDER_COMPLETION_ENDPOINTS`,
+        `${label}: provider '${provider}' no tiene endpoint en PROVIDER_COMPLETION_ENDPOINTS`,
     );
-    const spec = completion.PROVIDER_COMPLETION_ENDPOINTS[provider];
-    assert.match(spec.url, /^https:\/\//, 'el endpoint del default debe ser HTTPS literal');
-
-    // (a) allowlist hardcoded, sin `configuredByProvider` (tercer arg omitido a
-    //     propósito: el default no puede depender del JSON de config).
-    assert.equal(
-        completion.isAllowedModel(provider, model),
-        true,
-        `model default '${model}' no está en PROVIDER_MODELS_ALLOWLIST['${provider}']`,
-    );
-
-    // Guardia explícita contra la regresión puntual: el shim HTTP de AI Studio
-    // (`gemini-google`) no sirve ningún id de su allowlist Antigravity, así que
-    // NO puede ser el default del judge.
+    assert.match(completion.PROVIDER_COMPLETION_ENDPOINTS[provider].url, /^https:\/\//,
+        `${label}: el endpoint debe ser HTTPS literal`);
+    assert.equal(completion.isAllowedModel(provider, model), true,
+        `${label}: model '${model}' no está en PROVIDER_MODELS_ALLOWLIST['${provider}']`);
     assert.notEqual(provider, 'gemini-google',
         'gemini-google en completion-client es AI Studio HTTP: no sirve los ids de Antigravity (404)');
+}
+
+test('#6858/#6563: el default (provider, model) de semantic-dedup es servible por spawn de Codex', () => {
+    assertServible(sd.BUILTIN_DEFAULT_PROVIDER, sd.BUILTIN_DEFAULT_MODEL, 'builtin');
+    assert.equal(sd.BUILTIN_DEFAULT_PROVIDER, 'openai-codex');
+    assert.ok(sd.SPAWN_COMPLETION_PROVIDERS.has('openai-codex'));
+    assert.ok(sd.SPAWN_COMPLETION_PROVIDERS.has('anthropic'));
+    for (const p of RETIRED_PROVIDERS) assert.ok(!sd.SPAWN_COMPLETION_PROVIDERS.has(p));
 });
 
-test('#6858: los defaults efectivos (con env) también son allowlisted y con endpoint', () => {
+test('#6858/#6563: los defaults efectivos (con env) también son servibles', () => {
     // Si un operador overridea por SEMANTIC_DEDUP_PROVIDER/MODEL, el override
     // tiene que seguir siendo servible; si no, el judge vuelve a fail-open.
-    assert.ok(
-        Object.prototype.hasOwnProperty.call(completion.PROVIDER_COMPLETION_ENDPOINTS, sd.DEFAULT_PROVIDER),
-        `provider efectivo '${sd.DEFAULT_PROVIDER}' sin endpoint HTTP`,
-    );
-    assert.equal(
-        completion.isAllowedModel(sd.DEFAULT_PROVIDER, sd.DEFAULT_MODEL),
-        true,
-        `model efectivo '${sd.DEFAULT_MODEL}' no allowlisted para '${sd.DEFAULT_PROVIDER}'`,
-    );
+    assertServible(sd.DEFAULT_PROVIDER, sd.DEFAULT_MODEL, 'efectivo');
+});
+
+test('#6563: dispatchComplete rutea openai-codex/anthropic al spawn y el resto al cliente HTTP', async () => {
+    const sherlock = require('../sherlock-verifier');
+    const origCodex = sherlock._spawnCodexComplete;
+    const origAnthropic = sherlock._spawnAnthropicComplete;
+    const origHttp = completion.complete;
+    const seen = [];
+    sherlock._spawnCodexComplete = async (a) => { seen.push(['codex', a]); return { ok: true, content: '{}' }; };
+    sherlock._spawnAnthropicComplete = async (a) => { seen.push(['anthropic', a]); return { ok: true, content: '{}' }; };
+    completion.complete = async (a) => { seen.push(['http', a]); return { ok: false, error: { type: 'no_key_configured' } }; };
+    try {
+        await sd.dispatchComplete({ provider: 'openai-codex', model: 'gpt-5.5', prompt: 'p', temperature: 0, maxTokens: 10 });
+        await sd.dispatchComplete({ provider: 'anthropic', prompt: 'p', timeoutMs: 1234 });
+        await sd.dispatchComplete({ provider: 'gemini-google', model: 'x', prompt: 'p' });
+    } finally {
+        sherlock._spawnCodexComplete = origCodex;
+        sherlock._spawnAnthropicComplete = origAnthropic;
+        completion.complete = origHttp;
+    }
+    assert.deepEqual(seen.map((s) => s[0]), ['codex', 'anthropic', 'http']);
+    assert.equal(seen[0][1].model, 'gpt-5.5');
+    assert.equal(seen[0][1].timeoutMs, sd.DEFAULT_SPAWN_TIMEOUT_MS, 'sin timeoutMs explícito aplica el presupuesto default');
+    assert.equal(seen[1][1].timeoutMs, 1234);
+    assert.equal(seen[2][1].provider, 'gemini-google');
+});
+
+test('#6563: dispatchComplete nunca lanza — una excepción del spawn se devuelve como ok:false', async () => {
+    const sherlock = require('../sherlock-verifier');
+    const origCodex = sherlock._spawnCodexComplete;
+    sherlock._spawnCodexComplete = async () => { throw new Error('boom'); };
+    try {
+        const res = await sd.dispatchComplete({ provider: 'openai-codex', model: 'gpt-5.5', prompt: 'p' });
+        assert.equal(res.ok, false);
+        assert.equal(res.error.type, 'spawn_failed');
+        assert.match(res.error.detail, /boom/);
+    } finally {
+        sherlock._spawnCodexComplete = origCodex;
+    }
 });
 
 test('CA-1: el LLM-judge marca alta donde Jaccard (findSimilar) deja pasar', async () => {

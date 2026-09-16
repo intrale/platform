@@ -24,7 +24,8 @@
 // CAMBIOS #3484 (2026-05-23) — Decisión Opción B (spawn CLI para Anthropic)
 // --------------------------------------------------------------------------
 // Hasta esta versión Sherlock SOLO usaba providers HTTP-compatible (cerebras /
-// gemini-google / nvidia-nim) y EXCLUÍA el provider del Commander para
+// gemini-google / nvidia-nim; cerebras y nvidia-nim retirados en #6563) y
+// EXCLUÍA el provider del Commander para
 // preservar adversariality. Combinado con un clamp de timeout en 10s, eso
 // causaba que Sherlock cayera en fallback en cascada y muriera en F-6
 // silencioso casi siempre.
@@ -156,10 +157,12 @@ const MAX_INCONSISTENCIES = 5;
 // despacha vía spawn-CLI (cuando hay handler disponible) o se saltea.
 // Para sumar uno nuevo: agregarlo acá Y a `PROVIDER_COMPLETION_ENDPOINTS`
 // de `lib/multi-provider/completion-client.js`.
+// #6563 — cerebras y nvidia-nim se retiraron del plantel; se quitan de acá
+// (no se dejan comentados) para que una reintroducción no pase silenciosa.
+// Queda sólo el shim HTTP de gemini-google (AI Studio), que hoy no sirve ids
+// de Antigravity: la cascada tolera su fallo y sigue a los spawns.
 const HTTP_COMPLETION_PROVIDERS = Object.freeze(new Set([
-    'cerebras',
     'gemini-google',
-    'nvidia-nim',
 ]));
 
 // Providers que Sherlock invoca vía spawn CLI (Opción B de #3484).
@@ -632,10 +635,10 @@ function resolveSherlockProvider({
 }) {
     // #3484: `excludedProvider` se ignora a propósito (back-compat). El
     // único motivo para excluir un provider acá es que NO tengamos handler
-    // (HTTP o spawn) implementado en Sherlock para él. Hoy los 5 providers de
-    // la chain telegram-sherlock tienen handler (cerebras/gemini/nvidia HTTP +
-    // anthropic/codex spawn); la rama de exclusión queda como defensa para un
-    // provider futuro sin handler.
+    // (HTTP o spawn) implementado en Sherlock para él. Hoy los 3 providers de
+    // la chain telegram-sherlock tienen handler (gemini HTTP + anthropic/codex
+    // spawn; cerebras y nvidia-nim retirados en #6563); la rama de exclusión
+    // queda como defensa para un provider futuro sin handler.
     // #3558: `initialExcluded` permite arrancar el resolver con un set
     // pre-poblado, usado por la cascada para saltar providers ya probados
     // sin tocar la semántica original (que sigue ignorando `excludedProvider`).
