@@ -335,7 +335,7 @@ test('codex pasa `-` como posicional y foldea persona+mensaje para stdin (#4529)
 // -----------------------------------------------------------------------------
 // 6b. Provider 'gemini-google' real (post adapter): launchAgent dispara el
 //     spawn del gemini CLI traduciendo los args estilo Claude al shape Gemini
-//     (`agy --print --model <model>`).
+//     (`agy --input-format stream-json … --model <model>`, #6857).
 // -----------------------------------------------------------------------------
 test('launchAgent con provider gemini-google spawnea agy con args traducidos', () => {
     const modelsPath = path.join(PIPELINE, 'agent-models.json');
@@ -375,8 +375,9 @@ test('launchAgent con provider gemini-google spawnea agy con args traducidos', (
     assert.equal(spi.calls.length, 1);
     const call = spi.calls[0];
     assert.equal(call.cmd, '/fake/agy');
-    assert.deepEqual(call.args.slice(0, 4), [
-        '--print', '--dangerously-skip-permissions', '--print-timeout', '5m',
+    assert.deepEqual(call.args.slice(0, 7), [
+        '--input-format', 'stream-json', '--output-format', 'stream-json',
+        '--dangerously-skip-permissions', '--print-timeout', '5m',
     ]);
     assert.ok(call.args.includes('--model'));
     assert.ok(call.args.includes('gemini-3-flash-preview'));

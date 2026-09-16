@@ -2454,6 +2454,63 @@ no lleva material de auth):
 > no de la mera presencia de una key. Por eso `anthropic` figura `key_status:
 > absent` pero `state: green` (`reason_code: cli_oauth_ok`).
 
+#### 14.3.1 Gemini / Antigravity CLI: round-trip real y tres estados (#6857)
+
+Para `gemini-google` la presencia del binario no alcanza: un `agy` instalado puede
+estar deslogueado o sin licencia. Hasta #6857 eso se resolvía leyendo un flag de
+entorno local (`AGY_LICENSE_READY=1`) — sin round-trip al proveedor — y el flag
+estaba vacío en producción con la licencia paga activa: el provider figuraba rojo
+para siempre (#6225). El flag **ya no existe**. El estado sale de un round-trip
+real a `agy models` (`.pipeline/lib/multi-provider/agy-catalog-probe.js`):
+
+| Estado real | `state` | `reason_code` | Badge en `/providers` | Gatea el dispatch |
+|---|---|---|---|---|
+| Binario ausente (`AGY_BIN` inválido, no instalado) | `red` | `cli_unavailable` | **SIN INSTALAR** | sí (durable) |
+| Instalado, sin sesión/licencia (rc≠0, timeout, catálogo vacío) | `red` | `cli_license_unavailable` | **SIN LICENCIA** | sí (durable) |
+| Instalado y con licencia (catálogo poblado) | `green` | `cli_catalog_ok` | **SANO** · "catálogo verificado · N modelos · hace X" | no |
+
+Cómo funciona:
+
+- **Binario**: se resuelve con la misma función que el launcher
+  (`detectLauncher`: `AGY_BIN` → `%LOCALAPPDATA%\agy\bin\agy.exe` → PATH). Ese dir
+  está sólo en el PATH de **usuario**, por eso el fallback a `agy` pelado no sirve
+  desde los servicios y la ubicación oficial va antes.
+- **Round-trip**: `agy models` (no interactivo, no consume cuota de generación,
+  ~2 s). El CLI hace `loadCodeAssist` + `fetchAvailableModels` contra
+  `daily-cloudcode-pa.googleapis.com` con el token del keyring; sin red o sin
+  sesión sale con rc≠0. Sano = rc 0 **y** ≥1 línea `id<TAB>label` en stdout.
+  Timeout duro de 30 s (un `agy` deslogueado bloquea en OAuth, #4869).
+- **Cache con TTL** en `.pipeline/state/agy-catalog-probe.json`: 15 min para un
+  verde (5 min de tick × 3 < 20 min de frescura del dispatch), **4 min para un
+  rojo** (menos de un tick, para que reautenticar se refleje enseguida). El
+  binario se re-verifica en cada tick, con o sin cache. Un spawn real que
+  termine en `authentication_rejected` (#5795) invalida la cache. "Probar ahora"
+  en el dashboard fuerza el round-trip.
+- **Snapshot**: los providers con round-trip llevan además `cli_probe: { kind,
+  detail, model_count, models, checked_at, cached, launcher_kind }` (campo
+  opcional; ausente para el resto). El catálogo real alimenta también el cruce
+  de vigencia de #5888 (`catalog_check`), que antes quedaba `unavailable` por
+  el short-circuit OAuth.
+- **Frescura visible**: si el snapshot supera 2×TTL (30 min), el badge pasa a
+  `info` · **SIN DATOS**. Un verde viejo nunca se lee como verde fresco.
+
+Qué **no** dice el round-trip: no distingue plan pago de gratuito (#6564 sigue
+vivo en esa parte) — sólo que hay una sesión con licencia capaz de listar el
+catálogo. Y no valida que los modelos configurados en `agent-models.json`
+existan en Antigravity (#6858); eso se ve en la columna de vigencia.
+
+**Encendido y respawns**: no hay nada que configurar dentro del repo. La sesión
+OAuth de `agy` vive en el keyring de Windows del usuario del servicio y el
+binario en `%LOCALAPPDATA%`; ninguno se pierde con `reset` ni con el
+`git reset --hard` de cada respawn.
+
+**Launcher (agy ≥ 1.2)**: el prompt entra por stdin como una línea NDJSON
+(`--input-format stream-json --output-format stream-json`); `--print` sin valor
+dejó de existir en 1.2.x y un prompt en argv reventaría con ENAMETOOLONG
+(#4529). El log del agente es NDJSON y el objeto útil es el `result` del
+evento `{"event":"result"}`. La adaptación del parser de tokens/errores al
+shape real (`usage.*`, `error` string) es #7288.
+
 ### 14.4 Failover reproducible
 
 La cadena de fallback vive en
@@ -2743,12 +2800,13 @@ hace"*:
 | `sin datos 24h` | no evaluable | no | Falta muestra. **Nunca** se degrada a "no aporta" |
 | ausente del panel | sin declarar | no | Despacha pero no está en config (#6153) |
 
-**Ejemplo canónico — `gemini-google`.** Figura `red` en el panel y `mantener` en el
-reporte, **simultáneamente, y eso es correcto**: el rojo lo produce
-`cli-oauth-probe.js:82` cuando `AGY_LICENSE_READY !== '1'`, un flag de entorno **sin
-round-trip al proveedor**. Mientras tanto el dispatcher lo eligió 277 veces en la misma
-ventana, porque el health-gate sólo aplica con rojo fresco (<20 min) y con snapshot viejo
-cae en `red_stale` → fail-open. Seguimiento de la corrección: **#6225**.
+**Ejemplo canónico — `gemini-google` (histórico, corregido en #6857).** Figuraba `red`
+en el panel y `mantener` en el reporte, **simultáneamente, y eso era correcto**: el rojo
+lo producía `cli-oauth-probe.js` cuando `AGY_LICENSE_READY !== '1'`, un flag de entorno
+**sin round-trip al proveedor**. Mientras tanto el dispatcher lo eligió 277 veces en la
+misma ventana, porque el health-gate sólo aplica con rojo fresco (<20 min) y con snapshot
+viejo cae en `red_stale` → fail-open. Desde #6857 el rojo/verde sale de `agy models`
+(§14.3.1) y #6225 quedó cerrado con esa entrega.
 
 ### 15.9 Registro de la decisión
 

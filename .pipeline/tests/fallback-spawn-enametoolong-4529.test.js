@@ -110,9 +110,9 @@ test('#4529 codex: system >32K va por stdin, argv chico, spawn real sin ENAMETOO
 });
 
 // -----------------------------------------------------------------------------
-// gemini: `-p ''` + payload >32K por stdin, spawn real sin ENAMETOOLONG.
+// gemini: NDJSON por stdin (`--input-format stream-json`, #6857) + payload >32K, spawn real sin ENAMETOOLONG.
 // -----------------------------------------------------------------------------
-test('#4529 gemini: system >32K va por stdin, `-p` vacío, spawn real sin ENAMETOOLONG', () => {
+test('#4529 gemini: system >32K va por stdin (NDJSON), argv chico, spawn real sin ENAMETOOLONG', () => {
     const { sysFile } = writeBigSystemFile();
     const sink = stdinSinkScript();
     forceNodeLauncher(gemini, sink);
@@ -124,10 +124,15 @@ test('#4529 gemini: system >32K va por stdin, `-p` vacío, spawn real sin ENAMET
         });
         assert.ok(argvBytes(spawnDef.args) < 4096, `argv demasiado grande: ${argvBytes(spawnDef.args)}`);
         assert.ok(spawnDef.args.every((a) => !String(a).includes('Sos el Commander')));
-        assert.ok(spawnDef.args.includes('--print'));
+        // #6857 — agy 1.2.x: el prompt entra por `--input-format stream-json`
+        // (NDJSON por stdin); `--print` sin valor dejó de existir. El invariante
+        // de #4529 se mantiene: argv chico, payload gigante por stdin.
+        assert.ok(spawnDef.args.includes('--input-format') && spawnDef.args.includes('stream-json'));
+        assert.ok(!spawnDef.args.includes('--print'));
         assert.ok(!spawnDef.args.includes('Contame el estado'));
         assert.ok(spawnDef.stdinPayload.length > WINDOWS_CMDLINE_LIMIT);
         assert.ok(spawnDef.stdinPayload.includes('Contame el estado'));
+        assert.equal(JSON.parse(spawnDef.stdinPayload).event, 'user', 'una línea NDJSON válida');
         const r = spawnSync(spawnDef.cmd, spawnDef.args, {
             input: spawnDef.stdinPayload,
             timeout: 15000,

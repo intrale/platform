@@ -110,7 +110,10 @@ const MANAGED_KEYS = Object.freeze([
         legacyField: 'gemini_google_api_key',
         auth_mode: 'oauth',
         cli_binary: 'agy',
-        readiness_env: 'AGY_LICENSE_READY',
+        // #6857 — el estado sale de un round-trip real (`agy models`), no de
+        // un flag de entorno. `readiness_env: 'AGY_LICENSE_READY'` se eliminó:
+        // ver `cli-oauth-probe.js#probeCliProviderLive` y `agy-catalog-probe.js`.
+        catalog_probe: 'agy',
         free_tier_notes: 'Antigravity CLI; disponibilidad sujeta a sesión OAuth y licencia/billing.',
     },
     {
