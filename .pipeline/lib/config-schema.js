@@ -642,12 +642,19 @@ const SCHEMA = {
                 access_audit: {
                     type: 'object',
                     additionalProperties: false,
-                    // Las 7 claves que ya viven en el YAML se enumeran COMPLETAS:
+                    // Las 8 claves que ya viven en el YAML se enumeran COMPLETAS:
                     // con `additionalProperties: false`, omitir una dejaría el
                     // pipeline arrancando pausado por `ConfigSchemaViolation`.
                     required: ['burst_threshold'],
                     properties: {
                         enabled: { type: 'boolean' },
+                        // #5563 · CA-1 — deriva en runtime el ARN del rol de
+                        // lectura del host (`intrale-vault-runtime-<hostId>`)
+                        // y lo suma a la allowlist. Booleano EXACTO como
+                        // `hostIdFromHostname`: `"true"` string no deriva y
+                        // el esquema lo rechaza, para que la allowlist no
+                        // quede vacía por un typo que el YAML lee como truthy.
+                        expected_principals_from_hosts: { type: 'boolean' },
                         poll_interval_min: { type: 'integer', minimum: 1, maximum: 1440 },
                         // CAMBIAR ESTE VALOR INVALIDA `burst_threshold`: el umbral
                         // está expresado en `physical_read` por ventana de
@@ -795,6 +802,12 @@ const SCHEMA = {
             type: 'object',
             additionalProperties: true,
             properties: {
+                // #5113 CA-C1 — flag ÚNICO de cutover del estado operativo al
+                // store durable. Gatea lectura Y escritura a la vez: nunca
+                // coexisten dos fuentes de verdad. Lo lee un solo archivo
+                // (`lib/operational-state-backend.js`), con el mismo criterio
+                // fail-closed `=== true` que `namespaced.enabled`.
+                durable: { type: 'boolean' },
                 namespaced: {
                     type: 'object',
                     additionalProperties: true,
@@ -1114,6 +1127,17 @@ function sanitizeKeyName(name) {
  *
  * Escapar (y no colapsar) preserva el nombre real de la clave: Telegram renderiza
  * `\_` como `_`.
+ *
+ * Por qué el `\` NO está en la clase escapada (#7227): en el parser real de
+ * Telegram (tdlib `parse_markdown` v1, `td/telegram/MessageEntity.cpp:1936`,
+ * el que el Bot API usa para `parse_mode: 'Markdown'`) el `\` sólo escapa si lo
+ * sigue `_`, `*`, `` ` `` o `[`; `\\`, `\x` y un `\` final son literales. Así la
+ * salida de esta función ya es parseable para TODO input, y escapar el `\`
+ * duplicaría visualmente cada backslash de los paths Windows en las alertas que
+ * lee el operador (`C:\Workspaces\x` se vería `C:\\Workspaces\\x`).
+ * El oráculo `contarSinEscapar` de `__tests__/config-schema.test.js` es el
+ * port fiel de ese bucle; si un análisis vuelve a ver un "bypass por
+ * backslash" (#5570), el bug está en el análisis. NO agregar `\` a la regex.
  *
  * @param {*} s
  * @returns {string}

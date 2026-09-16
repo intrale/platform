@@ -1,0 +1,48 @@
+===== SONDA DEL ESTADO OPERATIVO · --migration-dry-run =====
+naturaleza: dry-run: lee las fuentes reales y escribe SÓLO un backup timestampeado (no toca el store; `apply` va en H0 y en los tests contra fake)
+sourceDir: C:\Workspaces\Intrale\platform\.pipeline
+backupRoot: C:\Workspaces\Intrale\platform\.pipeline\backup
+fuentes: waves.json, .partial-pause.json
+
+[OK]    §2.4 · layout de las fuentes (informativo) — namespaceEnabled=false · sourceDir=C:\Workspaces\Intrale\platform\.pipeline (plano)
+[OK]    fuentes · waves.json y .partial-pause.json presentes y parseables — waves.json: presente (olas 12, 7 claves top-level) · .partial-pause.json: presente (allowlist 54, 3 claves top-level)
+[OK]    dry-run · migrateState({ apply:false }) — ok · backup en C:\Workspaces\Intrale\platform\.pipeline\backup\2026-09-14T03-24-25-173Z · claves con checksum: waves, partial-pause
+[OK]    backup · backup coincide con su propio manifest.json (sha256 + conteo por archivo) — waves.json: sha256 91b81c3faf7a806ed015867e4cf3e41104ae4f4a7951b33284cd933a717c7887 · 7 claves · .partial-pause.json: sha256 692059c0222a63f87e2295296a37ee93f8d5a494e3fe4aa5d33be8dc92754059 · 3 claves
+
+conteos: olas: 12 · allowlist: 54
+
+--- REPORTE DEL MIGRADOR (dry-run) ---
+===== MIGRACIÓN ESTADO DE COORDINACIÓN [DRY-RUN] =====
+
+--- BACKUP ---
+[OK] backup en: C:\Workspaces\Intrale\platform\.pipeline\backup\2026-09-14T03-24-25-173Z
+
+--- MIGRACIÓN ---
+clave              | fuente                 | presente | registros | acción
+waves              | waves.json             | sí       | 7         | pendiente
+partial-pause      | .partial-pause.json    | sí       | 3         | pendiente
+
+--- VERIFICACIÓN (checksum sha256 canónico) ---
+clave              | antes (sha256)                                                    | después (sha256)
+waves              | 91b81c3faf7a806ed015867e4cf3e41104ae4f4a7951b33284cd933a717c7887 | (pendiente)
+partial-pause      | 692059c0222a63f87e2295296a37ee93f8d5a494e3fe4aa5d33be8dc92754059 | (pendiente)
+
+--- ALCANCE DEL CUTOVER ---
+migrated_count: 0
+entidades del alcance real: descriptor#self, product#<id>, catalog#index, signature#*, audit#*, claim#*
+descriptores hallados: 1 (reservados: 1 · candidatos no reservados: 0)
+  intrale-platform.json        | projectId: intrale-platform         | [RESERVADO] no se da de alta como producto
+por qué el conteo da ese número:
+  - 1 descriptor(es) declaran un id RESERVADO (`intrale-platform`): el control-plane NO es un tenant, así que `durableRegisterProduct` los rechaza por diseño y no hay producto que dar de alta desde ellos.
+  - las 5 fuentes de coordinación (waves, blocked, blocked-by-infra, health, partial-pause) están EXCLUIDAS del cutover por #5112: este módulo sabe moverlas, pero no pertenecen al alcance del cutover y no cuentan para `migrated_count`.
+[ATENCIÓN] migrated_count es un DIAGNÓSTICO, no una medida de paridad. Cero migrados comparado contra un store vacío da verde sin probar nada. La evidencia positiva del cutover la aporta una sonda controlada NO VACÍA, comparada contra `aws dynamodb get-item --consistent-read` (ver docs/pipeline/runbook-cutover-durable.md).
+
+--- RESULTADO ---
+[DRY-RUN] no se escribió nada.
+           `--apply` está bloqueado a propósito (alcance_no_implementado): las 5 fuentes que
+           este módulo sabe mover son las que #5112 prohíbe migrar en el cutover.
+
+ROLLBACK: node .pipeline/lib/kernel-store-migrate.js --rollback --from C:\Workspaces\Intrale\platform\.pipeline\backup\2026-09-14T03-24-25-173Z
+
+--- VEREDICTO ---
+VEREDICTO: VERDE — 3 verificación(es) en verde.

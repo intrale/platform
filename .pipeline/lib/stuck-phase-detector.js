@@ -38,6 +38,7 @@ const { isApprovedArtifact } = require('./phase-completion');
 const { resolveSeverity } = require('./rejection-severity');
 
 const DEFAULT_STALE_THRESHOLD_MS = 15 * 60 * 1000; // 15 min sin avance
+const REBOTE_EMISORES = new Set(['barrido', 'reconciler']);
 
 /**
  * #5641 — Resuelve EL deliverable vigente de un skill (prioridad
@@ -56,7 +57,7 @@ function resolveDeliverable(skill, deliverables) {
     }
     for (const st of ['listo', 'procesado', 'archivado']) {
         const d = byState[st];
-        if (d) return { state: st, yaml: (d && d.yaml) || {} };
+        if (d) return { state: st, yaml: (d && d.yaml) || {}, name: d.name };
     }
     return null;
 }
@@ -72,7 +73,7 @@ function exitCodeOf(y) {
  * @param {string} skill
  * @param {Array<{skill:string,state:string,yaml:object,mtimeMs:number}>} deliverables
  * @param {Set<string>} liveSkills  skills en pendiente/trabajando (activos)
- * @returns {{skill:string, status:'live'|'done'|'infra-failed'|'cancelled'|'rejected'|'corrupt'|'missing', state?:string, exitCode?:number|null}}
+ * @returns {{skill:string, status:'live'|'done'|'infra-failed'|'cancelled'|'consumed'|'rejected'|'corrupt'|'missing', state?:string, exitCode?:number|null}}
  */
 function classifySkill(skill, deliverables, liveSkills) {
     if (liveSkills.has(skill)) return { skill, status: 'live' };
@@ -105,11 +106,14 @@ function classifySkill(skill, deliverables, liveSkills) {
     }
 
     if (y.cancelado_por != null && y.cancelado_por !== '') return { skill, status: 'cancelled', state: st };
+    if (y.resultado === 'rechazado' && REBOTE_EMISORES.has(y.rebote_emitido_por)) {
+        return { skill, status: 'consumed', state: st };
+    }
     // #6296 — el YAML viaja SÓLO en la rama `rejected`: es el único consumidor
     // (`resolveSeverity` necesita el campo `severidad` del veredicto). Volver a
     // resolver el deliverable dentro de `analyzeStuckIssue` sería una segunda
     // fuente de verdad sobre cuál artefacto manda.
-    if (y.resultado === 'rechazado') return { skill, status: 'rejected', state: st, yaml: y, motivo: y.motivo || y.motivo_rechazo || null };
+    if (y.resultado === 'rechazado') return { skill, status: 'rejected', state: st, name: found.name, yaml: y, motivo: y.motivo || y.motivo_rechazo || null };
     return { skill, status: 'corrupt', state: st }; // presente pero indeterminado
 }
 
@@ -194,6 +198,7 @@ function analyzeStuckIssue(args = {}) {
     const done = classes.filter((c) => c.status === 'done');
     const live = classes.filter((c) => c.status === 'live');
     const rejected = classes.filter((c) => c.status === 'rejected');
+    const consumed = classes.filter((c) => c.status === 'consumed');
     const corrupt = classes.filter((c) => c.status === 'corrupt');
     const cancelled = classes.filter((c) => c.status === 'cancelled');
     const missing = classes.filter((c) => c.status === 'missing');
@@ -206,6 +211,9 @@ function analyzeStuckIssue(args = {}) {
     // o PID vivo); un `trabajando/` huérfano de agente muerto NO debe pasar acá
     // (arquitecto P1-3), sino la fase varada nunca se cura.
     if (live.length > 0) return { stuck: false, action: 'none', reason: 'trabajo-vivo' };
+    if (consumed.length > 0 && rejected.length === 0) {
+        return { stuck: false, action: 'none', reason: 'rechazo-ya-rebotado' };
+    }
 
     // Antigüedad: si no hay deliverables, no es un varado de FASE (lo maneja el
     // intake re-admitiendo). Si el más nuevo es reciente, darle tiempo.
@@ -233,6 +241,8 @@ function analyzeStuckIssue(args = {}) {
     if (rejected.length > 0) {
         const sev = rejected.map((c) => ({
             skill: c.skill,
+            state: c.state,
+            name: c.name,
             severidad: resolveSeverity({ skill: c.skill, yaml: c.yaml }),
             motivo: c.motivo || null,
         }));

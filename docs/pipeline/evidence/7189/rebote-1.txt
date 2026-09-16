@@ -1,0 +1,114 @@
+HEAD previo, solo cambia entorno de sonda: strict=0 -> CA-B1.ok=false, exitCode=1
+HEAD previo, solo cambia entorno de sonda: strict=1 -> CA-B1.ok=true, exitCode=0
+
+$ node --test .pipeline/tests/pulpo-runtime-auth-7189.test.js .pipeline/lib/__tests__/opstate-cutover-probe-7189.test.js
+✔ CA-2 rojo: fuera de tests `fake-sync` tampoco pasa — sólo aws-cli / aws-cli-sync (0.4291ms)
+shell=0/servicio=0 -> CA-B1.ok=false, exitCode=1
+shell=1/servicio=0 -> CA-B1.ok=false, exitCode=1
+shell=0/servicio=1 -> CA-B1.ok=true, exitCode=0
+shell=1/servicio=sin señal -> CA-B1.ok=false, exitCode=1
+✔ CA-1 negativo shell=1/servicio=0 no permite VERDE; shell=0/servicio=1 sí (769.335ms)
+Proceso hijo real acreditado: strict=false, ok=true
+ℹ tests 79
+ℹ pass 79
+ℹ fail 0
+ℹ skipped 0
+
+$ node --test .pipeline/lib/__tests__/operational-state*.test.js .pipeline/lib/__tests__/partial-pause*.test.js .pipeline/lib/__tests__/waves*.test.js .pipeline/lib/__tests__/kernel-store-migrate.test.js .pipeline/lib/__tests__/kernel-coordination-store.test.js .pipeline/tests/*.js
+✔ CA-3/UX-A · la remediacion de internal-bypass NO dice "usa el envoltorio" y remite al §7 (0.1408ms)
+✔ CA-1a · --report separa produccion de tests y emite fila de total (316.7792ms)
+✔ CA-1a · classifyScope distingue produccion de tests (0.4095ms)
+✔ backupAgentBranch: fail si falta issue o skill (923.5795ms)
+✔ Gap #1 integración: emit con cfg ausente (degradado) → skipped por disabled (5.1855ms)
+✔ schema inválido (stage no enum) → fail closed con audit schema_invalid (4.3826ms)
+✔ schema inválido (status no enum) → fail closed (3.3386ms)
+✔ schema falta `command` → fail closed (3.9462ms)
+✔ enabled:false → action skipped reason disabled (1.9003ms)
+✔ kill_switch:true → action skipped reason kill_switch (1.945ms)
+✔ stage no notifiable → action skipped reason stage_not_notifiable (2.4218ms)
+✔ whitelist vacía → fail closed (0.1693ms)
+✔ #3680 · FORCE_PROVIDER_OVERRIDE bypass cuando skill está en allowlist (2.483ms)
+✔ CA-1 (runtime): qa:skipped también viaja del issue al PR (4.4296ms)
+✔ CA-16/5 issue con label qa:skipped bypassa el gate (0.4091ms)
+✔ CA-16/5b qa:skipped funciona también con shape {name} (0.2814ms)
+✔ CA-16/5c qa:skipped es case-insensitive (0.4237ms)
+[2026-09-14 03:57:06] [barrido] ⚡ #6432 fast-fail en verificacion — rebote temprano, cancelados skills pendientes/en cooldown (disparado por: delivery)
+✔ doc apunta a los tests que congelan el contrato (0.5081ms)
+✔ e2e-qa se dispara solo por los cambios detectados, sin bypass por label (0.5125ms)
+✔ bypass a: contenido "++ b/decoy" no oculta el secreto del resto del hunk (2269.7278ms)
+✔ bypass b: un secreto en una línea que arranca con "++" se escanea igual (2711.3562ms)
+✔ bypass c: un NUL después del umbral de binario de git no salva al hunk (1578.4243ms)
+[2026-09-14 03:57:19] [preflight] 🟢 gate-bypass #3954 reason=infra-no-apk — área pipeline/dashboard sin cambios en app/composeApp/ → no exige APK {"event":"gate-bypass","issue":"3954","qaMode":"structural","source":"preflight","reason":"infra-no-apk","decision":"skip-apk","labels":["area:pipeline","app:client","Ready"],"changedFiles":[".pipeline/lib/qa-evidence-gate.js",".pipeline/pulpo.js"]}
+[2026-09-14 03:57:19] [preflight] 🟢 gate-bypass #4001 reason=infra-no-apk — área pipeline/dashboard sin cambios en app/composeApp/ → no exige APK {"event":"gate-bypass","issue":"4001","qaMode":"structural","source":"preflight","reason":"infra-no-apk","decision":"skip-apk","labels":["area:dashboard"],"changedFiles":[".pipeline/dashboard-v2.js"]}
+✔ caso: nota trivial (<80) en pipeline-dev SÍ materializa (bypass del umbral) (15.6138ms)
+shell=0/servicio=0 -> CA-B1.ok=false, exitCode=1
+shell=1/servicio=0 -> CA-B1.ok=false, exitCode=1
+shell=0/servicio=1 -> CA-B1.ok=true, exitCode=0
+shell=1/servicio=sin señal -> CA-B1.ok=false, exitCode=1
+✔ CA-1 negativo shell=1/servicio=0 no permite VERDE; shell=0/servicio=1 sí (651.1994ms)
+[2026-09-14 03:57:28] [gate-bypass] 🟢 gate-bypass #990003956 reason=qa-skipped — label explícito qa:skipped, no requiere evidencia audiovisual {"event":"gate-bypass","issue":"990003956","source":"label","decision":"skip-video","reason":"qa-skipped"}
+✔ #3956 · GitHub con qa:skipped SÍ bypassea (label legítimo, sin evidencia requerida) (3.4156ms)
+✔ #3956 · sin qa:skipped en ninguna fuente → exige evidencia (comportamiento normal) (0.8871ms)
+✔ #5708 · la verificación visual no se satisface con unit tests o renderHtml aislado (0.733ms)
+[2026-09-14 03:57:32] [gate-bypass] 🟢 gate-bypass #990006495 qaMode=structural source=preflight — QA estructural no requiere evidencia audiovisual {"event":"gate-bypass","issue":"990006495","qaMode":"structural","source":"preflight","labels":[],"decision":"skip-video","reason":"QA estructural no requiere evidencia audiovisual"}
+✔ #6495 · el label qa:skipped bypassea el sellado igual que el gate hermano (0.517ms)
+✔ #6495 · android sin bypass sigue siendo EXIGIBLE: el fail-closed del sellado aplica (0.673ms)
+✔ #6495 · un label qa:skipped inyectado en el YAML no compra el bypass del sellado (0.3765ms)
+  + path aprobado-android incluye ícono ✅, título, tests y modo
+  + total=0 rechazado muestra "rechazado sin tests ejecutados"
+✔ rol UX reconoce qa:skipped como atajo legitimo (PASO 0.A) (0.7175ms)
+  ✓ bypass ZWSP entre caracteres de un [REDACTED] detecta
+  ✓ bypass BOM al inicio: no bloquea detección
+  ✓ bypass null byte embebido: se elimina antes de matchear
+  ✓ bypass case folding en header: AuThOrIzAtIoN redacted
+  ✓ bypass homoglyphs: Cyrillic A en AKIA se detecta
+  ✓ sanitizeSecrets: expuesto para tests y es puro
+  ✓ bypass ZWSP en sk-ant-: se redacta igual (NFC + zero-width strip)
+  ✓ bypass ZWSP en gsk_ se redacta igual (zero-width strip, legacy)
+✔ timeout: reporta batches completados y tests corridos antes del corte (0.441ms)
+  ✔ #3154 · fixture válida (launcher=claude) con env var faltante retorna exit 0 (bypass OAuth) (544.6937ms)
+✔ evaluateVisualGate bypassa qa:skipped (CA-3) (0.3563ms)
+✔ buildBlockComment incluye instrucciones de desbloqueo y qa:skipped (0.2837ms)
+ℹ tests 2963
+ℹ pass 2960
+ℹ fail 0
+ℹ skipped 3
+
+$ bash .pipeline/smoke-test.sh
+[2026-09-14 00:55:55] === SMOKE TEST OK ===
+[smoke-test] === SMOKE TEST OK ===
+
+$ bash ./gradlew check --no-daemon
+BUILD SUCCESSFUL in 2m 54s
+343 actionable tasks: 168 executed, 175 from cache
+
+$ node .pipeline/scripts/opstate-cutover-probe.js --preconditions --pipeline-dir C:/Workspaces/Intrale/platform/.pipeline --json
+{
+  "exitCode": 1,
+  "CA-B1": {
+    "id": "CA-B1",
+    "etapa": "PARTIAL_PAUSE_STRICT_AUTH=1 + sin `gate_grace` en 30 días",
+    "ok": false,
+    "detalle": "strict: false (servicio: no acreditado: heartbeat_no_acreditado) / gate_grace en 30 días: 0 (audit: 214 entradas, último gate_grace 2026-08-13T18:16:22.173Z)",
+    "causa": "strict_auth_apagado",
+    "siguiente": "H0 paso 0 · exportá PARTIAL_PAUSE_STRICT_AUTH=1 en el entorno del SERVICIO (launcher / restart.js) y reiniciá; verificalo desde el proceso del Pulpo, no desde una shell suelta (D-10, runbook §4 CA-B1).",
+    "datos": {
+      "strict": false,
+      "serviceAuth": {
+        "ok": false,
+        "strict": false,
+        "source": "C:\\Workspaces\\Intrale\\platform\\.pipeline\\last-tick.json",
+        "reason": "heartbeat_no_acreditado"
+      },
+      "gateGrace30d": 0,
+      "auditEntries": 214,
+      "lastGateGrace": "2026-08-13T18:16:22.173Z",
+      "auditExists": true
+    }
+  }
+}
+
+$ node .pipeline/lib/operational-state-lint.js --check
+[operational-state-lint] OK - 652 archivos JS escaneados, 0 violations
+$ node .pipeline/lib/ghost-artifact-lint.js --check
+[ghost-artifact-lint] OK - 678 archivos JS escaneados, 0 violations

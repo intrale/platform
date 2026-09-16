@@ -40,6 +40,7 @@ handler determinístico puede romper.
 | `/help`, `/start`          | determinística | `pulpo.cmdHelp` (legacy)                  | —                      |
 | `/restart`, `/limpiar`     | determinística | handlers legacy                            | —                      |
 | `/bloqueados`, `/unblock`  | determinística | handlers legacy                            | —                      |
+| `/unblock <n> <orientación>` | determinística | `humanBlock.unblockIssue` → la orientación viaja en `pendiente/<marker>.guidance.txt`, `pulpo.moveFile` la lleva a `trabajando/` y llega al prompt del agente en el **próximo lanzamiento** (one-shot, cap 8 KB; #7240) | `self-healing-fases-varadas.md` § "Ciclo de vida de la orientación" |
 | `/entregado <issue> [pr <n>]` | determinística | `commander-det` → `resolveDeliveryState` | `estado-entrega.md`    |
 | `está entregado <n>`       | determinística | `commander-det` → `resolveDeliveryState` | `estado-entrega.md`    |
 | `/intake <num>`            | **LLM**        | `pulpo.cmdIntake` con Claude              | —                      |

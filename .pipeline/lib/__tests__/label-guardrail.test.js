@@ -768,3 +768,114 @@ test('SEC-H: describeRejection de create-issue no habla de un issue inexistente'
     assert.match(msg, /NO fue creado/);
     assert.doesNotMatch(msg, /#null/, 'no puede citar un numero de issue que todavia no existe');
 });
+
+// -----------------------------------------------------------------------------
+// #7232 — Capa 1: una recomendación APROBADA es trabajo real y sí admite
+// `needs-human`. La regla `MEZCLA_BLOQUEO_SOBRE_RECO` decide con la fuente
+// única `isRecommendationIssue()` (`lib/recommendation-labels.js`).
+// -----------------------------------------------------------------------------
+
+test('#7232 CA-1: needs-human sobre una recomendacion APROBADA se permite (trabajo real)', () => {
+    const v = guardrail.evaluateLabelOrder({
+        action: 'label',
+        label: 'needs-human',
+        order: { issue: 5570 },
+        getCurrentLabels: () => ['tipo:recomendacion', 'recommendation:approved', 'source:recommendation', 'Ready'],
+    });
+    assert.strictEqual(v.allowed, true);
+    assert.strictEqual(v.motivo, 'sin-conflicto');
+    assert.strictEqual(v.consulted, true);
+});
+
+test('#7232 CA-2: needs-human sobre tipo:recomendacion SIN approved sigue rechazado (no regresion #5690)', () => {
+    const v = guardrail.evaluateLabelOrder({
+        action: 'label',
+        label: 'needs-human',
+        order: { issue: 5571 },
+        getCurrentLabels: () => ['tipo:recomendacion'],
+    });
+    assert.strictEqual(v.allowed, false);
+    assert.strictEqual(v.motivo, guardrail.MOTIVOS.MEZCLA_BLOQUEO_SOBRE_RECO);
+});
+
+test('#7232 CA-2: needs-human sobre source:recommendation SIN approved se rechaza (ampliacion de la fuente unica)', () => {
+    const v = guardrail.evaluateLabelOrder({
+        action: 'label',
+        label: 'needs-human',
+        order: { issue: 5572 },
+        getCurrentLabels: () => ['source:recommendation', 'enhancement'],
+    });
+    assert.strictEqual(v.allowed, false);
+    assert.strictEqual(v.motivo, guardrail.MOTIVOS.MEZCLA_BLOQUEO_SOBRE_RECO);
+});
+
+test('#7232 CA-2: la procedencia declarada NO habilita needs-human sobre una reco no aprobada (REQ-SEC-1)', () => {
+    const v = guardrail.evaluateLabelOrder({
+        action: 'label',
+        label: 'needs-human',
+        order: { issue: 5573, ...AUTORIZADA },
+        getCurrentLabels: () => ['tipo:recomendacion'],
+    });
+    assert.strictEqual(v.allowed, false);
+    assert.strictEqual(v.motivo, guardrail.MOTIVOS.MEZCLA_BLOQUEO_SOBRE_RECO);
+});
+
+test('#7232 CA-2 (SEC-G): labels actuales en mayusculas con approved se permiten igual', () => {
+    const v = guardrail.evaluateLabelOrder({
+        action: 'label',
+        label: 'needs-human',
+        order: { issue: 5574 },
+        getCurrentLabels: () => [' Tipo:Recomendacion ', 'Recommendation:Approved'],
+    });
+    assert.strictEqual(v.allowed, true);
+    assert.strictEqual(v.motivo, 'sin-conflicto');
+});
+
+test('#7232 CA-2 (REQ-SEC-1): needs-human y tipo:recomendacion en la MISMA orden sigue siendo mezcla aunque este aprobada', () => {
+    const v = guardrail.evaluateLabelOrder({
+        action: 'label',
+        label: 'needs-human,tipo:recomendacion',
+        order: { issue: 5575 },
+        getCurrentLabels: () => ['tipo:recomendacion', 'recommendation:approved'],
+    });
+    assert.strictEqual(v.allowed, false);
+    assert.strictEqual(v.motivo, guardrail.MOTIVOS.MEZCLA_EN_LA_MISMA_ORDEN);
+    assert.strictEqual(v.consulted, false);
+});
+
+test('#7232 CA-2: MEZCLA_RECO_SOBRE_BLOQUEO no cambia (tipo:recomendacion sobre needs-human sigue rechazado)', () => {
+    const v = guardrail.evaluateLabelOrder({
+        action: 'label',
+        label: 'tipo:recomendacion',
+        order: { issue: 5576 },
+        getCurrentLabels: () => ['needs-human', 'recommendation:approved'],
+    });
+    assert.strictEqual(v.allowed, false);
+    assert.strictEqual(v.motivo, guardrail.MOTIVOS.MEZCLA_RECO_SOBRE_BLOQUEO);
+});
+
+test('#7232 CA-2 (UX-4): describeRejection explica que es una reco pendiente de triaje y que aprobada si admite needs-human', () => {
+    const msg = guardrail.describeRejection({
+        issue: 5577,
+        label_solicitado: 'needs-human',
+        labels_actuales: ['tipo:recomendacion'],
+        motivo: guardrail.MOTIVOS.MEZCLA_BLOQUEO_SOBRE_RECO,
+        accion: 'label',
+        origen: '5577-label-x.json',
+    });
+    assert.match(msg, /pendiente de triaje/);
+    assert.match(msg, /recommendation:approved/);
+    assert.match(msg, /aprobada s[ií] admite needs-human/);
+    assert.doesNotMatch(msg, /ya es una recomendaci/);
+});
+
+test('#7232 CA-8: MOTIVOS no gana ningun motivo nuevo', () => {
+    assert.deepStrictEqual(Object.keys(guardrail.MOTIVOS).sort(), [
+        'APPROVED_SIN_ORIGEN_HUMANO',
+        'INDETERMINADO',
+        'MEZCLA_BLOQUEO_SOBRE_RECO',
+        'MEZCLA_EN_LA_MISMA_ORDEN',
+        'MEZCLA_RECO_SOBRE_BLOQUEO',
+        'REMOVE_NEEDS_HUMAN_SIN_ORIGEN_HUMANO',
+    ]);
+});

@@ -321,6 +321,24 @@ function reasonFilePath(blockedFile) {
 }
 
 /**
+ * #7232 rev-1 — Sidecar PROPIO del reconciler para sus campos de estado
+ * (`needs_human_seen_at`, `sin_label_alertado_at`, `label_enqueued_at`) cuando
+ * el `.reason.json` está corrupto/ilegible y NO puede tocarse (la pregunta del
+ * agente vive ahí y hay que conservar sus bytes). Termina en `.reason.json` a
+ * propósito: todos los filtros de artefactos (`isMarkerArtifact`,
+ * `pipeline-rewind`, `rebote-classifier`) ya lo excluyen como marker.
+ */
+function reconcilerSidecarPath(blockedFile) {
+    return blockedFile + '.reconciler.reason.json';
+}
+
+/** Borra los sidecars del marker (`.reason.json` + sidecar del reconciler). Best-effort. */
+function removeMarkerSidecars(blockedFile) {
+    try { fs.unlinkSync(reasonFilePath(blockedFile)); } catch {}
+    try { fs.unlinkSync(reconcilerSidecarPath(blockedFile)); } catch {}
+}
+
+/**
  * #6611 rev-1 — RUTA DEL MARKER, RESUELTA EN UN SOLO LUGAR.
  *
  * EL DEFECTO QUE ESTO CIERRA. Este módulo tiene DOS productores de entradas de
@@ -348,6 +366,28 @@ function resolveMarkerFile(blocked) {
     return null;
 }
 
+/**
+ * #7240 — CONTRATO DE UBICACIÓN Y CICLO DE VIDA de la orientación de destrabe.
+ * Vale para los dos canales (`guidanceFilePath` y `guidanceAgentFilePath`).
+ *
+ *   1. ESCRITURA — se escribe en `<pipeline>/<fase>/pendiente/<marker><sufijo>`,
+ *      JUNTO al marker `<issue>.<skill>` que se re-encola. Escritores:
+ *      `unblockIssue` (humano, más abajo) y `stuck-reconciler-deps.js` (agente,
+ *      carril de rebote #6296). Ninguno escribe en `trabajando/`.
+ *   2. TRANSPORTE — `pulpo.moveFile(pendiente/<marker>, trabajando/)` lo
+ *      traslada a `trabajando/` con el marker, cada archivo con su propio
+ *      nombre (`lib/guidance-injection.transportGuidanceArtifacts`). Es el
+ *      único punto por el que pasan todos los lanzamientos.
+ *   3. CONSUMO — `lanzarAgenteClaude` lo lee one-shot en `trabajando/`
+ *      (`lib/guidance-injection.buildGuidanceBlocks`), lo inyecta al prompt y
+ *      lo borra. Nunca sobrevive a un lanzamiento.
+ *
+ * Nunca se despacha como work-item: `isMarkerArtifact` lo filtra en todo
+ * listado de markers. Los sufijos salen de `GUIDANCE_SUFFIXES`
+ * (`lib/marker-artifact`), fuente única compartida con transporte, lector y
+ * el cleaner de huérfanos. Hasta #7240 escritor y lector divergían (escribía
+ * `pendiente/`, leía `trabajando/`) y toda orientación se perdía.
+ */
 function guidanceFilePath(targetDir, marker) {
     return path.join(targetDir, marker + '.guidance.txt');
 }
@@ -364,6 +404,10 @@ function guidanceFilePath(targetDir, marker) {
  * Por eso la extensión es distinta y NO hay forma de confundirlos ni por
  * accidente: son dos lecturas separadas, con dos headers separados, y el header
  * de este declara explícitamente que NO es autoritativo.
+ *
+ * Ubicación y ciclo de vida: el mismo contrato de `guidanceFilePath` (#7240):
+ * se escribe en `pendiente/` junto al marker, `pulpo.moveFile` lo transporta a
+ * `trabajando/` y `buildGuidanceBlocks` lo consume one-shot.
  */
 function guidanceAgentFilePath(targetDir, marker) {
     return path.join(targetDir, marker + '.guidance.agent.txt');
@@ -875,7 +919,7 @@ function unblockIssue(opts) {
     if (guidance) {
         try { fs.writeFileSync(guidanceFilePath(targetDir, marker), guidance); } catch {}
     }
-    try { fs.unlinkSync(reasonFilePath(sourceFile)); } catch {}
+    removeMarkerSidecars(sourceFile);
 
     // #6432 D11 / A-6 — la degradación del reclaim es pegajosa para todas las
     // vías automáticas. Sólo una intervención humana explícita (ver
@@ -919,7 +963,7 @@ function dismissBlockedIssue(opts) {
     }
 
     try { fs.unlinkSync(sourceFile); } catch {}
-    try { fs.unlinkSync(reasonFilePath(sourceFile)); } catch {}
+    removeMarkerSidecars(sourceFile);
 
     emitDismissed({
         issue, skill: blocked.skill, phase: blocked.phase, pipeline: blocked.pipeline,
@@ -1040,7 +1084,7 @@ function reconcileBlockedMarkers({ issue, unlocker = 'github:label-removed', ski
                 PIPELINE_DIR, m.pipeline, m.phase, 'pendiente', path.basename(m.file));
             if (fs.existsSync(destino)) {
                 try { fs.unlinkSync(m.file); } catch { /* best-effort */ }
-                try { fs.unlinkSync(reasonFilePath(m.file)); } catch { /* puede no existir */ }
+                removeMarkerSidecars(m.file); // puede no existir
                 action = 'residuo-eliminado';
             } else if (esMarkerSintetico(m, skillsPorFase)) {
                 // (2) MARKER SINTÉTICO — destrabarlo fabricaría un work-file
@@ -2002,6 +2046,9 @@ module.exports = {
     PIPELINE_DIR,
     PIPELINES,
     BLOCK_SUBDIR,
+    reasonFilePath,
+    reconcilerSidecarPath,
+    removeMarkerSidecars,
     NEEDS_HUMAN_LABEL,
     isMarkerArtifact,
     // #4068 — acciones rápidas de needs-human

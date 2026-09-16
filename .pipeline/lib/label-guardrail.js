@@ -74,6 +74,10 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const auditLog = require('./audit-log');
+// #7232 — fuente ÚNICA de "qué es una recomendación" (módulo hoja, sin requires:
+// no hay ciclo). Una recomendación APROBADA es trabajo real y sí admite
+// `needs-human`; sin esto el guardrail contradecía al intake y a `human-block`.
+const { isRecommendationIssue } = require('./recommendation-labels');
 
 const NEEDS_HUMAN = 'needs-human';
 const TIPO_RECOMENDACION = 'tipo:recomendacion';
@@ -347,7 +351,14 @@ function evaluateLabelOrder({ action, label, order = {}, getCurrentLabels } = {}
     const actualesNorm = actuales.map(normalizeLabelName);
 
     // SEC-F — se evalúa el COMPONENTE pedido, no el string entero.
-    if (pideNeedsHuman && actualesNorm.includes(TIPO_RECOMENDACION)) {
+    // #7232 — decide con la fuente única: una recomendación APROBADA es trabajo
+    // real (mismo criterio que el intake del pulpo y `human-block.js`), así que
+    // `needs-human` se aplica; una pendiente de triaje (`tipo:recomendacion` o
+    // `source:recommendation` sin `recommendation:approved`) sigue rechazada.
+    // Se pasa `actualesNorm` (minúsculas, SEC-G): `isRecommendationIssue`
+    // compara exacto contra los nombres canónicos. La procedencia
+    // (`authorizedBy`) sigue sin consultarse acá (REQ-SEC-1).
+    if (pideNeedsHuman && isRecommendationIssue(actualesNorm)) {
         return { allowed: false, motivo: MOTIVOS.MEZCLA_BLOQUEO_SOBRE_RECO, consulted: true, currentLabels: actuales };
     }
     if (pideRecomendacion && actualesNorm.includes(NEEDS_HUMAN)) {
@@ -561,7 +572,7 @@ function auditAuthorizedBypass(ctx = {}) {
 function describeRejection({ issue, label_solicitado, labels_actuales, motivo, accion, origen }) {
     const explicaciones = {
         [MOTIVOS.MEZCLA_BLOQUEO_SOBRE_RECO]:
-            `el issue ya es una recomendación (${TIPO_RECOMENDACION}) y ${NEEDS_HUMAN} es para bloqueos reales`,
+            `el issue es una recomendación pendiente de triaje (${TIPO_RECOMENDACION} sin ${RECOMMENDATION_APPROVED}) y ${NEEDS_HUMAN} es para trabajo real — una recomendación aprobada sí admite ${NEEDS_HUMAN}`,
         [MOTIVOS.MEZCLA_RECO_SOBRE_BLOQUEO]:
             `el issue está bloqueado por un humano (${NEEDS_HUMAN}) y no puede marcarse como recomendación`,
         [MOTIVOS.MEZCLA_EN_LA_MISMA_ORDEN]:

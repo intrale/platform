@@ -381,7 +381,7 @@ function buildStuckReconcilerDeps(opts = {}) {
         issueLiveElsewhere: (issue, p, currentFase) => {
             for (const f of allPhasesOf(p)) {
                 if (f === currentFase) continue;
-                for (const st of ['pendiente', 'trabajando']) {
+                for (const st of ['pendiente', 'trabajando', 'listo']) {
                     try {
                         if (fs.readdirSync(path.join(fasePath(p, f), st)).some((n) => n.startsWith(issue + '.'))) return true;
                     } catch { /* dir ausente */ }
@@ -735,6 +735,30 @@ function buildStuckReconcilerDeps(opts = {}) {
                 }
             }
             if (escritos === 0) return false;
+
+            // El recibo se escribe sólo después de materializar el destino.
+            for (const rejected of rechazoSkills) {
+                try {
+                    const name = rejected.name || `${n}.${rejected.skill}`;
+                    if (path.basename(name) !== name || name !== `${n}.${rejected.skill}`) continue;
+                    const states = rejected.state ? [rejected.state] : ['listo', 'procesado', 'archivado'];
+                    for (const state of states) {
+                        if (!['listo', 'procesado', 'archivado'].includes(state)) continue;
+                        const file = path.join(fasePath(pipeline, faseOrigen), state, name);
+                        if (!fs.existsSync(file)) continue;
+                        const prev = readYamlSafe(file);
+                        if (prev && prev.resultado === 'rechazado') {
+                            const tmp = `${file}.${process.pid}.tmp`;
+                            fs.writeFileSync(tmp, require('js-yaml').dump({ ...prev,
+                                rebote_emitido_por: 'reconciler', rebote_emitido_ts: new Date().toISOString(),
+                                rebote_emitido_destino: faseDestino, rebote_emitido_numero: conteo.reboteCount + 1,
+                            }), 'utf8');
+                            fs.renameSync(tmp, file);
+                        }
+                        break;
+                    }
+                } catch (e) { log('reconciler', `rebote #${n}: no pude persistir recibo: ${e.message}`); }
+            }
 
             // (6) Constancia en el issue.
             //

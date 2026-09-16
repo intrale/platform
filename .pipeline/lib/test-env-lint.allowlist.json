@@ -5004,19 +5004,19 @@
         },
         {
             "file": "tests/label-cache-invalidacion-5863.test.js",
-            "line": 403,
+            "line": 410,
             "kind": "deuda",
             "reason": "escritura de GH_BIN_OVERRIDE fuera del helper"
         },
         {
             "file": "tests/label-cache-invalidacion-5863.test.js",
-            "line": 412,
+            "line": 419,
             "kind": "deuda",
             "reason": "escritura de GH_BIN_OVERRIDE fuera del helper"
         },
         {
             "file": "tests/label-cache-invalidacion-5863.test.js",
-            "line": 413,
+            "line": 420,
             "kind": "deuda",
             "reason": "escritura de GH_BIN_OVERRIDE fuera del helper"
         },
@@ -5047,6 +5047,12 @@
         {
             "file": "tests/merge-race-reclaim-avisos-6432.test.js",
             "line": 22,
+            "kind": "deuda",
+            "reason": "PULPO_NO_AUTOSTART escrita en el sentido seguro (apagar)"
+        },
+        {
+            "file": "tests/opstate-dispatch-cause-5113.test.js",
+            "line": 23,
             "kind": "deuda",
             "reason": "PULPO_NO_AUTOSTART escrita en el sentido seguro (apagar)"
         },

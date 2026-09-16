@@ -207,6 +207,44 @@ function isMissingTestsReason(motivo) {
     return false;
 }
 
+/**
+ * #7231 — Predicado del filtro `motivosHumanos` del barrido del Pulpo
+ * (`pulpo.js`, rama de bloqueo humano #2549). Extraído para que sea testeable
+ * sin montar el Pulpo; el orden de precedencia es el histórico:
+ *
+ *   1. #4767 — un bloqueo MECÁNICO ya auto-resuelto por el carril paralelo NO
+ *      escala a humano (no congela).
+ *   2. #7231 — la señal ESTRUCTURADA manda: `rebote_categoria: human_block`
+ *      declarado por el agente entra sin depender de una frase mágica en el
+ *      `motivo`. `classifyRebote` ya devolvía `category: 'human_block'` ante
+ *      ese hint (`:461`), pero el filtro sólo lo usaba para que missing-tests
+ *      no lo pisara, nunca como señal positiva (#5570: guru declaró el hint,
+ *      el texto no matcheó `isHumanBlockReason` y el issue rebotó en bucle).
+ *   3. Heurística textual `isHumanBlockReason(motivo)`, con missing-tests
+ *      (#4223) ganándole cuando no hay hint explícito.
+ *
+ * @param {object} m                       — motivo clasificado del barrido
+ * @param {string} [m.motivo]
+ * @param {string|null} [m.rebote_categoria]
+ * @param {{category?: string}} [m.veredicto] — salida de `classifyRebote`
+ * @param {Set<object>} [mecanicoResueltos] — motivos resueltos por el carril
+ *                                            paralelo (#4767)
+ * @returns {boolean}
+ */
+function esMotivoHumano(m, mecanicoResueltos) {
+    if (!m || typeof m !== 'object') return false;
+    if (mecanicoResueltos && typeof mecanicoResueltos.has === 'function' && mecanicoResueltos.has(m)) {
+        return false;
+    }
+    if (m.rebote_categoria === 'human_block') return true;
+    if (m.veredicto && m.veredicto.category === 'human_block') return true;
+    if (!humanBlock.isHumanBlockReason(m.motivo)) return false;
+    // Missing-tests gana sobre la heurística textual de human_block (#4223).
+    // El hint explícito ya salió por `return true` arriba.
+    if (isMissingTestsReason(m.motivo)) return false;
+    return true;
+}
+
 // -----------------------------------------------------------------------------
 // API PÚBLICA
 // -----------------------------------------------------------------------------
@@ -1281,6 +1319,10 @@ function stripProcedenciaAgente(data) {
     if (!data || typeof data !== 'object') return { falsificada: false, campos: [] };
 
     const campos = [];
+    for (const field of ['rebote_emitido_por', 'rebote_emitido_ts', 'rebote_emitido_destino', 'rebote_emitido_numero']) {
+        if (Object.prototype.hasOwnProperty.call(data, field)) campos.push(field);
+        delete data[field];
+    }
     if (data.veredicto_sintetizado_por !== undefined) campos.push('veredicto_sintetizado_por');
     if (data.agente_exit_code !== undefined) campos.push('agente_exit_code');
 
@@ -1307,6 +1349,7 @@ module.exports = {
     MAX_MOTIVO_LEN,
     detectDependencyBlock,
     isMissingTestsReason, // #4223
+    esMotivoHumano, // #7231 — predicado del filtro `motivosHumanos` del barrido
     buildDependencyComment,
     reportDependencyBlock,
     sanitizeDepsList,

@@ -109,6 +109,45 @@ una escalada de privilegio por artefacto. El texto pasa por
 se reemplaza por un texto degradado que lo declara — el defecto no desaparece
 porque el motivo sea sospechoso.
 
+#### Ciclo de vida de la orientación (#7240)
+
+Los dos canales comparten el mismo ciclo, con los sufijos de
+`GUIDANCE_SUFFIXES` (`lib/marker-artifact.js`) como fuente única:
+
+```
+escritor            transporte                       consumo one-shot
+────────────        ────────────────────────────     ──────────────────────────
+pendiente/<marker>.guidance[.agent].txt
+   │  human-block.guidanceFilePath /
+   │  guidanceAgentFilePath
+   ▼
+pulpo.moveFile(pendiente/<marker>, trabajando/)
+   │  lib/guidance-injection.transportGuidanceArtifacts
+   │  (DESPUÉS de mover el marker; el artifact nunca es corrida)
+   ▼
+trabajando/<marker>.guidance[.agent].txt
+   │  lanzarAgenteClaude → lib/guidance-injection.buildGuidanceBlocks
+   │  inyecta al prompt y borra el archivo
+   ▼
+prompt del agente (📋 INDICACIONES HUMANAS / 🤖 ORIENTACIÓN AUTOMÁTICA …)
+```
+
+- **Se escribe en `pendiente/`**, junto al marker que se re-encola. Ningún
+  escritor toca `trabajando/`.
+- **`moveFile` lo transporta a `trabajando/`** con el marker, cada archivo con
+  su propio nombre (nunca se colapsa `.guidance.agent.txt` en `.guidance.txt`).
+  Es best-effort: si el `rename` falla, el agente se lanza igual y el log
+  `lanzamiento` dice qué canal (`humana` / `del validador`), qué marker y qué
+  path no llegó — nunca el contenido.
+- **Se consume one-shot** al armar el prompt: caps de **8 KB** (humana) y
+  **4 KB** (agente) con el marcador `[… orientación truncada a N KB …]` al
+  final, en línea propia; después de leerlo el archivo se borra. Si el borrado
+  falla queda un warning con el path.
+- Hasta #7240 el paso de transporte no existía: la orientación se escribía en
+  `pendiente/` y se leía en `trabajando/`, así que **nunca llegaba** (dead
+  letter desde #2801). Las que quedan huérfanas en `pendiente/` las archiva
+  el cleaner de `ghost-artifact-invariant.md`.
+
 Como `pulpo.js` **borra** el guidance después de inyectarlo (one-shot), el
 comentario que el rebote deja en el issue **no es cosmético**: es el único rastro
 duradero de por qué el issue volvió a dev.
@@ -259,7 +298,7 @@ lo saca), y por eso importa quién lo quita y cuándo:
 | Vía | Quién la dispara | Efecto concreto al destrabar |
 |---|---|---|
 | Botones de la notificación (`buildBlockedActionMarkup`) | El operador, desde Telegram | `executeQuickAction` → `reactivateAllBlocked` → `unblockIssue` (misma mecánica que la fila siguiente). |
-| `humanBlock.unblockIssue({ issue, guidance, unlocker })` | Operador / brazo de desbloqueo | **`rename`** del marker a `<pipeline>/<fase>/pendiente/<issue>.<skill>` + `<marker>.guidance.txt` con la guía, y borra el `.reason.json`. El Pulpo lo despacha en el tick siguiente: el `<skill>` está en `skills_por_fase[fase]`, así que **pasa el invariante** y el agente re-corre. |
+| `humanBlock.unblockIssue({ issue, guidance, unlocker })` | Operador / brazo de desbloqueo | **`rename`** del marker a `<pipeline>/<fase>/pendiente/<issue>.<skill>` + `<marker>.guidance.txt` con la guía, y borra el `.reason.json`. El Pulpo lo despacha en el tick siguiente: el `<skill>` está en `skills_por_fase[fase]`, así que **pasa el invariante** y el agente re-corre. `moveFile` lleva el `.guidance.txt` a `trabajando/` junto con el marker y `lanzarAgenteClaude` lo inyecta one-shot (#7240; ver "Ciclo de vida de la orientación"). |
 | `humanBlock.dismissBlockedIssue({ issue })` | Operador | Borra marker + `.reason.json`. **No** reactiva: el issue no vuelve a la cola. |
 | Archivado por TTL del servicio-reconciler (#3186) | Automático | Poda markers vencidos. |
 | `reconcileLabelToFilesystem` (#4222) | Automático | **Sólo si NO hay marker**: limpia labels `needs-human` fantasma. |
@@ -294,6 +333,64 @@ bloqueado que ya no corresponde:
 node -e "console.log(require('./.pipeline/lib/human-block').listBlockedIssues())"
 ```
 
+### Evidencia del label en el `reason.json` (#7232)
+
+El `servicio-reconciler` tiene una regla de "destrabe humano detectado": si un
+marker sigue en `bloqueado-humano/` pero el label `needs-human` **no** está en
+GitHub, asume que un humano lo quitó y mueve el marker a `pendiente/`. Esa
+heurística era **fail-open**: el label puede no haber llegado nunca (el
+guardrail de labels descartó la orden sobre una recomendación, `gh` caído,
+veredicto `INDETERMINADO`), y en ese caso "sin label" **no** significa "un
+humano decidió". En #5570 el resultado fue un bucle: `guru` pedía decisión,
+el guardrail descartaba `needs-human`, el reconciler leía el vacío como
+destrabe y el intake relanzaba a `guru` cada ~3 minutos.
+
+Desde #7232 el reconciler sólo destraba con **evidencia positiva propia**, que
+persiste en `<marker>.reason.json` mediante `updateMarkerReason()` (escritura
+atómica `.tmp` + `rename`; nunca toca el mtime del marker, así que no vuelve
+stale ninguna orden encolada):
+
+| Campo | Quién lo escribe | Cuándo | Qué significa |
+|---|---|---|---|
+| `needs_human_seen_at` | `reconcileHumanUnblockDetected` | La primera vez que el reconciler **ve** el label `needs-human` en GitHub para ese marker (una sola escritura). | El label existió. Es lo **único** que habilita un destrabe futuro por "label ausente". |
+| `label_enqueued_at` | `reconcileMarkerToLabel` | Cada vez que encola una orden `needs-human` por ese marker. | Backoff anti-amplificación (REQ-SEC-3): un marker **sin** `needs_human_seen_at` no se re-encola hasta pasadas `LABEL_REENQUEUE_BACKOFF_MS` (6 h). Pasa de 288 órdenes/día a 4. Con evidencia no aplica backoff. |
+| `sin_label_alertado_at` | `reconcileHumanUnblockDetected` | Al emitir la alerta `human-block-sin-label`, **sólo si el encolador de Telegram confirmó** (`notifyTelegram` devolvió `{ ok: true }`). | Dedupe: la alerta no se repite en ciclos siguientes; el panel `/bloqueados` lleva el SLA. Si el encolado falló (`mkdir_failed`, `no_operator_chat_id`, excepción), **no se persiste** y el ciclo siguiente reintenta: un bloqueo invisible no puede quedar además sin alerta. |
+
+**`reason.json` corrupto o ilegible.** `updateMarkerReason()` **nunca** lo
+sobrescribe: sus bytes se conservan tal cual (ahí puede estar la pregunta del
+agente aunque el JSON esté roto). En ese caso los tres campos van a un sidecar
+propio del reconciler, `<marker>.reconciler.reason.json`, atado al mtime del
+marker (`marker_mtime_ms`): si el marker cambió (otro bloqueo posterior), el
+sidecar es de otra vida y se ignora. Se limpia junto con el `reason.json`
+(destrabe, archivado, `unblockIssue`/`dismissBlockedIssue`, ghost-artifact
+cleaner). Sólo se crea un `reason.json` nuevo cuando **no existe ninguno**.
+
+Con esos campos, la regla queda:
+
+- **label presente** → se persiste `needs_human_seen_at` si faltaba; nada más.
+- **label ausente + `needs_human_seen_at` presente** → destrabe humano legítimo:
+  marker → `pendiente/`, `reason.json` borrado **sólo después** del `rename`
+  (REQ-SEC-6), línea `human-unblock-detected` en `stale-orders.log`.
+- **label ausente + sin evidencia** (`reason.json` sin el campo, corrupto o
+  inexistente) → **no se mueve** (fail-closed). Línea `human-block-sin-label`
+  en `stale-orders.log` cada ciclo, alerta Telegram `⚠️ human-block-sin-label`
+  una vez, y el issue se cuenta como `retenidos sin label` en el log de
+  resumen del ciclo. Cómo actuar: ver "Me llegó `human-block-sin-label`" en
+  `brazo-desbloqueo.md`.
+
+Markers anteriores al deploy de #7232 que tengan el label reciben
+`needs_human_seen_at` en el primer ciclo; los que ya estaban sin label (los
+defectuosos) generan la alerta y se destraban a mano.
+
+> **Capa 1, en el guardrail.** El origen del bucle era que
+> `label-guardrail.js` rechazaba `needs-human` sobre cualquier
+> `tipo:recomendacion`, incluso **aprobada**. Ahora decide con
+> `isRecommendationIssue()` (`lib/recommendation-labels.js`, la fuente única):
+> una recomendación aprobada es trabajo real y el label se aplica; una
+> pendiente de triaje (`tipo:recomendacion` o `source:recommendation` sin
+> `recommendation:approved`) sigue rechazada. La capa 2 de arriba cubre lo
+> que la capa 1 no alcanza (`gh` caído, `INDETERMINADO`, caminos futuros).
+
 ## El defecto que esto arregla (#5396)
 
 Antes, el operador recibía cada 10 minutos escalaciones de issues de julio que
@@ -326,3 +423,19 @@ node --test .pipeline/lib/__tests__/servicio-reconciler.test.js
 real** de `buildStuckReconcilerDeps` (no un `allowed: true` mockeado). El objeto
 `deps` se extrajo de `pulpo.js` a `lib/stuck-reconciler-deps.js` justamente para
 que ese test sea posible sin cargar 16k líneas con side-effects.
+# Recibo de consumo del rebote
+
+Desde #7206, un rechazo ya materializado conserva `rebote_emitido_por`
+(`barrido` o `reconciler`), `rebote_emitido_ts`, `rebote_emitido_destino` y
+`rebote_emitido_numero`. Los escribe el orquestador después de crear el destino;
+un fallo de estampado se registra sin deshacer el rebote. El estado `procesado/`
+por sí solo no distingue un rechazo pendiente de uno ya atendido.
+
+El detector clasifica ese recibo como `consumed` y responde
+`none/rechazo-ya-rebotado`. Un rechazo sin recibo válido conserva su prioridad;
+no se convierte en aprobado ni en skill faltante. `listo/` también cuenta como
+estado vivo en otra fase, cubriendo la ventana antes del barrido.
+
+El on-exit elimina los cuatro campos si los declara un agente. El recibo legítimo
+se escribe después de esa limpieza y se conserva al mover el archivo; no debe
+volver a tratarse como declaración del agente al releer `procesado/`.

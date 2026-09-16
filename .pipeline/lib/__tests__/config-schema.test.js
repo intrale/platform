@@ -14,6 +14,7 @@ const {
     formatErrors,
     formatErrorsForHuman,
     sanitizeKeyName,
+    escapeMarkdownLegacy,
     resolveSide,
     describeConfigFailure,
     formatConfigFailureLog,
@@ -496,18 +497,46 @@ const METACHARS_MARKDOWN_LEGACY = [
     { nombre: 'guion bajo', re: /_/g },
 ];
 
+// Port fiel de tdlib `parse_markdown` v1 (`td/telegram/MessageEntity.cpp:1936`,
+// el parser que el Bot API usa para `parse_mode: 'Markdown'`): el `\` sólo
+// escapa si lo sigue `_`, `*`, `` ` `` o `[`. `\\`, `\x` y un `\` final son
+// literales. NO agregar reglas propias: un oráculo "mejorado" (el anterior
+// consumía CUALQUIER carácter tras el `\`) es lo que produjo el falso positivo
+// "bypass por backslash" de #5570, que no existe en el parser real (#7227).
+const ESCAPABLES_MARKDOWN_V1 = new Set(['_', '*', '`', '[']);
+
 /**
  * Cuenta ocurrencias NO escapadas (las precedidas por `\` ya no delimitan).
  * Telegram interpreta `\_` como un `_` literal, así que ese no cuenta.
+ *
+ * Regla de escape = la de tdlib `parse_markdown` v1 (`MessageEntity.cpp:1936`):
+ * el `\` consume el carácter siguiente SÓLO si es uno de `_ * ` [`. Con
+ * `texto[i + 1] === undefined` (backslash final) `Set.has` da `false` y el `\`
+ * queda literal sin consumir nada.
  */
 function contarSinEscapar(texto, re) {
     let n = 0;
     for (let i = 0; i < texto.length; i++) {
-        if (texto[i] === '\\') { i++; continue; }
+        if (texto[i] === '\\' && ESCAPABLES_MARKDOWN_V1.has(texto[i + 1])) { i++; continue; }
         re.lastIndex = 0;
         if (re.test(texto[i])) n++;
     }
     return n;
+}
+
+/**
+ * Render v1 de tdlib para texto SIN entidades: quita sólo los `\` que escapan
+ * (mismo bucle de `MessageEntity.cpp:1936`). Es lo que el operador termina
+ * viendo en Telegram cuando la salida de `escapeMarkdownLegacy` no forma
+ * ninguna entidad.
+ */
+function renderMarkdownV1(texto) {
+    let out = '';
+    for (let i = 0; i < texto.length; i++) {
+        if (texto[i] === '\\' && ESCAPABLES_MARKDOWN_V1.has(texto[i + 1])) { out += texto[i + 1]; i++; continue; }
+        out += texto[i];
+    }
+    return out;
 }
 
 /** Un mensaje sólo es entregable si cada delimitador queda balanceado. */
@@ -629,6 +658,52 @@ test('#5173 el copy de Telegram va acotado y el del log completo', () => {
 
     // CA-13: con la raíz cerrada, el copy apunta a declarar la sección nueva.
     assert.match(telegram, /config-schema\.js/);
+});
+
+// #7227 — el `\` queda FUERA de la clase escapada de `escapeMarkdownLegacy` a
+// propósito (SEC-1). Este test fija dos cosas contra el parser real de tdlib v1:
+// (a) la salida no deja ningún metacaracter activo para ningún input con
+// backslashes, y (b) el render es fiel al input — o sea, los backslashes del
+// input NO se duplican. Si este test sale rojo, el error está en el test (o en
+// el helper), NUNCA en `escapeMarkdownLegacy`: meter el `\` en la regex
+// duplicaría visualmente cada backslash de los paths Windows en las alertas.
+test('#7227 el escape legacy es fiel al parser de tdlib v1 y no duplica backslashes', () => {
+    // Backslashes construidos con fromCharCode para no pelear con el escaping
+    // del literal JS (mismo truco que provider-exhaustion-pause.test.js).
+    const BS = String.fromCharCode(92);
+    const inputs = [
+        // Los 4 del issue
+        'Gemini ' + BS + '*x',
+        BS + BS + '*x',
+        'C:' + BS + 'Workspaces' + BS + 'x',
+        'fin' + BS,
+        // SEC-4: backslash aislado, doble, final tras metacaracter y el vector
+        // de link de #5467 combinado con backslash.
+        'a' + BS + '_b',
+        BS,
+        BS + BS,
+        '*' + BS,
+        BS + '[x](http://evil)',
+        '](http://evil) [x',
+    ];
+    assert.strictEqual(inputs.length, 10);
+    const contarBS = (t) => t.split(BS).length - 1;
+    for (const input of inputs) {
+        const salida = escapeMarkdownLegacy(input);
+        const ctx = JSON.stringify(input);
+        // (a) cero metacaracteres activos según el oráculo corregido
+        for (const { nombre, re } of METACHARS_MARKDOWN_LEGACY) {
+            assert.strictEqual(contarSinEscapar(salida, re), 0, `${ctx}: ${nombre} activo`);
+        }
+        // (b) fidelidad de render: lo que Telegram muestra es exactamente el input.
+        assert.strictEqual(renderMarkdownV1(salida), input, `${ctx}: render infiel`);
+        // Equivalente contable: la salida suma EXACTAMENTE un `\` por metacaracter
+        // del input y conserva los que ya venían. (La igualdad ingenua
+        // count(\, input) === count(\, salida) falla por diseño en 6 de estos 10.)
+        assert.strictEqual(contarBS(salida),
+            contarBS(input) + (input.match(/[_*`\[]/g) || []).length,
+            `${ctx}: cantidad de backslashes inesperada`);
+    }
 });
 
 test('#5173 sanitizeKeyName acota a 64 chars y colapsa lo no imprimible', () => {
@@ -899,28 +974,51 @@ test('#5801 el config.yaml de HEAD trae el umbral calibrado y su ventana', () =>
     assert.strictEqual(audit.burst_threshold, 360);
     // CA-1 — supera el pico observado convertido a la unidad de la ventana.
     assert.ok(audit.burst_threshold > picoVentana);
-    // El gate de rollout NO se toca en esta entrega: sigue siendo decisión del
-    // operador, y ahora encenderlo ya no puede dejar la ráfaga sin umbral.
-    assert.strictEqual(audit.enabled, false);
+    // #5563 — El gate quedó ENCENDIDO con el prerrequisito humano cumplido
+    // (CA-0: `cloudtrail:LookupEvents` otorgado a `claude-code`, 2026-09-14).
+    // Encenderlo no pudo dejar la ráfaga sin umbral: es lo que #5801 garantizó.
+    assert.strictEqual(audit.enabled, true);
     assert.ok(validateConfig(realConfig()).valid);
 });
 
-test('#5801 las 7 claves de access_audit están declaradas en el esquema', () => {
+test('#5801 las 8 claves de access_audit están declaradas en el esquema', () => {
     // Trampa conocida de `additionalProperties: false`: omitir UNA de las claves
     // que ya viven en el YAML deja el pipeline arrancando pausado por
     // ConfigSchemaViolation. El config real es la guarda.
+    // #5563 sumó `expected_principals_from_hosts` (allowlist derivada por host).
     const CLAVES = [
         'enabled', 'poll_interval_min', 'lookback_min', 'expected_principals',
+        'expected_principals_from_hosts',
         'burst_threshold', 'authorization_failure_threshold', 'cooldown_min',
     ];
     const audit = realConfig().vault.access_audit;
     assert.deepEqual(Object.keys(audit).sort(), [...CLAVES].sort(),
-        'el YAML real trae exactamente estas 7 claves');
+        'el YAML real trae exactamente estas 8 claves');
     for (const clave of CLAVES) {
         const cfg = { vault: { access_audit: { burst_threshold: 360 } } };
         cfg.vault.access_audit[clave] = audit[clave];
         assert.ok(validateConfig(cfg).valid, `la clave ${clave} debe estar declarada`);
     }
+});
+
+test('#5563 vault.access_audit.expected_principals_from_hosts es booleano EXACTO, como hostIdFromHostname', () => {
+    // La allowlist se DERIVA en runtime cuando la señal es `true`. Un string
+    // `"true"` sería truthy para el YAML y dejaría la allowlist vacía (o
+    // derivada por accidente) según quién lo lea: el esquema lo rechaza.
+    const con = (valor) => ({ vault: { access_audit: { burst_threshold: 360, expected_principals_from_hosts: valor } } });
+    assert.ok(validateConfig(con(true)).valid, '`true` se acepta');
+    assert.ok(validateConfig(con(false)).valid, '`false` se acepta');
+    assert.ok(!validateConfig(con('true')).valid, '`"true"` string se rechaza');
+    assert.ok(!validateConfig(con(1)).valid, '`1` se rechaza');
+    // Una clave desconocida bajo `access_audit` sigue rechazada.
+    const typo = { vault: { access_audit: { burst_threshold: 360, expected_principals_from_host: true } } };
+    assert.ok(!validateConfig(typo).valid, 'un typo de la clave no puede pasar en silencio');
+    // El YAML real la trae encendida junto con el gate y sin ARN literal.
+    const audit = realConfig().vault.access_audit;
+    assert.strictEqual(audit.expected_principals_from_hosts, true);
+    assert.deepEqual(audit.expected_principals, []);
+    const yamlText = fs.readFileSync(path.join(__dirname, '..', '..', 'config.yaml'), 'utf8');
+    assert.doesNotMatch(yamlText, /arn:aws:iam::\d{12}/, 'CA-1: ningún ARN literal con account id en el repo público');
 });
 
 test('#5801 el TTL de la caché del vault sigue topado en 300 y el config real lo respeta', () => {

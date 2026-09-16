@@ -202,6 +202,33 @@ test('no-regresion: needs-human sobre un issue que NO es recomendacion se aplica
     assert.ok(!procesada.discarded);
 });
 
+// -----------------------------------------------------------------------------
+// #7232 CA-1 — una recomendación APROBADA es trabajo real: `needs-human` se
+// aplica de punta a punta (el worker invoca `editIssue`, sin `discarded`).
+// Es exactamente la orden que el guardrail descartaba en #5570.
+// -----------------------------------------------------------------------------
+
+test('#7232 CA-1: needs-human sobre una recomendacion APROBADA se aplica y editIssue SI se invoca', () => {
+    const { observado, procesada } = correrOrden(
+        { action: 'label', issue: 5570, label: 'needs-human' },
+        { labels: ['enhancement', 'Ready', 'area:pipeline', 'source:recommendation', 'tipo:recomendacion', 'recommendation:approved'] },
+    );
+    assert.strictEqual(observado.editIssue.length, 1);
+    assert.deepStrictEqual(observado.editIssue[0], { issue: 5570, opts: { addLabel: 'needs-human' } });
+    assert.deepStrictEqual(observado.getIssueLabels, [5570], 'sigue consultando el estado actual (SEC-D)');
+    assert.ok(procesada, 'la orden viaja a listo/');
+    assert.ok(!procesada.discarded, 'no hay discarded');
+});
+
+test('#7232 CA-2: needs-human sobre una recomendacion NO aprobada sigue descartada end-to-end (no regresion #5690)', () => {
+    const { observado, procesada } = correrOrden(
+        { action: 'label', issue: 5578, label: 'needs-human' },
+        { labels: ['source:recommendation', 'tipo:recomendacion', 'needs:triage-backlog'] },
+    );
+    assert.deepStrictEqual(observado.editIssue, [], 'el issue NO debe mutarse');
+    assert.strictEqual(procesada.discarded, 'label-guardrail:mezcla-needs-human-sobre-recomendacion');
+});
+
 test('no-regresion: un comment no pasa por el guardrail', () => {
     const { observado } = correrOrden({ action: 'comment', issue: 902, body: 'hola' });
     assert.strictEqual(observado.comment.length, 1);

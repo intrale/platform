@@ -45,6 +45,18 @@ function makeDeps(fs, over = {}) {
     return deps;
 }
 
+test('#7206 rechazo downstream consumido no vuelve a rebotar aunque no haya liveness', () => {
+    const fs = { desarrollo: { aprobacion: { procesado: {
+        '999706.review': { yaml: { resultado: 'rechazado', rebote_emitido_por: 'barrido' }, mtimeMs: OLD },
+    } } } };
+    const deps = makeDeps(fs);
+    const res = runStuckPhaseReconciler(deps, {});
+    assert.equal(res.requeued, 0);
+    assert.equal(res.escalated, 0);
+    assert.equal(deps.calls.requeue.length, 0);
+    assert.equal(deps.calls.escalate.length, 0);
+});
+
 test('E2E #4507: ux faltante en aprobacion → requeue ux', () => {
     const fs = { desarrollo: { aprobacion: {
         listo: { '4507.review': { yaml: APROB, mtimeMs: OLD } },

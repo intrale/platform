@@ -35,6 +35,7 @@ require('./lib/java-home-normalizer').normalizeJavaHome({
 const { sanitize } = require('./sanitizer');
 const { sanitizeGithubPayload } = require('./lib/sanitize-payload');
 const gateLabelReconciler = require('./lib/gate-label-reconciler');
+const { supersededGateOrder } = require('./lib/gate-order-precedence');
 // #5690 — guardrail fail-closed contra la mezcla `needs-human`/`tipo:recomendacion`
 // y contra la auto-aprobación de recomendaciones desde la cola anónima.
 const labelGuardrail = require('./lib/label-guardrail');
@@ -777,7 +778,11 @@ function processQueue({ ghClient = defaultGhClient } = {}) {
       // tenga que sanitizar primero.)
       data = sanitizeGithubPayload(rawData);
 
-      switch (data.action) {
+      // #7206: la precedencia sobrevive a reintentos y reinicios, y no depende
+      // del orden lexicográfico de prefijos en readdirSync.
+      if (supersededGateOrder(data, { queueDir: QUEUE_DIR, name: file.name })) {
+        log(`Orden QA superada: ${file.name} por ${data.superseded_by}`);
+      } else switch (data.action) {
         case 'comment':
           ghClient.commentIssue(data.issue, data.body);
           log(`Comentario en #${data.issue}`);
