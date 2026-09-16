@@ -69,9 +69,12 @@ const KERNEL_INTERFACES = Object.freeze(new Set(['backend', 'frontend', 'pipelin
 const GATE_NAMES = Object.freeze(['gate0', 'gate2', 'visual']);
 const KNOWN_GATE_MODES = Object.freeze(new Set(['enforce', 'dry-run']));
 
-const LIVE_PROVIDER_IDS = Object.freeze(['anthropic', 'openai-codex', 'gemini-google', 'cerebras', 'nvidia-nim']);
+// Plantel de runtime vigente (los proveedores gratuitos cerebras / nvidia-nim se
+// retiraron en #6563). Debe coincidir con el enum de `providers.order.items` en
+// `contracts/project.schema.json`.
+const LIVE_PROVIDER_IDS = Object.freeze(['anthropic', 'openai-codex', 'gemini-google']);
 const LIVE_PROVIDER_SET = Object.freeze(new Set(LIVE_PROVIDER_IDS));
-const DEFAULT_PROVIDER_ORDER = Object.freeze(['anthropic', 'openai-codex', 'gemini-google', 'cerebras', 'nvidia-nim']);
+const DEFAULT_PROVIDER_ORDER = Object.freeze(['anthropic', 'openai-codex', 'gemini-google']);
 const KNOWN_PR_POLICIES = Object.freeze(new Set(['required', 'direct-to-main']));
 
 // Campos de texto NO confiables sobre los que corre el detector de prompt-injection.
@@ -755,7 +758,7 @@ function deriveProviderOrder(descriptor) {
   }
   const order = Array.isArray(raw) ? raw : DEFAULT_PROVIDER_ORDER;
   const seen = new Set();
-  if (order.length < 1 || order.length > 5) throw new Error('providers.order invalido: cantidad fuera de rango');
+  if (order.length < 1 || order.length > LIVE_PROVIDER_IDS.length) throw new Error('providers.order invalido: cantidad fuera de rango');
   for (const provider of order) {
     if (!LIVE_PROVIDER_SET.has(provider)) throw new Error(`providers.order invalido: provider no permitido ${JSON.stringify(provider)}`);
     if (seen.has(provider)) throw new Error(`providers.order invalido: provider duplicado ${JSON.stringify(provider)}`);

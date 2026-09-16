@@ -17,16 +17,16 @@
 //           CONSUMIDO y su color por umbral (ok/warn/bad); 100% consumido =>
 //           bad (AGOTADA). Regresión dura: motor 55%/11% → panel 55%/11%, no
 //           45%/89%.
-//   #4884 CA-5 — ALCANCE: los demás gauge (free-tiers gemini/cerebras/nvidia/
-//           kimi) siguen pintando su % DISPONIBLE sin invertir, y su copy sigue
-//           diciendo "disponible" (celda + skeleton).
+//   #4884 CA-5 — ALCANCE: los demás gauge (free-tier gemini) siguen pintando
+//           su % DISPONIBLE sin invertir, y su copy sigue diciendo
+//           "disponible" (celda + skeleton).
 //   #4900 — Codex fresco (mode 'event') sincroniza porcentaje, barra, color y
 //           accesibilidad, SIEMPRE con semántica DISPONIBLE (= 100 - consumo
 //           del slice). Reemplaza el "✓ sin límite" legacy de #4533.
 //   CA-5  — `pillTextFor(state)` para `stale`/`missing` devuelve la etiqueta de
 //           estado, nunca un porcentaje; `pctTextClient(null)` → "--%" (no "0%").
-//   UX-G5 — `MZ_ACTIVE_PROVIDERS` (fuente única) lista exactamente los 5
-//           proveedores reales, sin el fantasma `groq`.
+//   UX-G5 — `MZ_ACTIVE_PROVIDERS` (fuente única) lista exactamente los 3
+//           proveedores reales, sin retirados (`groq`, `cerebras`, `nvidia-nim`).
 // =============================================================================
 'use strict';
 
@@ -97,20 +97,20 @@ function loadPillHelpers() {
 // UX-G4 — "sin dato" literal, nunca 0%, cuando el bucket no tiene dato.
 // ---------------------------------------------------------------------------
 test('UX-G4: _mzHydrateWinCell con mode nodata escribe "sin dato" (no 0%, no número)', () => {
-    const { cid, els } = makeCell('cerebras', 'short');
+    const { cid, els } = makeCell('gemini-google', 'short');
     const { _mzHydrateWinCell } = loadWinCellHelper(els);
 
     // Sub-shape "sin dato" del slice.
-    const r = _mzHydrateWinCell('cerebras', 'short', { mode: 'nodata', available: null, win: 'Min' });
+    const r = _mzHydrateWinCell('gemini-google', 'short', { mode: 'nodata', available: null, win: 'Min' });
     assert.equal(els[cid + '-pct'].textContent, 'sin dato', 'debe escribir el literal "sin dato"');
     assert.notEqual(els[cid + '-pct'].textContent, '0%', 'NUNCA "0%"');
     assert.ok(els[cid]._classes.has('mz-qm-nodata'), 'la celda marca estado sin dato');
     assert.equal(r.healthy, false, 'sin dato no cuenta como proveedor sano');
 
     // b = null también cae a "sin dato".
-    const c2 = makeCell('cerebras', 'long');
+    const c2 = makeCell('gemini-google', 'long');
     const { _mzHydrateWinCell: h2 } = loadWinCellHelper(c2.els);
-    h2('cerebras', 'long', null);
+    h2('gemini-google', 'long', null);
     assert.equal(c2.els[c2.cid + '-pct'].textContent, 'sin dato', 'b null → sin dato');
 });
 
@@ -154,17 +154,17 @@ test('#4884: ANTHROPIC gauge sin `pct` en el slice degrada a 100 - available (nu
 });
 
 // ---------------------------------------------------------------------------
-// #4884 CA-5 — ALCANCE "SOLO Anthropic". Los free-tiers en mode 'gauge'
-// (gemini-google, cerebras, nvidia-nim, kimi-moonshot) NO se invierten: su
-// `available` es la disponibilidad GENUINA (100*remaining/limit,
-// provider-quota.js:166), no un `100 - consumido`. Invertirlos sería un bug
-// nuevo de la misma clase que #4884 corrige. Estos casos son la red de
-// seguridad: hoy los free-tiers están en 'nodata', pero `recordSample()` es
-// código vivo y en cuanto reporten headers x-ratelimit-* la celda se hidrata.
+// #4884 CA-5 — ALCANCE "SOLO Anthropic". El free-tier en mode 'gauge'
+// (gemini-google) NO se invierte: su `available` es la disponibilidad GENUINA
+// (100*remaining/limit, provider-quota.js:166), no un `100 - consumido`.
+// Invertirlo sería un bug nuevo de la misma clase que #4884 corrige. Estos
+// casos son la red de seguridad: hoy el free-tier está en 'nodata', pero
+// `recordSample()` es código vivo y en cuanto reporte metadatos de cuota la
+// celda se hidrata.
 // ---------------------------------------------------------------------------
-test('#4884 CA-5: cerebras gauge available=70 sigue mostrando 70% DISPONIBLE (no invertido a 30%)', () => {
-    const { cid, els } = makeCell('cerebras', 'short');
-    const r = loadWinCellHelper(els)._mzHydrateWinCell('cerebras', 'short',
+test('#4884 CA-5: gemini gauge available=70 sigue mostrando 70% DISPONIBLE (no invertido a 30%)', () => {
+    const { cid, els } = makeCell('gemini-google', 'short');
+    const r = loadWinCellHelper(els)._mzHydrateWinCell('gemini-google', 'short',
         { mode: 'gauge', available: 70, win: 'Min', resetAt: null });
     assert.equal(els[cid + '-pct'].textContent, '70%', 'free-tier: pinta su DISPONIBLE tal cual');
     assert.notEqual(els[cid + '-pct'].textContent, '30%', 'NUNCA invertido (regresión del rebote rev-1)');
@@ -175,14 +175,15 @@ test('#4884 CA-5: cerebras gauge available=70 sigue mostrando 70% DISPONIBLE (no
     assert.equal(r.healthy, true, '70% disponible es un proveedor sano');
 });
 
-test('#4884 CA-5: los 4 free-tiers gauge conservan la semántica DISPONIBLE + color por umbral #4533', () => {
+test('#4884 CA-5: el gauge free-tier conserva la semántica DISPONIBLE + color por umbral #4533', () => {
     // [key, available, % esperado, clase esperada] — la clase sale de
     // _mzThresholdClass (avail<20→bad, avail<50→warn, resto ok), intacta.
+    // Un solo free-tier vigente (#6563): se recorren los tres umbrales con él.
     const CASOS = [
         ['gemini-google', 70, '70%', 'ok'],
-        ['cerebras',      45, '45%', 'warn'],
-        ['nvidia-nim',    15, '15%', 'bad'],
-        ['kimi-moonshot', 95, '95%', 'ok'],
+        ['gemini-google', 45, '45%', 'warn'],
+        ['gemini-google', 15, '15%', 'bad'],
+        ['gemini-google', 95, '95%', 'ok'],
     ];
     for (const [key, available, esperado, cls] of CASOS) {
         const { cid, els } = makeCell(key, 'short');
@@ -195,8 +196,8 @@ test('#4884 CA-5: los 4 free-tiers gauge conservan la semántica DISPONIBLE + co
 });
 
 test('#4884 CA-5: free-tier con available=0 marca "AGOTADA (0% disponible)" y NO sano', () => {
-    const { cid, els } = makeCell('cerebras', 'long');
-    const r = loadWinCellHelper(els)._mzHydrateWinCell('cerebras', 'long',
+    const { cid, els } = makeCell('gemini-google', 'long');
+    const r = loadWinCellHelper(els)._mzHydrateWinCell('gemini-google', 'long',
         { mode: 'gauge', available: 0, win: 'Día', resetAt: null });
     assert.equal(els[cid + '-pct'].textContent, '0%');
     assert.match(els[cid].getAttribute('title'), /AGOTADA \(0% disponible\)/, 'agotada en semántica disponible');
@@ -208,7 +209,7 @@ test('#4884 CA-5: free-tier con available=0 marca "AGOTADA (0% disponible)" y NO
 test('#4884 CA-4: el skeleton _mzWinCell dice "consumida" solo en Anthropic; el resto "disponible"', () => {
     assert.match(home._mzWinCell('anthropic', 'short', '5h'), /cuota consumida real/,
         'la fila Anthropic anuncia consumido');
-    for (const key of ['cerebras', 'gemini-google', 'nvidia-nim', 'openai-codex']) {
+    for (const key of ['gemini-google', 'openai-codex']) {
         const html = home._mzWinCell(key, 'short', 'Min');
         assert.match(html, /cuota disponible real/, `${key}: el skeleton sigue diciendo "disponible"`);
         assert.ok(!/cuota consumida/.test(html), `${key}: el skeleton NUNCA dice "consumida"`);
@@ -339,9 +340,8 @@ test('#4900: los extremos NO se leen con la polaridad invertida (anti-regresión
 test('#4900: el rótulo accesible del estado fresco dice "disponible" (igual que gauge)', () => {
     // Baseline de comparación: un gauge de vista DISPONIBLE. Desde #4884 CA-5
     // `anthropic` es la ÚNICA celda que pinta CONSUMIDO, así que no sirve como
-    // referencia de polaridad; los free-tiers (gemini-google, cerebras,
-    // nvidia-nim) siguen pintando disponible y son la matriz con la que la
-    // celda Codex debe leerse igual.
+    // referencia de polaridad; el free-tier (gemini-google) sigue pintando
+    // disponible y es la matriz con la que la celda Codex debe leerse igual.
     const evt = makeCell('openai-codex', 'short');
     loadWinCellHelper(evt.els)._mzHydrateWinCell('openai-codex', 'short',
         { mode: 'event', eventState: 'ok', pct: 28, win: '5H' });
@@ -485,10 +485,12 @@ test('CA-5: pillTextFor(stale/missing) devuelve etiqueta de estado, nunca un %',
 });
 
 // ---------------------------------------------------------------------------
-// UX-G5 — fuente única de proveedores: 5 reales, sin groq.
+// UX-G5 — fuente única de proveedores: 3 reales, sin retirados.
 // ---------------------------------------------------------------------------
-test('UX-G5: MZ_ACTIVE_PROVIDERS lista los 5 providers reales sin groq', () => {
+test('UX-G5: MZ_ACTIVE_PROVIDERS lista los 3 providers reales sin retirados', () => {
     assert.deepEqual([...home.MZ_ACTIVE_PROVIDERS].sort(),
-        ['anthropic', 'cerebras', 'gemini-google', 'nvidia-nim', 'openai-codex'].sort());
-    assert.ok(!home.MZ_ACTIVE_PROVIDERS.includes('groq'), 'groq no debe estar en la fuente única');
+        ['anthropic', 'gemini-google', 'openai-codex'].sort());
+    for (const retirado of ['groq', 'cerebras', 'nvidia-nim', 'kimi-moonshot']) {
+        assert.ok(!home.MZ_ACTIVE_PROVIDERS.includes(retirado), `${retirado} no debe estar en la fuente única`);
+    }
 });

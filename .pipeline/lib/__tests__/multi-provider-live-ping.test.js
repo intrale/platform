@@ -12,6 +12,27 @@ const os = require('node:os');
 
 const livePing = require('../multi-provider/live-ping');
 
+// #6563 — Tras la baja de cerebras/nvidia-nim no queda en el plantel ningún
+// provider que se pinguee por API key: anthropic, codex y gemini-google
+// (Antigravity) son OAuth y `ping()` hace short-circuit por el probe del CLI.
+// El camino HTTP (throttle facturable, clasificación de status, endpoints
+// literales anti-SSRF) se conserva como infraestructura, así que para
+// ejercitarlo estos tests re-declaran temporalmente a `gemini-google` (y a
+// `anthropic` cuando hace falta un segundo provider) como `api_key` en la
+// lista gestionada que consulta `ping()`. `getRawKey` sigue usando la spec
+// real (paths canónico/legacy de cada provider). Se restaura al terminar.
+const secretsRw = require('../multi-provider/secrets-rw');
+const REAL_MANAGED_KEYS = secretsRw.MANAGED_KEYS;
+function asApiKeyProviders(providers) {
+    return Object.freeze(REAL_MANAGED_KEYS.map((k) => (providers.includes(k.provider)
+        ? Object.freeze({ ...k, auth_mode: 'api_key', catalog_probe: undefined, cli_binary: undefined })
+        : k)));
+}
+async function withHttpPingProviders(providers, fn) {
+    secretsRw.MANAGED_KEYS = asApiKeyProviders(providers);
+    try { return await fn(); } finally { secretsRw.MANAGED_KEYS = REAL_MANAGED_KEYS; }
+}
+
 // #3965 CA-4 — `ping()` ahora mantiene un cooldown/concurrencia server-side por
 // proveedor en estado de módulo. Estos tests verifican la CLASIFICACIÓN del
 // status code (no el throttle), y cada uno pingea el mismo set de proveedores en
@@ -51,7 +72,8 @@ function fakeHttp({ status = 200, body = '' } = {}) {
 test('isAllowedProvider acepta solo los providers conocidos', () => {
     assert.equal(livePing.isAllowedProvider('anthropic'), true);
     assert.equal(livePing.isAllowedProvider('openai'), true);
-    assert.equal(livePing.isAllowedProvider('cerebras'), true);
+    assert.equal(livePing.isAllowedProvider('gemini-google'), true);
+    assert.equal(livePing.isAllowedProvider('cerebras'), false, 'retirado en #6563');
     assert.equal(livePing.isAllowedProvider('attacker.com'), false);
     assert.equal(livePing.isAllowedProvider('file://etc/passwd'), false);
     assert.equal(livePing.isAllowedProvider(''), false);
@@ -67,9 +89,11 @@ test('ping devuelve no_key_configured cuando falta la key (provider api_key)', a
     const dir = tmpDir();
     const f = path.join(dir, 'config.json');
     writeKeys(f, {});
-    // #4402 — `openai` pasó a auth_mode:'oauth' (short-circuit CLI). Usamos un
-    // provider api_key puro (`cerebras`) para ejercer el gate `no_key_configured`.
-    const r = await livePing.ping({ provider: 'cerebras', secretsPath: f });
+    // #4402 — `openai` pasó a auth_mode:'oauth' (short-circuit CLI). #6563 — ya
+    // no queda provider api_key en el plantel: se ejercita el gate con
+    // `gemini-google` re-declarado como api_key (ver helper arriba).
+    const r = await withHttpPingProviders(['gemini-google'], () =>
+        livePing.ping({ provider: 'gemini-google', secretsPath: f }));
     assert.equal(r.ok, false);
     assert.equal(r.reason, 'no_key_configured');
 });
@@ -165,13 +189,12 @@ test('RS-5.1/5.2 — el resultado OAuth NO contiene material de token/credencial
 
 // ─── Free providers (#3260) ─────────────────────────────────────────────────
 
-test('isAllowedProvider acepta los free providers vivos (#3260 + #3243 + #3353)', () => {
-    // #3353 — groq removido; los 3 free providers vivos quedan acá.
+test('isAllowedProvider acepta sólo el free provider vivo (#3260 + #3353 + #6563)', () => {
+    // #3353 — groq removido; #6563 — cerebras y nvidia-nim retirados.
     assert.equal(livePing.isAllowedProvider('groq'), false, 'groq debería estar removido tras #3353');
     assert.equal(livePing.isAllowedProvider('gemini-google'), true);
-    assert.equal(livePing.isAllowedProvider('cerebras'), true);
-    // #3243 — NVIDIA NIM
-    assert.equal(livePing.isAllowedProvider('nvidia-nim'), true);
+    assert.equal(livePing.isAllowedProvider('cerebras'), false, 'cerebras retirado en #6563');
+    assert.equal(livePing.isAllowedProvider('nvidia-nim'), false, 'nvidia-nim retirado en #6563');
 });
 
 // Tests "ping Groq con ..." se eliminaron en #3353 — Groq descontinuado.
@@ -192,93 +215,76 @@ test('ping Gemini-Google usa el probe CLI-OAuth y no una API key HTTP', async ()
     assert.equal(httpCalls, 0);
 });
 
-test('ping Cerebras con status 200 devuelve authenticated', async () => {
+// ─── Camino HTTP por API key (clasificación de status) ───────────────────────
+// #6563 — se ejercita con `gemini-google` re-declarado como api_key (helper).
+
+const GEMINI_KEY = { gemini_google_api_key: 'AIzaSyTest_1234567890abcdef000' };
+
+test('ping HTTP con status 200 devuelve authenticated', async () => {
     const dir = tmpDir();
     const f = path.join(dir, 'config.json');
-    writeKeys(f, { cerebras_api_key: 'csk_test_1234567890abcdef0000' });
-    const r = await livePing.ping({ provider: 'cerebras', secretsPath: f, httpImpl: fakeHttp({ status: 200 }) });
-    assert.equal(r.ok, true);
-});
-
-test('ping Cerebras con 401 → invalid_credentials', async () => {
-    const dir = tmpDir();
-    const f = path.join(dir, 'config.json');
-    writeKeys(f, { cerebras_api_key: 'csk_test_1234567890abcdef0000' });
-    const r = await livePing.ping({ provider: 'cerebras', secretsPath: f, httpImpl: fakeHttp({ status: 401 }) });
-    assert.equal(r.reason, 'invalid_credentials');
-});
-
-// ─── NVIDIA NIM (#3243) ──────────────────────────────────────────────────────
-
-test('ping NVIDIA NIM con status 200 devuelve authenticated', async () => {
-    const dir = tmpDir();
-    const f = path.join(dir, 'config.json');
-    writeKeys(f, { nvidia_nim_api_key: 'nvapi-test-1234567890abcdef0000' });
-    const r = await livePing.ping({ provider: 'nvidia-nim', secretsPath: f, httpImpl: fakeHttp({ status: 200 }) });
+    writeKeys(f, GEMINI_KEY);
+    const r = await withHttpPingProviders(['gemini-google'], () =>
+        livePing.ping({ provider: 'gemini-google', secretsPath: f, httpImpl: fakeHttp({ status: 200 }) }));
     assert.equal(r.ok, true);
     assert.equal(r.reason, 'authenticated');
-    assert.equal(r.provider, 'nvidia-nim');
+    assert.equal(r.provider, 'gemini-google');
 });
 
-test('ping NVIDIA NIM con 401 → invalid_credentials', async () => {
+test('ping HTTP con 401 → invalid_credentials', async () => {
     const dir = tmpDir();
     const f = path.join(dir, 'config.json');
-    writeKeys(f, { nvidia_nim_api_key: 'nvapi-test-1234567890abcdef0000' });
-    const r = await livePing.ping({ provider: 'nvidia-nim', secretsPath: f, httpImpl: fakeHttp({ status: 401 }) });
+    writeKeys(f, GEMINI_KEY);
+    const r = await withHttpPingProviders(['gemini-google'], () =>
+        livePing.ping({ provider: 'gemini-google', secretsPath: f, httpImpl: fakeHttp({ status: 401 }) }));
     assert.equal(r.ok, false);
     assert.equal(r.reason, 'invalid_credentials');
 });
 
-test('ping NVIDIA NIM con 403 → forbidden', async () => {
+test('ping HTTP con 403 → forbidden', async () => {
     const dir = tmpDir();
     const f = path.join(dir, 'config.json');
-    writeKeys(f, { nvidia_nim_api_key: 'nvapi-test-1234567890abcdef0000' });
-    const r = await livePing.ping({ provider: 'nvidia-nim', secretsPath: f, httpImpl: fakeHttp({ status: 403 }) });
+    writeKeys(f, GEMINI_KEY);
+    const r = await withHttpPingProviders(['gemini-google'], () =>
+        livePing.ping({ provider: 'gemini-google', secretsPath: f, httpImpl: fakeHttp({ status: 403 }) }));
     assert.equal(r.reason, 'forbidden');
 });
 
-test('ping NVIDIA NIM con 429 + insufficient_quota → quota_exhausted', async () => {
+test('ping HTTP con 429 + insufficient_quota → quota_exhausted', async () => {
     const dir = tmpDir();
     const f = path.join(dir, 'config.json');
-    writeKeys(f, { nvidia_nim_api_key: 'nvapi-test-1234567890abcdef0000' });
-    const r = await livePing.ping({
-        provider: 'nvidia-nim',
+    writeKeys(f, GEMINI_KEY);
+    const r = await withHttpPingProviders(['gemini-google'], () => livePing.ping({
+        provider: 'gemini-google',
         secretsPath: f,
         httpImpl: fakeHttp({ status: 429, body: '{"error":{"code":"insufficient_quota"}}' }),
-    });
+    }));
     assert.equal(r.reason, 'quota_exhausted');
 });
 
-test('ping NVIDIA NIM con 429 plain → rate_limited', async () => {
+test('ping HTTP con 429 plain → rate_limited', async () => {
     const dir = tmpDir();
     const f = path.join(dir, 'config.json');
-    writeKeys(f, { nvidia_nim_api_key: 'nvapi-test-1234567890abcdef0000' });
-    const r = await livePing.ping({
-        provider: 'nvidia-nim',
+    writeKeys(f, GEMINI_KEY);
+    const r = await withHttpPingProviders(['gemini-google'], () => livePing.ping({
+        provider: 'gemini-google',
         secretsPath: f,
         httpImpl: fakeHttp({ status: 429, body: '{"error":{"code":"rate_limit_exceeded"}}' }),
-    });
+    }));
     assert.equal(r.reason, 'rate_limited');
 });
 
-test('NVIDIA NIM usa header Authorization Bearer (SR-2: nunca query string)', () => {
-    const spec = livePing.PROVIDER_PING_ENDPOINTS['nvidia-nim'];
-    assert.ok(spec.url.startsWith('https://integrate.api.nvidia.com/v1/models'),
-        'NVIDIA NIM debe pingear /v1/models hardcoded (SR-1)');
-    assert.ok(!spec.url.includes('?'), 'NVIDIA NIM URL no debe llevar query string');
-    const headers = spec.headers('nvapi-TEST');
-    assert.equal(headers['authorization'], 'Bearer nvapi-TEST',
-        'NVIDIA NIM debe enviar la key en header Authorization Bearer');
-    // No debería haber otros headers de auth alternativos.
-    assert.ok(!('x-api-key' in headers), 'no debe haber x-api-key suelto');
-    assert.ok(!('key' in headers), 'no debe haber "key" suelto');
+test('#6563 — PROVIDER_PING_ENDPOINTS no conserva endpoints de providers retirados', () => {
+    assert.equal('cerebras' in livePing.PROVIDER_PING_ENDPOINTS, false);
+    assert.equal('nvidia-nim' in livePing.PROVIDER_PING_ENDPOINTS, false);
+    assert.deepEqual(Object.keys(livePing.PROVIDER_PING_ENDPOINTS).sort(), ['anthropic', 'gemini-google', 'openai']);
 });
 
-test('NVIDIA NIM usa GET /v1/models (SR-3: nunca /v1/chat/completions)', () => {
-    const spec = livePing.PROVIDER_PING_ENDPOINTS['nvidia-nim'];
-    assert.equal(spec.method, 'GET', 'NVIDIA NIM ping debe ser GET');
-    assert.ok(spec.url.endsWith('/v1/models'), 'NVIDIA NIM ping debe usar /v1/models (no completions)');
-    assert.equal(spec.body(), null, 'NVIDIA NIM ping no debe enviar body');
+test('Gemini usa GET de listado de modelos (SR-3: nunca /v1/chat/completions)', () => {
+    const spec = livePing.PROVIDER_PING_ENDPOINTS['gemini-google'];
+    assert.equal(spec.method, 'GET', 'el ping debe ser GET');
+    assert.ok(!spec.url.includes('chat/completions'), 'el ping debe usar el listado (no completions)');
+    assert.equal(spec.body(), null, 'el ping no debe enviar body');
 });
 
 test('PROVIDER_PING_ENDPOINTS solo expone URLs HTTPS literales hardcoded (anti-SSRF)', () => {
@@ -310,12 +316,12 @@ test('Gemini-Google usa header x-goog-api-key, NUNCA query string (SR-2)', () =>
 test('#5888 R-J: ping sin expectModels devuelve exactamente el shape de HEAD', async () => {
     const dir = tmpDir();
     const f = path.join(dir, 'config.json');
-    writeKeys(f, { cerebras_api_key: 'csk_test_aaaaaaaaaaaaaaaaaaaa' });
-    const r = await livePing.ping({
-        provider: 'cerebras',
+    writeKeys(f, GEMINI_KEY);
+    const r = await withHttpPingProviders(['gemini-google'], () => livePing.ping({
+        provider: 'gemini-google',
         secretsPath: f,
-        httpImpl: fakeHttp({ status: 200, body: '{"object":"list","data":[{"id":"gpt-oss-120b"}]}' }),
-    });
+        httpImpl: fakeHttp({ status: 200, body: '{"models":[{"name":"models/gemini-3.8-flash-medium"}]}' }),
+    }));
     assert.deepEqual(Object.keys(r).sort(), ['latency_ms', 'ok', 'provider', 'reason', 'statusCode']);
     assert.equal('catalog_check' in r, false);
     assert.equal(r.ok, true);

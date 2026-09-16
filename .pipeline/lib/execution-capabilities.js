@@ -10,10 +10,11 @@
 //                                    autoriza X?"). Ahí vive `tool_use_gated`.
 //   - execution-capabilities.js   → eje CAPACIDAD DEL MOTOR (este módulo).
 //
-// Mezclarlos es un fail-open (guru #1 / SEC-1 de #4839): `cerebras` tiene
-// `tool_use_gated` en el eje autorización (no está restringido por modo) pero
-// su motor NO sostiene tool-use agéntico (`supports_tool_use: false`). Reusar
-// esa capability para el matching de fallback dejaría pasar cerebras en falso.
+// Mezclarlos es un fail-open (guru #1 / SEC-1 de #4839): un provider puede
+// tener `tool_use_gated` en el eje autorización (no está restringido por modo)
+// y aun así NO sostener tool-use agéntico en su motor (`supports_tool_use:
+// false`) — era el caso de `cerebras`, retirado en #6563. Reusar esa capability
+// para el matching de fallback lo dejaría pasar en falso.
 //
 // El validador de fallbacks (lib/agent-models-validate.js) usa este catálogo
 // como enum cerrado y aplica matching FAIL-CLOSED: un rol que exige una

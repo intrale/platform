@@ -14,7 +14,7 @@
 //   5. shouldRespondReducedMode con enabled:false → false (CA-7: regresión cero).
 //
 // Modo reducido = pagos (billing:'paid' → Anthropic, Codex) todos gateados por
-// cuota PERO queda un free (billing:'free' → Cerebras) sano como candidato. En
+// cuota PERO queda un free (billing:'free' → Gemini) sano como candidato. En
 // ese estado el Commander responde advisory y NO spawnea el free (PO D1).
 // =============================================================================
 
@@ -31,7 +31,7 @@ const commanderMP = require('../../commander/multi-provider');
 const { assertCopyLimpio } = require('../../__tests__/helpers/forbidden-copy-patterns');
 
 // agent-models.json mínimo: telegram-commander con primario anthropic (paid),
-// fallback openai-codex (paid) y cerebras (free). auth_mode oauth/api_key sin
+// fallback openai-codex (paid) y gemini-google (free hasta #6564). auth_mode oauth sin
 // secretos requeridos en el test → determinístico. La CLAVE del issue es el
 // campo `billing` por provider (fuente de verdad de "¿hay pago?").
 function agentModels() {
@@ -46,8 +46,8 @@ function agentModels() {
                 launcher: 'codex', model: 'gpt-5.5', auth_mode: 'oauth',
                 credentials_env: ['OPENAI_API_KEY'], billing: 'paid',
             },
-            cerebras: {
-                launcher: 'cerebras', model: 'gpt-oss-120b',
+            'gemini-google': {
+                launcher: 'gemini-google', model: 'gemini-3.8-flash-medium', auth_mode: 'oauth',
                 credentials_env: [], billing: 'free',
             },
         },
@@ -57,7 +57,7 @@ function agentModels() {
                 model_override: 'claude-sonnet-4-6',
                 fallbacks: [
                     { provider: 'openai-codex', model_override: 'gpt-5.5' },
-                    { provider: 'cerebras', model_override: 'gpt-oss-120b' },
+                    { provider: 'gemini-google', model_override: 'gemini-3.8-flash-medium' },
                 ],
             },
         },
@@ -129,11 +129,11 @@ function quotaFlagMulti(providers) {
 // -----------------------------------------------------------------------------
 // CA-1 — todos los pagos gateados + free sano → isReducedMode === true.
 // -----------------------------------------------------------------------------
-test('#4870 CA-1 · Anthropic + Codex gateados + Cerebras (free) sano → isReducedMode=true', () => {
+test('#4870 CA-1 · Anthropic + Codex gateados + Gemini (free) sano → isReducedMode=true', () => {
     withTempPipeline({
         'agent-models.json': JSON.stringify(agentModels()),
-        // Ambos PAGOS agotados; el free (cerebras) NO está en el flag → la cadena
-        // resuelve a cerebras y NO está gateada, pero es free ⇒ modo reducido.
+        // Ambos PAGOS agotados; el free (gemini) NO está en el flag → la cadena
+        // resuelve a gemini y NO está gateada, pero es free ⇒ modo reducido.
         'quota-exhausted.json': quotaFlagMulti(['anthropic', 'openai-codex']),
     }, (tmp) => {
         assert.equal(commanderMP.isReducedMode({ pipelineDir: tmp }), true);
@@ -141,7 +141,7 @@ test('#4870 CA-1 · Anthropic + Codex gateados + Cerebras (free) sano → isRedu
         // Sanity: la resolución real salta al free sano con billing 'free'.
         const res = commanderMP.resolveCommanderProvider({ pipelineDir: tmp, log: () => {} });
         assert.equal(res.gated, false);
-        assert.equal(res.provider, 'cerebras', 'la cadena efectiva usa el free sano');
+        assert.equal(res.provider, 'gemini-google', 'la cadena efectiva usa el free sano');
         assert.equal(res.providerBilling, 'free', 'el candidato resuelto es free');
     });
 });
@@ -173,10 +173,10 @@ test('#4870 CA-4 · sin flags (primario Anthropic pago sano) → isReducedMode=f
 // -----------------------------------------------------------------------------
 // CA-5 — chain enteramente gateada (ni pagos ni frees) → gated:true → NO reduced.
 // -----------------------------------------------------------------------------
-test('#4870 CA-5 · Anthropic + Codex + Cerebras TODOS gateados → gated:true → isReducedMode=false', () => {
+test('#4870 CA-5 · Anthropic + Codex + Gemini TODOS gateados → gated:true → isReducedMode=false', () => {
     withTempPipeline({
         'agent-models.json': JSON.stringify(agentModels()),
-        'quota-exhausted.json': quotaFlagMulti(['anthropic', 'openai-codex', 'cerebras']),
+        'quota-exhausted.json': quotaFlagMulti(['anthropic', 'openai-codex', 'gemini-google']),
     }, (tmp) => {
         // La cadena entera gateada NO es modo reducido (es "todos caídos").
         assert.equal(commanderMP.isReducedMode({ pipelineDir: tmp }), false);
@@ -203,7 +203,7 @@ test('#4870 CA-3 · el canned NO filtra secrets, nombres de modelo, ni jerga int
     const text = commanderMP.cannedReducedModeResponse({ downProviders: ['anthropic', 'openai-codex'] });
     // Sin nombres de modelos ni secrets ni términos internos.
     assert.doesNotMatch(text, /claude-|gpt-|gpt-oss|deepseek|zai-glm/i, 'sin nombres de modelo');
-    assert.doesNotMatch(text, /API_KEY|CEREBRAS|NVIDIA_NIM|Bearer|sk-/i, 'sin secrets/credenciales');
+    assert.doesNotMatch(text, /API_KEY|GEMINI|Bearer|sk-/i, 'sin secrets/credenciales');
     assert.doesNotMatch(text, /\bgated\b|providerBilling|\bchain\b/i, 'sin jerga interna');
     // #6179 CA-8 — tercer test anti-jerga reapuntado a la lista CENTRALIZADA.
     // Con tres listas propias alcanzaba con agregar un patrón nuevo en una sola

@@ -246,63 +246,33 @@ function stripReservedChildSecrets(candidateEnv = {}, operatorEnv = process.env)
 }
 
 // -----------------------------------------------------------------------------
-// PROVIDER_STATIC_ENV — variables de entorno ESTÁTICAS por provider (#4880).
-//
-// A diferencia de las API keys (que vienen del env del pulpo hidratado desde
-// credentials.json), estas son CONSTANTES DE CÓDIGO: no derivan del issue, del
-// prompt, del título ni de ningún input de usuario. Se vuelcan al env del child
-// SOLO cuando el provider activo coincide con la clave del mapa.
-//
-// Caso `kimi-moonshot` (SEC-2, #4880): Kimi (Moonshot) se integra como drop-in
-// de Claude Code apuntando `ANTHROPIC_BASE_URL` a su endpoint Anthropic-compat.
-// Requisitos de seguridad que este diseño satisface:
-//   - La URL es una CONSTANTE HTTPS literal (no `NODE_TLS_REJECT_UNAUTHORIZED=0`,
-//     sin proxy, jamás derivada de input). Previene SSRF / redirección de
-//     tráfico Anthropic a un endpoint atacante.
-//   - Se inyecta SOLO en el child con `providerName === 'kimi-moonshot'`. NUNCA
-//     global en el pulpo ni en childs de anthropic/codex/otros → no envenena el
-//     tráfico Anthropic legítimo (que va a api.anthropic.com por default).
-//   - `ANTHROPIC_BASE_URL` no está en SYSTEM_ALLOWLIST ni en ningún scope, así
-//     que aunque el operador la exporte global NUNCA se propaga desde processEnv:
-//     el único origen posible es este mapa.
-//
-// **NO agregar entradas sin justificación de seguridad** — cada var estática es
-// una decisión de plataforma (igual criterio que SYSTEM_ALLOWLIST / SCOPES).
-const PROVIDER_STATIC_ENV = Object.freeze({
-    'kimi-moonshot': Object.freeze({
-        // Endpoint Anthropic-compatible de Moonshot (spike #4871). El launcher
-        // `claude` habla contra esta base URL en vez de api.anthropic.com.
-        ANTHROPIC_BASE_URL: 'https://api.moonshot.ai/anthropic',
-    }),
-});
-
-// -----------------------------------------------------------------------------
 // PROVIDER_MODEL_ENV — nombre de la variable de entorno por la que cada provider
 // NO-Anthropic espera recibir el modelo a usar (#6272).
 //
-// Mismo criterio de diseño que PROVIDER_STATIC_ENV (#4880): CONSTANTE de código,
-// scopeada al provider ACTIVO del despacho, jamás derivada de `processEnv` ni de
-// input del operador. El valor que se inyecta es el modelo resuelto, y pasa antes
-// por la whitelist estricta de `lib/model-propagation.js` (SR-A.1).
+// CONSTANTE de código, scopeada al provider ACTIVO del despacho, jamás derivada
+// de `processEnv` ni de input del operador. El valor que se inyecta es el modelo
+// resuelto, y pasa antes por la whitelist estricta de `lib/model-propagation.js`
+// (SR-A.1).
 //
-// Los providers cuyo launcher es `claude` (anthropic, kimi-moonshot) NO figuran
-// acá a propósito: reciben el modelo por el flag `--model` en el array de args
+// Los providers cuyo launcher es `claude` (anthropic) NO figuran acá a
+// propósito: reciben el modelo por el flag `--model` en el array de args
 // (ver providers/anthropic.js::buildSpawn), no por env. `lib/model-propagation.js`
 // decide el canal (`arg` vs `env`) y usa este mapa como fuente única de nombres.
 //
 // Los nombres coinciden con lo que cada handler YA lee hoy:
 //   - openai-codex   → providers/openai-codex.js  (`env.CODEX_MODEL`)
 //   - gemini-google  → providers/gemini-google.js (SÓLO `env.GEMINI_MODEL`; `AGY_MODEL` se ignora — #6858)
-//   - cerebras       → providers/cerebras.js      (`env.CEREBRAS_MODEL`)
-//   - nvidia-nim     → providers/nvidia-nim.js    (`env.NVIDIA_NIM_MODEL`)
+//
+// Nota histórica: el mapa `PROVIDER_STATIC_ENV` (#4880, `ANTHROPIC_BASE_URL`
+// para el drop-in de Kimi) se eliminó junto con el provider en #6563. Ningún
+// provider vigente necesita env estático: NO reintroducirlo sin justificación
+// de seguridad (SSRF / redirección del tráfico Anthropic).
 //
 // **NO agregar entradas sin que el handler correspondiente lea esa variable** —
 // el guardrail anti-regresión (CA-7) verifica justamente esa correspondencia.
 const PROVIDER_MODEL_ENV = Object.freeze({
     'openai-codex': 'CODEX_MODEL',
     'gemini-google': 'GEMINI_MODEL',
-    'cerebras': 'CEREBRAS_MODEL',
-    'nvidia-nim': 'NVIDIA_NIM_MODEL',
 });
 
 // -----------------------------------------------------------------------------
@@ -547,19 +517,6 @@ function buildChildEnv(opts = {}) {
         out[providerKeyVar] = processEnv[providerKeyVar];
     }
 
-    // 3.b Env estático por provider (#4880). Constantes de código scopeadas al
-    //     provider activo (ej. ANTHROPIC_BASE_URL → endpoint Kimi para
-    //     `kimi-moonshot`). Se vuelca DESPUÉS de la key del provider y ANTES de
-    //     los scopes/pipelineExtras. Nunca se toma de processEnv (SEC-2): el
-    //     único origen es PROVIDER_STATIC_ENV, así el operador no puede
-    //     envenenar el tráfico Anthropic legítimo con una var global.
-    const staticEnv = PROVIDER_STATIC_ENV[providerName];
-    if (staticEnv) {
-        for (const [k, v] of Object.entries(staticEnv)) {
-            out[k] = v;
-        }
-    }
-
     // 4. Scopes declarados por el skill (`requires_credentials`) o defaults
     //    hardcoded por skill (DEFAULT_REQUIRES_BY_SKILL) cuando el archivo no
     //    los declara.
@@ -706,7 +663,6 @@ module.exports = {
     // Constantes exportadas para inspección (tests + dashboard futuro).
     SYSTEM_ALLOWLIST,
     PROVIDER_DEFAULT_CREDENTIAL_ENV,
-    PROVIDER_STATIC_ENV,
     PROVIDER_MODEL_ENV,
     CREDENTIAL_SCOPES,
     SCOPES_ALWAYS_ON,

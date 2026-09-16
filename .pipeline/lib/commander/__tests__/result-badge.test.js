@@ -97,12 +97,12 @@ test('todo campo dinámico pasa por escapeHtml — provider malicioso se escapa'
 test('caso completo (ok + provider + cross) produce los 3 fragmentos', () => {
   const html = buildResultBadges({
     resultado: 'fallback',
-    provider: 'cerebras',
+    provider: 'gemini-google',
     sameProviderVerification: false,
   }, escapeHtml);
   assert.ok(html.includes('cmd-result-fallback'));
   assert.ok(html.includes('cmd-provider'));
-  assert.ok(html.includes('cerebras'));
+  assert.ok(html.includes('gemini-google'));
   assert.ok(html.includes('cmd-verif-cross'));
 });
 

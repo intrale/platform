@@ -35,7 +35,7 @@ test('precedencia: ajustada gana a fallback/ok (verdict rechazado + crossProvide
   const r = classifyCommanderResult({
     hadError: false,
     sherlockVerdict: { verdict: 'rechazado' },
-    dispatchResolution: { provider: 'anthropic', crossProvider: true, fallbackUsed: 'cerebras' },
+    dispatchResolution: { provider: 'anthropic', crossProvider: true, fallbackUsed: 'gemini-google' },
   });
   assert.equal(r.resultado, 'ajustada');
 });
@@ -87,7 +87,7 @@ test('fallback ← fallbackUsed != null (aunque crossProvider sea false)', () =>
 });
 
 test('fallback ← crossProvider true (fallbackUsed null)', () => {
-  const r = classifyCommanderResult({ dispatchResolution: { provider: 'cerebras', crossProvider: true, fallbackUsed: null } });
+  const r = classifyCommanderResult({ dispatchResolution: { provider: 'gemini-google', crossProvider: true, fallbackUsed: null } });
   assert.equal(r.resultado, 'fallback');
   assert.equal(r.crossProviderDispatch, true);
 });
@@ -226,7 +226,7 @@ test('#6459: huerfano GANA a ajustada y a fallback', () => {
   assert.equal(classifyCommanderResult({
     deliveryUnconfirmed: true,
     sherlockVerdict: { verdict: 'rechazado' },
-    dispatchResolution: { provider: 'anthropic', crossProvider: true, fallbackUsed: 'cerebras' },
+    dispatchResolution: { provider: 'anthropic', crossProvider: true, fallbackUsed: 'gemini-google' },
   }).resultado, 'huerfano');
 });
 

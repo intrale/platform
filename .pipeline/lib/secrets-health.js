@@ -98,9 +98,6 @@ const SECRET_LABELS = Object.freeze({
   'providers.openai.api_key': 'clave de API de OpenAI',
   'providers.anthropic.api_key': 'clave de API de Anthropic',
   'providers.google.api_key': 'clave de API de Google Gemini',
-  'providers.cerebras.api_key': 'clave de API de Cerebras',
-  'providers.nvidia.api_key': 'clave de API de NVIDIA NIM',
-  'providers.moonshot.api_key': 'clave de API de Moonshot Kimi',
   'google_drive.drive_folder_id': 'carpeta de Google Drive',
   'google_drive.oauth_client_id': 'identificador de cliente OAuth de Google Drive',
   'google_drive.oauth_client_secret': 'secreto de cliente OAuth de Google Drive',
@@ -223,11 +220,11 @@ function safeText(text) {
 
 /**
  * El "grupo" de un secreto = su namespace, es decir el nombre lógico sin el
- * último segmento. `providers.moonshot.api_key` → `providers.moonshot`.
+ * último segmento. `providers.google.api_key` → `providers.google`.
  *
- * Es más fino que `service` a propósito: `providers` agrupa seis proveedores
- * independientes, y que OpenAI esté configurado no implica que Moonshot lo
- * esté. Usar `service` como eje de actividad clasificaría a Moonshot como
+ * Es más fino que `service` a propósito: `providers` agrupa varios proveedores
+ * independientes, y que OpenAI esté configurado no implica que Google lo
+ * esté. Usar `service` como eje de actividad clasificaría a Google como
  * "activo y faltante" sólo porque OpenAI existe (R-6).
  *
  * @param {string} name
@@ -412,8 +409,9 @@ function collectPresence(opts = {}) {
  * único caso en que el pipeline no puede funcionar. Una degradación de un
  * servicio opcional (`service_active`) o una cadena rota se REPORTAN (level
  * `warn`) sin haltear. Sin esta distinción, el primer boot post-merge frenaría
- * el pipeline sobre `TELEGRAM_LEO_OPERATOR_CHAT_ID` / `ANTHROPIC_AUTH_TOKEN`,
- * que en el estado vivo están ausentes y son sanos por diseño.
+ * el pipeline sobre `TELEGRAM_LEO_OPERATOR_CHAT_ID` (o, hasta #6563, sobre
+ * `ANTHROPIC_AUTH_TOKEN`), que en el estado vivo están ausentes y son sanos
+ * por diseño.
  *
  * @param {{ hydrated?: string[], skipped_existing?: string[], skipped_empty?: string[], missing?: string[], source?: string }} loadResult
  * @param {{ entries?: Array<Object> }} manifest

@@ -161,13 +161,13 @@ test('renderCostosClientScript cablea la delegación CSP-safe (addEventListener)
 // =============================================================================
 // #4194 EP7.1 — Rediseño integral MIZPÁ: banner de misión (alarma), gráfico de
 // barras apiladas 14d por proveedor + línea de presupuesto, proyecciones + mix,
-// detalle por skill con columna de proveedor, «Cuota por proveedor» (5 tarjetas).
+// detalle por skill con columna de proveedor, «Cuota por proveedor» (3 tarjetas, #6563).
 // =============================================================================
 function makeSlice(overrides) {
     return Object.assign({
         dailyByProvider: [
             { day: '2026-06-09', provider: 'anthropic', cost_usd: 3.5, sessions: 2 },
-            { day: '2026-06-09', provider: 'groq', cost_usd: 0.4, sessions: 1 },
+            { day: '2026-06-09', provider: 'gemini', cost_usd: 0.4, sessions: 1 },
             { day: '2026-06-10', provider: 'anthropic', cost_usd: 2.1, sessions: 1 },
         ],
         budget: { monthly_usd: 120, source: 'persisted', actor: 'operador-local' },
@@ -184,13 +184,13 @@ function makeSlice(overrides) {
         sessionsBySkill: {
             guru: [
                 { provider: 'anthropic', cost_usd: 1.2, duration_ms: 5000, ts: '2026-06-09T10:00:00Z' },
-                { provider: 'groq', cost_usd: 0.4, duration_ms: 2000, ts: '2026-06-09T11:00:00Z' },
+                { provider: 'gemini', cost_usd: 0.4, duration_ms: 2000, ts: '2026-06-09T11:00:00Z' },
             ],
         },
         byProvider: {
             anthropic: { sessions: 3, cost_usd: 5.6, duration_ms: 7000 },
             'openai-codex': { sessions: 2, cost_usd: 1.4, duration_ms: 500 },
-            groq: { sessions: 4, cost_usd: 0, duration_ms: 300 },
+            gemini: { sessions: 4, cost_usd: 0, duration_ms: 300 },
         },
         claudeQuota: { sessionPct: 1.2, sessionStatus: 'ok', weeklyPct: 38.2, weeklyStatus: 'ok', daysToReset: 3.1, calibrated: true },
     }, overrides || {});
@@ -198,20 +198,22 @@ function makeSlice(overrides) {
 
 test('renderCostosChart: barras apiladas por proveedor + línea de presupuesto (CA-3)', () => {
     const chart = costos.renderCostosChart(makeSlice());
-    // Segmentos por proveedor presentes (Claude=cl, Groq=gq).
+    // Segmentos por proveedor presentes (Claude=cl, Gemini=gm).
     assert.match(chart, /cz-seg cz-seg-cl/);
-    assert.match(chart, /cz-seg cz-seg-gq/);
+    assert.match(chart, /cz-seg cz-seg-gm/);
     assert.match(chart, /cz-budget-line/);
     // Barras: 14 días → 14 contenedores .cz-bar.
     const bars = (chart.match(/class="cz-bar"/g) || []).length;
     assert.equal(bars, 14, `esperaba 14 barras, encontré ${bars}`);
 });
 
-test('renderCostosChart: leyenda incluye los 5 proveedores + deterministas, FREE en $0 visibles (CA-6)', () => {
+test('renderCostosChart: leyenda incluye los 3 proveedores + deterministas, FREE en $0 visibles (CA-6)', () => {
     const chart = costos.renderCostosChart(makeSlice());
-    for (const p of ['Claude', 'Codex', 'Groq', 'Gemini', 'Cerebras', 'Deterministas']) {
+    for (const p of ['Claude', 'Codex', 'Gemini', 'Deterministas']) {
         assert.match(chart, new RegExp(p), `falta el proveedor ${p} en la leyenda`);
     }
+    // #6563 — los proveedores gratuitos retirados no aparecen como filas fantasma.
+    assert.doesNotMatch(chart, /Groq|Cerebras|NVIDIA/);
     // FREE tier visible aunque su gasto sea $0 (nunca se truncan — CA-6).
     assert.match(chart, /cz-freetag/);
     assert.match(chart, /\$0\.00/);
@@ -234,18 +236,17 @@ test('renderMissionBanner: desvío vs presupuesto + gastado hoy/mes + el que má
     assert.ok(!/cz-mission-alarm/.test(ok));
 });
 
-test('renderProviderQuota: una tarjeta por cada uno de los 5 proveedores con su tier (CA-2)', () => {
+test('renderProviderQuota: una tarjeta por cada uno de los 3 proveedores con su tier (CA-2)', () => {
     const q = costos.renderProviderQuota(makeSlice());
-    // Las 5 tarjetas presentes.
+    // Las 3 tarjetas presentes (#6563: sin Groq ni Cerebras).
     const cards = (q.match(/class="cz-pq /g) || []).length;
-    assert.equal(cards, 5, `esperaba 5 tarjetas de cuota, encontré ${cards}`);
+    assert.equal(cards, 3, `esperaba 3 tarjetas de cuota, encontré ${cards}`);
     // Cada proveedor con su modelo de límite (tier).
     assert.match(q, /Claude[\s\S]*PLAN MAX/);
     assert.match(q, /Codex[\s\S]*PAGO/);
-    // Los free tier marcados FREE.
-    assert.match(q, /Groq[\s\S]*FREE/);
+    // El free tier marcado FREE.
     assert.match(q, /Gemini[\s\S]*FREE/);
-    assert.match(q, /Cerebras[\s\S]*FREE/);
+    assert.doesNotMatch(q, /Groq|Cerebras|NVIDIA/);
     // Claude muestra su % estimado de la cuota (sesión/semanal).
     assert.match(q, /38\.2%/);
 });

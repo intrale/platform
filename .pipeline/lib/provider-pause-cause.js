@@ -280,7 +280,7 @@ function isPlainObject(v) {
  *
  * OJO con `Number()`: `Number(null)` y `Number('')` son `0`, ambos finitos. Un
  * chequeo con `Number.isFinite(Number(pct))` haría que un provider SIN medición
- * (`quota.pct: null`, que es el caso real de openai/cerebras/nvidia en el
+ * (`quota.pct: null`, que es el caso real de openai en el
  * snapshot vivo) reportara `cuota agotada (0 %)` — un dato inventado y además
  * invertido. Por eso exigimos `typeof number`.
  */

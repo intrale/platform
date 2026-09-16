@@ -33,7 +33,7 @@ function fakeHttp({ status = 200, body } = {}) {
     const _body = body != null ? body : JSON.stringify({
         choices: [{ message: { content: 'ok' } }],
         usage: { prompt_tokens: 3, completion_tokens: 5 },
-        model: 'gpt-oss-120b',
+        model: 'gemini-3.8-flash-medium',
     });
     const impl = {
         request(opts, cb) {
@@ -64,9 +64,11 @@ function fakeHttp({ status = 200, body } = {}) {
 // Credencial válida (formato de secrets-rw) para que el gate se alcance:
 // el chequeo de key ocurre ANTES del gate, así que sin key nunca probaríamos
 // el gate.
-function keyFileForCerebras() {
+// #6563 — el único provider HTTP que queda en completion-client es el shim de
+// AI Studio de `gemini-google` (cerebras/nvidia-nim retirados).
+function keyFileForGemini() {
     const f = path.join(tmpDir(), 'config.json');
-    writeKeys(f, { cerebras_api_key: 'csk_test_1234567890abcdef0000' });
+    writeKeys(f, { gemini_google_api_key: 'AIzaSyTest_1234567890abcdef000' });
     return f;
 }
 
@@ -75,11 +77,11 @@ function keyFileForCerebras() {
 test('#4404 · positivo: paths permitidos → complete() despacha (doRequest invocado)', async () => {
     const { impl, state } = fakeHttp({ status: 200 });
     const r = await completion.complete({
-        provider: 'cerebras',
-        model: 'gpt-oss-120b',
+        provider: 'gemini-google',
+        model: 'gemini-3.8-flash-medium',
         prompt: 'hola',
         paths: ['docs/pipeline/multi-provider.md', 'README.md'],
-        secretsPath: keyFileForCerebras(),
+        secretsPath: keyFileForGemini(),
         httpImpl: impl,
     });
     assert.equal(state.dispatched, true, 'con paths permitidos el gate deja despachar');
@@ -90,10 +92,10 @@ test('#4404 · positivo: paths permitidos → complete() despacha (doRequest inv
 test('#4404 · positivo: sin paths (default []) el gate es transparente', async () => {
     const { impl, state } = fakeHttp({ status: 200 });
     const r = await completion.complete({
-        provider: 'cerebras',
-        model: 'gpt-oss-120b',
+        provider: 'gemini-google',
+        model: 'gemini-3.8-flash-medium',
         prompt: 'hola',
-        secretsPath: keyFileForCerebras(),
+        secretsPath: keyFileForGemini(),
         httpImpl: impl,
     });
     assert.equal(state.dispatched, true);
@@ -105,16 +107,12 @@ test('#4404 · positivo: sin paths (default []) el gate es transparente', async 
 test('#4404 · negativo: path excluido (application.conf) → data_residency_blocked, sin dispatch', async () => {
     const { impl, state } = fakeHttp({ status: 200 });
     const r = await completion.complete({
-        provider: 'nvidia-nim',
-        model: 'deepseek-ai/deepseek-v4-flash-0731',
+        provider: 'gemini-google',
+        model: 'gemini-3.8-flash-medium',
         prompt: 'analizá esto',
         // Excluido para non_anthropic por el sidecar real (**/application.conf).
         paths: ['users/src/main/resources/application.conf'],
-        secretsPath: (() => {
-            const f = path.join(tmpDir(), 'config.json');
-            writeKeys(f, { nvidia_nim_api_key: 'nvapi-test-1234567890abcdef0000' });
-            return f;
-        })(),
+        secretsPath: keyFileForGemini(),
         httpImpl: impl,
     });
     assert.equal(state.dispatched, false, 'un path bloqueado NUNCA debe llegar a doRequest');
@@ -134,11 +132,11 @@ test('#4404 · negativo: appendAudit invocado con {path,motivo,pattern} al bloqu
         appendAudit: (arg) => { auditCalls.push(arg); return { written: (arg.blocked || []).length }; },
     };
     const r = await completion.complete({
-        provider: 'cerebras',
-        model: 'gpt-oss-120b',
+        provider: 'gemini-google',
+        model: 'gemini-3.8-flash-medium',
         prompt: 'x',
         paths: ['config/secrets/service-account.json'],
-        secretsPath: keyFileForCerebras(),
+        secretsPath: keyFileForGemini(),
         httpImpl: impl,
         drfImpl: drfSpy,
     });
@@ -165,11 +163,11 @@ test('#4404 · sidecar inválido (loadExclusionsOrThrow lanza) → data_residenc
         appendAudit() { throw new Error('no debería llamarse'); },
     };
     const r = await completion.complete({
-        provider: 'cerebras',
-        model: 'gpt-oss-120b',
+        provider: 'gemini-google',
+        model: 'gemini-3.8-flash-medium',
         prompt: 'x',
         paths: ['README.md'],
-        secretsPath: keyFileForCerebras(),
+        secretsPath: keyFileForGemini(),
         httpImpl: impl,
         drfImpl: drfBroken,
     });
@@ -189,11 +187,11 @@ test('#4404 · filterPathsForProvider lanza → data_residency_blocked, sin disp
         appendAudit() {},
     };
     const r = await completion.complete({
-        provider: 'cerebras',
-        model: 'gpt-oss-120b',
+        provider: 'gemini-google',
+        model: 'gemini-3.8-flash-medium',
         prompt: 'x',
         paths: ['README.md'],
-        secretsPath: keyFileForCerebras(),
+        secretsPath: keyFileForGemini(),
         httpImpl: impl,
         drfImpl: drfThrow,
     });

@@ -1,5 +1,7 @@
 # Anexo #3809 — Degradación en cascada de la cadena de providers de Sherlock
 
+> **Registro histórico — plantel retirado en [#6563](https://github.com/intrale/platform/issues/6563) (2026-09-16).** Los proveedores gratuitos `cerebras`, `nvidia-nim` y `kimi-moonshot` (y los remanentes `ollama`/`groq`) fueron dados de baja del ruteo por el criterio de admisión de [#6562](https://github.com/intrale/platform/issues/6562). Este documento se conserva tal cual como evidencia de las decisiones de su momento; el estado vigente y el plan de rollback están en [`docs/pipeline/multi-provider.md`](../pipeline/multi-provider.md) §16–§17.
+
 > **Naturaleza:** ANEXO de la auditoría maestra
 > [`auditoria-3803-multi-provider.md`](./auditoria-3803-multi-provider.md). NO la
 > reemplaza ni la duplica: extiende el barrido del 2026-06-02 con el incidente

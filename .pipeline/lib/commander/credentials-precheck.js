@@ -50,7 +50,7 @@
 // ---------
 // S-1 NO leemos los valores literales de las credenciales al log: sólo
 //     verificamos presencia y placeholder. El primero que falla, lo
-//     reportamos por nombre de variable (`CEREBRAS_API_KEY missing`), no
+//     reportamos por nombre de variable (`OPENAI_API_KEY missing`), no
 //     por valor.
 // S-2 Fail-open NO permitido: si `agent-models.json` falla a parsear, todos
 //     los providers se reportan como degraded (ranking vacío → caller aborta).
@@ -139,7 +139,7 @@ function validateProviderCredentials(providerName, providerDef, processEnv) {
     // y quedó vivo como cláusula suelta al lado de su propio reemplazo. Un
     // provider drop-in de Claude Code que se autentica por API key entraba por
     // esa cláusula y quedaba exento de TODA validación, contradiciendo su
-    // propio `auth_mode` declarado. Caso real: `kimi-moonshot`
+    // propio `auth_mode` declarado. Caso real: `kimi-moonshot` (retirado en #6563)
     // (`launcher: 'claude'` + `auth_mode: 'api_key'` +
     // `credentials_env: ['ANTHROPIC_AUTH_TOKEN']`). Sin token cargado se lo
     // seguía reportando como fallback SANO, el dispatcher lo elegía como

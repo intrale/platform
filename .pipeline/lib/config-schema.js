@@ -126,13 +126,11 @@ class ConfigParseViolation extends Error {
 // Acepta tanto los ids cortos como los canónicos usados en agent-models.json.
 // -----------------------------------------------------------------------------
 
+// Los proveedores gratuitos (groq, cerebras, nvidia-nim) se retiraron en #6563.
 const PROVIDER_ENUM = Object.freeze([
     'claude', 'anthropic',
     'codex', 'openai-codex',
-    'groq',
     'gemini', 'gemini-google',
-    'cerebras',
-    'nvidia-nim',
 ]);
 
 // -----------------------------------------------------------------------------

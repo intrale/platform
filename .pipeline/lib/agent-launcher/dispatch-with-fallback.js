@@ -814,8 +814,8 @@ const HEALTH_FRESHNESS_MS = 20 * 60 * 1000;
 // rate-limit puntual) es exactamente la incertidumbre que la política fail-open
 // quiere preservar: el provider pudo recuperarse entre el ping del cron y este
 // spawn. Gatearlo por un timeout lo saca de la cascada hasta 20min aunque ya
-// esté sano (Gemini quedó rojo por un timeout y la cascada saltó a Cerebras
-// aunque Gemini ya respondía 200). Ante causa NO-durable → fail-open.
+// esté sano (Gemini quedó rojo por un timeout y la cascada saltó al siguiente
+// eslabón aunque Gemini ya respondía 200). Ante causa NO-durable → fail-open.
 //
 // Los reason_code provienen de `health-alerts.sanitizeReasonCode` (allowlist
 // cerrada en live-ping/health-alerts). Sólo estos justifican gatear:

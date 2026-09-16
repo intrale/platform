@@ -1,5 +1,7 @@
 # Resiliencia del pipeline ante corte de cuota Claude
 
+> **Registro histórico — plantel retirado en [#6563](https://github.com/intrale/platform/issues/6563) (2026-09-16).** Los proveedores gratuitos `cerebras`, `nvidia-nim` y `kimi-moonshot` (y los remanentes `ollama`/`groq`) fueron dados de baja del ruteo por el criterio de admisión de [#6562](https://github.com/intrale/platform/issues/6562). Este documento se conserva tal cual como evidencia de las decisiones de su momento; el estado vigente y el plan de rollback están en [`docs/pipeline/multi-provider.md`](../pipeline/multi-provider.md) §16–§17.
+
 **Spike de validación** · Issue [#3251](https://github.com/intrale/platform/issues/3251) · Ejecutado 2026-05-16 · Worktree `platform.agent-3251-pipeline-dev`.
 
 Este documento responde la pregunta operacional: **¿Qué pasa con el pipeline V3 si la cuota Anthropic se agota un sábado a la madrugada?** El esquema multi-provider (issues #3198, #3221, #3233, #3235) declara fallbacks por skill, pero hasta este spike nunca lo habíamos probado en runtime. La conclusión corta es que la red de respaldo es una **ilusión de cobertura**: el dispatcher rutea correctamente al fallback, pero los handlers reales son stubs y el Telegram Commander es un punto único de falla.

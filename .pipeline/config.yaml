@@ -697,9 +697,7 @@ quota_detector:
   ttl_by_provider:
     anthropic: 7          # ciclo semanal Plan Max
     openai-codex: 1       # cap rolling del plan (usage_limit_reached ~horas); techo 1d
-    cerebras: 1           # free tier — recuperación rápida
     gemini-google: 1      # free tier — recuperación rápida
-    nvidia-nim: 1         # free tier — recuperación rápida
   # Si `false`, el detector funciona pero no escribe `.pipeline/logs/quota-detector-*.log`.
   # Útil para apagar audit en caso de problema de espacio en disco — no debería
   # ser necesario nunca con la rotación normal.
@@ -741,7 +739,7 @@ multi_provider:
   health:
     # Cadencia del cron de health. Default 5 min.
     # Clamp [1,240] min con piso duro ≥60s (RS-5.5) anti-DoS free tier
-    # (Gemini RPM 15, Cerebras RPM 30). Jitter ±60s se conserva en código.
+    # (Gemini RPM 15). Jitter ±60s se conserva en código.
     # Un typo/valor inválido cae al default 5 min sin romper el arranque.
     interval_minutes: 5
   # ---------------------------------------------------------------------------
@@ -1306,15 +1304,15 @@ pipeline:
   #
   # Hasta este issue el modelo declarado en `agent-models.json` se resolvía y se
   # logueaba, pero NUNCA llegaba al hijo: Anthropic nunca recibía `--model`, y
-  # CODEX_MODEL / GEMINI_MODEL / CEREBRAS_MODEL / NVIDIA_NIM_MODEL nunca se
-  # seteaban para agentes. Los cinco proveedores corrían con el default de su CLI.
+  # CODEX_MODEL / GEMINI_MODEL nunca se seteaban para agentes. Todos los
+  # proveedores corrían con el default de su CLI.
   #
   # APAGADO POR DEFAULT. Con `enabled: false` (o sin esta sección) el objeto que
   # recibe `child_process.spawn` es byte-idéntico al de antes del cambio.
   #
   # NO ENCENDER antes de que #6271 (resolución correcta del modelo) esté
   # entregado: con la resolución vieja, prender esto sólo repartiría el literal
-  # legacy a los cinco proveedores. El encendido escalonado y el rollback son
+  # legacy a todos los proveedores. El encendido escalonado y el rollback son
   # scope de #6274.
   #
   # Modos:
@@ -1322,8 +1320,8 @@ pipeline:
   #   dry-run  → se loguea el modelo que SE HABRÍA pasado, con prefijo
   #              `[dry-run]`, sin alterar el comando. Sirve para verificar qué
   #              resolvería cada actor antes de prender de verdad.
-  #   on       → se propaga (flag `--model` en anthropic/kimi-moonshot; variable
-  #              de entorno en el resto, según PROVIDER_MODEL_ENV).
+  #   on       → se propaga (flag `--model` en anthropic; variable de entorno
+  #              en el resto, según PROVIDER_MODEL_ENV).
   #
   # Precedencia: by_skill (actor) > by_provider > default_mode > off. El más
   # específico gana, así se puede prender un actor sin prender a su proveedor
@@ -1388,10 +1386,10 @@ inflight_fallback:
 # Sherlock corre como capa interna del Commander de Telegram: antes de mandar
 # cada respuesta, refuta el análisis con evidencia del estado actual del
 # sistema. Usa la chain `telegram-sherlock` de `agent-models.json` con el orden
-# de calidad aprobado (Anthropic Haiku 4.5 → Codex → Gemini → Cerebras →
-# NVIDIA NIM). Si detecta inconsistencias, reelabora la respuesta (1 vez, cap
-# hardcoded). Si timeout/error/sin-provider, agrega disclaimer F-6 y manda la
-# original.
+# de calidad aprobado (Anthropic Haiku 4.5 → Codex → Gemini; los proveedores
+# gratuitos de cola se retiraron en #6563). Si detecta inconsistencias,
+# reelabora la respuesta (1 vez, cap hardcoded). Si timeout/error/sin-provider,
+# agrega disclaimer F-6 y manda la original.
 #
 # Defensas (CA-SEC-1..9):
 #   - sherlock_enabled solo se lee desde este archivo (CA-SEC-7 anti-toggle

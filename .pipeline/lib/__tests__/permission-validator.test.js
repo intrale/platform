@@ -64,8 +64,8 @@ test('openai-codex/full-auto concede el set autónomo completo incluyendo tool_u
     assert.equal(codex.has('network_in'), false);
 });
 
-test('free providers (gemini/cerebras/nvidia-nim) en bypassPermissions tienen celda con set autónomo (#3820 defecto #2)', () => {
-    for (const p of ['gemini-google', 'cerebras', 'nvidia-nim']) {
+test('free provider (gemini) en bypassPermissions tiene celda con set autónomo (#3820 defecto #2)', () => {
+    for (const p of ['gemini-google']) {
         const granted = permissionValidator.grantedCapabilities(p, 'bypassPermissions');
         assert.ok(granted instanceof Set, `${p} debe tener celda bypassPermissions`);
         assert.ok(granted.has('file_read'), `${p} concede file_read`);

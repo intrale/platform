@@ -76,8 +76,7 @@ test('CA-2: los scopes resultantes se afirman VALOR POR VALOR', () => {
 
   assert.deepEqual(resultantes, [
     'aws', 'github',
-    'providers:anthropic', 'providers:cerebras', 'providers:google',
-    'providers:moonshot', 'providers:nvidia', 'providers:openai',
+    'providers:anthropic', 'providers:google', 'providers:openai',
   ]);
 
   // Aserciones NEGATIVAS explícitas (D-1 · SEC-7): el descarte no se traduce.
@@ -85,9 +84,13 @@ test('CA-2: los scopes resultantes se afirman VALOR POR VALOR', () => {
   assert.equal(resultantes.includes('telegram'), false, 'telegram-hooks NO se traduce a telegram');
 
   // `providers` se expande desde PROVIDER_VENDORS (almacenamiento), nunca desde
-  // LIVE_PROVIDER_IDS (runtime): `moonshot` es la prueba — no está en runtime.
-  assert.equal(resultantes.includes('providers:moonshot'), true);
-  assert.equal(d.LIVE_PROVIDER_IDS.includes('moonshot'), false);
+  // LIVE_PROVIDER_IDS (runtime): son vocabularios distintos (`openai` vs
+  // `openai-codex`, `google` vs `gemini-google`). (Hasta #6563 la prueba era
+  // `moonshot`, vendor sin id de runtime; se retiró junto con Kimi.)
+  assert.equal(resultantes.includes('providers:openai'), true);
+  assert.equal(d.LIVE_PROVIDER_IDS.includes('openai'), false);
+  assert.equal(resultantes.includes('providers:google'), true);
+  assert.equal(d.LIVE_PROVIDER_IDS.includes('google'), false);
 });
 
 test('CA-3: mapeo TOTAL del enum 1.0 con exactamente TRES destinos', () => {

@@ -271,41 +271,10 @@ const KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER = Object.freeze({
         'quota_exceeded',
         'resource_exhausted',
     ]),
-    // #3353 (mayo 2026) — Groq descontinuado: la entrada `groq` se removió
-    // de la meta-allowlist; agent-models.json con quota_error_types declarado
-    // para groq ahora falla la cross-validation con mensaje accionable.
-    //
-    // #3220 — Cerebras también es OpenAI-compatible. Lista conservadora.
-    // #5978 — `insufficient_quota` verificado empíricamente: al agotarse el
-    // crédito, Cerebras devuelve HTTP 402 con
-    // `{"error":{"status":402,"message":"Payment required...","code":"insufficient_quota"}}`.
-    // Sin este tipo el 402 no seteaba flag de cuota y el provider seguía en la
-    // cadena, matando agentes al spawn y rebotando issues sanos. Alineado con
-    // nvidia-nim/kimi-moonshot, que ya lo declaran (mismo contrato OpenAI-compat).
-    cerebras: Object.freeze([
-        'rate_limit_exceeded',
-        'quota_exceeded',
-        'insufficient_quota',
-    ]),
-    // #3243 — NVIDIA NIM, 4to free provider. API OpenAI-compat: `_detectOpenAI`
-    // reusa el shape SSE sin código nuevo. Lista conservadora — NVIDIA no
-    // publica códigos formales del free tier; estos cubren los casos típicos
-    // de un OpenAI-compat provider (429 → quota / rate limit).
-    'nvidia-nim': Object.freeze([
-        'rate_limit_exceeded',
-        'quota_exceeded',
-        'insufficient_quota',
-    ]),
-    // #4880 — Kimi (Moonshot). Drop-in de Claude Code contra el endpoint
-    // Anthropic-compatible: el error viaja con shape Anthropic-like por el
-    // stream-json, pero con SU allowlist de tipos (api-key metered, NO el
-    // snapshot MAX de Anthropic). El handler `providers/kimi-moonshot.js` la usa
-    // vía `_detectAnthropic` con `provider: 'kimi-moonshot'`.
-    'kimi-moonshot': Object.freeze([
-        'rate_limit_exceeded',
-        'quota_exceeded',
-        'insufficient_quota',
-    ]),
+    // Providers retirados de la meta-allowlist: groq (#3353) y cerebras /
+    // nvidia-nim / kimi-moonshot (#6563). Un agent-models.json que declare
+    // quota_error_types para ellos falla la cross-validation con mensaje
+    // accionable.
 });
 
 // -----------------------------------------------------------------------------
@@ -1892,8 +1861,9 @@ function _detectAnthropic(evt, allowlist, opts = {}) {
  *   Alternativa observada en algunos clientes OpenAI:
  *   `evt.type === 'response.error' && evt.error.type ∈ allowlist`
  *
- *   Shape DESNUDO observado empíricamente en Cerebras (#5978, 2026-08-22), sin
- *   sobre SSE y con el discriminador en `code` en vez de `type`:
+ *   Shape DESNUDO observado empíricamente en un OpenAI-compat (Cerebras,
+ *   retirado en #6563; #5978, 2026-08-22), sin sobre SSE y con el
+ *   discriminador en `code` en vez de `type`:
  *   `{"error":{"status":402,"message":"Payment required ...","code":"insufficient_quota"}}`
  *   Este shape hacía invisible el 402 de billing: el detector devolvía
  *   `matched:false`, nunca se seteaba el flag de cuota, el resolver seguía
@@ -1927,7 +1897,7 @@ function _detectOpenAI(evt, allowlist, opts = {}) {
     }
 
     // Shape DESNUDO (#5978): `{ error: { status, message, code } }` — sin sobre
-    // SSE. Es lo que emite Cerebras (y varios OpenAI-compat) al morir por 402 de
+    // SSE. Es lo que emiten varios OpenAI-compat al morir por 402 de
     // billing. Se leen SOLO los campos de control `type` y `code` del objeto
     // `error` de nivel raíz; nunca texto libre ni canal de contenido. Se exige
     // que NO haya discriminador de evento (`evt.event`/`evt.type`) para no pisar
@@ -1995,7 +1965,7 @@ function detectQuotaError(parsedEvent, providerDef, opts = {}) {
     } else if (parser === 'openai-sse') {
         result = _detectOpenAI(parsedEvent, allowlist);
     } else {
-        // Provider sin handler conocido (deterministic, gemini, ollama):
+        // Provider sin handler conocido (deterministic, gemini):
         // no aplica detección de cuota basada en eventos.
         return { matched: false };
     }

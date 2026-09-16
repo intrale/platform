@@ -342,19 +342,19 @@
         },
         {
             "file": "lib/__tests__/commander-multi-provider.test.js",
-            "line": 1641,
+            "line": 1755,
             "kind": "deuda",
             "reason": "escritura de ANTHROPIC_API_KEY fuera del helper"
         },
         {
             "file": "lib/__tests__/commander-multi-provider.test.js",
-            "line": 1651,
+            "line": 1765,
             "kind": "deuda",
             "reason": "escritura de ANTHROPIC_API_KEY fuera del helper"
         },
         {
             "file": "lib/__tests__/commander-multi-provider.test.js",
-            "line": 1652,
+            "line": 1766,
             "kind": "deuda",
             "reason": "escritura de ANTHROPIC_API_KEY fuera del helper"
         },
@@ -4398,7 +4398,13 @@
         },
         {
             "file": "skills-deterministicos/__tests__/tester.test.js",
-            "line": 1600,
+            "line": 1599,
+            "kind": "deuda",
+            "reason": "escritura de GRADLE_LOCK_PATH fuera del helper"
+        },
+        {
+            "file": "skills-deterministicos/__tests__/tester.test.js",
+            "line": 1615,
             "kind": "deuda",
             "reason": "escritura de GRADLE_LOCK_PATH fuera del helper"
         },
@@ -4410,13 +4416,13 @@
         },
         {
             "file": "skills-deterministicos/__tests__/tester.test.js",
-            "line": 1617,
+            "line": 1627,
             "kind": "deuda",
             "reason": "escritura de GRADLE_LOCK_PATH fuera del helper"
         },
         {
             "file": "skills-deterministicos/__tests__/tester.test.js",
-            "line": 1628,
+            "line": 1639,
             "kind": "deuda",
             "reason": "escritura de GRADLE_LOCK_PATH fuera del helper"
         },
@@ -4428,31 +4434,25 @@
         },
         {
             "file": "skills-deterministicos/__tests__/tester.test.js",
-            "line": 1641,
+            "line": 1768,
             "kind": "deuda",
-            "reason": "escritura de GRADLE_LOCK_PATH fuera del helper"
+            "reason": "escritura de PIPELINE_REPO_ROOT fuera del helper"
         },
         {
             "file": "skills-deterministicos/__tests__/tester.test.js",
             "line": 1769,
             "kind": "deuda",
-            "reason": "escritura de PIPELINE_REPO_ROOT fuera del helper"
-        },
-        {
-            "file": "skills-deterministicos/__tests__/tester.test.js",
-            "line": 1770,
-            "kind": "deuda",
             "reason": "escritura de CLAUDE_PROJECT_DIR fuera del helper"
         },
         {
             "file": "skills-deterministicos/__tests__/tester.test.js",
-            "line": 1785,
+            "line": 1784,
             "kind": "deuda",
             "reason": "escritura de PIPELINE_REPO_ROOT fuera del helper"
         },
         {
             "file": "skills-deterministicos/__tests__/tester.test.js",
-            "line": 1786,
+            "line": 1785,
             "kind": "deuda",
             "reason": "escritura de CLAUDE_PROJECT_DIR fuera del helper"
         },

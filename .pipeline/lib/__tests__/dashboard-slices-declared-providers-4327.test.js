@@ -17,7 +17,7 @@ const os = require('node:os');
 const path = require('node:path');
 
 // Alineado con los `providers` reales de agent-models.json (sin `deterministic`).
-const REAL_PROVIDERS = ['anthropic', 'openai-codex', 'gemini-google', 'cerebras', 'nvidia-nim'];
+const REAL_PROVIDERS = ['anthropic', 'openai-codex', 'gemini-google'];
 
 function freshSlices() {
     delete require.cache[require.resolve('../dashboard-slices')];
@@ -41,7 +41,7 @@ test('CA-3: quotaSlice deriva providers de agent-models.json sin groq ni determi
     fs.writeFileSync(path.join(pipeline, 'agent-models.json'), JSON.stringify({
         providers: {
             anthropic: {}, 'openai-codex': {}, 'gemini-google': {},
-            cerebras: {}, 'nvidia-nim': {}, deterministic: {},
+            deterministic: {},
         },
     }));
     const slices = freshSlices();

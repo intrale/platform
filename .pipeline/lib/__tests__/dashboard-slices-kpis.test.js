@@ -63,7 +63,7 @@ test('CA-2: tokens24h expone { total, by_provider } cuando el snapshot-24h tiene
             by_provider: {
                 anthropic: { tokens_in: 6000, tokens_out: 3000 },
                 'openai-codex': { tokens_in: 2000, tokens_out: 1000 },
-                groq: { tokens_in: 2000, tokens_out: 1000 },
+                'gemini-google': { tokens_in: 2000, tokens_out: 1000 },
             },
         },
     });
@@ -74,7 +74,7 @@ test('CA-2: tokens24h expone { total, by_provider } cuando el snapshot-24h tiene
     assert.deepEqual(out.tokens24h.by_provider, {
         anthropic: 9000,
         'openai-codex': 3000,
-        groq: 3000,
+        'gemini-google': 3000,
     });
 });
 
@@ -277,7 +277,7 @@ test('CA-5: quotaSlice expone `providers` con anthropic + stubs not_implemented'
     // agent-models.json mínimo declarando providers.
     fs.writeFileSync(path.join(pipeline, 'agent-models.json'), JSON.stringify({
         providers: {
-            anthropic: {}, 'openai-codex': {}, groq: {}, 'gemini-google': {}, cerebras: {},
+            anthropic: {}, 'openai-codex': {}, 'gemini-google': {},
             deterministic: {}, // debe filtrarse
         },
     }));
@@ -386,17 +386,17 @@ test('CA-5.1: weekly-quota.computeUsageSince filtra eventos de providers no-Anth
     const { root, pipeline, metrics } = mkTmpPipeline();
     const log = path.join(root, '.claude', 'activity-log.jsonl');
     const now = Date.now();
-    // 1h de Anthropic + 2h de Groq + 30min sin provider (legacy) — solo deben
+    // 1h de Anthropic + 2h de Gemini + 30min sin provider (legacy) — solo deben
     // sumar Anthropic + legacy = 1.5h.
     fs.writeFileSync(log, [
         JSON.stringify({ event: 'session:end', ts: new Date(now - 1000).toISOString(), duration_ms: 3600000, provider: 'anthropic', model: 'claude' }),
-        JSON.stringify({ event: 'session:end', ts: new Date(now - 2000).toISOString(), duration_ms: 7200000, provider: 'groq', model: 'llama' }),
+        JSON.stringify({ event: 'session:end', ts: new Date(now - 2000).toISOString(), duration_ms: 7200000, provider: 'gemini-google', model: 'gemini-flash' }),
         JSON.stringify({ event: 'session:end', ts: new Date(now - 3000).toISOString(), duration_ms: 1800000, model: 'claude' }),
     ].join('\n') + '\n');
     delete require.cache[require.resolve('../weekly-quota')];
     const wq = require('../weekly-quota');
     const usage = wq.computeUsageSince(log, now - 24 * 3600 * 1000);
-    // 1h + 0.5h = 1.5h. Groq excluido.
+    // 1h + 0.5h = 1.5h. Gemini excluido.
     assert.ok(Math.abs(usage.hoursUsed - 1.5) < 0.01,
         `hoursUsed debe ser ~1.5h, fue ${usage.hoursUsed}`);
     assert.equal(usage.sessionsCount, 2, 'solo Anthropic + legacy se cuentan');

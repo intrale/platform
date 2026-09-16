@@ -1,26 +1,23 @@
 // =============================================================================
-// completion-client.js — Cliente HTTP completion-aware para free providers
+// completion-client.js — Cliente HTTP completion-aware para providers
 // OpenAI-compatible (#3342, split de #3331 Sherlock).
 //
 // Por qué existe:
 //   - El spawn de CLI (`claude`/`codex`/etc.) agrega 2-5s de overhead de arranque.
 //   - El Sherlock verifier (#3331) requiere latencia <1s → necesita invocar el
 //     provider directamente vía API HTTP, sin pasar por CLI.
-//   - Los adapters de spawn (`openai-codex`, `gemini-google`, `cerebras`,
-//     `nvidia-nim`, `anthropic`) ya son reales (histórico #3198, cerrado por
-//     PRs #3792/#3793/#3794). Este módulo sigue siendo el camino HTTP
-//     in-process para los providers OpenAI-compat (sin overhead de spawn),
-//     usado por Sherlock; los providers OAuth (anthropic/codex) van por spawn.
+//   - Los adapters de spawn (`openai-codex`, `gemini-google`, `anthropic`) ya
+//     son reales (histórico #3198, cerrado por PRs #3792/#3793/#3794). Este
+//     módulo sigue siendo el camino HTTP in-process para el shim OpenAI-compat
+//     (sin overhead de spawn), usado por la cascada de Sherlock y el health;
+//     los providers OAuth (anthropic/codex) van por spawn.
 //
 // Providers cubiertos (alineados con FREE_PROVIDERS en health-alerts.js):
-//   - cerebras       (Llama 3.x / Llama 4 scout, OpenAI-compat)
-//   - gemini-google  (Gemini 1.5/2.0, shim OpenAI-compat de v1beta)
-//   - nvidia-nim     (DeepSeek / Llama / Mistral / Kimi, OpenAI-compat)
+//   - gemini-google  (shim OpenAI-compat de AI Studio v1beta; ver nota abajo)
 //
-// Nota: Groq fue removido del pipeline en #3368 (mayo 2026) por política
-// inestable de restricciones del provider. El issue #3342 fue escrito antes de
-// esa remoción y mencionaba Groq — alineamos con el estado actual de main para
-// no reintroducir el provider.
+// Nota: Groq fue removido del pipeline en #3368 (mayo 2026); cerebras y
+// nvidia-nim (los otros dos free OpenAI-compat que vivían acá) se retiraron en
+// #6563 junto con sus endpoints y allowlists de modelos. No reintroducirlos.
 //
 // Defensa SSRF (OWASP A10):
 //   - URLs hardcoded por provider en `PROVIDER_COMPLETION_ENDPOINTS` (frozen).
@@ -66,8 +63,6 @@
 //   responsabilidad del caller (ej. Sherlock #3331) respetar los free-tier
 //   límites publicados:
 //     - Gemini Google: RPM 15 / RPD 1500 / TPM 1M (free)
-//     - Cerebras:      RPM 30 / TPM 60K (free)
-//     - NVIDIA NIM:    RPM/RPD sin documentar públicamente
 //   Ver `docs/pipeline/multi-provider.md` §8.
 //
 // IMPORTANTE — Gemini OpenAI-compat es BETA:
@@ -101,13 +96,6 @@ const httpClassifier = require('../http-error-classifier');
 //      .pipeline/lib/__tests__/completion-client.test.js.
 // ---------------------------------------------------------------------------
 const PROVIDER_COMPLETION_ENDPOINTS = Object.freeze({
-    cerebras: Object.freeze({
-        url: 'https://api.cerebras.ai/v1/chat/completions',
-        method: 'POST',
-        // OpenAI-compat: key en Authorization Bearer.
-        authHeader: 'authorization',
-        authFormat: 'bearer',
-    }),
     'gemini-google': Object.freeze({
         // BETA shim. Documentado en el header del módulo. Riesgo aceptable
         // porque normaliza el body al schema OpenAI y nos evita maintain dos
@@ -119,23 +107,15 @@ const PROVIDER_COMPLETION_ENDPOINTS = Object.freeze({
         // el catálogo de Antigravity y AI Studio NO sirve ninguno de esos ids
         // (medido: `gemini-3.8-flash-medium` → HTTP 404 "is not found"). Hoy
         // esta ruta no tiene ningún (provider, model) que responda ok=true:
-        // NO apuntarle un default (semantic-dedup ya se quemó con eso — su
-        // default es cerebras). El único caller que la recorre es la cascada
-        // del Sherlock (`HTTP_COMPLETION_PROVIDERS` en sherlock-verifier.js),
-        // que tolera el fallo y sigue al próximo provider. La entrada se
-        // conserva hasta que #6563 (baja de AI Studio) la reconcilie o retire.
+        // NO apuntarle un default (semantic-dedup ya se quemó con eso; desde
+        // #6563 su default va por spawn de Codex). Los únicos callers que la
+        // recorren son la cascada del Sherlock (`HTTP_COMPLETION_PROVIDERS` en
+        // sherlock-verifier.js), que tolera el fallo y sigue al próximo
+        // provider, y el health. La entrada se conserva (#6563 retiró cerebras
+        // y nvidia-nim, no este shim) hasta que #6564 la reconcilie o retire.
         url: 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions',
         method: 'POST',
         // El shim OpenAI-compat de Google acepta Authorization Bearer.
-        authHeader: 'authorization',
-        authFormat: 'bearer',
-    }),
-    'nvidia-nim': Object.freeze({
-        // NVIDIA NIM expone OpenAI-compat en `/v1/chat/completions` (mismo
-        // hostname que el ping a `/v1/models` en live-ping.js). Confirmado en
-        // agent-launcher/providers/nvidia-nim.js + agent-models.json#nvidia-nim.
-        url: 'https://integrate.api.nvidia.com/v1/chat/completions',
-        method: 'POST',
         authHeader: 'authorization',
         authFormat: 'bearer',
     }),
@@ -145,27 +125,11 @@ const PROVIDER_COMPLETION_ENDPOINTS = Object.freeze({
 // arbitrario que provoque 400 ruidosos con eco en el body (info leak menor).
 // El `model` viaja como field del body JSON (no en la URL) → NO abre SSRF, pero
 // igual filtramos. Los modelos en producción salen de `.pipeline/agent-models.json`:
-// cerebras=gpt-oss-120b (#3794; los `llama-*` de abajo son legacy del snapshot
-// 2026-05-19 y el free tier ya no los sirve), gemini-google=gemini-3.8-flash-medium
-// (#6858), nvidia-nim=deepseek-ai/deepseek-v4-flash-0731 (#5887, 2026-08-13: el
-// modelo deepseek anterior llegó a end-of-life el 2026-08-07 y devolvía HTTP 410
-// — se reemplaza, no se deja al lado, para que ninguna reintroducción pase
-// silenciosa por esta barrera). Si la lista se queda corta, agregar
-// acá + test.
+// gemini-google=gemini-3.8-flash-medium (#6858). Las listas de cerebras y
+// nvidia-nim se retiraron con sus providers en #6563 (se quitan, no se dejan
+// al lado, para que ninguna reintroducción pase silenciosa por esta barrera).
+// Si la lista se queda corta, agregar acá + test.
 const PROVIDER_MODELS_ALLOWLIST = Object.freeze({
-    cerebras: Object.freeze([
-        // #6858 (rebote review) — modelo de producción de Cerebras (mismo id
-        // que ALLOWED_MODELS_BY_LAUNCHER.cerebras y `providers.cerebras.model`
-        // de agent-models.json; presente en `GET /v1/models` el 2026-09-16).
-        // Hasta acá sólo entraba por la vía config-aware (MP-04); ahora es
-        // literal porque es el default HTTP de lib/semantic-dedup.js y el
-        // test de ese módulo exige `isAllowedModel` sin depender del JSON.
-        'gpt-oss-120b',
-        'llama3.1-8b',
-        'llama3.1-70b',
-        'llama-3.3-70b',
-        'llama-4-scout-17b-16e-instruct',
-    ]),
     // #6858 (2026-09-16) — catálogo REAL de Antigravity (`agy models`, CLI
     // 1.2.4) por REEMPLAZO: `gemini-1.5-*`, `gemini-2.0-*` y `gemini-2.5-*` eran
     // ids de AI Studio / Gemini CLI gratuito (retirado) y NO existen en
@@ -197,15 +161,6 @@ const PROVIDER_MODELS_ALLOWLIST = Object.freeze({
         'claude-opus-4-6-thinking',
         'gpt-oss-120b-medium',
     ]),
-    'nvidia-nim': Object.freeze([
-        'deepseek-ai/deepseek-v4-flash-0731',
-        'deepseek-ai/deepseek-r1',
-        'meta/llama-3.1-8b-instruct',
-        'meta/llama-3.1-70b-instruct',
-        'meta/llama-3.3-70b-instruct',
-        'mistralai/mixtral-8x7b-instruct-v0.1',
-        'moonshotai/kimi-k2-6',
-    ]),
 });
 
 // Timeout default — 0 = SIN timeout (decisión Leo 2026-06-02 voz). El cliente
@@ -221,7 +176,7 @@ const MAX_BODY_BYTES = 64 * 1024; // 64KB — cap defensivo contra DoS.
 // ---------------------------------------------------------------------------
 // MP-04 (#3803) — allowlist config-aware. La allowlist hardcoded de arriba es
 // la línea de base de defensa, pero quedaba ESTÁTICA: un modelo configurado en
-// `agent-models.json` (p.ej. cerebras=gpt-oss-120b) que no figurara como string
+// `agent-models.json` (p.ej. un `model_override` nuevo) que no figurara como string
 // literal acá hacía fallar al provider con `invalid_model` ANTES del request
 // HTTP → cortaba la cascada en un eslabón sano. Ahora derivamos también los
 // modelos efectivamente declarados en la config (provider.model default +
@@ -296,7 +251,7 @@ function isAllowedModel(provider, model, configuredByProvider) {
 // complete — invoca una completion contra el provider OpenAI-compatible.
 //
 // Args:
-//   - provider:    'cerebras' | 'gemini-google' | 'nvidia-nim' (allowlisted).
+//   - provider:    'gemini-google' (allowlisted en PROVIDER_COMPLETION_ENDPOINTS).
 //   - model:       string en PROVIDER_MODELS_ALLOWLIST[provider].
 //   - prompt:      string del prompt (se envía como user message).
 //   - messages:    opcional, array de {role, content}; si no se pasa, se

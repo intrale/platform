@@ -88,8 +88,6 @@ const LIVE_PROVIDERS = Object.freeze([
     { id: 'anthropic', name: 'Anthropic Claude' },
     { id: 'openai-codex', name: 'OpenAI Codex' },
     { id: 'gemini-google', name: 'Gemini Google' },
-    { id: 'cerebras', name: 'Cerebras' },
-    { id: 'nvidia-nim', name: 'NVIDIA NIM' },
 ]);
 // #4800 — orgs destino permitidas para "Crear nuevo" (se refleja como <select>,
 // nunca texto libre · security A01). La validación autoritativa vive en el drainer
@@ -314,7 +312,7 @@ var OW_STEP = 0;
 var OW_MAX = 5;
 var OW_REPO_MODE = 'existing';
 var OW_DEFAULT_ADMISSION_LABELS = ['needs-definition', 'Ready'];
-var OW_DEFAULT_PROVIDER_ORDER = ['anthropic', 'openai-codex', 'gemini-google', 'cerebras', 'nvidia-nim'];
+var OW_DEFAULT_PROVIDER_ORDER = ['anthropic', 'openai-codex', 'gemini-google'];
 var OW_PROVIDER_ORDER = OW_DEFAULT_PROVIDER_ORDER.slice();
 var OW_EDIT_PRODUCT = '';
 try { OW_EDIT_PRODUCT = new URLSearchParams(window.location.search).get('editProduct') || ''; } catch(e) { OW_EDIT_PRODUCT = ''; }

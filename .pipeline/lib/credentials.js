@@ -10,12 +10,12 @@
 // Estructura esperada del JSON:
 //   {
 //     "telegram":   { "bot_token": "...", "chat_id": "..." },
-//     "providers":  { "google": {"api_key": "..."}, "cerebras": {...}, ... }
+//     "providers":  { "google": {"api_key": "..."}, "openai": {...}, ... }
 //   }
 //
-// #3353 (mayo 2026): Groq fue descontinuado. Si el credentials.json todavía
-// tiene `providers.groq`, la key se ignora silenciosamente (sin entrada en
-// ENV_MAPPING) — el operador puede limpiarlo cuando quiera.
+// Providers retirados (groq en #3353; cerebras/nvidia/moonshot en #6563): si el
+// credentials.json todavía tiene sus claves, se ignoran silenciosamente (sin
+// entrada en ENV_MAPPING) — el operador puede limpiarlas cuando quiera.
 //
 // Precedencia (alineada con loadApiKeys de telegram-secrets.js):
 //   1. process.env ya seteado → respetar, no sobrescribir
@@ -149,21 +149,9 @@ const ENV_DESCRIPTORS = Object.freeze({
   'providers.google.api_key': {
     env: 'GEMINI_API_KEY', backend: 'ssm', shared: true, auth_anchor: false,
   },
-  // providers.groq.api_key se removió en #3353 — Groq descontinuado.
-  'providers.cerebras.api_key': {
-    env: 'CEREBRAS_API_KEY', backend: 'ssm', shared: true, auth_anchor: false,
-  },
-  'providers.nvidia.api_key': {
-    env: 'NVIDIA_NIM_API_KEY', backend: 'ssm', shared: true, auth_anchor: false,
-  },
-  // #4880 — Kimi (Moonshot). Drop-in de Claude Code contra el endpoint
-  // Anthropic-compat: autentica con su token en `ANTHROPIC_AUTH_TOKEN` (var
-  // distinta de `ANTHROPIC_API_KEY`, la OAuth/Max real). Fuente única en
-  // credentials.json; jamás por Telegram (SEC-5). El valor nunca se loguea (el
-  // loader sólo lista nombres de var).
-  'providers.moonshot.api_key': {
-    env: 'ANTHROPIC_AUTH_TOKEN', backend: 'ssm', shared: true, auth_anchor: false,
-  },
+  // providers.groq.api_key se removió en #3353; providers.cerebras.api_key,
+  // providers.nvidia.api_key y providers.moonshot.api_key (ANTHROPIC_AUTH_TOKEN,
+  // drop-in de Kimi #4880) se removieron en #6563 — providers retirados.
   // #5172 — Google Drive (persistencia de evidencia de QA).
   //
   // Hasta ahora estas credenciales vivían SÓLO en el archivo versionado
@@ -233,7 +221,7 @@ function seHidrata(descriptor) {
 //        devolvería `[]` SIN lanzar excepción y el wizard de providers del
 //        dashboard quedaría vacío: falla silenciosa, por eso tiene test propio.
 //   .pipeline/lib/__tests__/credentials.test.js, credentials-google-drive.test.js,
-//   kimi-provider-4880.test.js, .pipeline/tests/dashboard/wizard-providers-flow.test.js
+//   .pipeline/tests/dashboard/wizard-providers-flow.test.js
 //
 // (Ojo: `hydrate-provider-env.js:35` declara OTRO `ENV_MAPPING` local y
 // homónimo, sin relación con éste. Un `grep` lo trae; no es parte de esto.)
@@ -272,11 +260,11 @@ const ANCHOR_ENV_VARS = Object.freeze(new Set(
 ));
 
 // Mapeo legacy: telegram-config.json usa flat keys (no nested). Solo cubre las
-// que existían en ese formato — providers nuevos (google/cerebras/nvidia) no
-// se cargan del legacy porque no existían cuando ese archivo era canónico.
+// que existían en ese formato — providers posteriores (google) no se cargan
+// del legacy porque no existían cuando ese archivo era canónico.
 //
-// #3353 (mayo 2026): `groq_api_key` se removió del mapping legacy junto con la
-// descontinuación de Groq. Si aparece en el JSON legacy se ignora silenciosamente.
+// Las claves legacy de providers retirados (`groq_api_key` en #3353) se ignoran
+// silenciosamente si aparecen en el JSON legacy.
 const LEGACY_MAPPING = Object.freeze({
   'bot_token':           'TELEGRAM_BOT_TOKEN',
   'chat_id':             'TELEGRAM_CHAT_ID',
@@ -325,9 +313,9 @@ const SOURCE = Object.freeze({
 
 // D-SYNC-7 — memoización por namespace A NIVEL DE MÓDULO. No es una
 // optimización: `loadIntoEnv` NO se llama sólo en el boot. `action-token.js:77`
-// la llama por resolución de token y `cerebras-runner.js:96` /
-// `nvidia-nim-runner.js:90` POR LANZAMIENTO DE AGENTE. Sin esto, cada launch
-// pagaría el arranque de un proceso Python de la AWS CLI (~1-2 s).
+// la llama por resolución de token y los handlers de provider la invocaban POR
+// LANZAMIENTO DE AGENTE. Sin esto, cada launch pagaría el arranque de un
+// proceso Python de la AWS CLI (~1-2 s).
 //
 // El TTL sale de `vault.cache_ttl_seconds` (tope duro de 300 s en el módulo del
 // vault, SEC-6): un caché sin vencimiento en un proceso que vive días
@@ -2326,7 +2314,8 @@ const SNAPSHOT_SCOPE_NO_DECLARADO = 'scope-no-declarado';
  * Providers declarados en el inventario, DERIVADOS de `ENV_DESCRIPTORS`
  * (`providers.<nombre>.api_key`). No es una lista escrita a mano: una segunda
  * copia se desincroniza el día que se agregue o se saque un provider — que es
- * exactamente lo que pasó con `providers.groq` en #3353.
+ * exactamente lo que pasó con `providers.groq` en #3353 y con los free
+ * retirados en #6563.
  *
  * @type {Object<string,string>} nombre de provider -> clave lógica
  */

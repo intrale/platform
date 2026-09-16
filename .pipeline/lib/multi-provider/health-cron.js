@@ -165,9 +165,9 @@ const CATALOG_CHECK_MAX_HOURS = 168;   // 7 días
 
 // Providers en alcance del cruce (cond. 9 + D-1). Escrito, no implícito (CA-13).
 // `anthropic` / `openai` quedan fuera porque corren por CLI-OAuth y `ping()`
-// hace short-circuit antes del HTTP; `kimi-moonshot` queda fuera por D-1 (no
-// está en MANAGED_KEYS ni en PROVIDER_PING_ENDPOINTS — ref. #5892).
-const CATALOG_CHECK_PROVIDERS = Object.freeze(['nvidia-nim', 'gemini-google', 'cerebras']);
+// hace short-circuit antes del HTTP. nvidia-nim y cerebras (que también se
+// cruzaban acá) se retiraron en #6563.
+const CATALOG_CHECK_PROVIDERS = Object.freeze(['gemini-google']);
 
 // #5888 G-7/CA-13 — El cron nombra a Codex `openai`; `agent-models.json` lo
 // nombra `openai-codex`. El mapeo queda EXPLÍCITO para que el día que Codex
@@ -183,8 +183,7 @@ function jitterMs(rangeMs = JITTER_RANGE_MS, rng = Math.random) {
 // #4402 CA-3 — Cadencia configurable vía config.yaml
 //
 // Lee `multi_provider.health.interval_minutes` de `.pipeline/config.yaml`.
-// Clamp `[1, 240]` min con piso duro ≥60s (RS-5.5, anti-DoS: Gemini RPM 15,
-// Cerebras RPM 30).
+// Clamp `[1, 240]` min con piso duro ≥60s (RS-5.5, anti-DoS: Gemini RPM 15).
 //
 // #5172 (D-D / CA-12) — DOS cambios acá:
 //
@@ -663,7 +662,7 @@ async function pingAllProviders({ providers, prevSnapshot, secretsPath, fsImpl =
             auth_mode: spec.auth_mode === 'oauth' ? 'oauth' : 'api_key',
             // #5888 CA-5/R-C — EJE SEPARADO. `state` y `reason_code` de arriba
             // son la salud del PROVIDER y no los toca nadie desde acá: un modelo
-            // muerto no pone rojo a NVIDIA, que sigue sirviendo su catálogo.
+            // muerto no pone rojo al provider, que sigue sirviendo su catálogo.
             ...(catalogCheck ? { catalog_check: catalogCheck } : {}),
             // #6857 — evidencia del round-trip al CLI (sólo providers con
             // `catalog_probe`). Campo OPCIONAL: ausente para el resto. El
@@ -826,7 +825,7 @@ function formatAlertText(payload) {
     // #5888 UX-5/CA-17 — Rama propia del eje de MODELO, ANTES de la genérica.
     //
     // La genérica elige el emoji por el estado del PROVIDER: con provider sano +
-    // modelo muerto saldría `🩺 … 🟢 nvidia-nim → GREEN`, y en un canal que el
+    // modelo muerto saldría `🩺 … 🟢 gemini-google → GREEN`, y en un canal que el
     // operador escanea por emoji 🟢 significa "ignorar". La única alerta que
     // produce esta barrera llegaría camuflada de buena noticia.
     //

@@ -172,12 +172,12 @@ test('CA-14 #4731: HTML SIN flag NO revela proveedor ni copy del banner (curl|gr
 });
 
 test('CA-2/CA-3 #4731: banner PARTIAL nombra al proveedor afectado y su motivo (no "global")', () => {
-    // Codex agotado, Anthropic/Cerebras operativos → degradación PUNTUAL.
+    // Codex agotado, Anthropic/Gemini operativos → degradación PUNTUAL.
     const html = home.renderHomeHTML({
         quotaState: {
             active: true,
             scope: 'partial',
-            operational: ['anthropic', 'cerebras'],
+            operational: ['anthropic', 'gemini-google'],
             operationalCount: 2,
             providers: [{
                 id: 'openai-codex',
@@ -237,7 +237,7 @@ test('CA-3 #4731: banner MULTI muestra un chip por proveedor afectado', () => {
             operationalCount: 1,
             providers: [
                 { id: 'openai-codex', error_type: 'usage_limit_reached', resets_at: '2026-07-16T22:00:00.000Z', resets_at_ms: 1, detected_at: 'x' },
-                { id: 'cerebras', error_type: 'rate_limit_exceeded', resets_at: '2026-07-16T23:00:00.000Z', resets_at_ms: 2, detected_at: 'x' },
+                { id: 'gemini-google', error_type: 'rate_limit_exceeded', resets_at: '2026-07-16T23:00:00.000Z', resets_at_ms: 2, detected_at: 'x' },
             ],
             error_type: 'usage_limit_reached',
             detected_at: 'x',
@@ -249,7 +249,7 @@ test('CA-3 #4731: banner MULTI muestra un chip por proveedor afectado', () => {
         'título plural con conteo de afectados y operativos');
     // Un chip por proveedor afectado (data-provider por cada uno).
     assert.ok(html.includes('data-provider="openai-codex"'));
-    assert.ok(html.includes('data-provider="cerebras"'));
+    assert.ok(html.includes('data-provider="gemini-google"'));
 });
 
 test('CA-12: HTML siempre expone el banner con id quota-exhausted-banner', () => {
@@ -405,15 +405,15 @@ test('#4731: dos proveedores agotados coexisten en el slice (CA-3)', () => {
     writeFlag({
         providers: {
             'openai-codex': { exhausted: true, resets_at: new Date(Date.now() + 3600000).toISOString(), detected_at: new Date().toISOString(), pattern_matched: 'usage_limit_reached' },
-            'cerebras': { exhausted: true, resets_at: new Date(Date.now() + 7200000).toISOString(), detected_at: new Date().toISOString(), pattern_matched: 'rate_limit_exceeded' },
+            'gemini-google': { exhausted: true, resets_at: new Date(Date.now() + 7200000).toISOString(), detected_at: new Date().toISOString(), pattern_matched: 'rate_limit_exceeded' },
         },
     });
     try {
         const out = slices.quotaExhaustedSlice(fakeState({}));
         assert.equal(out.active, true);
         const ids = out.providers.map(p => p.id).sort();
-        assert.deepEqual(ids, ['cerebras', 'openai-codex']);
-        // Reset más próximo primero (codex +1h antes que cerebras +2h).
+        assert.deepEqual(ids, ['gemini-google', 'openai-codex']);
+        // Reset más próximo primero (codex +1h antes que gemini +2h).
         assert.equal(out.providers[0].id, 'openai-codex');
     } finally {
         clearFlag();

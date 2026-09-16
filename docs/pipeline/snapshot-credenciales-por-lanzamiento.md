@@ -144,7 +144,9 @@ pudo emitir. "Requerido" es una condición explícita, no una suposición:
 Un provider con `auth_mode: oauth` (Anthropic vía OAuth Max, Codex vía
 `~/.codex`, Gemini vía cuenta Google) autentica fuera del env: no hay key que
 pedir, así que tampoco hay snapshot que exigir. Los que sí lo requieren son los
-de régimen `api_key` — hoy `cerebras`, `nvidia-nim`, `kimi-moonshot`.
+de régimen `api_key` — desde #6563 ningún proveedor del plantel lo usa (lo usaban
+`cerebras`, `nvidia-nim` y `kimi-moonshot`, retirados); el mecanismo queda vigente
+para cualquier re-alta por §17 de `multi-provider.md`.
 
 Qué pasa en cada camino cuando el snapshot falla:
 

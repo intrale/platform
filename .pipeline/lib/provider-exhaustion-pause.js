@@ -643,7 +643,7 @@ function resolvePauseCause(payload, opts = {}) {
  * es efectivamente más corto. Varias entradas de la tabla de copy de UX-3 son
  * largas por sí solas (`el proveedor la reporta agotada (sin medición)` son 45
  * caracteres), así que ningún nombre las haría entrar: cambiar
- * `Cerebras` por `cerebras` ahí perdería el label lindo sin ganar una sola
+ * `Gemini` por `gemini-google` ahí perdería el label lindo sin ganar una sola
  * columna. Preferimos el nombre legible cuando el swap no aporta.
  *
  * El `label` viene del snapshot —input no confiable— así que se escapa contra

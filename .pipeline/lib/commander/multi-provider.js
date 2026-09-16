@@ -36,12 +36,13 @@
 // pre-spawn solamente el budget efectivo es el HARD_TIMEOUT_MS del spawn
 // único (10 min en pulpo.js). Reservamos la primitiva para que #3275 la use.
 //
-// ADAPTERS DE PROVIDER (estado 2026-06-02)
-// ----------------------------------------
-// Los 5 providers (`anthropic`, `openai-codex`, `gemini-google`, `cerebras`,
-// `nvidia-nim`) hoy tienen **adapter real** en lib/agent-launcher/providers/*.js
-// (PRs #3792/#3793/#3794 cerraron los últimos stubs del histórico #3198).
-// `buildSpawn` ya NO tira `_notImplemented` para ninguno de ellos.
+// ADAPTERS DE PROVIDER (estado 2026-09-16, #6563)
+// -----------------------------------------------
+// Los 3 providers (`anthropic`, `openai-codex`, `gemini-google`) tienen
+// **adapter real** en lib/agent-launcher/providers/*.js (PRs #3792/#3793/#3794
+// cerraron los últimos stubs del histórico #3198; los free cerebras/nvidia-nim
+// fueron retirados en #6563). `buildSpawn` ya NO tira `_notImplemented` para
+// ninguno de ellos.
 //
 // `safeBuildSpawn(...)` se mantiene como guardia defensiva: envuelve
 // `handler.buildSpawn` y devuelve `{ ok: false, reason }` en vez de propagar
@@ -292,7 +293,7 @@ function isCommanderChainGated(opts = {}) {
 //
 // Modo reducido = TODOS los providers PAGOS (billing:'paid' → Anthropic, Codex)
 // están gateados por cuota, PERO queda al menos un provider FREE sano en la chain
-// (billing:'free' → Gemini, Cerebras, NVIDIA NIM). En ese estado el Commander NO
+// (billing:'free' → Gemini, único free vigente tras #6563). En ese estado el Commander NO
 // ejecuta acciones: responde un aviso advisory (cannedReducedModeResponse) y NO
 // spawnea el free (decisión de PO D1 — least-privilege, no quema free tier).
 //
@@ -917,7 +918,7 @@ function formatFallbackNotice({ primaryProvider, fallbackProvider, errorCode, su
         ? MOTIVES[code]
         : 'motivo no confirmado';
     // #6179 — `fallbackProvider` se interpolaba CRUDO acá: un id interno
-    // (`cerebras`, `nvidia-nim`) viajaba tal cual al chat. Todo copy visible que
+    // (p. ej. `gemini-google`) viajaba tal cual al chat. Todo copy visible que
     // nombre un proveedor pasa por `publicProviderLabel` (SEC-5), que es
     // fail-closed: lo que no está en la allowlist pública cae al genérico.
     const motorLabel = publicProviderLabel(fallbackProvider, 'un motor de respaldo');
@@ -967,6 +968,155 @@ function publicProviderLabel(provider, fallbackLabel = null) {
     return Object.prototype.hasOwnProperty.call(_PAID_PROVIDER_LABELS, key)
         ? _PAID_PROVIDER_LABELS[key]
         : fallbackLabel;
+}
+
+// -----------------------------------------------------------------------------
+// #6563 — Mensaje de espera por eslabón cuando la cadena entera está gateada.
+//
+// Precisión del PO: con el plantel reducido a tres proveedores agénticos
+// (anthropic, openai-codex, gemini-google), cuando los tres están agotados o
+// fuera de ventana el operador tiene que ver el estado de CADA UNO
+// ("Claude en reposo hasta 07:00 · Codex sin cuota hasta 14:30 · Gemini sin
+// cuota"), nunca un genérico "cadena agotada" ni el nombre de un proveedor
+// retirado. La línea se arma SÓLO desde tablas cerradas:
+//   - etiqueta: `_CHAIN_WAIT_LABELS` (allowlist; un id fuera de ella se omite,
+//     nunca se interpola crudo — SEC-5 de #6179),
+//   - causa: `_SKIP_REASON_WAIT_COPY` (enum cerrado de skipReasons del
+//     dispatcher; un código desconocido cae a "no disponible"),
+//   - hora: `hasta HH:MM` sólo si se pudo leer del flag de cuota
+//     (`quota-exhausted.json`, resets_at por slot) o de la ventana de reposo
+//     (`provider-pause-cause.restStatusFor`). Best-effort y fail-open: cualquier
+//     error deja la causa sin hora, nunca tumba el canned.
+// Las dependencias de disco se resuelven LAZY y son inyectables por `opts`
+// (`quotaModule`, `restStatusFor`, `now`) para que los tests no toquen disco.
+// -----------------------------------------------------------------------------
+const _CHAIN_WAIT_LABELS = Object.freeze({
+    'anthropic': 'Claude',
+    'anthropic-claude': 'Claude',
+    'openai-codex': 'Codex',
+    'gemini-google': 'Gemini',
+});
+
+const _SKIP_REASON_WAIT_COPY = Object.freeze({
+    provider_inactive_by_schedule: 'en reposo',
+    quota_exhausted: 'sin cuota',
+    pacing_budget_red: 'sin cuota',
+    pacing_budget_yellow: 'sin cuota',
+    preventive_soft_gate: 'sin cuota',
+    health_gate: 'caído temporalmente',
+    permission_matrix: 'sin credenciales',
+    provider_disabled: 'apagado',
+    invalid_handler: 'no disponible',
+});
+
+const _WAIT_CLOCK_TZ = 'America/Argentina/Buenos_Aires';
+
+/** `HH:MM` (y `mañana HH:MM` / `DD/MM HH:MM` si no es hoy) en la TZ del operador. */
+function _formatWaitClock(targetMs, nowMs) {
+    if (!Number.isFinite(targetMs) || !Number.isFinite(nowMs) || targetMs <= nowMs) return '';
+    try {
+        const fmt = new Intl.DateTimeFormat('en-GB', {
+            timeZone: _WAIT_CLOCK_TZ, hour12: false,
+            day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit',
+        });
+        const parts = (ms) => {
+            const m = Object.create(null);
+            for (const p of fmt.formatToParts(new Date(ms))) m[p.type] = p.value;
+            return m;
+        };
+        const t = parts(targetMs);
+        const n = parts(nowMs);
+        const hhmm = `${t.hour === '24' ? '00' : t.hour}:${t.minute}`;
+        if (t.day === n.day && t.month === n.month) return hhmm;
+        if (targetMs - nowMs < 36 * 60 * 60 * 1000) return `mañana ${hhmm}`;
+        return `${t.day}/${t.month} ${hhmm}`;
+    } catch {
+        return '';
+    }
+}
+
+/** resets_at (ms) del slot de cuota del provider, o null. Fail-open. */
+function _quotaResetMsFor(provider, opts) {
+    try {
+        const quota = opts.quotaModule || require('../quota-exhausted');
+        const snap = quota.readDefensive({ now: opts.now, auditLogEnabled: false });
+        if (!snap || snap.exhausted !== true) return null;
+        const list = Array.isArray(snap.providers) ? snap.providers : [];
+        const canon = typeof quota.canonicalProvider === 'function'
+            ? quota.canonicalProvider(provider) : provider;
+        const slot = list.find((s) => s && (s.provider === provider || s.provider === canon));
+        const ms = slot ? Number(slot.resets_at_ms) : NaN;
+        return Number.isFinite(ms) ? ms : null;
+    } catch {
+        return null;
+    }
+}
+
+/** Hora de fin del reposo programado (`hoy/mañana HH:MM` vía pause-cause), o ''. */
+function _restClockFor(provider, opts) {
+    try {
+        const ppc = require('../provider-pause-cause');
+        const restStatusFor = typeof opts.restStatusFor === 'function'
+            ? opts.restStatusFor : ppc.restStatusFor;
+        const rest = restStatusFor(provider, opts.now, opts);
+        if (!rest || !rest.resting || !rest.atHHMM) return '';
+        return ppc.formatResumeClock(rest);
+    } catch {
+        return '';
+    }
+}
+
+/**
+ * Línea "Claude en reposo hasta hoy 07:00 · Codex sin cuota hasta 14:30 · …".
+ * Devuelve '' si no hay ningún eslabón del plantel con causa conocida.
+ *
+ * @param {object|null} resolution  `{ skipReasons, chainTried }` del dispatcher.
+ * @param {object} [opts]  `{ now, quotaModule, restStatusFor }` (tests).
+ */
+function describeGatedChain(resolution, opts = {}) {
+    const nowMs = Number.isFinite(opts.now) ? opts.now : Date.now();
+    const o = { ...opts, now: nowMs };
+    const skips = (resolution && Array.isArray(resolution.skipReasons)) ? resolution.skipReasons : [];
+    const chain = (resolution && Array.isArray(resolution.chainTried)) ? resolution.chainTried : [];
+
+    // Orden: el de la cadena si lo tenemos; si no, el de aparición en skips.
+    const order = [];
+    const seen = new Set();
+    const push = (p) => {
+        const key = String(p == null ? '' : p).trim().toLowerCase();
+        if (!key || seen.has(key)) return;
+        seen.add(key);
+        order.push(key);
+    };
+    for (const p of chain) push(p);
+    for (const s of skips) push(s && s.provider);
+
+    const reasonOf = new Map();
+    for (const s of skips) {
+        const key = String((s && s.provider) == null ? '' : s.provider).trim().toLowerCase();
+        if (key && !reasonOf.has(key)) reasonOf.set(key, String((s && s.reason) || ''));
+    }
+
+    const parts = [];
+    const labelSeen = new Set();
+    for (const key of order) {
+        if (!Object.prototype.hasOwnProperty.call(_CHAIN_WAIT_LABELS, key)) continue; // fail-closed
+        const label = _CHAIN_WAIT_LABELS[key];
+        if (labelSeen.has(label)) continue; // alias (anthropic-claude) → una sola entrada
+        labelSeen.add(label);
+        const code = reasonOf.get(key) || '';
+        const copy = Object.prototype.hasOwnProperty.call(_SKIP_REASON_WAIT_COPY, code)
+            ? _SKIP_REASON_WAIT_COPY[code]
+            : 'no disponible';
+        let until = '';
+        if (code === 'provider_inactive_by_schedule') {
+            until = _restClockFor(key, o);
+        } else if (copy === 'sin cuota') {
+            until = _formatWaitClock(_quotaResetMsFor(key, o), nowMs);
+        }
+        parts.push(until ? `${label} ${copy} hasta ${until}` : `${label} ${copy}`);
+    }
+    return parts.join(' · ');
 }
 
 // -----------------------------------------------------------------------------
@@ -1119,7 +1269,7 @@ const _DURAC_KEYS = {
  * existe una (CA-7).
  *
  * Describe el ESCALÓN de capacidad, nunca el id del proveedor (CA-5): al
- * operador no le sirve saber que corre con `cerebras`, le sirve saber que el
+ * operador no le sirve saber que corre con `gemini-google`, le sirve saber que el
  * pipeline no puede ejecutar comandos. Un nombre propio sólo aparecería si
  * `publicProviderLabel` lo devolviera desde la allowlist pública, y esa
  * allowlist tiene dos entradas, ambas de proveedores pagos, por diseño.
@@ -1291,7 +1441,7 @@ function redactSkipReasons(skipReasons) {
 // excluyendo SÓLO los providers no-anthropic ya spawneados. Por el TOCTOU del
 // flag global de cuota de anthropic (otro agente lo limpia entre el pick y el
 // retry), el resolver devolvía `anthropic` como primario libre y el guard lo
-// descartaba → fallo total sin recorrer gemini/cerebras/nvidia.
+// descartaba → fallo total sin recorrer el resto de la cadena.
 //
 // Fix: el set de exclusión es la UNIÓN de `triedNonAnthropic` + el/los
 // primario(s) gateado(s) del TURNO (`primaryProvider`, típicamente anthropic).
@@ -1949,7 +2099,7 @@ function safeBuildSpawn({ handler, args, cwd, env }) {
 // único mensaje conversacional listo para Telegram.
 //
 // Problema que resuelve: los providers no-Anthropic (codex `exec --json`,
-// gemini, cerebras, nvidia) emiten su salida como **JSONL** (un evento por
+// gemini) emiten su salida como **JSONL** (un evento por
 // línea), NO como texto plano. El path de fallback del commander capturaba el
 // `stdout` crudo y lo mandaba tal cual a Telegram — el TTS partía ese stream de
 // eventos en una lluvia de audios cortos y técnicos, totalmente heterogéneo con
@@ -1984,7 +2134,8 @@ function safeBuildSpawn({ handler, args, cwd, env }) {
 // respuesta válida vacía o cortar seco:
 //   - 'empty_output'  → stdout totalmente vacío (provider no emitió nada).
 //   - 'malformed_body'→ hubo JSON estructurado pero sin mensaje conversacional
-//                       (caso Cerebras HTTP 200 sin `content`/`response`/`choices`).
+//                       (caso HTTP 200 sin `content`/`response`/`choices`,
+//                       visto con un provider REST retirado en #6563).
 //   - null            → hay texto útil (`text` no vacío).
 // El caller (pulpo.js#runNonAnthropic) YA avanza al siguiente provider ante
 // `text===''` (advanceOrGiveUp 'empty_output'); `reason` sólo agrega
@@ -2025,7 +2176,7 @@ function extractFallbackReply(stdout) {
             return { text: reply.trim(), parsed: true, reason: null };
         }
         // Objeto JSON conocido pero sin texto conversacional (ej: payload de
-        // error, o el caso Cerebras HTTP 200 sin `content`) → vacío: el caller
+        // error, o un HTTP 200 sin `content`) → vacío: el caller
         // avanza al siguiente provider en vez de dumpear el JSON crudo. #4353
         // CA-4: es un fallo RECUPERABLE (`malformed_body`), no una respuesta
         // válida vacía.
@@ -2112,10 +2263,13 @@ function cannedFallbackUnavailableResponse({ provider }) {
 //
 // REQ-SEC-4: nunca logueamos valores de credenciales — solo causa/estado.
 // -----------------------------------------------------------------------------
-function cannedAllGatedResponse(resolution = null) {
+function cannedAllGatedResponse(resolution = null, opts = {}) {
     const skipReasons = (resolution && Array.isArray(resolution.skipReasons))
         ? resolution.skipReasons
         : [];
+    // #6563 — estado por eslabón (Claude · Codex · Gemini) al pie del canned.
+    const chainLine = describeGatedChain(resolution, opts);
+    const withChain = (text) => (chainLine ? `${text}\n${chainLine}` : text);
     const reason = resolution && typeof resolution.reason === 'string'
         ? resolution.reason
         : null;
@@ -2127,20 +2281,20 @@ function cannedAllGatedResponse(resolution = null) {
     // Causa NO-cuota: credenciales, inactividad por horario, health, etc.
     if (!hasQuota && (skipReasons.length > 0 || allBySchedule)) {
         if (allBySchedule) {
-            return (
+            return withChain(
                 `🕒 Todos los providers LLM del commander están fuera de su ventana de actividad ahora mismo. ` +
                 `Los comandos determinísticos (/status, /listado, /lanzar) siguen funcionando. ` +
                 `Te aviso cuando alguno entre en horario.`
             );
         }
-        return (
+        return withChain(
             `🚫 Ningún provider LLM del commander está disponible (sin credenciales o desactivados), no por falta de cuota. ` +
             `Los comandos determinísticos (/status, /listado, /lanzar) siguen funcionando. ` +
             `Te aviso cuando se recupere alguno.`
         );
     }
 
-    return (
+    return withChain(
         `🚫 Todos los providers LLM del commander están sin cuota disponible. ` +
         `Los comandos determinísticos (/status, /listado, /lanzar) siguen funcionando. ` +
         `Te aviso cuando se libere alguno.`
@@ -2300,6 +2454,7 @@ module.exports = {
     // INDEPENDIENTE de la política de episodio: no se deduplica nunca.
     formatMidTurnQuotaResponse,
     publicProviderLabel,
+    describeGatedChain, // #6563 — estado por eslabón del mensaje de espera
     auditCommanderRequest,
     readCommanderStats,
     safeBuildSpawn,

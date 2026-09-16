@@ -87,10 +87,10 @@ const ALLOWED_REASON_CODES = Object.freeze(new Set([
     // Y deben quedar FUERA de `DURABLE_RED_REASONS`
     // (`agent-launcher/dispatch-with-fallback.js:749`) — exactamente lo
     // contrario de lo que documenta el bloque de `cli_license_unavailable` acá
-    // arriba. Razón: un modelo muerto NO invalida al provider. NVIDIA sigue
+    // arriba. Razón: un modelo muerto NO invalida al provider, que sigue
     // sirviendo el resto de su catálogo; si estos codes entraran a
-    // DURABLE_RED_REASONS, el health-gate del dispatch (`:818`) sacaría a NVIDIA
-    // ENTERA de la cascada de fallback por un solo modelo caído (CA-4 / R-C).
+    // DURABLE_RED_REASONS, el health-gate del dispatch (`:818`) sacaría al
+    // provider ENTERO de la cascada de fallback por un solo modelo caído (CA-4 / R-C).
     'model_not_in_catalog',    // catálogo leído COMPLETO y el modelo no está.
     'model_check_unavailable', // no se pudo verificar. Ausencia de señal, no evidencia.
 ]));
@@ -146,8 +146,8 @@ function sanitizeProvider(provider) {
 // del pipeline. Mismo estilo fail-closed que `sanitizeProvider`: devuelve
 // `null`, NUNCA el crudo. El llamador emite igual, con texto genérico (CA-6).
 //
-// Validado contra los 6 ids reales del config: `claude-opus-4-7`, `gpt-5.5`,
-// `gemini-3-flash-preview`, `gpt-oss-120b`, `zai-glm-4.7`, `kimi-k2-6` y
+// Validado contra ids reales del config: `claude-opus-4-7`, `gpt-5.5`,
+// `gemini-3.8-flash-medium` y, del histórico de providers retirados en #6563,
 // `deepseek-ai/deepseek-v4-pro` (la `/` del vendor es el motivo de incluirla).
 const MODEL_ID_RE = /^[a-z0-9][a-z0-9./-]{0,63}$/;
 
@@ -167,7 +167,7 @@ function sanitizeModelId(modelId) {
  *   - Para estados `green` / `yellow` solo aplica la ventana dedup de 10 min.
  *
  * @param {object} params
- * @param {string} params.provider — `gemini-google`, `cerebras`, etc.
+ * @param {string} params.provider — `gemini-google`, etc.
  * @param {string} params.state — `green` | `yellow` | `red`.
  * @param {string} params.reasonCode — código genérico (sanitizado al persistir).
  * @param {number} [params.now=Date.now()]
@@ -301,23 +301,29 @@ function record({ provider, state, sent, now = Date.now(), dedupFile = HOME_DEDU
 /**
  * Wrapper conveniente para la condición CA-4 (b): "más de 2 free providers
  * caídos simultáneamente". Acepta el snapshot completo y devuelve true si
- * 3+ free providers están en rojo y la última alerta global de "multi-down"
- * fue hace más de DEDUP_WINDOW_MS.
+ * `MULTI_DOWN_MIN_RED` (3+) free providers están en rojo y la última alerta
+ * global de "multi-down" fue hace más de DEDUP_WINDOW_MS.
  *
  * Los providers free se identifican por estar en el set conocido (no incluye
  * anthropic / openai, que no son free tier).
  *
- * Groq fue descontinuado en #3353 (mayo 2026) por política inestable de
- * restricciones del proveedor.
+ * Groq fue descontinuado en #3353 (mayo 2026); cerebras y nvidia-nim se
+ * retiraron en #6563. El set queda recortado a Gemini (free hasta #6564), no
+ * eliminado: con un único free vigente el umbral de 3 es inalcanzable por
+ * construcción (el rojo de Gemini ya lo cubre `decide()` por provider), y la
+ * alerta vuelve a tener sentido sola si se suman free providers. `freeProviders`
+ * es inyectable para testear la lógica del umbral sin depender del plantel.
  */
-const FREE_PROVIDERS = Object.freeze(new Set(['gemini-google', 'cerebras', 'nvidia-nim']));
+const FREE_PROVIDERS = Object.freeze(new Set(['gemini-google']));
+const MULTI_DOWN_MIN_RED = 3;
 
-function decideMultiDown({ snapshot, now = Date.now(), dedupFile = HOME_DEDUP_FILE, fsImpl = fs } = {}) {
+function decideMultiDown({ snapshot, now = Date.now(), dedupFile = HOME_DEDUP_FILE, fsImpl = fs, freeProviders = FREE_PROVIDERS } = {}) {
     if (!snapshot || !Array.isArray(snapshot.providers)) {
         return { shouldEmit: false, reasonNoEmit: 'invalid_snapshot' };
     }
-    const reds = snapshot.providers.filter(p => p.state === 'red' && FREE_PROVIDERS.has(p.provider));
-    if (reds.length < 3) return { shouldEmit: false, reasonNoEmit: 'below_threshold', red_count: reds.length };
+    const free = (freeProviders instanceof Set) ? freeProviders : new Set(freeProviders || []);
+    const reds = snapshot.providers.filter(p => p.state === 'red' && free.has(p.provider));
+    if (reds.length < MULTI_DOWN_MIN_RED) return { shouldEmit: false, reasonNoEmit: 'below_threshold', red_count: reds.length };
 
     const store = tryReadJson(dedupFile, fsImpl) || { alerts: {} };
     if (!store.alerts || typeof store.alerts !== 'object') store.alerts = {};
@@ -374,7 +380,7 @@ const UNREPRESENTABLE_MODEL_KEY = '__unrepresentable__';
  * Decide si un modelo fuera de catálogo merece emisión a Telegram.
  *
  * @param {object} params
- * @param {string} params.provider — provider gestionado (`nvidia-nim`, …).
+ * @param {string} params.provider — provider gestionado (`gemini-google`, …).
  * @param {string} params.modelId — id configurado. Si no pasa el sanitize, la
  *   alerta se emite IGUAL con `model_id: null` (nunca el crudo, nunca se omite).
  * @param {string} [params.providerState] — estado de salud del provider. Viaja
@@ -439,6 +445,7 @@ module.exports = {
     ALLOWED_REASON_CODES,
     ALLOWED_STATES,
     FREE_PROVIDERS,
+    MULTI_DOWN_MIN_RED,
     decide,
     record,
     decideMultiDown,

@@ -2,8 +2,8 @@
 // extract-fallback-reply.test.js — Cobertura del normalizador de salida de los
 // providers de respaldo del Commander.
 //
-// Contexto: los providers no-Anthropic (codex `exec --json`, gemini, cerebras,
-// nvidia) emiten su salida como JSONL. El path de fallback dumpeaba ese stream
+// Contexto: los providers no-Anthropic (codex `exec --json`, gemini) emiten su
+// salida como JSONL. El path de fallback dumpeaba ese stream
 // crudo a Telegram y el TTS lo partía en una lluvia de audios técnicos. El
 // helper extrae sólo el/los `agent_message` finales para entregar un único
 // mensaje conversacional.

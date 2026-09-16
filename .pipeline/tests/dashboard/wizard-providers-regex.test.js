@@ -17,10 +17,6 @@ const VALID = {
     anthropic: 'sk-ant-' + 'A'.repeat(48),
     openai:    'sk-' + 'B'.repeat(48),
     google:    'C'.repeat(39),
-    cerebras:  'csk-' + 'D'.repeat(40),
-    nvidia:    'nvapi-' + 'E'.repeat(40),
-    // #4880 — Kimi (Moonshot): prefijo `sk-` + ≥32 chars.
-    moonshot:  'sk-' + 'F'.repeat(48),
 };
 
 // ≥2 inválidos por provider (prefijo errado / muy corta).
@@ -28,10 +24,6 @@ const INVALID = {
     anthropic: ['sk-' + 'A'.repeat(48), 'sk-ant-short', ''],
     openai:    ['nope-' + 'B'.repeat(48), 'sk-', 123],
     google:    ['short', 'has space here aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', null],
-    cerebras:  ['sk-' + 'D'.repeat(40), 'csk-short', undefined],
-    nvidia:    ['nv-' + 'E'.repeat(40), 'nvapi-short', {}],
-    // #4880 — prefijo errado / muy corta / no-string.
-    moonshot:  ['nope-' + 'F'.repeat(48), 'sk-short', 42],
 };
 
 test('cada provider de PROVIDER_REGEX tiene válido + inválidos definidos', () => {

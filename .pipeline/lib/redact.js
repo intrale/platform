@@ -380,8 +380,9 @@ function redactSecretValue(str) {
 
 // =============================================================================
 // #3837 (SEC-1 barrera B) — Redacción de CONTENIDO para el material RAG que se
-// envía a providers non_anthropic (Cerebras/NVIDIA). Un log con
-// token/credencial NUNCA debe llegar a un tercero.
+// envía a providers non_anthropic. Un log con token/credencial NUNCA debe
+// llegar a un tercero. (Nació para Cerebras/NVIDIA, retirados en #6563; la
+// barrera se conserva como defensa para cualquier tercero.)
 //
 // `redactSecretValue` sola (lo que aplicaba api-rag) sólo cubre 5 formatos de
 // key + entropía sobre el string COMPLETO. En líneas de log reales (con
@@ -486,7 +487,7 @@ module.exports = {
     // #3724 — escaneo por valor para audit log de wizards.
     redactObject,
     redactSecretValue,
-    // #3837 — barrera B de contenido RAG (Cerebras/NVIDIA).
+    // #3837 — barrera B de contenido RAG hacia providers non_anthropic.
     redactRagContent,
     shannonEntropy,
     SECRET_VALUE_PATTERNS,

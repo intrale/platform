@@ -260,15 +260,9 @@ const glitchRetry = require('./lib/commander/glitch-retry');
 // log con hash-chain (CA-4 / SR-3) y formatea las notificaciones a Leo según
 // UX-G1 (lenguaje natural, no log operativo).
 const commanderMP = require('./lib/commander/multi-provider');
-// Inyección de contexto del proyecto + guardrail anti-alucinación para providers
-// integrados como API REST pelada (cerebras, nvidia-nim). Sin esto, ante una
-// pregunta de estado en vivo inventan una explicación plausible pero falsa
-// (incidente Cerebras/Whisper 2026-06-05). No-op para providers agénticos.
-const commanderApiContext = require('./lib/commander/api-context-pack');
-// #3837 — Retrieval acotado (RAG) para providers API-pelados: compone material
-// REAL del repo (logs + CLAUDE.md) sobre el context-pack estático. Síncrono a
-// propósito para no romper el guard sync del fallback (#4318). No-op agénticos.
-const commanderApiRag = require('./lib/commander/api-rag');
+// #6563 — El subsistema "API pelada" (context-pack + RAG para providers REST sin
+// filesystem) se retiró junto con cerebras/nvidia-nim: los tres proveedores
+// vigentes (anthropic, openai-codex, gemini-google) son agénticos y ven el repo.
 // #3577 — Detectores in-stream del Commander en modo SHADOW (parte 1/2 del
 // split de #3472). Observan first-byte/stream-gap/eof-premature/transient-5xx
 // y los emiten al audit log SIN matar el primario ni spawnear secundario.
@@ -11527,19 +11521,13 @@ async function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, 
 
   // Escribir system prompt (rol) a archivo y user prompt corto como argumento
   const systemFile = path.join(LOG_DIR, `agent-${issue}-${skill}-system.txt`);
-  // Paridad con el Commander (incidente Cerebras/Whisper 2026-06-05): si el
-  // spawn de este agente cae a un provider integrado como API REST pelada
-  // (cerebras, nvidia-nim), el agente TAMPOCO ve el filesystem, los logs ni el
-  // runtime — sólo recibe el texto del system + user prompt. Igual que el
-  // Commander, ante preguntas/decisiones de estado en vivo tiende a alucinar.
-  // Le aumentamos el system prompt con el MISMO guardrail anti-alucinación +
-  // extracto de CLAUDE.md. Es no-op para los providers agénticos (anthropic,
-  // openai-codex, gemini-google), que ya investigan el repo de verdad.
-  let systemContent = `${base}\n\n${rol}`;
+  // #6563 — Sin augment por provider: todos los providers vigentes son
+  // agénticos (ven el repo), así que el system prompt es base + rol tal cual.
+  const systemContent = `${base}\n\n${rol}`;
   // #4284 — persistir el provider EFECTIVO (router decision real) para que el
   // dashboard ("Ahora · En Ejecución") muestre con qué provider corre realmente
   // el agente, no el configurado por skill. Best-effort: un fallo acá NUNCA
-  // bloquea el spawn (mismo estilo que el augment del system prompt contiguo).
+  // bloquea el spawn.
   // CA-5: el marker vive en la raíz de `.pipeline/`, no bajo `trabajando/` → no
   // altera los contadores de concurrencia.
   if (runningProviders && dispatchResolution && dispatchResolution.provider) {
@@ -11554,18 +11542,6 @@ async function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, 
     } catch (rpErr) {
       log('lanzamiento', `⚠️ ${skill}:#${issue} no se pudo escribir el marker de provider efectivo (best-effort): ${rpErr.message}`);
     }
-  }
-  try {
-    const effectiveProvider = (dispatchResolution && dispatchResolution.provider) || null;
-    systemContent = commanderApiContext.augmentSystemPromptForProvider(
-      systemContent, effectiveProvider, { root: ROOT });
-    if (commanderApiContext.isApiPeladaProvider(effectiveProvider)) {
-      log('lanzamiento', `🧱 ${skill}:#${issue} provider API-pelado "${effectiveProvider}": inyecto guardrail anti-alucinación + contexto del proyecto al system prompt.`);
-    }
-  } catch (augErr) {
-    // Best-effort: nunca bloquear el spawn por el augment. Cae al system base.
-    log('lanzamiento', `⚠️ ${skill}:#${issue} no se pudo aumentar el system prompt para provider API-pelado (best-effort): ${augErr.message}`);
-    systemContent = `${base}\n\n${rol}`;
   }
   fs.writeFileSync(systemFile, systemContent);
 
@@ -12440,7 +12416,7 @@ async function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, 
   // Antes este bloque llamaba `applyToSpawn` y empujaba `--model` a `args` por
   // su cuenta: era un segundo canal de propagación que salteaba la whitelist de
   // `sanitizeModelId`, no cubría a los providers que reciben el modelo por argv
-  // fuera de `anthropic` (kimi-moonshot quedaba en un no-op mudo), duplicaba
+  // fuera de `anthropic` (un provider hoy retirado en #6563 quedaba en un no-op mudo), duplicaba
   // `PROVIDER_MODEL_ENV`, podía duplicar `--model` si #6272 también estaba
   // encendido para el par, y dejaba `launchResult.modelPropagation` reportando
   // `apply:false` para propagaciones que sí ocurrieron (review de #6274).
@@ -14071,7 +14047,7 @@ function brazoHuerfanos(config) {
         // camino normal y se le cobraba al ISSUE: 3 barridos después el Pulpo
         // sintetizaba `Huérfano tras 3 reintentos` y rebotaba código sano.
         // Es lo que le pasó a #6612 en fase `aprobacion` cuando la cadena de
-        // `po` cayó en `kimi-moonshot`. Ahora buscamos por (skill, issue) y
+        // `po` cayó en un provider free (retirado en #6563). Ahora buscamos por (skill, issue) y
         // apagamos el provider que el marker dice que falló — nunca otro.
         try {
           const sfState = require('./lib/agent-launcher/spawn-failure-state');
@@ -16478,10 +16454,10 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
     {
       // ---------------------------------------------------------------------
       // Reintento de cadena ante respuesta vacía / spawn fallido (incidente
-      // Cerebras empty_output 2026-06-05). Antes, si el provider efectivo
-      // devolvía vacío o no se podía spawnear, cortábamos seco con un mensaje
-      // canned y NO probábamos el siguiente eslabón de la cascada (ej. tras
-      // cerebras quedaba nvidia-nim sin usar). Ahora, ante empty_output /
+      // empty_output 2026-06-05 con un provider hoy retirado en #6563). Antes,
+      // si el provider efectivo devolvía vacío o no se podía spawnear,
+      // cortábamos seco con un mensaje canned y NO probábamos el siguiente
+      // eslabón de la cascada. Ahora, ante empty_output /
       // spawn-error / no_implemented / data-residency, re-resolvemos la cadena
       // excluyendo el provider que falló y reintentamos con el siguiente, hasta
       // agotar la cascada. Sólo cuando NO queda ningún provider damos el
@@ -16538,34 +16514,10 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
           let sysFile = null;
           try {
             sysFile = path.join(PIPELINE, 'commander-system-prompt.md');
-            // Para providers API-pelados (cerebras, nvidia-nim) aumentamos el
-            // system prompt con contexto del proyecto + guardrail anti-alucinación.
-            // No-op para providers agénticos: devuelve la persona tal cual.
-            let systemForProvider = commanderApiContext.augmentSystemPromptForProvider(
-              fallbackParts.systemPrompt, provider, { root: ROOT });
-            // #3837 — COMPONER retrieval acotado (RAG) encima del context-pack
-            // estático: material REAL del repo (logs + CLAUDE.md) relacionado con
-            // la pregunta, para que el provider API-pelado funde su respuesta en
-            // hechos y no invente (incidente Cerebras/Whisper). Síncrono a
-            // propósito (no rompe el guard sync #4318). No-op para agénticos y
-            // best-effort: cualquier fallo cae al context-pack estático (SEC-6).
-            if (commanderApiContext.isApiPeladaProvider(provider)) {
-              try {
-                const ragBlock = commanderApiRag.augmentPromptWithRag({
-                  prompt: fallbackParts.userMessage,
-                  provider,
-                  root: ROOT,
-                  pipelineDir: PIPELINE,
-                });
-                if (ragBlock) {
-                  systemForProvider = `${systemForProvider}\n\n${ragBlock}`;
-                  log('commander', `🔎 provider API-pelado "${provider}": inyecto ${ragBlock.length} chars de material RAG (grounding real).`);
-                }
-              } catch (ragErr) {
-                // Fail-closed: degradar al context-pack estático (SEC-6).
-                log('commander', `⚠️ RAG para "${provider}" falló (best-effort, degrado a context-pack estático): ${ragErr.message}`);
-              }
-            }
+            // #6563 — La persona va tal cual: los providers de respaldo vigentes
+            // (openai-codex, gemini-google) son agénticos y ven el repo, así que
+            // ya no hay augment de contexto ni RAG por provider.
+            const systemForProvider = fallbackParts.systemPrompt;
             fs.writeFileSync(sysFile, systemForProvider, 'utf8');
           } catch { sysFile = null; }
           return sysFile
@@ -16584,7 +16536,7 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
         // gateado del turno (anthropic), no sólo los non-anthropic ya
         // spawneados. Sin esto, el TOCTOU del flag global de cuota de anthropic
         // hacía que el resolver devolviera anthropic y el guard lo descartara →
-        // fallo total sin recorrer gemini/cerebras/nvidia. Nos basamos en el
+        // fallo total sin recorrer el resto de la cadena. Nos basamos en el
         // estado del TURNO (`resolution.primaryProvider`), NO en re-leer el flag
         // mutable compartido (evita el TOCTOU).
         const plan = commanderMP.planChainAdvance({
@@ -19098,7 +19050,7 @@ async function _brazoCommanderInner(config, archivosIniciales, commanderPendient
     }
 
     // --- #3250 — SEC-5: bloqueo cuando el provider efectivo NO es Anthropic.
-    // Los providers no-Anthropic (Cerebras/Gemini/NVIDIA/Codex) no tienen Skill
+    // Los providers no-Anthropic (Codex/Gemini) no tienen Skill
     // tool habilitado en el harness; intentar /doc o /planner allí caería en
     // un fallback silencioso de calidad degradada. Mejor responder canned y
     // pedir al usuario que reintente cuando Claude vuelva.
@@ -27644,7 +27596,7 @@ if (process.env.PULPO_SKIP_AGENT_MODELS_VALIDATE !== '1') {
       // checkEnv:true (re-activado en #3154 después del fix temporal de #3153).
       // validateCredentialsEnvPresence hace bypass de providers con
       // `launcher: "claude"` (auth OAuth vía CLI, no env var). Cualquier
-      // otro launcher (codex/gemini/ollama/node) que declare credentials_env
+      // otro launcher (codex/agy/node) que declare credentials_env
       // sigue exigiendo presencia de la env var al boot. Esto gateá la
       // activación de openai-codex (OPENAI_API_KEY) sin romper el setup
       // actual donde todos los skills usan launcher=claude.

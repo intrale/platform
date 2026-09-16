@@ -22,10 +22,7 @@ Desde #3311 todas las credenciales del proyecto viven en un **único archivo**:
   "providers": {
     "openai":   { "api_key": "..." },
     "anthropic":{ "api_key": "..." },
-    "google":   { "api_key": "..." },
-    "groq":     { "api_key": "..." },
-    "cerebras": { "api_key": "..." },
-    "nvidia":   { "api_key": "..." }
+    "google":   { "api_key": "..." }
   },
 
   // #5217 — namespaces que NO pasan por ENV_MAPPING (ver más abajo)
@@ -59,7 +56,7 @@ Desde #3311 todas las credenciales del proyecto viven en un **único archivo**:
 
 **Cómo se carga**: `.pipeline/lib/credentials.js#loadIntoEnv()` se invoca al
 boot de `pulpo.js` y `restart.js`, mapea cada path a su env var canónica
-(`providers.groq.api_key` → `GROQ_API_KEY`, etc.) y popula `process.env`.
+(`providers.openai.api_key` → `OPENAI_API_KEY`, etc.) y popula `process.env`.
 `telegram-secrets.js` también lee este archivo para sus consumidores legacy.
 
 **Precedencia**:
@@ -306,20 +303,6 @@ no la arregla ningún reinicio — corregí el store primero.
 - [ ] El pulpo arranca sin `[FATAL]` (CA-2).
 - [ ] Commit pusheado con `last_rotated` actualizado.
 
-## Groq (free tier — multi-provider fallback)
-
-> _Free tier, regla `feedback_free-providers-rule`. Nunca pago._
-
-1. Abrí <https://console.groq.com> y andá a "API Keys".
-2. "Create API Key" — nombrá `intrale-pipeline-YYYYMMDD`. Copiar `gsk_...`
-   (se muestra una sola vez).
-3. Editá `~/.claude/secrets/credentials.json`:
-   ```json
-   { "providers": { "groq": { "api_key": "<nueva-key>" } } }
-   ```
-4. Revocá la vieja key en la misma página.
-5. Cerrá la rotación: ver [Cierre de toda rotación](#cierre-de-toda-rotación-5802).
-
 ## Gemini (Google AI Studio — free tier)
 
 > **NO REPONER salvo que vuelva un consumidor.** El provider `gemini-google`
@@ -341,59 +324,21 @@ no la arregla ningún reinicio — corregí el store primero.
 5. Revocá la vieja key desde la consola.
 6. Cerrá la rotación: ver [Cierre de toda rotación](#cierre-de-toda-rotación-5802).
 
-## Cerebras (free tier — multi-provider fallback)
+## Proveedores retirados — Groq, Cerebras, NVIDIA NIM, Moonshot Kimi (#3353 / #6563)
 
-1. Abrí <https://cloud.cerebras.ai/platform> y andá a "API Keys".
-2. "Create API Key" — nombrá `intrale-pipeline-YYYYMMDD`. Copiar `csk-...`.
-3. Editá `~/.claude/secrets/credentials.json`:
-   ```json
-   { "providers": { "cerebras": { "api_key": "<nueva-key>" } } }
-   ```
-4. Revocá la vieja key.
-5. Cerrá la rotación: ver [Cierre de toda rotación](#cierre-de-toda-rotación-5802).
-
-## NVIDIA NIM (preparada para #3243 — Ola N+5)
-
-> _Provider declarado pero todavía no consumido. La key vive en `credentials.json`
-> y se hidrata a `NVIDIA_NIM_API_KEY`, pero ningún `agent-models.json` la usa
-> hasta que #3243 entre en producción._
-
-1. Abrí <https://build.nvidia.com> y elegí cualquier modelo (sugerido:
-   DeepSeek V4-Pro o Kimi K2.6). Click "Get API Key".
-2. Editá `~/.claude/secrets/credentials.json`:
-   ```json
-   { "providers": { "nvidia": { "api_key": "<nueva-key>" } } }
-   ```
-3. Revocá la vieja key desde la consola de NVIDIA.
-4. Cerrá la rotación: ver [Cierre de toda rotación](#cierre-de-toda-rotación-5802). (No impacta a nada hasta que se implemente #3243.)
-
-## Moonshot Kimi (fallback multi-provider)
-
-> _Provider **activo y cableado**: `kimi-moonshot` es el último eslabón de las
-> cadenas de fallback de `review` y `po` en `agent-models.json`. Autentica por
-> `auth_mode: api_key` contra el endpoint Anthropic-compat, así que su token es
-> **fail-fast**: si la cadena degrada hasta Kimi y `ANTHROPIC_AUTH_TOKEN` no
-> está en el env del Pulpo, el child **no arranca** (`build-child-env` corta el
-> spawn). Ojo: es una var distinta de `ANTHROPIC_API_KEY` (la OAuth/Max real);
-> no las mezcles._
-
-1. Abrí <https://platform.moonshot.ai/console/api-keys> y creá una key nueva
-   nombrada `intrale-pipeline-YYYYMMDD`.
-2. Editá `~/.claude/secrets/credentials.json`:
-   ```json
-   { "providers": { "moonshot": { "api_key": "<nueva-key>" } } }
-   ```
-3. Revocá la vieja key desde la consola de Moonshot.
-4. Cerrá la rotación: ver [Cierre de toda rotación](#cierre-de-toda-rotación-5802).
-
-### Cómo verificar que rotaste bien (Moonshot Kimi)
-
-- La clave está **ausente** del store mientras no la aprovisiones, y el health
-  check la reporta como faltante: es un provider requerido, no opcional. No la
-  declares como "no reponer" para silenciar el rojo — el rojo es correcto y
-  significa que `review` y `po` se quedan sin último fallback.
-- `node -e "console.log(!!require('os') && !!(JSON.parse(require('fs').readFileSync(require('path').join(require('os').homedir(),'.claude','secrets','credentials.json'),'utf8')).providers||{}).moonshot)"`
-  debe imprimir `true` después de rotar.
+> Groq fue descontinuado en #3353 (mayo 2026). `cerebras`, `nvidia-nim` y
+> `kimi-moonshot` fueron dados de baja del ruteo el 2026-09-16 en #6563 (criterio
+> de admisión, `docs/pipeline/multi-provider.md` §16). Ninguno tiene consumidor:
+> `credentials.js` ya no mapea `providers.{groq,cerebras,nvidia,moonshot}` a
+> ninguna env var, el validador rechaza `CEREBRAS_API_KEY` / `NVIDIA_NIM_API_KEY`
+> / `ANTHROPIC_AUTH_TOKEN` en `credentials_env`, y el health-check no las pide.
+>
+> **No hay nada que rotar.** Si todavía tenés esas entradas en
+> `~/.claude/secrets/credentials.json`, revocá las keys en el portal del proveedor
+> y borrá la entrada. Los pasos de rotación que vivían acá están en el historial
+> de git de este archivo; la re-alta de un proveedor se hace por
+> `docs/pipeline/multi-provider.md` §17 (primero se rehabilita el consumidor, después
+> se repone la credencial).
 
 ## GitHub (token de gh CLI / `GH_TOKEN`)
 

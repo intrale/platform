@@ -25,9 +25,10 @@
 // 3. FUENTE UNICA: `.pipeline/logs/cross-provider-dispatch-*.jsonl`, que trae
 //    hash-chain (`hash_prev`/`hash_self`). PROHIBIDO leer de
 //    `.claude/activity-log.jsonl`: esa fuente mide sesiones de agente ya
-//    arrancado y da CERO para tres proveedores que despachan cientos de veces
-//    (gemini-google, cerebras, nvidia-nim) — decidir con ella daria de baja
-//    justo a los que aportan. Hay un test que falla si este archivo la importa.
+//    arrancado y da CERO para los proveedores que despachan cientos de veces
+//    sin sesion propia (gemini-google, y en su momento los free retirados en
+//    #6563) — decidir con ella daria de baja justo a los que aportan. Hay un
+//    test que falla si este archivo la importa.
 // 4. "SIN DATO" => `no_evaluable`, JAMAS "no aporta" (REQ-SEC-2c). Un proveedor
 //    no sale de la cadena por silencio del log, por muestra chica ni por
 //    cadena de hash rota.
@@ -117,11 +118,12 @@ const ENTRY_FIELD_WHITELIST = Object.freeze([
  *
  *     El descuento era ademas VACUO sobre datos reales: en la ventana de 30 dias
  *     hay 2.661 `fallback_provider_disabled` y CERO `provider_disabled`, con lo
- *     cual `gatedByOperator` daba 0 para los cuatro gratuitos — los unicos que el
+ *     cual `gatedByOperator` daba 0 para los gratuitos — los unicos que el
  *     criterio puede marcar — y el 100% de los saltos por kill-switch caia en el
- *     denominador. Medido sobre el log real: cerebras 719/3.163 = 22,7% con el
- *     kill-switch adentro contra 719/719 = 100% sin el, y sus 2.444 bloqueos son
- *     TODOS kill-switch. Reproducido en codigo: un proveedor con 10 intentos y 10
+ *     denominador. Medido sobre el log real (con cerebras, free retirado en
+ *     #6563): 719/3.163 = 22,7% con el kill-switch adentro contra 719/719 = 100%
+ *     sin el, y sus 2.444 bloqueos eran TODOS kill-switch. Reproducido en
+ *     codigo: un proveedor con 10 intentos y 10
  *     exitos (100% de aciertos) mas 400 bloqueos del kill-switch daba
  *     `candidato_baja` por "tasa 2,4% < umbral 5,0%".
  *
@@ -655,8 +657,8 @@ function computeContribution(entries, opts = {}) {
         // El log de dispatch NO trae latencia por invocacion: la unica fuente es
         // `state/multi-provider-health.json`, que guarda el resultado de UN
         // live-ping puntual (el ultimo). Rotularlo "latencia mediana" fue un
-        // error de rev-1: el review midio 15,9 s -> 2,3 s -> 1,26 s para
-        // nvidia-nim en tres observaciones del mismo dia.
+        // error de rev-1: el review midio 15,9 s -> 2,3 s -> 1,26 s para un
+        // free (nvidia-nim, retirado en #6563) en tres observaciones del mismo dia.
         //
         // Decision (rebote rev-2): NO se estima una mediana que no existe — el
         // body prohibe inventar el numero — se reporta lo que hay con su nombre
@@ -858,9 +860,9 @@ function evaluatePermanence(metrics, thresholds, chainCtx = {}) {
     // otro chequeo, unas lineas mas arriba), los 2 pagos satisfacian el
     // invariante de forma VACUA: el contador nunca bajaba de `min_survivors` y
     // el guard no se disparaba NUNCA para los gratuitos. Con el `declared` real
-    // de produccion (anthropic + openai-codex pagos; gemini-google + cerebras +
-    // nvidia-nim gratuitos) el criterio proponia vaciar la cadena de gratuitos
-    // entera de una sola vez, sin que el invariante interviniera.
+    // de produccion de entonces (anthropic + openai-codex pagos; gemini-google +
+    // dos free retirados en #6563) el criterio proponia vaciar la cadena de
+    // gratuitos entera de una sola vez, sin que el invariante interviniera.
     //
     // Eso es exactamente el incidente del 19/08 que motiva el issue, pero
     // auto-infligido y permanente: los dos proveedores que "sostenian" el

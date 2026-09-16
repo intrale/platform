@@ -22,17 +22,15 @@
 //     "providers":  {
 //       "anthropic": { "api_key": "..." },
 //       "openai":    { "api_key": "..." },
-//       "google":    { "api_key": "..." },        // mapea al provider 'gemini-google'
-//       "cerebras":  { "api_key": "..." },
-//       "nvidia":    { "api_key": "..." }
+//       "google":    { "api_key": "..." }         // mapea al provider 'gemini-google'
 //     }
 //   }
 //
 // Estructura legacy (solo lectura, deprecada):
 //   { "openai_api_key": "...", ... }  // flat
 //
-// Groq fue descontinuado en #3353 (mayo 2026): si aparece en el JSON, se
-// ignora silenciosamente porque ya no está en MANAGED_KEYS.
+// Providers retirados (groq en #3353; cerebras y nvidia en #6563): si aparecen
+// en el JSON, se ignoran silenciosamente porque ya no están en MANAGED_KEYS.
 // =============================================================================
 'use strict';
 
@@ -115,29 +113,6 @@ const MANAGED_KEYS = Object.freeze([
         // ver `cli-oauth-probe.js#probeCliProviderLive` y `agy-catalog-probe.js`.
         catalog_probe: 'agy',
         free_tier_notes: 'Antigravity CLI; disponibilidad sujeta a sesión OAuth y licencia/billing.',
-    },
-    {
-        provider: 'cerebras',
-        label: 'Cerebras',
-        editable: true,
-        canonicalPath: 'providers.cerebras.api_key',
-        legacyField: 'cerebras_api_key',
-        free_tier_notes: 'RPM 30 / TPM 60K (free) — ver docs/pipeline/multi-provider.md §8.',
-    },
-    {
-        // #3243 — NVIDIA NIM, 4to free provider del multi-provider. Mismo
-        // flujo de masking + atomic write 0600 + backup chain que el resto.
-        // Free tier sin RPM/RPD publicado por NVIDIA — observación pendiente
-        // del cron de health (ver docs/pipeline/multi-provider.md §8).
-        // En credentials.json canónico vive bajo `providers.nvidia` (alineado
-        // con credentials.js → NVIDIA_NIM_API_KEY). En la UI seguimos llamándolo
-        // 'nvidia-nim' para diferenciarlo de Triton / on-prem NIM.
-        provider: 'nvidia-nim',
-        label: 'NVIDIA NIM',
-        editable: true,
-        canonicalPath: 'providers.nvidia.api_key',
-        legacyField: 'nvidia_nim_api_key',
-        free_tier_notes: 'Free tier sin RPM/RPD/MOQ públicos — ver docs/pipeline/multi-provider.md §8.',
     },
 ]);
 

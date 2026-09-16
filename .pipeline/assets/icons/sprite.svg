@@ -571,7 +571,8 @@
 
   <!-- ic-provider-groq: rayo / bolt en circulo (LPU = inferencia ultra rapida).
        Metafora: la velocidad de Groq es su sello. El rayo dentro del circulo
-       diferencia visualmente del rayo de "build" o "deploy". -->
+       diferencia visualmente del rayo de "build" o "deploy".
+       Reservado — proveedor dado de baja (#3353 / #6563), sin consumidor. -->
   <symbol id="ic-provider-groq" viewBox="0 0 24 24">
     <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.6"/>
     <path d="M13.5 5 L7.5 13 L11 13 L10 19 L16 11 L12.5 11 Z"
@@ -593,7 +594,8 @@
 
   <!-- ic-provider-cerebras: wafer-scale (chip grande con grid interno denso).
        Diferencia clara de ic-provider-deterministic (chip simple): aqui el
-       grid 3x3 interno sugiere "muchos cores en un solo die". -->
+       grid 3x3 interno sugiere "muchos cores en un solo die".
+       Reservado — proveedor dado de baja en #6563, sin consumidor. -->
   <symbol id="ic-provider-cerebras" viewBox="0 0 24 24">
     <!-- Wafer (chip cuadrado grande) -->
     <rect x="3.5" y="3.5" width="17" height="17" rx="1.5"
@@ -609,7 +611,8 @@
 
   <!-- ic-provider-nvidia-nim: nodo / inferencia con halo (microservice).
        Circulo central con 3 satelites = "microservice de inferencia con
-       inputs/outputs paralelos". Diferenciado del ic-multi-provider general. -->
+       inputs/outputs paralelos". Diferenciado del ic-multi-provider general.
+       Reservado — proveedor dado de baja en #6563, sin consumidor. -->
   <symbol id="ic-provider-nvidia-nim" viewBox="0 0 24 24">
     <!-- Nodo central -->
     <circle cx="12" cy="12" r="3.5" fill="none" stroke="currentColor" stroke-width="1.75"/>

@@ -191,10 +191,16 @@
    *   - provider-gemini         (#8AB4F8) = 9.2:1  AA Large + AAA Normal
    *   - provider-cerebras       (#FFD166) = 12.3:1 AAA
    *   - provider-nvidia-nim     (#76B900) = 7.6:1  AAA Large + AA Normal
+   *
+   * Los tokens de groq / cerebras / nvidia-nim quedan RESERVADOS: sus
+   * proveedores se dieron de baja (groq en #3353; cerebras y nvidia-nim en
+   * #6563) y no tienen consumidor en views/ ni theme.css. Se conservan como
+   * identidad visual para que un rollback no requiera rediseno.
    * -------------------------------------------------------------------------- */
 
   /* Groq — coral calido distinto de provider-anthropic (copper) y del retry/danger.
-   * Identidad: velocidad (Groq LPU) -> tono energico. */
+   * Identidad: velocidad (Groq LPU) -> tono energico.
+   * Reservado — proveedor dado de baja (#3353 / #6563), sin consumidor. */
   --provider-groq:             #FF6B47;
   --provider-groq-dim:         #B84A30;
   --provider-groq-bg:          rgba(255, 107, 71, 0.14);
@@ -209,14 +215,15 @@
   --provider-gemini-fg:        #CBD9F9;   /* texto sobre provider-gemini-bg, 12.8:1 */
 
   /* Cerebras — amarillo claro, identidad de "wafer scale".
-   * Distinto de --warning (mostaza), --retry (ambar) y --quota-degraded. */
+   * Distinto de --warning (mostaza), --retry (ambar) y --quota-degraded.
+   * Reservado — proveedor dado de baja en #6563, sin consumidor. */
   --provider-cerebras:         #FFD166;
   --provider-cerebras-dim:     #C49A2E;
   --provider-cerebras-bg:      rgba(255, 209, 102, 0.14);
   --provider-cerebras-fg:      #FFE6A8;   /* texto sobre provider-cerebras-bg, 13.4:1 */
 
   /* NVIDIA NIM — verde NVIDIA clasico, distinto de --success.
-   * Reservado por si entra como provider en una ola futura (#3260). */
+   * Reservado — proveedor dado de baja en #6563, sin consumidor. */
   --provider-nvidia-nim:       #76B900;
   --provider-nvidia-nim-dim:   #5C8F00;
   --provider-nvidia-nim-bg:    rgba(118, 185, 0, 0.14);

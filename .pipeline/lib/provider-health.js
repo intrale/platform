@@ -61,7 +61,7 @@ const QUOTA_GATE_REASON = 'quota_exhausted_real';
 // Normalización provider-id → id canónico de `quota-adapters` (allowlist). El
 // health-cron nombra a Codex como 'openai', pero el adapter de cuota usa
 // 'openai-codex'. Los providers fuera de la allowlist de quota-adapters
-// (p.ej. nvidia-nim) caen a adapterStatus 'error' → fail-open (no degradan).
+// caen a adapterStatus 'error' → fail-open (no degradan).
 const QUOTA_PROVIDER_ALIAS = Object.freeze({ openai: 'openai-codex' });
 const CACHE_FILE_SUBDIR = path.join('cache', 'provider-health.json');
 
@@ -164,7 +164,7 @@ function listConfiguredProviders() {
     if (livePing && livePing.PROVIDER_PING_ENDPOINTS) {
         return Object.keys(livePing.PROVIDER_PING_ENDPOINTS);
     }
-    return ['anthropic', 'openai-codex', 'gemini-google', 'cerebras', 'nvidia-nim'];
+    return ['anthropic', 'openai-codex', 'gemini-google'];
 }
 
 /**

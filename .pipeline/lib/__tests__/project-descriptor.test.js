@@ -36,7 +36,7 @@ function validDescriptor(overrides = {}) {
       admissionLabels: ['Ready'],
       routing: [{ label: 'area:backend', capability: 'backend' }],
     },
-    providers: { order: ['anthropic', 'openai-codex', 'gemini-google', 'cerebras', 'nvidia-nim'] },
+    providers: { order: ['anthropic', 'openai-codex', 'gemini-google'] },
     pullRequests: { policy: 'required' },
     credentials: [{ ref: '~/.claude/secrets/credentials.json#acme', scopes: ['github'] }],
     capabilities: [{ interface: 'backend', skills: ['backend-dev'] }],
@@ -83,12 +83,14 @@ test('#4849: deriveProviderOrder respeta override valido y devuelve copia defens
   assert.notEqual(first, desc.providers.order);
 });
 
-test('#4849: deriveProviderOrder rechaza groq, desconocidos, duplicados, vacio y exceso', () => {
+test('#4849: deriveProviderOrder rechaza retirados (groq #3353, cerebras #6563), desconocidos, duplicados, vacio y exceso', () => {
   assert.throws(() => d.deriveProviderOrder({ providers: { order: ['groq'] } }), /provider no permitido/);
+  assert.throws(() => d.deriveProviderOrder({ providers: { order: ['cerebras'] } }), /provider no permitido/);
+  assert.throws(() => d.deriveProviderOrder({ providers: { order: ['nvidia-nim'] } }), /provider no permitido/);
   assert.throws(() => d.deriveProviderOrder({ providers: { order: ['unknown-provider'] } }), /provider no permitido/);
   assert.throws(() => d.deriveProviderOrder({ providers: { order: ['anthropic', 'anthropic'] } }), /duplicado/);
   assert.throws(() => d.deriveProviderOrder({ providers: { order: [] } }), /cantidad fuera de rango/);
-  assert.throws(() => d.deriveProviderOrder({ providers: { order: ['anthropic', 'openai-codex', 'gemini-google', 'cerebras', 'nvidia-nim', 'extra'] } }), /cantidad fuera de rango/);
+  assert.throws(() => d.deriveProviderOrder({ providers: { order: ['anthropic', 'openai-codex', 'gemini-google', 'extra'] } }), /cantidad fuera de rango/);
   assert.throws(() => d.deriveProviderOrder({ providers: { order: 'anthropic' } }), /order debe ser una lista/);
 });
 
@@ -743,10 +745,10 @@ test('#4805 CA-7: round-trip real en disco — status durable + integrity válid
 test('#4851: providers.order valido y pullRequests.policy valida pasan con contrato cerrado', () => {
   const res = d.validateDescriptor(validDescriptor({
     pullRequests: { policy: 'direct-to-main' },
-    providers: { order: ['openai-codex', 'anthropic', 'gemini-google', 'cerebras', 'nvidia-nim'] },
+    providers: { order: ['openai-codex', 'anthropic', 'gemini-google'] },
   }));
   assert.equal(res.valid, true, JSON.stringify(res.errors));
-  assert.deepEqual(d.deriveProviderOrder(res.descriptor), ['openai-codex', 'anthropic', 'gemini-google', 'cerebras', 'nvidia-nim']);
+  assert.deepEqual(d.deriveProviderOrder(res.descriptor), ['openai-codex', 'anthropic', 'gemini-google']);
   assert.equal(d.derivePullRequestPolicy(res.descriptor), 'direct-to-main');
 });
 
@@ -758,19 +760,21 @@ test('#4851: politica de PR ausente deriva default seguro required', () => {
   assert.equal(d.derivePullRequestPolicy(res.descriptor), 'required');
 });
 
-test('#4851: providers.order default seguro no contiene groq', () => {
+test('#4851: providers.order default seguro no contiene proveedores retirados', () => {
   const desc = validDescriptor();
   delete desc.providers;
   const res = d.validateDescriptor(desc);
   assert.equal(res.valid, true, JSON.stringify(res.errors));
-  assert.deepEqual(d.deriveProviderOrder(res.descriptor), ['anthropic', 'openai-codex', 'gemini-google', 'cerebras', 'nvidia-nim']);
-  assert.ok(!d.deriveProviderOrder(res.descriptor).some((id) => /groq/i.test(id)));
+  assert.deepEqual(d.deriveProviderOrder(res.descriptor), ['anthropic', 'openai-codex', 'gemini-google']);
+  assert.ok(!d.deriveProviderOrder(res.descriptor).some((id) => /groq|cerebras|nvidia/i.test(id)));
 });
 
 for (const badOrder of [
   ['anthropic', 'anthropic'],
   ['anthropic', 'unknown-provider'],
   ['groq'],
+  ['cerebras'],
+  ['nvidia-nim'],
   [''],
 ]) {
   test(`#4851: providers.order invalido se rechaza: ${JSON.stringify(badOrder)}`, () => {

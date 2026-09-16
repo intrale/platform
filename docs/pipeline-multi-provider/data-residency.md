@@ -19,9 +19,9 @@ el mismo contrato.
 ## 1. Tabla de proveedores
 
 La tabla cubre los proveedores **previstos** por el schema multi-provider
-(`agent-models.schema.json` enum `launcher`: `claude`, `codex`, `gemini`,
-`ollama`, `node`) y los modos de cuenta relevantes para Anthropic (API y Plan
-Max). El estado de habilitación se cruza con `agent-models.json` (#3072 / H1).
+(`agent-models.schema.json` enum `launcher`: `claude`, `codex`, `gemini-google`,
+`node` — `ollama` se retiró del enum en #6563 junto con los proveedores gratuitos)
+y los modos de cuenta relevantes para Anthropic (API y Plan Max). El estado de habilitación se cruza con `agent-models.json` (#3072 / H1).
 
 | Provider | Habilitado en `agent-models.json` (2026-05-08) | Training opt-out por default | Región de procesamiento | BAA / DPA disponible | Retención logs lado proveedor | URL TOS | URL DPA | Última verificación |
 |---|---|---|---|---|---|---|---|---|
@@ -31,13 +31,12 @@ Max). El estado de habilitación se cruza con `agent-models.json` (#3072 / H1).
 | **OpenAI tier free** | ❌ no | ⛔ NO — entrena con datos por default | US | ⛔ no | indefinido | https://openai.com/policies/row-terms-of-use/ | n/a | 2026-05-08 |
 | **Google Gemini API** (paga) | ❌ no — schema lo permite, sin adapter | ⚙️ configurable — Vertex AI no entrena por default; Gemini API consumer sí | US/EU/global (Vertex) | ✅ sí (Vertex AI Enterprise / Workspace) | 30 días default (Vertex) | https://cloud.google.com/terms/service-terms | https://cloud.google.com/terms/data-processing-addendum | 2026-05-08 |
 | **Google Gemini tier free** (Gemini API consumer) | ❌ no | ⛔ NO — entrena con datos por default en el tier free | US/global | ⛔ no | indefinido | https://ai.google.dev/gemini-api/terms | n/a | 2026-05-08 |
-| **Ollama local** | ❌ no — schema lo permite, sin adapter | n/a — los datos no salen del host | localhost (no envía a servidor remoto) | n/a | local indefinido (gestionado por el operador) | https://ollama.com/library — TOS por modelo individual | n/a | 2026-05-08 |
 
 > **Nota sobre habilitación**: la columna "Habilitado en `agent-models.json`"
 > refleja el estado del archivo en `origin/main` al momento del último
 > relevamiento. El schema permite enum de `launcher` (`claude`, `codex`,
-> `gemini`, `ollama`, `node`) y de `output_parser` (`anthropic-stream-json`,
-> `openai-sse`, `gemini-stream`, `ollama-jsonl`, `none`), pero los `providers`
+> `gemini-google`, `node`) y de `output_parser` (`anthropic-stream-json`,
+> `openai-sse`, `gemini-stream`, `none`), pero los `providers`
 > registrados son la fuente de verdad — sólo los listados en `providers` están
 > activos.
 >
@@ -90,7 +89,7 @@ La lista vive como código en
 Hoy todas las exclusiones aplican a la **categoría** `non_anthropic` — un único
 bucket que cubre cualquier proveedor que NO sea `anthropic` ni `deterministic`.
 El sidecar también permite listar nombres concretos de proveedor (ej.
-`openai-codex`, `gemini`, `ollama`) en el campo `providers` de cada entrada,
+`openai-codex`, `gemini-google`) en el campo `providers` de cada entrada,
 para reglas más finas en el futuro.
 
 Si en el futuro se identifica que un proveedor concreto cumple un BAA
@@ -215,8 +214,8 @@ Las siguientes capas viven en otros issues del épico multi-provider:
 - Sanitizado de output a logs (#2334 / S2 — independiente, ver §3.5).
 - Aislamiento de credenciales por env del child process (#3084 ya cerrado / S7).
 - Audit log de switches de modelo (#3068 / §6.8.3).
-- Adapters reales no-Anthropic (#3076 / H3 OpenAI codex; futuros para Gemini y
-  Ollama). Hasta que existan, este filtro está activo pero **no tiene call
+- Adapters reales no-Anthropic (#3076 / H3 OpenAI codex; Gemini vía Antigravity
+  desde #6857). Hasta que existan, este filtro está activo pero **no tiene call
   sites no-Anthropic** — corre en boot validation (fail-closed) y queda listo
   para que H3+ lo invoque al construir el contexto del adapter.
 
