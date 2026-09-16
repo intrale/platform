@@ -598,6 +598,247 @@ function validateExecutionCapabilities(config) {
   return errors;
 }
 
+// ─── #6562 — Criterio de admisión de proveedores ─────────────────────────────
+//
+// Un proveedor entra al ruteo sólo si cumple LAS TRES condiciones:
+//   1. CLI local capaz de editar archivos (no una API pelada de chat).
+//   2. Reporta consumo verificable del período (no sólo "te pasaste").
+//   3. Términos que no entrenan con nuestro código.
+//
+// La declaración vive en `providers.<X>.admission` (schema: providerDef.admission)
+// y se evalúa FAIL-CLOSED: campo ausente = "no declaró" = no cumple. El mensaje
+// distingue "declaró false" de "no declaró" para que el operador vaya del error
+// al campo sin traducir. Vocabulario (rótulos) idéntico al de
+// docs/pipeline/multi-provider.md §16 y a la tabla de evaluación.
+//
+// "Activo en el ruteo" = referenciado por `default_provider`, por algún
+// `skills.<s>.provider` o por algún `skills.<s>.fallbacks[]`. Un provider
+// declarado pero no referenciado puede no cumplir sin romper la carga.
+//
+// Exención explícita: `admission.non_llm: true` (ejecutores sin LLM, ej.
+// `deterministic`). Sólo válida si `output_parser === 'none'` — un provider LLM
+// no puede eximirse marcándose non_llm. Nunca `if (key === 'deterministic')`.
+//
+// Excepción temporal: `admission.exception { reason, until, issue }` mantiene en
+// el ruteo a un provider que hoy no cumple (p. ej. baja programada en #6563).
+// `until` es inclusivo (UTC). Vencida ⇒ error de carga. Vigencia capeada a
+// ADMISSION_EXCEPTION_MAX_DAYS desde `now` para que no exista excepción eterna.
+
+const ADMISSION_CONDITIONS = Object.freeze([
+  Object.freeze({
+    field: 'cli_edits_files',
+    requirement: 'CLI local capaz de editar archivos',
+    failLabel: 'su CLI no edita archivos',
+  }),
+  Object.freeze({
+    field: 'reports_usage',
+    requirement: 'reporta consumo verificable',
+    failLabel: 'no reporta consumo verificable',
+  }),
+  Object.freeze({
+    field: 'terms_no_training',
+    requirement: 'términos que no entrenan con nuestro código',
+    failLabel: 'sus términos entrenan con el código',
+  }),
+]);
+
+const ADMISSION_EXCEPTION_MAX_DAYS = 120;
+const ADMISSION_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+const ADMISSION_PREFIX = '[provider-admission]';
+const ADMISSION_DOC_REF = 'docs/pipeline/multi-provider.md §16';
+
+/** Fecha UTC `YYYY-MM-DD` de `now` (Date | number | undefined ⇒ Date.now()). */
+function admissionToday(now) {
+  const d = now instanceof Date ? now : new Date(now === undefined ? Date.now() : now);
+  if (Number.isNaN(d.getTime())) return new Date().toISOString().slice(0, 10);
+  return d.toISOString().slice(0, 10);
+}
+
+/** Días entre dos fechas `YYYY-MM-DD` (b - a), sin DST porque ambas son UTC. */
+function admissionDaysBetween(a, b) {
+  return Math.round((Date.parse(b + 'T00:00:00Z') - Date.parse(a + 'T00:00:00Z')) / 86400000);
+}
+
+/**
+ * Providers referenciados por el ruteo: default_provider + skills.*.provider +
+ * skills.*.fallbacks[]. Devuelve Map<providerKey, string[] de paths JSON que lo
+ * referencian> para que el mensaje diga DÓNDE está activado.
+ */
+function collectRoutedProviders(config) {
+  const routed = new Map();
+  const add = (key, jsonPath) => {
+    if (typeof key !== 'string' || key.length === 0) return;
+    if (!routed.has(key)) routed.set(key, []);
+    routed.get(key).push(jsonPath);
+  };
+  if (!config || typeof config !== 'object') return routed;
+  add(config.default_provider, '#/default_provider');
+  if (config.skills && typeof config.skills === 'object') {
+    for (const [skillKey, skillDef] of Object.entries(config.skills)) {
+      if (!skillDef || typeof skillDef !== 'object') continue;
+      add(skillDef.provider, `#/skills/${skillKey}/provider`);
+      const fallbacks = Array.isArray(skillDef.fallbacks) ? skillDef.fallbacks : [];
+      for (let i = 0; i < fallbacks.length; i++) {
+        const norm = resolveFallbackEntry(fallbacks[i]);
+        if (norm) add(norm.provider, `#/skills/${skillKey}/fallbacks/${i}`);
+      }
+    }
+  }
+  return routed;
+}
+
+/**
+ * Evalúa UN provider contra el criterio. Función pura (no emite errores): la
+ * usan el guardrail (validateProviderAdmission) y el reporte de evaluación de
+ * la doc/tests. Shape:
+ *   {
+ *     provider, declared: boolean, exempt: boolean,
+ *     conditions: [{ field, requirement, failLabel, value: true|false|undefined,
+ *                    state: 'cumple'|'declaró false'|'no declaró' }],
+ *     failing: subset de conditions con state !== 'cumple',
+ *     admissible: boolean,                 // cumple las tres (o exento)
+ *     exception: null | { reason, until, issue, valid, active, expired, tooLong },
+ *     verdict: 'admisible' | 'exento (sin LLM)' | 'no admisible'
+ *            | 'no admisible — excepción vigente' | 'no admisible — excepción vencida',
+ *     evaluatedAt: 'YYYY-MM-DD'
+ *   }
+ */
+function evaluateProviderAdmission(providerKey, providerDef, options = {}) {
+  const today = admissionToday(options.now);
+  const adm = (providerDef && typeof providerDef === 'object' && providerDef.admission
+    && typeof providerDef.admission === 'object' && !Array.isArray(providerDef.admission))
+    ? providerDef.admission
+    : null;
+  const declared = adm !== null;
+  const exempt = declared && adm.non_llm === true;
+
+  const conditions = ADMISSION_CONDITIONS.map((c) => {
+    const value = adm ? adm[c.field] : undefined;
+    let state;
+    if (value === true) state = 'cumple';
+    else if (value === false) state = 'declaró false';
+    else state = 'no declaró';
+    return { field: c.field, requirement: c.requirement, failLabel: c.failLabel, value, state };
+  });
+  const failing = exempt ? [] : conditions.filter((c) => c.state !== 'cumple');
+
+  let exception = null;
+  if (adm && adm.exception && typeof adm.exception === 'object') {
+    const ex = adm.exception;
+    const untilOk = typeof ex.until === 'string' && ADMISSION_DATE_RE.test(ex.until)
+      && !Number.isNaN(Date.parse(ex.until + 'T00:00:00Z'));
+    const reasonOk = typeof ex.reason === 'string' && ex.reason.trim().length > 0;
+    const expired = untilOk ? ex.until < today : true;
+    const tooLong = untilOk ? admissionDaysBetween(today, ex.until) > ADMISSION_EXCEPTION_MAX_DAYS : false;
+    exception = {
+      reason: reasonOk ? ex.reason : null,
+      until: untilOk ? ex.until : null,
+      issue: Number.isInteger(ex.issue) ? ex.issue : null,
+      valid: untilOk && reasonOk,
+      active: untilOk && reasonOk && !expired && !tooLong,
+      expired,
+      tooLong,
+    };
+  }
+
+  const admissible = exempt || failing.length === 0;
+  let verdict;
+  if (exempt) verdict = 'exento (sin LLM)';
+  else if (admissible) verdict = 'admisible';
+  else if (exception && exception.active) verdict = 'no admisible — excepción vigente';
+  else if (exception && exception.expired) verdict = 'no admisible — excepción vencida';
+  else verdict = 'no admisible';
+
+  return {
+    provider: providerKey, declared, exempt, conditions, failing, admissible, exception, verdict, evaluatedAt: today,
+  };
+}
+
+/**
+ * Guardrail fail-closed del criterio de admisión (#6562). Un error por provider
+ * ruteado que no cumpla, con TODAS las condiciones incumplidas en el mismo
+ * mensaje (patrón accionable de getProviderHandler / #3484 CA-7):
+ *   qué provider + qué condición(es) fallan (rótulo de la doc) +
+ *   'declaró false' vs 'no declaró' + dónde corregir (path JSON + campo).
+ *
+ * Cross-checks adicionales (una sola verdad):
+ *   - `non_llm: true` sólo con `output_parser: "none"`.
+ *   - `cli_edits_files: true` exige `capabilities` ⊇ ['agentic-tool-use'].
+ *   - `exception` malformada / vencida / más larga que el cap ⇒ error.
+ *
+ * `options.now` (Date | ms) permite fijar el reloj en tests.
+ */
+function validateProviderAdmission(config, options = {}) {
+  const errors = [];
+  if (!config || typeof config !== 'object') return errors;
+  if (!config.providers || typeof config.providers !== 'object') return errors;
+  const routed = collectRoutedProviders(config);
+
+  for (const [providerKey, providerDef] of Object.entries(config.providers)) {
+    if (!providerDef || typeof providerDef !== 'object') continue;
+    const basePath = `#/providers/${providerKey}/admission`;
+    const ev = evaluateProviderAdmission(providerKey, providerDef, options);
+    const routedAt = routed.get(providerKey) || [];
+    const isRouted = routedAt.length > 0;
+
+    // Exención non_llm: sólo para ejecutores sin LLM (output_parser none).
+    if (ev.exempt && providerDef.output_parser !== 'none') {
+      errors.push({
+        path: `${basePath}/non_llm`,
+        message: `${ADMISSION_PREFIX} el proveedor "${providerKey}" declara admission.non_llm=true pero su output_parser es "${providerDef.output_parser}" (no es un ejecutor sin LLM): la exención no aplica`,
+        fix: `quitar admission.non_llm de providers.${providerKey} y declarar las tres condiciones (cli_edits_files, reports_usage, terms_no_training), o corregir output_parser a "none" si de verdad no invoca un LLM — ver ${ADMISSION_DOC_REF}`,
+      });
+    }
+
+    // Coherencia con capabilities: "edita archivos" sin agentic-tool-use es contradictorio.
+    if (!ev.exempt && ev.declared && providerDef.admission.cli_edits_files === true) {
+      const caps = Array.isArray(providerDef.capabilities) ? providerDef.capabilities : [];
+      if (!caps.includes('agentic-tool-use')) {
+        errors.push({
+          path: `${basePath}/cli_edits_files`,
+          message: `${ADMISSION_PREFIX} el proveedor "${providerKey}" declara admission.cli_edits_files=true pero providers.${providerKey}.capabilities no incluye "agentic-tool-use": son dos verdades contradictorias`,
+          fix: `agregar "agentic-tool-use" a providers.${providerKey}.capabilities si el motor de verdad edita archivos, o declarar admission.cli_edits_files=false — ver ${ADMISSION_DOC_REF}`,
+        });
+      }
+    }
+
+    // Excepción malformada (reason vacío / until inválido) o más larga que el cap.
+    if (ev.exception && !ev.exception.valid) {
+      errors.push({
+        path: `${basePath}/exception`,
+        message: `${ADMISSION_PREFIX} la excepción de admisión del proveedor "${providerKey}" es inválida: se requiere reason no vacío y until con formato YYYY-MM-DD`,
+        fix: `completar providers.${providerKey}.admission.exception = { "reason": "<motivo>", "until": "YYYY-MM-DD", "issue": <n> } o quitarla — ver ${ADMISSION_DOC_REF}`,
+      });
+    } else if (ev.exception && ev.exception.tooLong) {
+      errors.push({
+        path: `${basePath}/exception/until`,
+        message: `${ADMISSION_PREFIX} la excepción de admisión del proveedor "${providerKey}" vence el ${ev.exception.until}, más de ${ADMISSION_EXCEPTION_MAX_DAYS} días desde hoy (${ev.evaluatedAt}): las excepciones son temporales, no eternas`,
+        fix: `acortar providers.${providerKey}.admission.exception.until a como máximo ${ADMISSION_EXCEPTION_MAX_DAYS} días desde hoy, o resolver la condición incumplida — ver ${ADMISSION_DOC_REF}`,
+      });
+    }
+
+    if (!isRouted) continue; // declarado pero no activo en el ruteo: no bloquea la carga
+    if (ev.admissible) continue;
+    if (ev.exception && ev.exception.active) continue; // excepción vigente: pasa hasta `until`
+
+    const detail = ev.failing
+      .map((c) => `${c.failLabel} (admission.${c.field}: ${c.state})`)
+      .join('; ');
+    const where = routedAt.slice(0, 4).join(', ') + (routedAt.length > 4 ? ` y ${routedAt.length - 4} más` : '');
+    let expiredNote = '';
+    if (ev.exception && ev.exception.expired && ev.exception.valid) {
+      expiredNote = ` — la excepción "${ev.exception.reason}" venció el ${ev.exception.until}`;
+    }
+    const missingAll = !ev.declared;
+    errors.push({
+      path: basePath,
+      message: `${ADMISSION_PREFIX} el proveedor "${providerKey}" no es admisible en el ruteo: ${missingAll ? 'no declaró ninguna de las tres condiciones (falta el bloque admission) — ' : ''}${detail}${expiredNote}. Está activado en ${where}`,
+      fix: `en providers.${providerKey}.admission declarar en true sólo las condiciones que de verdad se cumplen (${ADMISSION_CONDITIONS.map((c) => c.field).join(', ')}); si alguna no se cumple, quitar "${providerKey}" de default_provider / skills.*.provider / fallbacks[], o registrar admission.exception { reason, until, issue } con vencimiento — ver ${ADMISSION_DOC_REF}`,
+    });
+  }
+  return errors;
+}
+
 /**
  * Cross-checks que JSON Schema vanilla no expresa (refinamiento Guru #2):
  *   - default_provider debe ser key de providers.
@@ -606,8 +847,11 @@ function validateExecutionCapabilities(config) {
  *   - secrets hardcoded en cualquier string (validateNoHardcodedSecrets).
  *   - credentials_env contra allowlist (validateCredentialsEnvAllowlist).
  *   - #4839 capabilities de ejecución rol×provider fail-closed (validateExecutionCapabilities).
+ *   - #6562 criterio de admisión de proveedores fail-closed (validateProviderAdmission).
+ *
+ * `options.now` (Date | ms) fija el reloj para evaluar excepciones de admisión.
  */
-function validateCrossReferences(config) {
+function validateCrossReferences(config, options = {}) {
   const errors = [];
   if (!config || typeof config !== 'object') return errors;
 
@@ -833,6 +1077,9 @@ function validateCrossReferences(config) {
   // #4839 — matching fail-closed de capabilities de ejecución rol×provider.
   errors.push(...validateExecutionCapabilities(config));
 
+  // #6562 — criterio de admisión de proveedores (tres condiciones, fail-closed).
+  errors.push(...validateProviderAdmission(config, { now: options.now }));
+
   // #3077 SEC-2 — quota_error_types declarados por cada provider deben pertenecer
   // a la meta-allowlist hardcoded en lib/quota-exhausted.js (defensa anti
   // supply-chain: un atacante con permiso de PR no puede silenciar el detector
@@ -1047,7 +1294,7 @@ function validate(jsonPath = CANONICAL_JSON_PATH, options = {}) {
   }));
 
   // 6. Cross-validations (independiente del schema, siempre corre).
-  const crossErrors = validateCrossReferences(config);
+  const crossErrors = validateCrossReferences(config, { now: options.now });
 
   // 7. Validación de env vars presentes (sólo si el caller pasó processEnv).
   //    Boot del pulpo lo activa; CLI/pre-commit lo deja en undefined.
@@ -1397,6 +1644,8 @@ module.exports = {
   HARDCODED_SECRET_PATTERNS,
   ALLOWED_CREDENTIAL_ENV_VARS,
   EXIT_CODES,
+  ADMISSION_CONDITIONS,
+  ADMISSION_EXCEPTION_MAX_DAYS,
   CANONICAL_SCHEMA_PATH,
   CANONICAL_JSON_PATH,
 
@@ -1413,6 +1662,9 @@ module.exports = {
   validateSpawnArgsTemplate,
   validateCrossReferences,
   validateExecutionCapabilities,
+  validateProviderAdmission,
+  evaluateProviderAdmission,
+  collectRoutedProviders,
   validateNoHardcodedSecrets,
   findHardcodedSecrets,
   validateCredentialsEnvAllowlist,

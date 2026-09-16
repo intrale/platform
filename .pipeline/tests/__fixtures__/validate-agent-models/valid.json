@@ -9,7 +9,13 @@
       "quota_error_types": ["usage_limit_error"],
       "supports_tool_use": true,
       "prompt_caching": { "supported": true },
-      "credentials_env": ["ANTHROPIC_API_KEY"]
+      "credentials_env": ["ANTHROPIC_API_KEY"],
+      "capabilities": ["agentic-tool-use"],
+      "admission": {
+        "cli_edits_files": true,
+        "reports_usage": true,
+        "terms_no_training": true
+      }
     }
   },
   "skills": {
