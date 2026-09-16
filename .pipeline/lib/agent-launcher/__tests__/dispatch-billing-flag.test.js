@@ -32,13 +32,15 @@ function agentModels() {
                 launcher: 'codex', model: 'gpt-5.5', auth_mode: 'oauth',
                 credentials_env: ['OPENAI_API_KEY'], billing: 'paid',
             },
-            cerebras: {
-                launcher: 'cerebras', model: 'gpt-oss-120b',
+            // #6563 — gemini-google es el único provider free del plantel vigente
+            // (antes el fixture usaba cerebras, retirado).
+            'gemini-google': {
+                launcher: 'gemini', model: 'gemini-3.1-pro-low',
                 credentials_env: [], billing: 'free',
             },
             // Provider SIN `billing` declarado → debe tratarse como 'free' (fail-safe).
             'legacy-unmarked': {
-                launcher: 'cerebras', model: 'gpt-oss-120b', credentials_env: [],
+                launcher: 'gemini', model: 'gemini-3.1-pro-low', credentials_env: [],
             },
         },
         skills: {
@@ -47,7 +49,7 @@ function agentModels() {
                 model_override: 'claude-sonnet-4-6',
                 fallbacks: [
                     { provider: 'openai-codex', model_override: 'gpt-5.5' },
-                    { provider: 'cerebras', model_override: 'gpt-oss-120b' },
+                    { provider: 'gemini-google', model_override: 'gemini-3.1-pro-low' },
                 ],
             },
         },
@@ -119,7 +121,7 @@ test('#4870 · billingOf devuelve "paid" para provider marcado paid', () => {
 
 test('#4870 · billingOf devuelve "free" para provider marcado free', () => {
     const models = agentModels();
-    assert.equal(dispatch.billingOf('cerebras', models), 'free');
+    assert.equal(dispatch.billingOf('gemini-google', models), 'free');
 });
 
 test('#4870 · billingOf FAIL-SAFE: provider sin billing declarado → "free"', () => {
@@ -166,7 +168,7 @@ test('#4870 · fallback a Codex (paid) → providerBilling="paid"', () => {
     });
 });
 
-test('#4870 · fallback a Cerebras (free) tras pagos gateados → providerBilling="free"', () => {
+test('#4870 · fallback a Gemini (free) tras pagos gateados → providerBilling="free"', () => {
     withTempPipeline({
         'agent-models.json': JSON.stringify(agentModels()),
         'quota-exhausted.json': quotaFlagMulti(['anthropic', 'openai-codex']),
@@ -177,7 +179,7 @@ test('#4870 · fallback a Cerebras (free) tras pagos gateados → providerBillin
             auditLog: { appendChained: () => {} },
         });
         assert.equal(res.gated, false);
-        assert.equal(res.provider, 'cerebras');
+        assert.equal(res.provider, 'gemini-google');
         assert.equal(res.providerBilling, 'free', 'candidato free ⇒ base del modo reducido');
     });
 });
@@ -185,7 +187,7 @@ test('#4870 · fallback a Cerebras (free) tras pagos gateados → providerBillin
 test('#4870 · chain enteramente gateada (all-gated) igual expone providerBilling', () => {
     withTempPipeline({
         'agent-models.json': JSON.stringify(agentModels()),
-        'quota-exhausted.json': quotaFlagMulti(['anthropic', 'openai-codex', 'cerebras']),
+        'quota-exhausted.json': quotaFlagMulti(['anthropic', 'openai-codex', 'gemini-google']),
     }, (tmp) => {
         const res = dispatch.resolveSpawnWithFallback({
             skill: 'telegram-commander', issue: 't', pipelineDir: tmp,

@@ -3,14 +3,13 @@
 //
 // Incidente (2026-07-06): la cadena de fallback del Commander moría en el spawn
 // con `spawn ENAMETOOLONG` en Windows. Causa raíz: los adapters no-Anthropic
-// (codex, gemini, cerebras, nvidia) foldeaban el system prompt + historial en la
+// (codex, gemini; y los retirados cerebras, nvidia — #6563) foldeaban el system prompt + historial en la
 // LÍNEA DE COMANDO (argv), superando el límite de `CreateProcess` (~32K). El
 // proceso del CLI nunca se creaba → throw síncrono antes de tocar la API.
 //
 // Fix: el payload grande (system foldeado + prompt) viaja por STDIN, igual que el
 // path primario de Anthropic escribe el system prompt a archivo. `buildSpawn`
-// devuelve `stdinPayload` y deja el argv chico (codex `-`, gemini `-p ''`,
-// runners `--prompt -`).
+// devuelve `stdinPayload` y deja el argv chico (codex `-`, gemini `-p ''`).
 //
 // Estos tests verifican DOS cosas por provider:
 //   1) CONTRATO: con un system prompt >32K, el argv total queda muy por debajo
@@ -30,8 +29,6 @@ const { spawnSync } = require('node:child_process');
 
 const codex = require('../lib/agent-launcher/providers/openai-codex.js');
 const gemini = require('../lib/agent-launcher/providers/gemini-google.js');
-const cerebras = require('../lib/agent-launcher/providers/cerebras.js');
-const nvidia = require('../lib/agent-launcher/providers/nvidia-nim.js');
 
 // Límite práctico de la línea de comando de Windows (CreateProcess ~32767). El
 // argv construido debe quedar MUY por debajo aunque el payload sea gigante.
@@ -145,56 +142,5 @@ test('#4529 gemini: system >32K va por stdin (NDJSON), argv chico, spawn real si
     }
 });
 
-// -----------------------------------------------------------------------------
-// cerebras / nvidia: el system va por --system-file (path, chico); el prompt del
-// usuario >32K va por stdin (`--prompt -`). Spawn real sin ENAMETOOLONG.
-// -----------------------------------------------------------------------------
-for (const [name, provider] of [['cerebras', cerebras], ['nvidia-nim', nvidia]]) {
-    test(`#4529 ${name}: prompt >32K va por stdin (--prompt -), spawn real sin ENAMETOOLONG`, () => {
-        const { sysFile } = writeBigSystemFile();
-        const sink = stdinSinkScript();
-        forceNodeLauncher(provider, sink);
-        // Prompt de usuario GIGANTE (>32K) — caso que reventaría `--prompt <text>`.
-        const bigUserPrompt = 'Pregunta muy larga del usuario. '.repeat(2000);
-        try {
-            const spawnDef = provider.buildSpawn({
-                args: ['-p', bigUserPrompt, '--system-prompt-file', sysFile],
-                cwd: process.cwd(),
-                env: {},
-            });
-            assert.ok(argvBytes(spawnDef.args) < 4096, `argv demasiado grande: ${argvBytes(spawnDef.args)}`);
-            assert.ok(spawnDef.args.every((a) => !String(a).includes('Pregunta muy larga')));
-            const pIdx = spawnDef.args.indexOf('--prompt');
-            assert.equal(spawnDef.args[pIdx + 1], '-');
-            // El system va por --system-file (path), no inline.
-            assert.ok(spawnDef.args.includes('--system-file'));
-            assert.ok(spawnDef.stdinPayload.length > WINDOWS_CMDLINE_LIMIT);
-            const r = spawnSync(spawnDef.cmd, spawnDef.args, {
-                input: spawnDef.stdinPayload,
-                timeout: 15000,
-                windowsHide: true,
-            });
-            assert.equal(r.error, undefined, `spawn falló: ${r.error && r.error.code}`);
-            assert.equal(r.status, 0);
-        } finally {
-            provider._resetLauncherCacheForTesting();
-        }
-    });
-}
-
-// -----------------------------------------------------------------------------
-// Runners: cuando `--prompt -`, el runner lee el prompt real por stdin.
-// -----------------------------------------------------------------------------
-test('#4529 cerebras-runner parseArgv + readStdin: --prompt - lee el prompt por stdin', () => {
-    const runner = require('../lib/agent-launcher/runners/cerebras-runner.js');
-    const parsed = runner.parseArgv(['--model', 'gpt-oss-120b', '--system-file', '/tmp/s.md', '--prompt', '-']);
-    assert.equal(parsed.prompt, '-');
-    assert.equal(typeof runner.readStdin, 'function');
-});
-
-test('#4529 nvidia-runner parseArgv + readStdin: --prompt - lee el prompt por stdin', () => {
-    const runner = require('../lib/agent-launcher/runners/nvidia-nim-runner.js');
-    const parsed = runner.parseArgv(['--model', 'deepseek', '--system-file', '/tmp/s.md', '--prompt', '-']);
-    assert.equal(parsed.prompt, '-');
-    assert.equal(typeof runner.readStdin, 'function');
-});
+// #6563 — los casos de cerebras / nvidia-nim (runners Node con `--prompt -`)
+// se retiraron con esos providers.

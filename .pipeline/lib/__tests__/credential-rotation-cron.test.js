@@ -666,11 +666,13 @@ test('ROTATION_POLICY_DAYS · 90 días por convención', () => {
 // las hidratadas dejaría 4 secretos sin vigilancia de vencimiento, incluido el
 // refresh token de Secrets Manager. Contrastar contra `ENV_MAPPING` volvía
 // verde ese agujero; contra `ENV_DESCRIPTORS` la coherencia es la real (13).
-test('inventario real · conserva exactamente las 13 variables de ENV_DESCRIPTORS', () => {
+// #6563 — ancla: 13 → 10 variables al retirar CEREBRAS_API_KEY,
+// NVIDIA_NIM_API_KEY y ANTHROPIC_AUTH_TOKEN (Kimi) de ENV_DESCRIPTORS.
+test('inventario real · conserva exactamente las 10 variables de ENV_DESCRIPTORS', () => {
   const inventory = fs.readFileSync(path.join(__dirname, '..', '..', '..', 'docs', 'secrets-inventory.md'), 'utf8');
   const rows = cron.parseInventoryMarkdown(inventory);
   const expected = Object.values(require('../credentials').ENV_DESCRIPTORS).map((d) => d.env).sort();
-  assert.equal(expected.length, 13);
+  assert.equal(expected.length, 10);
   assert.deepEqual(rows.map((row) => row.env_var).sort(), expected);
 });
 
@@ -704,7 +706,7 @@ test('metadata pendiente · recuerda una vez por día y no silencia la credencia
 });
 
 test('filas rotables nuevas · disparan T-14, T-7, T-3 y T-1', () => {
-  const envVars = ['TELEGRAM_BOT_TOKEN', 'OPENAI_API_KEY', 'GEMINI_API_KEY', 'CEREBRAS_API_KEY'];
+  const envVars = ['TELEGRAM_BOT_TOKEN', 'OPENAI_API_KEY', 'GEMINI_API_KEY', 'ANTHROPIC_API_KEY'];
   const days = [14, 7, 3, 1];
   for (let index = 0; index < envVars.length; index++) {
     const row = {

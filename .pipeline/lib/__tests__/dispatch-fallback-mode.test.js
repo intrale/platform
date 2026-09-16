@@ -8,8 +8,11 @@
 // salto a codex caía `mode_unknown` (FAIL-CLOSED) — causa raíz del incidente
 // del 26–28/06/2026.
 //
-// CA-2 / CA-5: codex → 'full-auto'; free providers (gemini/cerebras/nvidia) →
+// CA-2 / CA-5: codex → 'full-auto'; free providers (gemini-google) →
 // 'bypassPermissions'.
+//
+// #6563 — cerebras y nvidia-nim (retirados) cubrían el mismo camino que
+// gemini-google, único provider free del plantel vigente.
 // =============================================================================
 'use strict';
 
@@ -35,9 +38,7 @@ function mkTmpPipelineDir(fallbacks) {
         providers: {
             anthropic: { launcher: 'claude', model: 'claude-opus-4-7', credentials_env: ['ANTHROPIC_API_KEY'] },
             'openai-codex': { launcher: 'codex', model: 'gpt-5-codex', credentials_env: ['OPENAI_API_KEY'] },
-            cerebras: { launcher: 'cerebras', model: 'llama-3.3-70b', credentials_env: ['CEREBRAS_API_KEY'] },
             'gemini-google': { launcher: 'gemini', model: 'gemini-3.1-pro-low', credentials_env: ['GEMINI_API_KEY'] },
-            'nvidia-nim': { launcher: 'nvidia', model: 'deepseek-v4', credentials_env: ['NVIDIA_API_KEY'] },
         },
         skills: {
             'pipeline-dev': { provider: 'anthropic', fallbacks },
@@ -85,24 +86,6 @@ test('#4274 · fallback a openai-codex devuelve mode="full-auto" (no bypassPermi
     } finally { cleanup(dir); }
 });
 
-test('#4274 · fallback a cerebras devuelve mode="bypassPermissions" (free provider)', () => {
-    const dir = mkTmpPipelineDir([{ provider: 'cerebras' }]);
-    try {
-        const r = dispatch.resolveSpawnWithFallback({
-            skill: 'pipeline-dev',
-            issue: 4274,
-            pipelineDir: dir,
-            quotaModule: makeQuotaModule(),
-            primaryResolver,
-            providerHandlerResolver,
-            notify: silentNotify,
-            processEnv: { CEREBRAS_API_KEY: 'real-cerebras-key' },
-        });
-        assert.equal(r.provider, 'cerebras');
-        assert.equal(r.mode, 'bypassPermissions');
-    } finally { cleanup(dir); }
-});
-
 test('#4274 · fallback a gemini-google devuelve mode="bypassPermissions"', () => {
     const dir = mkTmpPipelineDir([{ provider: 'gemini-google' }]);
     try {
@@ -117,24 +100,6 @@ test('#4274 · fallback a gemini-google devuelve mode="bypassPermissions"', () =
             processEnv: { GEMINI_API_KEY: 'real-gemini-key' },
         });
         assert.equal(r.provider, 'gemini-google');
-        assert.equal(r.mode, 'bypassPermissions');
-    } finally { cleanup(dir); }
-});
-
-test('#4274 · fallback a nvidia-nim devuelve mode="bypassPermissions"', () => {
-    const dir = mkTmpPipelineDir([{ provider: 'nvidia-nim' }]);
-    try {
-        const r = dispatch.resolveSpawnWithFallback({
-            skill: 'pipeline-dev',
-            issue: 4274,
-            pipelineDir: dir,
-            quotaModule: makeQuotaModule(),
-            primaryResolver,
-            providerHandlerResolver,
-            notify: silentNotify,
-            processEnv: { NVIDIA_API_KEY: 'real-nvidia-key' },
-        });
-        assert.equal(r.provider, 'nvidia-nim');
         assert.equal(r.mode, 'bypassPermissions');
     } finally { cleanup(dir); }
 });

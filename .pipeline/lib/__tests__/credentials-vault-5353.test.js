@@ -107,8 +107,9 @@ function rutaScope(scope, tier = 'shared') {
 }
 
 /**
- * Namespace completo: los 13 valores del descriptor repartidos por scope y
- * backend, tal como los provisionaría #5338.
+ * Namespace completo: los 10 valores del descriptor repartidos por scope y
+ * backend, tal como los provisionaría #5338 (13 hasta #6563, que retiró
+ * cerebras / nvidia / moonshot).
  */
 function seedCompleto({ conAncla = true } = {}) {
   const telegram = { bot_token: 'VAULT-BOT', chat_id: '42' };
@@ -120,9 +121,6 @@ function seedCompleto({ conAncla = true } = {}) {
         openai: { api_key: 'VAULT-OPENAI' },
         anthropic: { api_key: 'VAULT-ANTHROPIC' },
         google: { api_key: 'VAULT-GEMINI' },
-        cerebras: { api_key: 'VAULT-CEREBRAS' },
-        nvidia: { api_key: 'VAULT-NVIDIA' },
-        moonshot: { api_key: 'VAULT-MOONSHOT' },
       },
       [rutaScope('google_drive')]: {
         oauth_client_id: 'VAULT-GD-ID',
@@ -476,8 +474,8 @@ test('D-SYNC-7 · N llamadas consecutivas pagan una sola resolucion del vault', 
   const trasLaPrimera = driver.calls.length;
   assert.ok(trasLaPrimera > 0);
 
-  // `cerebras-runner.js:96` y `nvidia-nim-runner.js:90` llaman a esto POR
-  // LANZAMIENTO DE AGENTE: sin memoización cada launch pagaría la AWS CLI.
+  // Los handlers de provider llamaban a esto POR LANZAMIENTO DE AGENTE: sin
+  // memoización cada launch pagaría la AWS CLI.
   for (let i = 0; i < 5; i += 1) loadIntoEnv({ ...base, env: {} });
   assert.equal(driver.calls.length, trasLaPrimera, '5 llamadas más, cero invocaciones más');
 
@@ -528,23 +526,23 @@ test('D-SYNC-7 · un fallo del vault NO se memoiza (se puede recuperar sin reini
 test('B1.3 · sin el flag no hay fallback: lo que falta en el vault queda sin setear aunque este en el archivo', () => {
   const env = {};
   const seed = seedCompleto();
-  delete seed.parameters[rutaScope('providers')].cerebras;
+  delete seed.parameters[rutaScope('providers')].google;
 
   conArchivosTmp(({ canonicalPath, legacyPath }) => {
     const r = cargar({
       canonicalPath, legacyPath, env, logger: () => {},
       vaultConfig: configVault(), vaultDriver: driverConSeed(seed),
     });
-    assert.deepEqual(r.missing, ['CEREBRAS_API_KEY']);
-    assert.ok(!('CEREBRAS_API_KEY' in env), 'el archivo lo tenía y NO se usó');
-  }, { canonical: { providers: { cerebras: { api_key: 'ARCHIVO-CEREBRAS' } } } });
+    assert.deepEqual(r.missing, ['GEMINI_API_KEY']);
+    assert.ok(!('GEMINI_API_KEY' in env), 'el archivo lo tenía y NO se usó');
+  }, { canonical: { providers: { google: { api_key: 'ARCHIVO-GEMINI' } } } });
 });
 
 test('B1.5/B1.6 · con la ventana ACTIVA el valor sale del archivo, con WARN y source file-bootstrap', () => {
   const env = {};
   const logger = capturarLogs();
   const seed = seedCompleto();
-  delete seed.parameters[rutaScope('providers')].cerebras;
+  delete seed.parameters[rutaScope('providers')].google;
   const ahora = Date.parse('2026-08-01T00:00:00Z');
 
   conArchivosTmp(({ canonicalPath, legacyPath }) => {
@@ -557,22 +555,22 @@ test('B1.5/B1.6 · con la ventana ACTIVA el valor sale del archivo, con WARN y s
       vaultDriver: driverConSeed(seed),
     });
 
-    assert.equal(env.CEREBRAS_API_KEY, 'ARCHIVO-CEREBRAS');
-    assert.equal(r.sources.CEREBRAS_API_KEY, SOURCE.FILE_BOOTSTRAP,
+    assert.equal(env.GEMINI_API_KEY, 'ARCHIVO-GEMINI');
+    assert.equal(r.sources.GEMINI_API_KEY, SOURCE.FILE_BOOTSTRAP,
       'B1.6: el source del fallback NUNCA es `vault`');
     assert.deepEqual(r.missing, []);
     // El resto sigue viniendo del vault.
     assert.equal(r.sources.ANTHROPIC_API_KEY, SOURCE.VAULT);
     // UX-4 — avisa mientras está activa, nombrando la variable y jamás el valor.
     assert.match(logger.texto(), /ventana de bootstrap del vault ACTIVA hasta 2026-09-01/);
-    assert.match(logger.texto(), /CEREBRAS_API_KEY se resolvio por la ventana de bootstrap/);
-    assert.ok(!logger.texto().includes('ARCHIVO-CEREBRAS'), 'el valor nunca se loguea');
-  }, { canonical: { providers: { cerebras: { api_key: 'ARCHIVO-CEREBRAS' } } } });
+    assert.match(logger.texto(), /GEMINI_API_KEY se resolvio por la ventana de bootstrap/);
+    assert.ok(!logger.texto().includes('ARCHIVO-GEMINI'), 'el valor nunca se loguea');
+  }, { canonical: { providers: { google: { api_key: 'ARCHIVO-GEMINI' } } } });
 });
 
 test('B1.5 · la ventana caducada no se aplica aunque el flag siga en true', () => {
   const seed = seedCompleto();
-  delete seed.parameters[rutaScope('providers')].cerebras;
+  delete seed.parameters[rutaScope('providers')].google;
   const cfg = configVault({
     bootstrap_fallback: true,
     bootstrap_fallback_until: '2026-09-01T00:00:00Z',
@@ -586,7 +584,7 @@ test('B1.5 · la ventana caducada no se aplica aunque el flag siga en true', () 
       now: () => Date.parse('2026-08-31T00:00:00Z'),
       vaultConfig: cfg, vaultDriver: driverConSeed(seed),
     });
-    assert.equal(antes.CEREBRAS_API_KEY, 'ARCHIVO-CEREBRAS');
+    assert.equal(antes.GEMINI_API_KEY, 'ARCHIVO-GEMINI');
 
     // Un día DESPUÉS: no aplica, con el mismo flag encendido.
     const despues = {};
@@ -596,15 +594,15 @@ test('B1.5 · la ventana caducada no se aplica aunque el flag siga en true', () 
       now: () => Date.parse('2026-09-02T00:00:00Z'),
       vaultConfig: cfg, vaultDriver: driverConSeed(seed),
     });
-    assert.ok(!('CEREBRAS_API_KEY' in despues), '"bootstrap temporal" no puede volverse permanente');
-    assert.deepEqual(r.missing, ['CEREBRAS_API_KEY']);
+    assert.ok(!('GEMINI_API_KEY' in despues), '"bootstrap temporal" no puede volverse permanente');
+    assert.deepEqual(r.missing, ['GEMINI_API_KEY']);
     assert.match(logger.texto(), /ventana de bootstrap del vault CADUCO/);
-  }, { canonical: { providers: { cerebras: { api_key: 'ARCHIVO-CEREBRAS' } } } });
+  }, { canonical: { providers: { google: { api_key: 'ARCHIVO-GEMINI' } } } });
 });
 
 test('B1.5 · el flag encendido sin fecha de caducidad NO abre la ventana', () => {
   const seed = seedCompleto();
-  delete seed.parameters[rutaScope('providers')].cerebras;
+  delete seed.parameters[rutaScope('providers')].google;
   const logger = capturarLogs();
 
   conArchivosTmp(({ canonicalPath, legacyPath }) => {
@@ -614,14 +612,14 @@ test('B1.5 · el flag encendido sin fecha de caducidad NO abre la ventana', () =
       vaultConfig: configVault({ bootstrap_fallback: true, bootstrap_fallback_until: '' }),
       vaultDriver: driverConSeed(seed),
     });
-    assert.deepEqual(r.missing, ['CEREBRAS_API_KEY']);
+    assert.deepEqual(r.missing, ['GEMINI_API_KEY']);
     assert.match(logger.texto(), /sin `vault.bootstrap_fallback_until`/);
-  }, { canonical: { providers: { cerebras: { api_key: 'ARCHIVO-CEREBRAS' } } } });
+  }, { canonical: { providers: { google: { api_key: 'ARCHIVO-GEMINI' } } } });
 });
 
 test('B1.4 · un archivo DENTRO del arbol del repo rechaza la ventana aunque el flag este encendido', () => {
   const seed = seedCompleto();
-  delete seed.parameters[rutaScope('providers')].cerebras;
+  delete seed.parameters[rutaScope('providers')].google;
   const logger = capturarLogs();
   const env = {};
 
@@ -636,7 +634,7 @@ test('B1.4 · un archivo DENTRO del arbol del repo rechaza la ventana aunque el 
     vaultDriver: driverConSeed(seed),
   });
 
-  assert.deepEqual(r.missing, ['CEREBRAS_API_KEY']);
+  assert.deepEqual(r.missing, ['GEMINI_API_KEY']);
   assert.match(logger.texto(), /DENTRO del arbol del repo/);
   assert.match(logger.texto(), /5218/, 'la razón nombra el guardrail que no se relaja');
 });

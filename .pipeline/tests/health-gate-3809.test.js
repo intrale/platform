@@ -414,10 +414,11 @@ test('C1 · audit fallback_health_gated NO contiene API keys ni tokens', () => {
 // D. REQ-SEC-4 — validación de modelos at-request es FAIL-CLOSED
 // =============================================================================
 test('D1 · modelo fuera de allowlist+config → invalid_model (fail-closed, no fail-open)', async () => {
-    // cerebras solo permite variantes llama* en la allowlist hardcoded; un modelo
-    // arbitrario no declarado en config debe ser RECHAZADO antes del HTTP.
+    // gemini-google (#6563: único provider HTTP del plantel) solo permite los
+    // ids de su allowlist hardcoded; un modelo arbitrario no declarado en
+    // config debe ser RECHAZADO antes del HTTP.
     const r = await completionClient.complete({
-        provider: 'cerebras',
+        provider: 'gemini-google',
         model: 'modelo-que-no-existe-999',
         prompt: 'hola',
         pipelineDir: '/nonexistent-pipeline-dir', // sin config → no agrega nada a la allowlist

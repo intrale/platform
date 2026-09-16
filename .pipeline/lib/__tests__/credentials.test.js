@@ -55,10 +55,9 @@ test('loadIntoEnv hidrata todas las vars desde credentials.json canonical', () =
       writeJson(canonical, {
         telegram: { bot_token: '12345:botoken-test', chat_id: '99999' },
         providers: {
-          openai:   { api_key: 'sk-proj-openai-test' },
-          google:   { api_key: 'AIza-gemini-test' },
-          cerebras: { api_key: 'csk-cerebras-test' },
-          nvidia:   { api_key: 'nvapi-nvidia-test' },
+          openai:    { api_key: 'sk-proj-openai-test' },
+          google:    { api_key: 'AIza-gemini-test' },
+          anthropic: { api_key: 'sk-ant-anthropic-test' }, // secret-scan:ignore
         },
       });
 
@@ -70,11 +69,14 @@ test('loadIntoEnv hidrata todas las vars desde credentials.json canonical', () =
       assert.equal(env.TELEGRAM_CHAT_ID, '99999');
       assert.equal(env.OPENAI_API_KEY, 'sk-proj-openai-test');
       assert.equal(env.GEMINI_API_KEY, 'AIza-gemini-test');
-      assert.equal(env.CEREBRAS_API_KEY, 'csk-cerebras-test');
-      assert.equal(env.NVIDIA_NIM_API_KEY, 'nvapi-nvidia-test');
+      assert.equal(env.ANTHROPIC_API_KEY, 'sk-ant-anthropic-test'); // secret-scan:ignore
       // #3353 — GROQ_API_KEY removida tras descontinuación; ya no se hidrata.
       assert.equal(env.GROQ_API_KEY, undefined);
-      assert.ok(result.hydrated.includes('CEREBRAS_API_KEY'));
+      // #6563 — cerebras/nvidia/moonshot retirados: sus vars ya no se hidratan.
+      assert.equal(env.CEREBRAS_API_KEY, undefined);
+      assert.equal(env.NVIDIA_NIM_API_KEY, undefined);
+      assert.equal(env.ANTHROPIC_AUTH_TOKEN, undefined);
+      assert.ok(result.hydrated.includes('ANTHROPIC_API_KEY'));
       assert.deepEqual(result.skipped_existing, []);
     });
   });
@@ -86,14 +88,14 @@ test('NO sobrescribe env vars que ya estan seteadas (precedencia env > JSON)', (
   withCleanEnv(() => {
     withTmpFiles(({ canonical, legacy }) => {
       writeJson(canonical, {
-        providers: { cerebras: { api_key: 'csk-from-json' } },
+        providers: { google: { api_key: 'AIza-from-json' } },
       });
-      const env = { CEREBRAS_API_KEY: 'csk-already-set-from-env' };
+      const env = { GEMINI_API_KEY: 'AIza-already-set-from-env' };
       const result = loadIntoEnv({ canonicalPath: canonical, legacyPath: legacy, env, logger: () => {} });
 
-      assert.equal(env.CEREBRAS_API_KEY, 'csk-already-set-from-env');
-      assert.ok(result.skipped_existing.includes('CEREBRAS_API_KEY'));
-      assert.ok(!result.hydrated.includes('CEREBRAS_API_KEY'));
+      assert.equal(env.GEMINI_API_KEY, 'AIza-already-set-from-env');
+      assert.ok(result.skipped_existing.includes('GEMINI_API_KEY'));
+      assert.ok(!result.hydrated.includes('GEMINI_API_KEY'));
     });
   });
 });
@@ -107,13 +109,13 @@ test('skipea placeholders conocidos (REVOKED, PLACEHOLDER, MOVED, ...)', () => {
         telegram: { bot_token: 'MOVED_TO_HOME', chat_id: '' },
         providers: {
           openai:   { api_key: 'CHANGE_ME' },
-          cerebras: { api_key: 'csk-real-value' },
+          google:   { api_key: 'AIza-real-value' },
         },
       });
       const env = {};
       const result = loadIntoEnv({ canonicalPath: canonical, legacyPath: legacy, env, logger: () => {} });
 
-      assert.equal(env.CEREBRAS_API_KEY, 'csk-real-value');
+      assert.equal(env.GEMINI_API_KEY, 'AIza-real-value');
       assert.equal(env.TELEGRAM_BOT_TOKEN, undefined);
       assert.equal(env.TELEGRAM_CHAT_ID, undefined);
       assert.equal(env.OPENAI_API_KEY, undefined);
@@ -170,21 +172,19 @@ test('cuando canonical no existe, hace fallback al legacy con flat keys', () => 
   });
 });
 
-test('legacy NO carga providers nuevos (google/cerebras/nvidia se acaban si solo hay legacy)', () => {
+test('legacy NO carga providers posteriores (google se acaba si solo hay legacy)', () => {
   withCleanEnv(() => {
     withTmpFiles(({ canonical, legacy }) => {
       writeJson(legacy, {
         bot_token: '12345:t',
         chat_id: '1',
-        // legacy NO conoce el field "google_api_key" ni "cerebras_api_key"
+        // legacy NO conoce el field "google_api_key"
       });
       const env = {};
       const result = loadIntoEnv({ canonicalPath: canonical, legacyPath: legacy, env, logger: () => {} });
 
       assert.equal(result.source, 'legacy');
       assert.equal(env.GEMINI_API_KEY, undefined);
-      assert.equal(env.CEREBRAS_API_KEY, undefined);
-      assert.equal(env.NVIDIA_NIM_API_KEY, undefined);
     });
   });
 });
@@ -258,10 +258,12 @@ test('ENV_MAPPING cubre los providers IA vivos + telegram + multimedia', () => {
   assert.ok(values.has('OPENAI_API_KEY'));
   assert.ok(values.has('ANTHROPIC_API_KEY'));
   assert.ok(values.has('GEMINI_API_KEY'));
-  assert.ok(values.has('CEREBRAS_API_KEY'));
-  assert.ok(values.has('NVIDIA_NIM_API_KEY'));
   // #3353 — GROQ_API_KEY removida tras la descontinuación del provider.
   assert.ok(!values.has('GROQ_API_KEY'), 'GROQ_API_KEY debería estar removida tras #3353');
+  // #6563 — cerebras / nvidia-nim / kimi-moonshot dados de baja del plantel.
+  assert.ok(!values.has('CEREBRAS_API_KEY'), 'CEREBRAS_API_KEY debería estar removida tras #6563');
+  assert.ok(!values.has('NVIDIA_NIM_API_KEY'), 'NVIDIA_NIM_API_KEY debería estar removida tras #6563');
+  assert.ok(!values.has('ANTHROPIC_AUTH_TOKEN'), 'ANTHROPIC_AUTH_TOKEN (Kimi) debería estar removida tras #6563');
 });
 
 // ─── scope aws (#5126) — RETIRADO EN EL MERGE CON main ──────────────────────

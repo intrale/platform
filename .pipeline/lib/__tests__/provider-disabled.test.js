@@ -49,10 +49,11 @@ test('isValidProvider acepta solo la allowlist', () => {
         assert.equal(mod.isValidProvider('anthropic'), true);
         assert.equal(mod.isValidProvider('openai-codex'), true);
         assert.equal(mod.isValidProvider('gemini-google'), true);
-        assert.equal(mod.isValidProvider('cerebras'), true);
-        assert.equal(mod.isValidProvider('nvidia-nim'), true);
         // deterministic NO es un provider de IA → no apagable.
         assert.equal(mod.isValidProvider('deterministic'), false);
+        // #6563 — providers retirados del plantel: ya no son apagables.
+        assert.equal(mod.isValidProvider('cerebras'), false);
+        assert.equal(mod.isValidProvider('nvidia-nim'), false);
         assert.equal(mod.isValidProvider('groq'), false);
         assert.equal(mod.isValidProvider('inexistente'), false);
         assert.equal(mod.isValidProvider(null), false);
@@ -97,11 +98,11 @@ test('set es idempotente: apagar dos veces no duplica la entrada', () => {
 
 test('clear re-habilita y devuelve true; clear de no-apagado devuelve false', () => {
     withSandbox((mod) => {
-        mod.setProviderDisabled('cerebras', NOAUDIT);
-        assert.equal(mod.clearProviderDisabled('cerebras', NOAUDIT), true);
-        assert.equal(mod.isProviderDisabled('cerebras', NOAUDIT), false);
+        mod.setProviderDisabled('gemini-google', NOAUDIT);
+        assert.equal(mod.clearProviderDisabled('gemini-google', NOAUDIT), true);
+        assert.equal(mod.isProviderDisabled('gemini-google', NOAUDIT), false);
         // Segundo clear: ya no estaba apagado.
-        assert.equal(mod.clearProviderDisabled('cerebras', NOAUDIT), false);
+        assert.equal(mod.clearProviderDisabled('gemini-google', NOAUDIT), false);
     });
 });
 
@@ -133,9 +134,9 @@ test('TTL: entrada vencida se drena en lectura (auto-restaurado)', () => {
 test('TTL vencido se persiste como drenado: el archivo refleja la limpieza', () => {
     withSandbox((mod) => {
         const t0 = 2_000_000_000_000;
-        mod.setProviderDisabled('cerebras', { ttlMs: 1000, now: t0, auditLogEnabled: false });
+        mod.setProviderDisabled('gemini-google', { ttlMs: 1000, now: t0, auditLogEnabled: false });
         mod.setProviderDisabled('anthropic', { ttlMs: null, now: t0, auditLogEnabled: false });
-        // Lectura post-vencimiento de cerebras: drena cerebras, conserva anthropic.
+        // Lectura post-vencimiento de gemini-google: lo drena, conserva anthropic.
         const list = mod.listDisabledProviders({ now: t0 + 5000, auditLogEnabled: false });
         const names = list.disabled.map((e) => e.name);
         assert.deepEqual(names, ['anthropic']);
@@ -145,11 +146,11 @@ test('TTL vencido se persiste como drenado: el archivo refleja la limpieza', () 
 test('apagado permanente (ttlMs:null) no vence', () => {
     withSandbox((mod) => {
         const t0 = 3_000_000_000_000;
-        const r = mod.setProviderDisabled('nvidia-nim', { ttlMs: null, now: t0, auditLogEnabled: false });
+        const r = mod.setProviderDisabled('openai-codex', { ttlMs: null, now: t0, auditLogEnabled: false });
         assert.equal(r.ok, true);
         assert.equal(r.ttl_ms, null);
         // Mucho después sigue apagado.
-        assert.equal(mod.isProviderDisabled('nvidia-nim', { now: t0 + 999_999_999, auditLogEnabled: false }), true);
+        assert.equal(mod.isProviderDisabled('openai-codex', { now: t0 + 999_999_999, auditLogEnabled: false }), true);
     });
 });
 
@@ -248,7 +249,7 @@ test('el archivo se borra cuando no quedan entradas activas', () => {
 test('clearAll borra el archivo entero', () => {
     withSandbox((mod) => {
         mod.setProviderDisabled('anthropic', NOAUDIT);
-        mod.setProviderDisabled('cerebras', NOAUDIT);
+        mod.setProviderDisabled('gemini-google', NOAUDIT);
         assert.equal(mod.clearAll(NOAUDIT), true);
         assert.equal(fs.existsSync(mod.flagFile()), false);
         // clearAll sobre archivo ausente → false.

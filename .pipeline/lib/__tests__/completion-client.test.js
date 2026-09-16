@@ -6,7 +6,7 @@
 //
 // Cobertura:
 //   - Allowlist anti-SSRF (providers + modelos).
-//   - Schema OpenAI-compat parseado correctamente para los 3 providers.
+//   - Schema OpenAI-compat parseado correctamente (gemini-google, único HTTP).
 //   - Errores tipados: timeout, 401, 429+quota vs rate, 5xx, schema drift,
 //     body cap 64KB.
 //   - Linter tests (CA seguridad): el módulo NO desactiva TLS y NO lee
@@ -15,8 +15,9 @@
 //   - La API key cruda NO se filtra en la respuesta serializada.
 //
 // Nota: el issue #3342 original listaba Groq como provider, pero #3368 lo
-// removió del pipeline antes del desarrollo. El cliente cubre los 3 free
-// providers actualmente soportados: cerebras, gemini-google, nvidia-nim.
+// removió del pipeline antes del desarrollo; cerebras y nvidia-nim se retiraron
+// en #6563. El cliente cubre hoy un único provider HTTP: gemini-google (shim
+// OpenAI-compat). Los casos genéricos usan gemini-google como fixture.
 // =============================================================================
 'use strict';
 
@@ -79,12 +80,13 @@ function fakeHttp({ status = 200, body = '', simulateTimeout = false, chunks } =
 
 // ─── Allowlist anti-SSRF ────────────────────────────────────────────────────
 
-test('isAllowedProvider acepta solo cerebras, gemini-google, nvidia-nim', () => {
-    assert.equal(completion.isAllowedProvider('cerebras'), true);
+test('isAllowedProvider acepta solo gemini-google', () => {
     assert.equal(completion.isAllowedProvider('gemini-google'), true);
-    assert.equal(completion.isAllowedProvider('nvidia-nim'), true);
     // Groq fue removido del pipeline en #3368 — no debe estar acá.
     assert.equal(completion.isAllowedProvider('groq'), false, 'groq removido del pipeline (#3368)');
+    // #6563 — cerebras y nvidia-nim retirados: NO deben reaparecer en la allowlist.
+    assert.equal(completion.isAllowedProvider('cerebras'), false, 'cerebras retirado del pipeline (#6563)');
+    assert.equal(completion.isAllowedProvider('nvidia-nim'), false, 'nvidia-nim retirado del pipeline (#6563)');
     assert.equal(completion.isAllowedProvider('anthropic'), false, 'anthropic usa OAuth/Claude Code, NO completion-client');
     assert.equal(completion.isAllowedProvider('attacker.com'), false);
     assert.equal(completion.isAllowedProvider('file://etc/passwd'), false);
@@ -98,13 +100,13 @@ test('complete devuelve unknown_provider para providers fuera de allowlist', asy
 });
 
 test('complete devuelve invalid_model si el model no está en allowlist del provider', async () => {
-    const r = await completion.complete({ provider: 'cerebras', model: 'gpt-4', prompt: 'hi' });
+    const r = await completion.complete({ provider: 'gemini-google', model: 'gpt-4', prompt: 'hi' });
     assert.equal(r.ok, false);
     assert.equal(r.error.type, 'invalid_model');
 });
 
 test('complete devuelve invalid_model si model está vacío', async () => {
-    const r = await completion.complete({ provider: 'cerebras', model: '', prompt: 'hi' });
+    const r = await completion.complete({ provider: 'gemini-google', model: '', prompt: 'hi' });
     assert.equal(r.ok, false);
     assert.equal(r.error.type, 'invalid_model');
 });
@@ -112,10 +114,10 @@ test('complete devuelve invalid_model si model está vacío', async () => {
 test('complete devuelve invalid_response si falta prompt y messages', async () => {
     const dir = tmpDir();
     const f = path.join(dir, 'config.json');
-    writeKeys(f, { cerebras_api_key: 'csk_test_1234567890abcdef0000' });
+    writeKeys(f, { gemini_google_api_key: 'AIzaSyTest_1234567890abcdef000' });
     const r = await completion.complete({
-        provider: 'cerebras',
-        model: 'llama-3.3-70b',
+        provider: 'gemini-google',
+        model: 'gemini-3.8-flash-medium',
         secretsPath: f,
     });
     assert.equal(r.ok, false);
@@ -127,8 +129,8 @@ test('complete devuelve no_key_configured cuando falta la key', async () => {
     const f = path.join(dir, 'config.json');
     writeKeys(f, {});
     const r = await completion.complete({
-        provider: 'cerebras',
-        model: 'llama-3.3-70b',
+        provider: 'gemini-google',
+        model: 'gemini-3.8-flash-medium',
         prompt: 'hi',
         secretsPath: f,
     });
@@ -138,32 +140,7 @@ test('complete devuelve no_key_configured cuando falta la key', async () => {
 
 // ─── Caso éxito por provider ────────────────────────────────────────────────
 
-test('complete Cerebras éxito devuelve schema normalizado', async () => {
-    const dir = tmpDir();
-    const f = path.join(dir, 'config.json');
-    writeKeys(f, { cerebras_api_key: 'csk_test_1234567890abcdef0000' });
-    const r = await completion.complete({
-        provider: 'cerebras',
-        model: 'llama-3.3-70b',
-        prompt: 'ping',
-        secretsPath: f,
-        httpImpl: fakeHttp({
-            status: 200,
-            body: JSON.stringify({
-                choices: [{ message: { content: 'pong cerebras' } }],
-                usage: { prompt_tokens: 5, completion_tokens: 3 },
-                model: 'llama-3.3-70b',
-            }),
-        }),
-    });
-    assert.equal(r.ok, true);
-    assert.equal(r.content, 'pong cerebras');
-    assert.equal(r.inputTokens, 5);
-    assert.equal(r.outputTokens, 3);
-    assert.equal(r.provider, 'cerebras');
-    assert.equal(r.model, 'llama-3.3-70b');
-    assert.ok(typeof r.durationMs === 'number' && r.durationMs >= 0);
-});
+// #6563 — casos de éxito de cerebras y nvidia-nim retirados con los providers.
 
 test('complete Gemini-Google éxito devuelve schema normalizado (shim OpenAI-compat)', async () => {
     const dir = tmpDir();
@@ -187,39 +164,18 @@ test('complete Gemini-Google éxito devuelve schema normalizado (shim OpenAI-com
     assert.equal(r.content, 'pong gemini');
     assert.equal(r.inputTokens, 7);
     assert.equal(r.outputTokens, 4);
-});
-
-test('complete NVIDIA NIM éxito devuelve schema normalizado', async () => {
-    const dir = tmpDir();
-    const f = path.join(dir, 'config.json');
-    writeKeys(f, { nvidia_nim_api_key: 'nvapi-test-1234567890abcdef0000' });
-    const r = await completion.complete({
-        provider: 'nvidia-nim',
-        model: 'deepseek-ai/deepseek-v4-flash-0731',
-        prompt: 'ping',
-        secretsPath: f,
-        httpImpl: fakeHttp({
-            status: 200,
-            body: JSON.stringify({
-                choices: [{ message: { content: 'pong nvidia' } }],
-                usage: { prompt_tokens: 10, completion_tokens: 2 },
-                model: 'deepseek-ai/deepseek-v4-flash-0731',
-            }),
-        }),
-    });
-    assert.equal(r.ok, true);
-    assert.equal(r.content, 'pong nvidia');
-    assert.equal(r.inputTokens, 10);
-    assert.equal(r.outputTokens, 2);
+    assert.equal(r.provider, 'gemini-google');
+    assert.equal(r.model, 'gemini-3.8-flash-medium');
+    assert.ok(typeof r.durationMs === 'number' && r.durationMs >= 0);
 });
 
 test('complete con messages preformado (multi-turn) en lugar de prompt funciona', async () => {
     const dir = tmpDir();
     const f = path.join(dir, 'config.json');
-    writeKeys(f, { cerebras_api_key: 'csk_test_1234567890abcdef0000' });
+    writeKeys(f, { gemini_google_api_key: 'AIzaSyTest_1234567890abcdef000' });
     const r = await completion.complete({
-        provider: 'cerebras',
-        model: 'llama-3.3-70b',
+        provider: 'gemini-google',
+        model: 'gemini-3.8-flash-medium',
         messages: [
             { role: 'system', content: 'sos murble' },
             { role: 'user', content: 'hola' },
@@ -230,7 +186,7 @@ test('complete con messages preformado (multi-turn) en lugar de prompt funciona'
             body: JSON.stringify({
                 choices: [{ message: { content: 'hola humano' } }],
                 usage: { prompt_tokens: 12, completion_tokens: 2 },
-                model: 'llama-3.3-70b',
+                model: 'gemini-3.8-flash-medium',
             }),
         }),
     });
@@ -241,10 +197,10 @@ test('complete con messages preformado (multi-turn) en lugar de prompt funciona'
 test('complete tolera usage faltante — devuelve 0 tokens en vez de fallar', async () => {
     const dir = tmpDir();
     const f = path.join(dir, 'config.json');
-    writeKeys(f, { cerebras_api_key: 'csk_test_1234567890abcdef0000' });
+    writeKeys(f, { gemini_google_api_key: 'AIzaSyTest_1234567890abcdef000' });
     const r = await completion.complete({
-        provider: 'cerebras',
-        model: 'llama-3.3-70b',
+        provider: 'gemini-google',
+        model: 'gemini-3.8-flash-medium',
         prompt: 'ping',
         secretsPath: f,
         httpImpl: fakeHttp({
@@ -265,10 +221,10 @@ test('complete tolera usage faltante — devuelve 0 tokens en vez de fallar', as
 test('complete con timeout → error.type = timeout', async () => {
     const dir = tmpDir();
     const f = path.join(dir, 'config.json');
-    writeKeys(f, { cerebras_api_key: 'csk_test_1234567890abcdef0000' });
+    writeKeys(f, { gemini_google_api_key: 'AIzaSyTest_1234567890abcdef000' });
     const r = await completion.complete({
-        provider: 'cerebras',
-        model: 'llama-3.3-70b',
+        provider: 'gemini-google',
+        model: 'gemini-3.8-flash-medium',
         prompt: 'ping',
         timeoutMs: 50,
         secretsPath: f,
@@ -281,10 +237,10 @@ test('complete con timeout → error.type = timeout', async () => {
 test('complete con 401 → error.type=auth_error, reason=invalid_credentials', async () => {
     const dir = tmpDir();
     const f = path.join(dir, 'config.json');
-    writeKeys(f, { cerebras_api_key: 'csk_test_1234567890abcdef0000' });
+    writeKeys(f, { gemini_google_api_key: 'AIzaSyTest_1234567890abcdef000' });
     const r = await completion.complete({
-        provider: 'cerebras',
-        model: 'llama-3.3-70b',
+        provider: 'gemini-google',
+        model: 'gemini-3.8-flash-medium',
         prompt: 'ping',
         secretsPath: f,
         httpImpl: fakeHttp({ status: 401, body: '{"error":{"message":"Invalid API Key"}}' }),
@@ -298,10 +254,10 @@ test('complete con 401 → error.type=auth_error, reason=invalid_credentials', a
 test('complete con 403 → error.type=auth_error, reason=forbidden', async () => {
     const dir = tmpDir();
     const f = path.join(dir, 'config.json');
-    writeKeys(f, { cerebras_api_key: 'csk_test_1234567890abcdef0000' });
+    writeKeys(f, { gemini_google_api_key: 'AIzaSyTest_1234567890abcdef000' });
     const r = await completion.complete({
-        provider: 'cerebras',
-        model: 'llama-3.3-70b',
+        provider: 'gemini-google',
+        model: 'gemini-3.8-flash-medium',
         prompt: 'ping',
         secretsPath: f,
         httpImpl: fakeHttp({ status: 403, body: '{"error":{"message":"Forbidden"}}' }),
@@ -313,10 +269,10 @@ test('complete con 403 → error.type=auth_error, reason=forbidden', async () =>
 test('complete con 429 + insufficient_quota → http_error reason=quota_exhausted', async () => {
     const dir = tmpDir();
     const f = path.join(dir, 'config.json');
-    writeKeys(f, { cerebras_api_key: 'csk_test_1234567890abcdef0000' });
+    writeKeys(f, { gemini_google_api_key: 'AIzaSyTest_1234567890abcdef000' });
     const r = await completion.complete({
-        provider: 'cerebras',
-        model: 'llama-3.3-70b',
+        provider: 'gemini-google',
+        model: 'gemini-3.8-flash-medium',
         prompt: 'ping',
         secretsPath: f,
         httpImpl: fakeHttp({ status: 429, body: '{"error":{"code":"insufficient_quota"}}' }),
@@ -328,10 +284,10 @@ test('complete con 429 + insufficient_quota → http_error reason=quota_exhauste
 test('complete con 429 plain rate_limit_exceeded → http_error reason=rate_limited', async () => {
     const dir = tmpDir();
     const f = path.join(dir, 'config.json');
-    writeKeys(f, { cerebras_api_key: 'csk_test_1234567890abcdef0000' });
+    writeKeys(f, { gemini_google_api_key: 'AIzaSyTest_1234567890abcdef000' });
     const r = await completion.complete({
-        provider: 'cerebras',
-        model: 'llama-3.3-70b',
+        provider: 'gemini-google',
+        model: 'gemini-3.8-flash-medium',
         prompt: 'ping',
         secretsPath: f,
         httpImpl: fakeHttp({ status: 429, body: '{"error":{"code":"rate_limit_exceeded"}}' }),
@@ -343,10 +299,10 @@ test('complete con 429 plain rate_limit_exceeded → http_error reason=rate_limi
 test('complete con 5xx → http_error reason=unknown con detail acotado', async () => {
     const dir = tmpDir();
     const f = path.join(dir, 'config.json');
-    writeKeys(f, { cerebras_api_key: 'csk_test_1234567890abcdef0000' });
+    writeKeys(f, { gemini_google_api_key: 'AIzaSyTest_1234567890abcdef000' });
     const r = await completion.complete({
-        provider: 'cerebras',
-        model: 'llama-3.3-70b',
+        provider: 'gemini-google',
+        model: 'gemini-3.8-flash-medium',
         prompt: 'ping',
         secretsPath: f,
         httpImpl: fakeHttp({ status: 503, body: 'Service unavailable' }),
@@ -359,10 +315,10 @@ test('complete con 5xx → http_error reason=unknown con detail acotado', async 
 test('complete con 2xx pero body no JSON → invalid_response reason=schema_drift', async () => {
     const dir = tmpDir();
     const f = path.join(dir, 'config.json');
-    writeKeys(f, { cerebras_api_key: 'csk_test_1234567890abcdef0000' });
+    writeKeys(f, { gemini_google_api_key: 'AIzaSyTest_1234567890abcdef000' });
     const r = await completion.complete({
-        provider: 'cerebras',
-        model: 'llama-3.3-70b',
+        provider: 'gemini-google',
+        model: 'gemini-3.8-flash-medium',
         prompt: 'ping',
         secretsPath: f,
         httpImpl: fakeHttp({ status: 200, body: '<html>oops</html>' }),
@@ -396,12 +352,12 @@ test('complete con 2xx pero sin choices[0].message.content → invalid_response 
 test('complete con body > 64KB → invalid_response reason=body_too_large', async () => {
     const dir = tmpDir();
     const f = path.join(dir, 'config.json');
-    writeKeys(f, { cerebras_api_key: 'csk_test_1234567890abcdef0000' });
+    writeKeys(f, { gemini_google_api_key: 'AIzaSyTest_1234567890abcdef000' });
     // Generamos 100KB de payload — supera MAX_BODY_BYTES = 64KB.
     const big = 'A'.repeat(100 * 1024);
     const r = await completion.complete({
-        provider: 'cerebras',
-        model: 'llama-3.3-70b',
+        provider: 'gemini-google',
+        model: 'gemini-3.8-flash-medium',
         prompt: 'ping',
         secretsPath: f,
         httpImpl: fakeHttp({ status: 200, body: big }),
@@ -416,11 +372,11 @@ test('complete con body > 64KB → invalid_response reason=body_too_large', asyn
 test('complete NO expone la API key cruda en la respuesta (success path)', async () => {
     const dir = tmpDir();
     const f = path.join(dir, 'config.json');
-    const secretKey = 'csk_VERY_SECRET_DO_NOT_LEAK_1234567890';
-    writeKeys(f, { cerebras_api_key: secretKey });
+    const secretKey = 'AIzaSy_VERY_SECRET_DO_NOT_LEAK_1234567890';
+    writeKeys(f, { gemini_google_api_key: secretKey });
     const r = await completion.complete({
-        provider: 'cerebras',
-        model: 'llama-3.3-70b',
+        provider: 'gemini-google',
+        model: 'gemini-3.8-flash-medium',
         prompt: 'ping',
         secretsPath: f,
         httpImpl: fakeHttp({
@@ -438,11 +394,11 @@ test('complete NO expone la API key cruda en la respuesta (success path)', async
 test('complete NO expone la API key cruda en la respuesta (error path 401)', async () => {
     const dir = tmpDir();
     const f = path.join(dir, 'config.json');
-    const secretKey = 'csk_VERY_SECRET_DO_NOT_LEAK_1234567890';
-    writeKeys(f, { cerebras_api_key: secretKey });
+    const secretKey = 'AIzaSy_VERY_SECRET_DO_NOT_LEAK_1234567890';
+    writeKeys(f, { gemini_google_api_key: secretKey });
     const r = await completion.complete({
-        provider: 'cerebras',
-        model: 'llama-3.3-70b',
+        provider: 'gemini-google',
+        model: 'gemini-3.8-flash-medium',
         prompt: 'ping',
         secretsPath: f,
         httpImpl: fakeHttp({ status: 401, body: '{"error":"Invalid"}' }),
@@ -522,12 +478,7 @@ test('LINTER: el módulo NO usa http:// (cleartext)', () => {
 
 // ─── Defensa adicional: header de auth correcto por provider ────────────────
 
-test('Cerebras usa Authorization Bearer (no x-api-key, no query)', () => {
-    const spec = completion.PROVIDER_COMPLETION_ENDPOINTS.cerebras;
-    assert.equal(spec.authHeader, 'authorization');
-    assert.equal(spec.authFormat, 'bearer');
-    assert.ok(!spec.url.includes('?'), 'Cerebras URL no debe llevar query string');
-});
+// #6563 — casos de header de cerebras y nvidia-nim retirados con los providers.
 
 test('Gemini-Google usa Authorization Bearer (shim OpenAI-compat, NO key en query)', () => {
     const spec = completion.PROVIDER_COMPLETION_ENDPOINTS['gemini-google'];
@@ -538,28 +489,17 @@ test('Gemini-Google usa Authorization Bearer (shim OpenAI-compat, NO key en quer
         'Gemini debe usar el shim OpenAI-compat de v1beta, no /v1beta/models/X:generateContent');
 });
 
-test('NVIDIA NIM usa Authorization Bearer (no x-api-key, no query)', () => {
-    const spec = completion.PROVIDER_COMPLETION_ENDPOINTS['nvidia-nim'];
-    assert.equal(spec.authHeader, 'authorization');
-    assert.equal(spec.authFormat, 'bearer');
-    assert.ok(!spec.url.includes('?'), 'NVIDIA NIM URL no debe llevar query string');
-    assert.ok(spec.url.endsWith('/v1/chat/completions'),
-        'NVIDIA NIM debe usar /v1/chat/completions (OpenAI-compat completion endpoint)');
-});
-
 test('PROVIDER_MODELS_ALLOWLIST incluye los modelos que usa producción (snapshot agent-models.json)', () => {
     // Sanity check defensivo: los modelos en producción deben estar en la
     // allowlist. Si alguien cambia agent-models.json, este test pega antes
     // que el dashboard.
-    // #6858 — `gpt-oss-120b` es el `providers.cerebras.model` real de
-    // agent-models.json y el default HTTP de lib/semantic-dedup.js; debe pasar
-    // SIN la vía config-aware (por eso es literal en la allowlist).
-    assert.ok(completion.isAllowedModel('cerebras', 'gpt-oss-120b'),
-        'cerebras/gpt-oss-120b en producción debe estar allowlisted');
+    // #6563 — cerebras y nvidia-nim retirados: sus listas NO deben reaparecer.
     assert.ok(completion.isAllowedModel('gemini-google', 'gemini-3.8-flash-medium'),
         'gemini-google/gemini-3.8-flash-medium en producción debe estar allowlisted');
-    assert.ok(completion.isAllowedModel('nvidia-nim', 'deepseek-ai/deepseek-v4-flash-0731'),
-        'nvidia-nim/deepseek-ai/deepseek-v4-flash-0731 en producción debe estar allowlisted');
+    assert.equal(completion.PROVIDER_MODELS_ALLOWLIST.cerebras, undefined,
+        'cerebras retirado (#6563): sin allowlist de modelos');
+    assert.equal(completion.PROVIDER_MODELS_ALLOWLIST['nvidia-nim'], undefined,
+        'nvidia-nim retirado (#6563): sin allowlist de modelos');
 });
 
 // =============================================================================
@@ -582,10 +522,10 @@ test('CA-CLIENT-4: caller pidiendo timeout > 0 se respeta sin cap (2026-06-02)',
     // cap absoluto, el valor se respeta tal cual (opt-in explícito del caller).
     const dir = tmpDir();
     const f = path.join(dir, 'config.json');
-    writeKeys(f, { cerebras_api_key: 'csk_test_1234567890abcdef0000' });
+    writeKeys(f, { gemini_google_api_key: 'AIzaSyTest_1234567890abcdef000' });
     const r = await completion.complete({
-        provider: 'cerebras',
-        model: 'llama-3.3-70b',
+        provider: 'gemini-google',
+        model: 'gemini-3.8-flash-medium',
         prompt: 'ping',
         timeoutMs: 999_999, // se respeta sin cap (ya no hay ABSOLUTE_MAX)
         secretsPath: f,
@@ -604,10 +544,10 @@ test('CA-CLIENT-4: caller pidiendo timeout > 0 se respeta sin cap (2026-06-02)',
 test('#3484: caller con timeoutMs negativo o inválido cae a DEFAULT_TIMEOUT_MS', async () => {
     const dir = tmpDir();
     const f = path.join(dir, 'config.json');
-    writeKeys(f, { cerebras_api_key: 'csk_test_1234567890abcdef0000' });
+    writeKeys(f, { gemini_google_api_key: 'AIzaSyTest_1234567890abcdef000' });
     const r = await completion.complete({
-        provider: 'cerebras',
-        model: 'llama-3.3-70b',
+        provider: 'gemini-google',
+        model: 'gemini-3.8-flash-medium',
         prompt: 'ping',
         timeoutMs: -100,
         secretsPath: f,
@@ -626,11 +566,10 @@ test('#3484: caller con timeoutMs negativo o inválido cae a DEFAULT_TIMEOUT_MS'
 // ─── MP-04 (#3803) · allowlist config-aware ─────────────────────────────────
 // Un modelo declarado en agent-models.json pero ausente de la allowlist
 // hardcoded ANTES fallaba con invalid_model y mataba un eslabón sano de la
-// cascada (caso real: cerebras=gpt-oss-120b). Ahora se acepta.
-// #6858 — `gpt-oss-120b` pasó a ser literal de la allowlist (es el default de
-// semantic-dedup), así que estos tests ejercitan la vía config-aware con
-// `zai-glm-4.7` (el `alternative_models` real de Cerebras), que sigue fuera
-// de la lista hardcoded.
+// cascada (caso real histórico: cerebras=gpt-oss-120b, provider retirado en
+// #6563). Ahora se acepta. Estos tests ejercitan la vía config-aware con
+// gemini-google y un id ficticio (`gemini-9.9-flash-test`) que queda fuera de
+// la lista hardcoded.
 
 function writeAgentModels(pipelineDir, json) {
     fs.writeFileSync(path.join(pipelineDir, 'agent-models.json'), JSON.stringify(json));
@@ -639,14 +578,14 @@ function writeAgentModels(pipelineDir, json) {
 test('MP-04 · modelo configurado en agent-models.json pero NO en allowlist hardcoded → aceptado', async () => {
     const pipelineDir = tmpDir();
     writeAgentModels(pipelineDir, {
-        providers: { cerebras: { model: 'zai-glm-4.7' } },
+        providers: { 'gemini-google': { model: 'gemini-9.9-flash-test' } },
         skills: {},
     });
     const f = path.join(pipelineDir, 'config.json');
-    writeKeys(f, { cerebras_api_key: 'csk_test_1234567890abcdef0000' });
+    writeKeys(f, { gemini_google_api_key: 'AIzaSyTest_1234567890abcdef000' });
     const r = await completion.complete({
-        provider: 'cerebras',
-        model: 'zai-glm-4.7', // NO está en PROVIDER_MODELS_ALLOWLIST
+        provider: 'gemini-google',
+        model: 'gemini-9.9-flash-test', // NO está en PROVIDER_MODELS_ALLOWLIST
         prompt: 'ping',
         pipelineDir,
         secretsPath: f,
@@ -662,14 +601,14 @@ test('MP-04 · modelo configurado en agent-models.json pero NO en allowlist hard
 test('MP-04 · modelo declarado como model_override de un fallback también se acepta', async () => {
     const pipelineDir = tmpDir();
     writeAgentModels(pipelineDir, {
-        providers: { cerebras: { model: 'llama-3.3-70b' } },
-        skills: { qa: { provider: 'anthropic', fallbacks: [{ provider: 'cerebras', model_override: 'zai-glm-4.7' }] } },
+        providers: { 'gemini-google': { model: 'gemini-3.8-flash-medium' } },
+        skills: { qa: { provider: 'anthropic', fallbacks: [{ provider: 'gemini-google', model_override: 'gemini-9.9-flash-test' }] } },
     });
     const f = path.join(pipelineDir, 'config.json');
-    writeKeys(f, { cerebras_api_key: 'csk_test_1234567890abcdef0000' });
+    writeKeys(f, { gemini_google_api_key: 'AIzaSyTest_1234567890abcdef000' });
     const r = await completion.complete({
-        provider: 'cerebras',
-        model: 'zai-glm-4.7',
+        provider: 'gemini-google',
+        model: 'gemini-9.9-flash-test',
         prompt: 'ping',
         pipelineDir,
         secretsPath: f,
@@ -680,9 +619,9 @@ test('MP-04 · modelo declarado como model_override de un fallback también se a
 
 test('MP-04 · modelo NI en allowlist NI configurado sigue siendo invalid_model (defensa intacta)', async () => {
     const pipelineDir = tmpDir();
-    writeAgentModels(pipelineDir, { providers: { cerebras: { model: 'llama-3.3-70b' } }, skills: {} });
+    writeAgentModels(pipelineDir, { providers: { 'gemini-google': { model: 'gemini-3.8-flash-medium' } }, skills: {} });
     const r = await completion.complete({
-        provider: 'cerebras',
+        provider: 'gemini-google',
         model: 'modelo-arbitrario-no-declarado',
         prompt: 'hi',
         pipelineDir,
@@ -728,14 +667,14 @@ function fakeHttpSequence(responses) {
 test('MP-12 · 2xx con schema_drift en el 1er intento → reintenta y devuelve éxito en el 2do', async () => {
     const dir = tmpDir();
     const f = path.join(dir, 'config.json');
-    writeKeys(f, { cerebras_api_key: 'csk_test_1234567890abcdef0000' });
+    writeKeys(f, { gemini_google_api_key: 'AIzaSyTest_1234567890abcdef000' });
     const http = fakeHttpSequence([
         { status: 200, body: '<html>blip</html>' }, // malformado
         { status: 200, body: JSON.stringify({ choices: [{ message: { content: 'recuperado' } }] }) },
     ]);
     const r = await completion.complete({
-        provider: 'cerebras',
-        model: 'llama-3.3-70b',
+        provider: 'gemini-google',
+        model: 'gemini-3.8-flash-medium',
         prompt: 'ping',
         secretsPath: f,
         httpImpl: http,
@@ -748,11 +687,11 @@ test('MP-12 · 2xx con schema_drift en el 1er intento → reintenta y devuelve �
 test('MP-12 · schema_drift persistente en ambos intentos → invalid_response (sin retry infinito)', async () => {
     const dir = tmpDir();
     const f = path.join(dir, 'config.json');
-    writeKeys(f, { cerebras_api_key: 'csk_test_1234567890abcdef0000' });
+    writeKeys(f, { gemini_google_api_key: 'AIzaSyTest_1234567890abcdef000' });
     const http = fakeHttpSequence([{ status: 200, body: '<html>roto</html>' }]);
     const r = await completion.complete({
-        provider: 'cerebras',
-        model: 'llama-3.3-70b',
+        provider: 'gemini-google',
+        model: 'gemini-3.8-flash-medium',
         prompt: 'ping',
         secretsPath: f,
         httpImpl: http,
@@ -766,11 +705,11 @@ test('MP-12 · schema_drift persistente en ambos intentos → invalid_response (
 test('MP-12 · error NO-2xx (5xx) NO consume retry — cascada inmediata', async () => {
     const dir = tmpDir();
     const f = path.join(dir, 'config.json');
-    writeKeys(f, { cerebras_api_key: 'csk_test_1234567890abcdef0000' });
+    writeKeys(f, { gemini_google_api_key: 'AIzaSyTest_1234567890abcdef000' });
     const http = fakeHttpSequence([{ status: 503, body: 'down' }]);
     const r = await completion.complete({
-        provider: 'cerebras',
-        model: 'llama-3.3-70b',
+        provider: 'gemini-google',
+        model: 'gemini-3.8-flash-medium',
         prompt: 'ping',
         secretsPath: f,
         httpImpl: http,
@@ -789,10 +728,10 @@ test('MP-12 · error NO-2xx (5xx) NO consume retry — cascada inmediata', async
 test('#4353 CA-5 — 5xx con email en el body → error.detail redactado (no eco crudo)', async () => {
     const dir = tmpDir();
     const f = path.join(dir, 'config.json');
-    writeKeys(f, { cerebras_api_key: 'csk_test_1234567890abcdef0000' });
+    writeKeys(f, { gemini_google_api_key: 'AIzaSyTest_1234567890abcdef000' });
     const r = await completion.complete({
-        provider: 'cerebras',
-        model: 'llama-3.3-70b',
+        provider: 'gemini-google',
+        model: 'gemini-3.8-flash-medium',
         prompt: 'ping',
         secretsPath: f,
         // El upstream eco-a el mensaje del usuario, que traía un email (PII).
@@ -809,11 +748,11 @@ test('#4353 CA-5 — 5xx con email en el body → error.detail redactado (no eco
 test('#4353 CA-5 — detail acotado a DETAIL_MAX_BYTES (512) aunque el body sea enorme', async () => {
     const dir = tmpDir();
     const f = path.join(dir, 'config.json');
-    writeKeys(f, { cerebras_api_key: 'csk_test_1234567890abcdef0000' });
+    writeKeys(f, { gemini_google_api_key: 'AIzaSyTest_1234567890abcdef000' });
     const hugeBody = 'x'.repeat(5000); // > 512 pero < MAX_BODY_BYTES (16KB, no truncated)
     const r = await completion.complete({
-        provider: 'cerebras',
-        model: 'llama-3.3-70b',
+        provider: 'gemini-google',
+        model: 'gemini-3.8-flash-medium',
         prompt: 'ping',
         secretsPath: f,
         httpImpl: fakeHttp({ status: 503, body: hugeBody }),
