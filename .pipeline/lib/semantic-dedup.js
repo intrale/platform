@@ -82,7 +82,9 @@ const ALLOWED_ACTIONS = Object.freeze(['crear', 'redefinir', 'fusionar']);
 // así que el default es un provider de la allowlist HTTP. Free-tier por la
 // regla del proyecto (gemini/cerebras free). Overridable por env u opts.
 const DEFAULT_PROVIDER = process.env.SEMANTIC_DEDUP_PROVIDER || 'gemini-google';
-const DEFAULT_MODEL = process.env.SEMANTIC_DEDUP_MODEL || 'gemini-2.5-flash';
+// #6858 — id del catálogo real de Antigravity (`agy models`), sincronizado con
+// PROVIDER_MODELS_ALLOWLIST['gemini-google']; el id viejo caía en invalid_model.
+const DEFAULT_MODEL = process.env.SEMANTIC_DEDUP_MODEL || 'gemini-3.8-flash-medium';
 
 const DEFAULT_THRESHOLD = 0.7;
 

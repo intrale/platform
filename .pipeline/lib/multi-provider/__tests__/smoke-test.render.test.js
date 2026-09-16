@@ -27,7 +27,7 @@ function fixtureModels() {
         providers: {
             anthropic:       { launcher: 'claude',   model: 'claude-opus-4-7' },
             'openai-codex':  { launcher: 'codex',    model: 'gpt-5.5' },
-            'gemini-google': { launcher: 'gemini',   model: 'gemini-2.0-flash' },
+            'gemini-google': { launcher: 'gemini',   model: 'gemini-3.8-flash-medium' },
             'cerebras':      { launcher: 'cerebras', model: 'llama-3.3-70b' },
             'nvidia-nim':    { launcher: 'nvidia',   model: 'deepseek-v4' },
             deterministic:   { launcher: 'node',     model: 'deterministic' },

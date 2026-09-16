@@ -304,6 +304,11 @@ Cualquier cambio dispara:
 | openai-codex | `gpt-5-codex` | 256.000 | chat, tools, cache | 2.50 | 10.00 | backend-dev, pipeline-dev |
 | openai-codex | `gpt-5` | 256.000 | chat, tools, vision, cache | 5.00 | 20.00 | guru, qa |
 | deterministic | `deterministic` | 0 | (sin LLM) | 0 | 0 | build, tester, linter, delivery |
+| gemini-google | `gemini-3.8-flash-high` | — | chat, tools, vision, reasoning | — (licencia Antigravity) | — | android-dev, web-dev, architect |
+| gemini-google | `gemini-3.8-flash-medium` | — | chat, tools, vision | — | — | qa, po, ux, perf, telegram-commander |
+| gemini-google | `gemini-3.8-flash-low` | — | chat, tools, vision | — | — | telegram-sherlock |
+| gemini-google | `gemini-3.7-flash-medium` | — | chat, tools, vision | — | — | alternativo del provider (#3501) |
+| gemini-google | *(+10 ids más: `gemini-3.7-flash-{high,low}`, `gemini-3.6-flash-*`, `gemini-3.1-pro-*`, `claude-sonnet-4-6`, `claude-opus-4-6-thinking`, `gpt-oss-120b-medium`)* | — | — | — | — | ver §8.10 |
 
 > **Importante:** esta tabla se mantiene **a mano** y puede desactualizarse si el catálogo cambia sin que el doc se actualice. Para el estado canónico siempre consultá el archivo de código o la **Tab "3 · Catálogo"** del dashboard. El issue [#3197](https://github.com/intrale/platform/issues/3197) propone auto-generar esta tabla — sigue abierto.
 
@@ -452,7 +457,7 @@ La política vive en [`.pipeline/lib/model-propagation.js`](../../.pipeline/lib/
 | `anthropic` | `claude` | argv | `['--model', id]` — dos elementos separados del array |
 | `kimi-moonshot` | `claude` | argv | idem (reusa el `buildSpawn` de Anthropic) |
 | `openai-codex` | `codex` | env | `CODEX_MODEL` → el handler la traduce a `-m <id>` |
-| `gemini-google` | `gemini-google` | env | `GEMINI_MODEL` → `--model <id>` |
+| `gemini-google` | `gemini-google` | env | `GEMINI_MODEL` → `--model <id>`. **Única fuente**: `AGY_MODEL` se ignora y queda en `modelTrace.ignoredEnv` (#6334, cerrado en #6858) |
 | `cerebras` | `cerebras` | env | `CEREBRAS_MODEL` → `--model <id>` |
 | `nvidia-nim` | `nvidia-nim` | env | `NVIDIA_NIM_MODEL` → `--model <id>` |
 | `deterministic` | `node` | — | no aplica (Node puro, sin LLM) |
@@ -467,6 +472,28 @@ propósito: `pipeline.env_isolation_enabled` sigue en `false`, así que hoy ning
 agente pasa por esa rama y la propagación habría quedado como código muerto.
 El launcher recibe el env ya construido por cualquiera de los dos caminos del
 pulpo y le agrega la variable ahí.
+
+#### Precedencia de la variable de modelo en `gemini-google` (#6334 → #6858)
+
+Hasta #6858 el handler leía `env.AGY_MODEL || env.GEMINI_MODEL`. Como el pulpo
+**nunca** propaga `AGY_MODEL` (no está en `PROVIDER_MODEL_ENV` ni en ningún scope
+de `build-child-env.js`), un `AGY_MODEL` exportado en el entorno del operador —o
+heredado por un path sin aislar— **pisaba** al modelo propagado, y la traza del
+launcher afirmaba "propagué X" mientras el CLI corría con Y.
+
+Regla vigente (`providers/gemini-google.js::resolveModelFromEnv`):
+
+| Env del hijo | `--model` que corre | `modelTrace` | Log del launcher |
+|---|---|---|---|
+| `GEMINI_MODEL=X` | `X` | `{ applied:true, model:X, source:'GEMINI_MODEL', ignoredEnv:[] }` | — |
+| `GEMINI_MODEL=X` + `AGY_MODEL=Y` | `X` | `{ applied:true, model:X, source:'GEMINI_MODEL', ignoredEnv:['AGY_MODEL'] }` | `ℹ️ … IGNORÓ AGY_MODEL presente en el env; modelo efectivo "X" (fuente: GEMINI_MODEL)` |
+| sólo `AGY_MODEL=Y` | *(sin flag: default del CLI)* | `{ applied:false, reason:'agy_model_env_ignored', ignoredEnv:['AGY_MODEL'] }` | `⚠️ … descartó el flag --model (razón: agy_model_env_ignored)` + `ℹ️ … IGNORÓ AGY_MODEL` |
+| ninguna | *(sin flag)* | *(sin clave — regresión cero)* | — |
+
+La traza nunca puede afirmar un modelo distinto del que corrió: el string del
+`modelTrace` es literalmente el que va en argv. Guardrail en
+`tests/gemini-antigravity-4869.test.js` (el código del handler no puede volver a
+leer `AGY_MODEL` como fuente ni pasar `--effort`).
 
 **Caída a un proveedor de respaldo:** se propaga el modelo del proveedor
 **efectivo**, nunca el del primario. El launcher usa `effective.provider` /
@@ -1330,6 +1357,83 @@ NVIDIA NIM aporta razonamiento de calidad alta en free tier — Cerebras es velo
 
 - `guru` (análisis técnico): `nvidia-nim` queda como **último fallback** con `deepseek-ai/deepseek-v4-flash-0731` (se migró tras el end-of-life del modelo DeepSeek anterior; ver #5887). Anthropic sigue primero (sign-off Leo 2026-05-15).
 - Resto de skills: sin asignación todavía. Promover NVIDIA NIM arriba en otros skills requiere sign-off humano explícito.
+
+### 8.10 Antigravity (`gemini-google`) — catálogo de modelos y verificación automática (#6858)
+
+> **Migración 2026-09-16 (#6858, split de #6856).** Los 9 skills con Gemini en su
+> cadena (`android-dev`, `web-dev`, `qa`, `po`, `ux`, `architect`, `perf`,
+> `telegram-commander`, `telegram-sherlock`) declaraban `gemini-3-flash-preview`,
+> un id del **Gemini CLI gratuito retirado** que **no existe en Antigravity**. Con el
+> provider encendido, todo spawn hubiera muerto sin trabajo con `--model` inválido:
+> el mismo modo de falla que la migración de NVIDIA (#5887). `gemini-2.5-flash`
+> (`alternative_models`) tampoco estaba en el catálogo.
+
+**Catálogo real** — medido con `agy models` (CLI 1.2.4, 2026-09-16). El CLI
+escribe a stdout una línea `id<TAB>label` por modelo:
+
+| id | label (tal cual lo devuelve `agy models`) | Uso en el pipeline |
+|---|---|---|
+| `gemini-3.8-flash-high` | Gemini 3.8 Flash (High) | android-dev, web-dev, architect |
+| `gemini-3.8-flash-medium` | Gemini 3.8 Flash (Medium) | default del provider; qa, po, ux, perf, telegram-commander |
+| `gemini-3.8-flash-low` | Gemini 3.8 Flash (Low) | telegram-sherlock |
+| `gemini-3.7-flash-high` / `-medium` / `-low` | Gemini 3.7 Flash (…) | `-medium` es el `alternative_models` del provider (familia distinta al primario → Sherlock conserva adversarialidad parcial, #3501) |
+| `gemini-3.6-flash-high` / `-medium` / `-low` | Gemini 3.6 Flash (…) | sin asignar |
+| `gemini-3.1-pro-high` / `-low` | Gemini 3.1 Pro (…) | sin asignar |
+| `claude-sonnet-4-6`, `claude-opus-4-6-thinking`, `gpt-oss-120b-medium` | (terceros bajo licencia Antigravity) | sin asignar |
+
+La asignación fina modelo↔agente es de **#6860**; acá alcanza con un id válido y
+coherente por skill (tiering igual al de Anthropic y Codex: devs/architect →
+`high`, evaluadores/chat → `medium`, verificador → `low`).
+
+**Canal de esfuerzo — uno solo.** El sufijo `-high/-medium/-low` del id codifica
+el esfuerzo de razonamiento; `agy` además expone `--effort` como flag aparte.
+El pipeline usa **sólo el sufijo del id** y nunca pasa `--effort`: así el string
+que muestra el dashboard y la traza es exactamente el que corrió. Verificado en
+vivo: `thinking_tokens` para el mismo prompt = 100 (`-high`) / 30 (`-medium`) /
+21 (`-low`).
+
+**Las tres barreras son espejo exacto del catálogo** (por reemplazo, no por
+agregado — el id viejo se quita para que ninguna reintroducción pase silenciosa):
+
+| Barrera | Archivo |
+|---|---|
+| `ALLOWED_MODELS_BY_LAUNCHER['gemini-google']` | `lib/agent-models-validate.js` (boot del pulpo + CA-6 de la propagación) |
+| `PROVIDER_MODELS_ALLOWLIST['gemini-google']` | `lib/multi-provider/completion-client.js` |
+| `CATALOG['gemini-google']` (`CATALOG_VERSION 2026-09-16.1`) | `lib/multi-provider/model-catalog.js` (Tab "3 · Catálogo" del dashboard; `cost_per_1m: null` → se renderiza `—`, Antigravity factura por licencia) |
+
+**Verificación automática contra el CLI** — `lib/multi-provider/agy-catalog.js`
+cruza `agent-models.json` (las 4 fuentes de #5888 restringidas a gemini-google)
++ las tres barreras contra `agy models` **real**:
+
+```bash
+node .pipeline/lib/multi-provider/agy-catalog.js --check     # exit 1 si hay ids muertos; 2 si agy no está
+node --test .pipeline/lib/__tests__/agy-catalog.test.js      # offline con fixture + en vivo si agy está instalado
+bash .pipeline/smoke-test.sh                                  # paso 4: reporta (no aborta) en cada restart
+```
+
+Semántica: un id **configurado o allowlisted que el CLI no devuelve** es `dead`
+→ falla. Un id **nuevo del CLI que el pipeline no adoptó** es `unlisted` → aviso,
+no falla (un modelo nuevo del vendor nunca dispara rollback). El smoke test
+reporta sin abortar a propósito: si el vendor retira un modelo, un fallo duro
+ahí entraría en bucle de rollback sin arreglar nada.
+
+> **Nunca** cruzar contra `GET generativelanguage.googleapis.com/v1beta/models`
+> (`live-ping.js`): ese es el catálogo de **AI Studio**, donde
+> `gemini-3-flash-preview` sí existe. Cruzar contra él es exactamente lo que
+> dejó pasar el defecto original (ver #7289 para migrar el cron de #5888).
+
+**Cómo medir un modelo nuevo antes de configurarlo** (CA-4 de #6858, con agy
+1.2.4 el prompt va en argv — por stdin no se lee, #7290):
+
+```bash
+"$LOCALAPPDATA/agy/bin/agy.exe" --print "Responde solo con la palabra OK" \
+  --dangerously-skip-permissions --print-timeout 120s --output-format json \
+  --model gemini-3.8-flash-low
+# → {"status":"SUCCESS","response":"OK\n","usage":{"input_tokens":13049,"output_tokens":22,"thinking_tokens":21,...}}
+```
+
+`parseTokensFromLog` del handler lee ese `usage` (`output_tokens` ya incluye
+`thinking_tokens`) y cae al legacy `stats.models` de 1.1.x si no está.
 
 ---
 

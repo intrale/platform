@@ -391,6 +391,18 @@ function launchAgent({
         log('agent-launcher', `⚠️ ${skill}:#${issue} el handler ${effective.provider} descartó el flag --model `
             + `(razón: ${spawnDef.modelTrace.reason}); el agente arranca con el default del CLI. El spawn NO se aborta.`);
     }
+    // #6334/#6858 — el handler ignoró una variable de modelo que NO es la que
+    // propaga PROVIDER_MODEL_ENV (ej. `AGY_MODEL` exportada por el operador).
+    // Se deja constancia para que la traza pueda afirmar qué modelo corrió y de
+    // qué fuente salió: nunca un "propagué X" que en runtime fue Y.
+    if (spawnDef.modelTrace && Array.isArray(spawnDef.modelTrace.ignoredEnv)
+        && spawnDef.modelTrace.ignoredEnv.length > 0) {
+        const efectivo = spawnDef.modelTrace.model
+            ? `modelo efectivo "${spawnDef.modelTrace.model}" (fuente: ${spawnDef.modelTrace.source})`
+            : 'el agente arranca con el default del CLI';
+        log('agent-launcher', `ℹ️ ${skill}:#${issue} el handler ${effective.provider} IGNORÓ `
+            + `${spawnDef.modelTrace.ignoredEnv.join(', ')} presente en el env; ${efectivo}.`);
+    }
     const child = _spawn(spawnDef.cmd, spawnDef.args, spawnDef.spawnOpts);
 
     // #4529 — payload grande (system foldeado + prompt) por STDIN, no por argv:

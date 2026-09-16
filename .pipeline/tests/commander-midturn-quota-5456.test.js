@@ -179,7 +179,7 @@ function sembrarCadenasDivergentes(tmp) {
             provider: 'anthropic',
             model_override: 'claude-sonnet-4-6',
             fallbacks: [
-                { provider: 'gemini-google', model_override: 'gemini-3-flash-preview' },
+                { provider: 'gemini-google', model_override: 'gemini-3.8-flash-medium' },
                 { provider: 'cerebras', model_override: 'gpt-oss-120b' },
             ],
         },

@@ -180,5 +180,23 @@ if [ -d "$ORPHAN_DIR" ]; then
   fi
 fi
 
+# --- 4) Catálogo de modelos de Antigravity (#6858) ---
+# Cruza los ids de gemini-google (agent-models.json + las 3 barreras de modelo)
+# contra `agy models` REAL. Un id muerto mata sin trabajo a cualquier agente que
+# caiga a ese eslabón (modo de falla de #5887), así que se reporta en cada
+# restart. NO aborta el smoke test a propósito: si el vendor retira un modelo,
+# un fallo duro acá dispararía rollback en bucle sin arreglar nada (el commit
+# anterior tiene el mismo id). El fallo duro vive en el test
+# lib/__tests__/agy-catalog.test.js y en `node lib/multi-provider/agy-catalog.js --check`.
+log "4) Verificando catálogo de modelos de Antigravity (agy models)..."
+AGY_CHECK_OUT=$( cd "${PIPELINE_DIR}" && node lib/multi-provider/agy-catalog.js --check 2>&1 )
+AGY_CHECK_RC=$?
+case "$AGY_CHECK_RC" in
+  0) log "  OK ${AGY_CHECK_OUT}" ;;
+  1) log "  WARN ids de modelo MUERTOS en la config de gemini-google — corregir antes de encender el provider:"
+     while IFS= read -r line; do log "       ${line}"; done <<< "${AGY_CHECK_OUT}" ;;
+  *) log "  WARN no se pudo leer el catálogo de agy (rc=${AGY_CHECK_RC}): ${AGY_CHECK_OUT}" ;;
+esac
+
 log "=== SMOKE TEST OK ==="
 exit 0

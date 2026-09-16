@@ -171,7 +171,7 @@ test('complete Gemini-Google éxito devuelve schema normalizado (shim OpenAI-com
     writeKeys(f, { gemini_google_api_key: 'AIzaSyTest_1234567890abcdef000' });
     const r = await completion.complete({
         provider: 'gemini-google',
-        model: 'gemini-2.0-flash',
+        model: 'gemini-3.8-flash-medium',
         prompt: 'ping',
         secretsPath: f,
         httpImpl: fakeHttp({
@@ -179,7 +179,7 @@ test('complete Gemini-Google éxito devuelve schema normalizado (shim OpenAI-com
             body: JSON.stringify({
                 choices: [{ message: { content: 'pong gemini' } }],
                 usage: { prompt_tokens: 7, completion_tokens: 4 },
-                model: 'gemini-2.0-flash',
+                model: 'gemini-3.8-flash-medium',
             }),
         }),
     });
@@ -377,7 +377,7 @@ test('complete con 2xx pero sin choices[0].message.content → invalid_response 
     writeKeys(f, { gemini_google_api_key: 'AIzaSyTest_1234567890abcdef000' });
     const r = await completion.complete({
         provider: 'gemini-google',
-        model: 'gemini-2.0-flash',
+        model: 'gemini-3.8-flash-medium',
         prompt: 'ping',
         secretsPath: f,
         httpImpl: fakeHttp({
@@ -553,8 +553,8 @@ test('PROVIDER_MODELS_ALLOWLIST incluye los modelos que usa producción (snapsho
     // que el dashboard.
     assert.ok(completion.isAllowedModel('cerebras', 'llama-3.3-70b'),
         'cerebras/llama-3.3-70b en producción debe estar allowlisted');
-    assert.ok(completion.isAllowedModel('gemini-google', 'gemini-2.0-flash'),
-        'gemini-google/gemini-2.0-flash en producción debe estar allowlisted');
+    assert.ok(completion.isAllowedModel('gemini-google', 'gemini-3.8-flash-medium'),
+        'gemini-google/gemini-3.8-flash-medium en producción debe estar allowlisted');
     assert.ok(completion.isAllowedModel('nvidia-nim', 'deepseek-ai/deepseek-v4-flash-0731'),
         'nvidia-nim/deepseek-ai/deepseek-v4-flash-0731 en producción debe estar allowlisted');
 });

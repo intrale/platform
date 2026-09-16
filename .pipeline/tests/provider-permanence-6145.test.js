@@ -36,7 +36,7 @@ const AGENT_MODELS = {
     providers: {
         anthropic: { billing: 'paid', model: 'claude-opus-4-7' },
         'openai-codex': { billing: 'paid', model: 'gpt-5.5' },
-        'gemini-google': { billing: 'free', model: 'gemini-3-flash-preview' },
+        'gemini-google': { billing: 'free', model: 'gemini-3.8-flash-medium' },
         cerebras: { billing: 'free', model: 'gpt-oss-120b' },
         'nvidia-nim': { billing: 'free', model: 'deepseek-v4' },
         'kimi-moonshot': { billing: 'free', model: 'kimi-k2-6' },

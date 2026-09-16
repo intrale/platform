@@ -76,7 +76,7 @@ function agentModels({ skill = 'guru', provider = 'anthropic', model = 'claude-s
         providers: {
             anthropic: { launcher: 'claude', model: 'claude-opus-4-7', permissions_mode: 'bypassPermissions' },
             'openai-codex': { launcher: 'codex', model: 'gpt-5.5', permissions_mode: 'bypassPermissions' },
-            'gemini-google': { launcher: 'gemini-google', model: 'gemini-3-flash-preview', permissions_mode: 'bypassPermissions' },
+            'gemini-google': { launcher: 'gemini-google', model: 'gemini-3.8-flash-medium', permissions_mode: 'bypassPermissions' },
             cerebras: { launcher: 'cerebras', model: 'gpt-oss-120b', permissions_mode: 'bypassPermissions' },
             'nvidia-nim': { launcher: 'nvidia-nim', model: 'deepseek-ai/deepseek-v4-flash-0731', permissions_mode: 'bypassPermissions' },
             'kimi-moonshot': { launcher: 'claude', model: 'kimi-k2-6', permissions_mode: 'bypassPermissions' },
@@ -321,7 +321,7 @@ test('CA-1: el flag encendido no altera el env del hijo en el canal argv', () =>
 
 const CASOS_ENV = [
     { provider: 'openai-codex', envVar: 'CODEX_MODEL', model: 'gpt-5.4' },
-    { provider: 'gemini-google', envVar: 'GEMINI_MODEL', model: 'gemini-2.5-flash' },
+    { provider: 'gemini-google', envVar: 'GEMINI_MODEL', model: 'gemini-3.7-flash-medium' },
     { provider: 'cerebras', envVar: 'CEREBRAS_MODEL', model: 'zai-glm-4.7' },
     { provider: 'nvidia-nim', envVar: 'NVIDIA_NIM_MODEL', model: 'moonshotai/kimi-k2-instruct' },
 ];
@@ -634,7 +634,7 @@ for (const provider of PROVIDERS_LLM) {
             anthropic: 'claude-haiku-4-5',
             'kimi-moonshot': 'kimi-k2-6',
             'openai-codex': 'gpt-5.4-mini',
-            'gemini-google': 'gemini-2.0-flash',
+            'gemini-google': 'gemini-3.8-flash-medium',
             cerebras: 'zai-glm-4.7',
             'nvidia-nim': 'moonshotai/kimi-k2-instruct',
         }[provider];

@@ -133,8 +133,8 @@ const PROVIDER_COMPLETION_ENDPOINTS = Object.freeze({
 // arbitrario que provoque 400 ruidosos con eco en el body (info leak menor).
 // El `model` viaja como field del body JSON (no en la URL) → NO abre SSRF, pero
 // igual filtramos. Los modelos en producción salen de `.pipeline/agent-models.json`
-// (snapshot 2026-05-19): cerebras=llama-3.3-70b, gemini-google=gemini-2.0-flash,
-// nvidia-nim=deepseek-ai/deepseek-v4-flash-0731 (#5887, 2026-08-13: el
+// (snapshot 2026-05-19): cerebras=llama-3.3-70b, gemini-google=gemini-3.8-flash-medium
+// (#6858), nvidia-nim=deepseek-ai/deepseek-v4-flash-0731 (#5887, 2026-08-13: el
 // modelo deepseek anterior llegó a end-of-life el 2026-08-07 y devolvía HTTP 410
 // — se reemplaza, no se deja al lado, para que ninguna reintroducción pase
 // silenciosa por esta barrera). Si la lista se queda corta, agregar
@@ -146,17 +146,28 @@ const PROVIDER_MODELS_ALLOWLIST = Object.freeze({
         'llama-3.3-70b',
         'llama-4-scout-17b-16e-instruct',
     ]),
+    // #6858 (2026-09-16) — catálogo REAL de Antigravity (`agy models`, CLI
+    // 1.2.4) por REEMPLAZO: `gemini-1.5-*`, `gemini-2.0-*` y `gemini-2.5-*` eran
+    // ids de AI Studio / Gemini CLI gratuito (retirado) y NO existen en
+    // Antigravity. Se quitan, no se dejan al lado. Espejo exacto de
+    // ALLOWED_MODELS_BY_LAUNCHER['gemini-google'] (lib/agent-models-validate.js)
+    // y del CATALOG de model-catalog.js; las tres se cruzan contra el CLI en
+    // lib/multi-provider/agy-catalog.js.
     'gemini-google': Object.freeze([
-        'gemini-1.5-flash',
-        'gemini-1.5-flash-8b',
-        'gemini-1.5-pro',
-        'gemini-2.0-flash',
-        'gemini-2.0-flash-exp',
-        // 2026-06-04 — `gemini-1.5-flash` fue retirado del catálogo de Google;
-        // el modelo alternativo de Sherlock pasa a `gemini-2.5-flash` (free tier
-        // vigente). Se suma a la allowlist para que el config nuevo pase el filtro.
-        'gemini-2.5-flash',
-        'gemini-2.5-pro',
+        'gemini-3.8-flash-high',
+        'gemini-3.8-flash-medium',
+        'gemini-3.8-flash-low',
+        'gemini-3.7-flash-high',
+        'gemini-3.7-flash-medium',
+        'gemini-3.7-flash-low',
+        'gemini-3.6-flash-high',
+        'gemini-3.6-flash-medium',
+        'gemini-3.6-flash-low',
+        'gemini-3.1-pro-high',
+        'gemini-3.1-pro-low',
+        'claude-sonnet-4-6',
+        'claude-opus-4-6-thinking',
+        'gpt-oss-120b-medium',
     ]),
     'nvidia-nim': Object.freeze([
         'deepseek-ai/deepseek-v4-flash-0731',

@@ -137,7 +137,7 @@ test('CA-1: `configuredModelsByProvider` cubre las 4 fuentes, una por fuente', (
     // fuente 2 — providers[].alternative_models[]
     assert.ok(by.get('cerebras').has('zai-glm-4.7'));
     // fuente 3 — skills[].model_override
-    assert.ok(by.get('gemini-google').has('gemini-2.5-pro'));
+    assert.ok(by.get('gemini-google').has('gemini-3.1-pro-low'));
     // fuente 4 — skills[].fallbacks[].model_override
     assert.ok(by.get('nvidia-nim').has(DEAD_MODEL));
 });
@@ -173,11 +173,11 @@ test('CA-1: `expectModelsForPing` sólo cubre los 3 providers en alcance y usa e
 // CA-2 — El catálogo se parsea con la forma REAL de cada provider
 // =============================================================================
 
-test('CA-2/G-1: con el catálogo Gemini real (models[].name con prefijo), gemini-3-flash-preview NO se marca ausente', () => {
+test('CA-2/G-1: con el catálogo Gemini real (models[].name con prefijo), gemini-3.8-flash-medium NO se marca ausente', () => {
     const out = livePing._crossCheckCatalog({
         spec: SPEC_GEMINI,
         result: reqResult({ body: CATALOG_GEMINI }),
-        expectModels: ['gemini-3-flash-preview', 'gemini-2.5-flash', 'gemini-2.5-pro'],
+        expectModels: ['gemini-3.8-flash-medium', 'gemini-3.7-flash-medium', 'gemini-3.1-pro-low'],
     });
     assert.equal(out.ok, true);
     assert.deepEqual(out.models.filter((m) => !m.alive), [],
@@ -197,7 +197,7 @@ test('CA-2/G-2/R-H: `nextPageToken` no vacío ⇒ model_check_unavailable, jamá
     const out = livePing._crossCheckCatalog({
         spec: SPEC_GEMINI,
         result: reqResult({ body: paginado }),
-        expectModels: ['gemini-3-flash-preview'],
+        expectModels: ['gemini-3.8-flash-medium'],
     });
     assert.equal(out.ok, false);
     assert.equal(out.reason_code, 'model_check_unavailable');
@@ -400,7 +400,7 @@ test('CA-6/S-A: sanitizeModelId rechaza metacaracteres Markdown, HTML, mayúscul
         assert.equal(healthAlerts.sanitizeModelId(m), null, `debe rechazar: ${String(m).slice(0, 40)}`);
     }
     // Los 6 ids reales del config + el del vendor con `/` deben pasar.
-    for (const m of ['claude-opus-4-7', 'gpt-5.5', 'gemini-3-flash-preview', 'gpt-oss-120b',
+    for (const m of ['claude-opus-4-7', 'gpt-5.5', 'gemini-3.8-flash-medium', 'gpt-oss-120b',
         'zai-glm-4.7', 'kimi-k2-6', DEAD_MODEL]) {
         assert.equal(healthAlerts.sanitizeModelId(m), m, `debe aceptar: ${m}`);
     }

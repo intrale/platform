@@ -94,7 +94,7 @@ test('extrae solo response de un objeto JSON de gemini (pretty-printed)', () => 
     const stdout = JSON.stringify({
         session_id: '5e5318cd-8c81-4279-803c-afb4d25c4903',
         response: '¡Excelente, Leo! Analicé el estado del repo.',
-        stats: { models: { 'gemini-3-flash-preview': { tokens: { total: 2973 } } } },
+        stats: { models: { 'gemini-3.8-flash-medium': { tokens: { total: 2973 } } } },
     }, null, 2);
     const r = extractFallbackReply(stdout);
     assert.equal(r.parsed, true);

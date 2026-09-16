@@ -19,7 +19,29 @@
 // =============================================================================
 'use strict';
 
-const CATALOG_VERSION = '2026-06-04.1';
+// 2026-09-16.1 — #6858: alta del provider `gemini-google` con el catálogo real
+// de Antigravity (hasta acá el dashboard no mostraba ninguna fila Gemini pese
+// a que 9 skills lo tienen en su cadena).
+const CATALOG_VERSION = '2026-09-16.1';
+
+// #6858 — Helper para las 14 filas de Antigravity. El catálogo del CLI codifica
+// el esfuerzo de razonamiento en el sufijo del id (`-high/-medium/-low`); ese
+// sufijo es el ÚNICO canal de esfuerzo que usa el pipeline (nunca `--effort`).
+// Antigravity factura por licencia/cuota, no por token: `cost_per_1m` queda en
+// `null` y el front lo renderiza como `—` (no se inventan precios). `label` es
+// el nombre humano que devuelve `agy models`, tal cual.
+function agyModel(id, label, extra) {
+    return {
+        id,
+        label,
+        capabilities: ['chat', 'tools', 'vision'],
+        cost_per_1m: null,
+        context_window: null,
+        release_date: '2026-09',
+        recommended_for: [],
+        ...(extra || {}),
+    };
+}
 
 const CATALOG = Object.freeze({
     anthropic: Object.freeze([
@@ -97,6 +119,50 @@ const CATALOG = Object.freeze({
             release_date: '2026-07',
             recommended_for: ['po', 'review'],
         },
+    ]),
+    // #6858 (2026-09-16) — Antigravity (`agy`, CLI 1.2.4). Catálogo medido con
+    // `agy models`; los 14 ids son exactamente los que el CLI devuelve y se
+    // cruzan contra él en lib/multi-provider/agy-catalog.js. `recommended_for`
+    // refleja los skills que efectivamente lo declaran en agent-models.json.
+    'gemini-google': Object.freeze([
+        agyModel('gemini-3.8-flash-high', 'Gemini 3.8 Flash (High)', {
+            capabilities: ['chat', 'tools', 'vision', 'reasoning'],
+            recommended_for: ['android-dev', 'web-dev', 'architect'],
+        }),
+        agyModel('gemini-3.8-flash-medium', 'Gemini 3.8 Flash (Medium)', {
+            recommended_for: ['qa', 'po', 'ux', 'perf', 'telegram-commander'],
+        }),
+        agyModel('gemini-3.8-flash-low', 'Gemini 3.8 Flash (Low)', {
+            recommended_for: ['telegram-sherlock'],
+        }),
+        agyModel('gemini-3.7-flash-high', 'Gemini 3.7 Flash (High)', {
+            capabilities: ['chat', 'tools', 'vision', 'reasoning'],
+        }),
+        // Modelo alternativo del provider (#3501): familia distinta al primario
+        // para que Sherlock conserve adversarialidad parcial.
+        agyModel('gemini-3.7-flash-medium', 'Gemini 3.7 Flash (Medium)', {
+            recommended_for: ['telegram-sherlock'],
+        }),
+        agyModel('gemini-3.7-flash-low', 'Gemini 3.7 Flash (Low)'),
+        agyModel('gemini-3.6-flash-high', 'Gemini 3.6 Flash (High)', {
+            capabilities: ['chat', 'tools', 'vision', 'reasoning'],
+        }),
+        agyModel('gemini-3.6-flash-medium', 'Gemini 3.6 Flash (Medium)'),
+        agyModel('gemini-3.6-flash-low', 'Gemini 3.6 Flash (Low)'),
+        agyModel('gemini-3.1-pro-high', 'Gemini 3.1 Pro (High)', {
+            capabilities: ['chat', 'tools', 'vision', 'reasoning'],
+        }),
+        agyModel('gemini-3.1-pro-low', 'Gemini 3.1 Pro (Low)'),
+        // Modelos de terceros servidos por Antigravity bajo su licencia.
+        agyModel('claude-sonnet-4-6', 'Claude Sonnet 4.6 (Thinking)', {
+            capabilities: ['chat', 'tools', 'vision', 'reasoning'],
+        }),
+        agyModel('claude-opus-4-6-thinking', 'Claude Opus 4.6 (Thinking)', {
+            capabilities: ['chat', 'tools', 'vision', 'reasoning'],
+        }),
+        agyModel('gpt-oss-120b-medium', 'GPT-OSS 120B (Medium)', {
+            capabilities: ['chat', 'tools'],
+        }),
     ]),
     deterministic: Object.freeze([
         {
