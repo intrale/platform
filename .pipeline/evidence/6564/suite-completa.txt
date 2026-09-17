@@ -1,0 +1,9 @@
+﻿✔ sin campo text → text null (retorno aditivo no rompe) (0.3805ms)
+ℹ tests 2409
+ℹ suites 3
+ℹ pass 2406
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 3
+ℹ todo 0
+ℹ duration_ms 188826.034

@@ -1,0 +1,4 @@
+Cuota efectiva medida por la comprobación automática · hace 12 min
+Gemini Models · semanal 99 % · 5 h 100 % · reinicia 23/09 16:14 UTC
+Claude y GPT · semanal 99 % · 5 h 100 % · reinicia 23/09 16:14 UTC
+El tier contratado no es observable con agy 1.2.4: confirmalo a mano (docs/pipeline/multi-provider.md).

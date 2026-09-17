@@ -70,6 +70,7 @@ try { oauthSessionCopy = require('../../assets/copy/oauth-session-expiry/render.
 // colector correspondiente: si una lib falla, la pantalla degrada con "sin
 // datos" en vez de romper el render completo (CA-A3).
 const secrets = require('../../lib/multi-provider/secrets-rw');
+const { sanitizePlanCheck } = require('../../lib/multi-provider/agy-plan-probe');
 
 // #4246 — Banner de ola común (② del marco MIZPÁ de #4234). Se reutiliza el
 // helper compartido `renderMissionBanner()` de la HOME para NO duplicar el markup
@@ -99,7 +100,7 @@ const PROVIDER_ORDER = Object.freeze(['anthropic', 'openai', 'gemini-google', 'c
 const PROVIDER_META = Object.freeze({
     anthropic:       { name: 'Claude',     accent: '--provider-anthropic',  tier: 'PLAN MAX', tierKind: 'max',  tierIcon: '🟦', disabledKey: 'anthropic',    catalogKey: 'anthropic' },
     openai:          { name: 'Codex',      accent: '--provider-openai',     tier: 'PAGO',     tierKind: 'paid', tierIcon: '🟧', disabledKey: 'openai-codex', catalogKey: 'openai-codex' },
-    'gemini-google': { name: 'Gemini',     accent: '--provider-gemini',     tier: 'FREE',     tierKind: 'free', tierIcon: '🟩', disabledKey: 'gemini-google', catalogKey: 'gemini-google' },
+    'gemini-google': { name: 'Gemini',     accent: '--provider-gemini',     tierKind: 'measured', disabledKey: 'gemini-google', catalogKey: 'gemini-google' },
     cerebras:        { name: 'Cerebras',   accent: '--provider-cerebras',   tier: 'FREE',     tierKind: 'free', tierIcon: '🟨', disabledKey: 'cerebras',     catalogKey: 'cerebras' },
     'nvidia-nim':    { name: 'NVIDIA NIM', accent: '--provider-nvidia-nim', tier: 'FREE',     tierKind: 'free', tierIcon: '🟩', disabledKey: 'nvidia-nim',   catalogKey: 'nvidia-nim' },
 });
@@ -162,6 +163,8 @@ function healthBadgeFor(p, now) {
 //
 // Copy acordado con `ux` — NO cambiar sin actualizar la tabla de la definición.
 const REASON_LABEL = Object.freeze({
+    plan_quota_ok: 'cuota del plan verificada',
+    plan_tier_unknown: 'cuota del plan sin verificar',
     cli_oauth_ok: 'OAuth CLI OK',
     cli_catalog_ok: 'catálogo verificado',      // #6857: round-trip real (`agy models`) con catálogo poblado
     authenticated: 'autenticado',
@@ -502,6 +505,7 @@ function buildProvidersModel() {
             // el health-cron ni siquiera escribe el campo para ellos, así que la
             // fila no muestra una vigencia que nadie verifica.
             catalogCheck: (h.catalog_check && typeof h.catalog_check === 'object') ? h.catalog_check : null,
+            planCheck: (h.plan_check && typeof h.plan_check === 'object') ? h.plan_check : null,
             // #4283 — discriminante de cuota real (#4202). Independiente del
             // estado de login: distingue "logueado" de "logueado + con cuota"
             // (CA-5). Shape seguro { adapterStatus, status, pct } — sin secretos.
@@ -588,7 +592,38 @@ function buildProvidersModel() {
 
 // ───────────────────────── Render SSR ─────────────────────────
 
-function renderTierBadge(p) {
+function renderPlanBadge(p, now = Date.now()) {
+    const check = sanitizePlanCheck(p.planCheck, now);
+    const noSession = ['cli_license_unavailable', 'cli_unavailable'].includes(p.healthReason)
+        || check.reason_code === 'cli_license_unavailable';
+    const rel = relativeTime(check.checked_at, now) || 'sin medición';
+    if (noSession) {
+        return '<span class="prov-tier prov-tier-free" title="Sin sesión: no se puede medir la cuota del plan">'
+            + '<svg class="status-ico" aria-hidden="true"><use href="#ic-cell-na"></use></svg>PLAN · NO VERIFICABLE</span>'
+            + '<span class="prov-health-reason">sin sesión, no se puede medir la cuota</span>';
+    }
+    if (check.reason_code === 'plan_quota_ok') {
+        const pct = Math.round(check.groups[0].buckets[0].remaining_fraction * 100);
+        const lines = check.groups.map((g, i) => {
+            const weekly = g.buckets[0], short = g.buckets[1];
+            return `${i === 0 ? 'Gemini Models' : 'Claude y GPT'} · semanal ${Math.round(weekly.remaining_fraction * 100)} %`
+                + (short ? ` · 5 h ${Math.round(short.remaining_fraction * 100)} %` : '')
+                + (weekly.reset_time ? ` · reinicia ${weekly.reset_time.slice(8, 10)}/${weekly.reset_time.slice(5, 7)} ${weekly.reset_time.slice(11, 16)} UTC` : '');
+        });
+        const title = `Cuota efectiva medida por la comprobación automática · ${rel}\n${lines.join('\n')}\n`
+            + 'El tier contratado no es observable con agy 1.2.4: confirmalo a mano (docs/pipeline/multi-provider.md).';
+        return renderStatusBadge({ severity: 'ok', label: `PLAN CON CUOTA · ${pct}% SEMANAL`, title })
+            + `<span class="prov-health-reason">cuota del plan verificada · ${escapeHtmlText(rel)}</span>`;
+    }
+    const count = p.planCheck && Number.isInteger(p.planCheck.consecutive_count) && p.planCheck.consecutive_count > 0
+        ? ` · ${Math.min(9999, p.planCheck.consecutive_count)}.º tick` : '';
+    return renderStatusBadge({ severity: 'info', label: 'PLAN · SIN VERIFICAR',
+        title: `Cuota del plan sin verificar · ${rel} · hasta confirmarla no se la cuenta como plan contratado` })
+        + `<span class="prov-health-reason">cuota del plan sin verificar${count} · ${escapeHtmlText(rel)}</span>`;
+}
+
+function renderTierBadge(p, now) {
+    if (p.key === 'gemini-google') return renderPlanBadge(p, now);
     const cls = 'prov-tier prov-tier-' + p.tierKind;
     const title = p.tierKind === 'max' ? 'Plan MAX (suscripción Claude, sin costo por token)'
         : p.tierKind === 'paid' ? 'Tier pago (consume créditos de la cuenta)'
@@ -782,7 +817,7 @@ function renderProviderRow(p, now) {
     <span class="prov-dot" aria-hidden="true"></span>
     <div class="prov-id-txt">
       <span class="prov-name">${escapeHtmlText(p.name)}</span>
-      ${renderTierBadge(p)}
+      ${renderTierBadge(p, now)}
     </div>
   </div>
   <div class="prov-col prov-col-key">${renderKeyCell(p)}</div>
@@ -1286,6 +1321,13 @@ const PANEL_CSS = `
 .prov-id { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .prov-dot { width: 12px; height: 12px; border-radius: 50%; flex: none; background: var(--row-accent, var(--in-fg-dim)); box-shadow: 0 0 0 3px color-mix(in srgb, var(--row-accent, #888) 22%, transparent); }
 .prov-id-txt { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+/* #6564: espacio del eje plan según mockup UX rev. 2, sin superponer credencial. */
+.prov-row[data-provider="gemini-google"] .prov-id-txt { flex-direction: row; flex-wrap: wrap; align-items: center; gap: 10px; }
+.prov-row[data-provider="gemini-google"] .prov-id-txt .prov-health-reason { flex-basis: 100%; }
+.prov-row[data-provider="gemini-google"] .prov-id-txt .status-badge { font-size: 9.5px; }
+@media (min-width: 1101px) {
+  .prov-row[data-provider="gemini-google"] { grid-template-columns: 360px 1fr 1.4fr 1.5fr auto; }
+}
 .prov-name { font-size: 15px; font-weight: 800; }
 .prov-tier { display: inline-flex; align-items: center; gap: 5px; font-size: 9.5px; font-weight: 800; letter-spacing: .5px;
   padding: 2px 8px; border-radius: 7px; width: fit-content; border: 1px solid transparent; }
@@ -1537,6 +1579,7 @@ ${/* El panel inerte NO monta el banner: sin su markup, el CSS y el bundle acá
 }
 
 module.exports = {
+    renderPlanBadge,
     renderProviders,
     bodyHtml,
     buildProvidersModel,

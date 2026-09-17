@@ -1,0 +1,47 @@
+{
+  "catalog": {
+    "ok": true,
+    "reason": "cli_catalog_ok",
+    "model_count": 14
+  },
+  "plan": {
+    "reason_code": "plan_quota_ok",
+    "checked_at": "2026-09-16T23:47:51.990Z",
+    "groups": [
+      {
+        "name": "Gemini Models",
+        "buckets": [
+          {
+            "id": "gemini-weekly",
+            "window": "weekly",
+            "remaining_fraction": 0.9910483360290527,
+            "reset_time": "2026-09-23T16:14:00.000Z"
+          },
+          {
+            "id": "gemini-5h",
+            "window": "5h",
+            "remaining_fraction": 0.9850897789001465,
+            "reset_time": "2026-09-17T02:14:00.000Z"
+          }
+        ]
+      },
+      {
+        "name": "Claude and GPT models",
+        "buckets": [
+          {
+            "id": "3p-weekly",
+            "window": "weekly",
+            "remaining_fraction": 0.9826536178588867,
+            "reset_time": "2026-09-23T21:51:17.000Z"
+          },
+          {
+            "id": "3p-5h",
+            "window": "5h",
+            "remaining_fraction": 0.9479607939720154,
+            "reset_time": "2026-09-17T02:51:17.000Z"
+          }
+        ]
+      }
+    ]
+  }
+}

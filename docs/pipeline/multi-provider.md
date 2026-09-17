@@ -1202,6 +1202,7 @@ Garantías:
 - **Dedupe 10 min**: misma combinación `provider+state` no se reenvía dentro de la ventana.
 - **Back-off exponencial**: si el estado rojo persiste, alertas cada 30 / 60 / 120 / 240 min (cap 4h) — sin flood.
 - **Persistencia del dedupe**: `~/.claude/secrets/telegram-alerts-dedup.json` (0600). Sobrevive restarts del pulpo.
+- **Prueba de entrega (#6564 CA-3)**: cada alerta sale con un `_correlationId` (`mphealth-<ms>-<hex>`), así que `svc-telegram` escribe el recibo `enviado` con el `message_id` real en `servicios/telegram/recibos/<cid>.json` **sólo** cuando la API responde `ok:true` (bus de recibos #4082, fail-closed). Ésa es la evidencia de recepción aceptada por el operador: no hace falta cliente Telegram ni captura del celular. Para reproducir el disparo del 2.º tick de `plan_tier_unknown` por el canal real y esperar el recibo: `node .pipeline/tools/evidence-telegram-6564.js --real` (sin `--real` es dry-run y no toca la cola de producción).
 
 Para silenciar todas las alertas durante una maintenance window: borrar el archivo `.../telegram-alerts-dedup.json` y crearlo con `{ "alerts": { "__SUPPRESSED_UNTIL__": <unix-ms> } }` no es soportado todavía — la solución actual es cortar el bot de Telegram. Ver issue de mejora si esto se vuelve recurrente.
 
@@ -1369,6 +1370,19 @@ NVIDIA NIM aporta razonamiento de calidad alta en free tier — Cerebras es velo
 - Resto de skills: sin asignación todavía. Promover NVIDIA NIM arriba en otros skills requiere sign-off humano explícito.
 
 ### 8.10 Antigravity (`gemini-google`) — catálogo de modelos y verificación automática (#6858)
+
+**Cuota y tier (#6564).** El tier contratado no es observable automáticamente
+con `agy` 1.2.4: `/usage` expone cuota, pero no el nombre del plan, y no existe
+un comando no interactivo de cuenta/plan. El operador lo confirma abriendo
+`agy` interactivo y leyendo el header email + plan tier, sin copiar identidad
+a evidencias ni logs. El health-cron muestra sesión + cuota efectiva mediante
+`plan_check`, independiente de la salud; nunca infiere el tier por la cuota.
+
+Para comprobar cuota manualmente desde Git Bash se usa
+`MSYS_NO_PATHCONV=1 agy -p "/usage" --output-format json`. Sin esa variable,
+Git Bash convierte `/usage` en una ruta y puede disparar un turno real de
+aproximadamente 13.000 tokens. El probe usa Node con `shell:false` y argumento
+literal. Véase [procedimiento, caché y verificación de sesión](gemini-plan-verification.md).
 
 > **Migración 2026-09-16 (#6858, split de #6856).** Los 9 skills con Gemini en su
 > cadena (`android-dev`, `web-dev`, `qa`, `po`, `ux`, `architect`, `perf`,
