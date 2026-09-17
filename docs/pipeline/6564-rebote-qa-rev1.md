@@ -94,3 +94,35 @@ casos: 2406 aprobados, cero fallos y tres omisiones (153024,5333 ms).
 Persisten los dos impedimentos de evidencia: ventana operativa de reinicio
 y acceso al cliente Telegram autenticado para la captura narrada. No se
 identificó un defecto funcional que justifique modificar la implementación.
+
+## Reverificación de dev, rebote 2 (17/09, 09:51 UTC)
+
+La rama estaba sincronizada con main y sin commits pendientes de push.
+Se verificó nuevamente el marker canónico de restart:
+`{"timestamp":"2026-09-16T09:59:29.511Z","pid":7648}`.
+`rg -n 'killAll|annotateAndMoveOrphans|reset --hard' .pipeline/restart.js`
+confirmó reset en línea 205, reubicación de huérfanos en 395 y killAll en 933.
+`Test-Path $env:PIPELINE_TRABAJANDO` devolvió `True`.
+No se ejecutó restart; no hay evidencia nueva de persistencia post-reinicio.
+
+`(Get-Process Telegram -ErrorAction SilentlyContinue | Measure-Object).Count`
+devolvió `0`. Esto no descarta una sesión web. La inspección visual de
+`qa/evidence/6564/screenshot-telegram.png` confirmó el texto
+«Ticks: 0 / 1 / 0 mensajes. Cola aislada; sin entrega al cliente Telegram».
+No se comprobó acceso a un cliente autenticado ni recepción real.
+
+Verificaciones ejecutadas en esta pasada:
+- Node: 80 tests, 80 pass, 0 fail, 0 skipped (953.2152 ms).
+- Git Bash, `./gradlew check --no-daemon`: BUILD SUCCESSFUL in 42s;
+  344 actionable tasks: 11 executed, 333 up-to-date.
+- Git Bash, `.pipeline/smoke-test.sh`: SMOKE TEST OK; pulpo 11888,
+  dashboard 17420, svc-telegram 13560, HTTP 200, catálogo de 14 modelos.
+  Advertencia real: last-restart.json tiene 85893s (esperado < 300).
+- Logs locales: `.pipeline/evidence/6564/{focused,gradle,smoke}-rev2.txt`.
+
+No se identificó un defecto funcional nuevo. Persisten CA-1 y CA-3 sin
+verificar. Se consultó disponibilidad de ventana operativa y cliente
+Telegram; no se recibió coordinación durante las verificaciones.
+El resultado conserva rechazo grave e informa `rebote_categoria: human_block`,
+contrato ya reconocido por `.pipeline/lib/rebote-classifier.js`, para describir
+el impedimento operativo. El lifecycle permanece a cargo del Pulpo.
