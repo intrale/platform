@@ -1995,8 +1995,18 @@ function extractFallbackReply(stdout) {
     if (!raw.trim()) return { text: '', parsed: false, reason: 'empty_output' };
 
     // --- Path A: JSONL streaming (Codex) — agent_message por línea ---
+    // --- Path A2: NDJSON de Antigravity (`agy --output-format stream-json`,
+    //     agy 1.2.x / #6857). El texto final viaja en el evento
+    //     `{"event":"result","result":{"status","response"}}`; los deltas del
+    //     turno en `{"event":"step_update","step_update":{"step_type":
+    //     "agent_response","text_delta"}}`. Sin este path, 180 KB de stream
+    //     válido con "PONG" adentro salían como `malformed_body` y el Commander
+    //     descartaba TODA respuesta de Gemini (incidente 2026-09-17: 7/7
+    //     turnos del día tirados a Cerebras/NIM con `empty_output`).
     const messages = [];
     let sawJson = false;
+    let agyResult = null;
+    const agyDeltas = [];
     for (const line of raw.split('\n')) {
         const t = line.trim();
         if (!t.startsWith('{')) continue;
@@ -2007,11 +2017,33 @@ function extractFallbackReply(stdout) {
             && obj.item.type === 'agent_message'
             && typeof obj.item.text === 'string') {
             messages.push(obj.item.text);
+            continue;
+        }
+        if (obj && obj.event === 'result' && obj.result && typeof obj.result === 'object') {
+            agyResult = obj.result; // el último `result` manda
+            continue;
+        }
+        if (obj && obj.event === 'step_update' && obj.step_update
+            && obj.step_update.step_type === 'agent_response'
+            && typeof obj.step_update.text_delta === 'string') {
+            agyDeltas.push(obj.step_update.text_delta);
         }
     }
 
     if (messages.length > 0) {
         return { text: messages.join('\n\n').trim(), parsed: true, reason: null };
+    }
+
+    // Path A2 — `result.response` es la respuesta canónica. Si el proceso murió
+    // antes del `result` (kill por budget) pero ya había emitido deltas del
+    // turno, se entrega lo acumulado: mejor un mensaje parcial que el canned.
+    // Un `result` sin `response` (status FAILED/CANCELLED con `error`) NO se
+    // filtra al operador: cae a `malformed_body` como cualquier payload de error.
+    if (agyResult && typeof agyResult.response === 'string' && agyResult.response.trim()) {
+        return { text: agyResult.response.trim(), parsed: true, reason: null };
+    }
+    if (agyDeltas.length > 0 && agyDeltas.join('').trim()) {
+        return { text: agyDeltas.join('').trim(), parsed: true, reason: null };
     }
 
     // --- Path B: objeto JSON único (Gemini y similares HTTP) ---

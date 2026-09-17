@@ -21,7 +21,7 @@
 //   3) parseTokensFromLog — agrega los tokens reportados por el CLI. Con
 //      `--output-format stream-json` el log es NDJSON y el objeto útil es el
 //      `result` del evento `{"event":"result"}`; `_parseGeminiJson` lo
-//      localiza. La adaptación del shape (`usage.*`, `error` string) es #7288.
+//      localiza. usage.* y error string respetan el contrato de agy 1.2.x (#7290).
 //   4) detectQuotaExhausted — inspecciona el objeto `error` del JSON y matchea
 //      por shape estructural (status/code/reason normalizados a lowercase)
 //      contra la allowlist canónica en `quota-exhausted.js`
@@ -121,13 +121,17 @@ function _resetLauncherCacheForTesting() { cachedLauncher = null; }
 // Contrato de entrada (lo que el pulpo construye en pulpo.js:5846):
 //   ['-p', userPrompt, '--system-prompt-file', systemFile, ...]
 //
-// Contrato de salida (agy 1.2.x — #6857, #6859):
+// Contrato de salida (agy 1.2.x — #6857, #7322, #6859):
 //   ['--input-format', 'stream-json', '--output-format', 'stream-json',
+//    '--disable-slash-commands',
 //    '--dangerously-skip-permissions', '--print-timeout', timeout,
 //    '--add-dir', cwd, ('--add-dir', extraDir)*,
 //    '--model', model?]
-// `--model` va SIEMPRE al final (los tests lo fijan con `slice(-2)`); los
-// `--add-dir` van antes, uno por directorio, sin deduplicar contra el cwd.
+// `--disable-slash-commands` (#7322, AGY_HARDENING_ARGS) va pegado a los flags
+// de stream-json: evita que un prompt que empiece con `/` se interprete como
+// comando del CLI. `--model` va SIEMPRE al final (los tests lo fijan con
+// `slice(-2)`); los `--add-dir` van antes, uno por directorio, sin deduplicar
+// contra el cwd.
 // El payload real se pipea por STDIN como UNA línea NDJSON
 // (`{"event":"user","message":{"role":"user","content":"<system+prompt>"}}`)
 // para evitar ENAMETOOLONG en Windows. Verificado en vivo contra agy 1.2.4:
@@ -136,6 +140,7 @@ function _resetLauncherCacheForTesting() { cachedLauncher = null; }
 // cualquier prompt en argv ("a prompt given on the command line would be
 // ignored"). Esta es la única vía documentada para stdin.
 // -----------------------------------------------------------------------------
+const AGY_HARDENING_ARGS = Object.freeze(['--disable-slash-commands']);
 const AGY_STREAM_INPUT_ARGS = Object.freeze(['--input-format', 'stream-json', '--output-format', 'stream-json']);
 
 /**
@@ -209,7 +214,7 @@ function translateClaudeArgsToGemini(args, env, workspace) {
     // (propagación #6272) con el id resuelto para el skill (#6271).
     const { model } = resolveModelFromEnv(env);
     const timeout = (env && env.AGY_PRINT_TIMEOUT) || '5m';
-    const out = [...AGY_STREAM_INPUT_ARGS, '--dangerously-skip-permissions', '--print-timeout', timeout];
+    const out = [...AGY_STREAM_INPUT_ARGS, ...AGY_HARDENING_ARGS, '--dangerously-skip-permissions', '--print-timeout', timeout];
     // #6859 — workspace explícito: agy ignora el cwd del proceso.
     const ws = workspace && typeof workspace === 'object' ? workspace : {};
     if (typeof ws.cwd === 'string' && ws.cwd.length > 0) out.push('--add-dir', ws.cwd);
@@ -486,6 +491,10 @@ function detectQuotaExhausted(logPath, cfg, quotaExhaustedModule, fsImpl) {
     const obj = _parseGeminiJson(raw);
     if (!obj) return { matched: false };
 
+    if (typeof obj.error === 'string') {
+        return quotaExhaustedModule._detectGemini({ event: 'result', result: obj }, allowlist);
+    }
+
     // El error puede venir como `error` directo o anidado en `error.error`.
     const errObj = (obj.error && typeof obj.error === 'object')
         ? (obj.error.error && typeof obj.error.error === 'object' ? obj.error.error : obj.error)
@@ -558,6 +567,7 @@ module.exports = {
     _foldGeminiPayload: foldGeminiPayload,
     _encodeStreamJsonPayload: encodeStreamJsonPayload,
     AGY_STREAM_INPUT_ARGS,
+    AGY_HARDENING_ARGS,
     // #6859 — workspace explícito (`--add-dir`) y diagnóstico del scratch.
     AGY_WORKSPACE_ERROR_CODE,
     AGY_SCRATCH_RELATIVE,

@@ -32,8 +32,9 @@ test('agy reemplaza por completo la invocación del Gemini CLI retirado', () => 
         // proceso); `--model` sigue al final.
         assert.deepEqual(spawn.args, [
             '--input-format', 'stream-json', '--output-format', 'stream-json',
+            '--disable-slash-commands', // #7322 — hardening
             '--dangerously-skip-permissions', '--print-timeout', '30s',
-            '--add-dir', ROOT,
+            '--add-dir', ROOT, // #6859 — workspace explícito
             '--model', 'gemini-3.8-flash-low',
         ]);
         assert.deepEqual(JSON.parse(spawn.stdinPayload), { event: 'user', message: { role: 'user', content: 'hola' } });

@@ -61,6 +61,16 @@ function cursorPath(pipelineDir) {
 }
 
 /**
+ * Identidad estable del archivo activo a partir de un `Stats` con `bigint: true`.
+ * `dev` y `ino` se serializan como enteros exactos (BigInt → string decimal).
+ * Exportada para que los tests puedan reproducir la colisión sin depender del
+ * layout del disco.
+ */
+function fileIdentity(stat) {
+    return `${String(stat.dev)}:${String(stat.ino)}`;
+}
+
+/**
  * Registra una mutación de label EFECTIVAMENTE aplicada en GitHub.
  *
  * Se invoca DESPUÉS de que `gh` respondió OK — nunca antes. Una orden
@@ -123,9 +133,17 @@ function drainNewIssues({ pipelineDir } = {}) {
         if (!pipelineDir) return empty;
         const file = logPath(pipelineDir);
 
+        // `bigint: true` es OBLIGATORIO para la identidad del archivo. En NTFS el
+        // file reference (`ino`) es un valor de 64 bits (48 de índice MFT + 16 de
+        // secuencia) que supera 2^53: como `Number` pierde los bits bajos y dos
+        // archivos con índices MFT cercanos reportan el MISMO `ino`. Medido en
+        // este entorno: 9 colisiones cada 2000 archivos. Con ese `ino` impreciso,
+        // una rotación donde el archivo nuevo quedó del mismo tamaño que el viejo
+        // pasaba desapercibida y el cursor quedaba mudo hasta que el activo
+        // superara el offset anterior (#7290, rebote 2: flaky de CA-R3).
         let stat;
-        try { stat = fs.statSync(file); } catch { return empty; }
-        const size = stat.size;
+        try { stat = fs.statSync(file, { bigint: true }); } catch { return empty; }
+        const size = Number(stat.size);
 
         let offset = 0;
         let cursorFileId = null;
@@ -137,8 +155,10 @@ function drainNewIssues({ pipelineDir } = {}) {
 
         // La identidad cambia ante rename+archivo nuevo incluso cuando el archivo
         // nuevo tiene exactamente el mismo tamaño que el anterior. Comparar sólo
-        // `offset > size` dejaba ese caso mudo para siempre.
-        const fileId = `${String(stat.dev)}:${String(stat.ino)}`;
+        // `offset > size` dejaba ese caso mudo para siempre. Un cursor viejo con
+        // el `file_id` impreciso (pre-fix) difiere del exacto una sola vez y
+        // provoca UNA relectura desde 0: idempotente por diseño.
+        const fileId = fileIdentity(stat);
         const identityChanged = cursorFileId !== null && cursorFileId !== fileId;
 
         // El archivo cambió de identidad o encogió respecto del cursor ⇒ rotó
@@ -205,6 +225,7 @@ module.exports = {
     drainNewIssues,
     logPath,
     cursorPath,
+    fileIdentity,
     MAX_LOG_BYTES,
     MAX_DRAIN_LINES,
 };
