@@ -116,3 +116,35 @@ rg '"provider":"gemini-google"' .pipeline/state/provider-cost.jsonl
 ```
 
 El smoke directo y los fixtures contables no sustituyen ese dispatch posterior al merge.
+
+## Rebote 2 (tester): flaky de `label-mutation-log.js` en la corrida completa
+
+El tester rechazó con `1 failures sobre 18618 totales`: `CA-R3 tras una rotación el cursor reinicia en vez de quedar mudo` (`false !== true` en "debe reconocer la rotación"). La suite pasa aislada (21/21); el fallo aparece sólo bajo la presión de archivos de la corrida completa.
+
+Causa raíz, medida en este entorno:
+
+```text
+node -e '...statSync(a) vs statSync(a,{bigint:true})...'
+number ino a/b: 222083756627920900 28991922604412576
+bigint ino a/b: 222083756627920888n 28991922604412577n
+ino > 2^53: true  seq(high16): 789n
+
+archivos: 2000  colisiones ino Number: 9  colisiones ino BigInt: 0
+```
+
+En NTFS el file reference (`ino`) es de 64 bits (48 de índice MFT + 16 de secuencia) y supera 2^53; como `Number` pierde los bits bajos y archivos con índice MFT cercano reportan el mismo `ino`. `drainNewIssues()` armaba la identidad del marker con ese valor: cuando el archivo rotado y el nuevo quedan del mismo tamaño (el caso exacto del test), la rotación sólo se detecta por identidad, y con la colisión quedaba muda. No es sólo un flaky del test: en producción dejaría invisibles las mutaciones posteriores a una rotación hasta que el archivo activo superara el offset anterior.
+
+Fix (`67c77d6da`): `statSync(file, { bigint: true })` y `fileIdentity()` con `dev:ino` exactos. Un cursor previo con el id impreciso difiere una sola vez y provoca una relectura desde 0, idempotente por diseño. Dos tests de regresión determinísticos, que fallan sin el fix y pasan con él:
+
+```text
+git checkout .pipeline/lib/label-mutation-log.js && node --test .pipeline/tests/label-cache-invalidacion-5863.test.js
+✖ CA-R3 la identidad del archivo no colapsa dos inodes NTFS que como Number son iguales (#7290)
+✖ CA-R3 el drenado pide el stat con bigint para no perder precisión en el inode
+ℹ pass 21  ℹ fail 2
+
+git apply /tmp/fix-7290.patch && node --test .pipeline/tests/label-cache-invalidacion-5863.test.js
+ℹ pass 23  ℹ fail 0
+
+node --test ".pipeline/**/*.test.js" "qa/scripts/__tests__/**/*.test.js" "scripts/**/*.test.js"
+ℹ tests 18620  ℹ pass 18610  ℹ fail 0  ℹ skipped 10
+```
