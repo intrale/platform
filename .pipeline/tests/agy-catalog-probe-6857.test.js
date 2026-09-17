@@ -317,6 +317,7 @@ async function snapshotWith(catalogResult, extra = {}) {
         providers: [secrets.MANAGED_KEYS.find((k) => k.provider === 'gemini-google')],
         cliProbe: () => true,
         catalogProbe: async () => catalogResult,
+        planProbe: async () => ({ reason_code: 'plan_tier_unknown', checked_at: new Date(NOW).toISOString() }),
         quotaAssessImpl: () => ({ adapterStatus: 'unknown', status: 'unknown', pct: null, gated: false, reason_code: null }),
         defaultProvider: 'anthropic',
         now: NOW,
@@ -395,7 +396,10 @@ test('launcher: buildSpawn usa --input-format stream-json y manda system+prompt 
         assert.equal(plan.modelTrace && plan.modelTrace.model, 'gemini-3.8-flash-low');
         assert.deepEqual(plan.args, [
             '--input-format', 'stream-json', '--output-format', 'stream-json',
-            '--disable-slash-commands', '--dangerously-skip-permissions', '--print-timeout', '5m', '--model', 'gemini-3.8-flash-low',
+            '--disable-slash-commands', // #7322 — hardening
+            '--dangerously-skip-permissions', '--print-timeout', '5m',
+            '--add-dir', dir, // #6859 — workspace explícito
+            '--model', 'gemini-3.8-flash-low',
         ]);
         assert.equal(plan.args.includes('--print'), false, 'agy 1.2.x: --print sin valor es error');
         assert.equal(plan.args.some((a) => a.includes('hola')), false, 'el prompt NUNCA va por argv (#4529)');

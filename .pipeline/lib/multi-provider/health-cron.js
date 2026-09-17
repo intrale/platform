@@ -41,10 +41,14 @@ const path = require('node:path');
 const secretsRw = require('./secrets-rw');
 const livePing = require('./live-ping');
 const healthAlerts = require('./health-alerts');
+const { probeAgyPlan, sanitizePlanCheck } = require('./agy-plan-probe');
 const auditLog = require('../audit-log');
 const redact = require('../redact');
 // #6226 — nombres únicos + escritura fail-closed para los dropfiles de la cola.
 const dropfileWriter = require('../dropfile-writer');
+// #6564 CA-3 — bus de recibos (#4082): cada alerta sale con `_correlationId`
+// para que `svc-telegram` escriba el recibo `enviado` con el `message_id` real.
+const telegramReceipt = require('../telegram-receipt');
 // #4402 — fuente única de la lógica CLI-OAuth (extraída de acá a un módulo
 // compartido para que `live-ping.js` la reutilice sin ciclo de require).
 const cliOauthProbe = require('./cli-oauth-probe');
@@ -504,7 +508,7 @@ function listManagedAndPingable() {
 // Snapshot build + alerts
 // -----------------------------------------------------------------------------
 
-async function pingAllProviders({ providers, prevSnapshot, secretsPath, fsImpl = fs, httpImpl, pingImpl, cliProbe, catalogProbe, stateDir, quotaAssessImpl, defaultProvider, now, checkCatalog = false, expectModelsByProvider = null } = {}) {
+async function pingAllProviders({ providers, prevSnapshot, secretsPath, fsImpl = fs, httpImpl, pingImpl, cliProbe, catalogProbe, planProbe = probeAgyPlan, stateDir, quotaAssessImpl, defaultProvider, now, checkCatalog = false, expectModelsByProvider = null } = {}) {
     const prevByProvider = {};
     if (prevSnapshot && Array.isArray(prevSnapshot.providers)) {
         for (const p of prevSnapshot.providers) prevByProvider[p.provider] = p;
@@ -640,6 +644,19 @@ async function pingAllProviders({ providers, prevSnapshot, secretsPath, fsImpl =
             catalogCheck = null;
         }
 
+        let planCheck;
+        if (spec.provider === 'gemini-google') {
+            let measured = { reason_code: 'cli_license_unavailable', checked_at: new Date(nowMs).toISOString() };
+            if (pingResult.reason === 'cli_catalog_ok') {
+                try { measured = await planProbe({ fsImpl, stateDir, nowMs }); }
+                catch { measured = { reason_code: 'plan_tier_unknown', checked_at: new Date(nowMs).toISOString() }; }
+            }
+            planCheck = sanitizePlanCheck(measured, nowMs);
+            planCheck.consecutive_count = planCheck.reason_code === 'plan_tier_unknown'
+                ? Math.min(9999, (prev.plan_check && prev.plan_check.reason_code === 'plan_tier_unknown'
+                    && Number.isInteger(prev.plan_check.consecutive_count) ? prev.plan_check.consecutive_count : 0) + 1) : 0;
+        }
+
         results.push({
             provider: spec.provider,
             label: spec.label,
@@ -664,6 +681,7 @@ async function pingAllProviders({ providers, prevSnapshot, secretsPath, fsImpl =
             // son la salud del PROVIDER y no los toca nadie desde acá: un modelo
             // muerto no pone rojo al provider, que sigue sirviendo su catálogo.
             ...(catalogCheck ? { catalog_check: catalogCheck } : {}),
+            ...(planCheck ? { plan_check: planCheck } : {}),
             // #6857 — evidencia del round-trip al CLI (sólo providers con
             // `catalog_probe`). Campo OPCIONAL: ausente para el resto. El
             // dashboard lo usa para "catálogo verificado · N modelos · hace X".
@@ -761,6 +779,18 @@ function emitAlerts({ snapshot, prevSnapshot, telegramSender, dedupFile, fsImpl 
             }
         }
 
+        // #6564: segundo tick sin cuota verificable; dedupe independiente.
+        if (p.provider === 'gemini-google' && p.reason_code !== 'cli_license_unavailable'
+            && p.reason_code !== 'cli_unavailable') {
+            const decision = healthAlerts.decidePlanEvent({ provider: p.provider, providerState: p.state,
+                planCheck: p.plan_check, now, dedupFile, fsImpl });
+            if (decision.shouldEmit) {
+                const okSend = telegramSender ? !!telegramSender(decision.payload) : true;
+                healthAlerts.recordPlanEvent({ provider: p.provider, sent: okSend, now, dedupFile, fsImpl });
+                if (okSend) sent.push({ kind: 'plan_tier_unknown', provider: p.provider, payload: decision.payload });
+            }
+        }
+
         // #5888 Trigger 4: modelo configurado fuera del catálogo del provider.
         //
         // SÓLO `model_not_in_catalog`. `model_check_unavailable` NO emite a
@@ -819,6 +849,14 @@ function emitAlerts({ snapshot, prevSnapshot, telegramSender, dedupFile, fsImpl 
 
 function formatAlertText(payload) {
     if (!payload || typeof payload !== 'object') return '🩺 multi-provider health: alerta';
+    if (payload.event === 'plan_tier_unknown') {
+        const state = payload.provider_state === 'red' ? '🔴 CAÍDO'
+            : payload.provider_state === 'yellow' ? '🟡 DEGRADADO' : '🟢 SANO';
+        return '⚠️ *Plan sin verificar* — `gemini-google` sigue ' + state
+            + ', pero Gemini (Antigravity CLI) no pudo verificar la cuota del plan. '
+            + 'Hasta confirmarlo no se lo cuenta como plan contratado. Revisá la sesión de agy o confirmá el plan a mano.\n'
+            + '(`plan_tier_unknown` x' + payload.consecutive_count + ') · Observado: ' + payload.observed_at;
+    }
     if (payload.event === 'multi_down') {
         const provs = Array.isArray(payload.providers_red) ? payload.providers_red.join(', ') : '?';
         return `🩺 *Multi-Down* — ${payload.red_count} free providers en rojo: \`${provs}\`. Pipeline opera con red de respaldo reducida.\nObservado: ${payload.observed_at}`;
@@ -862,7 +900,7 @@ function formatAlertText(payload) {
     return `🩺 *Multi-Provider Health* — ${stateEmoji} \`${payload.provider}\` → \`${payload.state.toUpperCase()}\` (\`${reason}\`${count}).\nObservado: ${payload.observed_at}`;
 }
 
-function defaultTelegramSender(payload, { pipelineDir, fsImpl = fs } = {}) {
+function defaultTelegramSender(payload, { pipelineDir, fsImpl = fs, correlationId } = {}) {
     try {
         const root = pipelineDir || path.resolve(__dirname, '..', '..');
         const svcDir = path.join(root, 'servicios', 'telegram', 'pendiente');
@@ -871,7 +909,17 @@ function defaultTelegramSender(payload, { pipelineDir, fsImpl = fs } = {}) {
         // por defense in depth (SR-4): si el formateador introduce campos
         // nuevos, se redactan antes de salir.
         const safePayload = redact.redactValue(payload);
-        const msg = { text: formatAlertText(safePayload), parse_mode: 'Markdown' };
+        // #6564 CA-3 — `_correlationId` liga el dropfile con el recibo que escribe
+        // `svc-telegram` SÓLO cuando el API responde `ok:true` + `message_id`
+        // (`servicios/telegram/recibos/<cid>.json`). Sin él la alerta se entregaba
+        // igual pero no dejaba prueba de recepción reconciliable; con él cada
+        // alerta de salud queda auditada con el mismo mecanismo que los salientes
+        // del Commander. Un id externo inválido NO se acepta (R3: deriva un nombre
+        // de archivo) — se reemplaza por uno generado, nunca se omite.
+        const cid = telegramReceipt.isValidCorrelationId(correlationId)
+            ? correlationId
+            : telegramReceipt.generateCorrelationId('mphealth');
+        const msg = { text: formatAlertText(safePayload), parse_mode: 'Markdown', _correlationId: cid };
         // #6226 — nombre único (`<ts>-<seq>-mp-health.json`) + escritura `wx`.
         // Antes el nombre era `${Date.now()}-mp-health.json` a secas y
         // `emitAlerts()` invoca este sender UNA VEZ POR ALERTA dentro del mismo
@@ -931,6 +979,7 @@ async function runOnce(opts = {}) {
         pingImpl: opts.pingImpl,
         cliProbe: opts.cliProbe,
         catalogProbe: opts.catalogProbe,
+        planProbe: opts.planProbe,
         stateDir,
         quotaAssessImpl: opts.quotaAssessImpl,
         defaultProvider: opts.defaultProvider,

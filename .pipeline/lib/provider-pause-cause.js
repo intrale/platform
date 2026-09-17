@@ -155,6 +155,8 @@ const REASON_LABEL_DEFAULT = 'motivo desconocido';
 const REASON_TABLE = Object.freeze({
     authenticated: { text: () => 'disponible', cause: CAUSE_DISPONIBLE },
     cli_oauth_ok: { text: () => 'disponible', cause: CAUSE_DISPONIBLE },
+    plan_quota_ok: { text: () => 'disponible', cause: CAUSE_DISPONIBLE },
+    plan_tier_unknown: { text: () => 'con la cuota del plan sin verificar', cause: CAUSE_TRANSITORIA },
     cli_catalog_ok: { text: () => 'disponible', cause: CAUSE_DISPONIBLE }, // #6857: catálogo verificado por round-trip
 
     quota_exhausted_real: {
@@ -220,6 +222,7 @@ const REASON_TABLE = Object.freeze({
  * Y con la cuota agotada").
  */
 const ACTION_SHORT = Object.freeze({
+    plan_tier_unknown: 'con la cuota del plan sin verificar',
     cli_contract_mismatch: 'con el CLI en una versión no probada',
     cli_license_unavailable: 'sin licencia',
     cli_unavailable: 'sin CLI disponible',
@@ -242,6 +245,7 @@ const ACTION_SHORT = Object.freeze({
  * sin humor: esto es una alerta operativa que se lee a las 3 AM.
  */
 const ACTION_FULL = Object.freeze({
+    plan_tier_unknown: (l) => `${l} no pudo verificar la cuota del plan. Hasta confirmarlo no se lo cuenta como plan contratado.`,
     cli_contract_mismatch: (l) => l + ' tiene el CLI en una versión fuera del rango probado. Instalá una versión del rango o, si la nueva funciona, subí el pin (cli_contract) del proveedor.',
     cli_license_unavailable: (l) => `${l} no tiene licencia habilitada. Reautenticá o revisá el billing.`,
     cli_unavailable: (l) => `${l} no tiene el CLI disponible. Instalalo o revisá el PATH.`,

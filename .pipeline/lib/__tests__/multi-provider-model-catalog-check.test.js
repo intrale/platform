@@ -858,6 +858,8 @@ test('CA-18: las 7 etiquetas coinciden LITERAL con la tabla acordada con ux', ()
         cli_license_unavailable: 'CLI sin licencia activa',
         model_not_in_catalog: 'modelo fuera de catálogo',
         model_check_unavailable: 'vigencia no verificable',
+        plan_quota_ok: 'cuota del plan verificada',
+        plan_tier_unknown: 'cuota del plan sin verificar',
     };
     for (const [code, label] of Object.entries(tabla)) {
         assert.equal(providersView.REASON_LABEL[code], label, `etiqueta de ${code}`);

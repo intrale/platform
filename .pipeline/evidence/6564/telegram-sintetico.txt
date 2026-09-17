@@ -1,0 +1,2 @@
+⚠️ *Plan sin verificar* — `gemini-google` sigue 🟢 SANO, pero Gemini (Antigravity CLI) no pudo verificar la cuota del plan. Hasta confirmarlo no se lo cuenta como plan contratado. Revisá la sesión de agy o confirmá el plan a mano.
+(`plan_tier_unknown` x2) · Observado: 2026-09-17T04:37:36.544Z

@@ -1,0 +1,51 @@
+{
+  "catalog_reason": "cli_catalog_ok",
+  "model_count": 14,
+  "plan": {
+    "reason_code": "plan_quota_ok",
+    "checked_at": "2026-09-17T09:42:47.117Z",
+    "groups": [
+      {
+        "name": "Gemini Models",
+        "buckets": [
+          {
+            "id": "gemini-weekly",
+            "window": "weekly",
+            "remaining_fraction": 0.9909663200378418,
+            "reset_time": "2026-09-23T16:14:00.000Z"
+          },
+          {
+            "id": "gemini-5h",
+            "window": "5h",
+            "remaining_fraction": 1,
+            "reset_time": "2026-09-17T14:42:16.000Z"
+          }
+        ]
+      },
+      {
+        "name": "Claude and GPT models",
+        "buckets": [
+          {
+            "id": "3p-weekly",
+            "window": "weekly",
+            "remaining_fraction": 0.9826536178588867,
+            "reset_time": "2026-09-23T21:51:17.000Z"
+          },
+          {
+            "id": "3p-5h",
+            "window": "5h",
+            "remaining_fraction": 1,
+            "reset_time": "2026-09-17T14:42:51.000Z"
+          }
+        ]
+      }
+    ]
+  },
+  "ticks": [
+    0,
+    1,
+    0
+  ],
+  "telegram_client_verified": false,
+  "restart_executed": false
+}

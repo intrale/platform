@@ -147,3 +147,70 @@ test('el path JSONL de codex NO se rompe por el path de objeto único', () => {
     assert.equal(r.parsed, false);
     assert.equal(r.text, '');
 });
+
+// -----------------------------------------------------------------------------
+// Path A2 — NDJSON de Antigravity (agy 1.2.x, `--output-format stream-json`).
+// Incidente 2026-09-17: el Commander descartaba toda respuesta de Gemini como
+// `malformed_body` porque el stream multi-evento no es ni el JSONL de Codex ni
+// el objeto único del Gemini CLI viejo.
+// -----------------------------------------------------------------------------
+const AGY_INIT = '{"event":"init","conversation_id":"c1","init":{"model":"gemini-3.8-flash-low","cwd":"C:\\x","tools":["run_command"],"permission_mode":"always-proceed"}}';
+const AGY_USER_DONE = '{"event":"step_update","step_update":{"conversation_id":"c1","step_index":0,"state":"DONE","step_type":"user_input"}}';
+
+test('agy stream-json: extrae result.response y descarta init/step_update', () => {
+    const stdout = [
+        AGY_INIT,
+        AGY_USER_DONE,
+        '{"event":"step_update","step_update":{"conversation_id":"c1","step_index":1,"state":"ACTIVE","step_type":"agent_response","text_delta":"PONG"}}',
+        '{"event":"step_update","step_update":{"conversation_id":"c1","step_index":1,"state":"DONE","step_type":"agent_response","text_delta":"\n","usage":{"input_tokens":13111,"output_tokens":2}}}',
+        '{"event":"result","result":{"conversation_id":"c1","status":"SUCCESS","response":"PONG\n","duration_seconds":7.6,"num_turns":1,"usage":{"total_tokens":13113}}}',
+        '',
+    ].join('\n');
+    const r = extractFallbackReply(stdout);
+    assert.equal(r.parsed, true);
+    assert.equal(r.reason, null);
+    assert.equal(r.text, 'PONG');
+});
+
+test('agy stream-json: el result.response manda sobre los deltas (deltas de tool-calls no se cuelan)', () => {
+    const stdout = [
+        AGY_INIT,
+        '{"event":"step_update","step_update":{"step_index":1,"state":"DONE","step_type":"tool_call","tool":"run_command","text_delta":"ls -la"}}',
+        '{"event":"step_update","step_update":{"step_index":2,"state":"ACTIVE","step_type":"agent_response","text_delta":"Borrador "}}',
+        '{"event":"step_update","step_update":{"step_index":2,"state":"DONE","step_type":"agent_response","text_delta":"parcial"}}',
+        '{"event":"result","result":{"status":"SUCCESS","response":"Listo Leo, el pipeline está arriba."}}',
+    ].join('\n');
+    const r = extractFallbackReply(stdout);
+    assert.equal(r.parsed, true);
+    assert.equal(r.text, 'Listo Leo, el pipeline está arriba.');
+});
+
+test('agy stream-json sin result (kill por budget) → entrega los deltas del agent_response acumulados', () => {
+    const stdout = [
+        AGY_INIT,
+        AGY_USER_DONE,
+        '{"event":"step_update","step_update":{"step_index":1,"state":"ACTIVE","step_type":"agent_response","text_delta":"Estoy revisando "}}',
+        '{"event":"step_update","step_update":{"step_index":1,"state":"ACTIVE","step_type":"agent_response","text_delta":"el pipeline."}}',
+    ].join('\n');
+    const r = extractFallbackReply(stdout);
+    assert.equal(r.parsed, true);
+    assert.equal(r.text, 'Estoy revisando el pipeline.');
+});
+
+test('agy stream-json con result de error (sin response) → vacío recuperable, no filtra el error', () => {
+    const stdout = [
+        AGY_INIT,
+        '{"event":"result","result":{"status":"FAILED","error":"quota exceeded for model gemini-3.8-flash-low","num_turns":0}}',
+    ].join('\n');
+    const r = extractFallbackReply(stdout);
+    assert.equal(r.parsed, false);
+    assert.equal(r.text, '');
+    assert.equal(r.reason, 'malformed_body');
+});
+
+test('agy stream-json: sólo eventos técnicos sin texto → vacío recuperable', () => {
+    const r = extractFallbackReply([AGY_INIT, AGY_USER_DONE].join('\n'));
+    assert.equal(r.parsed, false);
+    assert.equal(r.text, '');
+    assert.equal(r.reason, 'malformed_body');
+});

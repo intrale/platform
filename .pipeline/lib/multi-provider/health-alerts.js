@@ -79,6 +79,8 @@ const ALLOWED_REASON_CODES = Object.freeze(new Set([
     // binario está en el PATH") porque acá SÍ se observó al proveedor. Verde;
     // nunca entra a DURABLE_RED_REASONS.
     'cli_catalog_ok',
+    'plan_quota_ok',
+    'plan_tier_unknown',
     // #5888 — eje de VIGENCIA DE MODELO, distinto del eje de salud del provider.
     //
     // Deben estar acá porque `sanitizeReasonCode` colapsa a `'unknown'` todo lo
@@ -438,7 +440,30 @@ function recordModelEvent({ provider, modelId, sent, now = Date.now(), dedupFile
     catch { /* best-effort: si no podemos escribir, próxima decisión re-emite */ }
 }
 
+// #6564: la racha viene del snapshot durable; el dedupe conserva sólo envíos.
+function decidePlanEvent({ provider, providerState, planCheck, now = Date.now(), dedupFile = HOME_DEDUP_FILE, fsImpl = fs } = {}) {
+    if (provider !== 'gemini-google' || !ALLOWED_STATES.has(providerState)
+        || !planCheck || planCheck.reason_code !== 'plan_tier_unknown'
+        || !Number.isInteger(planCheck.consecutive_count) || planCheck.consecutive_count < 2) return { shouldEmit: false };
+    const store = tryReadJson(dedupFile, fsImpl) || {};
+    const prev = store.alerts && store.alerts[`${provider}|plan`];
+    if (prev && Number.isFinite(prev.last_sent_at) && now - prev.last_sent_at < MODEL_ALERT_DEDUP_MS) return { shouldEmit: false };
+    return { shouldEmit: true, payload: { event: 'plan_tier_unknown', provider,
+        provider_state: providerState, reason_code: 'plan_tier_unknown',
+        consecutive_count: planCheck.consecutive_count, observed_at: new Date(now).toISOString() } };
+}
+
+function recordPlanEvent({ provider, sent, now = Date.now(), dedupFile = HOME_DEDUP_FILE, fsImpl = fs } = {}) {
+    if (provider !== 'gemini-google' || !sent) return;
+    const store = tryReadJson(dedupFile, fsImpl) || { alerts: {} };
+    if (!store.alerts || typeof store.alerts !== 'object') store.alerts = {};
+    store.alerts[`${provider}|plan`] = { last_sent_at: now };
+    try { writeJsonAtomic(dedupFile, store, fsImpl); } catch { /* defensivo como los demás ejes */ }
+}
+
 module.exports = {
+    decidePlanEvent,
+    recordPlanEvent,
     HOME_DEDUP_FILE,
     DEDUP_WINDOW_MS,
     BACKOFF_LEVELS_MS,

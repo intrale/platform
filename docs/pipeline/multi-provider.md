@@ -1229,6 +1229,7 @@ Garantías:
 - **Dedupe 10 min**: misma combinación `provider+state` no se reenvía dentro de la ventana.
 - **Back-off exponencial**: si el estado rojo persiste, alertas cada 30 / 60 / 120 / 240 min (cap 4h) — sin flood.
 - **Persistencia del dedupe**: `~/.claude/secrets/telegram-alerts-dedup.json` (0600). Sobrevive restarts del pulpo.
+- **Prueba de entrega (#6564 CA-3)**: cada alerta sale con un `_correlationId` (`mphealth-<ms>-<hex>`), así que `svc-telegram` escribe el recibo `enviado` con el `message_id` real en `servicios/telegram/recibos/<cid>.json` **sólo** cuando la API responde `ok:true` (bus de recibos #4082, fail-closed). Ésa es la evidencia de recepción aceptada por el operador: no hace falta cliente Telegram ni captura del celular. Para reproducir el disparo del 2.º tick de `plan_tier_unknown` por el canal real y esperar el recibo: `node .pipeline/tools/evidence-telegram-6564.js --real` (sin `--real` es dry-run y no toca la cola de producción).
 
 Para silenciar todas las alertas durante una maintenance window: borrar el archivo `.../telegram-alerts-dedup.json` y crearlo con `{ "alerts": { "__SUPPRESSED_UNTIL__": <unix-ms> } }` no es soportado todavía — la solución actual es cortar el bot de Telegram. Ver issue de mejora si esto se vuelve recurrente.
 
@@ -1354,6 +1355,19 @@ topology check) se conserva en el historial de git de este archivo. Para volver 
 habilitarlo, seguir §17.
 
 ### 8.10 Antigravity (`gemini-google`) — catálogo de modelos y verificación automática (#6858)
+
+**Cuota y tier (#6564).** El tier contratado no es observable automáticamente
+con `agy` 1.2.4: `/usage` expone cuota, pero no el nombre del plan, y no existe
+un comando no interactivo de cuenta/plan. El operador lo confirma abriendo
+`agy` interactivo y leyendo el header email + plan tier, sin copiar identidad
+a evidencias ni logs. El health-cron muestra sesión + cuota efectiva mediante
+`plan_check`, independiente de la salud; nunca infiere el tier por la cuota.
+
+Para comprobar cuota manualmente desde Git Bash se usa
+`MSYS_NO_PATHCONV=1 agy -p "/usage" --output-format json`. Sin esa variable,
+Git Bash convierte `/usage` en una ruta y puede disparar un turno real de
+aproximadamente 13.000 tokens. El probe usa Node con `shell:false` y argumento
+literal. Véase [procedimiento, caché y verificación de sesión](gemini-plan-verification.md).
 
 > **Migración 2026-09-16 (#6858, split de #6856).** Los 9 skills con Gemini en su
 > cadena (`android-dev`, `web-dev`, `qa`, `po`, `ux`, `architect`, `perf`,
@@ -2685,6 +2699,52 @@ dejó de existir en 1.2.x y un prompt en argv reventaría con ENAMETOOLONG
 (#4529). El log del agente es NDJSON y el objeto útil es el `result` del
 evento `{"event":"result"}`. La adaptación del parser de tokens/errores al
 shape real (`usage.*`, `error` string) es #7288.
+
+**Workspace: `--add-dir <cwd>` obligatorio (#6859)**. Antigravity **no trabaja
+sobre el `cwd` del proceso**: tiene su propio concepto de workspace y, si no se
+le declara uno, escribe en un scratch propio en
+`~/.gemini/antigravity-cli/scratch/` **reportando `SUCCESS`** y afirmando haber
+creado el archivo pedido. Medido en vivo tres veces con el mismo argv que arma
+el pipeline (3/9 con agy 1.1.20, 16/9 con 1.2.4, 17/9 con 1.2.5): sin
+`--add-dir` el directorio pedido queda vacío y el archivo aparece en el scratch;
+con `--add-dir <dir>` aparece en `<dir>`. El modo de falla es el peor posible —
+silencioso y con reporte de éxito: un agente despachado sin el flag "implementa"
+contra un scratch fantasma y el issue rebota sin diff y sin causa visible.
+
+Por eso `buildSpawn` del handler (`lib/agent-launcher/providers/gemini-google.js`):
+
+- Traduce el `cwd` recibido a `--add-dir <cwd>` en el argv, además de mantenerlo
+  en `spawnOpts.cwd` (paridad con los demás handlers). Es el mismo `cwd` que
+  manda el Pulpo: el worktree en `dev`, el ROOT del repo en las demás fases —
+  mismo modelo de riesgo que Claude hoy bajo `--dangerously-skip-permissions`.
+- Acepta `extraDirs: string[]` para directorios adicionales; el flag es
+  repetible y se emite uno por directorio, en orden, después del `cwd`.
+- **Falla fuerte sin `cwd`** (ausente, vacío, no-string o ruta relativa):
+  `Error` con `code = 'AGY_WORKSPACE_REQUIRED'` y mensaje en español que incluye
+  `PIPELINE_ISSUE` / `PIPELINE_SKILL` si vienen en el `env` y el path del
+  scratch como pista. Los tres callers (`pulpo.js`, `sherlock-verifier.js`,
+  `commander/multi-provider.js`) siempre pasan un string absoluto y capturan el
+  throw, así que ningún camino vivo cambia; el que no sepa dónde trabajar falla
+  visible en vez de caer al scratch.
+- `--model` sigue siendo lo último del argv; los `--add-dir` van antes.
+
+**Por qué `--add-dir` y no `--project` / `--new-project`**: ambos flags existen
+en 1.2.x pero son identidad de sesión/proyecto en el estado local del CLI
+(`~/.gemini/antigravity-cli/`), no scope de filesystem. Un `--new-project` por
+worktree acumularía un proyecto persistente por issue sin aislamiento medible;
+`--add-dir` solo alcanza para CA-1/CA-3 del issue. Decisión: **no se usan**.
+`--sandbox` (restricciones de terminal) queda fuera de este alcance (SEC-7 de
+#6856).
+
+**Diagnóstico**: ante un rebote "implementé" sin diff de un agente que haya
+caído a este provider, mirar el scratch antes que el log —
+`node -e "console.log(require('./.pipeline/lib/agent-launcher/providers/gemini-google').agyScratchDir())"`
+— y el argv del spawn (tiene que contener `--add-dir`). Verificación:
+
+```bash
+node --test .pipeline/tests/gemini-add-dir-6859.test.js        # offline: fake de agy que honra --add-dir, asserta sobre disco
+node .pipeline/tests/smoke/gemini-add-dir.smoke.js               # real: repo git temporal + archivo + git status + scratch sin cambios
+```
 
 ### 14.4 Failover reproducible
 
