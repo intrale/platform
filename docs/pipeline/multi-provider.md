@@ -3300,9 +3300,11 @@ git show "$SHA_BAJA" -- \
 #    <= 120 días (ADMISSION_EXCEPTION_MAX_DAYS).
 X=$X SHA_BAJA=$SHA_BAJA node - <<'EOF'
 const fs = require('fs');
-const { execSync } = require('child_process');
+const { execFileSync } = require('child_process');
 const X = process.env.X, SHA = process.env.SHA_BAJA;
-const prev = JSON.parse(execSync(`git show ${SHA}^:.pipeline/agent-models.json`, { encoding: 'utf8' }));
+// execFileSync, no execSync: en Windows execSync pasa por cmd.exe, donde `^` es
+// carácter de escape y `git show SHA^:ruta` llega como `SHA:ruta` (estado POST-baja).
+const prev = JSON.parse(execFileSync('git', ['show', `${SHA}^:.pipeline/agent-models.json`], { encoding: 'utf8' }));
 const cur = JSON.parse(fs.readFileSync('.pipeline/agent-models.json', 'utf8'));
 cur.providers[X] = prev.providers[X];
 cur.providers[X].admission = {

@@ -59,3 +59,73 @@ test('CA-4 · el plan de rollback no elige SHA_BAJA con git log --grep | tail -1
     // kimi-moonshot nunca tuvo quota-adapter: el checkout es condicional.
     assert.match(section, /git cat-file -e "\$SHA_BAJA\^:\$f"/);
 });
+
+// CA-4 (rebote QA #2) — el paso 4 del plan (heredoc `node - <<'EOF'`) se ejecuta
+// textualmente contra un repo sintético con dos commits: A tiene al proveedor
+// X en `providers` y en un fallback; B (= SHA_BAJA) lo borra. En Windows
+// `execSync` corre por cmd.exe, donde `^` es escape: `git show SHA^:ruta`
+// llegaba como `SHA:ruta` (estado post-baja) y el script moría con
+// TypeError sobre `prev.providers[X]`. El test reproduce ese escenario real.
+test('CA-4 · el paso 4 del plan de rollback corre tal cual contra un merge sintético (Windows incluido)', () => {
+    const fs = require('node:fs');
+    const os = require('node:os');
+    const path = require('node:path');
+    const { execFileSync, spawnSync } = require('node:child_process');
+    const doc = fs.readFileSync(path.join(__dirname, '..', '..', 'docs', 'pipeline', 'multi-provider.md'), 'utf8');
+    const section = doc.slice(doc.indexOf('### 17.2 Comandos'), doc.indexOf('### 17.3'));
+    const m = section.match(/^X=\$X SHA_BAJA=\$SHA_BAJA node - <<'EOF'\r?\n([\s\S]*?)^EOF\r?$/m);
+    assert.ok(m, 'el paso 4 es un heredoc `node -` con X y SHA_BAJA en el entorno');
+    const script = m[1];
+
+    const X = 'nvidia-nim';
+    const before = {
+        providers: {
+            anthropic: { billing: 'paid', admission: { status: 'admitted' } },
+            [X]: { billing: 'free', admission: { status: 'admitted' } },
+        },
+        skills: {
+            'pipeline-dev': { fallbacks: [{ provider: 'anthropic' }, { provider: X }] },
+            qa: { fallbacks: [{ provider: 'anthropic' }] },
+        },
+    };
+    const after = JSON.parse(JSON.stringify(before));
+    delete after.providers[X];
+    after.skills['pipeline-dev'].fallbacks.pop();
+
+    const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'rollback-6563-'));
+    try {
+        const git = (...args) => execFileSync('git', args, { cwd: repo, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+        const jsonPath = path.join(repo, '.pipeline', 'agent-models.json');
+        fs.mkdirSync(path.dirname(jsonPath), { recursive: true });
+        git('init', '-q');
+        git('config', 'user.email', 'test@intrale.local');
+        git('config', 'user.name', 'test');
+        fs.writeFileSync(jsonPath, JSON.stringify(before, null, 2));
+        git('add', '-A');
+        git('commit', '-q', '-m', 'A: con el proveedor');
+        fs.writeFileSync(jsonPath, JSON.stringify(after, null, 2));
+        git('add', '-A');
+        git('commit', '-q', '-m', 'B: baja del proveedor');
+        const shaBaja = git('rev-parse', 'HEAD');
+
+        const run = spawnSync(process.execPath, ['-'], {
+            cwd: repo, input: script, encoding: 'utf8',
+            env: { ...process.env, X, SHA_BAJA: shaBaja },
+        });
+        assert.equal(run.status, 0, `el paso 4 falló:\n${run.stderr}`);
+
+        const result = JSON.parse(fs.readFileSync(jsonPath, 'utf8'));
+        assert.ok(result.providers[X], 'el bloque providers.<x> se repuso desde SHA_BAJA^');
+        assert.equal(result.providers[X].billing, 'free');
+        assert.equal(result.providers[X].admission.status, 'admitted');
+        assert.ok(result.providers[X].admission.exception, 'lleva excepción de admisión');
+        assert.deepEqual(result.providers[X].admission.exception.issue, 0, 'placeholder de issue nuevo');
+        assert.deepEqual(result.skills['pipeline-dev'].fallbacks.map(f => f.provider), ['anthropic', X],
+            'vuelve al final de la cadena donde estaba');
+        assert.deepEqual(result.skills.qa.fallbacks.map(f => f.provider), ['anthropic'],
+            'no se agrega a cadenas donde no estaba');
+        assert.deepEqual(result.providers.anthropic, before.providers.anthropic);
+    } finally {
+        fs.rmSync(repo, { recursive: true, force: true });
+    }
+});
