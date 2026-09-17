@@ -1,0 +1,3 @@
+# Artefactos temporales de agentes: logs, dumps y scripts de verificación.
+# No son entregables; evita incorporarlos con git add -A durante delivery.
+/tmp-[0-9]*
