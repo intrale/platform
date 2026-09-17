@@ -2606,7 +2606,13 @@ no lleva material de auth):
 > no de la mera presencia de una key. Por eso `anthropic` figura `key_status:
 > absent` pero `state: green` (`reason_code: cli_oauth_ok`).
 
-#### 14.3.1 Gemini / Antigravity CLI: round-trip real y tres estados (#6857)
+#### 14.3.1 Gemini / Antigravity CLI: round-trip real y cuatro estados (#6857, #7290)
+
+El probe ejecuta `agy --version` antes del catálogo y acepta el rango `1.2.0`–`1.2.5`
+(probado con el CLI instalado el 17/9/2026). `spec.cli_contract` permite ajustar el pin;
+un cambio de pin invalida la cache v2. Errores, timeout o versión fuera del rango
+producen rojo durable con TTL negativo; el probe nunca actualiza el binario.
+
 
 Para `gemini-google` la presencia del binario no alcanza: un `agy` instalado puede
 estar deslogueado o sin licencia. Hasta #6857 eso se resolvía leyendo un flag de
@@ -2618,6 +2624,7 @@ real a `agy models` (`.pipeline/lib/multi-provider/agy-catalog-probe.js`):
 | Estado real | `state` | `reason_code` | Badge en `/providers` | Gatea el dispatch |
 |---|---|---|---|---|
 | Binario ausente (`AGY_BIN` inválido, no instalado) | `red` | `cli_unavailable` | **SIN INSTALAR** | sí (durable) |
+| Instalado, versión fuera del pin (< min, > max_tested o ilegible) | `red` | `cli_contract_mismatch` | **VERSIÓN NO PROBADA** | sí (durable) |
 | Instalado, sin sesión/licencia (rc≠0, timeout, catálogo vacío) | `red` | `cli_license_unavailable` | **SIN LICENCIA** | sí (durable) |
 | Instalado y con licencia (catálogo poblado) | `green` | `cli_catalog_ok` | **SANO** · "catálogo verificado · N modelos · hace X" | no |
 
@@ -2864,7 +2871,7 @@ porcentajes nunca se calculan sobre un denominador que el reporte no declara.
 |---|---|---|
 | `cupo` | `quota_exhausted`, `quota_exhausted_real` | Recuperable por diseño |
 | `credencial` | `invalid_credentials`, `no_key_configured`, `forbidden` | Imputable al proveedor / a la cuenta |
-| `observabilidad local` | `cli_license_unavailable`, `cli_unavailable`, `cli_binary_undeclared`, `unknown_provider` | **Bug nuestro.** Jamás imputable al proveedor |
+| `observabilidad local` | `cli_contract_mismatch`, `cli_license_unavailable`, `cli_unavailable`, `cli_binary_undeclared`, `unknown_provider` | **Bug nuestro.** Jamás imputable al proveedor |
 
 El bloqueo por `observabilidad local` tiene **doble protección**:
 

@@ -826,6 +826,7 @@ const DURABLE_RED_REASONS = Object.freeze(new Set([
     'unknown_provider',        // misconfig
     'cli_unavailable',         // binario CLI ausente del PATH
     'cli_binary_undeclared',   // provider CLI sin binario declarado
+    'cli_contract_mismatch',
     'cli_license_unavailable', // #4869 — CLI instalado pero sin licencia/billing
                                // (agy). Fail-closed durable: sin licencia el
                                // provider no puede autenticarse y `agy` bloquea
