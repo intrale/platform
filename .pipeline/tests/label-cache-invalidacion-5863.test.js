@@ -257,6 +257,45 @@ test('CA-R3 tras una rotación el cursor reinicia en vez de quedar mudo', () => 
   }
 });
 
+test('CA-R3 la identidad del archivo no colapsa dos inodes NTFS que como Number son iguales (#7290)', () => {
+  // File references de NTFS medidos en este entorno: 64 bits (48 índice MFT +
+  // 16 secuencia), muy por encima de 2^53. Como `Number` ambos redondean al
+  // mismo valor, y con eso la rotación de un archivo del mismo tamaño quedaba
+  // muda (flaky observado por el tester en la corrida completa de #7290).
+  const viejo = { dev: 3133049658n, ino: 222083756627920888n };
+  const nuevo = { dev: 3133049658n, ino: 222083756627920889n };
+  assert.equal(Number(viejo.ino), Number(nuevo.ino),
+    'precondición: como Number los dos inodes son indistinguibles');
+  assert.notEqual(labelMutationLog.fileIdentity(viejo), labelMutationLog.fileIdentity(nuevo),
+    'con BigInt la identidad es exacta y distingue los dos archivos');
+});
+
+test('CA-R3 el drenado pide el stat con bigint para no perder precisión en el inode', () => {
+  const dir = tmpDir('mut-bigint-');
+  const original = fs.statSync;
+  const llamadas = [];
+  try {
+    labelMutationLog.recordApplied({ pipelineDir: dir, issue: 600, label: 'x', action: 'label' });
+    fs.statSync = function (p, opts) {
+      if (String(p) === labelMutationLog.logPath(dir)) llamadas.push(opts);
+      return original.call(fs, p, opts);
+    };
+    const r = labelMutationLog.drainNewIssues({ pipelineDir: dir });
+    assert.deepEqual(r.issues, [600]);
+    assert.ok(llamadas.length >= 1, 'el drenado hace stat del marker');
+    assert.ok(llamadas.every((o) => o && o.bigint === true),
+      'todo stat del marker debe ser bigint: la identidad se arma con dev:ino exactos');
+
+    const cur = JSON.parse(fs.readFileSync(labelMutationLog.cursorPath(dir), 'utf8'));
+    const exacto = original.call(fs, labelMutationLog.logPath(dir), { bigint: true });
+    assert.equal(cur.file_id, labelMutationLog.fileIdentity(exacto),
+      'el cursor persiste la identidad exacta, no la redondeada');
+  } finally {
+    fs.statSync = original;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('CA-R3 las mutaciones sobre PRs no se propagan a la caché de issues', () => {
   const dir = tmpDir('mut-pr-');
   try {
