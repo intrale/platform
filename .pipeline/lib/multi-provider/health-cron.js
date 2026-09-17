@@ -46,6 +46,9 @@ const auditLog = require('../audit-log');
 const redact = require('../redact');
 // #6226 — nombres únicos + escritura fail-closed para los dropfiles de la cola.
 const dropfileWriter = require('../dropfile-writer');
+// #6564 CA-3 — bus de recibos (#4082): cada alerta sale con `_correlationId`
+// para que `svc-telegram` escriba el recibo `enviado` con el `message_id` real.
+const telegramReceipt = require('../telegram-receipt');
 // #4402 — fuente única de la lógica CLI-OAuth (extraída de acá a un módulo
 // compartido para que `live-ping.js` la reutilice sin ciclo de require).
 const cliOauthProbe = require('./cli-oauth-probe');
@@ -897,7 +900,7 @@ function formatAlertText(payload) {
     return `🩺 *Multi-Provider Health* — ${stateEmoji} \`${payload.provider}\` → \`${payload.state.toUpperCase()}\` (\`${reason}\`${count}).\nObservado: ${payload.observed_at}`;
 }
 
-function defaultTelegramSender(payload, { pipelineDir, fsImpl = fs } = {}) {
+function defaultTelegramSender(payload, { pipelineDir, fsImpl = fs, correlationId } = {}) {
     try {
         const root = pipelineDir || path.resolve(__dirname, '..', '..');
         const svcDir = path.join(root, 'servicios', 'telegram', 'pendiente');
@@ -906,7 +909,17 @@ function defaultTelegramSender(payload, { pipelineDir, fsImpl = fs } = {}) {
         // por defense in depth (SR-4): si el formateador introduce campos
         // nuevos, se redactan antes de salir.
         const safePayload = redact.redactValue(payload);
-        const msg = { text: formatAlertText(safePayload), parse_mode: 'Markdown' };
+        // #6564 CA-3 — `_correlationId` liga el dropfile con el recibo que escribe
+        // `svc-telegram` SÓLO cuando el API responde `ok:true` + `message_id`
+        // (`servicios/telegram/recibos/<cid>.json`). Sin él la alerta se entregaba
+        // igual pero no dejaba prueba de recepción reconciliable; con él cada
+        // alerta de salud queda auditada con el mismo mecanismo que los salientes
+        // del Commander. Un id externo inválido NO se acepta (R3: deriva un nombre
+        // de archivo) — se reemplaza por uno generado, nunca se omite.
+        const cid = telegramReceipt.isValidCorrelationId(correlationId)
+            ? correlationId
+            : telegramReceipt.generateCorrelationId('mphealth');
+        const msg = { text: formatAlertText(safePayload), parse_mode: 'Markdown', _correlationId: cid };
         // #6226 — nombre único (`<ts>-<seq>-mp-health.json`) + escritura `wx`.
         // Antes el nombre era `${Date.now()}-mp-health.json` a secas y
         // `emitAlerts()` invoca este sender UNA VEZ POR ALERTA dentro del mismo

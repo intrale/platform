@@ -126,3 +126,42 @@ Telegram; no se recibió coordinación durante las verificaciones.
 El resultado conserva rechazo grave e informa `rebote_categoria: human_block`,
 contrato ya reconocido por `.pipeline/lib/rebote-classifier.js`, para describir
 el impedimento operativo. El lifecycle permanece a cargo del Pulpo.
+
+## Cierre de CA-1 y CA-3 tras el desbloqueo humano (17/09, 11:44 UTC)
+
+El operador (Leo, 17/09, opción A) aceptó como evidencia de recepción de CA-3
+la confirmación de entrega de la API de Telegram (`ok:true` + `message_id`),
+el mismo bus de recibos (#4082) con el que se reconcilian los salientes del
+Commander. Indicó además no volver a pausar por CA-1 ni CA-3.
+
+### CA-1 · demostrado por el Commander
+
+Reinicio real del runtime posterior al bloqueo:
+`.pipeline/runtime-boot.json` → `startedAt = 2026-09-17T09:57:25.014Z`,
+`sha = 009fcf5e1`. Verificación posterior sin relogin (comentario del
+Commander del 17/09 11:25 UTC): `agy models` rc=0, catálogo de 14 modelos.
+Reverificado en esta pasada: `runtime-boot.json` conserva ese `startedAt`.
+
+### CA-3 · entrega real confirmada por la API de Telegram
+
+Cambio: `defaultTelegramSender` (`health-cron.js`) estampa `_correlationId`
+en el dropfile de cada alerta de salud; `svc-telegram` ya escribía el recibo
+`enviado` con `message_id` para cualquier dropfile con ese campo válido.
+Herramienta: `node .pipeline/tools/evidence-telegram-6564.js --real`
+(reproduce el 2.º tick de `plan_tier_unknown` con `emitAlerts()` real y
+espera el recibo en `servicios/telegram/recibos/`).
+
+Salida real de la corrida:
+
+```
+[6564] alerta encolada cid=ev6564-1789645434639-ccba2f1c dropfile=1789645434641-0000-mp-health.json modo=REAL
+[6564] entrega confirmada: message_id=140069 at=2026-09-17T11:44:00.210Z
+```
+
+Cruce con el log del servicio (`.pipeline/logs/svc-telegram.log`):
+`[2026-09-17 11:44:00] [svc-telegram] Enviado: 1789645434641-0000-mp-health.json`.
+Recibo escrito por `svc-telegram` (`servicios/telegram/recibos/ev6564-1789645434639-ccba2f1c.json`):
+`{"correlationId":"ev6564-1789645434639-ccba2f1c","status":"enviado","messageIds":[140069],"at":"2026-09-17T11:44:00.210Z"}`.
+Evidencia persistida: `.pipeline/evidence/6564/telegram-entrega.json`
+(`grep -E "@|token|conversation_id|quotaProject"` sobre el archivo: sin matches, CA-5).
+Ticks: 1.º → 0 envíos, 2.º → 1 envío (mismo texto que `telegram-sintetico.txt`).

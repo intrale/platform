@@ -1202,6 +1202,7 @@ Garantías:
 - **Dedupe 10 min**: misma combinación `provider+state` no se reenvía dentro de la ventana.
 - **Back-off exponencial**: si el estado rojo persiste, alertas cada 30 / 60 / 120 / 240 min (cap 4h) — sin flood.
 - **Persistencia del dedupe**: `~/.claude/secrets/telegram-alerts-dedup.json` (0600). Sobrevive restarts del pulpo.
+- **Prueba de entrega (#6564 CA-3)**: cada alerta sale con un `_correlationId` (`mphealth-<ms>-<hex>`), así que `svc-telegram` escribe el recibo `enviado` con el `message_id` real en `servicios/telegram/recibos/<cid>.json` **sólo** cuando la API responde `ok:true` (bus de recibos #4082, fail-closed). Ésa es la evidencia de recepción aceptada por el operador: no hace falta cliente Telegram ni captura del celular. Para reproducir el disparo del 2.º tick de `plan_tier_unknown` por el canal real y esperar el recibo: `node .pipeline/tools/evidence-telegram-6564.js --real` (sin `--real` es dry-run y no toca la cola de producción).
 
 Para silenciar todas las alertas durante una maintenance window: borrar el archivo `.../telegram-alerts-dedup.json` y crearlo con `{ "alerts": { "__SUPPRESSED_UNTIL__": <unix-ms> } }` no es soportado todavía — la solución actual es cortar el bot de Telegram. Ver issue de mejora si esto se vuelve recurrente.
 

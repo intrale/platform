@@ -1,0 +1,22 @@
+{
+  "issue": 6564,
+  "criterio": "CA-3",
+  "modo": "real",
+  "canal": "servicios/telegram/pendiente -> svc-telegram -> API sendMessage -> servicios/telegram/recibos",
+  "correlationId": "ev6564-1789645434639-ccba2f1c",
+  "dropfile": "1789645434641-0000-mp-health.json",
+  "enqueued_at": "2026-09-17T11:43:54.642Z",
+  "ticks": {
+    "tick1_envios": 0,
+    "tick2_envios": 1
+  },
+  "texto_alerta": "⚠️ *Plan sin verificar* — `gemini-google` sigue 🟢 SANO, pero Gemini (Antigravity CLI) no pudo verificar la cuota del plan. Hasta confirmarlo no se lo cuenta como plan contratado. Revisá la sesión de agy o confirmá el plan a mano.\n(`plan_tier_unknown` x2) · Observado: 2026-09-17T11:48:54.639Z",
+  "recibo": {
+    "status": "enviado",
+    "messageIds": [
+      140069
+    ],
+    "at": "2026-09-17T11:44:00.210Z",
+    "archivo": "servicios/telegram/recibos/ev6564-1789645434639-ccba2f1c.json"
+  }
+}
