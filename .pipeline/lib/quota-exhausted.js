@@ -264,9 +264,7 @@ const KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER = Object.freeze({
     // #3220 — rename ex-`gemini` → `gemini-google` (sign-off 2026-05-15).
     // Coordinación cross-archivo: ALLOWED_LAUNCHERS, ALLOWED_PROVIDERS y
     // adapter filename. Single source of truth para naming en pipeline V3.
-    // SEC-3 (#3220): handler estructurado `_detectGemini` pendiente — la
-    // detección actual queda declarativa, sólo soportada por string-matching
-    // heurístico (issue de recomendación #3226).
+    // #7290: _detectGemini valida status ERROR + error string del evento result.
     'gemini-google': Object.freeze([
         'quota_exceeded',
         'resource_exhausted',
@@ -1979,6 +1977,20 @@ function _detectOpenAI(evt, allowlist, opts = {}) {
  * @param {object} [opts] reservado
  * @returns {{ matched: boolean, errorType?: string, provider?: string }}
  */
+// #7290: sólo errores estructurales del resultado, nunca contenido generado.
+function _detectGemini(evt, allowlist) {
+    if (!evt || evt.event !== 'result' || !evt.result || typeof evt.result !== 'object') return { matched: false };
+    const r = evt.result;
+    if (r.status !== 'ERROR' || typeof r.error !== 'string' || !r.error) return { matched: false };
+    for (const { re, type } of [
+        { re: /\bRESOURCE_EXHAUSTED\b|\b429\b/, type: 'resource_exhausted' },
+        { re: /\bquota\b/i, type: 'quota_exceeded' },
+    ]) {
+        if (allowlist.includes(type) && re.test(r.error)) return { matched: true, errorType: type, resetsAt: null };
+    }
+    return { matched: false };
+}
+
 function detectQuotaError(parsedEvent, providerDef, opts = {}) {
     if (!providerDef || typeof providerDef !== 'object') {
         return { matched: false };
@@ -1994,8 +2006,10 @@ function detectQuotaError(parsedEvent, providerDef, opts = {}) {
         result = _detectAnthropic(parsedEvent, allowlist);
     } else if (parser === 'openai-sse') {
         result = _detectOpenAI(parsedEvent, allowlist);
+    } else if (parser === 'gemini-stream') {
+        result = _detectGemini(parsedEvent, allowlist);
     } else {
-        // Provider sin handler conocido (deterministic, gemini, ollama):
+        // Provider sin handler conocido (deterministic, ollama):
         // no aplica detección de cuota basada en eventos.
         return { matched: false };
     }
@@ -2207,6 +2221,7 @@ module.exports = {
     _writeJsonAtomic: writeJsonAtomic,
     _detectAnthropic,
     _detectOpenAI,
+    _detectGemini,
     _CLI_1M_CONTEXT_GLITCH_PATTERN,
     _CODEX_USAGE_LIMIT_PATTERN,
     // #7161 — reset anunciado por el propio mensaje de control de codex.

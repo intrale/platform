@@ -4,7 +4,7 @@
 //
 // Objetivo: invocar el provider real (no mockeado) y verificar que el
 // pipeline buildSpawn → child_process.spawn → parseTokensFromLog cierra el
-// contrato canónico contra `agy --print` con OAuth.
+// contrato canónico contra `agy --input-format stream-json` con OAuth.
 //
 // NO toca el pulpo. NO requiere pipeline corriendo. Es un smoke aislado.
 // =============================================================================
@@ -63,7 +63,7 @@ async function main() {
     }, TIMEOUT_MS);
 
     const exitCode = await new Promise((resolve) => {
-        child.on('exit', (code) => { clearTimeout(timer); resolve(code); });
+        child.on('close', (code) => { clearTimeout(timer); resolve(code); });
         child.on('error', (err) => { clearTimeout(timer); console.error('[smoke] spawn error:', err); resolve(-1); });
     });
 
@@ -81,7 +81,7 @@ async function main() {
     console.log(`[smoke] stderr_bytes   = ${stderrBytes}`);
     console.log(`[smoke] json_parsed    = ${obj ? 'yes' : 'no'}`);
     console.log(`[smoke] response       = ${obj ? JSON.stringify(obj.response) : 'null'}`);
-    console.log(`[smoke] models         = ${obj && obj.stats && obj.stats.models ? JSON.stringify(Object.keys(obj.stats.models)) : 'none'}`);
+    console.log(`[smoke] usage          = ${JSON.stringify(obj && obj.usage)}`);
 
     const tokens = provider.parseTokensFromLog(logPath);
     console.log(`[smoke] parseTokens    = ${JSON.stringify(tokens)}`);
@@ -92,11 +92,12 @@ async function main() {
 
     const ok =
         exitCode === 0 &&
-        obj != null &&
+        obj != null && obj.status === 'SUCCESS' &&
         typeof obj.response === 'string' && obj.response.length > 0 &&
         tokens.input > 0 &&
         qe.matched === false;
 
+    if (!ok) console.log(`[smoke] fail_reason = ${exitCode !== 0 ? 'exit ' + exitCode : !obj ? 'sin result' : obj.status !== 'SUCCESS' ? 'status ' + obj.status + ': ' + obj.error : tokens.input <= 0 ? 'tokens.input == 0' : 'respuesta vacía o cuota detectada'}`);
     console.log(`[smoke] log_path       = ${logPath}`);
     console.log(`[smoke] RESULT         = ${ok ? 'PASS' : 'FAIL'}`);
     process.exit(ok ? 0 : 1);

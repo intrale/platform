@@ -688,6 +688,7 @@ function sanitizeCliProbe(cp) {
         models,
         checked_at: typeof cp.checked_at === 'string' ? cp.checked_at : null,
         cached: cp.cached === true,
+        cli_version: /^\d+\.\d+\.\d+$/.test(cp.cli_version || '') ? cp.cli_version : null,
         launcher_kind: typeof cp.launcher_kind === 'string' ? cp.launcher_kind.slice(0, 32) : null,
     };
 }
