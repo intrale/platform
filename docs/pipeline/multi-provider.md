@@ -1443,7 +1443,7 @@ AWS_* / *_API_KEY en la máquina del operador. `dispatchComplete` restituye el
 
 | Medida | codex | claude |
 |--------|-------|--------|
-| `sandbox: 'read-only'` | `--sandbox read-only` (nunca `--dangerously-bypass-approvals-and-sandbox`) | `--tools "" --strict-mcp-config --disable-slash-commands --permission-mode dontAsk` (`ANTHROPIC_READ_ONLY_ARGS`) |
+| `sandbox: 'read-only'` | `--sandbox read-only` (nunca `--dangerously-bypass-approvals-and-sandbox`) | `--strict-mcp-config --disable-slash-commands --permission-mode dontAsk --tools ""` (`ANTHROPIC_READ_ONLY_ARGS`; sólo con launcher `shell:false`, ver abajo) |
 | `envPolicy: 'minimal'` | `buildMinimalCliEnv`: `SYSTEM_ALLOWLIST` + `CLI_OAUTH_ALLOWLIST` (`CODEX_HOME`, `CLAUDE_CONFIG_DIR`) + `CODEX_MODEL`/`CLAUDE_PROJECT_DIR`. Sin `PIPELINE_*`, sin credenciales. | ídem |
 | cwd | temporal vacío (`%TEMP%/semantic-dedup-judge-*`), borrado en `finally` | ídem |
 
@@ -1464,6 +1464,21 @@ reporta como `spawn_unavailable`, nunca degrada al default con agencia.
 > `slash_commands: []` y un prompt que exige crear un archivo, correr bash y
 > mandar un mail no produce ningún `tool_use`. `--bare` no sirve: exige
 > `ANTHROPIC_API_KEY` (nunca lee OAuth).
+
+**Read-only exige `shell:false` (rebote 2 de #6563, CWE-88).** `--tools ""`
+depende de un argumento *vacío*. Si el launcher de `claude` cae a un tier con
+`shell:true` (`cmd-shim` / `path-fallback` de `providers/anthropic.js`), Node
+concatena el argv con espacio sin citar (DEP0190) y el `""` desaparece: el child
+recibe `--tools --strict-mcp-config` y `--tools` se traga el flag siguiente como
+valor. En vivo eso dejó al juez con los MCP del operador conectados aunque los
+flags "estuvieran". Dos defensas, ambas fijadas en el mismo test:
+
+1. **Fail-closed**: `spawnAnthropicComplete` con `sandbox: 'read-only'` rechaza
+   spawnear si `spawnOpts.shell` o el launcher detectado usan shell
+   (`assertNoShellForReadOnly`) → `spawn_unavailable` → el juez cae en
+   `ninguna`. El fiscal Sherlock (bypass legacy) no se ve afectado.
+2. **Orden**: `--tools ""` es el **último** par de `ANTHROPIC_READ_ONLY_ARGS`,
+   así que ni concatenado tiene un flag de seguridad que tragarse.
 
 **Cómo medir un modelo nuevo antes de configurarlo** (CA-4 de #6858; desde #7298
 el transporte es `--input-format/--output-format stream-json` con el prompt por

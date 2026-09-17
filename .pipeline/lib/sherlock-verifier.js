@@ -768,12 +768,44 @@ const SPAWN_ENV_POLICIES = Object.freeze(['inherit', 'minimal']);
 //   --disable-slash-commands sin skills/slash commands del operador.
 //   --permission-mode dontAsk lo que igual pidiera permiso se deniega sin
 //                            prompt (no hay humano del otro lado).
+//
+// ORDEN (rebote 2 de #6563, CWE-88): `--tools ''` va ÚLTIMO a propósito. El
+// valor vacío es frágil: si el argv se concatenara con un shell (`shell:true`,
+// Node une con espacio sin citar — DEP0190) el `''` desaparece y `--tools` se
+// traga como valor el flag que le siga. Al final del array no tiene a quién
+// tragarse. Esto es defensa en profundidad: la barrera real es
+// `assertNoShellForReadOnly` (abajo), que rechaza spawnear con shell.
 const ANTHROPIC_READ_ONLY_ARGS = Object.freeze([
-    '--tools', '',
     '--strict-mcp-config',
     '--disable-slash-commands',
     '--permission-mode', 'dontAsk',
+    '--tools', '',
 ]);
+
+// Fail-closed (rebote 2 de #6563): bajo `sandbox: 'read-only'` el spawn NO
+// puede ir por un launcher con `shell:true` (tiers cmd-shim / path-fallback de
+// providers/anthropic.js). Con shell, Node concatena el argv sin escapar y el
+// `''` de `--tools ''` se pierde; en vivo eso dejó al child con los MCP del
+// operador (Gmail/Drive/Calendar) conectados aunque los flags "estuvieran".
+// Antes que degradar en silencio, lanzamos: el caller lo reporta como
+// `spawn_unavailable` y el juez de semantic-dedup cae en `ninguna`.
+function assertNoShellForReadOnly({ sandbox, spawnSpec, handler }) {
+    if (sandbox !== 'read-only') return;
+    const optsShell = spawnSpec && spawnSpec.spawnOpts ? spawnSpec.spawnOpts.shell : undefined;
+    let launcher = null;
+    try { launcher = handler && typeof handler.getLauncher === 'function' ? handler.getLauncher() : null; } catch {}
+    const launcherShell = launcher ? launcher.shell : undefined;
+    // `shell` puede ser `true` o el path de un shell (string no vacío): ambos
+    // concatenan. Se mira lo que va a `spawn` Y lo que declara el launcher.
+    if (optsShell || launcherShell) {
+        const kind = launcher && launcher.kind ? launcher.kind : 'desconocido';
+        throw new Error(
+            `[sherlock-verifier] sandbox read-only requiere shell:false y el launcher '${kind}' ` +
+            `usa shell (el argv se concatenaría sin escapar y '--tools ''' perdería el valor vacío); ` +
+            'se rechaza el spawn para no correr el juez con agencia',
+        );
+    }
+}
 
 function normalizeSpawnPolicies({ sandbox, envPolicy }) {
     const sb = (sandbox === undefined || sandbox === null) ? 'bypass' : String(sandbox);
@@ -846,6 +878,9 @@ function spawnAnthropicComplete({
                 cwd: _cwd,
                 env: _env,
             });
+            // Rebote 2 de #6563 — con read-only, shell:true degrada el control
+            // en silencio (CWE-88). Fail-closed: no se spawnea.
+            assertNoShellForReadOnly({ sandbox: policies.sandbox, spawnSpec, handler });
         } catch (e) {
             return resolve({
                 ok: false,
@@ -2372,5 +2407,6 @@ module.exports = {
     SPAWN_SANDBOX_POLICIES,
     SPAWN_ENV_POLICIES,
     ANTHROPIC_READ_ONLY_ARGS,
+    _assertNoShellForReadOnly: assertNoShellForReadOnly,
     _normalizeSpawnPolicies: normalizeSpawnPolicies,
 };

@@ -22,6 +22,12 @@
 //   (5) cada título de candidato pasa por `detectInjection` (y no puede
 //       fabricar líneas dentro de <datos>).
 //   (6) las políticas son cerradas: un valor desconocido lanza, no degrada.
+//   (7) rebote 2 (CWE-88): con read-only, un launcher `shell:true` NO spawnea
+//       (fail-closed → spawn_unavailable → `ninguna`), porque con shell Node
+//       concatena el argv sin escapar y `--tools ''` pierde el valor vacío,
+//       tragándose el flag siguiente (en vivo: MCP del operador conectados).
+//       Además `--tools ''` va ÚLTIMO en ANTHROPIC_READ_ONLY_ARGS, así que ni
+//       concatenado puede comerse un flag de seguridad.
 // =============================================================================
 'use strict';
 
@@ -217,6 +223,103 @@ test('#6563 sec: el juez por anthropic corre sin herramientas/MCP/skills y sin b
     assertEnvSinCredenciales(opts.env, 'anthropic');
     assert.ok(!fs.existsSync(opts.cwd), 'cwd temporal debe borrarse');
     assert.notEqual(path.resolve(opts.cwd), path.resolve(process.cwd()));
+});
+
+// -----------------------------------------------------------------------------
+// (7) — rebote 2: shell:true bajo read-only es fail-closed (CWE-88 / LLM08)
+// -----------------------------------------------------------------------------
+const NATIVE_LAUNCHER = Object.freeze({ kind: 'native-exe', cmd: '/fake/claude.exe', prefixArgs: [], shell: false });
+const SHELL_LAUNCHERS = Object.freeze([
+    { kind: 'cmd-shim', cmd: 'C:\\fake\\npm\\claude.cmd', prefixArgs: [], shell: true },
+    { kind: 'path-fallback', cmd: 'claude', prefixArgs: [], shell: true },
+]);
+
+/** Simula lo que hace Node con `shell:true` (DEP0190): join(' ') sin citar. */
+function argvDegradadoPorShell(args) {
+    return args.join(' ').split(' ').filter((a) => a.length > 0);
+}
+
+test('#6563 sec (rebote 2): con read-only y launcher shell:true el juez anthropic NO se spawnea (spawn_unavailable)', async () => {
+    for (const launcher of SHELL_LAUNCHERS) {
+        anthropic._setLauncherForTesting(launcher);
+        try {
+            const cap = makeCapturingSpawn({ provider: 'anthropic' });
+            const res = await withHostileEnv(() => sherlock._spawnAnthropicComplete({
+                prompt: 'p', timeoutMs: 0, spawnImpl: cap.spawnImpl, cwd: os.tmpdir(),
+                ...sd.JUDGE_SPAWN_POLICIES,
+            }));
+            assert.equal(res.ok, false, `${launcher.kind}: el spawn bajo shell:true debió fallar`);
+            assert.equal(res.error.type, 'spawn_unavailable', `${launcher.kind}: tipo de error`);
+            assert.match(res.error.detail, /shell/, `${launcher.kind}: el detalle debe explicar el shell`);
+            assert.equal(cap.calls.length, 0, `${launcher.kind}: se spawneó el child pese al shell:true`);
+        } finally {
+            anthropic._setLauncherForTesting(NATIVE_LAUNCHER);
+        }
+    }
+});
+
+test('#6563 sec (rebote 2): por dispatchComplete, shell:true cae en ok:false y no se spawnea nada', async () => {
+    anthropic._setLauncherForTesting(SHELL_LAUNCHERS[0]);
+    try {
+        const cap = makeCapturingSpawn({ provider: 'anthropic' });
+        const res = await withHostileEnv(() => sd.dispatchComplete({
+            provider: 'anthropic', prompt: 'p', spawnImpl: cap.spawnImpl,
+        }));
+        assert.equal(res.ok, false);
+        assert.equal(res.error.type, 'spawn_unavailable');
+        assert.equal(cap.calls.length, 0, 'no debe spawnear');
+    } finally {
+        anthropic._setLauncherForTesting(NATIVE_LAUNCHER);
+    }
+});
+
+test('#6563 sec (rebote 2): el fiscal (bypass legacy) sigue pudiendo usar shell:true — el fail-closed es sólo de read-only', async () => {
+    anthropic._setLauncherForTesting(SHELL_LAUNCHERS[0]);
+    try {
+        const cap = makeCapturingSpawn({ provider: 'anthropic' });
+        const res = await withHostileEnv(() => sherlock._spawnAnthropicComplete({
+            prompt: 'p', timeoutMs: 0, spawnImpl: cap.spawnImpl, cwd: os.tmpdir(),
+        }));
+        assert.equal(res.ok, true);
+        assert.equal(cap.calls.length, 1);
+        assert.equal(cap.calls[0].opts.shell, true);
+        assert.ok(cap.calls[0].args.includes('bypassPermissions'));
+    } finally {
+        anthropic._setLauncherForTesting(NATIVE_LAUNCHER);
+    }
+});
+
+test('#6563 sec (rebote 2): assertNoShellForReadOnly mira spawnOpts.shell Y el launcher, y trata shell string como shell', () => {
+    const okSpec = { spawnOpts: { shell: false } };
+    const noShell = { getLauncher: () => ({ kind: 'native-exe', shell: false }) };
+    assert.doesNotThrow(() => sherlock._assertNoShellForReadOnly({ sandbox: 'read-only', spawnSpec: okSpec, handler: noShell }));
+    // bypass: el control no aplica (paridad del fiscal con los agentes).
+    assert.doesNotThrow(() => sherlock._assertNoShellForReadOnly({ sandbox: 'bypass', spawnSpec: { spawnOpts: { shell: true } }, handler: noShell }));
+    // shell en spawnOpts aunque el launcher diga false.
+    assert.throws(() => sherlock._assertNoShellForReadOnly({ sandbox: 'read-only', spawnSpec: { spawnOpts: { shell: true } }, handler: noShell }), /shell/);
+    // shell como path (string no vacío) también concatena.
+    assert.throws(() => sherlock._assertNoShellForReadOnly({ sandbox: 'read-only', spawnSpec: { spawnOpts: { shell: '/bin/sh' } }, handler: noShell }), /shell/);
+    // shell en el launcher aunque spawnOpts no lo traiga.
+    assert.throws(() => sherlock._assertNoShellForReadOnly({ sandbox: 'read-only', spawnSpec: okSpec, handler: { getLauncher: () => ({ kind: 'cmd-shim', shell: true }) } }), /cmd-shim/);
+});
+
+test('#6563 sec (rebote 2): --tools "" es el ÚLTIMO par de ANTHROPIC_READ_ONLY_ARGS y ni concatenado por shell se traga un flag', async () => {
+    const ro = sherlock.ANTHROPIC_READ_ONLY_ARGS;
+    assert.equal(ro[ro.length - 2], '--tools', '--tools debe ser el penúltimo elemento');
+    assert.equal(ro[ro.length - 1], '', 'el valor vacío debe ser el último elemento');
+    // Argv real del juez (native-exe) → simulamos la concatenación de shell:true.
+    const cap = makeCapturingSpawn({ provider: 'anthropic' });
+    await withHostileEnv(() => sd.dispatchComplete({ provider: 'anthropic', prompt: 'p', spawnImpl: cap.spawnImpl }));
+    const args = cap.calls[0].args;
+    const degradado = argvDegradadoPorShell(args);
+    // Los flags de seguridad sobreviven como flags independientes...
+    for (const flag of ['--strict-mcp-config', '--disable-slash-commands', '--permission-mode']) {
+        assert.ok(degradado.includes(flag), `tras join(' ') falta ${flag}: ${degradado.join(' ')}`);
+        assert.notEqual(degradado[degradado.indexOf('--tools') + 1], flag, `--tools se tragó ${flag} tras join(' ')`);
+    }
+    assert.equal(degradado[degradado.indexOf('--permission-mode') + 1], 'dontAsk');
+    // ...y --tools queda al final sin nada que tragarse.
+    assert.equal(degradado[degradado.length - 1], '--tools', `--tools no es el último tras join(' '): ${degradado.join(' ')}`);
 });
 
 // -----------------------------------------------------------------------------
