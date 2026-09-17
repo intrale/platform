@@ -246,6 +246,55 @@ function stripReservedChildSecrets(candidateEnv = {}, operatorEnv = process.env)
 }
 
 // -----------------------------------------------------------------------------
+// buildMinimalCliEnv — env MÍNIMO para un child de clase "juez sin agencia"
+// (#6563, hallazgo security del rebote 1: LLM01 → LLM08).
+//
+// Caso de uso: `semantic-dedup.js` invoca al CLI OAuth del plantel (codex /
+// claude) para clasificar duplicados. El prompt de ese juez lleva títulos de
+// issues ABIERTOS del repo (público): contenido NO confiable. Si el child
+// hereda `process.env` del pulpo (aunque pase por `stripReservedChildSecrets`,
+// que sólo retira el material de firma de Telegram), una inyección en un título
+// puede derivar en bash con GH_TOKEN / AWS_* / *_API_KEY en la máquina del
+// operador. Este helper construye el env por ALLOWLIST, jamás por sustracción:
+//
+//   - SYSTEM_ALLOWLIST (PATH, HOME, USERPROFILE, APPDATA, TEMP, ...): lo que
+//     cualquier binario necesita para arrancar y para encontrar su config.
+//   - CLI_OAUTH_ALLOWLIST: las vars con las que los CLIs OAuth redirigen su
+//     directorio de credenciales (`~/.codex` / `~/.claude`). Sin ellas, el CLI
+//     usa HOME/USERPROFILE (ya en SYSTEM_ALLOWLIST). NO son credenciales: son
+//     paths.
+//   - `extras`: claves de transporte que el caller inyecta a propósito
+//     (CODEX_MODEL, CLAUDE_PROJECT_DIR). Una extra con nombre reservado o con
+//     el valor de un secreto reservado se descarta igual (`strip` al final).
+//
+// NO propaga PIPELINE_* (el juez no es un agente del pipeline), NO propaga
+// ninguna `*_API_KEY` ni `GH_TOKEN` ni `AWS_*`: los CLIs autentican por OAuth
+// fuera del env. Si algún día un provider HTTP-only necesitara una key acá, la
+// decisión pasa por `buildChildEnv` (scopes por skill), no por este helper.
+// -----------------------------------------------------------------------------
+const CLI_OAUTH_ALLOWLIST = Object.freeze([
+    'CODEX_HOME',        // codex: directorio de auth.json/config.toml (default ~/.codex)
+    'CLAUDE_CONFIG_DIR', // claude: directorio de config/credenciales (default ~/.claude)
+]);
+
+function buildMinimalCliEnv({ processEnv = process.env, extras = {} } = {}) {
+    const src = (processEnv && typeof processEnv === 'object') ? processEnv : {};
+    const out = {};
+    for (const k of [...SYSTEM_ALLOWLIST, ...CLI_OAUTH_ALLOWLIST]) {
+        if (Object.prototype.hasOwnProperty.call(src, k) && src[k] !== undefined) {
+            out[k] = src[k];
+        }
+    }
+    for (const [k, v] of Object.entries(extras || {})) {
+        if (v === undefined || v === null) continue;
+        out[k] = String(v);
+    }
+    // Última operación, DESPUÉS del merge: una extra no puede reintroducir
+    // material reservado bajo otro nombre.
+    return stripReservedChildSecrets(out, src);
+}
+
+// -----------------------------------------------------------------------------
 // PROVIDER_MODEL_ENV — nombre de la variable de entorno por la que cada provider
 // NO-Anthropic espera recibir el modelo a usar (#6272).
 //
@@ -673,6 +722,9 @@ module.exports = {
     RESERVED_CHILD_SECRET_NAMES,
     DEFAULT_REQUIRES_BY_SKILL,
     stripReservedChildSecrets,
+    // #6563 — env por allowlist para childs de clase "juez sin agencia".
+    CLI_OAUTH_ALLOWLIST,
+    buildMinimalCliEnv,
     // Internos exportados para tests.
     _resolveSkillConfig: resolveSkillConfig,
     _readAgentModelsDefensive: readAgentModelsDefensive,

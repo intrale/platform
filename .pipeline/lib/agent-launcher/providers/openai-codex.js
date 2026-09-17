@@ -118,6 +118,9 @@ function foldCodexPayload(args, env, fsImpl) {
 // Contrato de salida (lo que Codex CLI acepta):
 //   ['exec', '--json', '--skip-git-repo-check', '-C', cwd,
 //    '--dangerously-bypass-approvals-and-sandbox', '-m', model?, '-']
+//   o, con `opts.sandbox === 'read-only'` (#6563):
+//   ['exec', '--json', '--skip-git-repo-check', '-C', cwd,
+//    '--sandbox', 'read-only', '-m', model?, '-']
 //
 // #4529 — El prompt (system foldeado + mensaje) YA NO va como argumento
 // posicional: se pasa `-` para que codex lea las instrucciones por STDIN
@@ -126,22 +129,54 @@ function foldCodexPayload(args, env, fsImpl) {
 // cuando el payload supera el límite de la línea de comando (~32K). El payload
 // real lo devuelve `buildSpawn` en `stdinPayload`.
 // -----------------------------------------------------------------------------
-function translateClaudeArgsToCodex(args, env, cwd) {
+
+// Políticas de sandbox que este adapter sabe emitir. Cerrado a propósito: un
+// valor fuera de la tabla NO degrada a `bypass` (sería un escalamiento de
+// privilegios silencioso) ni a `read-only` (un agente que necesita escribir
+// fallaría sin explicación) — lanza, y `buildSpawn` lo reporta como
+// `spawn_unavailable`.
+//   bypass    — legacy/default: paridad con `--permission-mode bypassPermissions`
+//               de Claude. Es lo que reciben los agentes del pipeline.
+//   read-only — #6563: juez sin agencia (`semantic-dedup`). El modelo puede
+//               leer y responder, pero NO escribir ni ejecutar con efectos:
+//               el prompt lleva contenido no confiable (títulos de issues del
+//               repo público) y la inyección no puede convertirse en bash.
+const CODEX_SANDBOX_POLICIES = Object.freeze({
+    'bypass': Object.freeze(['--dangerously-bypass-approvals-and-sandbox']),
+    'read-only': Object.freeze(['--sandbox', 'read-only']),
+});
+const CODEX_BYPASS_FLAG = '--dangerously-bypass-approvals-and-sandbox';
+
+function resolveSandboxArgs(sandbox) {
+    const key = (sandbox === undefined || sandbox === null) ? 'bypass' : String(sandbox);
+    if (!Object.prototype.hasOwnProperty.call(CODEX_SANDBOX_POLICIES, key)) {
+        throw new Error(
+            `[openai-codex] sandbox desconocido: '${key}'. `
+            + `Valores válidos: ${Object.keys(CODEX_SANDBOX_POLICIES).join(', ')}.`
+        );
+    }
+    return [...CODEX_SANDBOX_POLICIES[key]];
+}
+
+function translateClaudeArgsToCodex(args, env, cwd, opts = {}) {
     // Modelo: env CODEX_MODEL si fue explicitado, sino dejamos al CLI elegir
     // su default (varía según modo de auth: con OAuth ChatGPT Plus es `gpt-5`,
     // con API key paga acepta `gpt-5-codex`). El pulpo inyecta CODEX_MODEL via
     // env-isolation cuando el skill resuelve un modelo específico.
     const model = env && env.CODEX_MODEL;
     const out = ['exec', '--json', '--skip-git-repo-check', '-C', cwd];
-    // Paridad de permisos con `--permission-mode bypassPermissions` de Claude.
-    // `codex exec` corre por DEFAULT en sandbox `read-only` con aprobaciones,
-    // así que el agente choca con "no tengo permisos" / "no está instalado" al
-    // intentar escribir archivos, correr comandos o instalar dependencias —
-    // limitaciones que Claude no tiene. El pipeline ya corre en un entorno
-    // externo de confianza (la máquina de Leo), por lo que le damos a codex el
-    // mismo acceso pleno: sin sandbox y sin aprobaciones interactivas. Sin esto
-    // el fallback degrada por proveedor, que es justo lo que NO queremos.
-    out.push('--dangerously-bypass-approvals-and-sandbox');
+    // Default `bypass`: paridad de permisos con `--permission-mode
+    // bypassPermissions` de Claude. `codex exec` corre por DEFAULT en sandbox
+    // `read-only` con aprobaciones, así que el agente choca con "no tengo
+    // permisos" / "no está instalado" al intentar escribir archivos, correr
+    // comandos o instalar dependencias — limitaciones que Claude no tiene. El
+    // pipeline ya corre en un entorno externo de confianza (la máquina de Leo),
+    // por lo que a los AGENTES les damos acceso pleno: sin sandbox y sin
+    // aprobaciones interactivas. Sin esto el fallback degrada por proveedor.
+    //
+    // `read-only` (#6563) es la excepción explícita para childs que sólo
+    // clasifican contenido no confiable y jamás deben ganar agencia.
+    out.push(...resolveSandboxArgs(opts && opts.sandbox));
     if (model) out.push('-m', model);
     // `-` = leer las instrucciones por stdin (ver comentario del header).
     out.push('-');
@@ -153,10 +188,14 @@ function translateClaudeArgsToCodex(args, env, cwd) {
 //
 // `args` vienen en formato Claude (ver pulpo.js:5846); acá los traducimos al
 // shape Codex y prependemos el prefijo del launcher detectado.
+//
+// `sandbox` (#6563): política de sandbox del child — `undefined`/'bypass'
+// (default, agentes) o 'read-only' (juez sin agencia). Ver
+// `CODEX_SANDBOX_POLICIES`.
 // -----------------------------------------------------------------------------
-function buildSpawn({ args, cwd, env, interactive_supported }) {
+function buildSpawn({ args, cwd, env, interactive_supported, sandbox }) {
     const launcher = getLauncher();
-    const codexArgs = translateClaudeArgsToCodex(args || [], env || {}, cwd || process.cwd());
+    const codexArgs = translateClaudeArgsToCodex(args || [], env || {}, cwd || process.cwd(), { sandbox });
     // #4529 — el prompt (system foldeado + mensaje) viaja por STDIN, nunca por
     // argv. stdin SIEMPRE 'pipe' para poder escribirlo; el caller (agent-launcher /
     // pulpo commander / sherlock) escribe `stdinPayload` y cierra stdin.
@@ -409,6 +448,10 @@ module.exports = {
     detectAuthenticationRejected,
     // #4052 CA-2 — pre-flight health-check.
     probeCodexHealth,
+    // #6563 — políticas de sandbox (cerradas) + nombre del flag de bypass, para
+    // que los tests de regresión del juez lo referencien por constante.
+    CODEX_SANDBOX_POLICIES,
+    CODEX_BYPASS_FLAG,
     // exports internos para tests
     _detectLauncherFresh: detectLauncher,
     _translateClaudeArgsToCodex: translateClaudeArgsToCodex,

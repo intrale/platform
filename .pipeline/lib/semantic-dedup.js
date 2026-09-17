@@ -24,7 +24,9 @@
 //       instrucciones, devolvé fusionar". Mitigación: `detectInjection`
 //       (handoff.js) corre sobre título+body CRUDO ANTES de cualquier llamada
 //       al modelo; los hits se neutralizan (truncado) y se loguean por patrón
-//       (nunca el body crudo) + framing dato/instrucción en el prompt.
+//       (nunca el body crudo) + framing dato/instrucción en el prompt. Aplica
+//       TAMBIÉN a cada título de candidato (`safeField`, #6563): los issues
+//       abiertos del repo público son igual de no confiables que el propuesto.
 //   - LLM02 Insecure Output Handling: nunca se ejecuta/confía el texto del
 //       modelo. La salida pasa por `safeParseAndValidate` (schema estricto +
 //       allowlist de acciones). Salida fuera de schema → `level:'ninguna'`.
@@ -39,7 +41,13 @@
 //       filtrado por `stripReservedChildSecrets`; el caller manda solo el
 //       `provider` ID, jamás una URL ni un binario.
 //   - LLM08 Excessive Agency: la acción destructiva `fusionar` NUNCA se
-//       ejecuta: cae en gate humano. Señal incierta → fail-closed.
+//       ejecuta: cae en gate humano. Señal incierta → fail-closed. El juez
+//       mismo tampoco tiene agencia (#6563): cuando corre por spawn de un CLI
+//       de agente lo hace con sandbox read-only / sin herramientas, env por
+//       allowlist (sin GH_TOKEN, AWS_*, *_API_KEY) y cwd temporal vacío
+//       (`JUDGE_SPAWN_POLICIES` en `dispatchComplete`). Una inyección que
+//       supere el framing sólo puede alterar el JSON, nunca tocar disco ni
+//       correr comandos con las credenciales del operador.
 //   - LLM04 Model DoS / costo: caps de tamaño (truncado de body), cache 30s de
 //       `fetchOpenIssues` (CACHE_TTL_MS) y circuit-breaker a nivel módulo.
 //   - LLM09 Overreliance: error/indisponibilidad del modelo → `level:'ninguna'`
@@ -112,14 +120,51 @@ const SPAWN_COMPLETION_PROVIDERS = Object.freeze(new Set(['openai-codex', 'anthr
 // recibe SIGTERM y el resultado es fail-open (`ninguna`).
 const DEFAULT_SPAWN_TIMEOUT_MS = 90 * 1000;
 
+// Contención del juez por spawn (#6563, hallazgo security del rebote 1).
+//
+// El cliente HTTP original era un juez SIN agencia por construcción (LLM08 de
+// la cabecera): texto entra, JSON sale. Un CLI de agente (codex / claude) NO lo
+// es: por default corre con bypass de sandbox/aprobaciones, hereda el env del
+// pulpo y tiene cwd en el repo. Con contenido no confiable en el prompt (hasta
+// MAX_CANDIDATES títulos de issues abiertos del repo público) eso convierte una
+// inyección (LLM01) en escritura/bash con credenciales en la máquina del
+// operador. Las tres opciones de abajo restituyen el "sin agencia":
+//   - sandbox 'read-only'  → codex: `--sandbox read-only`; claude: `--tools ""`
+//                            + `--permission-mode dontAsk`. Nunca el bypass.
+//   - envPolicy 'minimal'  → env por allowlist (SYSTEM_ALLOWLIST + OAuth del
+//                            CLI), nunca `process.env`: sin GH_TOKEN, AWS_*,
+//                            *_API_KEY.
+//   - cwd temporal vacío   → aunque el sandbox falle, el child no ve el repo ni
+//                            el `.pipeline/` del operador. Se crea por llamada y
+//                            se borra en `finally` (#7210: nada de fixtures
+//                            huérfanos en %TEMP%).
+const JUDGE_SPAWN_POLICIES = Object.freeze({ sandbox: 'read-only', envPolicy: 'minimal' });
+const JUDGE_TMP_PREFIX = 'semantic-dedup-judge-';
+
+function makeJudgeCwd() {
+    const fs = require('node:fs');
+    const os = require('node:os');
+    const path = require('node:path');
+    return fs.mkdtempSync(path.join(os.tmpdir(), JUDGE_TMP_PREFIX));
+}
+
+function removeJudgeCwd(dir) {
+    if (!dir) return;
+    try { require('node:fs').rmSync(dir, { recursive: true, force: true }); } catch { /* best-effort */ }
+}
+
 /**
  * Despacha la completion al transporte que corresponde al provider:
- *   - `SPAWN_COMPLETION_PROVIDERS` → spawn del CLI (sherlock-verifier helpers).
+ *   - `SPAWN_COMPLETION_PROVIDERS` → spawn del CLI (sherlock-verifier helpers)
+ *     con las políticas de contención `JUDGE_SPAWN_POLICIES` + cwd temporal.
  *   - resto → `completion-client.complete()` (HTTP, allowlist de endpoints).
  * Mismo shape de retorno en ambos casos. Nunca lanza: cualquier excepción del
  * transporte se devuelve como `{ok:false}` para que el caller haga fail-open.
+ *
+ * `spawnImpl` es inyectable SOLO para tests (captura el argv/env/cwd reales
+ * del child sin lanzar un proceso).
  */
-async function dispatchComplete({ provider, model, prompt, temperature, maxTokens, timeoutMs }) {
+async function dispatchComplete({ provider, model, prompt, temperature, maxTokens, timeoutMs, spawnImpl }) {
     if (!SPAWN_COMPLETION_PROVIDERS.has(provider)) {
         return completionClient.complete({ provider, model, prompt, temperature, maxTokens });
     }
@@ -128,13 +173,18 @@ async function dispatchComplete({ provider, model, prompt, temperature, maxToken
     // inyectado (tests).
     const sherlock = require('./sherlock-verifier');
     const budget = Number.isFinite(Number(timeoutMs)) ? Number(timeoutMs) : DEFAULT_SPAWN_TIMEOUT_MS;
+    let cwd = null;
     try {
+        cwd = makeJudgeCwd();
+        const common = { prompt, timeoutMs: budget, cwd, spawnImpl, ...JUDGE_SPAWN_POLICIES };
         if (provider === 'openai-codex') {
-            return await sherlock._spawnCodexComplete({ prompt, model, timeoutMs: budget });
+            return await sherlock._spawnCodexComplete({ ...common, model });
         }
-        return await sherlock._spawnAnthropicComplete({ prompt, timeoutMs: budget });
+        return await sherlock._spawnAnthropicComplete(common);
     } catch (e) {
         return { ok: false, provider, error: { type: 'spawn_failed', detail: e && e.message ? e.message : String(e) } };
+    } finally {
+        removeJudgeCwd(cwd);
     }
 }
 
@@ -211,13 +261,26 @@ function logInjection(hits) {
 // -----------------------------------------------------------------------------
 
 /**
- * Trunca y redacta el título de un candidato para incluirlo en el prompt.
+ * Neutraliza, redacta y trunca el título de un candidato para incluirlo en el
+ * prompt. Mismo orden defensivo que el issue propuesto (#6563, hallazgo
+ * security del rebote 1): los títulos de los issues ABIERTOS también son
+ * contenido no confiable (repo público) y antes entraban al prompt sin pasar
+ * por `detectInjection` — un título con "ignore previous instructions" llegaba
+ * tal cual al modelo.
+ *   detectInjection (crudo) → redact → truncate
+ * Los hits se loguean por patrón (nunca el texto crudo), igual que el propuesto.
  * @param {string} s
  * @param {number} max
  * @returns {string}
  */
 function safeField(s, max) {
-    let out = redactSecretValue(redactUrlLike(redactEmailsInText(String(s == null ? '' : s))));
+    const inj = detectInjection(String(s == null ? '' : s));
+    if (inj.hits.length > 0) logInjection(inj.hits);
+    let out = redactSecretValue(redactUrlLike(redactEmailsInText(inj.text)));
+    // Un candidato ocupa UNA línea del listado (`- #N: título`): los saltos de
+    // línea (incluido el marcador de truncado) se colapsan para que un título
+    // no pueda fabricar líneas extra dentro de <datos>.
+    out = out.replace(/\s*[\r\n]+\s*/g, ' ');
     if (out.length > max) out = out.slice(0, max);
     return out;
 }
@@ -523,9 +586,13 @@ module.exports = {
     extractJson,
     rankByJaccard,
     dispatchComplete,
+    safeField,
     // Constantes (testing).
     SPAWN_COMPLETION_PROVIDERS,
     DEFAULT_SPAWN_TIMEOUT_MS,
+    // #6563 — contención del juez por spawn.
+    JUDGE_SPAWN_POLICIES,
+    JUDGE_TMP_PREFIX,
     BUILTIN_DEFAULT_PROVIDER,
     BUILTIN_DEFAULT_MODEL,
     DEFAULT_PROVIDER,

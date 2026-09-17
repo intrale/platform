@@ -732,11 +732,72 @@ function resolveSherlockProvider({
 //   - El prompt va por stdin (no como arg) → no aparece en `ps aux` ni en
 //     command-line logs del SO.
 //   - El env del child se hereda del parent + `CLAUDE_PROJECT_DIR=ROOT` (mismo
-//     patrón que `ejecutarClaude` en pulpo.js).
+//     patrón que `ejecutarClaude` en pulpo.js) — salvo con `envPolicy:
+//     'minimal'` (#6563), donde se arma por allowlist (ver abajo).
 //   - El stdout se trunca a 64KB (mismo cap que completion-client) para
 //     defensa anti-DoS de payload.
+//
+// Opciones de contención (#6563, opt-in — Sherlock NO las usa; las usa el juez
+// de `semantic-dedup.js`, cuyo prompt lleva contenido no confiable):
+//   - `sandbox: 'read-only'` — el child NO gana agencia: en anthropic se
+//     traduce a `ANTHROPIC_READ_ONLY_ARGS` (sin herramientas, sin MCP, sin
+//     skills, permisos denegados sin prompt); en codex a `--sandbox read-only`
+//     (ver providers/openai-codex.js).
+//   - `envPolicy: 'minimal'` — el env del child se construye por ALLOWLIST con
+//     `buildChildEnvLib.buildMinimalCliEnv` (SYSTEM_ALLOWLIST + OAuth del CLI +
+//     extras de transporte), nunca desde `process.env`. Un `env` explícito del
+//     caller se ignora bajo esta política (fail-closed: la política manda).
 // -----------------------------------------------------------------------------
 const SPAWN_MAX_STDOUT_BYTES = 64 * 1024;
+
+// Políticas de sandbox/env aceptadas por los spawn helpers. Cerradas: un valor
+// desconocido lanza (se reporta como `spawn_unavailable`), nunca degrada al
+// default con agencia.
+const SPAWN_SANDBOX_POLICIES = Object.freeze(['bypass', 'read-only']);
+const SPAWN_ENV_POLICIES = Object.freeze(['inherit', 'minimal']);
+
+// Args con los que `claude -p` queda SIN agencia (#6563). Verificado contra el
+// evento `system/init` real del stream-json (2026-09-17): `tools: []`,
+// `mcp_servers: []`, `slash_commands: []`, y un prompt que exige crear un
+// archivo / correr bash / mandar un mail no produce ningún `tool_use`.
+//   --tools ""               sin herramientas built-in (Bash/Write/Edit/...).
+//   --strict-mcp-config      sólo MCP de `--mcp-config` (que no se pasa) → cero
+//                            servers. SIN este flag el child carga los MCP del
+//                            operador (Gmail/Drive/Calendar): agencia real
+//                            aunque `--tools ""` esté puesto (observado).
+//   --disable-slash-commands sin skills/slash commands del operador.
+//   --permission-mode dontAsk lo que igual pidiera permiso se deniega sin
+//                            prompt (no hay humano del otro lado).
+const ANTHROPIC_READ_ONLY_ARGS = Object.freeze([
+    '--tools', '',
+    '--strict-mcp-config',
+    '--disable-slash-commands',
+    '--permission-mode', 'dontAsk',
+]);
+
+function normalizeSpawnPolicies({ sandbox, envPolicy }) {
+    const sb = (sandbox === undefined || sandbox === null) ? 'bypass' : String(sandbox);
+    const ep = (envPolicy === undefined || envPolicy === null) ? 'inherit' : String(envPolicy);
+    if (!SPAWN_SANDBOX_POLICIES.includes(sb)) {
+        throw new Error(`[sherlock-verifier] sandbox desconocido: '${sb}' (válidos: ${SPAWN_SANDBOX_POLICIES.join(', ')})`);
+    }
+    if (!SPAWN_ENV_POLICIES.includes(ep)) {
+        throw new Error(`[sherlock-verifier] envPolicy desconocido: '${ep}' (válidos: ${SPAWN_ENV_POLICIES.join(', ')})`);
+    }
+    return { sandbox: sb, envPolicy: ep };
+}
+
+// Arma el env BASE del child según la política. El caller lo pasa SIEMPRE por
+// `stripReservedChildSecrets` como última operación (#5462): esta función no
+// reemplaza ese filtro, decide de dónde sale el material.
+//   inherit — `env` explícito del caller, o `process.env` + extras (legacy).
+//   minimal — allowlist (#6563); `env` explícito se ignora.
+function resolveSpawnBaseEnv({ envPolicy, env, extras }) {
+    if (envPolicy === 'minimal') {
+        return buildChildEnvLib.buildMinimalCliEnv({ processEnv: process.env, extras });
+    }
+    return Object.assign({}, env || process.env, extras);
+}
 
 function spawnAnthropicComplete({
     prompt,
@@ -745,28 +806,45 @@ function spawnAnthropicComplete({
     anthropicHandler,
     cwd,
     env,
+    sandbox,
+    envPolicy,
 }) {
     return new Promise((resolve) => {
         const startedAt = Date.now();
         const _spawn = spawnImpl || require('node:child_process').spawn;
         const handler = anthropicHandler || require('./agent-launcher/providers/anthropic');
+        const _cwd = cwd || process.cwd();
 
         let spawnSpec;
         try {
+            const policies = normalizeSpawnPolicies({ sandbox, envPolicy });
+            // #6563 — sin agencia. Default legacy: bypass.
+            const permissionArgs = policies.sandbox === 'read-only'
+                ? ANTHROPIC_READ_ONLY_ARGS
+                : ['--permission-mode', 'bypassPermissions'];
+            // #5462 H-4 — el filtro envuelve TAMBIÉN el `env` explícito del
+            // caller: el default heredaba process.env entero y ningún caller
+            // real pasa env, así que la rama sin filtrar era la de producción.
+            // #6563 — con `envPolicy: 'minimal'` la base sale de la allowlist.
+            // Legacy (`inherit`): un `env` explícito reemplaza la base entera
+            // (sin extras), como antes; sin `env`, process.env + extras.
+            const legacyExplicitEnv = policies.envPolicy === 'inherit' && !!env;
+            const _env = buildChildEnvLib.stripReservedChildSecrets(
+                resolveSpawnBaseEnv({
+                    envPolicy: policies.envPolicy,
+                    env: legacyExplicitEnv ? env : null,
+                    extras: legacyExplicitEnv ? {} : { CLAUDE_PROJECT_DIR: _cwd },
+                }),
+                process.env,
+            );
             spawnSpec = handler.buildSpawn({
                 args: [
                     '-p',
                     '--output-format', 'text',
-                    '--permission-mode', 'bypassPermissions',
+                    ...permissionArgs,
                 ],
-                cwd: cwd || process.cwd(),
-                // #5462 H-4 — el filtro envuelve TAMBIÉN el `env` explícito del
-                // caller: el default heredaba process.env entero y ningún caller
-                // real pasa env, así que la rama sin filtrar era la de producción.
-                env: buildChildEnvLib.stripReservedChildSecrets(
-                    env || { ...process.env, CLAUDE_PROJECT_DIR: cwd || process.cwd() },
-                    process.env,
-                ),
+                cwd: _cwd,
+                env: _env,
             });
         } catch (e) {
             return resolve({
@@ -902,6 +980,10 @@ function spawnAnthropicComplete({
 //     todos los spawns de agentes del pulpo — consistente con el resto del
 //     pipeline. El env del child hereda del parent + CODEX_MODEL, MENOS el
 //     material reservado, que se saca con `stripReservedChildSecrets` (#5462).
+//     Con `envPolicy: 'minimal'` (#6563) el env se arma por allowlist.
+//   - `sandbox: 'read-only'` (#6563) emite `--sandbox read-only` en vez del
+//     bypass de aprobaciones/sandbox. Ver `spawnAnthropicComplete` para el
+//     contrato de las dos opciones de contención.
 //   - stdout truncado a 64KB (mismo cap que anthropic/completion-client).
 // -----------------------------------------------------------------------------
 function spawnCodexComplete({
@@ -912,35 +994,44 @@ function spawnCodexComplete({
     codexHandler,
     cwd,
     env,
+    sandbox,
+    envPolicy,
 }) {
     return new Promise((resolve) => {
         const startedAt = Date.now();
         const _spawn = spawnImpl || require('node:child_process').spawn;
         const handler = codexHandler || require('./agent-launcher/providers/openai-codex');
         const _cwd = cwd || process.cwd();
-        // #5462 H-5 — el child es un CLI de TERCEROS (Codex) y es un camino
-        // caliente: la chain `telegram-sherlock` tiene openai-codex como primer
-        // fallback y, por diseño (#3921), Sherlock excluye al provider del
-        // commander — con el commander en anthropic el fiscal cae acá.
-        // El filtro va como ÚLTIMA operación, DESPUÉS del merge: si se filtrara
-        // el operando `env` antes, un extra del merge podría reintroducir material.
-        const _env = buildChildEnvLib.stripReservedChildSecrets(
-            Object.assign(
-                {},
-                env || process.env,
-                model ? { CODEX_MODEL: model } : {},
-                { CLAUDE_PROJECT_DIR: _cwd }
-            ),
-            process.env,
-        );
 
         let spawnSpec;
         try {
+            const policies = normalizeSpawnPolicies({ sandbox, envPolicy });
+            // #5462 H-5 — el child es un CLI de TERCEROS (Codex) y es un camino
+            // caliente: la chain `telegram-sherlock` tiene openai-codex como primer
+            // fallback y, por diseño (#3921), Sherlock excluye al provider del
+            // commander — con el commander en anthropic el fiscal cae acá.
+            // El filtro va como ÚLTIMA operación, DESPUÉS del merge: si se filtrara
+            // el operando `env` antes, un extra del merge podría reintroducir material.
+            // #6563 — con `envPolicy: 'minimal'` la base sale de la allowlist y el
+            // `env` del caller se ignora.
+            const _env = buildChildEnvLib.stripReservedChildSecrets(
+                resolveSpawnBaseEnv({
+                    envPolicy: policies.envPolicy,
+                    env,
+                    extras: Object.assign(
+                        {},
+                        model ? { CODEX_MODEL: model } : {},
+                        { CLAUDE_PROJECT_DIR: _cwd }
+                    ),
+                }),
+                process.env,
+            );
             spawnSpec = handler.buildSpawn({
                 args: ['-p', String(prompt == null ? '' : prompt)],
                 cwd: _cwd,
                 env: _env,
                 interactive_supported: false,
+                sandbox: policies.sandbox,
             });
         } catch (e) {
             return resolve({
@@ -2277,4 +2368,9 @@ module.exports = {
     _resolveSherlockProvider: resolveSherlockProvider,
     _spawnAnthropicComplete: spawnAnthropicComplete,
     _spawnCodexComplete: spawnCodexComplete,
+    // #6563 — políticas de contención de los spawn helpers (cerradas).
+    SPAWN_SANDBOX_POLICIES,
+    SPAWN_ENV_POLICIES,
+    ANTHROPIC_READ_ONLY_ARGS,
+    _normalizeSpawnPolicies: normalizeSpawnPolicies,
 };

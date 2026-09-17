@@ -1423,13 +1423,47 @@ ahí entraría en bucle de rollback sin arreglar nada.
 > allowlist (la 2ª barrera) es el catálogo de Antigravity: AI Studio no sirve
 > ninguno de esos ids (`gemini-3.8-flash-medium` → HTTP 404). Por esa ruta hoy
 > **ningún** `complete({provider:'gemini-google'})` responde `ok=true`. Ningún
-> default HTTP del pipeline debe apuntar ahí: el juez semántico de duplicados
-> (`lib/semantic-dedup.js`, usado por el Commander al crear issues) usa
-> `cerebras` + `gpt-oss-120b`, y un test fija que su default pasa
-> `isAllowedModel` y tiene endpoint. El único caller que recorre la entrada es
-> la cascada del Sherlock, que tolera el fallo y sigue al próximo provider. La
-> reconciliación o retiro de la entrada es alcance de la baja de AI Studio
-> (#6563).
+> default HTTP del pipeline debe apuntar ahí: desde #6563 (baja de los
+> gratuitos) el juez semántico de duplicados (`lib/semantic-dedup.js`, usado
+> por el Commander al crear issues) ya no tiene ningún provider HTTP servible y
+> corre por **spawn del CLI OAuth** (`openai-codex` por default, `anthropic`
+> como alternativa) con la contención descrita abajo; un test fija que su
+> default es servible por ese transporte. El único caller que recorre la
+> entrada HTTP de Gemini es la cascada del Sherlock, que tolera el fallo y
+> sigue al próximo provider.
+
+**Contención del juez semántico por spawn (#6563, hallazgo security del rebote 1).**
+Un CLI de agente no es un cliente HTTP: por default corre con bypass de
+sandbox/aprobaciones, hereda el env del pulpo y tiene cwd en el repo. El prompt
+del juez lleva hasta 25 títulos de issues abiertos del repo público (contenido
+no confiable), así que una inyección podía convertirse en bash con GH_TOKEN /
+AWS_* / *_API_KEY en la máquina del operador. `dispatchComplete` restituye el
+"juez sin agencia" con tres medidas, todas fijadas por
+`tests/semantic-dedup-judge-no-agency-6563.test.js`:
+
+| Medida | codex | claude |
+|--------|-------|--------|
+| `sandbox: 'read-only'` | `--sandbox read-only` (nunca `--dangerously-bypass-approvals-and-sandbox`) | `--tools "" --strict-mcp-config --disable-slash-commands --permission-mode dontAsk` (`ANTHROPIC_READ_ONLY_ARGS`) |
+| `envPolicy: 'minimal'` | `buildMinimalCliEnv`: `SYSTEM_ALLOWLIST` + `CLI_OAUTH_ALLOWLIST` (`CODEX_HOME`, `CLAUDE_CONFIG_DIR`) + `CODEX_MODEL`/`CLAUDE_PROJECT_DIR`. Sin `PIPELINE_*`, sin credenciales. | ídem |
+| cwd | temporal vacío (`%TEMP%/semantic-dedup-judge-*`), borrado en `finally` | ídem |
+
+Además, cada título de candidato pasa por `detectInjection` → redact →
+truncate (`safeField`), igual que el issue propuesto, y no puede fabricar
+líneas extra dentro de `<datos>`.
+
+Las dos opciones (`sandbox`, `envPolicy`) viven en
+`sherlock-verifier._spawnCodexComplete/_spawnAnthropicComplete` y son
+**opt-in**: el fiscal Sherlock conserva el bypass y el env heredado (filtrado
+por #5462). Las tablas de políticas son cerradas: un valor desconocido se
+reporta como `spawn_unavailable`, nunca degrada al default con agencia.
+
+> Verificado en vivo el 2026-09-17: con `--tools ""` **solo**, el child de
+> `claude` sigue cargando los MCP del operador (Gmail/Drive/Calendar) — el
+> evento `system/init` los lista. Con `--strict-mcp-config` (sin
+> `--mcp-config`) el `init` reporta `tools: []`, `mcp_servers: []`,
+> `slash_commands: []` y un prompt que exige crear un archivo, correr bash y
+> mandar un mail no produce ningún `tool_use`. `--bare` no sirve: exige
+> `ANTHROPIC_API_KEY` (nunca lee OAuth).
 
 **Cómo medir un modelo nuevo antes de configurarlo** (CA-4 de #6858; desde #7298
 el transporte es `--input-format/--output-format stream-json` con el prompt por
