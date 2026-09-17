@@ -79,7 +79,7 @@ function fakeOperatorEnv() {
  * spawnImpl falso: captura (cmd, args, opts) + estado del cwd en el momento del
  * spawn y emite una respuesta JSON válida para que la promesa resuelva.
  */
-function makeCapturingSpawn({ provider, throwOnSpawn = false }) {
+function makeCapturingSpawn({ provider, throwOnSpawn = false, exitCode = 0 }) {
     const cap = { calls: [] };
     cap.spawnImpl = (cmd, args, opts) => {
         const cwd = opts && opts.cwd;
@@ -101,7 +101,7 @@ function makeCapturingSpawn({ provider, throwOnSpawn = false }) {
                 ? JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: '{"level":"ninguna"}' } }) + '\n'
                 : '{"level":"ninguna"}';
             ch.stdout.emit('data', Buffer.from(payload));
-            ch.emit('exit', 0);
+            ch.emit('exit', exitCode);
         });
         return ch;
     };
@@ -160,8 +160,36 @@ test('#6563 sec: el juez por codex corre con --sandbox read-only, jamás con el 
     assert.ok(!args.includes('--dangerously-bypass-approvals-and-sandbox'));
     const i = args.indexOf('--sandbox');
     assert.ok(i >= 0 && args[i + 1] === 'read-only', `argv sin --sandbox read-only: ${args.join(' ')}`);
+    assert.ok(args.includes('--ignore-user-config'), 'el juez no debe heredar MCP del operador');
+    assert.ok(args.includes('--ignore-rules'), 'el juez no debe heredar reglas de ejecución');
+    for (const feature of ['apps', 'plugins', 'shell_tool', 'unified_exec',
+        'multi_agent', 'hooks', 'browser_use', 'computer_use', 'image_generation',
+        'view_image', 'code_mode_host']) {
+        assert.ok(args.some((arg, index) => arg === '--disable' && args[index + 1] === feature),
+            `el juez debe desactivar ${feature}`);
+    }
+    assert.ok(args.includes('web_search="disabled"'), 'el juez no debe buscar contenido en la web');
     assert.equal(args[args.length - 1], '-', 'el prompt sigue yendo por stdin (#4529)');
     assert.ok(args.includes('gpt-5.5'), 'el modelo sigue viajando con -m');
+});
+
+test('#6563 sec: los agentes Codex normales conservan su configuración y herramientas', () => {
+    const args = codex._translateClaudeArgsToCodex([], {}, process.cwd());
+    assert.ok(args.includes(codex.CODEX_BYPASS_FLAG));
+    assert.ok(!args.includes('--ignore-user-config'));
+    assert.ok(!args.includes('--ignore-rules'));
+    assert.ok(!args.includes('--disable'));
+});
+
+test('#6563 sec: un CLI que rechaza los flags nuevos no se reintenta con permisos legacy', async () => {
+    const cap = makeCapturingSpawn({ provider: 'openai-codex', exitCode: 2 });
+    const res = await withHostileEnv(() => sd.dispatchComplete({
+        provider: 'openai-codex', prompt: 'p', spawnImpl: cap.spawnImpl,
+    }));
+    assert.equal(res.ok, false);
+    assert.equal(cap.calls.length, 1, 'no hay retry sin los controles de aislamiento');
+    assert.ok(!cap.calls[0].args.includes(codex.CODEX_BYPASS_FLAG));
+    assert.ok(!fs.existsSync(cap.calls[0].opts.cwd), 'también limpia el temporal al fallar el CLI');
 });
 
 test('#6563 sec: el env del juez por codex se arma por allowlist (sin GH_TOKEN/AWS_*/API keys/PIPELINE_*)', async () => {
@@ -368,7 +396,8 @@ test('#6563: JUDGE_SPAWN_POLICIES fija read-only + minimal y las tablas de polí
     assert.deepEqual([...sherlock.SPAWN_SANDBOX_POLICIES], ['bypass', 'read-only']);
     assert.deepEqual([...sherlock.SPAWN_ENV_POLICIES], ['inherit', 'minimal']);
     assert.deepEqual(Object.keys(codex.CODEX_SANDBOX_POLICIES).sort(), ['bypass', 'read-only']);
-    assert.deepEqual([...codex.CODEX_SANDBOX_POLICIES['read-only']], ['--sandbox', 'read-only']);
+    assert.ok(Object.isFrozen(codex.CODEX_SANDBOX_POLICIES['read-only']));
+    assert.deepEqual(codex.CODEX_SANDBOX_POLICIES['read-only'].slice(0, 2), ['--sandbox', 'read-only']);
     assert.deepEqual([...codex.CODEX_SANDBOX_POLICIES.bypass], [codex.CODEX_BYPASS_FLAG]);
 });
 

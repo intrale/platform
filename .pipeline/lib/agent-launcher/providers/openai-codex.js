@@ -143,7 +143,20 @@ function foldCodexPayload(args, env, fsImpl) {
 //               repo público) y la inyección no puede convertirse en bash.
 const CODEX_SANDBOX_POLICIES = Object.freeze({
     'bypass': Object.freeze(['--dangerously-bypass-approvals-and-sandbox']),
-    'read-only': Object.freeze(['--sandbox', 'read-only']),
+    // El sandbox de shell no desactiva los MCP/apps configurados por el
+    // operador. El juez conserva OAuth pero no carga su config ni sus reglas.
+    // Un CLI sin estos flags falla cerrado: nunca se reintenta sin aislamiento.
+    'read-only': Object.freeze([
+        '--sandbox', 'read-only',
+        '--ignore-user-config', '--ignore-rules',
+        '--disable', 'apps', '--disable', 'plugins',
+        '--disable', 'shell_tool', '--disable', 'unified_exec',
+        '--disable', 'multi_agent', '--disable', 'hooks',
+        '--disable', 'browser_use', '--disable', 'computer_use',
+        '--disable', 'image_generation', '--disable', 'view_image',
+        '--disable', 'code_mode_host',
+        '-c', 'web_search="disabled"',
+    ]),
 });
 const CODEX_BYPASS_FLAG = '--dangerously-bypass-approvals-and-sandbox';
 
