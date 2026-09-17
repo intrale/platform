@@ -15,6 +15,9 @@
 //      un prompt en argv reventaría con ENAMETOOLONG en Windows (#4529).
 //      Gemini NO tiene flag de system prompt, así que el contenido del
 //      `--system-prompt-file` se foldea al inicio del prompt.
+//      #6859 — el `cwd` se traduce ADEMÁS a `--add-dir <cwd>` (ver bloque
+//      "Workspace" más abajo): agy ignora el cwd del proceso y sin ese flag
+//      escribe en un scratch propio reportando SUCCESS.
 //   3) parseTokensFromLog — agrega los tokens reportados por el CLI. Con
 //      `--output-format stream-json` el log es NDJSON y el objeto útil es el
 //      `result` del evento `{"event":"result"}`; `_parseGeminiJson` lo
@@ -36,10 +39,38 @@
 //  - Detección de cuota SOLO por shape estructural sobre campos dedicados de
 //    error (status/code/reason). NUNCA substring sobre `response` (canal de
 //    contenido controlado por el modelo).
+//  - `--add-dir <cwd>` + `--dangerously-skip-permissions` = escritura sobre el
+//    `cwd` que manda el caller. En fases no-dev el Pulpo pasa el repo
+//    principal (ROOT), igual que con Claude hoy: mismo modelo de riesgo, no
+//    una regresión. Nunca se agrega un dir que el caller no haya pedido.
+//
+// Workspace (#6859) — por qué `--add-dir` y no `--project`:
+//   Antigravity NO trabaja sobre el cwd del proceso. Medido en vivo (3/9 con
+//   agy 1.1.20, 16/9 con 1.2.4 y 17/9 con 1.2.5): sin `--add-dir` el CLI
+//   responde `SUCCESS`, afirma haber creado el archivo pedido y lo deja en
+//   `~/.gemini/antigravity-cli/scratch/`; el directorio pedido queda vacío.
+//   Con `--add-dir <dir>` el archivo aparece en `<dir>`. El modo de falla es
+//   silencioso: un agente despachado sin el flag "implementa" contra un
+//   scratch fantasma y el issue rebota sin diff y sin causa visible.
+//   - `--add-dir` es repetible y toma ruta absoluta (`/` o `\` sirven). Es el
+//     ÚNICO flag que define el scope de filesystem → `buildSpawn` lo emite
+//     SIEMPRE con el `cwd` recibido y acepta `extraDirs` para los adicionales.
+//   - `--project` / `--new-project` son identidad de sesión/proyecto en el
+//     estado local del CLI (`~/.gemini/antigravity-cli/`), no scope de FS. Un
+//     `--new-project` por worktree acumularía un proyecto persistente por
+//     issue sin aislamiento medible. Decisión: NO se usan; `--add-dir` alcanza.
+//   - Sin `cwd` (o con uno relativo) `buildSpawn` LANZA (CA-4): un launcher
+//     que no sabe dónde trabajar tiene que fallar fuerte y visible, nunca
+//     caer al scratch. Los tres callers (pulpo, sherlock, commander) siempre
+//     pasan un string absoluto y capturan el throw, así que ningún camino
+//     vivo cambia de comportamiento.
+//   Diagnóstico de un rebote "implementé" sin diff que haya caído a este
+//   provider: mirar el scratch (`agyScratchDir()`) antes que el log.
 // =============================================================================
 'use strict';
 
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 // #5795 — contrato compartido de la clase cerrada 'authentication_rejected'.
 const authRejection = require('../auth-rejection');
@@ -90,10 +121,13 @@ function _resetLauncherCacheForTesting() { cachedLauncher = null; }
 // Contrato de entrada (lo que el pulpo construye en pulpo.js:5846):
 //   ['-p', userPrompt, '--system-prompt-file', systemFile, ...]
 //
-// Contrato de salida (agy 1.2.x — #6857):
+// Contrato de salida (agy 1.2.x — #6857, #6859):
 //   ['--input-format', 'stream-json', '--output-format', 'stream-json',
 //    '--dangerously-skip-permissions', '--print-timeout', timeout,
+//    '--add-dir', cwd, ('--add-dir', extraDir)*,
 //    '--model', model?]
+// `--model` va SIEMPRE al final (los tests lo fijan con `slice(-2)`); los
+// `--add-dir` van antes, uno por directorio, sin deduplicar contra el cwd.
 // El payload real se pipea por STDIN como UNA línea NDJSON
 // (`{"event":"user","message":{"role":"user","content":"<system+prompt>"}}`)
 // para evitar ENAMETOOLONG en Windows. Verificado en vivo contra agy 1.2.4:
@@ -169,15 +203,69 @@ function resolveModelFromEnv(env) {
     };
 }
 
-function translateClaudeArgsToGemini(args, env) {
+function translateClaudeArgsToGemini(args, env, workspace) {
     // Modelo: SÓLO `GEMINI_MODEL` (ver resolveModelFromEnv). Sin ella dejamos al
     // CLI elegir su default. El pulpo inyecta GEMINI_MODEL desde agent-launcher.js
     // (propagación #6272) con el id resuelto para el skill (#6271).
     const { model } = resolveModelFromEnv(env);
     const timeout = (env && env.AGY_PRINT_TIMEOUT) || '5m';
     const out = [...AGY_STREAM_INPUT_ARGS, '--dangerously-skip-permissions', '--print-timeout', timeout];
+    // #6859 — workspace explícito: agy ignora el cwd del proceso.
+    const ws = workspace && typeof workspace === 'object' ? workspace : {};
+    if (typeof ws.cwd === 'string' && ws.cwd.length > 0) out.push('--add-dir', ws.cwd);
+    for (const dir of (Array.isArray(ws.extraDirs) ? ws.extraDirs : [])) {
+        if (typeof dir === 'string' && dir.length > 0) out.push('--add-dir', dir);
+    }
     if (model) out.push('--model', model);
     return out;
+}
+
+// -----------------------------------------------------------------------------
+// Workspace (#6859) — helpers de validación y diagnóstico.
+//
+// `agyScratchDir()` resuelve `~/.gemini/antigravity-cli/scratch` (el destino
+// fantasma cuando falta `--add-dir`). Se usa en el mensaje de error de CA-4 y
+// lo consumen los tests/smoke para asertar que quedó SIN cambios tras un spawn.
+// `homedir` es inyectable para tests.
+//
+// `assertWorkspaceDir(value, label, env)` acepta SOLO strings no vacíos con
+// ruta absoluta (`path.isAbsolute`). Todo lo demás lanza `Error` con
+// `code = 'AGY_WORKSPACE_REQUIRED'` y un mensaje accionable que incluye
+// `PIPELINE_ISSUE` / `PIPELINE_SKILL` si vienen en `env` (rastreo en logs sin
+// abrir el código) y el path del scratch como pista de diagnóstico.
+// -----------------------------------------------------------------------------
+const AGY_SCRATCH_RELATIVE = Object.freeze(['.gemini', 'antigravity-cli', 'scratch']);
+const AGY_WORKSPACE_ERROR_CODE = 'AGY_WORKSPACE_REQUIRED';
+
+function agyScratchDir(homedir) {
+    const home = (typeof homedir === 'string' && homedir) ? homedir : os.homedir();
+    return path.join(home, ...AGY_SCRATCH_RELATIVE);
+}
+
+function _describeValue(v) {
+    if (v === undefined) return 'undefined';
+    if (v === null) return 'null';
+    if (typeof v === 'string') return JSON.stringify(v);
+    return `${typeof v}:${String(v)}`;
+}
+
+function assertWorkspaceDir(value, label, env) {
+    const ok = typeof value === 'string' && value.length > 0 && path.isAbsolute(value);
+    if (ok) return value;
+    const e = env && typeof env === 'object' ? env : {};
+    const ctx = [];
+    if (typeof e.PIPELINE_ISSUE === 'string' && e.PIPELINE_ISSUE) ctx.push(`issue #${e.PIPELINE_ISSUE}`);
+    if (typeof e.PIPELINE_SKILL === 'string' && e.PIPELINE_SKILL) ctx.push(`skill ${e.PIPELINE_SKILL}`);
+    const ctxText = ctx.length ? ` [${ctx.join(', ')}]` : '';
+    const err = new Error(
+        `Antigravity: buildSpawn requiere un '${label}' absoluto para ubicar el workspace del agente`
+        + `${ctxText} (recibió: ${_describeValue(value)}). Sin --add-dir el agente escribiría en el `
+        + `scratch fantasma (${agyScratchDir()}) reportando SUCCESS y el issue rebotaría sin diff. `
+        + `El caller tiene que pasar el worktree o el ROOT del repo como ruta absoluta.`,
+    );
+    err.code = AGY_WORKSPACE_ERROR_CODE;
+    err.received = value;
+    throw err;
 }
 
 // -----------------------------------------------------------------------------
@@ -186,6 +274,12 @@ function translateClaudeArgsToGemini(args, env) {
 //
 // `args` vienen en formato Claude (ver pulpo.js:5846); acá los traducimos al
 // shape Gemini y prependemos el prefijo del launcher detectado.
+//
+// `cwd` (#6859) — OBLIGATORIO y absoluto: se traduce a `--add-dir <cwd>` y se
+// mantiene en `spawnOpts.cwd`. `extraDirs` (opcional, string[]) agrega un
+// `--add-dir` por cada directorio adicional que el agente necesite. Ausente,
+// vacío o relativo → `Error` con `code='AGY_WORKSPACE_REQUIRED'` (ver
+// `assertWorkspaceDir`); nunca se cae al scratch del CLI.
 //
 // `modelTrace` (#6334/#6858) — misma forma que el handler de Anthropic para que
 // agent-launcher.js lo audite sin casos especiales:
@@ -196,9 +290,14 @@ function translateClaudeArgsToGemini(args, env) {
 //       launcher loguea que el agente arranca con el default del CLI.
 // Sin ninguna de las dos variables NO se agrega la clave (regresión cero).
 // -----------------------------------------------------------------------------
-function buildSpawn({ args, cwd, env, interactive_supported }) {
+function buildSpawn({ args, cwd, env, interactive_supported, extraDirs }) {
     const launcher = getLauncher();
-    const geminiArgs = translateClaudeArgsToGemini(args || [], env || {});
+    // #6859 — fail-fast (CA-4): sin cwd absoluto no hay workspace y agy caería
+    // al scratch en silencio. Los directorios adicionales se validan igual.
+    const workspaceCwd = assertWorkspaceDir(cwd, 'cwd', env);
+    const workspaceExtra = (Array.isArray(extraDirs) ? extraDirs : [])
+        .map((d) => assertWorkspaceDir(d, 'extraDirs[]', env));
+    const geminiArgs = translateClaudeArgsToGemini(args || [], env || {}, { cwd: workspaceCwd, extraDirs: workspaceExtra });
     // #4529 — payload (system foldeado + mensaje) por STDIN, nunca por argv.
     // stdin SIEMPRE 'pipe'; el caller escribe `stdinPayload` y cierra stdin.
     // #6857 — serializado como NDJSON para `--input-format stream-json`.
@@ -225,7 +324,9 @@ function buildSpawn({ args, cwd, env, interactive_supported }) {
         stdinPayload,
         ...(modelTrace ? { modelTrace } : {}),
         spawnOpts: {
-            cwd,
+            // #6859 — se mantiene en spawnOpts (paridad con los demás handlers)
+            // aunque agy no lo use: el workspace real viaja en `--add-dir`.
+            cwd: workspaceCwd,
             stdio: ['pipe', 'pipe', 'pipe'],
             detached: false,
             shell: launcher.shell,
@@ -457,6 +558,11 @@ module.exports = {
     _foldGeminiPayload: foldGeminiPayload,
     _encodeStreamJsonPayload: encodeStreamJsonPayload,
     AGY_STREAM_INPUT_ARGS,
+    // #6859 — workspace explícito (`--add-dir`) y diagnóstico del scratch.
+    AGY_WORKSPACE_ERROR_CODE,
+    AGY_SCRATCH_RELATIVE,
+    agyScratchDir,
+    assertWorkspaceDir,
     _parseGeminiJson,
     _extractErrorTokens,
     _setLauncherForTesting,

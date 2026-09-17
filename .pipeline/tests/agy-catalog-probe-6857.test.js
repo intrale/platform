@@ -394,7 +394,9 @@ test('launcher: buildSpawn usa --input-format stream-json y manda system+prompt 
         assert.equal(plan.modelTrace && plan.modelTrace.model, 'gemini-3.8-flash-low');
         assert.deepEqual(plan.args, [
             '--input-format', 'stream-json', '--output-format', 'stream-json',
-            '--dangerously-skip-permissions', '--print-timeout', '5m', '--model', 'gemini-3.8-flash-low',
+            '--dangerously-skip-permissions', '--print-timeout', '5m',
+            '--add-dir', dir, // #6859 — workspace explícito
+            '--model', 'gemini-3.8-flash-low',
         ]);
         assert.equal(plan.args.includes('--print'), false, 'agy 1.2.x: --print sin valor es error');
         assert.equal(plan.args.some((a) => a.includes('hola')), false, 'el prompt NUNCA va por argv (#4529)');

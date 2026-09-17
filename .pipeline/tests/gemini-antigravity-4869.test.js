@@ -28,9 +28,12 @@ test('agy reemplaza por completo la invocación del Gemini CLI retirado', () => 
         assert.equal(spawn.cmd, 'agy');
         // #6857 — agy 1.2.x: prompt por stdin como NDJSON (`--input-format
         // stream-json`); `--print` sin valor ya no existe.
+        // #6859 — el cwd viaja TAMBIÉN como `--add-dir` (agy ignora el cwd del
+        // proceso); `--model` sigue al final.
         assert.deepEqual(spawn.args, [
             '--input-format', 'stream-json', '--output-format', 'stream-json',
             '--dangerously-skip-permissions', '--print-timeout', '30s',
+            '--add-dir', ROOT,
             '--model', 'gemini-3.8-flash-low',
         ]);
         assert.deepEqual(JSON.parse(spawn.stdinPayload), { event: 'user', message: { role: 'user', content: 'hola' } });
