@@ -2656,6 +2656,52 @@ dejó de existir en 1.2.x y un prompt en argv reventaría con ENAMETOOLONG
 evento `{"event":"result"}`. La adaptación del parser de tokens/errores al
 shape real (`usage.*`, `error` string) es #7288.
 
+**Workspace: `--add-dir <cwd>` obligatorio (#6859)**. Antigravity **no trabaja
+sobre el `cwd` del proceso**: tiene su propio concepto de workspace y, si no se
+le declara uno, escribe en un scratch propio en
+`~/.gemini/antigravity-cli/scratch/` **reportando `SUCCESS`** y afirmando haber
+creado el archivo pedido. Medido en vivo tres veces con el mismo argv que arma
+el pipeline (3/9 con agy 1.1.20, 16/9 con 1.2.4, 17/9 con 1.2.5): sin
+`--add-dir` el directorio pedido queda vacío y el archivo aparece en el scratch;
+con `--add-dir <dir>` aparece en `<dir>`. El modo de falla es el peor posible —
+silencioso y con reporte de éxito: un agente despachado sin el flag "implementa"
+contra un scratch fantasma y el issue rebota sin diff y sin causa visible.
+
+Por eso `buildSpawn` del handler (`lib/agent-launcher/providers/gemini-google.js`):
+
+- Traduce el `cwd` recibido a `--add-dir <cwd>` en el argv, además de mantenerlo
+  en `spawnOpts.cwd` (paridad con los demás handlers). Es el mismo `cwd` que
+  manda el Pulpo: el worktree en `dev`, el ROOT del repo en las demás fases —
+  mismo modelo de riesgo que Claude hoy bajo `--dangerously-skip-permissions`.
+- Acepta `extraDirs: string[]` para directorios adicionales; el flag es
+  repetible y se emite uno por directorio, en orden, después del `cwd`.
+- **Falla fuerte sin `cwd`** (ausente, vacío, no-string o ruta relativa):
+  `Error` con `code = 'AGY_WORKSPACE_REQUIRED'` y mensaje en español que incluye
+  `PIPELINE_ISSUE` / `PIPELINE_SKILL` si vienen en el `env` y el path del
+  scratch como pista. Los tres callers (`pulpo.js`, `sherlock-verifier.js`,
+  `commander/multi-provider.js`) siempre pasan un string absoluto y capturan el
+  throw, así que ningún camino vivo cambia; el que no sepa dónde trabajar falla
+  visible en vez de caer al scratch.
+- `--model` sigue siendo lo último del argv; los `--add-dir` van antes.
+
+**Por qué `--add-dir` y no `--project` / `--new-project`**: ambos flags existen
+en 1.2.x pero son identidad de sesión/proyecto en el estado local del CLI
+(`~/.gemini/antigravity-cli/`), no scope de filesystem. Un `--new-project` por
+worktree acumularía un proyecto persistente por issue sin aislamiento medible;
+`--add-dir` solo alcanza para CA-1/CA-3 del issue. Decisión: **no se usan**.
+`--sandbox` (restricciones de terminal) queda fuera de este alcance (SEC-7 de
+#6856).
+
+**Diagnóstico**: ante un rebote "implementé" sin diff de un agente que haya
+caído a este provider, mirar el scratch antes que el log —
+`node -e "console.log(require('./.pipeline/lib/agent-launcher/providers/gemini-google').agyScratchDir())"`
+— y el argv del spawn (tiene que contener `--add-dir`). Verificación:
+
+```bash
+node --test .pipeline/tests/gemini-add-dir-6859.test.js        # offline: fake de agy que honra --add-dir, asserta sobre disco
+node .pipeline/tests/smoke/gemini-add-dir.smoke.js               # real: repo git temporal + archivo + git status + scratch sin cambios
+```
+
 ### 14.4 Failover reproducible
 
 La cadena de fallback vive en
