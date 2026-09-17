@@ -102,7 +102,8 @@ const CATALOG_PROBES = Object.freeze({
  * declaran (`spec.catalog_probe`). Devuelve la misma forma que
  * `probeCliProvider` más `cli_probe` con la evidencia del round-trip.
  *
- * Tres estados para `gemini-google`:
+ * Cuatro estados: versión fuera de contrato → cli_contract_mismatch (rojo durable).
+ * Estados restantes para `gemini-google`:
  *   - binario ausente                → `{ ok:false, reason:'cli_unavailable' }`
  *   - instalado, catálogo vacío/err  → `{ ok:false, reason:'cli_license_unavailable' }`
  *   - instalado, catálogo poblado    → `{ ok:true,  reason:'cli_catalog_ok' }`
@@ -156,6 +157,7 @@ async function probeCliProviderLive(spec, opts = {}) {
             timeoutMs: opts.timeoutMs,
             spawnImpl: opts.spawnImpl,
             noCache: opts.noCache,
+            contract: spec.cli_contract,
         });
     } catch {
         r = null;
@@ -175,6 +177,7 @@ async function probeCliProviderLive(spec, opts = {}) {
         // derivados: conteo, ids saneados, timestamps. Nunca texto del CLI.
         cli_probe: {
             kind: probeName,
+            cli_version: /^\d+\.\d+\.\d+$/.test(r.cli_version || '') ? r.cli_version : null,
             detail: r.detail || null,
             model_count: Number.isFinite(r.model_count) ? r.model_count : 0,
             models: Array.isArray(r.models) ? r.models.slice(0, 64) : [],

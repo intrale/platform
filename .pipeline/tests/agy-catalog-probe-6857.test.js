@@ -44,13 +44,14 @@ function tmpDir() {
 function fakeSpawn({ rc = 0, stdout = '', stderr = 'Fetching available models...', hang = false, enoent = false } = {}) {
     const calls = [];
     const spawn = (cmd, args, opts) => {
-        calls.push({ cmd, args, opts });
+        if (args[0] === 'models') calls.push({ cmd, args, opts });
         const child = new EventEmitter();
         child.stdout = new EventEmitter();
         child.stderr = new EventEmitter();
         child.killed = false;
         child.kill = () => { child.killed = true; };
         setImmediate(() => {
+            if (args[0] === '--version') { child.stdout.emit('data', Buffer.from('1.2.4')); child.emit('close', 0); return; }
             if (enoent) { child.emit('error', Object.assign(new Error('ENOENT'), { code: 'ENOENT' })); return; }
             if (stderr) child.stderr.emit('data', Buffer.from(stderr));
             if (stdout) child.stdout.emit('data', Buffer.from(stdout));
@@ -330,7 +331,7 @@ test('health-cron: catálogo poblado → green / cli_catalog_ok con cli_probe en
     assert.equal(g.reason_code, 'cli_catalog_ok');
     assert.equal(g.auth_mode, 'oauth');
     assert.equal(g.latency_ms, 2100);
-    assert.deepEqual(Object.keys(g.cli_probe).sort(), ['cached', 'checked_at', 'detail', 'kind', 'launcher_kind', 'model_count', 'models']);
+    assert.deepEqual(Object.keys(g.cli_probe).sort(), ['cached', 'checked_at', 'cli_version', 'detail', 'kind', 'launcher_kind', 'model_count', 'models']);
     assert.equal(g.cli_probe.model_count, 2);
     assert.equal(g.cli_probe.kind, 'agy');
     // El snapshot es contrato: nada del CLI sin sanear.
@@ -394,7 +395,7 @@ test('launcher: buildSpawn usa --input-format stream-json y manda system+prompt 
         assert.equal(plan.modelTrace && plan.modelTrace.model, 'gemini-3.8-flash-low');
         assert.deepEqual(plan.args, [
             '--input-format', 'stream-json', '--output-format', 'stream-json',
-            '--dangerously-skip-permissions', '--print-timeout', '5m', '--model', 'gemini-3.8-flash-low',
+            '--disable-slash-commands', '--dangerously-skip-permissions', '--print-timeout', '5m', '--model', 'gemini-3.8-flash-low',
         ]);
         assert.equal(plan.args.includes('--print'), false, 'agy 1.2.x: --print sin valor es error');
         assert.equal(plan.args.some((a) => a.includes('hola')), false, 'el prompt NUNCA va por argv (#4529)');
@@ -504,7 +505,106 @@ test('dashboard /providers: el render SSR contiene los tres labels y "catálogo 
     assert.doesNotMatch(sinLic, />CAÍDO</);
     const sinBin = fila({ healthState: 'red', healthReason: 'cli_unavailable', cliProbe: { model_count: 0, detail: 'binary_missing' } });
     assert.match(sinBin, />SIN INSTALAR</);
+    const contract = fila({ lastChecked: new Date(NOW - 2 * 60_000).toISOString(), healthState: 'red', healthReason: 'cli_contract_mismatch', cliProbe: { cli_version: '1.3.0', detail: 'version_above_tested', checked_at: new Date(NOW - 2 * 60_000).toISOString() } });
+    assert.match(contract, />VERSIÓN NO PROBADA</);
+    assert.match(contract, /versión del CLI fuera del rango probado · agy 1\.3\.0 · hace 2 min/);
+    const unreadable = fila({ healthState: 'red', healthReason: 'cli_contract_mismatch', cliProbe: { detail: 'version_unparseable' } });
+    assert.match(unreadable, /versión del CLI ilegible/);
+    assert.doesNotMatch(unreadable, /agy null/);
     const viejo = fila({ healthState: 'green', healthReason: 'cli_catalog_ok', cliProbe: { model_count: 14 }, lastChecked: new Date(NOW - 61 * 60_000).toISOString() });
     assert.match(viejo, />SIN DATOS</);
     assert.doesNotMatch(viejo, />SANO</);
+});
+
+// #7290 — versión, errores y cache del contrato antes de consultar modelos.
+function fakeVersionSpawn({ version = '1.2.4', rc = 0, hang = false, throws = false, error = false, killThrows = false } = {}) {
+    const calls = [];
+    const fakeSpawnImpl = (cmd, args, opts) => {
+        calls.push({ cmd, args, opts });
+        if (throws) throw new Error('spawn falló');
+        const child = new EventEmitter();
+        child.stdout = new EventEmitter(); child.stderr = new EventEmitter();
+        child.kill = () => { if (killThrows) throw new Error('kill falló'); };
+        setImmediate(() => {
+            if (error) { child.emit('error', new Error('ENOENT')); child.emit('close', 1); return; }
+            child.stderr.emit('data', 'texto que no se persiste');
+            child.stdout.emit('data', args[0] === '--version' ? version : CATALOG_STDOUT);
+            if (!hang) child.emit('close', args[0] === '--version' ? rc : 0);
+        });
+        return child;
+    };
+    fakeSpawnImpl.calls = calls;
+    return fakeSpawnImpl;
+}
+
+test('contrato: parsea versión saneada y rechaza basura o números inseguros', () => {
+    for (const input of [null, {}, '', 'agy 1.2.4', 'x', '999999999999999999999.2.4']) assert.equal(agyProbe.parseAgyVersion(input), null);
+    assert.equal(agyProbe.parseAgyVersion(' 1.2.4\r\n'), '1.2.4');
+    assert.equal(agyProbe.parseAgyVersion('1.2.4 extra'), '1.2.4');
+    assert.ok(Object.isFrozen(agyProbe.AGY_CLI_CONTRACT));
+});
+
+for (const [version, detail] of [['1.1.20', 'version_below_min'], ['1.3.0', 'version_above_tested'], ['2.0.0', 'version_above_tested'], ['basura', 'version_unparseable']]) {
+    test(`contrato: ${version} corta antes del catálogo con ${detail}`, async () => {
+        const { env } = installedEnv(tmpDir());
+        const fake = fakeVersionSpawn({ version });
+        const r = await agyProbe.probeAgyCatalog({ env, spawnImpl: fake, noCache: true });
+        assert.equal(r.reason, 'cli_contract_mismatch'); assert.equal(r.detail, detail);
+        assert.deepEqual(r.models, []); assert.equal(r.ok, false);
+        assert.deepEqual(fake.calls.map(c => c.args), [['--version']]);
+        assert.equal(fake.calls[0].opts.shell, false); assert.equal(fake.calls[0].opts.windowsHide, true);
+        assert.deepEqual(fake.calls[0].opts.stdio, ['ignore', 'pipe', 'pipe']);
+    });
+}
+
+for (const failure of [{ rc: 1 }, { error: true }, { throws: true }, { hang: true }, { hang: true, killThrows: true }]) {
+    test(`contrato: fallo ${JSON.stringify(failure)} da rojo aunque stdout tenga versión válida`, async () => {
+        const { env } = installedEnv(tmpDir());
+        const fake = fakeVersionSpawn(failure);
+        const r = await agyProbe.probeAgyCatalog({ env, spawnImpl: fake, timeoutMs: 10, noCache: true });
+        assert.equal(r.reason, 'cli_contract_mismatch'); assert.equal(r.detail, 'version_unparseable');
+        assert.equal(fake.calls.length, 1);
+    });
+}
+
+test('contrato: override del spec llega al probe y cli_version al snapshot', async () => {
+    const { env } = installedEnv(tmpDir());
+    const gemini = secrets.MANAGED_KEYS.find(k => k.provider === 'gemini-google');
+    const fake = fakeVersionSpawn({ version: '1.2.4' });
+    const r = await probeCliProviderLive({ ...gemini, cli_contract: { min_version: '1.2.5', max_tested_version: '1.2.5' } }, { env, spawnImpl: fake, noCache: true });
+    assert.equal(r.reason, 'cli_contract_mismatch'); assert.equal(r.cli_probe.cli_version, '1.2.4');
+    const snapshot = await snapshotWith({ ok: false, reason: r.reason, detail: r.cli_probe.detail, cli_version: '1.2.4', models: [] });
+    assert.equal(snapshot.state, 'red'); assert.equal(snapshot.cli_probe.cli_version, '1.2.4');
+});
+
+test('contrato: cache v1 se descarta y cambiar pin invalida cache v2; rojo usa TTL negativo', async () => {
+    const dir = tmpDir(), { env, exe } = installedEnv(dir);
+    const cachePath = path.join(dir, 'cache.json');
+    fs.writeFileSync(cachePath, JSON.stringify({ version: 1, checked_at_ms: NOW, cmd: exe, reason: 'cli_catalog_ok' }));
+    const fake = fakeVersionSpawn();
+    const opts = { env, cachePath, spawnImpl: fake, nowMs: NOW };
+    const r = await agyProbe.probeAgyCatalog(opts);
+    assert.equal(r.cached, false); assert.equal(r.cli_version, '1.2.4'); assert.equal(fake.calls.length, 2);
+    assert.equal(JSON.parse(fs.readFileSync(cachePath)).version, 2);
+    assert.equal((await agyProbe.probeAgyCatalog(opts)).cached, true);
+    const contract = { max_tested_version: '1.2.3' };
+    const red = await agyProbe.probeAgyCatalog({ ...opts, contract });
+    assert.equal(red.reason, 'cli_contract_mismatch'); assert.equal(fake.calls.length, 3);
+    assert.equal((await agyProbe.probeAgyCatalog({ ...opts, contract, nowMs: NOW + 1000 })).cached, true);
+    assert.equal((await agyProbe.probeAgyCatalog({ ...opts, contract, nowMs: NOW + agyProbe.DEFAULT_NEGATIVE_TTL_MS + 1 })).cached, false);
+    assert.equal(fake.calls.length, 4);
+    assert.equal((await agyProbe.probeAgyCatalog({ ...opts, contract: { min_version: 'basura' }, noCache: true })).detail, 'version_unparseable');
+    assert.equal((await agyProbe.probeAgyCatalog({ ...opts, contract: { min_version: '2.0.0', max_tested_version: '1.2.4' }, noCache: true })).detail, 'version_unparseable');
+});
+
+test('contrato: vocabulario durable y textos aprobados por UX completos', () => {
+    assert.ok(healthAlerts.ALLOWED_REASON_CODES.has('cli_contract_mismatch'));
+    assert.ok(DURABLE_RED_REASONS.has('cli_contract_mismatch'));
+    assert.ok(pauseCause.REASON_TABLE.cli_contract_mismatch);
+    assert.equal(providersView.REASON_LABEL.cli_contract_mismatch, 'versión del CLI fuera del rango probado');
+    assert.doesNotMatch(providersView.REASON_LABEL.cli_contract_mismatch, /_/);
+    const badge = providersView.healthBadgeFor({ healthState: 'red', healthReason: 'cli_contract_mismatch', authMode: 'oauth', cliProbe: {} }, NOW);
+    assert.equal(badge.label, 'VERSIÓN NO PROBADA'); assert.equal(badge.severity, 'bad');
+    const source = fs.readFileSync(require.resolve('../lib/multi-provider/agy-catalog-probe'), 'utf8');
+    assert.doesNotMatch(source, /\[\s*['"]update['"]/);
 });

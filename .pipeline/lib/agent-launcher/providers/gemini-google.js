@@ -18,7 +18,7 @@
 //   3) parseTokensFromLog — agrega los tokens reportados por el CLI. Con
 //      `--output-format stream-json` el log es NDJSON y el objeto útil es el
 //      `result` del evento `{"event":"result"}`; `_parseGeminiJson` lo
-//      localiza. La adaptación del shape (`usage.*`, `error` string) es #7288.
+//      localiza. usage.* y error string respetan el contrato de agy 1.2.x (#7290).
 //   4) detectQuotaExhausted — inspecciona el objeto `error` del JSON y matchea
 //      por shape estructural (status/code/reason normalizados a lowercase)
 //      contra la allowlist canónica en `quota-exhausted.js`
@@ -102,6 +102,7 @@ function _resetLauncherCacheForTesting() { cachedLauncher = null; }
 // cualquier prompt en argv ("a prompt given on the command line would be
 // ignored"). Esta es la única vía documentada para stdin.
 // -----------------------------------------------------------------------------
+const AGY_HARDENING_ARGS = Object.freeze(['--disable-slash-commands']);
 const AGY_STREAM_INPUT_ARGS = Object.freeze(['--input-format', 'stream-json', '--output-format', 'stream-json']);
 
 /**
@@ -175,7 +176,7 @@ function translateClaudeArgsToGemini(args, env) {
     // (propagación #6272) con el id resuelto para el skill (#6271).
     const { model } = resolveModelFromEnv(env);
     const timeout = (env && env.AGY_PRINT_TIMEOUT) || '5m';
-    const out = [...AGY_STREAM_INPUT_ARGS, '--dangerously-skip-permissions', '--print-timeout', timeout];
+    const out = [...AGY_STREAM_INPUT_ARGS, ...AGY_HARDENING_ARGS, '--dangerously-skip-permissions', '--print-timeout', timeout];
     if (model) out.push('--model', model);
     return out;
 }
@@ -385,6 +386,10 @@ function detectQuotaExhausted(logPath, cfg, quotaExhaustedModule, fsImpl) {
     const obj = _parseGeminiJson(raw);
     if (!obj) return { matched: false };
 
+    if (typeof obj.error === 'string') {
+        return quotaExhaustedModule._detectGemini({ event: 'result', result: obj }, allowlist);
+    }
+
     // El error puede venir como `error` directo o anidado en `error.error`.
     const errObj = (obj.error && typeof obj.error === 'object')
         ? (obj.error.error && typeof obj.error.error === 'object' ? obj.error.error : obj.error)
@@ -457,6 +462,7 @@ module.exports = {
     _foldGeminiPayload: foldGeminiPayload,
     _encodeStreamJsonPayload: encodeStreamJsonPayload,
     AGY_STREAM_INPUT_ARGS,
+    AGY_HARDENING_ARGS,
     _parseGeminiJson,
     _extractErrorTokens,
     _setLauncherForTesting,

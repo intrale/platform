@@ -185,6 +185,7 @@ const REASON_TABLE = Object.freeze({
     invalid_credentials: { text: () => 'credenciales inválidas', cause: CAUSE_AUTH },
     no_key_configured: { text: () => 'sin credenciales configuradas', cause: CAUSE_AUTH },
     forbidden: { text: () => 'acceso denegado por el proveedor', cause: CAUSE_AUTH },
+    cli_contract_mismatch: { text: () => 'con el CLI en una versión no probada', cause: CAUSE_AUTH },
     cli_license_unavailable: { text: () => 'sin licencia CLI habilitada', cause: CAUSE_AUTH },
     cli_unavailable: { text: () => 'CLI no disponible', cause: CAUSE_AUTH },
     cli_binary_undeclared: { text: () => 'CLI sin declarar en la configuración', cause: CAUSE_AUTH },
@@ -219,6 +220,7 @@ const REASON_TABLE = Object.freeze({
  * Y con la cuota agotada").
  */
 const ACTION_SHORT = Object.freeze({
+    cli_contract_mismatch: 'con el CLI en una versión no probada',
     cli_license_unavailable: 'sin licencia',
     cli_unavailable: 'sin CLI disponible',
     cli_binary_undeclared: 'sin CLI declarado',
@@ -240,6 +242,7 @@ const ACTION_SHORT = Object.freeze({
  * sin humor: esto es una alerta operativa que se lee a las 3 AM.
  */
 const ACTION_FULL = Object.freeze({
+    cli_contract_mismatch: (l) => l + ' tiene el CLI en una versión fuera del rango probado. Instalá una versión del rango o, si la nueva funciona, subí el pin (cli_contract) del proveedor.',
     cli_license_unavailable: (l) => `${l} no tiene licencia habilitada. Reautenticá o revisá el billing.`,
     cli_unavailable: (l) => `${l} no tiene el CLI disponible. Instalalo o revisá el PATH.`,
     cli_binary_undeclared: (l) => `${l} no tiene el CLI declarado. Declaralo en agent-models.json.`,

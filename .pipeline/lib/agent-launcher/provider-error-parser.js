@@ -487,6 +487,14 @@ function detectFromCliStderr(input, provider, quotaModule, opts = {}) {
         }
     }
 
+    // #7290: mismo detector estructural que el handler y el camino legacy.
+    if (provider === 'gemini-google' && allowlist.length > 0 && typeof quotaModule._detectGemini === 'function') {
+        for (const line of lines) {
+            const r = quotaModule._detectGemini(parseJsonOrSSE(line), allowlist);
+            if (r.matched) return { errorClass: 'quota_exhausted', evidence: line, errorType: r.errorType, resetsAt: null };
+        }
+    }
+
     // 3. Heurística regex (CLI stderr de texto libre).
     //
     // #4541 (Bug 2 — falso positivo sobre contenido normal): SOLO aplicamos los
