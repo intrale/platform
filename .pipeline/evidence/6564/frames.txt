@@ -1,0 +1,7 @@
+file 'con-cuota-page.png'
+duration 9
+file 'sin-verificar-page.png'
+duration 9
+file 'sin-sesion-page.png'
+duration 9
+file 'sin-sesion-page.png'

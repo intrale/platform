@@ -316,6 +316,7 @@ async function snapshotWith(catalogResult, extra = {}) {
         providers: [secrets.MANAGED_KEYS.find((k) => k.provider === 'gemini-google')],
         cliProbe: () => true,
         catalogProbe: async () => catalogResult,
+        planProbe: async () => ({ reason_code: 'plan_tier_unknown', checked_at: new Date(NOW).toISOString() }),
         quotaAssessImpl: () => ({ adapterStatus: 'unknown', status: 'unknown', pct: null, gated: false, reason_code: null }),
         defaultProvider: 'anthropic',
         now: NOW,

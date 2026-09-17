@@ -1370,6 +1370,19 @@ NVIDIA NIM aporta razonamiento de calidad alta en free tier — Cerebras es velo
 
 ### 8.10 Antigravity (`gemini-google`) — catálogo de modelos y verificación automática (#6858)
 
+**Cuota y tier (#6564).** El tier contratado no es observable automáticamente
+con `agy` 1.2.4: `/usage` expone cuota, pero no el nombre del plan, y no existe
+un comando no interactivo de cuenta/plan. El operador lo confirma abriendo
+`agy` interactivo y leyendo el header email + plan tier, sin copiar identidad
+a evidencias ni logs. El health-cron muestra sesión + cuota efectiva mediante
+`plan_check`, independiente de la salud; nunca infiere el tier por la cuota.
+
+Para comprobar cuota manualmente desde Git Bash se usa
+`MSYS_NO_PATHCONV=1 agy -p "/usage" --output-format json`. Sin esa variable,
+Git Bash convierte `/usage` en una ruta y puede disparar un turno real de
+aproximadamente 13.000 tokens. El probe usa Node con `shell:false` y argumento
+literal. Véase [procedimiento, caché y verificación de sesión](gemini-plan-verification.md).
+
 > **Migración 2026-09-16 (#6858, split de #6856).** Los 9 skills con Gemini en su
 > cadena (`android-dev`, `web-dev`, `qa`, `po`, `ux`, `architect`, `perf`,
 > `telegram-commander`, `telegram-sherlock`) declaraban `gemini-3-flash-preview`,

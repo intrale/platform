@@ -1,0 +1,33 @@
+bash.exe : [smoke-test] inicio pid=1115 pipeline_dir=/c/Workspaces/Intrale/platform.agent-6564-pipeline-dev/.pipeline 
+runtime_dir=/c/Workspaces/Intrale/platform/.pipeline
+En línea: 2 Carácter: 1
++ & 'C:\Program Files\Git\bin\bash.exe' .pipeline/smoke-test.sh *> .pip ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: ([smoke-test] in...tform/.pipeline:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+[2026-09-17 01:32:36] === SMOKE TEST ===
+[smoke-test] === SMOKE TEST ===
+[2026-09-17 01:32:36] 1) Verificando procesos críticos...
+[smoke-test] 1) Verificando procesos críticos...
+[2026-09-17 01:32:41]   pulpo: OK 11888
+[smoke-test]   pulpo: OK 11888
+[2026-09-17 01:32:41]   dashboard: OK 17420
+[smoke-test]   dashboard: OK 17420
+[2026-09-17 01:32:41]   svc-telegram: OK 13560
+[smoke-test]   svc-telegram: OK 13560
+[2026-09-17 01:32:41] 2) Verificando dashboard HTTP...
+[smoke-test] 2) Verificando dashboard HTTP...
+[2026-09-17 01:32:42]   OK dashboard HTTP 200
+[smoke-test]   OK dashboard HTTP 200
+[2026-09-17 01:32:42] 3) Verificando estado del filesystem...
+[smoke-test] 3) Verificando estado del filesystem...
+[2026-09-17 01:32:43]   WARN last-restart.json tiene 66794s (esperado < 300)
+[smoke-test]   WARN last-restart.json tiene 66794s (esperado < 300)
+[2026-09-17 01:32:43] 4) Verificando catálogo de modelos de Antigravity (agy models)...
+[smoke-test] 4) Verificando catálogo de modelos de Antigravity (agy models)...
+[2026-09-17 01:32:48]   OK [agy-catalog] OK: 4 id(s) configurados y 14 id(s) en total (config + 3 barreras) están en el catálogo de agy (14 modelos)
+[smoke-test]   OK [agy-catalog] OK: 4 id(s) configurados y 14 id(s) en total (config + 3 barreras) están en el 
+catálogo de agy (14 modelos)
+[2026-09-17 01:32:49] === SMOKE TEST OK ===
+[smoke-test] === SMOKE TEST OK ===

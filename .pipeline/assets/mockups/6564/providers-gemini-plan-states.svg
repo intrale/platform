@@ -1,0 +1,181 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="1240" height="1040" viewBox="0 0 1240 1040" font-family="Segoe UI Variable, Segoe UI, -apple-system, BlinkMacSystemFont, Roboto, Helvetica, Arial, sans-serif">
+  <!--
+    Mockup UX · #6564 — Eje "plan" del proveedor Gemini (Antigravity CLI) en /providers.
+    Revisión 2 (16/09/2026, tras rebote cross-phase de guru → PO reacotó a la opción A):
+      · el estado del plan es "sesión + cuota efectiva medida" (agy -p "/usage" —output-format json, 0 tokens),
+      · TRES estados cerrados: plan_quota_ok / plan_tier_unknown / cli_license_unavailable,
+      · "PLAN PAGO · VERIFICADO" pasa a "PLAN CON CUOTA · N% SEMANAL",
+      · "PLAN GRATUITO · ESPERADO PAGO" (plan_tier_free) queda FUERA de alcance: no hay oráculo del tier.
+    Tokens: .pipeline/assets/design-tokens.css (surface-0/1/2, text-*, success, warning, danger, info, provider-gemini).
+    Iconografía: símbolos copiados de .pipeline/assets/icons/sprite.svg (ic-provider-gemini, ic-key, ic-ok, ic-bad, ic-info, ic-cell-na).
+    Regla: el badge de plan es una MEDICIÓN, no metadata estática. Sin medición fresca nunca se muestra verde.
+  -->
+  <defs>
+    <symbol id="ic-provider-gemini" viewBox="0 0 24 24"><path d="M9 4 L14 9 L9 14 L4 9 Z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M15 10 L20 15 L15 20 L10 15 Z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><circle cx="9" cy="9" r="1.2" fill="currentColor"/><circle cx="15" cy="15" r="1.2" fill="currentColor"/></symbol>
+    <symbol id="ic-key" viewBox="0 0 24 24"><circle cx="8" cy="13" r="4.5" fill="none" stroke="currentColor" stroke-width="1.75"/><path d="M12.5 13 L21 13 M18 13 V16 M21 13 V16" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/><circle cx="8" cy="13" r="1.4" fill="currentColor"/></symbol>
+    <symbol id="ic-ok" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.75"/><path d="M7.75 12.25 L10.75 15.25 L16.25 8.75" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="ic-bad" viewBox="0 0 24 24"><path d="M8.4 3.5 H15.6 L20.5 8.4 V15.6 L15.6 20.5 H8.4 L3.5 15.6 V8.4 Z" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linejoin="round"/><path d="M12 7.5 V13" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/><circle cx="12" cy="16.5" r="1.1" fill="currentColor"/></symbol>
+    <symbol id="ic-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.75"/><circle cx="12" cy="7.75" r="1.15" fill="currentColor"/><path d="M12 11 V16.5" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></symbol>
+    <symbol id="ic-cell-na" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.75"/><path d="M8 12 H16" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></symbol>
+  </defs>
+
+  <rect width="1240" height="1040" fill="#0D1117"/>
+
+  <text x="40" y="46" font-size="20" font-weight="700" fill="#E6EDF3">/providers · Gemini (Antigravity CLI) — eje "plan" (#6564, rev. 2 · alcance reacotado)</text>
+  <text x="40" y="70" font-size="12.5" fill="#8B949E">El badge de plan pasa de metadata estática (FREE hardcodeado) a estado MEDIDO: sesión + cuota efectiva vía `agy -p "/usage"`. Tres estados cerrados; uno solo es verde. El tier contratado no se afirma nunca.</text>
+
+  <g font-size="10" font-weight="700" fill="#6E7681" letter-spacing="0.6">
+    <text x="60" y="108">PROVEEDOR · PLAN (medido)</text>
+    <text x="430" y="108">CREDENCIAL</text>
+    <text x="560" y="108">SALUD EN VIVO · CAUSA</text>
+    <text x="930" y="108">CATÁLOGO</text>
+    <text x="1120" y="108">ACTIVO</text>
+  </g>
+  <line x1="40" y1="116" x2="1200" y2="116" stroke="#21262D"/>
+
+  <!-- ESTADO 1 · CON CUOTA (plan_quota_ok) -->
+  <g transform="translate(40,128)">
+    <rect width="1160" height="118" rx="10" fill="#161B22" stroke="#30363D"/>
+    <rect x="0" y="0" width="4" height="118" rx="2" fill="#8AB4F8"/>
+    <text x="20" y="22" font-size="10" font-weight="700" fill="#3FB950" letter-spacing="0.6">ESTADO 1 · PLAN CON CUOTA — plan_quota_ok (único verde posible; sólo con medición fresca ≤ 2×TTL)</text>
+    <g transform="translate(20,44)">
+      <circle cx="8" cy="12" r="6" fill="#8AB4F8"/>
+      <svg x="22" y="0" width="24" height="24" color="#8AB4F8"><use href="#ic-provider-gemini"/></svg>
+      <text x="54" y="18" font-size="15" font-weight="600" fill="#E6EDF3">Gemini</text>
+      <g transform="translate(120,2)">
+        <rect width="214" height="22" rx="11" fill="rgba(63,185,80,0.14)" stroke="#3FB950"/>
+        <svg x="8" y="4" width="14" height="14" color="#3FB950"><use href="#ic-ok"/></svg>
+        <text x="27" y="15.5" font-size="10" font-weight="800" fill="#3FB950" letter-spacing="0.5">PLAN CON CUOTA · 99% SEMANAL</text>
+      </g>
+    </g>
+    <text x="74" y="94" font-size="11" fill="#8B949E">cuota del plan verificada · hace 12 min</text>
+    <g transform="translate(390,50)">
+      <svg width="16" height="16" color="#8B949E"><use href="#ic-key"/></svg>
+      <text x="22" y="12.5" font-size="11.5" fill="#B1BAC4">OAuth CLI · keyring</text>
+    </g>
+    <g transform="translate(560,44)">
+      <rect width="66" height="22" rx="11" fill="rgba(63,185,80,0.14)" stroke="#3FB950"/>
+      <svg x="7" y="4" width="14" height="14" color="#3FB950"><use href="#ic-ok"/></svg>
+      <text x="26" y="15.5" font-size="11" font-weight="600" fill="#3FB950">SANO</text>
+      <text x="0" y="46" font-size="11" fill="#8B949E">catálogo verificado · 14 modelos · hace 12 min</text>
+    </g>
+    <text x="890" y="60" font-size="11.5" fill="#B1BAC4">14 modelos</text>
+    <text x="890" y="78" font-size="10.5" fill="#8B949E">gemini-3.8-flash-medium ✓</text>
+    <g transform="translate(1080,48)"><rect width="40" height="20" rx="10" fill="#3FB950"/><circle cx="30" cy="10" r="8" fill="#E6EDF3"/></g>
+  </g>
+
+  <!-- Tooltip del badge (hover sobre ESTADO 1) -->
+  <g transform="translate(180,252)">
+    <path d="M14 0 L22 -8 L30 0 Z" fill="#1C2128" stroke="#30363D"/>
+    <rect y="0" width="560" height="84" rx="8" fill="#1C2128" stroke="#30363D"/>
+    <text x="14" y="20" font-size="11" font-weight="700" fill="#E6EDF3">Cuota efectiva medida por la comprobación automática · hace 12 min</text>
+    <text x="14" y="38" font-size="11" fill="#B1BAC4" font-family="Consolas, Menlo, monospace">Gemini Models      semanal 99 %  · 5 h 100 %  · reinicia 23/09 16:14 UTC</text>
+    <text x="14" y="54" font-size="11" fill="#B1BAC4" font-family="Consolas, Menlo, monospace">Claude y GPT       semanal 100 % · 5 h 100 %  · reinicia 23/09 21:47 UTC</text>
+    <text x="14" y="72" font-size="10.5" fill="#8B949E">El tier contratado no es observable con agy 1.2.4: confirmalo a mano (docs/pipeline/multi-provider.md).</text>
+  </g>
+  <text x="760" y="290" font-size="10.5" fill="#6E7681">← tooltip (title) del badge: ambos grupos, semanal y 5 h, antigüedad. Sólo números (CA-5).</text>
+
+  <!-- ESTADO 2 · SIN VERIFICAR (plan_tier_unknown) -->
+  <g transform="translate(40,350)">
+    <rect width="1160" height="118" rx="10" fill="#161B22" stroke="#30363D"/>
+    <rect x="0" y="0" width="4" height="118" rx="2" fill="#8AB4F8"/>
+    <text x="20" y="22" font-size="10" font-weight="700" fill="#58A6FF" letter-spacing="0.6">ESTADO 2 · SIN VERIFICAR — plan_tier_unknown: sesión activa pero /usage no parseable, falta un grupo, disparó un turno real (num_turns &gt; 0) o snapshot &gt; 2×TTL. Nunca verde por inercia</text>
+    <g transform="translate(20,44)">
+      <circle cx="8" cy="12" r="6" fill="#8AB4F8"/>
+      <svg x="22" y="0" width="24" height="24" color="#8AB4F8"><use href="#ic-provider-gemini"/></svg>
+      <text x="54" y="18" font-size="15" font-weight="600" fill="#E6EDF3">Gemini</text>
+      <g transform="translate(120,2)">
+        <rect width="140" height="22" rx="11" fill="rgba(88,166,255,0.14)" stroke="#58A6FF"/>
+        <svg x="8" y="4" width="14" height="14" color="#58A6FF"><use href="#ic-info"/></svg>
+        <text x="27" y="15.5" font-size="10" font-weight="800" fill="#58A6FF" letter-spacing="0.5">PLAN · SIN VERIFICAR</text>
+      </g>
+    </g>
+    <text x="74" y="94" font-size="11" fill="#8B949E">cuota del plan sin verificar · 2.º tick · hace 3 min</text>
+    <g transform="translate(390,50)">
+      <svg width="16" height="16" color="#8B949E"><use href="#ic-key"/></svg>
+      <text x="22" y="12.5" font-size="11.5" fill="#B1BAC4">OAuth CLI · keyring</text>
+    </g>
+    <g transform="translate(560,44)">
+      <rect width="66" height="22" rx="11" fill="rgba(63,185,80,0.14)" stroke="#3FB950"/>
+      <svg x="7" y="4" width="14" height="14" color="#3FB950"><use href="#ic-ok"/></svg>
+      <text x="26" y="15.5" font-size="11" font-weight="600" fill="#3FB950">SANO</text>
+      <text x="0" y="46" font-size="11" fill="#8B949E">catálogo verificado · 14 modelos · hace 3 min   ← el eje SALUD no cambia: el proveedor sigue sirviendo</text>
+    </g>
+    <text x="890" y="60" font-size="11.5" fill="#B1BAC4">14 modelos</text>
+    <text x="890" y="78" font-size="10.5" fill="#8B949E">gemini-3.8-flash-medium ✓</text>
+    <g transform="translate(1080,48)"><rect width="40" height="20" rx="10" fill="#3FB950"/><circle cx="30" cy="10" r="8" fill="#E6EDF3"/></g>
+  </g>
+
+  <!-- ESTADO 3 · SIN SESIÓN (cli_license_unavailable, existente) -->
+  <g transform="translate(40,480)">
+    <rect width="1160" height="118" rx="10" fill="#161B22" stroke="#30363D"/>
+    <rect x="0" y="0" width="4" height="118" rx="2" fill="#8AB4F8"/>
+    <text x="20" y="22" font-size="10" font-weight="700" fill="#F85149" letter-spacing="0.6">ESTADO 3 · SIN SESIÓN — cli_license_unavailable (existe desde #6857). Un solo rojo por fila: lo pone la salud; el plan NO duplica la alarma ni la alerta</text>
+    <g transform="translate(20,44)">
+      <circle cx="8" cy="12" r="6" fill="#8AB4F8"/>
+      <svg x="22" y="0" width="24" height="24" color="#8AB4F8"><use href="#ic-provider-gemini"/></svg>
+      <text x="54" y="18" font-size="15" font-weight="600" fill="#E6EDF3">Gemini</text>
+      <g transform="translate(120,2)">
+        <rect width="150" height="22" rx="11" fill="#1C2128" stroke="#30363D"/>
+        <svg x="8" y="4" width="14" height="14" color="#8B949E"><use href="#ic-cell-na"/></svg>
+        <text x="27" y="15.5" font-size="10" font-weight="800" fill="#8B949E" letter-spacing="0.5">PLAN · NO VERIFICABLE</text>
+      </g>
+    </g>
+    <text x="74" y="94" font-size="11" fill="#8B949E">sin sesión, no se puede medir la cuota</text>
+    <g transform="translate(390,50)">
+      <svg width="16" height="16" color="#F85149"><use href="#ic-key"/></svg>
+      <text x="22" y="12.5" font-size="11.5" fill="#B1BAC4">OAuth CLI · sin token</text>
+    </g>
+    <g transform="translate(560,44)">
+      <rect width="108" height="22" rx="11" fill="rgba(248,81,73,0.14)" stroke="#F85149"/>
+      <svg x="7" y="4" width="14" height="14" color="#F85149"><use href="#ic-bad"/></svg>
+      <text x="26" y="15.5" font-size="11" font-weight="600" fill="#F85149">SIN LICENCIA</text>
+      <text x="0" y="46" font-size="11" fill="#8B949E">CLI sin licencia activa · hace 4 min</text>
+    </g>
+    <text x="890" y="60" font-size="11.5" fill="#6E7681">— sin catálogo</text>
+    <g transform="translate(1080,48)"><rect width="40" height="20" rx="10" fill="#3FB950"/><circle cx="30" cy="10" r="8" fill="#E6EDF3"/></g>
+  </g>
+
+  <!-- Fuera de alcance: estado eliminado -->
+  <g transform="translate(40,612)">
+    <rect width="1160" height="40" rx="8" fill="#0D1117" stroke="#30363D" stroke-dasharray="4 3"/>
+    <g transform="translate(20,9)" opacity="0.45">
+      <rect width="218" height="22" rx="11" fill="rgba(248,81,73,0.14)" stroke="#F85149"/>
+      <svg x="8" y="4" width="14" height="14" color="#F85149"><use href="#ic-bad"/></svg>
+      <text x="27" y="15.5" font-size="10" font-weight="800" fill="#F85149" letter-spacing="0.5">PLAN GRATUITO · ESPERADO PAGO</text>
+      <line x1="4" y1="11" x2="214" y2="11" stroke="#E6EDF3" stroke-width="2"/>
+    </g>
+    <text x="256" y="25" font-size="11" fill="#8B949E">ELIMINADO (rev. 2): `plan_tier_free` no existe. Sin oráculo del tier, prohibido inferir "gratuito" desde credits=0, upgrade_uri, onboarding.json o authMethod. Si no se sabe: SIN VERIFICAR.</text>
+  </g>
+
+  <!-- Telegram -->
+  <text x="40" y="688" font-size="14" font-weight="700" fill="#E6EDF3">Telegram · alerta de plan (falla ruidosa, CA-3) — canal Multi-Provider Health, eje propio como el de "modelo" (#5888)</text>
+  <g transform="translate(40,702)">
+    <rect width="560" height="150" rx="12" fill="#161B22" stroke="#30363D"/>
+    <text x="18" y="30" font-size="13" font-weight="700" fill="#E6EDF3">⚠️ Plan sin verificar — gemini-google sigue 🟢 SANO, pero</text>
+    <text x="18" y="50" font-size="12.5" fill="#E6EDF3">Gemini (Antigravity CLI) no pudo verificar la cuota del plan.</text>
+    <text x="18" y="68" font-size="12.5" fill="#E6EDF3">Hasta confirmarlo no se lo cuenta como plan contratado.</text>
+    <text x="18" y="86" font-size="12.5" fill="#E6EDF3">Revisá la sesión de agy o confirmá el plan a mano.</text>
+    <text x="18" y="110" font-size="12" fill="#B1BAC4" font-family="Consolas, Menlo, monospace">(plan_tier_unknown x2) · Observado: 2026-09-16T22:19:21Z</text>
+    <text x="18" y="134" font-size="11" fill="#8B949E">Recién al 2.º tick consecutivo · dedupe 24h · sin email, token, conversation_id ni project id (CA-5)</text>
+  </g>
+  <g transform="translate(620,702)">
+    <rect width="580" height="150" rx="12" fill="#161B22" stroke="#30363D"/>
+    <text x="18" y="30" font-size="13" font-weight="700" fill="#E6EDF3">🩺 Multi-Provider Health — 🔴 gemini-google → RED</text>
+    <text x="18" y="52" font-size="12" fill="#B1BAC4" font-family="Consolas, Menlo, monospace">(cli_license_unavailable x1)   ← ya existe (#6857), no se toca</text>
+    <text x="18" y="80" font-size="12.5" fill="#E6EDF3">Gemini (Antigravity CLI) no tiene licencia habilitada. Reautenticá o</text>
+    <text x="18" y="98" font-size="12.5" fill="#E6EDF3">revisá el billing.</text>
+    <text x="18" y="124" font-size="11" fill="#8B949E">Sin sesión ⇒ badge neutro NO VERIFICABLE (Gherkin 2). Un solo mensaje por tick, nunca dos.</text>
+  </g>
+
+  <!-- reglas -->
+  <g transform="translate(40,880)" font-size="11.5" fill="#B1BAC4">
+    <text y="0" font-weight="700" fill="#E6EDF3">Reglas del sistema visual (rev. 2)</text>
+    <text y="22">• El eje PLAN vive en el badge junto al nombre (donde hoy está el tier estático). El eje SALUD no cambia su semántica: SANO / DEGRADADO / SIN LICENCIA / SIN INSTALAR.</text>
+    <text y="42">• Un solo verde posible: "PLAN CON CUOTA · N% SEMANAL" con medición fresca (≤ 2×TTL) y num_turns = 0. N = remaining_fraction semanal del grupo Gemini, redondeado, sin decimales.</text>
+    <text y="62">• Nunca se afirma el tier: ni "PAGO" ni "GRATUITO". La distinción entre estados va por TEXTO del badge, no sólo por color (WCAG 1.4.1). Iconografía del sprite propio, sin emojis del SO.</text>
+    <text y="82">• Sin sesión: el rojo lo pone la salud (SIN LICENCIA). El badge de plan queda neutro y NO se emite una segunda alerta. Sin verificar: azul info, alerta recién al 2.º tick, dedupe 24h.</text>
+    <text y="102">• Codex conserva PAGO estático (no tiene comprobación de plan); Cerebras / NVIDIA NIM conservan FREE estático. La regla dinámica aplica sólo a gemini-google.</text>
+    <text y="122">• Invariante #5888: plan_quota_ok y plan_tier_unknown entran en ALLOWED_REASON_CODES, REASON_LABEL (sin "_") y REASON_TABLE / ACTION_SHORT / ACTION_FULL. Test del invariante en verde.</text>
+  </g>
+</svg>
