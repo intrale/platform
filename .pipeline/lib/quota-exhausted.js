@@ -1979,8 +1979,9 @@ function detectQuotaError(parsedEvent, providerDef, opts = {}) {
     } else if (parser === 'gemini-stream') {
         result = _detectGemini(parsedEvent, allowlist);
     } else {
-        // Provider sin handler conocido (deterministic, ollama):
-        // no aplica detección de cuota basada en eventos.
+        // `output_parser` sin detector de eventos (`none`, el de deterministic):
+        // no aplica detección de cuota basada en eventos. `ollama-jsonl` se
+        // retiró en #6563 junto con su launcher.
         return { matched: false };
     }
 

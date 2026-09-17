@@ -109,7 +109,7 @@ Estructura literal aceptada por el schema Ajv 2020-12 ([`.pipeline/agent-models.
 - `supports_tool_use` — `true` / `false` / `"limited"`. Define paridad funcional cross-provider.
 - `prompt_caching` — capacidades de cache (`supported`, `auto`, `ttl_seconds_default`, `ttl_seconds_extended`). Necesario para normalizar costos cross-provider.
 - `credentials_env` — env vars que **deben existir al boot del pulpo** si algún skill referencia este provider. Cada item validado contra `ALLOWED_CREDENTIAL_ENV_VARS` ([#3080](https://github.com/intrale/platform/issues/3080) SEC-3, anti-exfiltración de `PATH`/`AWS_SECRET_ACCESS_KEY` por declaración). **Cuando `auth_mode` es `"oauth"` este campo es opcional e informativo** — no se exige la key al boot ni se inyecta al child (ver abajo).
-- `auth_mode` — `"oauth"` | `"api_key"` (default `"api_key"` si está ausente). Declara **cómo** autentica el provider ([#3361](https://github.com/intrale/platform/issues/3361), generalizado por [#4306](https://github.com/intrale/platform/issues/4306)). Los providers OAuth/CLI login (`anthropic` → Claude Max, `openai-codex` → ChatGPT Plus vía `codex login`, `gemini-google` → cuenta Google) autentican vía login interactivo del CLI; su token vive en stores locales (`~/.claude/.credentials.json`, `~/.codex`, cuenta Google) y **nunca pasa por una env var**. Por eso, con `auth_mode: "oauth"`: (a) el pre-check de credenciales (`credentials-precheck.js`) y el boot validator (`agent-models-validate.js`) **bypassean** la exigencia de `credentials_env`; (b) `build-child-env.js` **no exige ni inyecta** la key al env del child (env-isolation). Los providers HTTP por API key pelada (`cerebras`, `nvidia-nim`) **NO** llevan `auth_mode` (quedan `api_key` por default) y siguen exigiendo su key. **Coherencia fail-closed:** `agent-models-validate.js` rechaza al cargar (`error`, no warning) un provider `oauth` cuyo `launcher` no sea de login CLI (`claude` / `codex` / `gemini-google`) — un provider HTTP/local marcado `oauth` correría sin credencial.
+- `auth_mode` — `"oauth"` | `"api_key"` (default `"api_key"` si está ausente). Declara **cómo** autentica el provider ([#3361](https://github.com/intrale/platform/issues/3361), generalizado por [#4306](https://github.com/intrale/platform/issues/4306)). Los providers OAuth/CLI login (`anthropic` → Claude Max, `openai-codex` → ChatGPT Plus vía `codex login`, `gemini-google` → cuenta Google) autentican vía login interactivo del CLI; su token vive en stores locales (`~/.claude/.credentials.json`, `~/.codex`, cuenta Google) y **nunca pasa por una env var**. Por eso, con `auth_mode: "oauth"`: (a) el pre-check de credenciales (`credentials-precheck.js`) y el boot validator (`agent-models-validate.js`) **bypassean** la exigencia de `credentials_env`; (b) `build-child-env.js` **no exige ni inyecta** la key al env del child (env-isolation). Un provider HTTP por API key pelada (como lo eran `cerebras` y `nvidia-nim` hasta su baja en [#6563](https://github.com/intrale/platform/issues/6563); hoy no queda ninguno en el plantel) **NO** lleva `auth_mode` (queda `api_key` por default) y sigue exigiendo su key. **Coherencia fail-closed:** `agent-models-validate.js` rechaza al cargar (`error`, no warning) un provider `oauth` cuyo `launcher` no sea de login CLI (`claude` / `codex` / `gemini-google`) — un provider HTTP/local marcado `oauth` correría sin credencial.
 - `permissions_mode` — modo de permisos del CLI. Mapeado a la matriz capability×(provider, mode) de [`docs/pipeline-multi-provider/permission-mapping.md`](../pipeline-multi-provider/permission-mapping.md).
 - `admission` — declaración de las **tres condiciones de admisión** ([#6562](https://github.com/intrale/platform/issues/6562), [§16](#16-criterio-de-admisión-de-proveedores-6562)): `cli_edits_files`, `reports_usage`, `terms_no_training`. Fail-closed: campo ausente = no cumple. `non_llm: true` exime a los ejecutores sin LLM; `exception { reason, until, issue }` mantiene temporalmente en el ruteo a uno que no cumple. Un proveedor referenciado por el ruteo que no declare las tres en `true` rompe el boot y el guardado desde el dashboard con un mensaje `[provider-admission]` que nombra la condición incumplida.
 
@@ -3241,7 +3241,7 @@ completo.
 |---|---|
 | Bloque de configuración | `providers.<x>` en `.pipeline/agent-models.json` (+ los `fallbacks[]` de cada skill donde iba) |
 | Adapter de launcher | `.pipeline/lib/agent-launcher/providers/<x>.js` (+ `runners/<x>-runner.js` para `cerebras`/`nvidia-nim`) y su registro en `resolve-provider.js` |
-| Quota-adapter | `.pipeline/lib/quota-adapters/<x>.js` + switch/allowlist en `quota-adapters/index.js` |
+| Quota-adapter | `.pipeline/lib/quota-adapters/<x>.js` + switch/allowlist en `quota-adapters/index.js`. **Sólo `cerebras` y `nvidia-nim`**: `kimi-moonshot` nunca tuvo quota-adapter ni runner (su cuota se detectaba por `KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER`) |
 | Allowlists del validador | `ALLOWED_LAUNCHERS`, `ALLOWED_MODELS_BY_LAUNCHER`, `ALLOWED_CREDENTIAL_ENV_VARS` en `.pipeline/lib/agent-models-validate.js`; `enum` informativo de `launcher` en `agent-models.schema.json`; `KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER` en `lib/quota-exhausted.js` |
 | Secretos | `secrets-manifest.json`, `lib/credentials.js`, `lib/secret-scopes.js`, `kernel-bootstrap/motor-9.1-secret-allowlist.json` |
 | Superficie del operador | filas en `views/dashboard/{providers,onboarding-wizard,home,multi-provider}.js`; tokens `--provider-<x>*` (`assets/design-tokens.css`) y símbolo `ic-provider-<x>` (`assets/icons/sprite.svg`) |
@@ -3252,17 +3252,34 @@ completo.
 # 0. Precondiciones: rama nueva desde main, pipeline en ventana segura.
 export PATH="/c/Workspaces/gh-cli/bin:$PATH"
 git fetch origin && git switch -c agent/<issue-nuevo>-realta-<x> origin/main
-SHA_BAJA=$(git log --format=%H --grep '#6563' origin/main | tail -1)   # merge del PR de la baja
+# SHA_BAJA = merge del PR que CERRÓ #6563. Se lee de GitHub (linked PR), no del texto
+# de los commits: `git log --grep '#6563'` también matchea #7295 y #7307, que sólo lo
+# mencionan, y `tail -1` devolvería el más antiguo (9867dc9c0, criterio de admisión).
+SHA_BAJA=$(gh api graphql -f query='{ repository(owner:"intrale", name:"platform") {
+  issue(number:6563) { closedByPullRequestsReferences(first:10) {
+    nodes { number merged mergeCommit { oid } } } } } }' \
+  --jq '.data.repository.issue.closedByPullRequestsReferences.nodes[] | select(.merged) | .mergeCommit.oid' \
+  | head -1)
+# Sanidad fail-closed: el merge de la baja BORRA los adapters retirados. Si el SHA no
+# los borra, no es ese commit y el resto del plan restauraría un estado equivocado.
+git diff --diff-filter=D --name-only "$SHA_BAJA^" "$SHA_BAJA" \
+  | grep -q '^\.pipeline/lib/agent-launcher/providers/cerebras\.js$' \
+  || { echo "SHA_BAJA='$SHA_BAJA' no es el merge de la baja de #6563"; exit 1; }
 X=nvidia-nim                                                          # proveedor a re-habilitar
 
 # 1. Backup del JSON vivo (misma convención que la UI del dashboard, §1.3).
 cp .pipeline/agent-models.json ".pipeline/agent-models.json.bak-$(date +%Y%m%d-%H%M%S)"
 
-# 2. Restaurar adapter + quota-adapter + runner desde el estado previo a la baja.
-git checkout "$SHA_BAJA^" -- \
-  ".pipeline/lib/agent-launcher/providers/$X.js" \
-  ".pipeline/lib/quota-adapters/$X.js"
-git checkout "$SHA_BAJA^" -- ".pipeline/lib/agent-launcher/runners/$X-runner.js" 2>/dev/null || true
+# 2. Restaurar adapter (+ quota-adapter y runner, sólo si existían) desde el estado previo.
+#    El adapter de launcher es obligatorio para los tres. El quota-adapter y el runner
+#    existían sólo para cerebras y nvidia-nim: kimi-moonshot nunca tuvo ninguno de los dos
+#    (ver tabla 17.1), y un `git checkout` de un path inexistente aborta con `pathspec did
+#    not match`; por eso se comprueba la existencia antes de restaurar.
+git checkout "$SHA_BAJA^" -- ".pipeline/lib/agent-launcher/providers/$X.js"
+for f in ".pipeline/lib/quota-adapters/$X.js" ".pipeline/lib/agent-launcher/runners/$X-runner.js"; do
+  if git cat-file -e "$SHA_BAJA^:$f" 2>/dev/null; then git checkout "$SHA_BAJA^" -- "$f";
+  else echo "sin $f en SHA_BAJA^ (esperado para kimi-moonshot)"; fi
+done
 
 # 3. Volver a registrar el proveedor en las allowlists y el registro de handlers.
 #    Ver el diff exacto de la baja para cada archivo y aplicarlo al revés:
@@ -3314,8 +3331,11 @@ node -e "const v=require('./.pipeline/lib/agent-models-validate.js');console.log
 # 7. Tests del núcleo + cobertura de la cadena.
 node --test .pipeline/tests/validate-agent-models.test.js .pipeline/tests/provider-admission-6562.test.js \
   ".pipeline/lib/__tests__/agent-models-validate*.test.js"
-node .pipeline/validate-chains.js
-node .pipeline/multi-provider-coverage.js
+node .pipeline/lib/multi-provider/validate-chains.js
+#    Matriz skill × provider en dry-run (sin spawn ni consumo de cuota). Exige ventana:
+#    pipeline con `.pausa` (halt total) o `.partial-pause.json` con
+#    `allowed_skills: ['multi-provider-smoke-test']`; si no, aborta con FATAL.
+node .pipeline/tools/multi-provider-smoke-test.js --dry-run --no-telegram --no-create-issues
 
 # 8. Restart y smoke test (mueve `pipeline-stable` si pasa; rollback automático si no).
 node .pipeline/restart.js

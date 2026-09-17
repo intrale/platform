@@ -687,7 +687,8 @@ function resolveSherlockProvider({
         if (!transport) {
             // Provider sin handler en Sherlock (HTTP ni spawn) — excluir y
             // seguir con el próximo de la chain. Defensa para providers
-            // futuros; hoy los 5 de telegram-sherlock tienen handler.
+            // futuros; hoy los 3 de telegram-sherlock (anthropic, openai-codex,
+            // gemini-google) tienen handler (#6563 retiró cerebras y nvidia-nim).
             if (typeof log === 'function') {
                 log('sherlock', `provider ${res.provider} no tiene handler en Sherlock — fallback al siguiente`);
             }
@@ -1553,8 +1554,9 @@ async function _verifyImpl(opts = {}) {
     // ante un provider colgado la da esta cascada, no un corte por reloj.
     //
     // #3484: NO se excluye al commanderProvider; un provider sin handler en
-    // Sherlock lo saltea resolveSherlockProvider internamente (hoy los 5 de la
-    // chain tienen handler — codex incluido desde 2026-06-02).
+    // Sherlock lo saltea resolveSherlockProvider internamente (hoy los 3 de la
+    // chain tienen handler — codex incluido desde 2026-06-02; cerebras y
+    // nvidia-nim dejaron la chain en #6563).
     // #3766: sin swap intra-provider — la adversariality nace del rol (prompt
     // fiscal), no del modelo. `commanderModel` se usa solo para el cálculo de
     // `sameModel` que se persiste al JSONL como forensics (sin influir en el
