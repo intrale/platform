@@ -375,9 +375,9 @@ test('launchAgent con provider gemini-google spawnea agy con args traducidos', (
     assert.equal(spi.calls.length, 1);
     const call = spi.calls[0];
     assert.equal(call.cmd, '/fake/agy');
-    assert.deepEqual(call.args.slice(0, 7), [
+    assert.deepEqual(call.args.slice(0, 8), [
         '--input-format', 'stream-json', '--output-format', 'stream-json',
-        '--dangerously-skip-permissions', '--print-timeout', '5m',
+        '--disable-slash-commands', '--dangerously-skip-permissions', '--print-timeout', '5m',
     ]);
     assert.ok(call.args.includes('--model'));
     assert.ok(call.args.includes('gemini-3.8-flash-medium'));

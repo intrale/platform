@@ -126,6 +126,7 @@ const HEALTH_LABEL = Object.freeze({ green: 'SANO', yellow: 'DEGRADADO', red: 'C
 // Copy acordado con `ux` en la definición de #6857.
 const HEALTH_LABEL_BY_REASON = Object.freeze({
     cli_unavailable: 'SIN INSTALAR',
+    cli_contract_mismatch: 'VERSIÓN NO PROBADA',
     cli_license_unavailable: 'SIN LICENCIA',
 });
 
@@ -188,6 +189,7 @@ const REASON_LABEL = Object.freeze({
     unknown: 'causa desconocida',
     network_error: 'error de red',             // distinto de `timeout de red`, que ya existía
     cli_binary_undeclared: 'binario CLI no declarado',  // config faltante, no una caída
+    cli_contract_mismatch: 'versión del CLI fuera del rango probado',
     cli_license_unavailable: 'CLI sin licencia activa', // #4869: instalado pero no habilitado
     // #5888 CA-8 — eje de VIGENCIA DE MODELO (no es salud del provider).
     model_not_in_catalog: 'modelo fuera de catálogo',   // nombra lo observado (D-2), no un EOL inferido
@@ -768,7 +770,9 @@ function renderProviderRow(p, now) {
     // snapshot quedó viejo, la línea lo dice en vez de repetir un verde rancio.
     let reasonTxt = reasonHuman(p.healthReason);
     if (p.cliProbe) {
+        if (p.healthReason === 'cli_contract_mismatch' && p.cliProbe.detail === 'version_unparseable') reasonTxt = 'versión del CLI ilegible';
         const parts = [reasonTxt];
+        if (p.healthReason === 'cli_contract_mismatch' && /^\d+\.\d+\.\d+$/.test(p.cliProbe.cli_version || '')) parts.push('agy ' + p.cliProbe.cli_version);
         if (p.healthReason === 'cli_catalog_ok' && Number.isFinite(p.cliProbe.model_count) && p.cliProbe.model_count > 0) {
             parts.push(p.cliProbe.model_count + ' modelos');
         }

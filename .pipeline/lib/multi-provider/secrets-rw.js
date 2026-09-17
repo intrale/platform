@@ -112,6 +112,7 @@ const MANAGED_KEYS = Object.freeze([
         // un flag de entorno. `readiness_env: 'AGY_LICENSE_READY'` se eliminó:
         // ver `cli-oauth-probe.js#probeCliProviderLive` y `agy-catalog-probe.js`.
         catalog_probe: 'agy',
+        cli_contract: { min_version: '1.2.0', max_tested_version: '1.2.5' },
         free_tier_notes: 'Antigravity CLI; disponibilidad sujeta a sesión OAuth y licencia/billing.',
     },
 ]);

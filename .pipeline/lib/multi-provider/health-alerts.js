@@ -72,6 +72,7 @@ const ALLOWED_REASON_CODES = Object.freeze(new Set([
     // la licencia. Debe sobrevivir al sanitize para que el health-gate del
     // dispatch lo trate como rojo DURABLE y saltee el provider (no lo colapses
     // a 'unknown', que el dispatch interpreta como rojo transitorio → fail-open).
+    'cli_contract_mismatch',
     'cli_license_unavailable',
     // #6857 — estado feliz del round-trip real al CLI (`agy models` devolvió
     // un catálogo poblado). Distinto de `cli_oauth_ok` (que sólo dice "el

@@ -12,7 +12,7 @@
 // `agy models` (no interactivo, no consume cuota de generación, ~2 s) y
 // considera SANO al provider sólo si el CLI devuelve un catálogo NO vacío.
 //
-// TRES ESTADOS, no dos (CA-4):
+// CUATRO ESTADOS (#7290): versión fuera del rango probado → cli_contract_mismatch.
 //
 //   | Estado real                          | reason_code               | ok    |
 //   |--------------------------------------|---------------------------|-------|
@@ -58,7 +58,7 @@ const childProcess = require('node:child_process');
 const { isBinaryOnPath } = require('./cli-oauth-probe');
 
 const CACHE_FILENAME = 'agy-catalog-probe.json';
-const CACHE_VERSION = 1;
+const CACHE_VERSION = 2;
 
 // TTL del cache (15 min). Ver cabecera: 5 min de tick × 3 = 15 < 20 min de
 // frescura del dispatch.
@@ -85,6 +85,9 @@ const MODEL_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._\-/:]{0,79}$/;
 
 // Tabla CERRADA de `detail` (secundario, nunca gobierna el estado).
 const DETAIL = Object.freeze({
+    VERSION_BELOW_MIN: 'version_below_min',
+    VERSION_ABOVE_TESTED: 'version_above_tested',
+    VERSION_UNPARSEABLE: 'version_unparseable',
     BINARY_MISSING: 'binary_missing',
     EXIT_NONZERO: 'exit_nonzero',
     TIMEOUT: 'timeout',
@@ -94,6 +97,7 @@ const DETAIL = Object.freeze({
 });
 
 const REASON = Object.freeze({
+    CONTRACT: 'cli_contract_mismatch',
     UNAVAILABLE: 'cli_unavailable',
     LICENSE: 'cli_license_unavailable',
     OK: 'cli_catalog_ok',
@@ -214,6 +218,69 @@ function runAgyModels({ cmd, env, spawnImpl, timeoutMs }) {
     });
 }
 
+function runAgyVersion({ cmd, env, spawnImpl, timeoutMs }) {
+    const _spawn = spawnImpl || childProcess.spawn;
+    const timeout = Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : DEFAULT_TIMEOUT_MS;
+    return new Promise((resolve) => {
+        let stdout = '';
+        let settled = false;
+        let timedOut = false;
+        let child;
+        const done = (result) => {
+            if (settled) return;
+            settled = true;
+            resolve(result);
+        };
+        try {
+            child = _spawn(cmd, ['--version'], {
+                shell: false,
+                windowsHide: true,
+                stdio: ['ignore', 'pipe', 'pipe'],
+                env,
+            });
+        } catch {
+            return done({ rc: null, stdout: '', timedOut: false, spawnError: true });
+        }
+        const timer = setTimeout(() => {
+            timedOut = true;
+            try { child.kill(); } catch { /* best-effort */ }
+            // Si `kill` no dispara `close` (Windows con handle colgado), no
+            // esperamos: el veredicto ya es "sin respuesta".
+            done({ rc: null, stdout, timedOut: true, spawnError: false });
+        }, timeout);
+        if (child.stdout) {
+            child.stdout.on('data', (d) => {
+                stdout = (stdout + String(d)).slice(0, MAX_STDOUT_BYTES);
+            });
+        }
+        // stderr se drena y se descarta: nunca se persiste texto libre del CLI.
+        if (child.stderr) child.stderr.on('data', () => {});
+        child.on('error', () => {
+            clearTimeout(timer);
+            done({ rc: null, stdout, timedOut, spawnError: true });
+        });
+        child.on('close', (code) => {
+            clearTimeout(timer);
+            done({ rc: code, stdout, timedOut, spawnError: false });
+        });
+    });
+}
+
+
+// Contrato probado: la versión se guarda saneada, nunca el stdout libre.
+const AGY_CLI_CONTRACT = Object.freeze({ min_version: '1.2.0', max_tested_version: '1.2.5' });
+function parseAgyVersion(stdout) {
+    if (typeof stdout !== 'string') return null;
+    const m = /^(\d+)\.(\d+)\.(\d+)/.exec(stdout.trim());
+    if (!m || m.slice(1).some(v => !Number.isSafeInteger(Number(v)))) return null;
+    return m.slice(1).map(Number).join('.');
+}
+function cmpSemver(a, b) {
+    const aa = a.split('.').map(Number), bb = b.split('.').map(Number);
+    for (let i = 0; i < 3; i++) if (aa[i] !== bb[i]) return aa[i] < bb[i] ? -1 : 1;
+    return 0;
+}
+
 // -----------------------------------------------------------------------------
 // Cache en filesystem
 // -----------------------------------------------------------------------------
@@ -261,6 +328,7 @@ function invalidateCache(opts = {}) {
 function fromCache(entry, nowMs) {
     return {
         ok: entry.reason === REASON.OK,
+        cli_version: parseAgyVersion(entry.cli_version),
         reason: entry.reason,
         detail: entry.detail || null,
         models: Array.isArray(entry.models) ? entry.models.slice() : [],
@@ -300,6 +368,8 @@ async function probeAgyCatalog(opts = {}) {
     const negativeTtlMs = Number.isFinite(opts.negativeTtlMs) && opts.negativeTtlMs >= 0
         ? opts.negativeTtlMs
         : Math.min(DEFAULT_NEGATIVE_TTL_MS, ttlMs);
+    const contract = { ...AGY_CLI_CONTRACT, ...(opts.contract || {}) };
+    const contractKey = JSON.stringify([contract.min_version, contract.max_tested_version]);
     const useCache = opts.noCache !== true;
     const cachePath = useCache ? cachePathFor(opts) : null;
 
@@ -329,9 +399,25 @@ async function probeAgyCatalog(opts = {}) {
     if (useCache && opts.force !== true) {
         const cached = readCache(cachePath, fsImpl);
         const effectiveTtl = cached && cached.reason === REASON.OK ? ttlMs : negativeTtlMs;
-        if (cached && cached.cmd === bin.cmd && (nowMs - cached.checked_at_ms) < effectiveTtl) {
+        if (cached && cached.cmd === bin.cmd && cached.contract_key === contractKey && (nowMs - cached.checked_at_ms) < effectiveTtl) {
             return fromCache(cached, nowMs);
         }
+    }
+
+    // 2.5 Contrato antes del catálogo. Un pin nuevo invalida la cache anterior.
+    const ver = await runAgyVersion({ cmd: bin.cmd, env, spawnImpl: opts.spawnImpl, timeoutMs: opts.timeoutMs });
+    const cliVersion = parseAgyVersion(ver.stdout);
+    const min = parseAgyVersion(contract.min_version), max = parseAgyVersion(contract.max_tested_version);
+    let contractDetail = null;
+    if (ver.spawnError || ver.timedOut || ver.rc !== 0 || !cliVersion || !min || !max || cmpSemver(min, max) > 0) contractDetail = DETAIL.VERSION_UNPARSEABLE;
+    else if (cmpSemver(cliVersion, min) < 0) contractDetail = DETAIL.VERSION_BELOW_MIN;
+    else if (cmpSemver(cliVersion, max) > 0) contractDetail = DETAIL.VERSION_ABOVE_TESTED;
+    if (contractDetail) {
+        const entry = { version: CACHE_VERSION, provider: 'gemini-google', cmd: bin.cmd,
+            launcher_kind: bin.kind, cli_version: cliVersion, contract_key: contractKey,
+            reason: REASON.CONTRACT, detail: contractDetail, models: [], checked_at_ms: nowMs };
+        if (useCache) writeCache(cachePath, entry, fsImpl);
+        return { ...fromCache(entry, nowMs), cached: false };
     }
 
     // 3. Round-trip real.
@@ -359,6 +445,8 @@ async function probeAgyCatalog(opts = {}) {
     const entry = {
         version: CACHE_VERSION,
         provider: 'gemini-google',
+        cli_version: cliVersion,
+        contract_key: contractKey,
         cmd: bin.cmd,
         launcher_kind: bin.kind,
         reason,
@@ -385,4 +473,7 @@ module.exports = {
     DETAIL,
     // internos, expuestos para tests
     _runAgyModels: runAgyModels,
+    _runAgyVersion: runAgyVersion,
+    AGY_CLI_CONTRACT,
+    parseAgyVersion,
 };
