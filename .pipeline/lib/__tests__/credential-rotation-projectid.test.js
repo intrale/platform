@@ -334,8 +334,9 @@ test('CA-8: una fila sin project_id valido NO genera alerta y SI genera error vi
 test('CA-8 · INVENTARIO REAL: ninguna fila resuelve a project_id vacio/undefined/invalido', () => {
     const md = fs.readFileSync(path.join(REPO_ROOT, 'docs', 'secrets-inventory.md'), 'utf8');
     const rows = cron.parseInventoryMarkdown(md);
-    // 13 filas hasta #6563; la baja de cerebras/nvidia-nim/kimi-moonshot deja 10.
-    assert.ok(rows.length >= 10, `el inventario real debe tener >= 10 filas, tiene ${rows.length}`);
+    // 13 filas hasta #6563; la baja de cerebras/nvidia-nim/kimi-moonshot deja 10;
+    // #6861 retira GEMINI_API_KEY (Antigravity es spawn puro, sin API key) → 9.
+    assert.ok(rows.length >= 9, `el inventario real debe tener >= 9 filas, tiene ${rows.length}`);
     const { isSafeProjectId } = require('../safe-project-id');
     for (const row of rows) {
         assert.ok(isSafeProjectId(row.project_id),

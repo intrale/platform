@@ -1466,18 +1466,20 @@ que muestra el dashboard y la traza es exactamente el que corrió. Verificado en
 vivo: `thinking_tokens` para el mismo prompt = 100 (`-high`) / 30 (`-medium`) /
 21 (`-low`).
 
-**Las tres barreras son espejo exacto del catálogo** (por reemplazo, no por
-agregado — el id viejo se quita para que ninguna reintroducción pase silenciosa):
+**Las dos barreras son espejo exacto del catálogo** (por reemplazo, no por
+agregado — el id viejo se quita para que ninguna reintroducción pase silenciosa).
+Hasta #6861 había una tercera, `PROVIDER_MODELS_ALLOWLIST['antigravity']` en
+`lib/multi-provider/completion-client.js`, que se retiró junto con el shim HTTP
+de AI Studio: Antigravity es spawn puro y esa tabla quedó vacía (`{}`).
 
 | Barrera | Archivo |
 |---|---|
 | `ALLOWED_MODELS_BY_LAUNCHER['antigravity']` | `lib/agent-models-validate.js` (boot del pulpo + CA-6 de la propagación) |
-| `PROVIDER_MODELS_ALLOWLIST['antigravity']` | `lib/multi-provider/completion-client.js` |
 | `CATALOG['antigravity']` (`CATALOG_VERSION 2026-09-16.1`) | `lib/multi-provider/model-catalog.js` (Tab "3 · Catálogo" del dashboard; `cost_per_1m: null` → se renderiza `—`, Antigravity factura por licencia) |
 
 **Verificación automática contra el CLI** — `lib/multi-provider/agy-catalog.js`
 cruza `agent-models.json` (las 4 fuentes de #5888 restringidas a antigravity)
-+ las tres barreras contra `agy models` **real**:
++ las dos barreras contra `agy models` **real**:
 
 ```bash
 node .pipeline/lib/multi-provider/agy-catalog.js --check     # exit 1 si hay ids muertos; 2 si agy no está
