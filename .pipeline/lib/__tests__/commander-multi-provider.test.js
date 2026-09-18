@@ -596,6 +596,12 @@ test('CA-1 / CA-2 — agent-models.json real tiene telegram-commander con orden 
     // #6563 — cerebras y nvidia-nim retirados: la cadena queda en el plantel
     // agéntico vigente (Codex → Gemini).
     assert.deepEqual(chain, ['openai-codex', 'gemini-google']);
+    // #6860 — matriz Antigravity firmada (Decisión 1: sí): el Commander cae a
+    // Claude Sonnet vía Google y el Sherlock a Flash-medium (familia distinta,
+    // #3501). Pinean la matriz, no la toleran.
+    assert.equal(cmd.fallbacks[1].model_override, 'claude-sonnet-4-6');
+    assert.deepEqual(models.skills['telegram-sherlock'].fallbacks[1], {
+        provider: 'gemini-google', model_override: 'gemini-3.8-flash-medium' });
 });
 
 // -----------------------------------------------------------------------------

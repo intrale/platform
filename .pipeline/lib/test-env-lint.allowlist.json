@@ -342,19 +342,19 @@
         },
         {
             "file": "lib/__tests__/commander-multi-provider.test.js",
-            "line": 1755,
+            "line": 1761,
             "kind": "deuda",
             "reason": "escritura de ANTHROPIC_API_KEY fuera del helper"
         },
         {
             "file": "lib/__tests__/commander-multi-provider.test.js",
-            "line": 1765,
+            "line": 1771,
             "kind": "deuda",
             "reason": "escritura de ANTHROPIC_API_KEY fuera del helper"
         },
         {
             "file": "lib/__tests__/commander-multi-provider.test.js",
-            "line": 1766,
+            "line": 1772,
             "kind": "deuda",
             "reason": "escritura de ANTHROPIC_API_KEY fuera del helper"
         },

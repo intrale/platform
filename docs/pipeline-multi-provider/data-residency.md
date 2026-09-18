@@ -31,6 +31,7 @@ y los modos de cuenta relevantes para Anthropic (API y Plan Max). El estado de h
 | **OpenAI tier free** | ❌ no | ⛔ NO — entrena con datos por default | US | ⛔ no | indefinido | https://openai.com/policies/row-terms-of-use/ | n/a | 2026-05-08 |
 | **Google Gemini API** (paga) | ❌ no — schema lo permite, sin adapter | ⚙️ configurable — Vertex AI no entrena por default; Gemini API consumer sí | US/EU/global (Vertex) | ✅ sí (Vertex AI Enterprise / Workspace) | 30 días default (Vertex) | https://cloud.google.com/terms/service-terms | https://cloud.google.com/terms/data-processing-addendum | 2026-05-08 |
 | **Google Gemini tier free** (Gemini API consumer) | ❌ no | ⛔ NO — entrena con datos por default en el tier free | US/global | ⛔ no | indefinido | https://ai.google.dev/gemini-api/terms | n/a | 2026-05-08 |
+| **Google Antigravity (consumer, plan pago)** | ✅ sí, bajo excepción #6564 (reasignada en #6563); 6 skills según #6860 | ⛔ NO — no se acredita ausencia de entrenamiento; opt-out documentado en la IDE, cobertura CLI sin confirmar | Sin garantía regional documentada para esta cuenta | No acreditado para consumer | Interacciones retenidas y revisables por humanos; borrado por solicitud | https://antigravity.google/terms | n/a | Auditoría 2026-09-16; CLI 1.2.5 re-verificado 2026-09-17; ver §4.4.1 de multi-provider.md |
 
 > **Nota sobre habilitación**: la columna "Habilitado en `agent-models.json`"
 > refleja el estado del archivo en `origin/main` al momento del último
