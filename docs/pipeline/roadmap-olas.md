@@ -64,7 +64,9 @@ Una entrada planeada que describe algo ya en curso es un bug de datos, no una no
 | **Estratégica** (`name`: `Ola 9.2 — …`, `Ola Puente — …`) | El identificador real del bloque de trabajo. | **La única válida** para hablar, planificar y reportar. |
 
 Hoy conviven: interna `6` = Ola 9.1 · interna `7` = Ola Puente · interna `8` = alta de producto nuevo ·
-interna `9` = Ola 9.2. Decir "la ola 8" sin aclarar cuál es una fuente garantizada de malentendido.
+interna `9` = Ola 9.2 · interna `10` = Ola 9.4 · interna `13` = Ola Proveedores · interna `15` = Ola Tablero fiel
+(que se ejecuta 13.ª). Decir "la ola 8" sin aclarar cuál es una fuente garantizada de malentendido.
+La **posición** en el tablero es una tercera cosa: es el orden de ejecución y se ajusta al reordenar.
 **Siempre nombrar por identificador estratégico.**
 
 ### R5 · Las dependencias se declaran en formato máquina, no en prosa
@@ -105,18 +107,39 @@ después hay que corregir.
 > uno menor si destraba más trabajo. El camino crítico vive en
 > [`corte-kernel-y-tres-proyectos.md` §7](corte-kernel-y-tres-proyectos.md): `E1 → E2 → (E3, E5) → E6 → E7 → E9`.
 
-| Orden | Bloque | Por qué acá | Estado |
-|-------|--------|-------------|--------|
+> **Última re-validación:** 2026-09-18 (Leo por Telegram, 10:44–11:37 ART; asentado en `meta.note` de
+> `waves.json`). Decisiones de ese día: (a) la **Ola Vault sube** y corre antes que la app operadora
+> (el ensayo de GATE 1 del 16/09 falló porque la firma por botón exige el vault encendido);
+> (b) la **separación kernel↔Intrale se ejecuta completa antes de empezar la app operadora**
+> —"si tenemos todo listo para separar, tenemos que hacerlo; si encima empezamos la app, después
+> impactamos las dos cosas"—, lo que restituye el camino crítico canónico frente a una propuesta
+> de adelantar la app; (c) se elimina la bolsa "EP-9 · Deuda operativa": la deuda real va a la ola
+> del tema al que pertenece; (d) la app operadora deja de ser una ola única y pasa a **cuatro olas
+> incrementales** hasta cubrir toda la funcionalidad del dashboard actual. La **posición** es lo que
+> se lee en el tablero y se corre al reordenar; la **referencia** estable es el título (R4).
+
+| Posición | Bloque | Por qué acá | Estado |
+|----------|--------|-------------|--------|
 | ✅ | **Release firmado del kernel** (E1) | Sin release publicado, `consume:true` no tiene de dónde consumir. Raíz de todo. | **Hecho** — `v0.1.2` publicado y firmado |
-| **En curso** | **Ola 9.4 · Partir config + externalizar el estado operativo por proyecto** (épico #5107) | **Cuello de botella real.** Mientras el estado sea plano y global, dos proyectos se pisan: no hay multi-proyecto, no hay app operadora, no se puede encender el consumo en serio. Alcance ampliado por decisión del operador (28/07): incluye además el **encendido del store durable** y el **almacenamiento externo** del estado operativo. Cadena `#5108 → #5109 → #5110 → #5113`; **#5111** paralelo tras #5108; **#5112** totalmente paralelizable. | Abierta 28/07 — 6 hijos, #5108 y #5112 habilitados |
-| **1.º** | **Ola 9.3 · Partir skills híbridos** (E6) | Grande y la **más riesgosa**: el producto puede perder reglas propias (strings, flavors, gates de QA) sin que nadie lo note. Su red de contención, el guardrail anti-regresión **#5068**, ya está cerrada — la red existe. | Sin épico creado |
-| **2.º** | **Red de seguridad del corte** (E3) + **launcher/updater externo** (E5) | Precondición del cutover: botón de pánico independiente, snapshot verificado, timeout de decisión y **simulacro verde obligatorio**. Sin ensayo, no hay corte. | Sin épico creado |
-| **3.º** | **Ola 9.5 · Cutover con freeze + observación** (E7) | Punto de no retorno. Ventana acotada y agendada, drenaje previo, motor local congelado como destino de rollback. | Sin épico creado |
-| **4.º** | **App operadora móvil** (E9) | Prueba de fuego del desacople: si el kernel no puede operar un proyecto que no es Intrale, el corte no terminó. **Depende dura de E2** (una app móvil no lee archivos locales). | Sin épico creado |
+| ✅ | **Ola 9.4 · Partir config + externalizar el estado operativo** (E2, épico #5107) | Envoltorio único de acceso al estado, migración de los accesos con guardrail, namespaceado por proyecto, partición de `config.yaml`, store durable y almacenamiento externo **preparados y ensayados en seco**. El encendido real quedó como cola (ver posición 5.ª). | **Cerrada 16/09** (interna 10) |
+| **1.ª · activa** | **Ola Proveedores · Antigravity encendido y retiro de los gratuitos** (épico #6856) | Cuota adicional paga (Google vía `agy`) con round-trip real, catálogo de modelos corregido, matriz modelo×agente firmada, y baja del ruteo de los proveedores gratuitos que no editan archivos ni reportan consumo. Descomprime la cuota de Anthropic antes de las olas grandes. | Abierta 16/09 (interna 13) — 10 issues, 8 cerrados; queda #6861 → épico |
+| **2.ª** | **Ola 9.4.1 · Ambiente de pruebas del CORE** (épico #7102) | Los tests del CORE dejan de correr contra la instalación productiva: resolvedor único de ambiente y `pipelineDir` de prueba. Precondición de higiene para todo lo que sigue. | Planificada (interna 11) — 7 issues |
+| **3.ª** | **Ola E8 · Contabilidad de cuota y auditor del modelo operativo** (épico #7186) | Libro contable de cuota por proveedor y auditor (#6809) que propone plan, schedule y cadena de respaldo; nada de eso se decide a mano. Con Antigravity encendido, la cuota es la variable que gobierna el paralelismo. | Planificada (interna 12) — 10 issues |
+| **4.ª** | **Ola Vault · Encendido seguro del vault de secretos** (épico #5215) | Los secretos dentro del repo se pierden en cada respawn y aparecieron copiados en worktrees viejos; la **firma por botón de GATE 1 exige `vault.enabled`**. Es la cerradura que hay que poner antes de abrir el modelo operativo hacia afuera. | Planificada (interna 14) — 13 issues · **subida el 18/09** (antes iba 6.ª) |
+| **5.ª** | **Ola Encendido · Estado externo del modelo operativo con firma del operador** (cola de 9.4 / E2, #7194) | El encendido real de lo que 9.4 dejó preparado: flips con firma del operador en la terminal, migración con paridad, sonda positiva y ensayo de vuelta atrás. **Prerrequisito duro de la app operadora**: un celular no lee archivos locales. | Planificada (interna 16) |
+| **6.ª** | **Ola Separación · Partir los skills híbridos** (Ola 9.3 / E6, épico #7027) | Grande y la **más riesgosa**: el producto puede perder reglas propias (strings, flavors, gates de QA) sin que nadie lo note. Su red de contención, el guardrail anti-regresión **#5068**, ya está cerrada. Mecanismo al kernel, contenido Intrale al adaptador. | Planificada (interna 17) — épico en definición |
+| **7.ª** | **Ola Separación · Red de seguridad y launcher del corte** (E3 + E5, épico #7347) | Precondición del cutover: botón de pánico independiente del sistema que se corta, tres niveles de recuperación, snapshot con restore probado, timeout de decisión y **simulacro verde obligatorio**. Sin ensayo, no hay corte. | Planificada (interna 18) — épico en definición |
+| **8.ª** | **Ola Separación · Corte con freeze** (Ola 9.5 / E7, épico #7348) | Punto de no retorno: canary de `kernel.consume`, ventana de corte agendada y vacía (drenaje previo), el kernel pineado pasa a autoritativo y el motor embebido queda congelado como destino de rollback. | Planificada (interna 19) — épico en definición |
+| **9.ª** | **Ola App operadora · Base y firma** (E9, épico #7349) | Prueba de fuego del desacople: la app nace como **proyecto nuevo operado por el pipeline** (tercer proyecto: kernel, Intrale, app). Login del operador, estado inicial y firma de gates desde el celular. Depende dura de la 5.ª (estado externo) y de que la separación esté hecha, para no impactar kernel y app a la vez. | Planificada (interna 20) — épico en definición |
+| **10.ª** | **Ola App operadora · Operar el pipeline** (épico #7350) | Pausa total/parcial y allowlist, roadmap de olas (abrir, cerrar, reordenar con confirmación, sumar/quitar issues), issues por fase con rebotes y acciones. | Planificada (interna 21) — épico en definición |
+| **11.ª** | **Ola App operadora · Equipo, proveedores y productos** (épico #7351) | Equipo y matriz modelo×agente, proveedores (cuota del libro contable, gateos, cadena de respaldo, salud multi-provider, propuestas del auditor) y productos. | Planificada (interna 22) — épico en definición |
+| **12.ª** | **Ola App operadora · Métricas e historia** (épico #7352) | KPIs, costos y tokens por sesión/agente/ola, historial de eventos, DORA y velocidad, recomendaciones con gate humano y logs de agentes. Con esta ola la app cubre **toda** la funcionalidad del dashboard actual. | Planificada (interna 23) — épico en definición |
+| **13.ª** | **Ola Tablero fiel · El dashboard muestra el estado real de la ola** | Que lo que el operador ve coincida con el estado real de la ola, sin mezclas ni fotos viejas. Va última porque el dashboard local deja de ser la superficie principal cuando la app operadora esté completa. | Planificada (interna 15) — 16 issues |
 
 **Paralelizable en cualquier momento** (no toca el camino crítico): runbook de continuidad y modo
-degradado (E4) · cuota y prioridad por proyecto (E8) · deuda operativa y quick wins EP-9 ·
-reconciliación automática del registro (**#5055**).
+degradado (E4) · reconciliación automática del registro (**#5055**). Los seis épicos nuevos
+(#7347–#7352) están en `needs-definition`, sin allowlist, y se bajan a historias con `/planner split`
+recién al abrir cada ola, con OK del operador (R6, R7).
 
 ### 2.1 Por qué 9.4 va antes que 9.3
 
@@ -140,6 +163,7 @@ Aunque el número sugiera lo contrario:
 | **Ola Puente** · Kernel multi-producto (épico #4644) | 7 | 20/07 | 35 |
 | Ola · Cierre de gestión de producto nuevo | 8 | 27/07 | 42 |
 | **Ola 9.2** · Parametrizar los skills de orquestación (épico #5064) | 9 | 28/07 | cadena #5065→#5068 (4/4) |
+| **Ola 9.4** · Partir config + externalizar el estado operativo (E2, épico #5107) | 10 | 16/09 | cadena #5108→#5113 preparada; el encendido real pasa a la Ola Encendido (#7194) |
 
 Las olas 1–7 de la auditoría 2026-06 y la Ola 8 de definición del desacople (épicas #4009–#4014)
 están cerradas y su salida son los documentos de diseño que este roadmap consume.
