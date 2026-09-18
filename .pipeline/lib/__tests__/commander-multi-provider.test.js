@@ -590,10 +590,10 @@ test('CA-1 / CA-2 — agent-models.json real tiene telegram-commander con orden 
     assert.ok(cmd, 'skill telegram-commander debe estar declarado');
     assert.equal(cmd.provider, 'anthropic');
     const chain = (cmd.fallbacks || []).map(f => f.provider);
-    // #3353 — groq removido del orden de fallback del telegram-commander.
-    // 2026-06-02 — nvidia-nim sumado al final de la cadena del Commander
-    // (adapter real, PR #3793) para cerrar el gap multi-provider.
     assert.deepEqual(chain, ['openai-codex', 'gemini-google', 'cerebras', 'nvidia-nim']);
+    assert.equal(cmd.fallbacks[1].model_override, 'claude-sonnet-4-6');
+    assert.deepEqual(models.skills['telegram-sherlock'].fallbacks[1], {
+        provider: 'gemini-google', model_override: 'gemini-3.8-flash-medium' });
 });
 
 // -----------------------------------------------------------------------------

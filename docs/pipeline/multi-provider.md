@@ -314,9 +314,9 @@ Cualquier cambio dispara:
 | openai-codex | `gpt-5-codex` | 256.000 | chat, tools, cache | 2.50 | 10.00 | backend-dev, pipeline-dev |
 | openai-codex | `gpt-5` | 256.000 | chat, tools, vision, cache | 5.00 | 20.00 | guru, qa |
 | deterministic | `deterministic` | 0 | (sin LLM) | 0 | 0 | build, tester, linter, delivery |
-| gemini-google | `gemini-3.8-flash-high` | — | chat, tools, vision, reasoning | — (licencia Antigravity) | — | android-dev, web-dev, architect |
-| gemini-google | `gemini-3.8-flash-medium` | — | chat, tools, vision | — | — | qa, po, ux, perf, telegram-commander |
-| gemini-google | `gemini-3.8-flash-low` | — | chat, tools, vision | — | — | telegram-sherlock |
+| gemini-google | `gemini-3.8-flash-high` | — | chat, tools, vision, reasoning | — (licencia Antigravity) | — | perf |
+| gemini-google | `gemini-3.8-flash-medium` | — | chat, tools, vision | — | — | telegram-sherlock |
+| gemini-google | `gemini-3.8-flash-low` | — | chat, tools, vision | — | — | sin asignar |
 | gemini-google | `gemini-3.7-flash-medium` | — | chat, tools, vision | — | — | alternativo del provider (#3501) |
 | gemini-google | *(+10 ids más: `gemini-3.7-flash-{high,low}`, `gemini-3.6-flash-*`, `gemini-3.1-pro-*`, `claude-sonnet-4-6`, `claude-opus-4-6-thinking`, `gpt-oss-120b-medium`)* | — | — | — | — | ver §8.10 |
 
@@ -673,11 +673,11 @@ Resuelve a `provider: 'openai-codex', model: 'gpt-5-codex'`. Si OpenAI agota cuo
 
 ### 4.4 Orden canónico por agente — sign-off Leo 2026-05-15 (#3221)
 
-Esta tabla refleja la **fuente autoritativa**: la memoria `project_multi-provider-per-agent-order` (sign-off Leo 2026-05-15). El archivo `.pipeline/agent-models.json` carga este orden 1:1. Los tests en `lib/__tests__/agent-models-validate.test.js` actúan como drift detector — si la tabla cambia, los tests fallan y avisan.
+Esta tabla refleja la **fuente autoritativa**: la memoria `project_multi-provider-per-agent-order` (sign-off Leo 2026-05-15). El archivo `.pipeline/agent-models.json` es la fuente vigente; #6860 actualiza las filas afectadas por Antigravity con el sign-off del 2026-09-18. El resto conserva aquí su referencia histórica. Los tests en `lib/__tests__/agent-models-validate.test.js` actúan como drift detector — si la tabla cambia, los tests fallan y avisan.
 
 Convenciones:
-- **Gemini EXCLUIDO**: el skill toca código fuente / secrets / estrategia. TOS AI Studio entrena con prompts free → riesgo de fuga.
-- **Gemini incluido**: el skill procesa multimodal (video QA, screenshots, mockups) y/o no toca código sensible.
+- **Gemini EXCLUIDO**: credenciales, estrategia e integridad de `main`, incluso con código público. Auditoría de security del **2026-09-16**: **la exclusión se mantiene** para Antigravity consumer, también en plan pago. Ver §4.4.1 para fuentes, vigencia y criterio de cierre.
+- **Gemini incluido**: evaluadores que redactan y validan sin credenciales de infraestructura; canal Telegram con aceptación explícita de privacidad de Leo. La capacidad de vision de PO/UX queda pendiente en #7314.
 - Cuando un fallback aparece con `model_override` específico, es porque el `model` default del provider no es adecuado para ese skill (ej. `qa` necesita `gpt-5` con vision, no `gpt-5-codex` text-only).
 
 > **Nota #3353 (mayo 2026):** `groq` fue descontinuado por política de bloqueos
@@ -687,23 +687,61 @@ Convenciones:
 |-------|---------|------------|------------|------------|-------|
 | `backend-dev` | claude / opus-4-7 | openai-codex / gpt-5-codex | cerebras / llama-3.3-70b | — | Gemini **EXCLUIDO** (toca secrets/prod) |
 | `pipeline-dev` | claude / opus-4-7 | openai-codex / gpt-5-codex | cerebras / llama-3.3-70b | — | Gemini **EXCLUIDO** (toca secrets/prod) |
-| `android-dev` | claude / opus-4-7 | openai-codex / gpt-5-codex | gemini-google / gemini-2.0-flash | cerebras / llama-3.3-70b | Cliente Android — Gemini OK |
-| `web-dev` | claude / opus-4-7 | openai-codex / gpt-5-codex | gemini-google / gemini-2.0-flash | cerebras / llama-3.3-70b | Cliente web — Gemini OK |
+| `android-dev` | anthropic / claude-opus-4-7 | openai-codex / gpt-5.5 | nvidia-nim / deepseek-ai/deepseek-v4-flash-0731 | — | Gemini **EXCLUIDO**: escribe código que va a main |
+| `web-dev` | anthropic / claude-opus-4-7 | openai-codex / gpt-5.5 | nvidia-nim / deepseek-ai/deepseek-v4-flash-0731 | — | Gemini **EXCLUIDO**: escribe código que va a main |
 | `security` | claude / opus-4-7 | openai-codex / gpt-5-codex | cerebras / llama-3.3-70b | — | Gemini **EXCLUIDO** (gate pre-merge sensible) |
-| `qa` | claude / opus-4-7 | openai-codex / gpt-5 | gemini-google / gemini-2.0-flash | cerebras / llama-3.3-70b | Vision multimodal (video) — Gemini **incluido** porque solo procesa output de emulador, no secrets |
+| `qa` | anthropic / claude-sonnet-4-6 | openai-codex / gpt-5.4 | — | — | Gemini **EXCLUIDO**: carga credenciales AWS |
 | `review` | claude / sonnet-4-7 | openai-codex / gpt-5-codex | cerebras / llama-3.3-70b | — | Gemini **EXCLUIDO** (lee diffs con secrets/JWT) |
-| `po` | claude / opus-4-7 | openai-codex / gpt-5 | gemini-google / gemini-2.0-flash | cerebras / llama-3.3-70b | Vision (video QA + screenshots) — Gemini OK por TOS |
-| `ux` | claude / opus-4-7 | openai-codex / gpt-5 | gemini-google / gemini-2.0-flash | cerebras / llama-3.3-70b | Vision (mockups/screenshots) — Gemini OK |
+| `po` | anthropic / claude-sonnet-4-6 | gemini-google / gemini-3.1-pro-low | openai-codex / gpt-5.4 | cerebras / gpt-oss-120b | Redacta y valida; Google antes de Codex, sign-off #6860; 4º respaldo kimi-moonshot/kimi-k2-6 |
+| `ux` | anthropic / claude-sonnet-4-6 | gemini-google / gemini-3.1-pro-low | openai-codex / gpt-5.4 | cerebras / gpt-oss-120b | Redacta y valida; Google antes de Codex, sign-off #6860 |
 | `doc` | claude / sonnet-4-7 | openai-codex / gpt-5-codex | cerebras / llama-3.3-70b | — | Gemini **EXCLUIDO** (estrategia de producto) |
 | `planner` | claude / sonnet-4-7 | openai-codex / gpt-5-codex | cerebras / llama-3.3-70b | — | Gemini **EXCLUIDO** (roadmap/estrategia) |
 | `guru` | claude / sonnet-4-7 | openai-codex / gpt-5-codex | cerebras / llama-3.3-70b | nvidia-nim / deepseek-v4-flash-0731 | Gemini **EXCLUIDO** (fragmentos código) |
 | `ops` | claude / sonnet-4-7 | openai-codex / gpt-5-codex | cerebras / llama-3.3-70b | — | Gemini **EXCLUIDO sí o sí** (procesa API keys / AWS creds / Cognito) |
-| `perf` | claude / sonnet-4-7 | openai-codex / gpt-5-codex | gemini-google / gemini-2.0-flash | cerebras / llama-3.3-70b | Sin secrets — Gemini OK |
+| `perf` | anthropic / claude-sonnet-4-6 | openai-codex / gpt-5.5 | gemini-google / gemini-3.8-flash-high | cerebras / gpt-oss-120b | Analiza builds sin credenciales de infraestructura |
 | `auth` | claude / sonnet-4-7 | openai-codex / gpt-5-codex | cerebras / llama-3.3-70b | — | Gemini **EXCLUIDO** (config interna del entorno) |
 
 > **Sobre la nota "sonnet-4-7" vs "sonnet-4-6" de la memoria:** la memoria original escribió `sonnet-4-6` para varios skills; el catálogo `ALLOWED_MODELS_BY_LAUNCHER` declara `claude-sonnet-4-7` siguiendo la convención del cluster (4-7 para Opus, 4-5 para Haiku). El JSON canónico usa `claude-sonnet-4-7` (modelo validado en la allowlist). Si Anthropic libera `claude-sonnet-4-6` en algún momento, agregarlo a `ALLOWED_MODELS_BY_LAUNCHER.claude` requiere review humano.
 
 > **Sobre `tester` y `build` (deterministic):** la memoria `project_multi-provider-per-agent-order` originalmente proponía `build` con un free provider y `tester`=claude-sonnet como primary LLM. Sin embargo, **ambos skills son determinísticos** — corren como Node scripts (`.pipeline/skills-deterministicos/{build,tester}.js`) y la allowlist hardcoded `DETERMINISTIC_SKILLS = ['build', 'tester', 'linter', 'delivery']` en `resolve-provider.js` fuerza spawn determinístico ignorando lo que diga `agent-models.json`. Declararlos con LLM declarativo y `fallbacks[]` en el JSON crea **drift entre fuentes de verdad** (mismo patrón del incidente #3157 que costó $2.72/h en builds). Por eso `agent-models.json` los declara con la forma mínima `{provider: deterministic}` igual que `linter` y `delivery`, y `deterministic-skills-coherence.test.js` lo enforce. Si alguna vez se introduce una variante LLM-augmented (ej. `tester --from-gherkin`), se trata como un skill nuevo con su propia entrada, no se mezcla con el determinístico.
+
+### 4.4.1 Matriz modelo×agente sobre Antigravity — sign-off Leo 2026-09-18 (#6860)
+
+> **La conclusión caduca si `agy --version` ≠ 1.2.5** o cambian las fuentes contractuales. La auditoría de security del 2026-09-16 se realizó con 1.2.4; guru re-verificó la instalación con 1.2.5 el 2026-09-17. Desarrollo comprobó nuevamente 1.2.5 en los spawns del 2026-09-18 UTC. El gate security conserva la firma de la re-verificación contractual.
+
+**TOS: la exclusión se mantiene.** Cuenta `authMethod=consumer`, no Enterprise. Los [términos de Antigravity](https://antigravity.google/terms) permiten retener interacciones para mejorar tecnologías y su revisión humana; pagar la licencia no acredita ausencia de entrenamiento. La [FAQ](https://antigravity.google/docs/faq/) remite a ajustes para el opt-out y [Plans](https://antigravity.google/docs/plans/) describe cuota/modelos. La auditoría también registró los hilos [168429](https://discuss.ai.google.dev/t/how-can-i-completely-opt-out-of-the-use-of-my-data-for-model-training/168429) y [125236](https://discuss.ai.google.dev/t/antigravity-data-training-opt-out/125236), sin confirmación de staff sobre el alcance del toggle de la IDE en el CLI. Fuente de la conclusión y evidencia local: comentario de security en #6860 (2026-09-16) y validación de guru (2026-09-17). Términos y FAQ consultados nuevamente durante desarrollo el 2026-09-18 UTC; no se declara `terms_no_training: true`.
+
+Cierre verificable para levantar la exclusión: **(a)** Workspace/Enterprise/GCP con DPA y fuente contractual, o **(b)** confirmación escrita de Google de que el opt-out cubre el CLI consumer, captura fechada del opt-out de la cuenta y re-verificación en cada cambio de versión. Cambiar de familia de modelo dentro de Google no elimina este requisito.
+
+[Sign-off de Leo](https://github.com/intrale/platform/issues/6860#issuecomment-5723188265), registrado antes de aplicar la matriz: **“Decisión 1: sí”**; **“Decisión 2: sí, Google antes que Codex (Opción A recomendada)”**. La primera acepta que Commander/Sherlock ruteen por Antigravity consumer con retención y revisión humana. La segunda coloca Google como primer respaldo de PO/UX, excepción al orden global Claude → Codex → Google.
+
+| Skill | Modelo en gemini-google | Posición | Bucket (dato de cuota, no criterio de asignación) | Justificación |
+|---|---|---|---|---|
+| android-dev | **EXCLUIDO** | Sin eslabón Google | — | Escribe código que llega a main; conserva Codex → NVIDIA. |
+| web-dev | **EXCLUIDO** | Sin eslabón Google | — | Escribe código que llega a main; conserva Codex → NVIDIA. |
+| qa | **EXCLUIDO** | Sin eslabón Google | — | El child recibe credenciales AWS; conserva sólo Codex. |
+| po | gemini-3.1-pro-low | 1º respaldo, antes de Codex (`fallbacks[0]`) | Gemini | Redacta y valida; Pro-low aporta criterio sin consumir el bucket Claude. Vision pendiente de #7314. |
+| ux | gemini-3.1-pro-low | 1º respaldo, antes de Codex (`fallbacks[0]`) | Gemini | Redacta y valida; comparte el criterio de PO sin credenciales de infraestructura. Vision pendiente de #7314. |
+| architect | gemini-3.1-pro-high | 2º respaldo, después de Codex (`fallbacks[1]`) | Gemini | Diseña a partir de código público; mayor razonamiento para arquitectura. |
+| perf | gemini-3.8-flash-high | 2º respaldo, después de Codex (`fallbacks[1]`) | Gemini | Analiza builds sin secrets y preserva la cuota Claude. |
+| telegram-commander | claude-sonnet-4-6 | 2º respaldo, después de Codex (`fallbacks[1]`) | Claude | Mantiene el piso de calidad del operador bajo el consentimiento de privacidad para Google. |
+| telegram-sherlock | gemini-3.8-flash-medium | 2º respaldo, después de Codex (`fallbacks[1]`) | Gemini | Sube desde Flash-low y conserva familia distinta del Commander (#3501). |
+| Sin skill | claude-opus-4-6-thinking — no asignado | — | Claude | Comparte cuota con Sonnet; no hay un caso de uso que justifique su mayor consumo. |
+| Sin skill | gpt-oss-120b-medium — no asignado | — | Claude/GPT | Ya existe gpt-oss-120b en Cerebras; preserva el bucket Claude. |
+
+Los defaults `gemini-3.8-flash-medium` y alternativo `gemini-3.7-flash-medium` no cambian. El sufijo del ID es el único canal de esfuerzo: no se añade `--effort`. No cambian `billing`, `admission` ni la excepción que vence el 2026-10-31 (#6563). Commander **sigue en modo reducido** mientras `billing: free`; #6564 cerró sin cambiarlo y #7338 registra el seguimiento del flip. Esta matriz no promete una activación inmediata del chat.
+
+**Evidencia de tool_use (CA-5), 2026-09-18 UTC, agy 1.2.5.** Por modelo se ejecutó `node .pipeline/tests/smoke/gemini-add-dir.smoke.js --model <id>`, con instrumentación efímera del resultado para registrar `usage`. El smoke usa `provider.buildSpawn` y `--add-dir`, crea un repo temporal y verifica contenido exacto `6859-OK`, presencia en git status y scratch sin archivos nuevos. Los temporales se eliminan después del PASS.
+
+| Modelo | Status / exit | Duración ms | input / output / thinking / cache_read | Archivo creado y comprobado |
+|---|---|---:|---|---|
+| gemini-3.1-pro-low | PASS / 0 | 17007 | 7609 / 832 / 665 / 20209 | agy-6859-wt-NfWlnX/marca-6859-1789696910819.txt |
+| gemini-3.1-pro-high | PASS / 0 | 13687 | 15518 / 679 / 497 / 12133 | agy-6859-wt-vgb0Qx/marca-6859-1789696928007.txt |
+| gemini-3.8-flash-high | PASS / 0 | 22817 | 88333 / 1965 / 1328 / 0 | agy-6859-wt-N91jpu/marca-6859-1789696941841.txt |
+| gemini-3.8-flash-medium | PASS / 0 | 11471 | 27023 / 537 / 336 / 0 | agy-6859-wt-CkaRm8/marca-6859-1789696964724.txt |
+| claude-sonnet-4-6 | PASS / 0 | 11334 | 16107 / 300 / 0 / 14663 | agy-6859-wt-njmEA2/marca-6859-1789696976337.txt |
+
+Los contadores son los reportados por el CLI; esta pasada observó cache_read distinto de cero en Pro y Sonnet, por lo que la observación histórica de caché cero no se generaliza a todos los modelos. No constituyen medición del precio ni del consumo de cuota del plan.
 
 ### 4.5 Pasos para hacer lo mismo desde la UI del dashboard
 
@@ -1384,9 +1422,8 @@ Git Bash convierte `/usage` en una ruta y puede disparar un turno real de
 aproximadamente 13.000 tokens. El probe usa Node con `shell:false` y argumento
 literal. Véase [procedimiento, caché y verificación de sesión](gemini-plan-verification.md).
 
-> **Migración 2026-09-16 (#6858, split de #6856).** Los 9 skills con Gemini en su
-> cadena (`android-dev`, `web-dev`, `qa`, `po`, `ux`, `architect`, `perf`,
-> `telegram-commander`, `telegram-sherlock`) declaraban `gemini-3-flash-preview`,
+> **Migración 2026-09-16 (#6858, split de #6856).** Los 6 skills que conservan Gemini tras #6860
+> (`po`, `ux`, `architect`, `perf`, `telegram-commander`, `telegram-sherlock`) declaraban `gemini-3-flash-preview`,
 > un id del **Gemini CLI gratuito retirado** que **no existe en Antigravity**. Con el
 > provider encendido, todo spawn hubiera muerto sin trabajo con `--model` inválido:
 > el mismo modo de falla que la migración de NVIDIA (#5887). `gemini-2.5-flash`
@@ -1397,17 +1434,15 @@ escribe a stdout una línea `id<TAB>label` por modelo:
 
 | id | label (tal cual lo devuelve `agy models`) | Uso en el pipeline |
 |---|---|---|
-| `gemini-3.8-flash-high` | Gemini 3.8 Flash (High) | android-dev, web-dev, architect |
-| `gemini-3.8-flash-medium` | Gemini 3.8 Flash (Medium) | default del provider; qa, po, ux, perf, telegram-commander |
-| `gemini-3.8-flash-low` | Gemini 3.8 Flash (Low) | telegram-sherlock |
+| `gemini-3.8-flash-high` | Gemini 3.8 Flash (High) | perf |
+| `gemini-3.8-flash-medium` | Gemini 3.8 Flash (Medium) | default del provider; telegram-sherlock |
+| `gemini-3.8-flash-low` | Gemini 3.8 Flash (Low) | sin asignar |
 | `gemini-3.7-flash-high` / `-medium` / `-low` | Gemini 3.7 Flash (…) | `-medium` es el `alternative_models` del provider (familia distinta al primario → Sherlock conserva adversarialidad parcial, #3501) |
 | `gemini-3.6-flash-high` / `-medium` / `-low` | Gemini 3.6 Flash (…) | sin asignar |
-| `gemini-3.1-pro-high` / `-low` | Gemini 3.1 Pro (…) | sin asignar |
-| `claude-sonnet-4-6`, `claude-opus-4-6-thinking`, `gpt-oss-120b-medium` | (terceros bajo licencia Antigravity) | sin asignar |
+| `gemini-3.1-pro-high` / `-low` | Gemini 3.1 Pro (…) | -high: architect; -low: po, ux |
+| `claude-sonnet-4-6`, `claude-opus-4-6-thinking`, `gpt-oss-120b-medium` | (terceros bajo licencia Antigravity) | Sonnet: telegram-commander; Opus y GPT-OSS: sin asignar |
 
-La asignación fina modelo↔agente es de **#6860**; acá alcanza con un id válido y
-coherente por skill (tiering igual al de Anthropic y Codex: devs/architect →
-`high`, evaluadores/chat → `medium`, verificador → `low`).
+La matriz firmada de **#6860** está en §4.4.1: 6 skills, 6 ids configurados en 8 rutas; las exclusiones se deciden por provider, no por familia de modelo.
 
 **Canal de esfuerzo — uno solo.** El sufijo `-high/-medium/-low` del id codifica
 el esfuerzo de razonamiento; `agy` además expone `--effort` como flag aparte.

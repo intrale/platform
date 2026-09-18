@@ -1617,21 +1617,20 @@ test('#3221 canónico · 15 skills con LLM declarados (memoria sign-off 2026-05-
   }
 });
 
-test('#3221 canónico · Gemini EXCLUIDO en los 9 skills LLM con TOS-risk (memoria sign-off)', () => {
-  // Memoria project_multi-provider-per-agent-order: Gemini queda fuera en
-  // backend-dev, pipeline-dev, security, review, doc, planner, guru, ops,
-  // auth (9 skills LLM que tocan secrets/código/estrategia). `tester` también
-  // está en la memoria con Gemini EXCLUIDO pero es determinístico (Node),
-  // sin fallbacks LLM — ver `deterministic-skills-coherence.test.js`.
+test('#3221 canónico · Gemini EXCLUIDO en los 12 skills sensibles (#6860, TOS consumer)', () => {
+  // #6860: credenciales + integridad de main, incluso con repositorio público.
+  // tester es determinístico y carece de fallbacks LLM.
   const raw = fs.readFileSync(validateMod.CANONICAL_JSON_PATH, 'utf8');
   const cfg = JSON.parse(raw);
   const tosExcluded = [
     'backend-dev', 'pipeline-dev', 'security', 'review',
     'doc', 'planner', 'guru', 'ops', 'auth',
+    'android-dev', 'web-dev', 'qa',
   ];
   for (const skill of tosExcluded) {
     const skillDef = cfg.skills[skill];
     assert.ok(skillDef, `skill ${skill} ausente del canónico`);
+    assert.notEqual(skillDef.provider, 'gemini-google', skill + ' excluido también como primario');
     const fallbacks = skillDef.fallbacks || [];
     const providerNames = fallbacks.map((fb) => typeof fb === 'string' ? fb : fb.provider);
     assert.ok(!providerNames.includes('gemini-google'),
@@ -1661,18 +1660,17 @@ test('#3221 canónico · build/tester declarados como deterministic (NO LLM en a
   }
 });
 
-test('#3221 canónico · qa/po/ux declaran Gemini en fallbacks (necesitan vision multimodal)', () => {
-  // qa procesa video del run, po/ux procesan screenshots. Memoria sign-off
-  // los autoriza con Gemini en fallbacks pese a TOS porque no procesan
-  // secrets directos (qa lee output del emulador, po lee features, ux mockups).
+test('#3221 canónico · po/ux declaran Pro-low como primer respaldo (#6860)', () => {
+  // po/ux redactan y validan; vision pendiente de #7314. qa sale por scope AWS.
   const raw = fs.readFileSync(validateMod.CANONICAL_JSON_PATH, 'utf8');
   const cfg = JSON.parse(raw);
-  for (const skill of ['qa', 'po', 'ux']) {
+  for (const skill of ['po', 'ux']) {
     const skillDef = cfg.skills[skill];
     const providerNames = (skillDef.fallbacks || [])
       .map((fb) => typeof fb === 'string' ? fb : fb.provider);
+    assert.deepEqual(skillDef.fallbacks[0], { provider: 'gemini-google', model_override: 'gemini-3.1-pro-low' });
     assert.ok(providerNames.includes('gemini-google'),
-      `${skill} debe declarar gemini-google en fallbacks (vision multimodal) — declarados: ${providerNames.join(', ')}`);
+      `${skill} debe declarar gemini-google en fallbacks (matriz firmada #6860) — declarados: ${providerNames.join(', ')}`);
   }
 });
 

@@ -137,17 +137,25 @@ test('collectConfiguredGeminiModels: junta provider.model, alternative_models, m
     assert.deepEqual(got.get('d'), ['skills.qa.fallbacks[0].model_override']);
 });
 
-test('collectConfiguredGeminiModels: el agent-models.json REAL declara exactamente 4 ids de Antigravity en 11 rutas', () => {
+test('collectConfiguredGeminiModels: matriz firmada #6860, 6 ids en 8 rutas y 6 skills', () => {
     const got = agyCatalog.collectConfiguredGeminiModels(REAL_CONFIG);
-    assert.deepEqual([...got.keys()].sort(), [
-        'gemini-3.7-flash-medium', 'gemini-3.8-flash-high', 'gemini-3.8-flash-low', 'gemini-3.8-flash-medium',
-    ]);
+    assert.deepEqual(Object.fromEntries([...got.entries()].sort(([a], [b]) => a.localeCompare(b))), {
+        'claude-sonnet-4-6': ['skills.telegram-commander.fallbacks[1].model_override'],
+        'gemini-3.1-pro-high': ['skills.architect.fallbacks[1].model_override'],
+        'gemini-3.1-pro-low': ['skills.po.fallbacks[0].model_override', 'skills.ux.fallbacks[0].model_override'],
+        'gemini-3.7-flash-medium': ['providers.gemini-google.alternative_models[0]'],
+        'gemini-3.8-flash-high': ['skills.perf.fallbacks[1].model_override'],
+        'gemini-3.8-flash-medium': ['providers.gemini-google.model', 'skills.telegram-sherlock.fallbacks[1].model_override'],
+    });
     const rutas = [...got.values()].flat();
-    assert.equal(rutas.length, 11, 'provider.model + alternative_models[0] + 9 fallbacks (uno por skill del issue)');
-    // Los 9 skills del issue tienen su eslabón gemini-google con un id válido.
-    for (const skill of ['android-dev', 'web-dev', 'qa', 'po', 'ux', 'architect', 'perf', 'telegram-commander', 'telegram-sherlock']) {
-        assert.ok(rutas.some((r) => r.startsWith(`skills.${skill}.fallbacks[`)), `skill ${skill} conserva su eslabón gemini-google`);
+    assert.equal(rutas.length, 8, 'provider.model + alternative_models[0] + 6 fallbacks');
+    assert.deepEqual(rutas.filter(r => /^skills\.(android-dev|web-dev|qa)\./.test(r)), []);
+    for (const skill of ['android-dev', 'web-dev']) {
+        assert.deepEqual(REAL_CONFIG.skills[skill].fallbacks.map(f => f.provider), ['openai-codex', 'nvidia-nim']);
     }
+    assert.deepEqual(REAL_CONFIG.skills.qa.fallbacks.map(f => f.provider), ['openai-codex']);
+    assert.deepEqual(REAL_CONFIG.skills.po.fallbacks.map(f => f.provider), ['gemini-google', 'openai-codex', 'cerebras', 'kimi-moonshot']);
+    assert.deepEqual(REAL_CONFIG.skills.ux.fallbacks.map(f => f.provider), ['gemini-google', 'openai-codex', 'cerebras']);
 });
 
 // -----------------------------------------------------------------------------
@@ -260,12 +268,12 @@ test('checkAgainstCli: con el catálogo real y la config real → ok; con un id 
     assert.equal(ok.check.dead.length, 0);
 
     const roto = JSON.parse(JSON.stringify(REAL_CONFIG));
-    roto.skills.qa.fallbacks.find((f) => f.provider === 'gemini-google').model_override = 'gemini-3-flash-preview';
+    roto.skills.po.fallbacks.find((f) => f.provider === 'gemini-google').model_override = 'gemini-3-flash-preview';
     const bad = agyCatalog.checkAgainstCli({ env: {}, execFileSync: exec, cacheTtlMs: 0, agentModels: roto });
     assert.equal(bad.ok, false);
     assert.equal(bad.reason, 'dead_models');
     assert.equal(bad.check.dead[0].id, 'gemini-3-flash-preview');
-    assert.deepEqual(bad.check.dead[0].sources, ['agent-models.json:skills.qa.fallbacks[1].model_override']);
+    assert.deepEqual(bad.check.dead[0].sources, ['agent-models.json:skills.po.fallbacks[0].model_override']);
 });
 
 // -----------------------------------------------------------------------------
