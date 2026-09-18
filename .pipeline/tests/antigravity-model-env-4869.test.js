@@ -43,7 +43,7 @@ test('agy reemplaza por completo la invocación del Gemini CLI retirado', () => 
         // #6858 — el esfuerzo viaja SÓLO en el sufijo del id, nunca como flag.
         assert.ok(!spawn.args.includes('--effort'), 'un solo canal de esfuerzo: el sufijo del id');
         assert.deepEqual(spawn.modelTrace, {
-            applied: true, model: 'gemini-3.8-flash-low', source: 'ANTIGRAVITY_MODEL', reason: 'ok', ignoredEnv: [],
+            applied: true, model: 'gemini-3.8-flash-low', source: 'ANTIGRAVITY_MODEL', reason: 'ok',
         });
     } finally {
         provider._resetLauncherCacheForTesting();
@@ -56,38 +56,40 @@ test('agy reemplaza por completo la invocación del Gemini CLI retirado', () => 
 });
 
 // =============================================================================
-// #6334 (cerrado en #6858) — precedencia EXPLÍCITA del modelo: sólo ANTIGRAVITY_MODEL.
-// Antes el handler leía `AGY_MODEL || ANTIGRAVITY_MODEL`: un AGY_MODEL exportado por
-// el operador pisaba al modelo propagado y la traza afirmaba un modelo que no
-// corrió.
+// #6334 (cerrado en #6858, prefijo unificado en #6861) — precedencia EXPLÍCITA
+// del modelo: el handler lee SÓLO `ANTIGRAVITY_MODEL`, la variable que propaga
+// PROVIDER_MODEL_ENV. Ninguna otra variable del entorno del operador (los
+// nombres viejos con prefijo del binario o del CLI retirado) es fuente ni deja
+// rastro: lo que no propaga build-child-env.js no existe para el handler.
 // =============================================================================
-test('#6334: ANTIGRAVITY_MODEL (la variable que propaga PROVIDER_MODEL_ENV) es la única fuente del --model; AGY_MODEL se ignora', () => {
+test('#6334/#6861: ANTIGRAVITY_MODEL (la variable que propaga PROVIDER_MODEL_ENV) es la ÚNICA fuente del --model', () => {
     const { PROVIDER_MODEL_ENV } = require('../lib/build-child-env');
     assert.equal(PROVIDER_MODEL_ENV['antigravity'], provider.MODEL_ENV_VAR);
     assert.equal(provider.MODEL_ENV_VAR, 'ANTIGRAVITY_MODEL');
-    assert.deepEqual(provider.IGNORED_MODEL_ENV_VARS, ['AGY_MODEL']);
+    // #6861 — la lista de variables "ignoradas" desapareció con el rename: ya
+    // no hay nombre viejo que tolerar.
+    assert.equal(provider.IGNORED_MODEL_ENV_VARS, undefined);
 
     provider._setLauncherForTesting({ kind: 'native-exe', cmd: 'agy', prefixArgs: [], shell: false });
     try {
-        // Escenario de #6334: AGY_MODEL heredado del entorno del operador + el
-        // modelo propagado. Gana el propagado y la traza lo dice.
-        const conShadow = provider.buildSpawn({
+        // Variables ajenas en el env (un export viejo del operador, con
+        // cualquier prefijo) no pisan al modelo propagado ni aparecen en la traza.
+        const conRuido = provider.buildSpawn({
             args: ['-p', 'hola'], cwd: ROOT,
-            env: { AGY_MODEL: 'gemini-1.0-legacy', ANTIGRAVITY_MODEL: 'gemini-3.8-flash-medium' },
+            env: { AGY_MODEL: 'gemini-1.0-legacy', GEMINI_MODEL: 'gemini-1.0-legacy', ANTIGRAVITY_MODEL: 'gemini-3.8-flash-medium' },
         });
-        assert.deepEqual(conShadow.args.slice(-2), ['--model', 'gemini-3.8-flash-medium']);
-        assert.ok(!conShadow.args.includes('gemini-1.0-legacy'));
-        assert.deepEqual(conShadow.modelTrace, {
-            applied: true, model: 'gemini-3.8-flash-medium', source: 'ANTIGRAVITY_MODEL', reason: 'ok', ignoredEnv: ['AGY_MODEL'],
+        assert.deepEqual(conRuido.args.slice(-2), ['--model', 'gemini-3.8-flash-medium']);
+        assert.ok(!conRuido.args.includes('gemini-1.0-legacy'));
+        assert.deepEqual(conRuido.modelTrace, {
+            applied: true, model: 'gemini-3.8-flash-medium', source: 'ANTIGRAVITY_MODEL', reason: 'ok',
         });
 
-        // Sólo AGY_MODEL (sin propagación): NO se pasa --model y queda traza de
-        // que se ignoró — el launcher loguea que arranca con el default del CLI.
-        const soloAgy = provider.buildSpawn({ args: ['-p', 'hola'], cwd: ROOT, env: { AGY_MODEL: 'gemini-1.0-legacy' } });
-        assert.ok(!soloAgy.args.includes('--model'));
-        assert.deepEqual(soloAgy.modelTrace, {
-            applied: false, model: null, source: 'cli-default', reason: 'agy_model_env_ignored', ignoredEnv: ['AGY_MODEL'],
-        });
+        // Sólo variables ajenas (sin ANTIGRAVITY_MODEL): equivale a "ninguna".
+        // NO se pasa --model y no hay modelTrace: regresión cero.
+        const soloRuido = provider.buildSpawn({ args: ['-p', 'hola'], cwd: ROOT, env: { AGY_MODEL: 'gemini-1.0-legacy' } });
+        assert.ok(!soloRuido.args.includes('--model'));
+        assert.ok(!soloRuido.args.includes('gemini-1.0-legacy'));
+        assert.equal(Object.hasOwn(soloRuido, 'modelTrace'), false);
 
         // Sin ninguna variable: regresión cero — ni --model ni modelTrace.
         const vacio = provider.buildSpawn({ args: ['-p', 'hola'], cwd: ROOT, env: {} });
@@ -97,11 +99,11 @@ test('#6334: ANTIGRAVITY_MODEL (la variable que propaga PROVIDER_MODEL_ENV) es l
         provider._resetLauncherCacheForTesting();
     }
 
-    // Guardrail de código: el handler no vuelve a leer AGY_MODEL como fuente.
+    // Guardrail de código: el handler no lee ninguna otra variable de modelo.
     // Sólo líneas de código: los comentarios narran el bug viejo a propósito.
     const codigo = fs.readFileSync(path.join(ROOT, '.pipeline/lib/agent-launcher/providers/antigravity.js'), 'utf8')
         .split('\n').filter((l) => !l.trim().startsWith('//')).join('\n');
-    assert.doesNotMatch(codigo, /env\.AGY_MODEL\s*\|\|/, 'la precedencia AGY_MODEL || ANTIGRAVITY_MODEL no puede volver');
+    assert.doesNotMatch(codigo, /\bAGY_MODEL\b|\bGEMINI_MODEL\b/, 'ninguna variable de modelo con prefijo divergente puede volver');
     assert.doesNotMatch(codigo, /'--effort'/, 'nunca se pasa --effort: el esfuerzo va en el sufijo del id');
 });
 

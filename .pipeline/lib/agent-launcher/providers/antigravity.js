@@ -201,7 +201,10 @@ const MODEL_ENV_VAR = 'ANTIGRAVITY_MODEL';
 
 function resolveModelFromEnv(env) {
     const e = env && typeof env === 'object' ? env : {};
-    const raw = e[MODEL_ENV_VAR];
+    // Lectura literal (no por clave dinámica) a propósito: el guardrail CA-7 de
+    // tests/model-propagation.test.js cruza `PROVIDER_MODEL_ENV` contra este
+    // archivo buscando `env.ANTIGRAVITY_MODEL`.
+    const raw = e.ANTIGRAVITY_MODEL; // === env.ANTIGRAVITY_MODEL (MODEL_ENV_VAR)
     const model = (typeof raw === 'string' && raw.trim().length > 0) ? raw.trim() : null;
     return {
         model,
