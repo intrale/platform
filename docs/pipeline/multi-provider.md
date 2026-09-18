@@ -1202,17 +1202,20 @@ Groq fue descontinuado (mayo 2026) por no cumplir criterio de estabilidad operat
 
 ### 8.1 Free tier real por provider
 
-> **Fuente:** documentación oficial verificada al 2026-05-17. Si un provider cambia los límites, actualizar acá y bumpear la nota en `secrets-rw.js#MANAGED_KEYS[].free_tier_notes`.
+> **Estado (#6861):** el plantel ya no tiene ningún provider free tier ni por
+> API key: `anthropic`, `openai-codex` y `antigravity` son los tres CLI con
+> OAuth (`auth_mode: 'oauth'`). Si en el futuro se admite un provider por API
+> key (§16), su fila va acá y la nota en `secrets-rw.js#MANAGED_KEYS[].free_tier_notes`.
 
-| Provider | RPM | RPD | Tokens/día | Endpoint usado en healthcheck | Notas |
-|----------|----:|----:|-----------:|--------------------------------|-------|
-| `antigravity` | 15 | 1500 | 1M tokens | `GET https://generativelanguage.googleapis.com/v1beta/models` | Auth con header `x-goog-api-key` (la key NUNCA en query string — `key` ya está en `SENSITIVE_QUERY_KEYS`). 400 con `API_KEY_INVALID` ⇒ `invalid_credentials`. |
+| Provider | Tier | Cómo se verifica la salud | Notas |
+|----------|------|---------------------------|-------|
+| `antigravity` | Licencia (no es free tier; `cost_per_1m: null`, factura por licencia) | **Sin endpoint HTTP ni API key.** `probeCliProviderLive` (#6857) hace el round-trip `agy models` y clasifica en `cli_catalog_ok` / `cli_license_unavailable` / `cli_unavailable` / `cli_contract_mismatch`; cuota con `MSYS_NO_PATHCONV=1 agy -p "/usage" --output-format json`. Detalle en §8.10. | Hasta #6861 esta fila describía el healthcheck del shim de AI Studio (`GET generativelanguage…/v1beta/models` con `x-goog-api-key`). Ese endpoint **se retiró** de `live-ping.js`, junto con el patrón `API_KEY_INVALID` del clasificador; ningún módulo del pipeline manda hoy ese header. |
 
 > `cerebras` y `nvidia-nim` se retiraron en #6563; sus filas (límites, endpoints de
 > health) viven en el historial de git de este archivo y se restauran con el
 > procedimiento de §17.
 
-Cron de healthchecks: cada 15min por provider = **96 requests/día por provider**, holgadamente dentro de cualquier free tier conocido. La validación semanal de keys (CA-2) reusa el mismo endpoint `/models` (no consume cuota). Groq fue descontinuado en #3353 y ya no se incluye en el cron.
+Cron de healthchecks: cada 15min por provider. Para los tres providers OAuth el cron no hace ningún request HTTP facturable: `ping()` los rutea por `MANAGED_KEYS[].auth_mode === 'oauth'` a la verificación por CLI antes de llegar a la tabla HTTP de `live-ping.js` (que quedó vacía). El presupuesto de **96 requests/día por provider** y la validación semanal de keys por `/models` (CA-2) sólo aplican a providers por API key, que hoy no hay. Groq fue descontinuado en #3353 y ya no se incluye en el cron.
 
 ### 8.2 Rotar una API key sin downtime (CA-5)
 
@@ -1220,7 +1223,7 @@ Cron de healthchecks: cada 15min por provider = **96 requests/día por provider*
 
 Procedimiento:
 
-1. **Generar la nueva key en el portal del provider** (Google AI Studio). NO revocar la vieja todavía.
+1. **Generar la nueva key en el portal del provider** por API key (hoy no hay ninguno en el plantel: los tres providers son CLI con OAuth, ver §8.10; este procedimiento aplica al que se admita por §16). NO revocar la vieja todavía.
 2. **Rotar vía UI del dashboard:**
    - Abrir `http://localhost:8080/dashboard.html#multi-provider`.
    - Tab **1 · Proveedores** → click "Rotar key" en el provider afectado.
@@ -1296,7 +1299,7 @@ node -e "console.log(JSON.stringify(require('./.pipeline/lib/multi-provider/secr
 ### 8.7 Anti-patrones a evitar
 
 - ❌ **Editar `telegram-config.json` con `vi`** durante rotación → race con writes del pulpo, sin backup, sin audit. Siempre usar la UI o `secrets.rotateKey()`.
-- ❌ **Pasar Gemini key como `?key=AIza…`** en URLs → aunque está en `SENSITIVE_QUERY_KEYS` para defense-in-depth, el header `x-goog-api-key` es el camino correcto (lo que el pipeline hace internamente).
+- ❌ **Pasar una API key en la query string** (`?key=…`, `?api_key=…`) de una URL → queda en logs, historial y excerpts de error. `key`/`api_key` están en `SENSITIVE_QUERY_KEYS` para defense-in-depth, pero el camino correcto para cualquier provider por API key futuro es siempre un header. Hoy no aplica a nadie del plantel: `antigravity` autentica por OAuth del CLI `agy` y el pipeline no manda ninguna API key de Google a ningún endpoint (el shim de AI Studio con `x-goog-api-key` se retiró en #6861; la key residual se revoca en #7286).
 - ❌ **Revocar la key vieja antes de validar la nueva con live-ping** → te quedás sin failover hasta restart.
 - ❌ **Pingear endpoints de completion en el healthcheck** → consumen cuota. El cron usa solo `/v1/models` (o equivalente).
 - ❌ **Bypassar el lock del cron** corriendo `runOnce` desde múltiples procesos → puede disparar abuse-detection del provider. El lock está ahí por una razón.
@@ -1309,17 +1312,17 @@ node -e "console.log(JSON.stringify(require('./.pipeline/lib/multi-provider/secr
 
 #### 8.8.1 Procedimiento recomendado
 
-1. Generá / obtené la API key en el portal del provider (Google AI Studio, etc.).
+1. Generá / obtené la API key en el portal del provider (aplica sólo a providers por API key; `antigravity` no tiene ninguna — autentica por OAuth de `agy`).
 2. **Guardá la key en un archivo local** bajo `~/.claude/secrets/` (fuera del repo):
    ```bash
-   # Ejemplo: agregar GEMINI key
+   # Ejemplo genérico (reemplazar <provider> por el nombre del provider por API key)
    mkdir -p ~/.claude/secrets
-   printf '%s' '<la-key>' > ~/.claude/secrets/gemini.txt
-   chmod 600 ~/.claude/secrets/gemini.txt
+   printf '%s' '<la-key>' > ~/.claude/secrets/<provider>.txt
+   chmod 600 ~/.claude/secrets/<provider>.txt
    ```
 3. **Por Telegram, mandá únicamente el path absoluto**, ej:
    ```
-   actualizar gemini key, está en ~/.claude/secrets/gemini.txt
+   actualizar la key de <provider>, está en ~/.claude/secrets/<provider>.txt
    ```
 4. El commander (cuando se cablee `8.8.2`) leerá el archivo desde disco, validará el path contra la whitelist, hará la rotación vía `secrets.rotateKey()` y devolverá confirmación. La key nunca toca el canal.
 
@@ -1377,7 +1380,7 @@ Estos archivos ya están en `.gitignore`. Si te encontrás des-ignorándolos a p
 
 Si por error pegaste una key directamente en el chat:
 
-1. **Revocá la key inmediatamente en el portal del provider** (Google AI Studio → Settings → API Keys → Delete). El sanitizer/redactor cubre el flanco a futuro, pero la key vieja sigue siendo válida hasta que la revoques upstream.
+1. **Revocá la key inmediatamente en el portal del provider** (consola de API keys del vendor correspondiente). El sanitizer/redactor cubre el flanco a futuro, pero la key vieja sigue siendo válida hasta que la revoques upstream.
 2. **Generá una nueva** y seguila el procedimiento §8.8.1.
 3. **Verificá los archivos que vivieron mientras la key estaba expuesta**:
    ```bash
@@ -1493,25 +1496,32 @@ no falla (un modelo nuevo del vendor nunca dispara rollback). El smoke test
 reporta sin abortar a propósito: si el vendor retira un modelo, un fallo duro
 ahí entraría en bucle de rollback sin arreglar nada.
 
-> **Nunca** cruzar contra `GET generativelanguage.googleapis.com/v1beta/models`
-> (`live-ping.js`): ese es el catálogo de **AI Studio**, donde
-> `gemini-3-flash-preview` sí existe. Cruzar contra él es exactamente lo que
-> dejó pasar el defecto original (ver #7289 para migrar el cron de #5888).
+> **Nunca** cruzar contra el catálogo de **AI Studio**
+> (`GET generativelanguage.googleapis.com/v1beta/models`): ahí
+> `gemini-3-flash-preview` sí existe, y cruzar contra él es exactamente lo que
+> dejó pasar el defecto original. Hasta #6861 `live-ping.js` tenía ese endpoint
+> como healthcheck del provider; se retiró junto con el shim (ver abajo). La
+> única fuente válida es `agy models` (ver #7289 para migrar el cron de #5888).
 
-> **El shim HTTP `antigravity` de `completion-client.js` es AI Studio, no
-> `agy`.** `PROVIDER_COMPLETION_ENDPOINTS['antigravity']` apunta a
-> `generativelanguage.googleapis.com/v1beta/openai/chat/completions`, y su
-> allowlist (la 2ª barrera) es el catálogo de Antigravity: AI Studio no sirve
-> ninguno de esos ids (`gemini-3.8-flash-medium` → HTTP 404). Por esa ruta hoy
-> **ningún** `complete({provider:'antigravity'})` responde `ok=true`. Ningún
-> default HTTP del pipeline debe apuntar ahí: desde #6563 (baja de los
-> gratuitos) el juez semántico de duplicados (`lib/semantic-dedup.js`, usado
-> por el Commander al crear issues) ya no tiene ningún provider HTTP servible y
-> corre por **spawn del CLI OAuth** (`openai-codex` por default, `anthropic`
-> como alternativa) con la contención descrita abajo; un test fija que su
-> default es servible por ese transporte. El único caller que recorre la
-> entrada HTTP de Gemini es la cascada del Sherlock, que tolera el fallo y
-> sigue al próximo provider.
+> **Retirado en #6861 — el shim HTTP de AI Studio ya no existe.** Hasta #6861
+> `completion-client.js` tenía una entrada `PROVIDER_COMPLETION_ENDPOINTS` del
+> ex "Gemini (Google)" que apuntaba a
+> `generativelanguage.googleapis.com/v1beta/openai/chat/completions` con API
+> key en header; AI Studio no servía ningún id del catálogo de Antigravity
+> (`gemini-3.8-flash-medium` → HTTP 404), así que por esa ruta **ningún**
+> `complete({provider:'antigravity'})` respondía `ok=true`. En el HEAD actual
+> las tres tablas quedaron vacías por reemplazo: `PROVIDER_COMPLETION_ENDPOINTS
+> = {}` y `PROVIDER_MODELS_ALLOWLIST = {}` (`completion-client.js`), y
+> `HTTP_COMPLETION_PROVIDERS = new Set([])` (`sherlock-verifier.js`). Antigravity
+> es **spawn puro**: el Sherlock lo alcanza por `spawnAntigravityComplete`
+> (`SPAWN_COMPLETION_PROVIDERS = {anthropic, openai-codex, antigravity}`), que
+> reusa `agent-launcher/providers/antigravity.js` — el mismo binario `agy` y la
+> misma OAuth que corren los agentes, sin API key (ver §12.1). El juez semántico
+> de duplicados (`lib/semantic-dedup.js`, usado por el Commander al crear
+> issues) ya corría desde #6563 por **spawn del CLI OAuth** (`openai-codex` por
+> default, `anthropic` como alternativa) con la contención descrita abajo; un
+> test fija que su default es servible por ese transporte. Ningún caller del
+> pipeline recorre hoy un endpoint HTTP de Google.
 
 **Contención del juez semántico por spawn (#6563, hallazgo security del rebote 1).**
 Un CLI de agente no es un cliente HTTP: por default corre con bypass de
@@ -2196,10 +2206,10 @@ Eventos en el audit log del día permiten calcular (futuro endpoint dashboard `/
 
 Sherlock acepta dos transportes para invocar providers:
 
-- **HTTP completion-client** (`lib/multi-provider/completion-client.js`) — para providers OpenAI-compat: hoy sólo `antigravity` (`cerebras` y `nvidia-nim` retirados en #6563).
-- **Spawn CLI** (`lib/agent-launcher/providers/anthropic.js::buildSpawn`) — para Anthropic. **Opción B** del issue #3484, elegida por: (a) reusa la infra existente y bien testeada, (b) evita refactor multi-schema del cliente HTTP para soportar la Anthropic Messages API (que no es OpenAI-compat), (c) recommendation explícita de PO y guru en la fase `criterios`.
+- **HTTP completion-client** (`lib/multi-provider/completion-client.js`) — para providers OpenAI-compat por API key. **Hoy la lista está vacía**: `HTTP_COMPLETION_PROVIDERS = new Set([])` (`sherlock-verifier.js`). `cerebras` y `nvidia-nim` se retiraron en #6563; el shim de AI Studio del ex "Gemini (Google)" se retiró en #6861 porque no servía ningún id del catálogo de Antigravity (404 en toda la cascada). El cliente se conserva (con tablas vacías y hook `_setProviderTablesForTesting` para mantener su cobertura) por si §16 admite un provider por API key.
+- **Spawn CLI** — `SPAWN_COMPLETION_PROVIDERS = {anthropic, openai-codex, antigravity}`. Cada uno reusa el handler del `agent-launcher`: `providers/anthropic.js::buildSpawn` (prompt por stdin, `--output-format text`), `providers/openai-codex.js` (`spawnCodexComplete`, prompt como argumento, stdout JSONL de `codex exec --json`; transporte real desde PR #3792) y `providers/antigravity.js` (`spawnAntigravityComplete`, #6861: prompt por stdin como NDJSON con `--input-format stream-json`, `ANTIGRAVITY_MODEL` en el env, se lee el evento `{"event":"result"}` del stream). **Opción B** del issue #3484, elegida por: (a) reusa la infra existente y bien testeada, (b) evita refactor multi-schema del cliente HTTP para soportar APIs que no son OpenAI-compat, (c) recommendation explícita de PO y guru en la fase `criterios`.
 
-Codex (`openai-codex`) sigue siendo stub ([#3076](https://github.com/intrale/platform/issues/3076) H3 pendiente) — Sherlock lo salta con gracia cuando aparece en la chain.
+`antigravity` llega al Sherlock por el mismo binario `agy` y la misma OAuth que corren los agentes — sin API key ni endpoint HTTP. Verificable: `_resolveSherlockProvider({ initialExcluded: ['anthropic', 'openai-codex'] })` → `{ provider: 'antigravity', transport: 'spawn' }`.
 
 ### 12.2 Cambios concretos respecto al estado pre-#3484
 
