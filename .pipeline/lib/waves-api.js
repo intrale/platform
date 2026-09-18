@@ -821,7 +821,8 @@ function handleRead(res, route, req) {
         if (route.action === 'roadmap-status') {
             return send(res, 200, {
                 version,
-                horizon: waves.getHorizon(5).map(toDisplayWave),
+                // Sin tope: el roadmap lista todas las planificadas.
+                horizon: waves.getHorizon(Number.MAX_SAFE_INTEGER).map(toDisplayWave),
                 allowlist: activeAllowlist(),
             });
         }
