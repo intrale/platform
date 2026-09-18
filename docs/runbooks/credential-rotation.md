@@ -21,8 +21,7 @@ Desde #3311 todas las credenciales del proyecto viven en un **único archivo**:
   "telegram":  { "bot_token": "...", "chat_id": "..." },
   "providers": {
     "openai":   { "api_key": "..." },
-    "anthropic":{ "api_key": "..." },
-    "google":   { "api_key": "..." }
+    "anthropic":{ "api_key": "..." }
   },
 
   // #5217 — namespaces que NO pasan por ENV_MAPPING (ver más abajo)

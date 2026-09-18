@@ -380,7 +380,7 @@ Si necesitás una restricción más fina ("este skill solo puede usar Haiku o So
 
 Antes de [#3486](https://github.com/intrale/platform/issues/3486) la decisión "¿este código HTTP del provider debería disparar fallback?" estaba duplicada en tres archivos:
 
-- `lib/multi-provider/completion-client.js` — matriz statusCode→reason para el camino HTTP OpenAI-compat (hoy sólo `antigravity`; Cerebras y NVIDIA NIM retirados en #6563).
+- `lib/multi-provider/completion-client.js` — matriz statusCode→reason para el camino HTTP OpenAI-compat (hoy la lista de providers HTTP está **vacía**: Cerebras y NVIDIA NIM se retiraron en #6563 y el shim HTTP de AI Studio en #6861; `antigravity` va por spawn CLI, ver [§12](#12-sherlock-verifier--timeout-y-providers-3484)).
 - `lib/multi-provider/live-ping.js` — un `interpret(status, bodyExcerpt)` por provider, con regex literales duplicados.
 - `lib/commander/provider-error-parser.js` — path `transport: 'api'` con su propia matriz para 401/403/429/5xx.
 
