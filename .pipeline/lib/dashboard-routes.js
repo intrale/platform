@@ -980,14 +980,23 @@ function enrichWave(wave, state) {
     return wave;
 }
 
+// Horizonte del roadmap: todas las olas planificadas (getHorizon exige un
+// entero positivo; Infinity no califica y caería al default de 5).
+const WAVES_HORIZON_LIMIT = Number.MAX_SAFE_INTEGER;
+
 /**
  * Construye el payload de /api/dash/waves desde lib/waves.js. Si la librería
  * no cargó o falla la lectura, retorna estructura vacía con `message` —
  * NUNCA expone paths, ENOENT ni stack traces (security CA-4/CA-8).
  *
- * #3616 — Usa `getHorizon(5)` para devolver la ola activa + las próximas 5
- * planificadas. Cada wave pasa por `normalizeWave` (whitelist por campo) —
+ * #3616 — Usa `getHorizon(WAVES_HORIZON_LIMIT)` para devolver la ola activa +
+ * las planificadas. Cada wave pasa por `normalizeWave` (whitelist por campo) —
  * no se expone path interno, hash, timestamp de boot ni stack traces.
+ *
+ * Sin tope: el horizonte original de 5 dejaba fuera de la solapa Roadmap a
+ * las olas planificadas 6.ª en adelante (con 12 planificadas, el operador
+ * veía sólo 5). El roadmap muestra TODAS las planificadas; el tope de 5 sigue
+ * viviendo en la tarjeta compacta del HOME (`MAX_PLANNED_VISIBLE`).
  *
  * Backward compat: el payload mantiene `active_wave` + `next_wave` (la primera
  * planificada) por si algún cliente viejo los lee directamente — el frontend
@@ -1069,7 +1078,7 @@ function buildWavesPayload(state, pipelineDir) {
         // getHorizon devuelve [activa, planned[0], ..., planned[N-1]] con
         // status taggeado por la lib. Lo desempacamos por status para
         // construir el payload público.
-        horizon = waves.getHorizon(5) || [];
+        horizon = waves.getHorizon(WAVES_HORIZON_LIMIT) || [];
     } catch {
         horizon = [];
     }

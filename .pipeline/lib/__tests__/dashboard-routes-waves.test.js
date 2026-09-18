@@ -245,12 +245,13 @@ test('#3616: buildWavesPayload expone planned[] con TODAS las olas del horizonte
     const planned3 = { number: 13, name: 'Próxima 3', goal: '', status: 'planned', issues: [] };
     const planned4 = { number: 14, name: 'Próxima 4', goal: '', status: 'planned', issues: [] };
     const planned5 = { number: 15, name: 'Próxima 5', goal: '', status: 'planned', issues: [] };
+    const planned6 = { number: 16, name: 'Próxima 6', goal: '', status: 'planned', issues: [] };
     delete require.cache[require.resolve('../dashboard-routes')];
     const payload = withFakeWaves(
         {
             getHorizon: (n) => {
-                assert.equal(n, 5, 'dashboard debe pedir 5 olas del horizonte');
-                return [fakeActive, planned1, planned2, planned3, planned4, planned5];
+                assert.ok(Number.isInteger(n) && n >= 6, 'dashboard no debe topear el horizonte en 5 (roadmap lista todas las planificadas)');
+                return [fakeActive, planned1, planned2, planned3, planned4, planned5, planned6];
             },
         },
         () => {
@@ -259,9 +260,9 @@ test('#3616: buildWavesPayload expone planned[] con TODAS las olas del horizonte
         },
     );
     assert.equal(payload.active_wave.number, 10);
-    assert.equal(payload.planned.length, 5);
+    assert.equal(payload.planned.length, 6, 'la 6.ª planificada tambien llega al payload');
     assert.equal(payload.planned[0].number, 11);
-    assert.equal(payload.planned[4].number, 15);
+    assert.equal(payload.planned[5].number, 16);
     assert.equal(payload.next_wave.number, 11, 'next_wave debe ser la primera planificada por backward compat');
 });
 
