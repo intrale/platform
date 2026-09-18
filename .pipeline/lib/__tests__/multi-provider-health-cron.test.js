@@ -32,6 +32,16 @@ function fakePing(scripted) {
     };
 }
 
+// #6861 — adapter de cuota NEUTRO. Sin `quotaAssessImpl` inyectado, `runOnce`
+// cae a `provider-health.assessProviderQuota`, que mide la cuota REAL de la
+// máquina: con Codex ≥90% el cuarto insumo (#4283) pisa `cli_unavailable` con
+// `quota_exhausted_real` y el test deja de ser hermético (falló así en el
+// tester del 2026-09-18). Todo `runOnce` de este archivo lo inyecta para que
+// el estado dependa sólo del probe de CLI scripted, nunca del host.
+function neutralQuota() {
+    return { adapterStatus: 'not_implemented', status: 'unknown', pct: null, gated: false, reason_code: null };
+}
+
 test('classifyState: ok + sin hits → green', () => {
     assert.equal(healthCron.classifyState({ ok: true }, { rate_limit_hit_24h: 0 }), 'green');
 });
@@ -214,6 +224,7 @@ test('runOnce: los providers OAuth se validan por CLI, nunca por secretos ni pin
         // #3802 — probe CLI fijo + sender/dedup aislados: el test no debe
         // depender del PATH real ni escribir en archivos reales del pipeline.
         cliProbe: (binary) => binary === 'claude',
+        quotaAssessImpl: neutralQuota,
         telegramSender: () => true,
         dedupFile: path.join(dir, 'dedup.json'),
         skipAudit: true,
@@ -309,6 +320,7 @@ test('runOnce: provider OAuth con CLI ausente → red (cli_unavailable)', async 
         pingImpl: fakePing({}),
         cliProbe: () => false, // CLI no disponible
         // Aislar efectos de archivo: el rojo de los OAuth dispara el sender.
+        quotaAssessImpl: neutralQuota,
         telegramSender: () => true,
         dedupFile: path.join(dir, 'dedup.json'),
         skipAudit: true,
@@ -335,6 +347,7 @@ test('runOnce: CA-6 simulación — 2 providers en rojo simultáneo → una aler
         // #6857 — antigravity es OAuth y su health hace round-trip REAL al
         // CLI (`agy models`). El probe fijo por binario evita spawnear el real.
         cliProbe: (binary) => binary === 'claude',
+        quotaAssessImpl: neutralQuota,
         telegramSender: () => true,
         dedupFile: path.join(dir, 'dedup.json'),
         skipAudit: true,
@@ -368,6 +381,7 @@ test('runOnce: con un único free provider en el plantel el rojo de todos NO dis
         auditDir,
         secretsPath,
         cliProbe: () => false, // #6857 — ver comentario del test anterior.
+        quotaAssessImpl: neutralQuota,
         telegramSender: () => true,
         dedupFile: path.join(dir, 'dedup.json'),
         skipAudit: true,
@@ -397,6 +411,7 @@ test('runOnce: el snapshot NO contiene fingerprint, masked ni body excerpt', asy
         // #3802 — probe CLI fijo + sender/dedup aislados (sino el rojo de
         // gemini dispararía el sender por defecto contra archivos reales).
         cliProbe: () => false,
+        quotaAssessImpl: neutralQuota,
         telegramSender: () => true,
         dedupFile: path.join(dir, 'dedup.json'),
         skipAudit: true,
@@ -424,6 +439,7 @@ test('runOnce: persiste snapshot a state/multi-provider-health.json', async () =
         cliProbe: (binary) => binary === 'claude',
         // Aislar efectos: sender en memoria + dedup en tmp (sino escribe en
         // servicios/telegram/pendiente/ y ~/.claude/secrets/…dedup.json reales).
+        quotaAssessImpl: neutralQuota,
         telegramSender: () => true,
         dedupFile: path.join(dir, 'dedup.json'),
         skipAudit: true,
