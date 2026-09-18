@@ -150,12 +150,17 @@ test('collectConfiguredGeminiModels: matriz firmada #6860, 6 ids en 8 rutas y 6 
     const rutas = [...got.values()].flat();
     assert.equal(rutas.length, 8, 'provider.model + alternative_models[0] + 6 fallbacks');
     assert.deepEqual(rutas.filter(r => /^skills\.(android-dev|web-dev|qa)\./.test(r)), []);
-    for (const skill of ['android-dev', 'web-dev']) {
-        assert.deepEqual(REAL_CONFIG.skills[skill].fallbacks.map(f => f.provider), ['openai-codex', 'nvidia-nim']);
+    // #6563 dio de baja cerebras/nvidia-nim/kimi-moonshot: los excluidos quedan
+    // sólo con Codex y po/ux con Google → Codex (Decisión 2 del sign-off).
+    for (const skill of ['android-dev', 'web-dev', 'qa']) {
+        assert.deepEqual(REAL_CONFIG.skills[skill].fallbacks.map(f => f.provider), ['openai-codex']);
     }
-    assert.deepEqual(REAL_CONFIG.skills.qa.fallbacks.map(f => f.provider), ['openai-codex']);
-    assert.deepEqual(REAL_CONFIG.skills.po.fallbacks.map(f => f.provider), ['gemini-google', 'openai-codex', 'cerebras', 'kimi-moonshot']);
-    assert.deepEqual(REAL_CONFIG.skills.ux.fallbacks.map(f => f.provider), ['gemini-google', 'openai-codex', 'cerebras']);
+    for (const skill of ['po', 'ux']) {
+        assert.deepEqual(REAL_CONFIG.skills[skill].fallbacks.map(f => f.provider), ['gemini-google', 'openai-codex']);
+    }
+    for (const skill of ['architect', 'perf', 'telegram-commander', 'telegram-sherlock']) {
+        assert.deepEqual(REAL_CONFIG.skills[skill].fallbacks.map(f => f.provider), ['openai-codex', 'gemini-google']);
+    }
 });
 
 // -----------------------------------------------------------------------------

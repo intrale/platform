@@ -112,18 +112,20 @@ const CATALOG = Object.freeze({
     // #6858 (2026-09-16) — Antigravity (`agy`, CLI 1.2.4). Catálogo medido con
     // `agy models`; los 14 ids son exactamente los que el CLI devuelve y se
     // cruzan contra él en lib/multi-provider/agy-catalog.js. `recommended_for`
-    // refleja los skills que efectivamente lo declaran en agent-models.json.
+    // refleja los skills que efectivamente lo declaran en agent-models.json:
+    // matriz #6860 (sign-off Leo 2026-09-18) — android-dev/web-dev/qa quedan
+    // fuera del provider (credenciales + integridad de main); Pro-low → po/ux,
+    // Pro-high → architect, Flash-high → perf, Sonnet-vía-Google → Commander,
+    // Flash-medium → Sherlock. Sólo cambia este campo: ids intactos.
     'gemini-google': Object.freeze([
         agyModel('gemini-3.8-flash-high', 'Gemini 3.8 Flash (High)', {
             capabilities: ['chat', 'tools', 'vision', 'reasoning'],
-            recommended_for: ['android-dev', 'web-dev', 'architect'],
+            recommended_for: ['perf'],
         }),
         agyModel('gemini-3.8-flash-medium', 'Gemini 3.8 Flash (Medium)', {
-            recommended_for: ['qa', 'po', 'ux', 'perf', 'telegram-commander'],
-        }),
-        agyModel('gemini-3.8-flash-low', 'Gemini 3.8 Flash (Low)', {
             recommended_for: ['telegram-sherlock'],
         }),
+        agyModel('gemini-3.8-flash-low', 'Gemini 3.8 Flash (Low)'),
         agyModel('gemini-3.7-flash-high', 'Gemini 3.7 Flash (High)', {
             capabilities: ['chat', 'tools', 'vision', 'reasoning'],
         }),
@@ -140,11 +142,15 @@ const CATALOG = Object.freeze({
         agyModel('gemini-3.6-flash-low', 'Gemini 3.6 Flash (Low)'),
         agyModel('gemini-3.1-pro-high', 'Gemini 3.1 Pro (High)', {
             capabilities: ['chat', 'tools', 'vision', 'reasoning'],
+            recommended_for: ['architect'],
         }),
-        agyModel('gemini-3.1-pro-low', 'Gemini 3.1 Pro (Low)'),
+        agyModel('gemini-3.1-pro-low', 'Gemini 3.1 Pro (Low)', {
+            recommended_for: ['po', 'ux'],
+        }),
         // Modelos de terceros servidos por Antigravity bajo su licencia.
         agyModel('claude-sonnet-4-6', 'Claude Sonnet 4.6 (Thinking)', {
             capabilities: ['chat', 'tools', 'vision', 'reasoning'],
+            recommended_for: ['telegram-commander'],
         }),
         agyModel('claude-opus-4-6-thinking', 'Claude Opus 4.6 (Thinking)', {
             capabilities: ['chat', 'tools', 'vision', 'reasoning'],
