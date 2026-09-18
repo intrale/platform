@@ -98,7 +98,7 @@ function _resetLauncherCacheForTesting() {
 //
 // Defensa en profundidad a propósito: el launcher ya validó el id antes de
 // llegar acá, pero `buildSpawn` es la ÚLTIMA frontera antes de argv y no confía
-// en su caller. Un handler nuevo que reuse esta función (ej. kimi-moonshot)
+// en su caller. Un handler nuevo que reuse esta función
 // hereda la validación sin tener que acordarse de pedirla.
 //
 // Regresión cero (CA-4): con `model` undefined el objeto devuelto es idéntico al

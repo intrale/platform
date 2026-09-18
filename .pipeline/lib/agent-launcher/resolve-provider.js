@@ -30,18 +30,10 @@ const PROVIDER_HANDLERS = {
     // #3220 — providers sign-off 2026-05-15. Handlers stub: tiran error
     // accionable si se les pide spawn antes de #3198 (runtime real).
     'gemini-google': require('./providers/gemini-google'),
-    'cerebras': require('./providers/cerebras'),
-    // #3243 — NVIDIA NIM, 4to free provider. Stub idéntico al patrón de los
-    // otros 3 free providers: error accionable hasta que #3198 entregue el
-    // wrapper real, sin tokens consumidos, sin crash del pulpo.
-    'nvidia-nim': require('./providers/nvidia-nim'),
-    // #4880 — Kimi (Moonshot), drop-in de Claude Code contra su endpoint
-    // Anthropic-compatible. El handler delega en el de Anthropic (mismo launcher
-    // `claude`, spawn y stream-json) y sólo aporta su propia detección de cuota.
-    'kimi-moonshot': require('./providers/kimi-moonshot'),
     'deterministic': require('./providers/deterministic'),
-    // Groq fue descontinuado en #3353 (mayo 2026) por política de bloqueos
-    // arbitrarios — el handler stub y la referencia se removieron del mapa.
+    // Los proveedores gratuitos (cerebras, nvidia-nim, kimi-moonshot; groq ya
+    // había salido en #3353) fueron retirados en #6563: sus handlers se
+    // borraron del mapa y del filesystem. Gemini se conserva hasta #6564.
 };
 
 const VALID_PROVIDERS = Object.freeze(Object.keys(PROVIDER_HANDLERS));
@@ -334,9 +326,6 @@ function resolvePermissionMode(models, providerName) {
         // si #3198 detecta que un wrapper de provider concreto necesita
         // otro modo, lo declara via providers.<x>.permissions_mode.
         'gemini-google': 'bypassPermissions',
-        'cerebras': 'bypassPermissions',
-        // #3243 — NVIDIA NIM default consistent con otros free providers.
-        'nvidia-nim': 'bypassPermissions',
         deterministic: 'native',
     };
     if (!models || !models.providers || !models.providers[providerName]) {

@@ -69,8 +69,6 @@ function mixedEntries() {
         fakeEntry('anthropic', 'Anthropic', 'absent', { editable: false, reason: 'OAuth/MAX' }),
         fakeEntry('openai', 'OpenAI / Codex', 'present'),
         fakeEntry('gemini-google', 'Gemini (Google AI Studio)', 'present'),
-        fakeEntry('cerebras', 'Cerebras', 'present'),
-        fakeEntry('nvidia-nim', 'NVIDIA NIM', 'absent'),
     ];
 }
 
@@ -95,18 +93,21 @@ test('CA-2 · una fila por proveedor con key, salud, tier, catálogo y kill-swit
     try {
         const html = providers.renderProviders();
         const rows = (html.match(/<article class="prov-row"/g) || []).length;
-        assert.equal(rows, 5, '5 proveedores gestionados, una fila cada uno');
+        assert.equal(rows, 3, '3 proveedores gestionados (#6563), una fila cada uno');
         assert.ok(html.includes('id="providers-list"'), 'contenedor de lista presente');
         assert.match(html, /prov-tier/, 'badge de tier');
         assert.match(html, /prov-quota-fill/, 'barra de cuota/carga');
         assert.match(html, /prov-model|prov-models-empty/, 'catálogo de modelos en línea');
         assert.match(html, /data-action="toggle-kill"/, 'kill-switch por fila');
-        // Tiers canónicos del negocio.
-        assert.match(html, /PLAN MAX/, 'Claude = PLAN MAX');
-        assert.match(html, /PAGO/, 'Codex = PAGO');
-        assert.match(html, /FREE/, 'free tiers');
-        // Los 5 providers canónicos por data-provider.
-        for (const p of ['anthropic', 'openai', 'gemini-google', 'cerebras', 'nvidia-nim']) {
+        // #6563 — tiers derivados de `billing` en agent-models.json (fuente única):
+        // Claude y Codex declaran `paid`, Gemini `free`. Sin leyenda hardcodeada.
+        assert.match(html, /prov-tier-paid/, 'Claude/Codex = PAGO (billing paid)');
+        assert.match(html, /PAGO/, 'leyenda PAGO derivada de billing');
+        assert.match(html, /prov-tier-free/, 'Gemini = FREE (billing free)');
+        assert.match(html, /FREE/, 'leyenda FREE derivada de billing');
+        assert.ok(!/PLAN MAX/.test(html), 'sin leyenda hardcodeada por provider');
+        // Los 3 providers canónicos por data-provider.
+        for (const p of ['anthropic', 'openai', 'gemini-google']) {
             assert.ok(html.includes('data-provider="' + p + '"'), 'falta data-provider ' + p);
         }
     } finally { restoreListKeys(); }
@@ -122,17 +123,17 @@ test('CA-2b · Anthropic/OAuth muestra "OAuth / MAX" sin API key ni input', () =
 
 test('CA-3 · banner de misión diagnostica cadena degradada con métricas', () => {
     const meta = {
-        total: 5, healthy: 4,
+        total: 3, healthy: 2,
         degraded: [{ name: 'Gemini', healthReason: 'timeout' }],
         absorber: { name: 'Codex', loadPct: 40 },
         defaultProvider: 'anthropic',
-        defaultChain: ['Claude', 'Codex', 'Gemini', 'Cerebras', 'NVIDIA NIM'],
+        defaultChain: ['Claude', 'Codex', 'Gemini'],
         agents: ['backend-dev'], healthTs: null, dispatchTotal: 570,
     };
     const banner = providers.renderMissionBanner(meta);
     assert.match(banner, /degradada/, 'diagnostica cadena degradada');
     assert.match(banner, /Gemini/, 'nombra al provider afectado');
-    assert.match(banner, /4 <span class="u">de 5/, 'sanos N/total');
+    assert.match(banner, /2 <span class="u">de 3/, 'sanos N/total');
     assert.match(banner, /Codex/, 'nombra quién absorbe el fallback');
     assert.match(banner, /40%/, 'nivel de absorción del fallback');
     assert.match(banner, /is-degraded/, 'estilo degradado');
@@ -140,7 +141,7 @@ test('CA-3 · banner de misión diagnostica cadena degradada con métricas', () 
 
 test('CA-3b · banner en calma cuando no hay degradados', () => {
     const meta = {
-        total: 5, healthy: 5, degraded: [],
+        total: 3, healthy: 3, degraded: [],
         absorber: { name: 'Claude', loadPct: 12 },
         defaultProvider: 'anthropic',
         defaultChain: ['Claude'], agents: [], healthTs: null, dispatchTotal: 100,
@@ -206,7 +207,7 @@ test('SEC · payload XSS en datos del provider NO es ejecutable', () => {
     const evil = '<img src=x onerror=alert(1)>"';
     const p = {
         key: 'anthropic', disabledKey: 'anthropic', name: evil, accent: 'var(--provider-anthropic)',
-        tier: 'PLAN MAX', tierKind: 'max', tierIcon: '🟦',
+        tier: 'PAGO', tierKind: 'paid', tierIcon: '🟧',
         masked: evil, fingerprint: evil, keyStatus: 'present', editable: true,
         reason: null, authMode: null, freeTierNotes: null,
         healthState: 'green', healthReason: evil, lastChecked: null,
@@ -237,7 +238,7 @@ test('SEC estático · sin inputs de password, sin textarea, sin handlers inline
 
 test('UX · tokens --provider-* DEFINIDOS en el documento (no solo referenciados)', () => {
     const html = providers.renderProviders();
-    for (const token of ['--provider-anthropic:', '--provider-gemini:', '--provider-cerebras:', '--provider-nvidia-nim:', '--provider-unknown:']) {
+    for (const token of ['--provider-anthropic:', '--provider-gemini:', '--provider-openai:', '--provider-unknown:']) {
         assert.ok(html.includes(token), 'el documento debe DEFINIR ' + token.slice(0, -1));
     }
     const inert = providers.renderInert('boom');
@@ -257,8 +258,10 @@ test('A3 · renderInert() retorna HTML visible "Ventana Providers no disponible"
 test('buildProvidersModel nunca lanza y devuelve el set canónico', () => {
     const model = providers.buildProvidersModel();
     assert.ok(Array.isArray(model.providers));
-    assert.equal(model.providers.length, 5);
-    assert.deepEqual(model.providers.map((p) => p.name), ['Claude', 'Codex', 'Gemini', 'Cerebras', 'NVIDIA NIM']);
+    assert.equal(model.providers.length, 3);
+    assert.deepEqual(model.providers.map((p) => p.name), ['Claude', 'Codex', 'Gemini']);
+    // #6563 — el tier sale de `billing` (agent-models.json), no de una tabla por provider.
+    assert.deepEqual(model.providers.map((p) => p.tierKind), ['paid', 'paid', 'free']);
     assert.ok(model.meta.absorber, 'identifica al absorber');
     assert.ok(typeof model.meta.healthy === 'number');
     assert.ok(Array.isArray(model.meta.agents));
@@ -334,7 +337,7 @@ test('Smoke · GET /dashboard?view=providers → 200', async () => {
 test('SEC · anti-leak cross-route: 0 keys completas en cada ruta', async () => {
     setListKeys(() => [
         fakeEntry('openai', 'OpenAI / Codex', 'present', { masked: 'sk-fake123456****wxyz' }),
-        fakeEntry('cerebras', 'Cerebras', 'present', { masked: 'csk-aa11****zz99' }),
+        fakeEntry('gemini-google', 'Gemini (Google AI Studio)', 'present', { masked: 'AIza-aa11****zz99' }),
     ]);
     const { server, port } = await startEphemeralServer();
     try {

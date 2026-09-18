@@ -69,7 +69,7 @@ node .pipeline/tools/multi-provider-smoke-test.js
 node .pipeline/tools/multi-provider-smoke-test.js --skill=guru
 
 # Filtrar a un único provider
-node .pipeline/tools/multi-provider-smoke-test.js --provider=cerebras
+node .pipeline/tools/multi-provider-smoke-test.js --provider=gemini-google
 
 # Filtrar a una combinación específica
 node .pipeline/tools/multi-provider-smoke-test.js --skill=qa --provider=gemini-google
@@ -151,7 +151,7 @@ Latencia se reporta sólo en buckets discretos (CA-A7 / REQ-SEC-9):
    {
      "event": "forced_provider_override",
      "skill": "multi-provider-smoke-test",
-     "forced_provider": "cerebras",
+     "forced_provider": "gemini-google",
      "primary_provider_bypassed": "anthropic",
      "source": "smoke-test"
    }

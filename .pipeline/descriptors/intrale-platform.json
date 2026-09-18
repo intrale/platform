@@ -21,7 +21,7 @@
     }
   ],
   "providers": {
-    "order": ["anthropic", "openai-codex", "gemini-google", "cerebras", "nvidia-nim"]
+    "order": ["anthropic", "openai-codex", "gemini-google"]
   },
   "pullRequests": {
     "policy": "required"

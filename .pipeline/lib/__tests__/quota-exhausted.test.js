@@ -1132,112 +1132,121 @@ test('lifecycle multi-provider · flag anthropic + skill openai pasa + skill ant
 // =============================================================================
 // #3220 — Tests multi-provider sign-off 2026-05-15 (gemini-google, cerebras)
 // #3353 — Tests específicos de groq eliminados: provider descontinuado.
+// #6563 — cerebras / nvidia-nim / kimi-moonshot retirados del plantel. Los
+//         casos que ejercitaban infraestructura genérica (parser openai-sse,
+//         scope del flag por provider) quedan anclados a `openai-codex`, el
+//         provider vigente que conserva el mismo camino `_detectOpenAI`.
 // =============================================================================
 
-const PROVIDER_DEF_CEREBRAS = Object.freeze({
-    launcher: 'cerebras',
-    model: 'llama-3.3-70b',
+const PROVIDER_DEF_OPENAI_COMPAT = Object.freeze({
+    launcher: 'codex',
+    model: 'gpt-5.5',
     output_parser: 'openai-sse', // API drop-in OpenAI-compatible
-    quota_error_types: ['rate_limit_exceeded', 'quota_exceeded'],
+    quota_error_types: ['insufficient_quota', 'billing_hard_limit_reached'],
     resets_at_cap_max_days: 31,
 });
 
-test('#3220 + #3353 · KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER incluye gemini-google y cerebras (sin groq)', () => {
+test('#3220 + #3353 + #6563 · KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER incluye gemini-google (sin groq ni cerebras)', () => {
     const tmp = newTmpDir();
     const q = freshModule(tmp);
     const meta = q.KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER;
     assert.ok(meta['gemini-google'], 'falta gemini-google');
-    assert.ok(meta.cerebras, 'falta cerebras');
     // #3353 — groq fue removido tras la descontinuación.
     assert.ok(!meta.groq, 'groq debería estar removido tras #3353');
+    // #6563 — providers retirados del plantel: fuera de la meta-allowlist.
+    for (const retired of ['cerebras', 'nvidia-nim', 'kimi-moonshot', 'ollama']) {
+        assert.ok(!meta[retired], `${retired} debería estar removido tras #6563`);
+    }
+    // El plantel vigente es exactamente éste.
+    assert.deepEqual(Object.keys(meta).sort(), ['anthropic', 'gemini-google', 'openai-codex']);
     // Inmutabilidad
+    assert.ok(Object.isFrozen(meta));
     assert.ok(Object.isFrozen(meta['gemini-google']));
-    assert.ok(Object.isFrozen(meta.cerebras));
+    assert.ok(Object.isFrozen(meta['openai-codex']));
     // Valores esperados
     assert.deepEqual([...meta['gemini-google']].sort(), ['quota_exceeded', 'resource_exhausted']);
-    // #5978 — se suma 'insufficient_quota': verificado empíricamente que Cerebras
-    // devuelve ese `code` en el 402 de billing (ver
-    // quota-exhausted-bare-error-5978.test.js). Sin él, el 402 no seteaba flag de
-    // cuota y el provider muerto seguía en la cadena rebotando issues sanos.
-    assert.deepEqual([...meta.cerebras].sort(), ['insufficient_quota', 'quota_exceeded', 'rate_limit_exceeded']);
+    // #5978 — 'insufficient_quota' es el `code` del 402 de billing de los
+    // OpenAI-compat (ver quota-exhausted-bare-error-5978.test.js). Sin él, el 402
+    // no seteaba flag de cuota y el provider muerto seguía en la cadena.
+    assert.ok(meta['openai-codex'].includes('insufficient_quota'));
     // Rename: bare 'gemini' ya no existe
     assert.ok(!meta.gemini, "key 'gemini' debe haber sido renombrado a 'gemini-google'");
 });
 
-test('#3220 · detectQuotaError(cerebras) matchea SSE event=error data.error.type', () => {
+test('#3220 · detectQuotaError(openai-sse) matchea SSE event=error data.error.type', () => {
     const tmp = newTmpDir();
     const q = freshModule(tmp);
-    const evt = { event: 'error', data: { error: { type: 'rate_limit_exceeded', message: 'Rate limit hit' } } };
-    const det = q.detectQuotaError(evt, PROVIDER_DEF_CEREBRAS);
+    const evt = { event: 'error', data: { error: { type: 'insufficient_quota', message: 'Payment required' } } };
+    const det = q.detectQuotaError(evt, PROVIDER_DEF_OPENAI_COMPAT);
     assert.equal(det.matched, true);
-    assert.equal(det.errorType, 'rate_limit_exceeded');
+    assert.equal(det.errorType, 'insufficient_quota');
 });
 
-test('#3220 · detectQuotaError(cerebras) matchea shape alternativo response.error', () => {
+test('#3220 · detectQuotaError(openai-sse) matchea shape alternativo response.error', () => {
     const tmp = newTmpDir();
     const q = freshModule(tmp);
-    const evt = { type: 'response.error', error: { type: 'rate_limit_exceeded' } };
-    const det = q.detectQuotaError(evt, PROVIDER_DEF_CEREBRAS);
+    const evt = { type: 'response.error', error: { type: 'insufficient_quota' } };
+    const det = q.detectQuotaError(evt, PROVIDER_DEF_OPENAI_COMPAT);
     assert.equal(det.matched, true);
-    assert.equal(det.errorType, 'rate_limit_exceeded');
+    assert.equal(det.errorType, 'insufficient_quota');
 });
 
-test('#3220 · detectQuotaError(cerebras) NO matchea error_type fuera de allowlist cerebras', () => {
+test('#3220 · detectQuotaError(openai-sse) NO matchea error_type fuera de la allowlist del provider', () => {
     const tmp = newTmpDir();
     const q = freshModule(tmp);
-    // billing_hard_limit_reached pertenece a openai-codex, no cerebras
-    const evt = { event: 'error', data: { error: { type: 'billing_hard_limit_reached' } } };
-    assert.equal(q.detectQuotaError(evt, PROVIDER_DEF_CEREBRAS).matched, false);
+    // usage_limit_error pertenece a anthropic, no al def openai-compat
+    const evt = { event: 'error', data: { error: { type: 'usage_limit_error' } } };
+    assert.equal(q.detectQuotaError(evt, PROVIDER_DEF_OPENAI_COMPAT).matched, false);
 });
 
-test('#3220 · setFlag con provider=cerebras + skill cerebras → gateado; skill anthropic NO gateado', () => {
+test('#3220 · setFlag con provider=openai-codex + skill openai-codex → gateado; skill anthropic NO gateado', () => {
     const tmp = newTmpDir();
     const q = freshModule(tmp);
     const now = Date.parse('2026-05-15T00:00:00Z');
     const resetsAt = new Date(now + 24 * 60 * 60 * 1000).toISOString();
     q.setFlag({
-        errorType: 'rate_limit_exceeded',
-        provider: 'cerebras',
-        model: 'llama-3.3-70b',
+        errorType: 'insufficient_quota',
+        provider: 'openai-codex',
+        model: 'gpt-5.5',
         resetsAt,
         now,
         maxDays: 31,
     });
-    // skill que usa cerebras SÍ se gatea
-    assert.equal(q.shouldGateSpawn('qa', { provider: 'cerebras', now }), true);
+    // skill que usa openai-codex SÍ se gatea
+    assert.equal(q.shouldGateSpawn('qa', { provider: 'openai-codex', now }), true);
     // skill que usa anthropic NO se gatea (scope cross-provider)
     assert.equal(q.shouldGateSpawn('qa', { provider: 'anthropic', now }), false);
 });
 
-test('#3220 · setFlag con provider=cerebras (segundo caso) + maxDays=31 produce flag con campos esperados', () => {
+test('#3220 · setFlag con provider=openai-codex (segundo caso) + maxDays=31 produce flag con campos esperados', () => {
     const tmp = newTmpDir();
     const q = freshModule(tmp);
     const now = Date.parse('2026-05-15T00:00:00Z');
     const resetsAt = new Date(now + 10 * 24 * 60 * 60 * 1000).toISOString();
     const r = q.setFlag({
-        errorType: 'quota_exceeded',
-        provider: 'cerebras',
-        model: 'llama-3.3-70b',
+        errorType: 'billing_hard_limit_reached',
+        provider: 'openai-codex',
+        model: 'gpt-5.5',
         resetsAt,
         now,
         maxDays: 31,
     });
-    assert.equal(r.payload.provider, 'cerebras');
-    assert.equal(r.payload.model, 'llama-3.3-70b');
-    assert.equal(r.payload.pattern_matched, 'quota_exceeded');
+    assert.equal(r.payload.provider, 'openai-codex');
+    assert.equal(r.payload.model, 'gpt-5.5');
+    assert.equal(r.payload.pattern_matched, 'billing_hard_limit_reached');
     const persisted = readFlag(tmp);
-    assert.equal(persisted.provider, 'cerebras');
+    assert.equal(persisted.provider, 'openai-codex');
 });
 
-test('#3220 · flag cerebras NO limpia con clearFlag(provider=gemini-google) (scope cross-provider)', () => {
+test('#3220 · flag openai-codex NO limpia con clearFlag(provider=gemini-google) (scope cross-provider)', () => {
     const tmp = newTmpDir();
     const q = freshModule(tmp);
     const now = Date.parse('2026-05-15T00:00:00Z');
     const resetsAt = new Date(now + 24 * 60 * 60 * 1000).toISOString();
-    q.setFlag({ errorType: 'rate_limit_exceeded', provider: 'cerebras', resetsAt, now, maxDays: 31 });
-    assert.equal(q.clearFlag({ provider: 'gemini-google' }), false, 'gemini-google no debería limpiar flag de cerebras');
+    q.setFlag({ errorType: 'insufficient_quota', provider: 'openai-codex', resetsAt, now, maxDays: 31 });
+    assert.equal(q.clearFlag({ provider: 'gemini-google' }), false, 'gemini-google no debería limpiar flag de openai-codex');
     assert.equal(q.isQuotaExhausted({ now }), true);
-    assert.equal(q.clearFlag({ provider: 'cerebras' }), true, 'cerebras sí limpia su propio flag');
+    assert.equal(q.clearFlag({ provider: 'openai-codex' }), true, 'openai-codex sí limpia su propio flag');
     assert.equal(q.isQuotaExhausted({ now }), false);
 });
 
@@ -1313,8 +1322,8 @@ test('#4353 CA-3 · el drenado es scoped: un éxito de X NO revalida el flag de 
         const resetsAt = Date.now() + 3600 * 1000;
         // Flag activo de gemini-google (otro provider).
         q.setFlag({ errorType: 'quota_exhausted', provider: 'gemini-google', resetsAt });
-        // Un éxito de nvidia-nim NO debe drenar el flag de gemini.
-        const drained = q.clearFlag({ event: 'success_spawn_fallback', reason: 'commander_fallback_success', provider: 'nvidia-nim' });
+        // Un éxito de openai-codex NO debe drenar el flag de gemini.
+        const drained = q.clearFlag({ event: 'success_spawn_fallback', reason: 'commander_fallback_success', provider: 'openai-codex' });
         assert.equal(drained, false, 'no debe drenar el flag de otro provider');
         assert.equal(q.shouldGateSpawn('telegram-commander', { provider: 'gemini-google' }), true, 'gemini sigue gated');
     } finally {
@@ -1340,7 +1349,7 @@ test('#4731 · dos proveedores agotados COEXISTEN sin pisarse (CA-3)', () => {
     // Ambos gatean su propio provider; ninguno gatea al otro fuera de scope.
     assert.equal(q.shouldGateSpawn('po', { provider: 'anthropic', now }), true);
     assert.equal(q.shouldGateSpawn('po', { provider: 'openai-codex', now }), true);
-    assert.equal(q.shouldGateSpawn('po', { provider: 'cerebras', now }), false);
+    assert.equal(q.shouldGateSpawn('po', { provider: 'gemini-google', now }), false);
     // El espejo top-level apunta al reset más próximo (codex, +1h).
     assert.equal(persisted.provider, 'openai-codex');
 });

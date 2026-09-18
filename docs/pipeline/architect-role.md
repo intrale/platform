@@ -129,6 +129,8 @@ Patrón ya usado por `handoff` y `delivery` — consistencia visual del feed del
 
 **Decisión firmada:** Sonnet 4.7 → Codex (gpt-5-codex) → Gemini (gemini-2.0-flash) → Cerebras (llama-3.3-70b).
 
+> **Actualización #6563 (2026-09-16):** Cerebras fue dado de baja del ruteo; la cadena vigente del `architect` en `agent-models.json` es `anthropic (sonnet-4-6) → openai-codex (gpt-5.5) → gemini-google (gemini-3.8-flash-high)`.
+
 **NO incluye Haiku 4.5** — justificación del PO en `criterios`:
 
 > El spike #3526 demostró que el ahorro principal viene de **evitar rebotes**, no del costo per-token. Una receta defectuosa de Haiku anula el ahorro. Sonnet 4.7 es el sweet spot: 5× más barato que Opus en input/output/cache, suficiente razonamiento para mapear codebase + proponer patrones.

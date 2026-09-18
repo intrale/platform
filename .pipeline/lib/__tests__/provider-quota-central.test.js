@@ -89,8 +89,11 @@ test('clasificación de proveedores: pagos vs free (sin solapamiento)', () => {
   assert.equal(isPaidProvider('anthropic'), true);
   assert.equal(isPaidProvider('openai-codex'), true);
   assert.equal(isPaidProvider('gemini-google'), false);
-  assert.equal(isFreeProvider('cerebras'), true);
+  assert.equal(isFreeProvider('gemini-google'), true);
   assert.equal(isFreeProvider('anthropic'), false);
+  // #6563 — cerebras retirado del plantel: ya no es free ni pago.
+  assert.equal(isFreeProvider('cerebras'), false);
+  assert.equal(isPaidProvider('cerebras'), false);
   const overlap = PAID_PROVIDERS.filter((p) => FREE_PROVIDERS.includes(p));
   assert.deepEqual(overlap, []);
 });
@@ -119,7 +122,6 @@ test('CA-1 · débitos concurrentes de pagos: total exacto en el contador centra
 test('routing: debitPaidQuota rechaza proveedores free (usan medición local)', async () => {
   const { store } = makeStore();
   await assert.rejects(() => debitPaidQuota(store, { provider: 'gemini-google', deltaTokens: 10 }), /sólo aplica a proveedores pagos/);
-  await assert.rejects(() => debitPaidQuota(store, { provider: 'cerebras', deltaTokens: 10 }), /pagos/);
 });
 
 test('routing: free tier usa recordSample local, NUNCA el contador central', async () => {

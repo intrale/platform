@@ -26,6 +26,9 @@ const { formatEpisodeNotice, TIERS, CAUSAS, EVENTOS } = require('./render');
 const JERGA = [
     /skill=/i, /primary=/i, /fallback=/i, /\bgated\b/i, /índice/i, /\bindice\b/i,
     /deepseek|gpt-\d|claude-[a-z0-9-]+|gemini-|llama-/i,
+    // Nombres de proveedor prohibidos en el copy. Incluye a los retirados en
+    // #6563 (cerebras / nvidia / kimi / moonshot / groq) como guarda contra
+    // filas fantasma: si reaparecen en un texto visible, es una regresión.
     /anthropic|openai|codex|cerebras|nvidia|kimi|moonshot|groq/i,
     /quota_exhausted|rate_limit|errorCode|raw_excerpt|5xx/i,
     /\[object Object\]/, /function Object\(\)/,

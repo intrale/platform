@@ -2521,7 +2521,7 @@ function historialTimelineSlice(state, ctx, opts) {
 //     el TOP-LEVEL del objeto retornado — son el resultado del adapter de
 //     Anthropic, idéntico byte-a-byte al shape pre-#3357. Esto evita romper
 //     consumidores del banner del dashboard.
-//   - Campo nuevo `providers: { anthropic, openai-codex, groq, ... }` expone
+//   - Campo nuevo `providers: { anthropic, openai-codex, gemini-google, ... }` expone
 //     el shape multi-provider para la UI nueva del kpi panel (CA-UX-2).
 //
 // #4202 — `providers[p]` se NORMALIZA al shape de cliente
@@ -2599,10 +2599,11 @@ function quotaSlice(state, ctx) {
     // está disponible (caso edge), cae al set mínimo conocido. NO usar `eval`
     // ni `require` dinámico con paths construidos — siempre el path fijo.
     // #4327 (CA-3) — Fallback alineado EXACTAMENTE con los `providers` reales de
-    // agent-models.json (sin `deterministic`, que no consume cuota, y sin `groq`,
-    // descontinuado en #3353). Blinda contra un provider fantasma si la lectura de
-    // config falla. El path config-driven (abajo) es el primario.
-    let declaredProviders = ['anthropic', 'openai-codex', 'gemini-google', 'cerebras', 'nvidia-nim'];
+    // agent-models.json (sin `deterministic`, que no consume cuota, y sin los
+    // proveedores retirados: `groq` en #3353, `cerebras`/`nvidia-nim` en #6563).
+    // Blinda contra un provider fantasma si la lectura de config falla. El path
+    // config-driven (abajo) es el primario.
+    let declaredProviders = ['anthropic', 'openai-codex', 'gemini-google'];
     try {
         const modelsPath = path.join(PIPELINE, 'agent-models.json');
         const models = safeReadJson(modelsPath, null);

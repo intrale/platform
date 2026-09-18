@@ -32,7 +32,8 @@ const path = require('path');
 
 // #4839 — catálogo de capabilities de EJECUCIÓN (eje capacidad del motor). Es
 // namespace propio, separado del eje autorización de lib/capabilities.js: NO se
-// reusa `tool_use_gated` (cerebras lo tiene y llevaría a fail-open — SEC-1). Se
+// reusa `tool_use_gated` (un provider sin tool_use podía tenerlo y llevaría a
+// fail-open — SEC-1). Se
 // usa para (a) inyectar el enum cerrado en el schema (loadSchema, anti-drift) y
 // (b) el matching fail-closed rol×provider en validateCrossReferences.
 const { capabilityNames } = require('./execution-capabilities');
@@ -44,31 +45,26 @@ const { capabilityNames } = require('./execution-capabilities');
 //
 // #3220 — incorporación multi-provider sign-off 2026-05-15:
 //   - `gemini-google` (rename ex-`gemini`, naming coherente con el sign-off).
-//   - `cerebras` (API OpenAI-compatible, modelos llama).
-// Las entradas suman launchers nuevos. El runtime real (wrapper Node por
-// provider) se materializa con #3198 — por ahora la allowlist habilita
-// declarar los providers en agent-models.json sin que el boot falle.
 //
 // #3353 (mayo 2026) — Groq fue descontinuado por política de bloqueos
 // arbitrarios. El launcher 'groq' se removió de la allowlist; cualquier
 // agent-models.json que lo declare ahora falla el boot con mensaje accionable.
+//
+// #6563 (2026-09-16) — baja de los proveedores gratuitos: `cerebras`,
+// `nvidia-nim` y el remanente `ollama` se removieron de la allowlist (criterio
+// de admisión #6562: no contables, sin CLI que edite archivos). Cualquier
+// agent-models.json que los declare falla el boot con mensaje accionable. El
+// rollback es re-alta con `admission.exception` — docs/pipeline/multi-provider.md §17.
 const ALLOWED_LAUNCHERS = Object.freeze([
   'claude',
   'codex',
   'gemini-google',
-  'cerebras',
-  // #3243 — NVIDIA NIM, 4to free provider (API OpenAI-compat). Sign-off
-  // 2026-05-17 (security + guru + ux + po aprobados en análisis del issue).
-  // El runtime real llega con #3198; este alias habilita declarar el provider
-  // en agent-models.json sin que el boot falle.
-  'nvidia-nim',
-  'ollama',
   'node',
 ]);
 
 // #4306 — launchers cuyo auth es login interactivo del CLI (OAuth). Un provider
 // con `auth_mode: "oauth"` SOLO es coherente si su launcher está acá; cualquier
-// otro (HTTP API key pelada: cerebras/nvidia-nim, o local: node/ollama) marcado
+// otro (p.ej. el launcher local `node`) marcado
 // `oauth` debe FALLAR al cargar (fail-closed, CA-3 / REQ-SEC-1) — sino correría
 // sin credencial alguna.
 const OAUTH_CAPABLE_LAUNCHERS = Object.freeze([
@@ -118,16 +114,14 @@ const DENIED_FLAGS = Object.freeze([
 
 // Output parsers válidos (composición consistente con el schema).
 //
-// #3220 — Cerebras expone una API drop-in OpenAI-compatible; el handler
-// `_detectOpenAI` en lib/quota-exhausted.js ya parsea el shape canónico
-// (`event=error data.error.type`) y alternativo (`response.error`). Por lo
-// tanto reusa `openai-sse` sin agregar parsers nuevos. Gemini conserva su
-// `gemini-stream` declarativo (handler estructurado pendiente — #3226).
+// `openai-sse` lo usa openai-codex (el handler `_detectOpenAI` en
+// lib/quota-exhausted.js parsea el shape canónico `event=error data.error.type`
+// y el alternativo `response.error`). Gemini conserva su `gemini-stream`
+// declarativo. `ollama-jsonl` se retiró en #6563 junto con el launcher.
 const ALLOWED_OUTPUT_PARSERS = Object.freeze([
   'anthropic-stream-json',
   'openai-sse',
   'gemini-stream',
-  'ollama-jsonl',
   'none',
 ]);
 
@@ -137,10 +131,9 @@ const ALLOWED_OUTPUT_PARSERS = Object.freeze([
 // código — recién entra acá. Si un caller declara un modelo fuera de su
 // launcher, el boot rechaza con mensaje accionable.
 //
-// Para los launchers determinísticos / locales sin LLM (node, ollama) la
-// lista queda vacía: cualquier string como `model` se acepta — son alias
-// informativos del script o del modelo local que el operador eligió, no
-// un binding a un endpoint de provider remoto.
+// Para el launcher determinístico sin LLM (node) la lista queda vacía:
+// cualquier string como `model` se acepta — es un alias informativo del
+// script, no un binding a un endpoint de provider remoto.
 const ALLOWED_MODELS_BY_LAUNCHER = Object.freeze({
   claude: Object.freeze([
     'claude-opus-4-7',
@@ -150,12 +143,6 @@ const ALLOWED_MODELS_BY_LAUNCHER = Object.freeze({
     // Era el primario de ~12 skills + el Commander → causa raíz de fragilidad.
     'claude-sonnet-4-6',
     'claude-haiku-4-5',
-    // #4880 — Kimi K2.6 (Moonshot). El provider `kimi-moonshot` reusa el
-    // launcher `claude` apuntado al endpoint Anthropic-compat de Moonshot
-    // (ANTHROPIC_BASE_URL), por lo que su `model` viaja por el mismo template
-    // que Anthropic y se valida contra ESTA allowlist. El id es el que acepta el
-    // endpoint Moonshot (spike #4871), no un modelo de Anthropic.
-    'kimi-k2-6',
   ]),
   codex: Object.freeze([
     // 2026-06-04 (sign-off Leo por voz) — Codex con cuenta ChatGPT (OAuth) solo
@@ -209,33 +196,10 @@ const ALLOWED_MODELS_BY_LAUNCHER = Object.freeze({
     'claude-opus-4-6-thinking',
     'gpt-oss-120b-medium',
   ]),
-  // 2026-06-02 — Corrección free tier real: el free tier de Cerebras NO sirve
-  // modelos `llama-*` (verificado contra GET /v1/models). Los únicos servibles
-  // hoy son `gpt-oss-120b` (default, menor overhead de reasoning) y `zai-glm-4.7`
-  // (alternativo para adversariality #3501). El smoke test del adapter (PR #3794)
-  // confirmó `gpt-oss-120b` con la key free real (exit 0, "OK", 83 in / 102 out).
-  cerebras: Object.freeze([
-    'gpt-oss-120b',
-    'zai-glm-4.7',
-  ]),
-  // #3243 — NVIDIA NIM expone modelos hosted con naming `vendor/model`. La
-  // allowlist se inicializa con los 2 modelos sign-off del issue (DeepSeek para
-  // razonamiento/código y Kimi K2.6 para agentic loops). El
-  // catálogo crece editando esta lista — fuente única de verdad cross-validada
-  // contra `provider.model` y `skills.<x>.model_override`. `gpt-oss-120b` queda
-  // pendiente de validar disponibilidad/cuota antes de sumarse.
-  // #5887 — el modelo DeepSeek original llegó a end-of-life el 2026-08-07 y
-  // devolvía HTTP 410; se reemplaza (no se agrega al lado) por el flash pineado,
-  // verificado vivo el 2026-08-13 con GET /v1/models + POST /v1/chat/completions
-  // con tools[] → finish_reason=tool_calls. Comparación exacta contra strings
-  // literales: sin wildcard, sin prefix-match, sin bypass por env var.
-  'nvidia-nim': Object.freeze([
-    'deepseek-ai/deepseek-v4-flash-0731',
-    'moonshotai/kimi-k2-instruct',
-  ]),
-  // launchers sin allowlist explícita → cualquier string `model` es válido.
+  // #6563 — los bloques `cerebras`, `nvidia-nim` y `ollama` se retiraron con
+  // sus launchers. Rollback: docs/pipeline/multi-provider.md §17.
+  // launcher sin allowlist explícita → cualquier string `model` es válido.
   node: Object.freeze([]),
-  ollama: Object.freeze([]),
 });
 
 // Patrones de secrets hardcoded prohibidos en cualquier string del JSON
@@ -284,28 +248,15 @@ const ALLOWED_CREDENTIAL_ENV_VARS = Object.freeze([
   'OPENAI_API_KEY',
   'GOOGLE_API_KEY',
   'GEMINI_API_KEY',
-  // #3220 SEC-1 — providers nuevos sign-off 2026-05-15. Sigue la convención
-  // `<PROVIDER>_API_KEY` (credencial explícita del provider, no var del SO).
-  // Review de seguridad aprobado en análisis del issue.
-  //
   // #3353 (mayo 2026) — `GROQ_API_KEY` se removió de la allowlist porque Groq
   // fue descontinuado: cualquier agent-models.json que lo declare ahora falla
   // el boot por env var fuera de allowlist, con mensaje accionable.
-  'CEREBRAS_API_KEY',
-  // #3243 SEC-1 — NVIDIA NIM, 4to free provider sign-off 2026-05-17. Sigue la
-  // convención `<PROVIDER>_API_KEY` (credencial explícita del provider, no var
-  // del SO). Security aprobó el handler en el análisis del issue.
-  'NVIDIA_NIM_API_KEY',
-  // #4880 SEC-1 — Kimi (Moonshot) se integra como drop-in de Claude Code contra
-  // su endpoint Anthropic-compatible (launcher `claude` + ANTHROPIC_BASE_URL).
-  // Autentica con su PROPIO token en `ANTHROPIC_AUTH_TOKEN` (var distinta de
-  // `ANTHROPIC_API_KEY`, la key OAuth/Max real de Anthropic) — así el child de
-  // Kimi nunca recibe la credencial de Anthropic. Termina en `_TOKEN`, respeta
-  // la convención de credencial explícita del provider.
-  'ANTHROPIC_AUTH_TOKEN',
+  // #6563 (2026-09-16) — `CEREBRAS_API_KEY`, `NVIDIA_NIM_API_KEY`,
+  // `ANTHROPIC_AUTH_TOKEN` (drop-in de Kimi, #4880) y `OLLAMA_HOST` se
+  // removieron con la baja de los proveedores gratuitos. Mismo efecto: declararlas
+  // en agent-models.json falla el boot con mensaje accionable.
   'GH_TOKEN',
   'GITHUB_TOKEN',
-  'OLLAMA_HOST',
 ]);
 
 // Exit codes accionables (CA-2 + UX guideline).
@@ -904,8 +855,8 @@ function validateCrossReferences(config, options = {}) {
       }
       // #4306 CA-3 / REQ-SEC-1 — coherencia auth_mode: un provider con
       // `auth_mode: "oauth"` DEBE tener un launcher de login CLI
-      // (OAUTH_CAPABLE_LAUNCHERS). Marcarlo oauth con un launcher HTTP
-      // (cerebras/nvidia-nim) o local (node/ollama) es fail-open: saltearía la
+      // (OAUTH_CAPABLE_LAUNCHERS). Marcarlo oauth con un launcher HTTP o
+      // local (node) es fail-open: saltearía la
       // validación de credenciales y correría sin auth. Error de carga, no
       // warning. `credentials_env` pasa a ser opcional cuando auth_mode=oauth
       // (no se valida acá; el bypass de presencia ya lo contempla).
@@ -920,7 +871,7 @@ function validateCrossReferences(config, options = {}) {
       }
       // #3220 — model default del provider debe pertenecer a la allowlist
       // de su launcher (cuando la allowlist existe y no está vacía).
-      // Launchers sin allowlist (node, ollama) aceptan cualquier `model`
+      // Launchers sin allowlist (node) aceptan cualquier `model`
       // string — su `model` es alias informativo del script local, no un
       // binding a un endpoint de provider remoto.
       //
@@ -1155,8 +1106,8 @@ function validateCrossReferences(config, options = {}) {
  * stores locales (`~/.claude/.credentials.json`, `~/.codex`, cuenta Google).
  * Cualquier `credentials_env` declarado para un provider OAuth se ignora a
  * propósito en este chequeo (es informativo). Para el resto de launchers
- * (`cerebras`, `nvidia-nim`, `ollama`, `node`) la presencia de la env var
- * sigue siendo obligatoria al boot.
+ * (hoy sólo `node`) la presencia de la env var sigue siendo obligatoria al
+ * boot.
  *
  * Compat: seguimos bypaseando `launcher === 'claude'` aunque no declare
  * `auth_mode`, porque históricamente Anthropic se autenticó por OAuth Max sin
@@ -1547,10 +1498,10 @@ function stringifyContextValue(v) {
  * crash; la validación primaria ocurre en validateCrossReferences.
  *
  * Casos:
- *   resolveFallbackEntry('cerebras')                          → { provider: 'cerebras', model_override: null }
+ *   resolveFallbackEntry('gemini-google')                     → { provider: 'gemini-google', model_override: null }
  *   resolveFallbackEntry({ provider: 'openai-codex', model_override: 'gpt-5' })
  *                                                             → { provider: 'openai-codex', model_override: 'gpt-5' }
- *   resolveFallbackEntry({ provider: 'cerebras' })            → { provider: 'cerebras', model_override: null }
+ *   resolveFallbackEntry({ provider: 'gemini-google' })       → { provider: 'gemini-google', model_override: null }
  *   resolveFallbackEntry(null|123|[])                         → null
  *   resolveFallbackEntry({ })                                 → null (sin provider)
  */

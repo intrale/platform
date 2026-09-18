@@ -9,7 +9,7 @@
 
 ## 1. Por qué este documento existe
 
-El pipeline V3 está migrando a **multi-provider** ([#3065](https://github.com/intrale/platform/issues/3065)). Cada provider (Anthropic / OpenAI-Codex / Gemini / Ollama / OpenRouter) define su propio modelo de permisos:
+El pipeline V3 está migrando a **multi-provider** ([#3065](https://github.com/intrale/platform/issues/3065)). Cada provider (Anthropic / OpenAI-Codex / Gemini) define su propio modelo de permisos (Ollama/OpenRouter figuraban en el análisis original; nunca entraron al plantel — ver #6563):
 
 | Provider | Flag más permisivo | Default seguro |
 |----------|--------------------|----------------|
@@ -125,7 +125,7 @@ El esquema de fallback multi-proveedor sólo es efectivo si el provider de desti
 | Provider de fallback | Modo resuelto |
 |----------------------|---------------|
 | `openai-codex`       | `full-auto`   |
-| `gemini-google` / `cerebras` / `nvidia-nim` | `bypassPermissions` |
+| `gemini-google`      | `bypassPermissions` |
 | `anthropic`          | `bypassPermissions` |
 
 > **Causa raíz del incidente del 26–28/06/2026:** el return del fallback omitía `mode`; el launcher lo rellenaba con un default `|| 'bypassPermissions'`. Como `openai-codex` no tiene celda `bypassPermissions` en la matriz (su modo canónico es `full-auto`), todo salto a codex caía `mode_unknown` → FAIL-CLOSED, neutralizando el fallback justo cuando Anthropic estaba caído.

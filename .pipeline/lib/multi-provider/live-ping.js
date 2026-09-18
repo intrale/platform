@@ -109,17 +109,15 @@ const PROVIDER_PING_ENDPOINTS = Object.freeze({
         }),
         interpret: (status, bodyExcerpt) =>
             classifyForLivePing('anthropic', status, bodyExcerpt),
-        // #5888 CA-13 — SIN `catalogExtract` por diseño. Los tres providers
+        // #5888 CA-13 — SIN `catalogExtract` por diseño. Los providers
         // excluidos del cruce de catálogo, con su razón escrita:
         //   - `anthropic`  : corre por CLI-OAuth (Claude Code MAX). `ping()`
         //     hace short-circuit por `probeCliProvider` y nunca llega acá, así
         //     que no hay body de catálogo que parsear.
         //   - `openai`     : idem (Codex CLI-OAuth). Su key de config es
         //     `openai-codex` (ver PING_TO_CONFIG_PROVIDER en health-cron.js).
-        //   - `kimi-moonshot` (D-1, ref. #5892): NO tiene entrada acá ni en
-        //     `MANAGED_KEYS`, así que `listManagedAndPingable()` jamás lo
-        //     pingea. Incluirlo exige resolver antes la inconsistencia de
-        //     config de #5892. Queda fuera POR DECISIÓN, no por accidente.
+        //   (kimi-moonshot, que también quedaba fuera por D-1/#5892, fue
+        //   retirado del pipeline en #6563.)
     },
     openai: {
         url: 'https://api.openai.com/v1/models',
@@ -153,27 +151,13 @@ const PROVIDER_PING_ENDPOINTS = Object.freeze({
     //   - El `interpret()` delega al clasificador HTTP universal (#3486). NO
     //     duplicar regex de cuota acá — agregar marcadores al clasificador.
     //
-    // NVIDIA NIM (#3243): API OpenAI-compatible, key viaja en `Authorization:
-    // Bearer`. Endpoint de listado `/v1/models`. Reason codes alineados al set
-    // genérico (SR-4 del análisis de seguridad).
-    'nvidia-nim': {
-        url: 'https://integrate.api.nvidia.com/v1/models',
-        method: 'GET',
-        body: () => null,
-        headers: (key) => ({ 'authorization': `Bearer ${key}` }),
-        interpret: (status, bodyExcerpt) =>
-            classifyForLivePing('nvidia-nim', status, bodyExcerpt),
-        // #5888 CA-2 — API OpenAI-compatible: `data[].id` plano (con prefijo de
-        // vendor incluido en el propio id, ej. `deepseek-ai/deepseek-v4-pro`).
-        catalogExtract: (json) => (Array.isArray(json && json.data) ? json.data : [])
-            .map((m) => ((m && typeof m.id === 'string') ? m.id : null))
-            .filter(Boolean),
-    },
     // Groq fue descontinuado (#3353, mayo 2026): la organización dueña de las
     // keys fue bloqueada por Groq sin aviso ("organization_restricted") y la
     // política de soporte era "desbloqueo único" — inaceptable para producción.
-    // Si en algún momento se reintegra, copiar el bloque desde git history
-    // (último commit con groq: 7dba2169).
+    // nvidia-nim y cerebras (los otros dos free OpenAI-compat que se pingeaban
+    // acá) se retiraron en #6563. Si alguno se reintegra, copiar el bloque
+    // desde git history (último commit con groq: 7dba2169; con nvidia-nim y
+    // cerebras: el padre del merge de #6563).
     'gemini-google': {
         // Google AI Studio v1beta. La key viaja en el header `x-goog-api-key`,
         // no en query (SR-2). Lo llamamos 'gemini-google' (no 'gemini' a
@@ -192,18 +176,6 @@ const PROVIDER_PING_ENDPOINTS = Object.freeze({
         // `models/`. Sin normalizarlo, TODO modelo vivo se reportaría ausente.
         catalogExtract: (json) => (Array.isArray(json && json.models) ? json.models : [])
             .map((m) => ((m && typeof m.name === 'string') ? m.name.replace(/^models\//, '') : null))
-            .filter(Boolean),
-    },
-    cerebras: {
-        url: 'https://api.cerebras.ai/v1/models',
-        method: 'GET',
-        body: () => null,
-        headers: (key) => ({ 'authorization': `Bearer ${key}` }),
-        interpret: (status, bodyExcerpt) =>
-            classifyForLivePing('cerebras', status, bodyExcerpt),
-        // #5888 CA-2 — OpenAI-compatible: `data[].id` plano, sin prefijo.
-        catalogExtract: (json) => (Array.isArray(json && json.data) ? json.data : [])
-            .map((m) => ((m && typeof m.id === 'string') ? m.id : null))
             .filter(Boolean),
     },
 });

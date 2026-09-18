@@ -45,28 +45,22 @@ test('#4306: oauth + launcher gemini-google → sin error de coherencia', () => 
     assert.equal(authErrors.length, 0, JSON.stringify(authErrors));
 });
 
-test('#4306: oauth + launcher HTTP (cerebras) → ERROR de carga (fail-closed)', () => {
-    const cfg = baseConfig({
-        cerebras: { launcher: 'cerebras', auth_mode: 'oauth', credentials_env: ['CEREBRAS_API_KEY'] },
-    });
-    const errors = validateCrossReferences(cfg);
-    const authErrors = errors.filter((e) => e.path === '#/providers/cerebras/auth_mode');
-    assert.equal(authErrors.length, 1, JSON.stringify(errors));
-    assert.match(authErrors[0].message, /no es de login CLI/);
-});
-
-test('#4306: oauth + launcher local (node) → ERROR de carga', () => {
+// #6563 — el caso "oauth + launcher HTTP" (cerebras) se retiró junto con el
+// provider: tras la baja no queda ningún launcher HTTP en ALLOWED_LAUNCHERS. El
+// único launcher fuera de OAUTH_CAPABLE_LAUNCHERS es el local `node`.
+test('#4306: oauth + launcher local (node) → ERROR de carga (fail-closed)', () => {
     const cfg = baseConfig({
         deterministic: { launcher: 'node', auth_mode: 'oauth' },
     });
     const errors = validateCrossReferences(cfg);
     const authErrors = errors.filter((e) => e.path === '#/providers/deterministic/auth_mode');
     assert.equal(authErrors.length, 1, JSON.stringify(errors));
+    assert.match(authErrors[0].message, /no es de login CLI/);
 });
 
 test('#4306: provider sin auth_mode (api_key default) NO dispara la regla de coherencia', () => {
     const cfg = baseConfig({
-        cerebras: { launcher: 'cerebras', credentials_env: ['CEREBRAS_API_KEY'] },
+        'gemini-google': { launcher: 'gemini-google', credentials_env: ['GEMINI_API_KEY'] },
     });
     const errors = validateCrossReferences(cfg);
     const authErrors = errors.filter((e) => e.path.includes('/auth_mode'));
@@ -95,12 +89,12 @@ test('#4306: validateCredentialsEnvPresence bypassea codex oauth sin OPENAI_API_
     assert.equal(errors.length, 0, JSON.stringify(errors));
 });
 
-test('#4306 (regresión): validateCredentialsEnvPresence SIGUE exigiendo key a cerebras', () => {
+test('#4306 (regresión): validateCredentialsEnvPresence SIGUE exigiendo key a un provider api_key', () => {
     const cfg = baseConfig(
-        { cerebras: { launcher: 'cerebras', credentials_env: ['CEREBRAS_API_KEY'] } },
-        { qa: { provider: 'cerebras' } },
+        { 'gemini-google': { launcher: 'gemini-google', credentials_env: ['GEMINI_API_KEY'] } },
+        { qa: { provider: 'gemini-google' } },
     );
-    const errors = validateCredentialsEnvPresence(cfg, { /* sin CEREBRAS_API_KEY */ });
+    const errors = validateCredentialsEnvPresence(cfg, { /* sin GEMINI_API_KEY */ });
     assert.equal(errors.length, 1, JSON.stringify(errors));
-    assert.match(errors[0].message, /CEREBRAS_API_KEY/);
+    assert.match(errors[0].message, /GEMINI_API_KEY/);
 });

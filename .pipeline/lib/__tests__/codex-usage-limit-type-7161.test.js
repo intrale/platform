@@ -281,7 +281,10 @@ test('CA-5 · un resets_at basura tampoco degrada al cap de 24h', () => {
 // CA-6 · La detección estructural de insufficient_quota NO se relaja
 // -----------------------------------------------------------------------------
 
-test('CA-6 · el 402 de billing de Cerebras (#5978) sigue matcheando insufficient_quota', () => {
+// #6563 — el shape desnudo del 402 se observó en Cerebras (#5978), retirado
+// con el provider. El detector es el de OpenAI-compat (`_detectOpenAI`), así que
+// el mismo frame se ejercita con `openai-codex` por transporte `api`.
+test('CA-6 · el 402 de billing desnudo OpenAI-compat (#5978) sigue matcheando insufficient_quota', () => {
     const frame402 = JSON.stringify({
         error: {
             status: 402,
@@ -290,7 +293,7 @@ test('CA-6 · el 402 de billing de Cerebras (#5978) sigue matcheando insufficien
         },
     });
     const verdict = parser.parseProviderError(frame402, {
-        provider: 'cerebras',
+        provider: 'openai-codex',
         transport: 'api',
         exitCode: 1,
         durationMs: 800,
@@ -301,7 +304,7 @@ test('CA-6 · el 402 de billing de Cerebras (#5978) sigue matcheando insufficien
     // Y ahora el tipo se persiste porque el provider LO REPORTÓ, no porque sea
     // el primer valor de la allowlist.
     const degradados = [];
-    const elegido = dispatcher._selectErrorTypeForFlag('cerebras', verdict, quota, {
+    const elegido = dispatcher._selectErrorTypeForFlag('openai-codex', verdict, quota, {
         onDegraded: (info) => degradados.push(info),
     });
     assert.equal(elegido, 'insufficient_quota');

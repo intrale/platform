@@ -26,13 +26,16 @@ test('ALLOWED_PROVIDERS exporta lista freezada de providers conocidos', () => {
     assert.ok(Array.isArray(ALLOWED_PROVIDERS));
     assert.ok(ALLOWED_PROVIDERS.includes('anthropic'));
     assert.ok(ALLOWED_PROVIDERS.includes('openai-codex'));
-    // #3220 — rename `gemini` → `gemini-google` + sumamos `cerebras`.
+    // #3220 — rename `gemini` → `gemini-google`.
     // #3353 — `groq` removido tras descontinuación del provider.
+    // #6563 — `cerebras`, `nvidia-nim`, `kimi-moonshot` y `ollama` retirados del plantel.
     assert.ok(ALLOWED_PROVIDERS.includes('gemini-google'));
-    assert.ok(!ALLOWED_PROVIDERS.includes('groq'), 'groq debería estar removido tras #3353');
-    assert.ok(ALLOWED_PROVIDERS.includes('cerebras'));
-    assert.ok(ALLOWED_PROVIDERS.includes('ollama'));
     assert.ok(ALLOWED_PROVIDERS.includes('deterministic'));
+    for (const retired of ['groq', 'cerebras', 'nvidia-nim', 'kimi-moonshot', 'ollama']) {
+        assert.ok(!ALLOWED_PROVIDERS.includes(retired), `${retired} debería estar fuera de la allowlist`);
+    }
+    assert.deepEqual([...ALLOWED_PROVIDERS].sort(),
+        ['anthropic', 'deterministic', 'gemini-google', 'openai-codex']);
     assert.equal(Object.isFrozen(ALLOWED_PROVIDERS), true,
         'ALLOWED_PROVIDERS debe estar freezada (defensa contra mutación en runtime)');
 });
@@ -82,15 +85,15 @@ test('fail-secure: si el adapter lanza excepción, dispatch devuelve error sin p
     // Mock adapter que tira excepción
     const adaptersDir = require.resolve('../../quota-adapters');
     delete require.cache[adaptersDir];
-    delete require.cache[require.resolve('../../quota-adapters/anthropic')];
 
-    // Inyectar un módulo que tira excepción para el adapter "ollama" (uno
-    // que no se usa frecuentemente). Stub directo del cache de require.
-    const fakeOllamaPath = require.resolve('../../quota-adapters/ollama');
-    delete require.cache[fakeOllamaPath];
-    require.cache[fakeOllamaPath] = {
-        id: fakeOllamaPath,
-        filename: fakeOllamaPath,
+    // Inyectar un módulo que tira excepción para el adapter "anthropic".
+    // Stub directo del cache de require. (#6563 — antes se usaba `ollama`,
+    // retirado con el provider.)
+    const fakeAnthropicPath = require.resolve('../../quota-adapters/anthropic');
+    delete require.cache[fakeAnthropicPath];
+    require.cache[fakeAnthropicPath] = {
+        id: fakeAnthropicPath,
+        filename: fakeAnthropicPath,
         loaded: true,
         exports: function explodingAdapter() {
             throw new Error('boom — adapter rotó');
@@ -98,13 +101,13 @@ test('fail-secure: si el adapter lanza excepción, dispatch devuelve error sin p
     };
 
     const { quotaUsage } = require('../../quota-adapters');
-    const r = quotaUsage('ollama', {});
+    const r = quotaUsage('anthropic', {});
     assert.equal(r.adapterStatus, 'error');
     assert.match(r.errorReason, /excepción|excepcion|boom/);
     assert.equal(r.pct, null, 'pct debe ser null tras excepción del adapter');
 
     // Limpieza para no contaminar otros tests.
-    delete require.cache[fakeOllamaPath];
+    delete require.cache[fakeAnthropicPath];
     delete require.cache[adaptersDir];
 });
 

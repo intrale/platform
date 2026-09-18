@@ -48,9 +48,6 @@ prefijos) aplica igual al otro documento.
 | kernel | openai-codex | `OPENAI_API_KEY` | leitolarreta | _pendiente alta_ | _pendiente alta_ | _pendiente alta_ | [runbook](runbooks/credential-rotation.md#openai) | https://platform.openai.com/api-keys |
 | kernel | anthropic | `ANTHROPIC_API_KEY` | leitolarreta | N/A (OAuth Max) | N/A (OAuth Max) | `intrale-pipeline-v3` | [runbook](runbooks/credential-rotation.md#anthropic) | https://console.anthropic.com/settings/keys |
 | kernel | google-ai | `GEMINI_API_KEY` | leitolarreta | _pendiente registrar_ | _pendiente registrar_ | `intrale-pipeline-v3` | [runbook](pipeline/vault-rotacion-auditoria.md#rotación-manual) | https://aistudio.google.com/app/apikey |
-| kernel | cerebras | `CEREBRAS_API_KEY` | leitolarreta | _pendiente registrar_ | _pendiente registrar_ | `intrale-pipeline-v3` | [runbook](pipeline/vault-rotacion-auditoria.md#rotación-manual) | https://cloud.cerebras.ai/ |
-| kernel | nvidia-nim | `NVIDIA_NIM_API_KEY` | leitolarreta | _pendiente registrar_ | _pendiente registrar_ | `intrale-pipeline-v3` | [runbook](runbooks/credential-rotation.md#nvidia-nim) | https://build.nvidia.com/settings/api-keys |
-| kernel | moonshot | `ANTHROPIC_AUTH_TOKEN` | leitolarreta | _pendiente registrar_ | _pendiente registrar_ | `intrale-pipeline-v3` | [runbook](pipeline/vault-rotacion-auditoria.md#rotación-manual) | https://platform.moonshot.ai/console/api-keys |
 | kernel | google-drive-client | `GOOGLE_OAUTH_CLIENT_ID` | leitolarreta | N/A (identificador) | N/A (identificador) | `intrale-pipeline-v3` | [política](pipeline/vault-rotacion-auditoria.md#clasificación) | N/A |
 | kernel | google-drive-client-secret | `GOOGLE_OAUTH_CLIENT_SECRET` | leitolarreta | _pendiente registrar_ | _pendiente registrar_ | `intrale-pipeline-v3` | [runbook](pipeline/vault-rotacion-auditoria.md#rotación-manual) | https://console.cloud.google.com/apis/credentials |
 | kernel | google-drive-refresh | `GOOGLE_OAUTH_REFRESH_TOKEN` | leitolarreta | N/A (OAuth administrado por tercero) | N/A (OAuth administrado por tercero) | `intrale-pipeline-v3` | [política](pipeline/vault-rotacion-auditoria.md#clasificación) | https://myaccount.google.com/permissions |
@@ -142,7 +139,7 @@ Reglas del contraste, y por qué cada una es fail-closed:
 | Scope lógico | Backend | Compartido | Descriptores que lo componen |
 |---|---|---|---|
 | `telegram` | ssm | sí | `telegram.bot_token`, `telegram.chat_id`, `telegram.leo_operator_chat_id` |
-| `providers` | ssm | sí | `providers.openai.api_key`, `providers.anthropic.api_key`, `providers.google.api_key`, `providers.cerebras.api_key`, `providers.nvidia.api_key`, `providers.moonshot.api_key` |
+| `providers` | ssm | sí | `providers.openai.api_key`, `providers.anthropic.api_key`, `providers.google.api_key` |
 | `google_drive` | ssm + secretsmanager | sí | `google_drive.oauth_client_id`, `google_drive.oauth_client_secret`, `google_drive.oauth_refresh_token`, `google_drive.drive_folder_id` |
 
 - **Owner de los tres scopes**: `leitolarreta` (mismo owner que las filas de la

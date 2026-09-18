@@ -6,9 +6,10 @@
 // celdas de ventana (corta/larga) e ids canónicos para hidratación.
 //
 // Cubre:
-//   * CA-A1 — aparece una fila por cada proveedor activo (≥5); NO aparece Groq.
+//   * CA-A1 — aparece una fila por cada proveedor activo (los 3 vigentes tras
+//             #6563); NO aparece ningún retirado (Groq, Cerebras, NVIDIA NIM).
 //   * CA-A2 — la lista se deriva de una fuente única (MZ_PROVIDER_META), no de
-//             un array fijo de 3: el render no se rompe al sumar un proveedor.
+//             un array fijo: el render no se rompe al sumar un proveedor.
 //   * CA-A3 — cada celda usa el id canónico `mz-qm-${key}-${slot}-{tag,bar,pct,rst}`.
 //   * #4533 — cada celda rotula su ventana real (5h/Sem, Min/Día, Roll).
 //   * CA-A5 / security — un label con markup no produce HTML ejecutable (XSS).
@@ -25,27 +26,29 @@ const {
     MZ_ACTIVE_PROVIDERS,
 } = require('../views/dashboard/home');
 
-// Proveedores activos esperados, alineados con multi-provider-health.json y
-// ALLOWED_PROVIDERS (ids canónicos). Groq queda fuera (descontinuado #3353).
-const EXPECTED_PROVIDERS = ['anthropic', 'openai-codex', 'gemini-google', 'cerebras', 'nvidia-nim'];
+// Proveedores activos esperados, alineados con agent-models.json y
+// ALLOWED_PROVIDERS (ids canónicos). Los gratuitos retirados quedan fuera
+// (Groq en #3353; Cerebras y NVIDIA NIM en #6563).
+const EXPECTED_PROVIDERS = ['anthropic', 'openai-codex', 'gemini-google'];
 
-test('CA-A1 — _mzProviderMatrix renderiza una fila por cada proveedor activo (≥5)', () => {
+test('CA-A1 — _mzProviderMatrix renderiza una fila por cada proveedor activo (3)', () => {
     const html = _mzProviderMatrix();
     const rowCount = (html.match(/class="mz-qm-row"/g) || []).length;
-    assert.ok(rowCount >= 5, `esperaba ≥5 filas de proveedor, hubo ${rowCount}`);
+    assert.equal(rowCount, EXPECTED_PROVIDERS.length, `esperaba ${EXPECTED_PROVIDERS.length} filas de proveedor, hubo ${rowCount}`);
     assert.equal(rowCount, MZ_ACTIVE_PROVIDERS.length, 'la cantidad de filas debe igualar a los proveedores activos');
 });
 
-test('CA-A1 — Cerebras y NVIDIA NIM presentes; Groq ausente', () => {
+test('CA-A1 — Anthropic, Codex y Gemini presentes; ningún retirado (Groq, Cerebras, NVIDIA)', () => {
     const html = _mzProviderMatrix();
-    assert.match(html, /Cerebras/, 'falta la fila de Cerebras');
-    assert.match(html, /NVIDIA NIM/, 'falta la fila de NVIDIA NIM');
-    assert.doesNotMatch(html, /Groq/i, 'Groq fue descontinuado (#3353) y no debe renderizarse');
+    assert.match(html, /Anthropic/, 'falta la fila de Anthropic');
+    assert.match(html, /Codex/, 'falta la fila de Codex');
+    assert.match(html, /Gemini/, 'falta la fila de Gemini');
+    assert.doesNotMatch(html, /Groq|Cerebras|NVIDIA/i, 'los proveedores retirados (#3353, #6563) no deben renderizarse');
 });
 
-test('CA-A2 — la lista deriva de fuente única (MZ_PROVIDER_META), no de 3 hardcodeados', () => {
+test('CA-A2 — la lista deriva de fuente única (MZ_PROVIDER_META), no de un array hardcodeado', () => {
     assert.deepEqual(MZ_ACTIVE_PROVIDERS.slice().sort(), EXPECTED_PROVIDERS.slice().sort());
-    assert.ok(MZ_ACTIVE_PROVIDERS.length > 3, 'la lista no puede ser un array fijo de 3');
+    assert.deepEqual(MZ_ACTIVE_PROVIDERS, Object.keys(MZ_PROVIDER_META), 'la lista se deriva de MZ_PROVIDER_META');
     // Sumar un proveedor a la fuente debe reflejarse en el render sin tocar
     // _mzProviderMatrix. Simulamos derivando a mano desde la misma fuente.
     const derived = MZ_ACTIVE_PROVIDERS.map(_mzProviderMatrixRow).join('');
@@ -77,15 +80,15 @@ test('#4533 — cada proveedor rotula su ventana real (5h/Sem, Min/Día, Roll)',
     assert.match(gem, />Día</, 'Gemini ventana larga = Día');
     // Los labels del skeleton derivan de MZ_PROVIDER_WINDOWS (fuente única SSR).
     assert.equal(MZ_PROVIDER_WINDOWS.anthropic.short, '5h');
-    assert.equal(MZ_PROVIDER_WINDOWS['nvidia-nim'].long, 'Día');
+    assert.equal(MZ_PROVIDER_WINDOWS['gemini-google'].long, 'Día');
 });
 
-test('#4533 — la fila muestra la fuente fidedigna del proveedor (CLI/API/headers)', () => {
+test('#4533 — la fila muestra la fuente fidedigna del proveedor (CLI/API)', () => {
     assert.match(_mzProviderMatrixRow('anthropic'), /· CLI/, 'Anthropic: fuente CLI');
+    assert.match(_mzProviderMatrixRow('openai-codex'), /· CLI/, 'Codex: fuente CLI');
     assert.match(_mzProviderMatrixRow('gemini-google'), /· API/, 'Gemini: fuente API');
-    assert.match(_mzProviderMatrixRow('cerebras'), /· headers/, 'Cerebras: fuente headers');
     // La fuente declarada en la meta coincide con lo renderizado.
-    assert.equal(MZ_PROVIDER_META['nvidia-nim'].src, 'headers');
+    assert.equal(MZ_PROVIDER_META['gemini-google'].src, 'API');
 });
 
 test('CA-A5 / security — un label con markup no produce HTML ejecutable (XSS)', () => {

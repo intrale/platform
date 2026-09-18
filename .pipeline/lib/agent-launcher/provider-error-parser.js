@@ -43,7 +43,7 @@
 //   }
 //
 //   ctx = {
-//     provider: 'anthropic' | 'openai-codex' | 'gemini-google' | 'cerebras' | 'nvidia-nim',
+//     provider: 'anthropic' | 'openai-codex' | 'gemini-google',
 //     transport: 'api' | 'cli',
 //     timedOut?: boolean,        // wrapper de spawn detectó timeout
 //     exitCode?: number | null,  // exit code del child process (null si timedOut)
@@ -175,12 +175,7 @@ const KNOWN_PROVIDERS = Object.freeze(new Set([
     'anthropic-claude',     // alias usado en agent-models.json fallbacks
     'openai-codex',
     'gemini-google',
-    'cerebras',
-    'nvidia-nim',
-    // #4880 — Kimi (Moonshot), drop-in Anthropic-compatible. Provider conocido
-    // para que el parser NO falle cerrado al detectar su cuota (usa
-    // `_detectAnthropic` con la allowlist de kimi-moonshot).
-    'kimi-moonshot',
+    // cerebras / nvidia-nim / kimi-moonshot retirados en #6563.
 ]));
 
 // Transports válidos.
@@ -652,7 +647,7 @@ function detectFromCliStderr(input, provider, quotaModule, opts = {}) {
 
 // -----------------------------------------------------------------------------
 // detectFromApiResponse — parsea respuesta JSON o último frame SSE de API
-// directa (Gemini, Groq histórico, Cerebras, NVIDIA NIM).
+// directa (Gemini; también los free retirados en #6563).
 //
 // SR-1: matcheamos SOLO contra el objeto `error` top-level o el campo
 // estructural `error.type`. PROHIBIDO substring sobre `content`.
@@ -947,8 +942,8 @@ function detectAuthenticationRejected(input, provider, transport) {
         return { errorClass: authRejection.AUTH_REJECTED_CLASS, rejection };
     };
 
-    // 1. Body JSON completo (típico de los runners REST: cerebras, nvidia,
-    //    gemini con `-o json`). `transport: 'api'` lo trata como api-json.
+    // 1. Body JSON completo (típico de los runners REST: gemini con
+    //    `-o json`). `transport: 'api'` lo trata como api-json.
     const whole = tryParseJson(input);
     if (whole) {
         const hit = evaluate(whole, transport === 'api' ? 'api-json' : 'cli-stream-json');

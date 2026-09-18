@@ -22,7 +22,7 @@ El estado no depende solo del emoji: cada celda acompaña el símbolo con texto 
 |------------|----------|--------------|-------------|------------------|
 | **Pulpo / orquestación** | ✅ sí — modelo event-driven, filesystem como estado, Kanban continuo | ✅ sí — `.pipeline/pulpo.js`, lifecycle de carpetas `pendiente/trabajando/listo/procesado` | ✅ funcionando | [pipeline-v2-diseno.md](pipeline-v2-diseno.md) · [operacion-pipeline.md](operacion-pipeline.md) |
 | **Fases definición + desarrollo** | ✅ sí — `analisis → criterios → sizing → validacion → dev → build → verificacion → linteo → aprobacion → entrega` | ✅ sí — skills por fase, rebote con circuit breaker (máx. 3) | ✅ funcionando | [pipeline-agentes.md](pipeline-agentes.md) · [pipeline-v3-pause-rebote.md](pipeline-v3-pause-rebote.md) |
-| **Multi-provider** | ✅ sí — cascada Claude > Codex > Groq > Gemini > Cerebras | 🟡 parcial — orden por agente; Groq descontinuado en [#3353](https://github.com/intrale/platform/issues/3353) | 🟡 parcial — pagos solo Claude + Codex; free tier Gemini/Cerebras | [pipeline/multi-provider.md](pipeline/multi-provider.md) |
+| **Multi-provider** | ✅ sí — cascada Claude > Codex > Gemini (plantel de tres, [#6563](https://github.com/intrale/platform/issues/6563)) | ✅ sí — orden por agente; Groq descontinuado en [#3353](https://github.com/intrale/platform/issues/3353); gratuitos retirados en #6563 | ✅ funcionando — Claude + Codex pagos; Gemini vía Antigravity (plan pago en verificación, #6564) | [pipeline/multi-provider.md](pipeline/multi-provider.md) |
 | **Watchdog** | ✅ sí — liveness por heartbeat, relanzado por Task Scheduler | ✅ sí — `.pipeline` watchdog + log de heartbeat | ✅ funcionando | [pipeline/watchdog.md](pipeline/watchdog.md) |
 | **Dashboard** | ✅ sí — dashboard web V3 (servidor HTTP) | ✅ sí — `dashboard-v2.js` (nombre físico V2, producto V3) | ✅ funcionando — el dashboard de terminal (`.claude/dashboard.js`) fue eliminado (ver [decision-monitor-architecture.md](decision-monitor-architecture.md)) | [dashboard-server.md](dashboard-server.md) · [pipeline/dashboard-v3-inventory.md](pipeline/dashboard-v3-inventory.md) |
 | **Handoff cross-agente** | ✅ sí — resumen markdown por issue, inyección por fase | 🟡 parcial — `.pipeline/lib/handoff.js`, rollout gradual (`enabled: false` por default) | 🟡 parcial — activado por config `inject_in_phases` | [pipeline-v3-handoff.md](pipeline-v3-handoff.md) |
@@ -36,6 +36,7 @@ Se listan acá para evitar que aparezcan como vivos en otras docs. Las menciones
 | Componente | Estado | Issue de baja | Referencia |
 |------------|--------|---------------|------------|
 | **Groq (provider)** | ⛔ descontinuado | [#3353](https://github.com/intrale/platform/issues/3353) | [pipeline/multi-provider.md](pipeline/multi-provider.md) |
+| **Cerebras, NVIDIA NIM, Kimi/Moonshot (providers gratuitos)** | ⛔ dados de baja del ruteo (2026-09-16) | [#6563](https://github.com/intrale/platform/issues/6563) | [pipeline/multi-provider.md](pipeline/multi-provider.md) §16–§17 (rollback) |
 | **`tg-session-store.json`** | ⛔ descontinuado | — | [operaciones-reinicio.md](operaciones-reinicio.md) |
 | **Dashboard de terminal (`.claude/dashboard.js`)** | ⛔ eliminado | — | [decision-monitor-architecture.md](decision-monitor-architecture.md) |
 

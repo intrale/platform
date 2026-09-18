@@ -24,7 +24,9 @@
 //       instrucciones, devolvé fusionar". Mitigación: `detectInjection`
 //       (handoff.js) corre sobre título+body CRUDO ANTES de cualquier llamada
 //       al modelo; los hits se neutralizan (truncado) y se loguean por patrón
-//       (nunca el body crudo) + framing dato/instrucción en el prompt.
+//       (nunca el body crudo) + framing dato/instrucción en el prompt. Aplica
+//       TAMBIÉN a cada título de candidato (`safeField`, #6563): los issues
+//       abiertos del repo público son igual de no confiables que el propuesto.
 //   - LLM02 Insecure Output Handling: nunca se ejecuta/confía el texto del
 //       modelo. La salida pasa por `safeParseAndValidate` (schema estricto +
 //       allowlist de acciones). Salida fuera de schema → `level:'ninguna'`.
@@ -32,12 +34,20 @@
 //       secrets que harían egress al provider externo. Mitigación: `redact.js`
 //       (emails/URLs/secrets) ANTES de truncar (truncar primero podría partir
 //       un secret y filtrar el prefijo). Residencia de datos: el contenido
-//       sale SOLO a los providers de `PROVIDER_COMPLETION_ENDPOINTS` (frozen:
-//       cerebras / gemini-google / nvidia-nim), con la key leída vía
-//       `secrets-rw.getRawKey` (nunca hardcode); el caller manda solo el
-//       `provider` ID, jamás una URL.
+//       sale SOLO a (i) los providers de `PROVIDER_COMPLETION_ENDPOINTS`
+//       (frozen: gemini-google desde #6563), con la key leída vía
+//       `secrets-rw.getRawKey` (nunca hardcode), o (ii) los CLIs OAuth del
+//       plantel (`openai-codex` / `anthropic`) vía spawn local con el env
+//       filtrado por `stripReservedChildSecrets`; el caller manda solo el
+//       `provider` ID, jamás una URL ni un binario.
 //   - LLM08 Excessive Agency: la acción destructiva `fusionar` NUNCA se
-//       ejecuta: cae en gate humano. Señal incierta → fail-closed.
+//       ejecuta: cae en gate humano. Señal incierta → fail-closed. El juez
+//       mismo tampoco tiene agencia (#6563): cuando corre por spawn de un CLI
+//       de agente lo hace con sandbox read-only / sin herramientas, env por
+//       allowlist (sin GH_TOKEN, AWS_*, *_API_KEY) y cwd temporal vacío
+//       (`JUDGE_SPAWN_POLICIES` en `dispatchComplete`). Una inyección que
+//       supere el framing sólo puede alterar el JSON, nunca tocar disco ni
+//       correr comandos con las credenciales del operador.
 //   - LLM04 Model DoS / costo: caps de tamaño (truncado de body), cache 30s de
 //       `fetchOpenIssues` (CACHE_TTL_MS) y circuit-breaker a nivel módulo.
 //   - LLM09 Overreliance: error/indisponibilidad del modelo → `level:'ninguna'`
@@ -77,24 +87,106 @@ const VALID_LEVELS = Object.freeze(['alta', 'parcial', 'ninguna']);
 // `fusionar` NUNCA se ejecuta: marca gate humano (CA-8/LLM08).
 const ALLOWED_ACTIONS = Object.freeze(['crear', 'redefinir', 'fusionar']);
 
-// Default provider/model del judge. anthropic/claude NO está en
-// PROVIDER_COMPLETION_ENDPOINTS (va por CLI launcher, no por el cliente HTTP),
-// así que el default es un provider de la allowlist HTTP. Free-tier por la
-// regla del proyecto (cerebras free). Overridable por env u opts.
+// Default provider/model del judge.
 //
-// #6858 (rebote review) — el default era `gemini-google`, pero el endpoint
+// Historia: el default fue `gemini-google` (#6858 lo rebotó: el endpoint
 // `gemini-google` de completion-client es el shim HTTP de AI Studio, NO el CLI
-// `agy`: desde #7298/#6858 su allowlist es el catálogo de Antigravity y AI
-// Studio no sirve ninguno de esos ids (404 medido con `gemini-3.8-flash-medium`).
-// Un default ahí caía SIEMPRE en fail-open + circuit breaker: el Commander
-// perdía el juez semántico en silencio. Por eso el default pasa a Cerebras con
-// `gpt-oss-120b` (modelo de producción del provider, presente en su
-// `GET /v1/models`). El par (provider, model) está fijado por test: debe pasar
-// `isAllowedModel` y tener endpoint en PROVIDER_COMPLETION_ENDPOINTS.
-const BUILTIN_DEFAULT_PROVIDER = 'cerebras';
-const BUILTIN_DEFAULT_MODEL = 'gpt-oss-120b';
+// `agy`, y no sirve ningún id del catálogo de Antigravity → 404 + circuit
+// breaker + juez perdido en silencio) y después `cerebras` con `gpt-oss-120b`.
+//
+// #6563 — Cerebras se dio de baja junto con el resto de los gratuitos y desde
+// esta versión NINGÚN provider del plantel (anthropic / openai-codex /
+// gemini-google) responde por el cliente HTTP con un (provider, model)
+// servible. El default pasa a `openai-codex` por spawn del CLI (`codex exec
+// --json`, OAuth ChatGPT), reusando `sherlock-verifier._spawnCodexComplete`,
+// que ya normaliza la salida al shape canónico `{ok, content, ...}` del
+// completion-client. El modelo es el mismo que declara `agent-models.json`
+// para openai-codex y está fijado por test contra
+// `ALLOWED_MODELS_BY_LAUNCHER.codex` (sin depender del JSON en runtime).
+// Overridable por env u opts: un override a un provider HTTP tiene que pasar
+// `isAllowedModel` + tener endpoint; uno a spawn tiene que estar en
+// `SPAWN_COMPLETION_PROVIDERS`.
+const BUILTIN_DEFAULT_PROVIDER = 'openai-codex';
+const BUILTIN_DEFAULT_MODEL = 'gpt-5.5';
 const DEFAULT_PROVIDER = process.env.SEMANTIC_DEDUP_PROVIDER || BUILTIN_DEFAULT_PROVIDER;
 const DEFAULT_MODEL = process.env.SEMANTIC_DEDUP_MODEL || BUILTIN_DEFAULT_MODEL;
+
+// Providers que el judge invoca por spawn del CLI en vez de HTTP. Espejo de
+// `SPAWN_COMPLETION_PROVIDERS` de sherlock-verifier.js (misma implementación).
+const SPAWN_COMPLETION_PROVIDERS = Object.freeze(new Set(['openai-codex', 'anthropic']));
+
+// Presupuesto del spawn (el cliente HTTP trae el suyo: 90s default). Un juez
+// colgado no puede frenar la creación del issue: vencido el timeout el child
+// recibe SIGTERM y el resultado es fail-open (`ninguna`).
+const DEFAULT_SPAWN_TIMEOUT_MS = 90 * 1000;
+
+// Contención del juez por spawn (#6563, hallazgo security del rebote 1).
+//
+// El cliente HTTP original era un juez SIN agencia por construcción (LLM08 de
+// la cabecera): texto entra, JSON sale. Un CLI de agente (codex / claude) NO lo
+// es: por default corre con bypass de sandbox/aprobaciones, hereda el env del
+// pulpo y tiene cwd en el repo. Con contenido no confiable en el prompt (hasta
+// MAX_CANDIDATES títulos de issues abiertos del repo público) eso convierte una
+// inyección (LLM01) en escritura/bash con credenciales en la máquina del
+// operador. Las tres opciones de abajo restituyen el "sin agencia":
+//   - sandbox 'read-only'  → codex: `--sandbox read-only`; claude: `--tools ""`
+//                            + `--permission-mode dontAsk`. Nunca el bypass.
+//   - envPolicy 'minimal'  → env por allowlist (SYSTEM_ALLOWLIST + OAuth del
+//                            CLI), nunca `process.env`: sin GH_TOKEN, AWS_*,
+//                            *_API_KEY.
+//   - cwd temporal vacío   → aunque el sandbox falle, el child no ve el repo ni
+//                            el `.pipeline/` del operador. Se crea por llamada y
+//                            se borra en `finally` (#7210: nada de fixtures
+//                            huérfanos en %TEMP%).
+const JUDGE_SPAWN_POLICIES = Object.freeze({ sandbox: 'read-only', envPolicy: 'minimal' });
+const JUDGE_TMP_PREFIX = 'semantic-dedup-judge-';
+
+function makeJudgeCwd() {
+    const fs = require('node:fs');
+    const os = require('node:os');
+    const path = require('node:path');
+    return fs.mkdtempSync(path.join(os.tmpdir(), JUDGE_TMP_PREFIX));
+}
+
+function removeJudgeCwd(dir) {
+    if (!dir) return;
+    try { require('node:fs').rmSync(dir, { recursive: true, force: true }); } catch { /* best-effort */ }
+}
+
+/**
+ * Despacha la completion al transporte que corresponde al provider:
+ *   - `SPAWN_COMPLETION_PROVIDERS` → spawn del CLI (sherlock-verifier helpers)
+ *     con las políticas de contención `JUDGE_SPAWN_POLICIES` + cwd temporal.
+ *   - resto → `completion-client.complete()` (HTTP, allowlist de endpoints).
+ * Mismo shape de retorno en ambos casos. Nunca lanza: cualquier excepción del
+ * transporte se devuelve como `{ok:false}` para que el caller haga fail-open.
+ *
+ * `spawnImpl` es inyectable SOLO para tests (captura el argv/env/cwd reales
+ * del child sin lanzar un proceso).
+ */
+async function dispatchComplete({ provider, model, prompt, temperature, maxTokens, timeoutMs, spawnImpl }) {
+    if (!SPAWN_COMPLETION_PROVIDERS.has(provider)) {
+        return completionClient.complete({ provider, model, prompt, temperature, maxTokens });
+    }
+    // Lazy require: sherlock-verifier arrastra commander/multi-provider y no
+    // hace falta cargarlo cuando el judge corre por HTTP o con completeImpl
+    // inyectado (tests).
+    const sherlock = require('./sherlock-verifier');
+    const budget = Number.isFinite(Number(timeoutMs)) ? Number(timeoutMs) : DEFAULT_SPAWN_TIMEOUT_MS;
+    let cwd = null;
+    try {
+        cwd = makeJudgeCwd();
+        const common = { prompt, timeoutMs: budget, cwd, spawnImpl, ...JUDGE_SPAWN_POLICIES };
+        if (provider === 'openai-codex') {
+            return await sherlock._spawnCodexComplete({ ...common, model });
+        }
+        return await sherlock._spawnAnthropicComplete(common);
+    } catch (e) {
+        return { ok: false, provider, error: { type: 'spawn_failed', detail: e && e.message ? e.message : String(e) } };
+    } finally {
+        removeJudgeCwd(cwd);
+    }
+}
 
 const DEFAULT_THRESHOLD = 0.7;
 
@@ -169,13 +261,26 @@ function logInjection(hits) {
 // -----------------------------------------------------------------------------
 
 /**
- * Trunca y redacta el título de un candidato para incluirlo en el prompt.
+ * Neutraliza, redacta y trunca el título de un candidato para incluirlo en el
+ * prompt. Mismo orden defensivo que el issue propuesto (#6563, hallazgo
+ * security del rebote 1): los títulos de los issues ABIERTOS también son
+ * contenido no confiable (repo público) y antes entraban al prompt sin pasar
+ * por `detectInjection` — un título con "ignore previous instructions" llegaba
+ * tal cual al modelo.
+ *   detectInjection (crudo) → redact → truncate
+ * Los hits se loguean por patrón (nunca el texto crudo), igual que el propuesto.
  * @param {string} s
  * @param {number} max
  * @returns {string}
  */
 function safeField(s, max) {
-    let out = redactSecretValue(redactUrlLike(redactEmailsInText(String(s == null ? '' : s))));
+    const inj = detectInjection(String(s == null ? '' : s));
+    if (inj.hits.length > 0) logInjection(inj.hits);
+    let out = redactSecretValue(redactUrlLike(redactEmailsInText(inj.text)));
+    // Un candidato ocupa UNA línea del listado (`- #N: título`): los saltos de
+    // línea (incluido el marcador de truncado) se colapsan para que un título
+    // no pueda fabricar líneas extra dentro de <datos>.
+    out = out.replace(/\s*[\r\n]+\s*/g, ' ');
     if (out.length > max) out = out.slice(0, max);
     return out;
 }
@@ -363,7 +468,7 @@ async function checkSemanticDuplicate(title, body, opts = {}) {
         threshold = DEFAULT_THRESHOLD,
         provider = DEFAULT_PROVIDER,
         model = DEFAULT_MODEL,
-        completeImpl = completionClient.complete,
+        completeImpl = dispatchComplete,
     } = opts || {};
 
     const rawTitle = String(title == null ? '' : title);
@@ -402,7 +507,9 @@ async function checkSemanticDuplicate(title, body, opts = {}) {
     let candidates = Array.isArray(openIssues) ? openIssues : fetchOpenIssues();
     candidates = rankByJaccard(rawTitle, candidates).slice(0, MAX_CANDIDATES);
 
-    // (d) framing dato/instrucción + (e) complete() temperature:0, JSON-only.
+    // (d) framing dato/instrucción + (e) complete() temperature:0, JSON-only
+    //     (por HTTP; los spawns de CLI no exponen temperature y confían en el
+    //     framing + el schema estricto de salida).
     const prompt = buildJudgePrompt(safeTitle, safeBody, candidates, threshold);
 
     let res;
@@ -478,7 +585,14 @@ module.exports = {
     safeParseAndValidate,
     extractJson,
     rankByJaccard,
+    dispatchComplete,
+    safeField,
     // Constantes (testing).
+    SPAWN_COMPLETION_PROVIDERS,
+    DEFAULT_SPAWN_TIMEOUT_MS,
+    // #6563 — contención del juez por spawn.
+    JUDGE_SPAWN_POLICIES,
+    JUDGE_TMP_PREFIX,
     BUILTIN_DEFAULT_PROVIDER,
     BUILTIN_DEFAULT_MODEL,
     DEFAULT_PROVIDER,

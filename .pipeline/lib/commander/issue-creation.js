@@ -23,7 +23,7 @@
 //      `TELEGRAM_ALLOWED_USER_IDS` vacía); cuando está poblada, sólo
 //      procesamos pedidos de quienes están en la lista.
 //   5. Bloqueo cuando el provider efectivo ≠ anthropic (SEC-5) — los
-//      providers free (Cerebras/Gemini/NVIDIA NIM) no tienen Skill tool
+//      providers no-Anthropic (Codex/Gemini) no tienen Skill tool
 //      habilitado en el harness; intentar `/doc` o `/planner` allí sería un
 //      fallback silencioso de calidad degradada.
 //
@@ -606,7 +606,7 @@ function logSkillInvocation({
 
 // -----------------------------------------------------------------------------
 // SEC-5 — Mensaje canned cuando el provider activo ≠ anthropic. Lo invocamos
-// pre-LLM para evitar que un fallback a Cerebras/Gemini/NVIDIA NIM termine creando
+// pre-LLM para evitar que un fallback a Codex/Gemini termine creando
 // un issue de calidad degradada. El copy sigue la guideline UX del análisis
 // del issue (lenguaje natural, accionable).
 // -----------------------------------------------------------------------------

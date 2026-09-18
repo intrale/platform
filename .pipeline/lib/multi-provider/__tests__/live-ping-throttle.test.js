@@ -22,6 +22,27 @@ const fs = require('node:fs');
 
 const livePing = require('../live-ping');
 
+// #6563 — Tras la baja de cerebras/nvidia-nim no queda en el plantel ningún
+// provider que se pinguee por API key: anthropic, codex y gemini-google
+// (Antigravity) son OAuth y `ping()` hace short-circuit por el probe del CLI.
+// El camino HTTP (throttle facturable, clasificación de status, endpoints
+// literales anti-SSRF) se conserva como infraestructura, así que para
+// ejercitarlo estos tests re-declaran temporalmente a `gemini-google` (y a
+// `anthropic` cuando hace falta un segundo provider) como `api_key` en la
+// lista gestionada que consulta `ping()`. `getRawKey` sigue usando la spec
+// real (paths canónico/legacy de cada provider). Se restaura al terminar.
+const secretsRw = require('../secrets-rw');
+const REAL_MANAGED_KEYS = secretsRw.MANAGED_KEYS;
+function asApiKeyProviders(providers) {
+    return Object.freeze(REAL_MANAGED_KEYS.map((k) => (providers.includes(k.provider)
+        ? Object.freeze({ ...k, auth_mode: 'api_key', catalog_probe: undefined, cli_binary: undefined })
+        : k)));
+}
+async function withHttpPingProviders(providers, fn) {
+    secretsRw.MANAGED_KEYS = asApiKeyProviders(providers);
+    try { return await fn(); } finally { secretsRw.MANAGED_KEYS = REAL_MANAGED_KEYS; }
+}
+
 // ---------------------------------------------------------------------------
 // httpImpl mock: registra cada request y responde 200 OK sin tocar la red.
 // El contador `calls` es la prueba dura de "NO hubo HTTP saliente".
@@ -53,8 +74,9 @@ function makeHttpMock() {
     return { httpImpl, state };
 }
 
-// Escribe un secrets.json canónico temporal con una key real para `cerebras`,
-// de modo que getRawKey devuelva la key y el ping llegue al gate de throttle.
+// Escribe un secrets.json canónico temporal con una key real para el provider
+// (path canónico `providers.<id>.api_key`; para gemini-google el id es
+// `google`), de modo que getRawKey devuelva la key y el ping llegue al gate.
 function writeSecrets(provider, value) {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mp-ping-'));
     const p = path.join(dir, 'credentials.json');
@@ -65,17 +87,17 @@ function writeSecrets(provider, value) {
 test('cooldown: 2 POST consecutivos dentro del intervalo → el 2do es rate_limited_local SIN HTTP saliente', async () => {
     livePing._resetPingThrottle();
     const { httpImpl, state } = makeHttpMock();
-    const secretsPath = writeSecrets('cerebras', 'csk-test-realkey-1234567890');
+    const secretsPath = writeSecrets('google', 'AIza-test-realkey-1234567890');
 
-    const first = await livePing.ping({
-        provider: 'cerebras', secretsPath, httpImpl, nowMs: 1_000, minIntervalMs: 10_000,
-    });
+    const first = await withHttpPingProviders(['gemini-google'], () => livePing.ping({
+        provider: 'gemini-google', secretsPath, httpImpl, nowMs: 1_000, minIntervalMs: 10_000,
+    }));
     assert.equal(first.ok, true, 'el 1er ping debe llegar al provider y resolver ok');
     assert.equal(state.calls, 1, 'el 1er ping dispara exactamente 1 HTTP saliente');
 
-    const second = await livePing.ping({
-        provider: 'cerebras', secretsPath, httpImpl, nowMs: 2_000, minIntervalMs: 10_000,
-    });
+    const second = await withHttpPingProviders(['gemini-google'], () => livePing.ping({
+        provider: 'gemini-google', secretsPath, httpImpl, nowMs: 2_000, minIntervalMs: 10_000,
+    }));
     assert.equal(second.ok, false, 'el 2do ping dentro del cooldown debe fallar');
     assert.equal(second.reason, 'rate_limited_local', 'reason esperado del throttle local');
     assert.equal(state.calls, 1, 'CLAVE: el 2do ping NO dispara HTTP saliente (sigue en 1)');
@@ -85,26 +107,31 @@ test('cooldown: 2 POST consecutivos dentro del intervalo → el 2do es rate_limi
 test('concurrencia: un 2do ping mientras el 1ro está in-flight → rate_limited_local SIN HTTP', async () => {
     livePing._resetPingThrottle();
     const { httpImpl, state } = makeHttpMock();
-    const secretsPath = writeSecrets('cerebras', 'csk-test-realkey-1234567890');
+    const secretsPath = writeSecrets('google', 'AIza-test-realkey-1234567890');
 
     // No await del primero: queda in-flight cuando lanzamos el segundo.
-    const p1 = livePing.ping({ provider: 'cerebras', secretsPath, httpImpl, minIntervalMs: 10_000 });
-    const second = await livePing.ping({ provider: 'cerebras', secretsPath, httpImpl, minIntervalMs: 10_000 });
+    const [p1, second] = await withHttpPingProviders(['gemini-google'], async () => {
+        const first = livePing.ping({ provider: 'gemini-google', secretsPath, httpImpl, minIntervalMs: 10_000 });
+        const sec = await livePing.ping({ provider: 'gemini-google', secretsPath, httpImpl, minIntervalMs: 10_000 });
+        await first; // dejar resolver el primero antes de restaurar la lista gestionada
+        return [first, sec];
+    });
 
     assert.equal(second.ok, false);
     assert.equal(second.reason, 'rate_limited_local', 'el ping concurrente se rechaza local');
     assert.equal(state.calls, 1, 'solo el 1er ping (in-flight) disparó HTTP');
 
-    await p1; // dejar resolver el primero
 });
 
 test('pasado el intervalo, el ping se vuelve a permitir', async () => {
     livePing._resetPingThrottle();
     const { httpImpl, state } = makeHttpMock();
-    const secretsPath = writeSecrets('cerebras', 'csk-test-realkey-1234567890');
+    const secretsPath = writeSecrets('google', 'AIza-test-realkey-1234567890');
 
-    await livePing.ping({ provider: 'cerebras', secretsPath, httpImpl, nowMs: 1_000, minIntervalMs: 10_000 });
-    const again = await livePing.ping({ provider: 'cerebras', secretsPath, httpImpl, nowMs: 1_000 + 10_001, minIntervalMs: 10_000 });
+    const again = await withHttpPingProviders(['gemini-google'], async () => {
+        await livePing.ping({ provider: 'gemini-google', secretsPath, httpImpl, nowMs: 1_000, minIntervalMs: 10_000 });
+        return livePing.ping({ provider: 'gemini-google', secretsPath, httpImpl, nowMs: 1_000 + 10_001, minIntervalMs: 10_000 });
+    });
 
     assert.equal(again.ok, true, 'tras superar el intervalo el ping vuelve a pasar');
     assert.equal(state.calls, 2, 'ambos pings (separados por > intervalo) dispararon HTTP');
@@ -113,21 +140,22 @@ test('pasado el intervalo, el ping se vuelve a permitir', async () => {
 test('el cooldown aísla por proveedor (no cruza providers)', async () => {
     livePing._resetPingThrottle();
     const { httpImpl, state } = makeHttpMock();
-    const secretsPath = writeSecrets('cerebras', 'csk-test-realkey-1234567890');
+    const secretsPath = writeSecrets('google', 'AIza-test-realkey-1234567890');
     // Mismo archivo de secrets con dos providers api_key (paths canónicos que
     // matchean sus ids). #4402 — `openai` pasó a OAuth (short-circuit CLI, sin
-    // HTTP), así que para probar el aislamiento del cooldown HTTP usamos dos
-    // providers api_key puros: cerebras + gemini-google.
+    // HTTP) y #6563 retiró los api_key puros, así que para probar el aislamiento
+    // del cooldown HTTP re-declaramos como api_key a gemini-google + anthropic.
     fs.writeFileSync(secretsPath, JSON.stringify({
         providers: {
-            cerebras: { api_key: 'csk-test-realkey-1234567890' },
             google: { api_key: 'AIza-test-realkey-1234567890' },
-            nvidia: { api_key: 'nvapi-test-realkey-1234567890' },
+            anthropic: { api_key: 'sk-ant-test-realkey-1234567890' }, // secret-scan:ignore (fixture de test, no es una key real)
         },
     }));
 
-    const a = await livePing.ping({ provider: 'cerebras', secretsPath, httpImpl, nowMs: 1_000, minIntervalMs: 10_000 });
-    const b = await livePing.ping({ provider: 'nvidia-nim', secretsPath, httpImpl, nowMs: 1_000, minIntervalMs: 10_000 });
+    const [a, b] = await withHttpPingProviders(['gemini-google', 'anthropic'], async () => [
+        await livePing.ping({ provider: 'gemini-google', secretsPath, httpImpl, nowMs: 1_000, minIntervalMs: 10_000 }),
+        await livePing.ping({ provider: 'anthropic', secretsPath, httpImpl, nowMs: 1_000, minIntervalMs: 10_000 }),
+    ]);
 
     assert.equal(a.ok, true);
     assert.equal(b.ok, true, 'otro provider no queda afectado por el cooldown del primero');

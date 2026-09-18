@@ -64,9 +64,7 @@
           "enum": [
             "anthropic",
             "openai-codex",
-            "gemini-google",
-            "cerebras",
-            "nvidia-nim"
+            "gemini-google"
           ],
           "description": "Provider LLM. 'deterministic' nunca aparece en la matriz (skill deterministic se excluye en buildMatrixFromAgentModels)."
         },

@@ -342,19 +342,19 @@
         },
         {
             "file": "lib/__tests__/commander-multi-provider.test.js",
-            "line": 1641,
+            "line": 1755,
             "kind": "deuda",
             "reason": "escritura de ANTHROPIC_API_KEY fuera del helper"
         },
         {
             "file": "lib/__tests__/commander-multi-provider.test.js",
-            "line": 1651,
+            "line": 1765,
             "kind": "deuda",
             "reason": "escritura de ANTHROPIC_API_KEY fuera del helper"
         },
         {
             "file": "lib/__tests__/commander-multi-provider.test.js",
-            "line": 1652,
+            "line": 1766,
             "kind": "deuda",
             "reason": "escritura de ANTHROPIC_API_KEY fuera del helper"
         },
@@ -2238,13 +2238,13 @@
         },
         {
             "file": "lib/__tests__/quota-exhausted.test.js",
-            "line": 1304,
+            "line": 1313,
             "kind": "deuda",
             "reason": "escritura de PIPELINE_DIR_OVERRIDE fuera del helper"
         },
         {
             "file": "lib/__tests__/quota-exhausted.test.js",
-            "line": 1321,
+            "line": 1330,
             "kind": "deuda",
             "reason": "escritura de PIPELINE_DIR_OVERRIDE fuera del helper"
         },
@@ -2490,13 +2490,7 @@
         },
         {
             "file": "lib/__tests__/secrets-health.test.js",
-            "line": 755,
-            "kind": "deuda",
-            "reason": "escritura de PIPELINE_DIR_OVERRIDE fuera del helper"
-        },
-        {
-            "file": "lib/__tests__/secrets-health.test.js",
-            "line": 763,
+            "line": 756,
             "kind": "deuda",
             "reason": "escritura de PIPELINE_DIR_OVERRIDE fuera del helper"
         },
@@ -2508,19 +2502,25 @@
         },
         {
             "file": "lib/__tests__/secrets-health.test.js",
-            "line": 773,
+            "line": 765,
             "kind": "deuda",
             "reason": "escritura de PIPELINE_DIR_OVERRIDE fuera del helper"
         },
         {
             "file": "lib/__tests__/secrets-health.test.js",
-            "line": 797,
+            "line": 774,
             "kind": "deuda",
             "reason": "escritura de PIPELINE_DIR_OVERRIDE fuera del helper"
         },
         {
             "file": "lib/__tests__/secrets-health.test.js",
             "line": 798,
+            "kind": "deuda",
+            "reason": "escritura de PIPELINE_DIR_OVERRIDE fuera del helper"
+        },
+        {
+            "file": "lib/__tests__/secrets-health.test.js",
+            "line": 799,
             "kind": "deuda",
             "reason": "escritura de PIPELINE_DIR_OVERRIDE fuera del helper"
         },
@@ -3546,43 +3546,43 @@
         },
         {
             "file": "lib/agent-launcher/__tests__/dispatch-billing-flag.test.js",
-            "line": 66,
+            "line": 68,
             "kind": "deuda",
             "reason": "escritura de PIPELINE_DIR_OVERRIDE fuera del helper"
         },
         {
             "file": "lib/agent-launcher/__tests__/dispatch-billing-flag.test.js",
-            "line": 74,
+            "line": 76,
             "kind": "deuda",
             "reason": "escritura de CODEX_SESSIONS_DIR fuera del helper"
-        },
-        {
-            "file": "lib/agent-launcher/__tests__/dispatch-billing-flag.test.js",
-            "line": 77,
-            "kind": "deuda",
-            "reason": "escritura de PIPELINE_DIR_OVERRIDE fuera del helper"
-        },
-        {
-            "file": "lib/agent-launcher/__tests__/dispatch-billing-flag.test.js",
-            "line": 78,
-            "kind": "deuda",
-            "reason": "escritura de PIPELINE_DIR_OVERRIDE fuera del helper"
         },
         {
             "file": "lib/agent-launcher/__tests__/dispatch-billing-flag.test.js",
             "line": 79,
             "kind": "deuda",
-            "reason": "delete de QUOTA_RECONCILE_DISABLED en el sentido seguro"
+            "reason": "escritura de PIPELINE_DIR_OVERRIDE fuera del helper"
+        },
+        {
+            "file": "lib/agent-launcher/__tests__/dispatch-billing-flag.test.js",
+            "line": 80,
+            "kind": "deuda",
+            "reason": "escritura de PIPELINE_DIR_OVERRIDE fuera del helper"
         },
         {
             "file": "lib/agent-launcher/__tests__/dispatch-billing-flag.test.js",
             "line": 81,
             "kind": "deuda",
+            "reason": "delete de QUOTA_RECONCILE_DISABLED en el sentido seguro"
+        },
+        {
+            "file": "lib/agent-launcher/__tests__/dispatch-billing-flag.test.js",
+            "line": 83,
+            "kind": "deuda",
             "reason": "escritura de CODEX_SESSIONS_DIR fuera del helper"
         },
         {
             "file": "lib/agent-launcher/__tests__/dispatch-billing-flag.test.js",
-            "line": 82,
+            "line": 84,
             "kind": "deuda",
             "reason": "escritura de CODEX_SESSIONS_DIR fuera del helper"
         },
@@ -4398,7 +4398,13 @@
         },
         {
             "file": "skills-deterministicos/__tests__/tester.test.js",
-            "line": 1600,
+            "line": 1599,
+            "kind": "deuda",
+            "reason": "escritura de GRADLE_LOCK_PATH fuera del helper"
+        },
+        {
+            "file": "skills-deterministicos/__tests__/tester.test.js",
+            "line": 1615,
             "kind": "deuda",
             "reason": "escritura de GRADLE_LOCK_PATH fuera del helper"
         },
@@ -4410,13 +4416,13 @@
         },
         {
             "file": "skills-deterministicos/__tests__/tester.test.js",
-            "line": 1617,
+            "line": 1627,
             "kind": "deuda",
             "reason": "escritura de GRADLE_LOCK_PATH fuera del helper"
         },
         {
             "file": "skills-deterministicos/__tests__/tester.test.js",
-            "line": 1628,
+            "line": 1639,
             "kind": "deuda",
             "reason": "escritura de GRADLE_LOCK_PATH fuera del helper"
         },
@@ -4428,31 +4434,25 @@
         },
         {
             "file": "skills-deterministicos/__tests__/tester.test.js",
-            "line": 1641,
+            "line": 1768,
             "kind": "deuda",
-            "reason": "escritura de GRADLE_LOCK_PATH fuera del helper"
+            "reason": "escritura de PIPELINE_REPO_ROOT fuera del helper"
         },
         {
             "file": "skills-deterministicos/__tests__/tester.test.js",
             "line": 1769,
             "kind": "deuda",
-            "reason": "escritura de PIPELINE_REPO_ROOT fuera del helper"
-        },
-        {
-            "file": "skills-deterministicos/__tests__/tester.test.js",
-            "line": 1770,
-            "kind": "deuda",
             "reason": "escritura de CLAUDE_PROJECT_DIR fuera del helper"
         },
         {
             "file": "skills-deterministicos/__tests__/tester.test.js",
-            "line": 1785,
+            "line": 1784,
             "kind": "deuda",
             "reason": "escritura de PIPELINE_REPO_ROOT fuera del helper"
         },
         {
             "file": "skills-deterministicos/__tests__/tester.test.js",
-            "line": 1786,
+            "line": 1785,
             "kind": "deuda",
             "reason": "escritura de CLAUDE_PROJECT_DIR fuera del helper"
         },

@@ -1,7 +1,7 @@
 {
   "_doc": "#5174 · CA-2 — snapshot REDACTADO (path -> tipo, NUNCA el valor) de la configuracion resuelta ANTES de partir config.yaml en kernel + producto. Generado desde .pipeline/config.yaml en el commit 14a454441 (entrega B, pre-particion). Sirve para demostrar que la particion no perdio ni cambio ninguna clave. Si un cambio LEGITIMO agrega o quita una clave top-level, regenerar con: node .pipeline/lib/__tests__/fixtures/regen-config-snapshot.js",
-  "_generadoDesde": "4cea8ca60",
-  "_claves": 581,
+  "_generadoDesde": "7383dbe63",
+  "_claves": 579,
   "snapshot": [
     "admission_gate: object(3)",
     "admission_gate.bootstrap_cap: number",
@@ -420,11 +420,9 @@
     "quota_detector.error_types: array[2]",
     "quota_detector.reminder_interval_minutes: number",
     "quota_detector.resets_at_cap_max_days: number",
-    "quota_detector.ttl_by_provider: object(5)",
+    "quota_detector.ttl_by_provider: object(3)",
     "quota_detector.ttl_by_provider.anthropic: number",
-    "quota_detector.ttl_by_provider.cerebras: number",
     "quota_detector.ttl_by_provider.gemini-google: number",
-    "quota_detector.ttl_by_provider.nvidia-nim: number",
     "quota_detector.ttl_by_provider.openai-codex: number",
     "reduced_mode: object(2)",
     "reduced_mode.enabled: boolean",

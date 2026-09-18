@@ -64,7 +64,6 @@ const PROVIDER_ALIASES = Object.freeze({
     gemini: 'gemini-google',
     google: 'gemini-google',
     claude: 'anthropic',
-    nvidia: 'nvidia-nim',
 });
 
 // Fuentes válidas de la decisión del router (enum cerrado, defensa en

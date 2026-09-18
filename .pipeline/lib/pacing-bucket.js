@@ -104,8 +104,6 @@ const VALID_PROVIDERS = Object.freeze([
     'anthropic',
     'openai-codex',
     'gemini-google',
-    'cerebras',
-    'nvidia-nim',
 ]);
 
 // Patrones de secreto — defensa sobre el mensaje generado.

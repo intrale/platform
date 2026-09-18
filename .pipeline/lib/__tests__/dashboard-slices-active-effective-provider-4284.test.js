@@ -89,7 +89,7 @@ test('CA-3: sin marker, cae al provider configurado (happy path, shape intacto)'
 test('CA-3: marker de OTRO agente no contamina a éste (match por clave exacta)', () => {
     setMarkers({
         'desarrollo/dev/otro-skill:9999': {
-            provider: 'cerebras', model: null, source: 'fallback', startedAt: Date.now(), durationMs: 1000,
+            provider: 'gemini-google', model: null, source: 'fallback', startedAt: Date.now(), durationMs: 1000,
         },
     });
     try {
@@ -97,7 +97,7 @@ test('CA-3: marker de OTRO agente no contamina a éste (match por clave exacta)'
         const agent = out.find(a => a.issue === '4284');
         assert.ok(agent);
         // No debe tomar el provider del marker ajeno.
-        assert.notEqual(agent.provider && agent.provider.id, 'cerebras');
+        assert.notEqual(agent.provider && agent.provider.id, 'gemini-google');
     } finally {
         restoreMarkers();
     }

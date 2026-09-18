@@ -164,7 +164,7 @@ test('getPacingState: store corrupto ⇒ green (fail-open, CA-7)', () => {
 });
 
 test('getPacingState: provider inválido ⇒ green', () => {
-    assert.equal(pb.getPacingState('groq', { now: NOW0 }), 'green');
+    assert.equal(pb.getPacingState('provider-inventado', { now: NOW0 }), 'green');
 });
 
 test('getPacingState lee el estado persistido del bucket', () => {

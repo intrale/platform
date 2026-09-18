@@ -59,8 +59,6 @@ const PROVIDERS = {
     deterministic: require('./agent-launcher/providers/deterministic'),
     'openai-codex': require('./agent-launcher/providers/openai-codex'),
     'gemini-google': require('./agent-launcher/providers/gemini-google'),
-    'nvidia-nim': require('./agent-launcher/providers/nvidia-nim'),
-    'cerebras': require('./agent-launcher/providers/cerebras'),
 };
 
 // #3082 (CA-S3 / CA-8): cache liviano de required_permissions por skill,
@@ -411,7 +409,7 @@ function launchAgent({
     const child = _spawn(spawnDef.cmd, spawnDef.args, spawnDef.spawnOpts);
 
     // #4529 — payload grande (system foldeado + prompt) por STDIN, no por argv:
-    // los providers no-Anthropic (codex/gemini/cerebras/nvidia) devuelven
+    // los providers no-Anthropic (codex/gemini) devuelven
     // `stdinPayload` y esperan leerlo por stdin (evita `spawn ENAMETOOLONG` en
     // Windows). Sólo escribimos+cerramos cuando hay payload: si es null (Anthropic
     // interactivo), no tocamos stdin para no romper el chat operador→agente.
@@ -439,7 +437,7 @@ function launchAgent({
     // brazoHuerfanos no encuentra a quién atribuir la muerte y se la cobra al
     // ISSUE: 3 barridos después el Pulpo sintetiza un rechazo de contenido y
     // rebota código sano. Eso es exactamente lo que le pasó a #6612 cuando la
-    // cadena cayó en `kimi-moonshot` sin token.
+    // cadena cayó en un provider sin token (kimi-moonshot, retirado en #6563).
     //
     // Seguro de generalizar porque el clasificador (`spawn-failure-classifier`)
     // ya es fail-closed y provider-agnóstico: sólo firma ENOENT/EACCES/EPERM,

@@ -103,7 +103,7 @@ function credentialEnvNamesOf(providerEntry) {
  * Nombres de variables de entorno que transportan credenciales de ALGÚN
  * provider. Se derivan del `providers` de `agent-models.json` MÁS el mapa de
  * defaults de `build-child-env.js`: una lista escrita a mano se desincroniza el
- * día que se agrega un provider (lección de `providers.groq`, #3353).
+ * día que se agrega o retira un provider (lección de `providers.groq`, #3353).
  *
  * @param {object} providersCfg sección `providers` de agent-models.json
  * @returns {Set<string>}

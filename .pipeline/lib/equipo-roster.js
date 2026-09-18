@@ -82,8 +82,6 @@ const PROVIDER_LABELS = {
     anthropic: 'Claude',
     'openai-codex': 'Codex',
     'gemini-google': 'Gemini',
-    cerebras: 'Cerebras',
-    'nvidia-nim': 'NVIDIA NIM',
     deterministic: 'Determinístico',
 };
 

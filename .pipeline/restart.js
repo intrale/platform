@@ -61,7 +61,7 @@ require('./lib/credentials').loadIntoEnv({
 
 // --- VALIDACIÓN FORCE_PROVIDER_OVERRIDE (#3680 CA-A9) ---
 // Boot fail-fast EN restart.js TAMBIÉN (no sólo pulpo). Si el operador hace
-// `set FORCE_PROVIDER_OVERRIDE=cerebras` y después `node .pipeline/restart.js`,
+// `set FORCE_PROVIDER_OVERRIDE=gemini-google` y después `node .pipeline/restart.js`,
 // el flag se hereda a los spawn children del pulpo y rompe la disciplina de
 // routing productivo. Defense-in-depth contra esa misma ruta de bypass —
 // abortar acá mismo antes de matar/relanzar los componentes.

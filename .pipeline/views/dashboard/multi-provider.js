@@ -490,12 +490,8 @@ function providerToken(provider) {
     if (p === 'openai') return '--provider-openai';
     if (p === 'openai-codex' || p === 'codex') return '--provider-openai-codex';
     if (p === 'deterministic') return '--provider-deterministic';
-    // #3243 — NVIDIA NIM free provider. Token ya entregado por UX en
-    // design-tokens.css (#76B900, contraste 7.6:1 AAA Large). Allowlist
-    // del dashboard sigue cerrada (regla R6 anti-fallback); el resto de free
-    // providers (gemini-google/cerebras) se cubren en #3326. Groq fue
-    // descontinuado en #3353.
-    if (p === 'nvidia-nim') return '--provider-nvidia-nim';
+    // Allowlist cerrada (regla R6 anti-fallback): todo provider fuera del set
+    // cae a unknown. Los proveedores gratuitos se retiraron en #6563.
     return '--provider-unknown';
 }
 
@@ -509,9 +505,6 @@ function providerIcon(provider, size) {
     if (p === 'openai') return iconSvg('provider-openai', size);
     if (p === 'openai-codex' || p === 'codex') return iconSvg('provider-openai-codex', size);
     if (p === 'deterministic') return iconSvg('provider-deterministic', size);
-    // #3243 — sprite entregado en .pipeline/assets/icons/sprite.svg
-    // (ic-provider-nvidia-nim: nodo + 3 satélites = microservice de inferencia).
-    if (p === 'nvidia-nim') return iconSvg('provider-nvidia-nim', size);
     return iconSvg('provider-unknown', size);
 }
 
@@ -1322,13 +1315,11 @@ async function loadCommanderDistribution(window) {
     }
     // Colores por provider — reusa tokens existentes si están, fallback inline.
     const colorFor = (p) => {
-        // #3353 — groq removido del mapa de colores tras la descontinuación.
+        // Sólo el plantel vigente (los proveedores gratuitos se retiraron en #6563).
         const map = {
             anthropic: '#d97706',
             'openai-codex': '#10a37f',
             'gemini-google': '#4285f4',
-            cerebras: '#8b5cf6',
-            'nvidia-nim': '#76b900',
         };
         return map[p] || '#6b7280';
     };

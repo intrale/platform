@@ -1,12 +1,14 @@
 // =============================================================================
 // model-propagation.test.js — #6272 (split de #6270)
 //
-// "Propagar el modelo resuelto al proceso hijo en los cinco proveedores."
+// "Propagar el modelo resuelto al proceso hijo en todos los proveedores."
+// (Eran cinco al escribirse; tras #6563 quedan tres LLM: anthropic,
+// openai-codex y gemini-google.)
 //
 // Cubre los 7 criterios de aceptación del issue:
 //   CA-1 — flag ON en Anthropic ⇒ `--model <id>` como ELEMENTO SEPARADO del array.
-//   CA-2 — flag ON ⇒ CODEX_MODEL / GEMINI_MODEL / CEREBRAS_MODEL / NVIDIA_NIM_MODEL
-//          llegan al env del hijo con el modelo del proveedor ACTIVO de la cadena.
+//   CA-2 — flag ON ⇒ CODEX_MODEL / GEMINI_MODEL llegan al env del hijo con el
+//          modelo del proveedor ACTIVO de la cadena.
 //   CA-3 — id fuera de la whitelist ⇒ se OMITE, deja traza y NO aborta el spawn.
 //   CA-4 — flag apagado (default) ⇒ el objeto que recibe `child_process.spawn`
 //          es byte-idéntico al actual (regresión cero).
@@ -77,9 +79,6 @@ function agentModels({ skill = 'guru', provider = 'anthropic', model = 'claude-s
             anthropic: { launcher: 'claude', model: 'claude-opus-4-7', permissions_mode: 'bypassPermissions' },
             'openai-codex': { launcher: 'codex', model: 'gpt-5.5', permissions_mode: 'bypassPermissions' },
             'gemini-google': { launcher: 'gemini-google', model: 'gemini-3.8-flash-medium', permissions_mode: 'bypassPermissions' },
-            cerebras: { launcher: 'cerebras', model: 'gpt-oss-120b', permissions_mode: 'bypassPermissions' },
-            'nvidia-nim': { launcher: 'nvidia-nim', model: 'deepseek-ai/deepseek-v4-flash-0731', permissions_mode: 'bypassPermissions' },
-            'kimi-moonshot': { launcher: 'claude', model: 'kimi-k2-6', permissions_mode: 'bypassPermissions' },
             deterministic: { launcher: 'node', model: 'deterministic' },
         },
         skills: { [skill]: { provider, model } },
@@ -93,11 +92,8 @@ function cfg(modelPropagation) {
 // Launcher de test para cada provider (evita tocar binarios reales del disco).
 const TEST_LAUNCHERS = {
     anthropic: { kind: 'test', cmd: '/test/claude', prefixArgs: ['--pre'], shell: false },
-    'kimi-moonshot': { kind: 'test', cmd: '/test/claude', prefixArgs: ['--pre'], shell: false },
     'openai-codex': { kind: 'test', cmd: '/test/codex', prefixArgs: [], shell: false },
     'gemini-google': { kind: 'test', cmd: '/test/agy', prefixArgs: [], shell: false },
-    cerebras: { kind: 'test', cmd: '/test/node', prefixArgs: ['/test/cerebras-runner.js'], shell: false },
-    'nvidia-nim': { kind: 'test', cmd: '/test/node', prefixArgs: ['/test/nvidia-runner.js'], shell: false },
 };
 
 function withTestLaunchers(fn) {
@@ -164,7 +160,7 @@ test('resolveMode: precedencia by_skill > by_provider > default_mode', () => {
     assert.deepEqual(mp.resolveMode({ config: c, provider: 'anthropic', skill: 'po' }),
         { mode: 'dry-run', source: 'provider' });
     // Otro proveedor sin entrada propia: cae al default.
-    assert.deepEqual(mp.resolveMode({ config: c, provider: 'cerebras', skill: 'po' }),
+    assert.deepEqual(mp.resolveMode({ config: c, provider: 'gemini-google', skill: 'po' }),
         { mode: 'off', source: 'default' });
 });
 
@@ -201,22 +197,25 @@ test('sanitizeModelId: rechaza metacaracteres de shell en ambos canales', () => 
     }
 });
 
-test('sanitizeModelId: el canal env acepta ids namespaced de NVIDIA; el canal arg (default) no', () => {
-    const id = 'deepseek-ai/deepseek-v4-flash-0731';
-    assert.deepEqual(mp.sanitizeModelId(id, { channel: 'env' }), { model: id, reason: 'ok' });
+test('sanitizeModelId: ningún canal acepta ids namespaced con `/` (la excepción de NVIDIA se retiró en #6563)', () => {
+    const id = 'vendor-x/modelo-namespaced-0731';
+    assert.deepEqual(mp.sanitizeModelId(id, { channel: 'env' }), { model: null, reason: 'failed_whitelist' });
     // Default = canal más estricto (fail-safe si el caller olvida declararlo).
     assert.deepEqual(mp.sanitizeModelId(id), { model: null, reason: 'failed_whitelist' });
     assert.deepEqual(mp.sanitizeModelId(id, { channel: 'arg' }), { model: null, reason: 'failed_whitelist' });
+    // Un id plano sigue pasando por ambos canales.
+    assert.deepEqual(mp.sanitizeModelId('gpt-5.4-mini', { channel: 'env' }), { model: 'gpt-5.4-mini', reason: 'ok' });
 });
 
 test('resolveTarget: canal argv para el launcher claude, env para el resto, none para deterministic', () => {
     assert.deepEqual(mp.resolveTarget('anthropic'), { kind: 'arg', envVar: null });
-    assert.deepEqual(mp.resolveTarget('kimi-moonshot'), { kind: 'arg', envVar: null });
     assert.deepEqual(mp.resolveTarget('openai-codex'), { kind: 'env', envVar: 'CODEX_MODEL' });
     assert.deepEqual(mp.resolveTarget('gemini-google'), { kind: 'env', envVar: 'GEMINI_MODEL' });
-    assert.deepEqual(mp.resolveTarget('cerebras'), { kind: 'env', envVar: 'CEREBRAS_MODEL' });
-    assert.deepEqual(mp.resolveTarget('nvidia-nim'), { kind: 'env', envVar: 'NVIDIA_NIM_MODEL' });
     assert.deepEqual(mp.resolveTarget('deterministic'), { kind: 'none', envVar: null });
+    // #6563 — los retirados ya no declaran canal: son desconocidos para el catálogo.
+    for (const retirado of ['cerebras', 'nvidia-nim', 'kimi-moonshot']) {
+        assert.deepEqual(mp.resolveTarget(retirado), { kind: 'none', envVar: null });
+    }
     assert.deepEqual(mp.resolveTarget('provider-inventado'), { kind: 'none', envVar: null });
 });
 
@@ -297,15 +296,6 @@ test('CA-1: con el flag encendido para Anthropic, --model viaja como dos element
     assert.equal(result.modelPropagation.model, 'claude-sonnet-4-6');
 });
 
-test('CA-1: kimi-moonshot reusa el buildSpawn de Anthropic y también recibe --model', () => {
-    const { spawnCall } = launch({
-        provider: 'kimi-moonshot',
-        model: 'kimi-k2-6',
-        config: cfg({ enabled: true, default_mode: 'on' }),
-    });
-    assert.deepEqual(spawnCall.args, ['--pre', '--model', 'kimi-k2-6', ...BASE_ARGS]);
-});
-
 test('CA-1: el flag encendido no altera el env del hijo en el canal argv', () => {
     const { spawnCall } = launch({
         provider: 'anthropic',
@@ -316,14 +306,12 @@ test('CA-1: el flag encendido no altera el env del hijo en el canal argv', () =>
 });
 
 // =============================================================================
-// CA-2 — Los cuatro providers no-Anthropic reciben el modelo por env.
+// CA-2 — Los providers no-Anthropic reciben el modelo por env.
 // =============================================================================
 
 const CASOS_ENV = [
     { provider: 'openai-codex', envVar: 'CODEX_MODEL', model: 'gpt-5.4' },
     { provider: 'gemini-google', envVar: 'GEMINI_MODEL', model: 'gemini-3.7-flash-medium' },
-    { provider: 'cerebras', envVar: 'CEREBRAS_MODEL', model: 'zai-glm-4.7' },
-    { provider: 'nvidia-nim', envVar: 'NVIDIA_NIM_MODEL', model: 'moonshotai/kimi-k2-instruct' },
 ];
 
 for (const caso of CASOS_ENV) {
@@ -350,13 +338,13 @@ for (const caso of CASOS_ENV) {
 test('CA-2: el env se COPIA, no se muta — el objeto del caller queda intacto', () => {
     const env = { FOO: 'bar' };
     const { spawnCall } = launch({
-        provider: 'cerebras',
-        model: 'gpt-oss-120b',
+        provider: 'gemini-google',
+        model: 'gemini-3.8-flash-low',
         env,
         config: cfg({ enabled: true, default_mode: 'on' }),
     });
-    assert.equal(spawnCall.opts.env.CEREBRAS_MODEL, 'gpt-oss-120b');
-    assert.equal(env.CEREBRAS_MODEL, undefined, 'el env del caller no debe mutarse');
+    assert.equal(spawnCall.opts.env.GEMINI_MODEL, 'gemini-3.8-flash-low');
+    assert.equal(env.GEMINI_MODEL, undefined, 'el env del caller no debe mutarse');
 });
 
 test('CA-2 (2º Gherkin): en caída a un proveedor de respaldo viaja el modelo del RESPALDO, no el del primario', () => {
@@ -526,15 +514,15 @@ test('CA-5: en dry-run el comando es idéntico al de flag apagado y queda la tra
 
 test('CA-5: en dry-run sobre un provider de env se nombra la variable que se habría seteado', () => {
     const { spawnCall, logs } = launch({
-        provider: 'cerebras',
-        model: 'gpt-oss-120b',
+        provider: 'gemini-google',
+        model: 'gemini-3.8-flash-low',
         config: cfg({ enabled: true, default_mode: 'dry-run' }),
     });
-    assert.equal(spawnCall.opts.env.CEREBRAS_MODEL, undefined, 'dry-run no setea la env');
+    assert.equal(spawnCall.opts.env.GEMINI_MODEL, undefined, 'dry-run no setea la env');
     const log = logs.joined();
     assert.ok(log.includes('[dry-run]'));
-    assert.ok(log.includes('CEREBRAS_MODEL'), 'debe nombrar la variable del canal');
-    assert.ok(log.includes('gpt-oss-120b'));
+    assert.ok(log.includes('GEMINI_MODEL'), 'debe nombrar la variable del canal');
+    assert.ok(log.includes('gemini-3.8-flash-low'));
 });
 
 // =============================================================================
@@ -567,21 +555,23 @@ test('CA-6: un id fuera de ALLOWED_MODELS_BY_LAUNCHER se reporta como error de c
     }
 });
 
-test('CA-6: el cruce es por LAUNCHER, no por provider — kimi-moonshot valida contra la lista de `claude`', () => {
-    // `kimi-k2-6` NO es un modelo de Anthropic, pero SÍ está en la allowlist del
-    // launcher `claude` (kimi-moonshot reusa ese launcher). Usar el catálogo
-    // indexado por provider lo rechazaría por error.
+test('CA-6: el cruce es por LAUNCHER, no por provider — un alias de provider valida contra la lista de su launcher', () => {
+    // Un provider con nombre propio que reusa el launcher `claude` (hasta #6563
+    // era kimi-moonshot) valida contra ALLOWED_MODELS_BY_LAUNCHER['claude'], no
+    // contra un catálogo indexado por provider (que lo rechazaría por error).
+    const models = JSON.parse(agentModels());
+    models.providers['claude-alias'] = { launcher: 'claude', model: 'claude-haiku-4-5', permissions_mode: 'bypassPermissions' };
     const ok = mp.validateDeclaredModel({
-        model: 'kimi-k2-6',
-        provider: 'kimi-moonshot',
-        agentModels: JSON.parse(agentModels()),
+        model: 'claude-haiku-4-5',
+        provider: 'claude-alias',
+        agentModels: models,
     });
-    assert.equal(ok.ok, true, 'kimi-k2-6 es válido para el launcher claude');
+    assert.equal(ok.ok, true, 'claude-haiku-4-5 es válido para el launcher claude');
 
     const malo = mp.validateDeclaredModel({
-        model: 'kimi-k2-9000',
-        provider: 'kimi-moonshot',
-        agentModels: JSON.parse(agentModels()),
+        model: 'claude-haiku-9000',
+        provider: 'claude-alias',
+        agentModels: models,
     });
     assert.equal(malo.ok, false);
     assert.ok(malo.error.includes('claude'), 'el mensaje debe nombrar el launcher, no el provider');
@@ -644,9 +634,9 @@ const PROVIDERS_LLM = Object.keys(PROVIDER_HANDLERS)
     .filter((p) => !mp.NO_MODEL_PROVIDERS.includes(p));
 
 test('CA-7: la tabla de handlers enumerada no está vacía (el guardrail mira algo real)', () => {
-    assert.ok(PROVIDERS_LLM.length >= 5, `se esperaban al menos 5 providers LLM, hay ${PROVIDERS_LLM.length}`);
-    // Los cinco del issue tienen que estar sí o sí.
-    for (const p of ['anthropic', 'openai-codex', 'gemini-google', 'cerebras', 'nvidia-nim']) {
+    assert.ok(PROVIDERS_LLM.length >= 3, `se esperaban al menos 3 providers LLM, hay ${PROVIDERS_LLM.length}`);
+    // Los tres vigentes tras #6563 tienen que estar sí o sí.
+    for (const p of ['anthropic', 'openai-codex', 'gemini-google']) {
         assert.ok(PROVIDERS_LLM.includes(p), `falta el provider ${p} en la tabla de handlers`);
     }
 });
@@ -669,11 +659,8 @@ for (const provider of PROVIDERS_LLM) {
         // aparece en el objeto que recibe `child_process.spawn`.
         const modelo = {
             anthropic: 'claude-haiku-4-5',
-            'kimi-moonshot': 'kimi-k2-6',
             'openai-codex': 'gpt-5.4-mini',
             'gemini-google': 'gemini-3.8-flash-medium',
-            cerebras: 'zai-glm-4.7',
-            'nvidia-nim': 'moonshotai/kimi-k2-instruct',
         }[provider];
         assert.ok(modelo, `falta el modelo de prueba para el provider '${provider}' — agregalo acá`);
 

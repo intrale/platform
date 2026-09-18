@@ -53,7 +53,7 @@ const PROVIDER_DESCONOCIDO = 'desconocido';
 // disponible (caso edge en tests/arranque). Se filtra `deterministic` (no es un
 // provider de chat con cuota). Coincide con el set declarado por los CA.
 const FALLBACK_PROVIDERS = Object.freeze([
-  'anthropic', 'openai-codex', 'gemini-google', 'cerebras', 'nvidia-nim',
+  'anthropic', 'openai-codex', 'gemini-google',
 ]);
 
 // Path FIJO al `agent-models.json` (dos niveles arriba de `lib/commander/`).
@@ -227,7 +227,7 @@ function classifyCommanderResult(args) {
 // providers (Parte 2) necesita clasificar el *request* ANTES del dispatch para
 // saber si requiere tool-use (ejecutar comandos del pipeline: lanzar agentes,
 // editar archivos, correr builds). Un request tool-use NO puede ir a un provider
-// sin `supports_tool_use` (Cerebras/Gemini) — el balancer los excluye con este
+// sin `supports_tool_use` — el balancer los excluye con este
 // flag (fail-closed en elegibilidad, provider-balancer.js CA-5).
 //
 // Heurística PURA y conservadora (no toca disco, no LLM):

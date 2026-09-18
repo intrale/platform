@@ -1,5 +1,7 @@
 # Auditoría integral end-to-end multi-provider (#3803)
 
+> **Registro histórico — plantel retirado en [#6563](https://github.com/intrale/platform/issues/6563) (2026-09-16).** Los proveedores gratuitos `cerebras`, `nvidia-nim` y `kimi-moonshot` (y los remanentes `ollama`/`groq`) fueron dados de baja del ruteo por el criterio de admisión de [#6562](https://github.com/intrale/platform/issues/6562). Este documento se conserva tal cual como evidencia de las decisiones de su momento; el estado vigente y el plan de rollback están en [`docs/pipeline/multi-provider.md`](../pipeline/multi-provider.md) §16–§17.
+
 > **Estado:** barrido completo — fase de documentación. NO se aplicó ningún fix todavía.
 > Esta es la lista maestra de cuestiones detectadas para ir resolviendo de a poco.
 > Fecha del barrido: 2026-06-02.

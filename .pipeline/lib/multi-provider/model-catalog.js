@@ -22,7 +22,10 @@
 // 2026-09-16.1 — #6858: alta del provider `gemini-google` con el catálogo real
 // de Antigravity (hasta acá el dashboard no mostraba ninguna fila Gemini pese
 // a que 9 skills lo tienen en su cadena).
-const CATALOG_VERSION = '2026-09-16.1';
+// 2026-09-16.2 — #6563: baja de `kimi-moonshot` (retirado del pipeline junto
+// con cerebras y nvidia-nim; el plantel queda en anthropic, openai-codex y
+// gemini-google).
+const CATALOG_VERSION = '2026-09-16.2';
 
 // #6858 — Helper para las 14 filas de Antigravity. El catálogo del CLI codifica
 // el esfuerzo de razonamiento en el sufijo del id (`-high/-medium/-low`); ese
@@ -104,20 +107,6 @@ const CATALOG = Object.freeze({
             context_window: 256_000,
             release_date: '2026-06',
             recommended_for: ['telegram-sherlock'],
-        },
-    ]),
-    // #4880 — Kimi (Moonshot), drop-in de Claude Code contra el endpoint
-    // Anthropic-compatible. Provider CLI-first para roles NO agénticos (po/review).
-    // Costo/ventana de contexto según spike #4871 (K2.6, pay-per-token barato).
-    'kimi-moonshot': Object.freeze([
-        {
-            id: 'kimi-k2-6',
-            label: 'Kimi K2.6 (Moonshot, Anthropic-compat)',
-            capabilities: ['chat', 'cache'],
-            cost_per_1m: { input: 0.60, output: 2.50 },
-            context_window: 256_000,
-            release_date: '2026-07',
-            recommended_for: ['po', 'review'],
         },
     ]),
     // #6858 (2026-09-16) — Antigravity (`agy`, CLI 1.2.4). Catálogo medido con

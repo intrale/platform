@@ -22,15 +22,13 @@ const PROVIDERS = [
     { id: 'anthropic', status: 'not_applicable', resets_at: null },
     { id: 'openai-codex', status: 'ok', resets_at: null },
     { id: 'gemini-google', status: 'gated', resets_at: '2026-07-02T18:00:00.000Z' },
-    { id: 'cerebras', status: 'unknown', resets_at: null },
-    { id: 'nvidia-nim', status: 'ok', resets_at: null },
 ];
 
 test('normalizeHealthId mapea openai a openai-codex y deja el resto igual', () => {
     assert.equal(normalizeHealthId('openai'), 'openai-codex');
     assert.equal(normalizeHealthId('openai-codex'), 'openai-codex');
     assert.equal(normalizeHealthId('anthropic'), 'anthropic');
-    assert.equal(normalizeHealthId('cerebras'), 'cerebras');
+    assert.equal(normalizeHealthId('gemini-google'), 'gemini-google');
 });
 
 test('healthById encuentra el provider canonico normalizando openai', () => {
@@ -60,7 +58,7 @@ test('healthBadge mapea status gated a agotado con clase health-gated y conserva
 });
 
 test('healthBadge mapea status unknown a inutilizable con clase health-broken', () => {
-    const b = healthBadge('cerebras', PROVIDERS);
+    const b = healthBadge('gemini-google', [{ id: 'gemini-google', status: 'unknown', resets_at: null }]);
     assert.deepEqual(b, { cls: 'health-broken', label: 'inutilizable', icon: 'ic-health-dead' });
 });
 

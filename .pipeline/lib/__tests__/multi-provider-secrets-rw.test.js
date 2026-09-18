@@ -75,14 +75,14 @@ test('detectFormat distingue canonical de legacy', () => {
 
 test('setNested crea estructura intermedia y asigna el valor', () => {
     const obj = {};
-    secrets.setNested(obj, 'providers.cerebras.api_key', 'csk_real');
+    secrets.setNested(obj, 'providers.google.api_key', 'AIza_real');
     assert.equal(Object.getPrototypeOf(obj.providers), null);
-    assert.equal(Object.getPrototypeOf(obj.providers.cerebras), null);
-    assert.equal(obj.providers.cerebras.api_key, 'csk_real');
+    assert.equal(Object.getPrototypeOf(obj.providers.google), null);
+    assert.equal(obj.providers.google.api_key, 'AIza_real');
 
     secrets.setNested(obj, 'providers.openai.api_key', 'sk-real');
     assert.equal(obj.providers.openai.api_key, 'sk-real');
-    assert.equal(obj.providers.cerebras.api_key, 'csk_real', 'no debe pisar siblings');
+    assert.equal(obj.providers.google.api_key, 'AIza_real', 'no debe pisar siblings');
 });
 
 test('setNested rechaza segmentos de prototype pollution sin contaminar Object.prototype', () => {
@@ -109,6 +109,7 @@ test('listKeys lee del formato CANONICAL nested', () => {
             openai:   { api_key: 'sk-actual-key-1234567890abcdef' },
             anthropic: { api_key: 'PLACEHOLDER' },
             google:   { api_key: 'AIza_real_key_1234567890abc' },
+            // #6563 — clave huérfana de un provider retirado: se ignora.
             cerebras: { api_key: 'csk_real_key_1234567890abcdef' },
         },
     }));
@@ -123,12 +124,14 @@ test('listKeys lee del formato CANONICAL nested', () => {
     assert.equal(byProvider.anthropic.status, 'placeholder');
     assert.equal(byProvider.anthropic.editable, false);
 
-    // Los free providers vivos DEBEN aparecer como present con la estructura
+    // El free provider vivo DEBE aparecer como present con la estructura
     // nested — éste es exactamente el caso que rompía el dashboard antes de
-    // #3313. #3353 eliminó groq, así que ya no aparece en este listado.
+    // #3313. #3353 eliminó groq y #6563 cerebras/nvidia-nim, así que ya no
+    // aparecen en este listado aunque el JSON conserve sus claves.
     assert.equal(byProvider['gemini-google'].status, 'present');
-    assert.equal(byProvider.cerebras.status, 'present');
     assert.equal(byProvider.groq, undefined, 'groq debería estar removido tras #3353');
+    assert.equal(byProvider.cerebras, undefined, 'cerebras debería estar removido tras #6563');
+    assert.equal(byProvider['nvidia-nim'], undefined, 'nvidia-nim debería estar removido tras #6563');
 });
 
 test('listKeys lee del formato LEGACY flat (fallback)', () => {
@@ -143,8 +146,7 @@ test('listKeys lee del formato LEGACY flat (fallback)', () => {
 
     assert.equal(byProvider.openai.status, 'present');
     assert.equal(byProvider.anthropic.status, 'placeholder');
-    // El legacy no incluye cerebras ni gemini-google → absent.
-    assert.equal(byProvider.cerebras.status, 'absent');
+    // El legacy no incluye gemini-google → absent.
     assert.equal(byProvider['gemini-google'].status, 'absent');
 });
 
@@ -213,16 +215,16 @@ test('rotateKey crea archivo CANONICAL si no existe (estructura nested)', () => 
     const file = path.join(dir, 'credentials.json');
     const bakDir = path.join(dir, 'bak');
     const result = secrets.rotateKey({
-        provider: 'cerebras',
-        newValue: 'csk_fresh_aaaaaaaaaaaaaaaaaaaa',
+        provider: 'openai',
+        newValue: 'sk-fresh-aaaaaaaaaaaaaaaaaaaa',
         secretsPath: file,
         backupDir: bakDir,
     });
     assert.equal(result.ok, true);
     assert.equal(result.format, 'canonical');
-    assert.equal(result.canonicalPath, 'providers.cerebras.api_key');
+    assert.equal(result.canonicalPath, 'providers.openai.api_key');
     const updated = JSON.parse(fs.readFileSync(file, 'utf8'));
-    assert.equal(updated.providers.cerebras.api_key, 'csk_fresh_aaaaaaaaaaaaaaaaaaaa');
+    assert.equal(updated.providers.openai.api_key, 'sk-fresh-aaaaaaaaaaaaaaaaaaaa');
 });
 
 test('rotateKey sobre archivo LEGACY preserva formato flat (compat hacia atrás)', () => {
@@ -289,14 +291,12 @@ test('getRawKey lee la key real del CANONICAL nested', () => {
         providers: {
             openai:   { api_key: 'sk-real-1234567890abcdef0000' },
             google:   { api_key: 'AIza-real-1234567890abcdef' },
-            cerebras: { api_key: 'csk-real-1234567890abcdef' },
             anthropic: { api_key: 'PLACEHOLDER' },
         },
     }));
     assert.equal(secrets.getRawKey({ provider: 'openai', secretsPath: file }), 'sk-real-1234567890abcdef0000');
     // 'gemini-google' (UI) mapea a 'providers.google.api_key' en canonical.
     assert.equal(secrets.getRawKey({ provider: 'gemini-google', secretsPath: file }), 'AIza-real-1234567890abcdef');
-    assert.equal(secrets.getRawKey({ provider: 'cerebras', secretsPath: file }), 'csk-real-1234567890abcdef');
     assert.equal(secrets.getRawKey({ provider: 'anthropic', secretsPath: file }), null, 'PLACEHOLDER → null');
 });
 
@@ -309,53 +309,56 @@ test('getRawKey lee del LEGACY flat cuando el canonical no existe', () => {
     assert.equal(secrets.getRawKey({ provider: 'openai', secretsPath: legacyFile }), 'sk-legacy-1234567890abcdef');
 });
 
-// ─── Free providers vivos (#3260 + #3313 + #3353) ───────────────────────────
+// ─── Plantel de providers (#3260 + #3313 + #3353 + #6563) ───────────────────
 
-test('MANAGED_KEYS incluye los free providers vivos con canonicalPath', () => {
+// #6563 — ancla del plantel gestionado: anthropic + openai + gemini-google.
+const PLANTEL_MANAGED = ['anthropic', 'openai', 'gemini-google'];
+
+test('MANAGED_KEYS refleja el plantel vigente y excluye los providers retirados', () => {
     const providers = secrets.MANAGED_KEYS.map(k => k.provider);
+    assert.deepEqual([...providers].sort(), [...PLANTEL_MANAGED].sort());
     // #3353 — groq fue removido tras descontinuación del provider.
     assert.ok(!providers.includes('groq'), 'groq debería estar removido tras #3353');
-    assert.ok(providers.includes('gemini-google'), 'gemini-google presente');
-    assert.ok(providers.includes('cerebras'), 'cerebras presente');
-    assert.ok(providers.includes('nvidia-nim'), 'nvidia-nim presente');
+    // #6563 — cerebras y nvidia-nim dados de baja junto con kimi-moonshot.
+    assert.ok(!providers.includes('cerebras'), 'cerebras debería estar removido tras #6563');
+    assert.ok(!providers.includes('nvidia-nim'), 'nvidia-nim debería estar removido tras #6563');
 
     const byP = Object.fromEntries(secrets.MANAGED_KEYS.map(k => [k.provider, k]));
     assert.equal(byP['gemini-google'].canonicalPath, 'providers.google.api_key');
-    assert.equal(byP.cerebras.canonicalPath, 'providers.cerebras.api_key');
+    assert.equal(byP.openai.canonicalPath, 'providers.openai.api_key');
+    assert.equal(byP.anthropic.canonicalPath, 'providers.anthropic.api_key');
 });
 
-test('free providers son editable=true (rotables vía UI)', () => {
-    for (const p of ['cerebras', 'nvidia-nim']) {
-        const spec = secrets.MANAGED_KEYS.find(k => k.provider === p);
-        assert.equal(spec.editable, true, `${p} debe ser editable`);
-        assert.ok(spec.free_tier_notes, `${p} debe tener free_tier_notes`);
-    }
+// #6563 — el caso "free providers son editable=true" se retiró con cerebras y
+// nvidia-nim: el único free vivo (gemini-google) es OAuth y no rota API keys.
+test('gemini-google (único free vivo) es OAuth: editable=false con free_tier_notes', () => {
     const gemini = secrets.MANAGED_KEYS.find(k => k.provider === 'gemini-google');
     assert.equal(gemini.editable, false, 'Gemini OAuth no rota API keys vía UI');
+    assert.equal(gemini.auth_mode, 'oauth');
     assert.ok(gemini.free_tier_notes);
 });
 
-test('rotateKey de free provider sobre CANONICAL crea backup + write atómico 0600 (SR-1)', () => {
+test('rotateKey de provider editable sobre CANONICAL crea backup + write atómico 0600 (SR-1)', () => {
     const dir = tmpDir();
     const file = path.join(dir, 'credentials.json');
     const bakDir = path.join(dir, 'bak');
     fs.writeFileSync(file, JSON.stringify({
-        providers: { cerebras: { api_key: 'csk_old_aaaaaaaaaaaaaaaaaaaaa' } },
+        providers: { openai: { api_key: 'sk-old-aaaaaaaaaaaaaaaaaaaaa' } },
     }));
     const result = secrets.rotateKey({
-        provider: 'cerebras',
-        newValue: 'csk_new_bbbbbbbbbbbbbbbbbbbbb',
+        provider: 'openai',
+        newValue: 'sk-new-bbbbbbbbbbbbbbbbbbbbb',
         secretsPath: file,
         backupDir: bakDir,
         retention: 5,
     });
     assert.equal(result.ok, true);
-    assert.equal(result.provider, 'cerebras');
+    assert.equal(result.provider, 'openai');
     assert.equal(result.format, 'canonical');
     assert.ok(result.fingerprint, 'fingerprint generado');
     assert.equal(result.fingerprint.length, 16);
     const persisted = JSON.parse(fs.readFileSync(file, 'utf8'));
-    assert.equal(persisted.providers.cerebras.api_key, 'csk_new_bbbbbbbbbbbbbbbbbbbbb');
+    assert.equal(persisted.providers.openai.api_key, 'sk-new-bbbbbbbbbbbbbbbbbbbbb');
     const backups = fs.readdirSync(bakDir).filter(f => f.startsWith('credentials.'));
     assert.equal(backups.length, 1);
 });
@@ -364,12 +367,12 @@ test('listKeys de free provider incluye free_tier_notes en metadata', () => {
     const dir = tmpDir();
     const file = path.join(dir, 'credentials.json');
     fs.writeFileSync(file, JSON.stringify({
-        providers: { cerebras: { api_key: 'csk_aaaaaaaaaaaaaaaaaaaaaa' } },
+        providers: { google: { api_key: 'AIza_aaaaaaaaaaaaaaaaaaaaaa' } },
     }));
     const out = secrets.listKeys({ secretsPath: file });
-    const cerebras = out.find(k => k.provider === 'cerebras');
-    assert.equal(cerebras.status, 'present');
-    assert.ok(cerebras.free_tier_notes, 'free_tier_notes debe estar en la metadata listKeys');
+    const gemini = out.find(k => k.provider === 'gemini-google');
+    assert.equal(gemini.status, 'present');
+    assert.ok(gemini.free_tier_notes, 'free_tier_notes debe estar en la metadata listKeys');
 });
 
 // =============================================================================

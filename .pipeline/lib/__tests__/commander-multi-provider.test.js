@@ -90,17 +90,19 @@ function mkTmpPipelineDir() {
                 credentials_env: ['OPENAI_API_KEY'],
                 permissions_mode: 'bypassPermissions',
             },
-            cerebras: {
-                launcher: 'cerebras',
-                model: 'llama-3.3-70b',
-                spawn_args_template: ['--model'],
-                output_parser: 'openai-sse',
-                quota_error_types: ['rate_limit_exceeded'],
+            // #6563 — tercer eslabón del plantel vigente (free hasta #6564).
+            'gemini-google': {
+                launcher: 'gemini-google',
+                model: 'gemini-3.8-flash-medium',
+                spawn_args_template: ['--model', '{model}', '--system', '{system_file}', '{user_prompt}'],
+                output_parser: 'gemini-stream',
+                quota_error_types: ['quota_exceeded', 'resource_exhausted'],
                 resets_at_cap_max_days: 31,
-                supports_tool_use: false,
+                supports_tool_use: true,
                 prompt_caching: { supported: false },
-                credentials_env: ['CEREBRAS_API_KEY'],
+                auth_mode: 'oauth',
                 permissions_mode: 'bypassPermissions',
+                billing: 'free',
             },
         },
         skills: {
@@ -109,7 +111,7 @@ function mkTmpPipelineDir() {
                 model_override: 'claude-opus-4-7',
                 fallbacks: [
                     { provider: 'openai-codex', model_override: 'gpt-5-codex' },
-                    { provider: 'cerebras', model_override: 'llama-3.3-70b' },
+                    { provider: 'gemini-google', model_override: 'gemini-3.8-flash-medium' },
                 ],
             },
         },
@@ -186,7 +188,7 @@ test('CA-7 — Claude gated por cuota → resuelve a openai-codex (próximo en c
     }
 });
 
-test('CA-7 — Claude + Codex gated → fallback escala a cerebras', () => {
+test('CA-7 — Claude + Codex gated → fallback escala a gemini-google', () => {
     const dir = mkTmpPipelineDir();
     try {
         const fakeQuota = makeFakeQuotaModule(['anthropic', 'openai-codex']);
@@ -196,8 +198,8 @@ test('CA-7 — Claude + Codex gated → fallback escala a cerebras', () => {
             quotaModule: fakeQuota,
         });
         assert.equal(r.gated, false);
-        assert.equal(r.provider, 'cerebras');
-        assert.deepEqual(r.chainTried, ['anthropic', 'openai-codex', 'cerebras']);
+        assert.equal(r.provider, 'gemini-google');
+        assert.deepEqual(r.chainTried, ['anthropic', 'openai-codex', 'gemini-google']);
     } finally {
         cleanup(dir);
     }
@@ -206,7 +208,7 @@ test('CA-7 — Claude + Codex gated → fallback escala a cerebras', () => {
 test('CA-7 — chain entera gated → gated:true, response canned', () => {
     const dir = mkTmpPipelineDir();
     try {
-        const fakeQuota = makeFakeQuotaModule(['anthropic', 'openai-codex', 'cerebras']);
+        const fakeQuota = makeFakeQuotaModule(['anthropic', 'openai-codex', 'gemini-google']);
         const r = cmp.resolveCommanderProvider({
             pipelineDir: dir,
             log: () => {},
@@ -264,8 +266,8 @@ test('Fix2 — provider efectivo falla (empty_output) → re-resuelve y avanza a
             log: () => {},
             issue: 'commander-chat',
         });
-        assert.equal(next.gated, false, 'aún queda cerebras libre en la cadena');
-        assert.equal(next.provider, 'cerebras');
+        assert.equal(next.gated, false, 'aún queda gemini-google libre en la cadena');
+        assert.equal(next.provider, 'gemini-google');
         assert.notEqual(next.provider, 'anthropic');
         assert.notEqual(next.provider, 'openai-codex');
     } finally {
@@ -276,11 +278,11 @@ test('Fix2 — provider efectivo falla (empty_output) → re-resuelve y avanza a
 test('Fix2 — todos los non-anthropic ya intentados → cadena agotada → canned all-gated', () => {
     const dir = mkTmpPipelineDir();
     try {
-        // Caso real del incidente: anthropic + codex apagados, efectivo cerebras,
-        // cerebras devuelve vacío. Re-resolver excluyendo cerebras (los tried) y
+        // Caso real del incidente: anthropic + codex apagados, efectivo gemini,
+        // gemini devuelve vacío. Re-resolver excluyendo gemini (los tried) y
         // con anthropic+codex gated por cuota → no queda ningún provider.
         const fakeQuota = makeFakeQuotaModule(['anthropic', 'openai-codex']);
-        const next = cmp.resolveCommanderProviderExcluding(['cerebras'], {
+        const next = cmp.resolveCommanderProviderExcluding(['gemini-google'], {
             pipelineDir: dir,
             skill: 'telegram-commander',
             quotaModule: fakeQuota,
@@ -300,17 +302,17 @@ test('Fix2 — todos los non-anthropic ya intentados → cadena agotada → cann
 test('Fix2 — exclusión por ARRAY descarta varios providers de una (tried acumulado)', () => {
     const dir = mkTmpPipelineDir();
     try {
-        // Sin cuotas gateadas, pero ya intentamos codex Y cerebras (ambos
+        // Sin cuotas gateadas, pero ya intentamos codex Y gemini (ambos
         // fallaron). Excluyendo el array completo no queda non-anthropic libre.
         const fakeQuota = makeFakeQuotaModule(['anthropic']);
-        const next = cmp.resolveCommanderProviderExcluding(['openai-codex', 'cerebras'], {
+        const next = cmp.resolveCommanderProviderExcluding(['openai-codex', 'gemini-google'], {
             pipelineDir: dir,
             skill: 'telegram-commander',
             quotaModule: fakeQuota,
             log: () => {},
             issue: 'commander-chat',
         });
-        assert.equal(next.gated, true, 'array de exclusión saca a codex y cerebras');
+        assert.equal(next.gated, true, 'array de exclusión saca a codex y gemini');
         assert.equal(next.source, 'all-gated');
     } finally {
         cleanup(dir);
@@ -340,7 +342,7 @@ test('CA-5 — formatFallbackNotice produce línea natural sin jerga', () => {
 test('#6179 D9 — un errorCode desconocido NO se interpola: cae a un literal genérico', () => {
     const text = cmp.formatFallbackNotice({
         primaryProvider: 'anthropic',
-        fallbackProvider: 'cerebras',
+        fallbackProvider: 'gemini-google',
         errorCode: 'algo_raro_del_proveedor_5xx',
         supportsToolUse: true,
     });
@@ -348,7 +350,7 @@ test('#6179 D9 — un errorCode desconocido NO se interpola: cae a un literal ge
         'el errorCode crudo es texto de origen externo y no se interpola (CA-9)');
     assert.match(text, /motivo no confirmado/);
     // Y el proveedor free tampoco se nombra: la allowlist pública es cerrada.
-    assert.doesNotMatch(text, /cerebras/i);
+    assert.doesNotMatch(text, /gemini/i);
     assert.match(text, /un motor de respaldo/);
 });
 
@@ -362,14 +364,14 @@ test('#6179 D8 / #5667 — publicProviderLabel no hereda de Object.prototype', (
     // Sanity: la allowlist real sigue funcionando.
     assert.equal(cmp.publicProviderLabel('anthropic', 'generico'), 'Anthropic');
     assert.equal(cmp.publicProviderLabel('openai-codex', 'generico'), 'Codex');
-    // Y un pago fuera de la allowlist sigue cayendo al genérico (fail-closed).
-    assert.equal(cmp.publicProviderLabel('cerebras', 'generico'), 'generico');
+    // Y un provider fuera de la allowlist sigue cayendo al genérico (fail-closed).
+    assert.equal(cmp.publicProviderLabel('gemini-google', 'generico'), 'generico');
 });
 
 test('CA-5 / SR-8 — formatFallbackNotice agrega línea de degradación si no tool use', () => {
     const text = cmp.formatFallbackNotice({
         primaryProvider: 'anthropic',
-        fallbackProvider: 'cerebras',
+        fallbackProvider: 'gemini-google',
         errorCode: 'quota_exhausted',
         supportsToolUse: false,
     });
@@ -591,9 +593,9 @@ test('CA-1 / CA-2 — agent-models.json real tiene telegram-commander con orden 
     assert.equal(cmd.provider, 'anthropic');
     const chain = (cmd.fallbacks || []).map(f => f.provider);
     // #3353 — groq removido del orden de fallback del telegram-commander.
-    // 2026-06-02 — nvidia-nim sumado al final de la cadena del Commander
-    // (adapter real, PR #3793) para cerrar el gap multi-provider.
-    assert.deepEqual(chain, ['openai-codex', 'gemini-google', 'cerebras', 'nvidia-nim']);
+    // #6563 — cerebras y nvidia-nim retirados: la cadena queda en el plantel
+    // agéntico vigente (Codex → Gemini).
+    assert.deepEqual(chain, ['openai-codex', 'gemini-google']);
 });
 
 // -----------------------------------------------------------------------------
@@ -728,7 +730,7 @@ test('SR-1 — provider !== anthropic y blocked.length === 0 → ok:true (contin
         const fakeDrf = makeFakeDrfModule({ simulateBlock: false });
         const r = cmp.enforceDataResidency({
             pipelineDir: dir,
-            provider: 'cerebras',
+            provider: 'gemini-google',
             paths: ['docs/innocent.md'],
             chatId: 'chat-w',
             prompt: 'algo',
@@ -790,7 +792,7 @@ test('SR-1 — enforceDataResidency emite evento audit data_residency_block cuan
         const fakeDrf = makeFakeDrfModule({ simulateBlock: true });
         cmp.enforceDataResidency({
             pipelineDir: dir,
-            provider: 'cerebras',
+            provider: 'gemini-google',
             paths: ['users/src/main/resources/application.conf'],
             chatId: 'chat-block',
             prompt: 'leelo',
@@ -804,7 +806,7 @@ test('SR-1 — enforceDataResidency emite evento audit data_residency_block cuan
         const entries = content.split('\n').map(l => JSON.parse(l));
         const blockEvent = entries.find(e => e.event === 'data_residency_block');
         assert.ok(blockEvent, 'debe haber al menos un evento data_residency_block');
-        assert.equal(blockEvent.provider_effective, 'cerebras');
+        assert.equal(blockEvent.provider_effective, 'gemini-google');
         assert.equal(blockEvent.error_code, 'data_residency_blocked');
         // SR-7: ningún path crudo en el log.
         assert.doesNotMatch(content, /application\.conf/);
@@ -846,7 +848,7 @@ test('SR-1 — sidecar real del repo carga sin throw y filtra application.conf p
     try {
         const r = cmp.enforceDataResidency({
             pipelineDir: dir,
-            provider: 'cerebras',
+            provider: 'gemini-google',
             paths: ['users/src/main/resources/application.conf'],
             chatId: 'chat-real',
             prompt: 'leelo',
@@ -895,7 +897,7 @@ test('#3484 CA-AUDIT-1 — auditCommanderRequest persiste los 5 campos enriched 
             pipelineDir: dir,
             event: 'sherlock_verification',
             providerIntended: 'anthropic',
-            providerEffective: 'cerebras',
+            providerEffective: 'gemini-google',
             prompt: 'hash placeholder',
             tokens: { input: 10, output: 5 },
             latencyMs: 120,
@@ -973,7 +975,7 @@ test('#4306 CA-6 — causa credenciales (sin quota) → mensaje "sin credenciale
         reason: 'all_gated',
         skipReasons: [
             { provider: 'openai-codex', reason: 'permission_matrix', details: 'no_key_configured' },
-            { provider: 'cerebras', reason: 'permission_matrix', details: 'env_missing_or_placeholder:CEREBRAS_API_KEY' },
+            { provider: 'gemini-google', reason: 'permission_matrix', details: 'env_missing_or_placeholder:GEMINI_API_KEY' },
         ],
     });
     assert.match(canned, /sin credenciales|no está disponible|disponible/i);
@@ -992,11 +994,123 @@ test('#4306 CA-6 — causa horario (todos_inactivos_por_horario) → mensaje de 
 test('#4306 CA-6 — REQ-SEC-4: el mensaje nunca incluye valores de credenciales', () => {
     const canned = cmp.cannedAllGatedResponse({
         reason: 'all_gated',
-        skipReasons: [{ provider: 'cerebras', reason: 'permission_matrix', details: 'env_missing_or_placeholder:CEREBRAS_API_KEY' }],
+        skipReasons: [{ provider: 'gemini-google', reason: 'permission_matrix', details: 'env_missing_or_placeholder:GEMINI_API_KEY' }],
     });
     // No debe leakear nombres de var ni valores: el detail del skip no se interpola.
-    assert.ok(!/CEREBRAS_API_KEY/.test(canned));
-    assert.ok(!/csk-/.test(canned));
+    assert.ok(!/GEMINI_API_KEY/.test(canned));
+    assert.ok(!/AIza/.test(canned));
+});
+
+// =============================================================================
+// #6563 — Mensaje de espera por eslabón (precisión del PO): cuando los tres
+// proveedores están agotados o fuera de ventana, el operador ve el estado de
+// CADA UNO con su causa y su hora, nunca un genérico ni un proveedor retirado.
+// =============================================================================
+const _WAIT_NOW = Date.UTC(2026, 8, 16, 12, 0, 0); // 09:00 en Buenos Aires
+
+function makeWaitDeps({ codexResetMs, geminiResetMs, claudeRest } = {}) {
+    const providers = [];
+    if (codexResetMs) providers.push({ provider: 'openai-codex', resets_at_ms: codexResetMs });
+    if (geminiResetMs) providers.push({ provider: 'gemini-google', resets_at_ms: geminiResetMs });
+    return {
+        now: _WAIT_NOW,
+        quotaModule: {
+            readDefensive: () => (providers.length ? { exhausted: true, providers } : { exhausted: false }),
+            canonicalProvider: (p) => p,
+        },
+        restStatusFor: (p) => (p === 'anthropic' && claudeRest ? claudeRest : { resting: false }),
+    };
+}
+
+test('#6563 — cadena agotada: el canned nombra a Claude, Codex y Gemini con su causa y su hora', () => {
+    const deps = makeWaitDeps({
+        codexResetMs: _WAIT_NOW + 2.5 * 3600 * 1000,   // hoy 11:30 BA
+        geminiResetMs: _WAIT_NOW + 30 * 3600 * 1000,   // mañana 15:00 BA
+        claudeRest: { resting: true, atHHMM: '07:00', when: 'tomorrow', minutesFromNow: 1320 },
+    });
+    const canned = cmp.cannedAllGatedResponse({
+        reason: 'all_gated',
+        chainTried: ['anthropic', 'openai-codex', 'gemini-google'],
+        skipReasons: [
+            { provider: 'anthropic', reason: 'provider_inactive_by_schedule', details: null },
+            { provider: 'openai-codex', reason: 'quota_exhausted', details: 'flag de cuota activo' },
+            { provider: 'gemini-google', reason: 'quota_exhausted', details: 'flag de cuota activo' },
+        ],
+    }, deps);
+    const lines = canned.split('\n');
+    assert.match(lines[0], /sin cuota disponible/, 'el titular histórico se conserva');
+    assert.equal(
+        lines[1],
+        'Claude en reposo hasta mañana 07:00 · Codex sin cuota hasta 11:30 · Gemini sin cuota hasta mañana 15:00',
+    );
+});
+
+test('#6563 — sin hora conocida el eslabón igual se nombra con su causa (nunca un genérico "cadena agotada")', () => {
+    const line = cmp.describeGatedChain({
+        chainTried: ['anthropic', 'openai-codex', 'gemini-google'],
+        skipReasons: [
+            { provider: 'anthropic', reason: 'quota_exhausted' },
+            { provider: 'openai-codex', reason: 'pacing_budget_red' },
+            { provider: 'gemini-google', reason: 'health_gate' },
+        ],
+    }, makeWaitDeps());
+    assert.equal(line, 'Claude sin cuota · Codex sin cuota · Gemini caído temporalmente');
+    assert.doesNotMatch(line, /cadena agotada/i);
+});
+
+test('#6563 — un proveedor retirado o desconocido en skipReasons NO aparece en el mensaje (fail-closed)', () => {
+    const line = cmp.describeGatedChain({
+        chainTried: ['anthropic', 'openai-codex', 'proveedor-retirado'],
+        skipReasons: [
+            { provider: 'anthropic', reason: 'quota_exhausted' },
+            { provider: 'proveedor-retirado', reason: 'invalid_handler' },
+            { provider: 'openai-codex', reason: 'quota_exhausted' },
+            { provider: 'constructor', reason: 'quota_exhausted' },
+        ],
+    }, makeWaitDeps());
+    assert.equal(line, 'Claude sin cuota · Codex sin cuota');
+    assert.doesNotMatch(line, /retirado|constructor|function/i);
+});
+
+test('#6563 — el detalle crudo del skip y un código desconocido no se interpolan', () => {
+    const line = cmp.describeGatedChain({
+        skipReasons: [
+            { provider: 'gemini-google', reason: 'codigo_inventado_del_dispatcher', details: 'env_missing_or_placeholder:GEMINI_API_KEY' },
+        ],
+    }, makeWaitDeps());
+    assert.equal(line, 'Gemini no disponible');
+});
+
+test('#6563 — sin skipReasons ni chainTried el canned queda igual que antes (una sola línea)', () => {
+    const canned = cmp.cannedAllGatedResponse({ reason: 'all_gated' }, makeWaitDeps());
+    assert.equal(canned.split('\n').length, 1);
+    assert.match(canned, /sin cuota disponible/);
+});
+
+test('#6563 — fuera de horario: el titular de ventana se conserva y la línea por eslabón dice "en reposo"', () => {
+    const canned = cmp.cannedAllGatedResponse({
+        reason: 'todos_inactivos_por_horario',
+        allInactiveBySchedule: true,
+        chainTried: ['anthropic'],
+        skipReasons: [{ provider: 'anthropic', reason: 'provider_inactive_by_schedule', details: null }],
+    }, makeWaitDeps({ claudeRest: { resting: true, atHHMM: '07:00', when: 'today', minutesFromNow: 60 } }));
+    const lines = canned.split('\n');
+    assert.match(lines[0], /fuera de su ventana de actividad/);
+    assert.equal(lines[1], 'Claude en reposo hasta hoy 07:00');
+});
+
+test('#6563 — un fallo al leer cuota o schedule no tumba el canned: la causa sale sin hora', () => {
+    const line = cmp.describeGatedChain({
+        skipReasons: [
+            { provider: 'anthropic', reason: 'provider_inactive_by_schedule' },
+            { provider: 'openai-codex', reason: 'quota_exhausted' },
+        ],
+    }, {
+        now: _WAIT_NOW,
+        quotaModule: { readDefensive: () => { throw new Error('disco roto'); } },
+        restStatusFor: () => { throw new Error('schedule roto'); },
+    });
+    assert.equal(line, 'Claude en reposo · Codex sin cuota');
 });
 
 // =============================================================================
@@ -1598,7 +1712,7 @@ test('#5456 CA-1/CA-2 — la respuesta reactiva admite el turno perdido, anuncia
 
 test('#5456 CA-1 — control negativo: un provider fuera de la allowlist NO filtra su id interno', () => {
     // Providers reales del pipeline que NO están en el mapping público de pagos.
-    for (const desconocido of ['cerebras', 'google-gemini', 'nvidia-nim', 'proveedor-inventado']) {
+    for (const desconocido of ['gemini-google', 'google-gemini', 'proveedor-inventado']) {
         const text = cmp.formatMidTurnQuotaResponse({
             primaryProvider: desconocido,
             fallbackProvider: desconocido,
@@ -1628,8 +1742,8 @@ test('#5456 CA-1 — publicProviderLabel es fail-closed: sólo Anthropic y Codex
     assert.equal(cmp.publicProviderLabel('ANTHROPIC'), 'Anthropic', 'case-insensitive');
     assert.equal(cmp.publicProviderLabel('  openai-codex  '), 'Codex', 'trim del id');
     // Fuera de la allowlist → el fallback declarado, jamás el id recibido.
-    assert.equal(cmp.publicProviderLabel('cerebras'), null);
-    assert.equal(cmp.publicProviderLabel('cerebras', 'otro proveedor'), 'otro proveedor');
+    assert.equal(cmp.publicProviderLabel('gemini-google'), null);
+    assert.equal(cmp.publicProviderLabel('gemini-google', 'otro proveedor'), 'otro proveedor');
     assert.equal(cmp.publicProviderLabel(undefined), null);
     assert.equal(cmp.publicProviderLabel(null), null);
 });

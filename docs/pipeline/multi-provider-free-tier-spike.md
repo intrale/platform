@@ -1,5 +1,7 @@
 # Multi-provider — spike de 3er provider gratuito como fallback
 
+> **Registro histórico — plantel retirado en [#6563](https://github.com/intrale/platform/issues/6563) (2026-09-16).** Los proveedores gratuitos `cerebras`, `nvidia-nim` y `kimi-moonshot` (y los remanentes `ollama`/`groq`) fueron dados de baja del ruteo por el criterio de admisión de [#6562](https://github.com/intrale/platform/issues/6562). Este documento se conserva tal cual como evidencia de las decisiones de su momento; el estado vigente y el plan de rollback están en [`docs/pipeline/multi-provider.md`](../pipeline/multi-provider.md) §16–§17.
+
 > **Issue:** [#3200](https://github.com/intrale/platform/issues/3200) — spike research-only para evaluar un tercer provider gratuito que actúe como tercer fallback del pipeline V3, después de `anthropic` y `openai-codex`.
 > **Estado:** spike documental. La validación empírica (corrida de prompts reales) queda pendiente hasta que Leo provisione las API keys de los providers shortlisteados (ver §10).
 > **Audiencia:** dev del pipeline (decisiones de integración), PO (sign-off del riesgo de degradación), Leo (validación final + provisión de keys).

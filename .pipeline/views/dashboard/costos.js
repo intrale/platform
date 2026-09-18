@@ -202,13 +202,14 @@ function renderCostosClientScript() {
 // pantalla completa consensuada en el mockup `costos-redesign-v2`:
 //   - Banner de misión en clave alarma: desvío vs presupuesto + gastado hoy/mes
 //     + presupuesto diario + «🔥 el que más pesa» (CA-4).
-//   - Gráfico de consumo diario: barras apiladas de 14 días por los 5
+//   - Gráfico de consumo diario: barras apiladas de 14 días por los 3
 //     proveedores + deterministas, línea de presupuesto, barras sobre el tope
 //     marcadas en rojo, proveedores FREE en $0 visibles en la leyenda (CA-3/CA-6).
 //   - Proyecciones + nota de mix de proveedores.
 //   - Detalle por skill con COLUMNA DE PROVEEDOR por fila (CA-5), nunca truncado.
-//   - «Cuota por proveedor»: una tarjeta por cada uno de los 5 proveedores con
-//     su modelo de límite propio (CA-2).
+//   - «Cuota por proveedor»: una tarjeta por cada uno de los 3 proveedores con
+//     su modelo de límite propio (CA-2). Los gratuitos Groq/Cerebras/NVIDIA
+//     se retiraron en #6563; el único free tier vigente es Gemini.
 //
 // HTML/CSS NATIVO scoped a `#costos-redesign` (sin librería de charting →
 // cumple REQ-SEC supply-chain A06/A08). Todo dato dinámico pasa por
@@ -219,25 +220,23 @@ function renderCostosClientScript() {
 
 // Orden de apilado FIJO bottom→top, determinístico entre renders. `openai-codex`
 // es el provider real de Codex en el activity-log; `deterministic` apila último.
-const PROVIDER_STACK_ORDER = ['anthropic', 'openai-codex', 'groq', 'gemini', 'cerebras'];
-const CHART_STACK_ORDER = ['anthropic', 'openai-codex', 'groq', 'gemini', 'cerebras', 'deterministic'];
+const PROVIDER_STACK_ORDER = ['anthropic', 'openai-codex', 'gemini'];
+const CHART_STACK_ORDER = ['anthropic', 'openai-codex', 'gemini', 'deterministic'];
 
 // Identidad por proveedor alineada al mockup MIZPÁ (color + etiqueta + tier +
 // si es free tier). Paleta scoped a #costos-redesign vía las clases de segmento.
 const PROVIDER_META = {
     'anthropic':     { label: 'Claude',        color: '#34D9E0', tier: 'PLAN MAX', tierCls: 'max',  free: false },
     'openai-codex':  { label: 'Codex',         color: '#A78BFA', tier: 'PAGO',     tierCls: 'pay',  free: false },
-    'groq':          { label: 'Groq',          color: '#FB923C', tier: 'FREE',     tierCls: 'free', free: true },
     'gemini':        { label: 'Gemini',        color: '#60A5FA', tier: 'FREE',     tierCls: 'free', free: true },
-    'cerebras':      { label: 'Cerebras',      color: '#34D399', tier: 'FREE',     tierCls: 'free', free: true },
     'deterministic': { label: 'Deterministas', color: '#FBBF24', tier: 'DET',      tierCls: 'det',  free: false },
     'unknown':       { label: 'Otros',         color: '#8A93A6', tier: '—',        tierCls: 'det',  free: false },
 };
 
 // Clave CSS corta por proveedor (para las clases de segmento .seg-cl, etc.).
 const PROVIDER_SEG = {
-    'anthropic': 'cl', 'openai-codex': 'cx', 'groq': 'gq',
-    'gemini': 'gm', 'cerebras': 'cb', 'deterministic': 'de', 'unknown': 'un',
+    'anthropic': 'cl', 'openai-codex': 'cx',
+    'gemini': 'gm', 'deterministic': 'de', 'unknown': 'un',
 };
 
 // Íconos por skill (decorativos, aria-hidden). Default genérico para skills no
@@ -256,9 +255,7 @@ function normProvider(p) {
     if (!s) return 'unknown';
     if (s.includes('anthropic') || s.includes('claude')) return 'anthropic';
     if (s.includes('codex') || s.includes('openai')) return 'openai-codex';
-    if (s.includes('groq')) return 'groq';
     if (s.includes('gemini') || s.includes('google')) return 'gemini';
-    if (s.includes('cerebras')) return 'cerebras';
     if (s.includes('determ')) return 'deterministic';
     return PROVIDER_META[s] ? s : 'unknown';
 }
@@ -463,7 +460,7 @@ function renderMissionBanner(slice) {
             : '<span class="cz-pill-ok">EN RANGO</span>';
         const desc = alarm
             ? 'El promedio diario proyecta un cierre de mes por encima del tope. Casi todo el gasto se concentra en los proveedores pagos (Claude y Codex); los free tier no suman costo. Ajustá el presupuesto o el mix de proveedores.'
-            : 'El ritmo actual proyecta un cierre de mes dentro del tope configurado. Los proveedores free tier (Groq, Gemini, Cerebras) absorben carga a costo cero.';
+            : 'El ritmo actual proyecta un cierre de mes dentro del tope configurado. El proveedor free tier (Gemini) absorbe carga a costo cero.';
 
         const topHtml = m.top
             ? `<div class="cz-oldest-val"><span class="cz-oldest-skill">${escapeHtmlText(m.top.skill)}</span> · ${escapeHtmlText(fmtUsd(m.top.total))}</div>`
@@ -537,7 +534,7 @@ function renderCostosChart(slice) {
                 + `</div>`;
         }).join('');
 
-        // Leyenda: las 6 series (5 proveedores + deterministas), FREE en $0
+        // Leyenda: las 4 series (3 proveedores + deterministas), FREE en $0
         // visibles y etiquetadas (CA-6).
         const legend = CHART_STACK_ORDER.map((p) => {
             const meta = providerMeta(p);
@@ -637,7 +634,7 @@ function renderProjectionsCards(slice) {
         const m = deriveMission(slice, deriveDailySeries(slice));
         const mix = `<div class="cz-mixnote">
   <div class="cz-mk">💡 Mix de proveedores</div>
-  <div class="cz-mv"><b>${escapeHtmlText(m.paidPct.toFixed(1))}%</b> del gasto sale de <b>Claude + Codex</b> (pagos). Groq, Gemini y Cerebras absorbieron <b>${escapeHtmlText(String(m.freeSessions))} sesiones</b> a costo cero. Subir su cuota libera presupuesto pago.</div>
+  <div class="cz-mv"><b>${escapeHtmlText(m.paidPct.toFixed(1))}%</b> del gasto sale de <b>Claude + Codex</b> (pagos). Gemini absorbió <b>${escapeHtmlText(String(m.freeSessions))} sesiones</b> a costo cero. Subir su cuota libera presupuesto pago.</div>
 </div>`;
 
         return `<div class="cz-projcards">${weeklyCard}${monthlyCard}${devCard}</div>${mix}`;
@@ -743,12 +740,10 @@ function renderProviderQuota(slice) {
         const cards = [
             card('anthropic', claudeMetrics, claudeReset),
             card('openai-codex', codexMetrics, codexReset),
-            freeCard('groq', 'linear-gradient(90deg,#FB923C,#FBBF24)'),
             freeCard('gemini', 'linear-gradient(90deg,#60A5FA,#34D9E0)'),
-            freeCard('cerebras', 'linear-gradient(90deg,#34D399,#34D9E0)'),
         ].join('');
 
-        return `<div class="cz-quotanote">Todos los proveedores tienen su techo. <b>Claude</b> (Plan Max) y <b>Codex</b> (pago) son los que tienen costo; <b>Groq, Gemini y Cerebras</b> corren en free tier con límites diarios de requests/tokens. Donde el proveedor no expone API de cuota, el valor es <b>estimado</b> desde el uso del activity-log.</div>
+        return `<div class="cz-quotanote">Todos los proveedores tienen su techo. <b>Claude</b> (Plan Max) y <b>Codex</b> (pago) son los que tienen costo; <b>Gemini</b> corre en free tier con límites diarios de requests/tokens. Donde el proveedor no expone API de cuota, el valor es <b>estimado</b> desde el uso del activity-log.</div>
   <div class="cz-pqgrid">${cards}</div>`;
     } catch (e) {
         return `<div class="cz-empty">Cuota por proveedor no disponible.</div>`;
@@ -827,8 +822,6 @@ const PROVIDER_DISPLAY = {
     anthropic: 'Anthropic',
     'openai-codex': 'OpenAI / Codex',
     'gemini-google': 'Gemini (Google AI Studio)',
-    cerebras: 'Cerebras',
-    'nvidia-nim': 'NVIDIA NIM',
     deterministic: 'Determinístico',
 };
 // Clasificación canónica free/pago (feedback_free-providers-rule.md · UX-G2).
@@ -838,8 +831,6 @@ const PROVIDER_TIER = {
     anthropic: 'pay',
     'openai-codex': 'pay',
     'gemini-google': 'free',
-    cerebras: 'free',
-    'nvidia-nim': 'free',
     deterministic: 'det',
 };
 const TIER_ORDER = { pay: 0, free: 1, det: 2, unknown: 3 };
@@ -903,7 +894,7 @@ function renderCostosRedesign(slice) {
         inner = `${renderMissionBanner(slice)}
   <div class="cz-grid">
     <div class="cz-panel">
-      ${panelHeader('📊', 'Consumo diario por proveedor', 'últimos 14 días · US$ por día, apilado por los 5 proveedores + deterministas', 'Cada barra es un día; los colores apilan cuánto gastó cada proveedor. Claude y Codex son pagos; Groq, Gemini y Cerebras corren en free tier (US$ 0). La línea punteada es el presupuesto diario.')}
+      ${panelHeader('📊', 'Consumo diario por proveedor', 'últimos 14 días · US$ por día, apilado por los 3 proveedores + deterministas', 'Cada barra es un día; los colores apilan cuánto gastó cada proveedor. Claude y Codex son pagos; Gemini corre en free tier (US$ 0). La línea punteada es el presupuesto diario.')}
       ${renderCostosChart(slice)}
       ${renderBudgetForm(slice)}
     </div>
@@ -913,15 +904,15 @@ function renderCostosRedesign(slice) {
     </div>
   </div>
   <div class="cz-panel">
-    ${panelHeader('🧮', 'Costo por proveedor', 'telemetría granular por ejecución — tokens y sesiones desglosados por proveedor real', 'Lee la telemetría append-only por ejecución (provider-cost.jsonl). Provider como dimensión primaria: Anthropic y OpenAI/Codex son pagos; Gemini, Cerebras y NVIDIA NIM corren en free tier; el determinístico no consume cuota LLM. Si todavía no hay registros, muestra un estado vacío explícito en vez de ceros.')}
+    ${panelHeader('🧮', 'Costo por proveedor', 'telemetría granular por ejecución — tokens y sesiones desglosados por proveedor real', 'Lee la telemetría append-only por ejecución (provider-cost.jsonl). Provider como dimensión primaria: Anthropic y OpenAI/Codex son pagos; Gemini corre en free tier; el determinístico no consume cuota LLM. Si todavía no hay registros, muestra un estado vacío explícito en vez de ceros.')}
     ${renderProviderCostBreakdown(slice)}
   </div>
   <div class="cz-panel">
-    ${panelHeader('🧩', 'Detalle por skill', 'skill, proveedor que lo corrió, costo y sesiones — sin paths, prompts ni tokens', 'Cuánto consumió cada rol de agente y en qué proveedor corrió. Los $0.00 corren en free tier (Groq/Gemini/Cerebras) o son deterministas.')}
+    ${panelHeader('🧩', 'Detalle por skill', 'skill, proveedor que lo corrió, costo y sesiones — sin paths, prompts ni tokens', 'Cuánto consumió cada rol de agente y en qué proveedor corrió. Los $0.00 corren en free tier (Gemini) o son deterministas.')}
     ${renderDrillDown(slice)}
   </div>
   <div class="cz-panel">
-    ${panelHeader('🔌', 'Cuota por proveedor', 'límites y consumo de los 5 proveedores del pipeline — no solo Anthropic', 'Cada proveedor tiene su propio modelo de límite: Claude por sesión 5h + semanal (Plan Max), Codex por plan pago, y los free tier (Groq/Gemini/Cerebras) por requests y tokens diarios. Las cuotas que el proveedor no expone por API se estiman desde el activity-log.')}
+    ${panelHeader('🔌', 'Cuota por proveedor', 'límites y consumo de los 3 proveedores del pipeline — no solo Anthropic', 'Cada proveedor tiene su propio modelo de límite: Claude por sesión 5h + semanal (Plan Max), Codex por plan pago, y el free tier (Gemini) por requests y tokens diarios. Las cuotas que el proveedor no expone por API se estiman desde el activity-log.')}
     ${renderProviderQuota(slice)}
   </div>`;
     } catch (e) {
@@ -1004,9 +995,7 @@ function costosRedesignStyle() {
 #costos-redesign .cz-seg{width:100%}
 #costos-redesign .cz-seg-cl{background:linear-gradient(180deg,#34D9E0,#2596b8)}
 #costos-redesign .cz-seg-cx{background:linear-gradient(180deg,#A78BFA,#7c5cff)}
-#costos-redesign .cz-seg-gq{background:linear-gradient(180deg,#FB923C,#d97324)}
 #costos-redesign .cz-seg-gm{background:linear-gradient(180deg,#60A5FA,#3b73c4)}
-#costos-redesign .cz-seg-cb{background:linear-gradient(180deg,#34D399,#1f9c70)}
 #costos-redesign .cz-seg-de{background:linear-gradient(180deg,#FBBF24,#d99a12)}
 #costos-redesign .cz-seg-un{background:linear-gradient(180deg,#8A93A6,#5B6376)}
 #costos-redesign .cz-bx{font-size:9.5px;color:var(--cz-mut2);font-weight:700}

@@ -59,6 +59,47 @@ const LINEAS = FUENTE.split(/\r?\n/);
 const CANARIO = 'canario-sintetico-5462-NO-ES-UN-TOKEN-REAL';
 const ROOT_FAKE = 'C:\\fake\\root';
 
+// #6563 — el plantel real es 100% OAuth (anthropic, openai-codex, gemini-google):
+// tras retirar cerebras / nvidia-nim / kimi-moonshot no queda en
+// `agent-models.json` ningún provider api_key que consuma credencial del env del
+// hijo. Para seguir ejercitando la rama del snapshot por intento (#5799) se
+// declara un provider api_key SINTÉTICO sólo dentro de este test, inyectado por
+// `fsImpl` al leer el catálogo — el `agent-models.json` real no se toca.
+const PROVIDER_API_KEY_SINTETICO = 'fake-api-key-provider';
+const VAR_API_KEY_SINTETICA = 'FAKE_PROVIDER_API_KEY';
+
+function catalogoConProviderSintetico(models) {
+    return {
+        ...models,
+        providers: {
+            ...(models.providers || {}),
+            [PROVIDER_API_KEY_SINTETICO]: {
+                auth_mode: 'api_key',
+                credentials_env: VAR_API_KEY_SINTETICA,
+                billing: 'paid',
+            },
+        },
+    };
+}
+
+/** `build-child-env` con el catálogo real + el provider api_key sintético. */
+function buildChildEnvLibConProviderSintetico() {
+    const fsImpl = {
+        ...fs,
+        readFileSync: (file, ...rest) => {
+            const raw = fs.readFileSync(file, ...rest);
+            if (!String(file).endsWith('agent-models.json')) return raw;
+            return JSON.stringify(catalogoConProviderSintetico(JSON.parse(raw)));
+        },
+    };
+    return {
+        ...buildChildEnvLib,
+        _resolveSkillConfig: (skill, opts = {}) =>
+            buildChildEnvLib._resolveSkillConfig(skill, { ...opts, fsImpl }),
+        buildChildEnv: (opts = {}) => buildChildEnvLib.buildChildEnv({ ...opts, fsImpl }),
+    };
+}
+
 // -----------------------------------------------------------------------------
 // Helpers
 // -----------------------------------------------------------------------------
@@ -81,10 +122,8 @@ function fakeOperatorEnv(extra = {}) {
         // --- ruido/infra ---
         CLAUDECODE: '1',
         ANTHROPIC_API_KEY: 'fake-anthropic-key',
-        ANTHROPIC_AUTH_TOKEN: 'fake-kimi-key',
         OPENAI_API_KEY: 'fake-openai-key',
-        CEREBRAS_API_KEY: 'fake-cerebras-key',
-        NVIDIA_NIM_API_KEY: 'fake-nvidia-key',
+        [VAR_API_KEY_SINTETICA]: 'fake-provider-key-DEL-PADRE',
         ...extra,
     };
 }
@@ -391,6 +430,7 @@ test('los sitios de clase agente pasan por build-child-env (buildChildEnv o stri
  */
 async function evaluarConstruirEnvCommander({
     aislamiento, provider, snapshotEnabled = false, snapshotEnv = null,
+    lib = buildChildEnvLib,
 }) {
     const src = bloqueHastaCierre('const construirEnvCommander = async (arg) => {');
     const factory = new Function(
@@ -412,7 +452,7 @@ async function evaluarConstruirEnvCommander({
     const fn = factory(
         { env: fakeOperatorEnv() },
         ROOT_FAKE,
-        buildChildEnvLib,
+        lib,
         attemptSnapshotInyectado,
         aislamiento,
         { pipeline: { credential_snapshot_enabled: snapshotEnabled } },
@@ -430,7 +470,8 @@ async function evaluarConstruirEnvCommander({
  * sólo comprobaba, por regex, que `childEnv` pasara por el filtro.
  */
 async function evaluarEnvDeIntentoAgente({
-    skill = 'guru', provider = 'cerebras', snapshotEnabled = false, snapshotEnv = null,
+    skill = 'guru', provider = 'openai-codex', snapshotEnabled = false, snapshotEnv = null,
+    lib = buildChildEnvLib,
 } = {}) {
     const src = bloqueHastaCierre('const construirEnvDeIntentoAgente = async ({ attempt, provider, operationId } = {}) => {');
     const factory = new Function(
@@ -451,7 +492,7 @@ async function evaluarEnvDeIntentoAgente({
     };
     const fn = factory(
         { env: fakeOperatorEnv() },
-        buildChildEnvLib,
+        lib,
         attemptSnapshotInyectado,
         skill,
         '5796',
@@ -469,20 +510,19 @@ test('#5799 la frontera por intento del Pulpo devuelve el env base tal cual con 
     // lookup case-insensitive de Windows.
     assert.strictEqual(env.PATH, 'C:\\fake\\bin');
     assert.strictEqual(env.ANTHROPIC_API_KEY, 'fake-anthropic-key');
-    assert.strictEqual(env.CEREBRAS_API_KEY, 'fake-cerebras-key');
+    assert.strictEqual(env.OPENAI_API_KEY, 'fake-openai-key');
 });
 
 test('#5799 la frontera por intento del Pulpo purga las credenciales del padre con el gate abierto', async () => {
     const env = await evaluarEnvDeIntentoAgente({
-        provider: 'cerebras',
+        lib: buildChildEnvLibConProviderSintetico(),
+        provider: PROVIDER_API_KEY_SINTETICO,
         snapshotEnabled: true,
-        snapshotEnv: { CEREBRAS_API_KEY: 'sk-cerebras-DEL-SNAPSHOT' },
+        snapshotEnv: { [VAR_API_KEY_SINTETICA]: 'sk-fake-DEL-SNAPSHOT' },
     });
-    assert.strictEqual(env.CEREBRAS_API_KEY, 'sk-cerebras-DEL-SNAPSHOT');
+    assert.strictEqual(env[VAR_API_KEY_SINTETICA], 'sk-fake-DEL-SNAPSHOT');
     assert.strictEqual(env.ANTHROPIC_API_KEY, undefined, 'la key del primario no sobrevive');
     assert.strictEqual(env.OPENAI_API_KEY, undefined);
-    assert.strictEqual(env.NVIDIA_NIM_API_KEY, undefined);
-    assert.strictEqual(env.ANTHROPIC_AUTH_TOKEN, undefined);
     // Lo que no es credencial de provider sigue viniendo del env base.
     assert.strictEqual(env.PATH, 'C:\\fake\\bin');
     assert.strictEqual(env.PIPELINE_ISSUE, '5462');
@@ -552,7 +592,7 @@ for (const aislamiento of [false, true]) {
 // --- H-1: ejecutor de fallback no-Anthropic ------------------------------------
 
 for (const aislamiento of [false, true]) {
-    for (const provider of ['cerebras', 'openai-codex']) {
+    for (const provider of ['gemini-google', 'openai-codex']) {
         test(`H-1 el env del fallback ${provider} no contiene el material de firma (aislamiento=${aislamiento})`, async () => {
             const env = await evaluarBuildEnvFor({ aislamiento, provider });
             assert.deepStrictEqual(
@@ -569,16 +609,18 @@ for (const aislamiento of [false, true]) {
 
 for (const aislamiento of [false, true]) {
     test(`#5799 la frontera por intento no filtra material reservado con el snapshot activo (aislamiento=${aislamiento})`, async () => {
-        // `cerebras` a propósito: es un provider del `agent-models.json` REAL que
-        // declara `credentials_env` y NO es `auth_mode: oauth`, así que consume
+        // El provider api_key SINTÉTICO a propósito (#6563): declara
+        // `credentials_env` y NO es `auth_mode: oauth`, así que consume
         // credencial del entorno del hijo — o sea, es de los que sí requieren
         // snapshot. Con un provider OAuth (anthropic, openai-codex, gemini) no hay
-        // key que pedir y el snapshot correctamente no se emite.
+        // key que pedir y el snapshot correctamente no se emite. Hasta #6563 este
+        // rol lo cumplía `cerebras`, que existía en el catálogo real.
         const env = await evaluarConstruirEnvCommander({
+            lib: buildChildEnvLibConProviderSintetico(),
             aislamiento,
-            provider: 'cerebras',
+            provider: PROVIDER_API_KEY_SINTETICO,
             snapshotEnabled: true,
-            snapshotEnv: { CEREBRAS_API_KEY: 'sk-cerebras-DEL-SNAPSHOT' },
+            snapshotEnv: { [VAR_API_KEY_SINTETICA]: 'sk-fake-DEL-SNAPSHOT' },
         });
         assert.deepStrictEqual(
             detectarFugas(env), [],
@@ -588,12 +630,11 @@ for (const aislamiento of [false, true]) {
         assert.strictEqual(env.CLAUDE_PROJECT_DIR, ROOT_FAKE);
         assert.strictEqual(env.TELEGRAM_CHAT_ID, '-1009999999');
         // El material del provider sale del SNAPSHOT, no del env del padre.
-        assert.strictEqual(env.CEREBRAS_API_KEY, 'sk-cerebras-DEL-SNAPSHOT');
+        assert.strictEqual(env[VAR_API_KEY_SINTETICA], 'sk-fake-DEL-SNAPSHOT');
         // Y las credenciales de OTROS providers no cruzan por ninguna rama del
         // rollout: con el snapshot activo se purgan del env base.
         assert.strictEqual(env.ANTHROPIC_API_KEY, undefined);
         assert.strictEqual(env.OPENAI_API_KEY, undefined);
-        assert.strictEqual(env.NVIDIA_NIM_API_KEY, undefined);
     });
 }
 
@@ -616,8 +657,8 @@ test('el filtro preserva CHAT_ID, PIPELINE_ISSUE y CLAUDE_PROJECT_DIR en los 3 s
         'H-3 summarize': evaluarSummarizeEnv(),
         'H-2 commander legacy': await evaluarCleanEnv({ aislamiento: false, provider: 'anthropic' }),
         'H-2 commander aislado': await evaluarCleanEnv({ aislamiento: true, provider: 'anthropic' }),
-        'H-1 fallback legacy': await evaluarBuildEnvFor({ aislamiento: false, provider: 'cerebras' }),
-        'H-1 fallback aislado': await evaluarBuildEnvFor({ aislamiento: true, provider: 'cerebras' }),
+        'H-1 fallback legacy': await evaluarBuildEnvFor({ aislamiento: false, provider: 'gemini-google' }),
+        'H-1 fallback aislado': await evaluarBuildEnvFor({ aislamiento: true, provider: 'gemini-google' }),
     };
     for (const [sitio, env] of Object.entries(envs)) {
         assert.strictEqual(env.TELEGRAM_CHAT_ID, '-1009999999', `${sitio}: perdió TELEGRAM_CHAT_ID`);

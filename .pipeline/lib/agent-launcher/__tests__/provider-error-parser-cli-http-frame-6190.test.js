@@ -69,7 +69,7 @@ test('#6190 el log real del agente (con header del pipeline) también clasifica 
 test('#6190 la clasificación no depende del provider en uso (402 es universal)', () => {
     // `status: 402` no es un marcador propietario: cualquier provider que lo
     // emita está diciendo lo mismo. No debe requerir allowlist por provider.
-    for (const provider of ['anthropic', 'openai-codex', 'gemini-google', 'cerebras', 'nvidia-nim']) {
+    for (const provider of ['anthropic', 'openai-codex', 'gemini-google']) {
         const r = parser.parseProviderError(FRAME_402_REAL, { ...CTX_CLI_MUERTE, provider });
         assert.strictEqual(r.errorClass, 'quota_exhausted',
             `provider ${provider}: un 402 debe leerse como cuota agotada`);

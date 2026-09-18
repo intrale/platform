@@ -8,7 +8,7 @@
 //          + ausencia de capabilities ⇒ tratado como "no ofrece ninguna" (SEC-3).
 //   CA-4 · Roles agénticos exigen agentic-tool-use; razonamiento no.
 //   CA-5 · Provider capaz pasa sin ruido.
-//   CA-6 · Config viva limpia: qa sin cerebras, deterministic con capability.
+//   CA-6 · Config viva limpia: qa sin providers incapaces, deterministic con capability.
 //   CA-7 · Este suite (aceptación + rechazo Gherkin del issue).
 // =============================================================================
 'use strict';
@@ -33,9 +33,10 @@ function tmpFile(content, ext = '.json') {
   return file;
 }
 
-// Config mínima válida con providers capaz (anthropic) e incapaz (cerebras) +
-// deterministic (declara agentic-tool-use por Riesgo D). Los skills se pisan por
-// test según el escenario.
+// Config mínima válida con providers capaz (anthropic) e incapaz (`incapaz`,
+// un fixture sobre el launcher gemini-google con `capabilities: []` — hasta
+// #6563 ese rol lo cumplía cerebras, provider retirado) + deterministic (declara
+// agentic-tool-use por Riesgo D). Los skills se pisan por test según el escenario.
 function baseConfig(overrides = {}) {
   const cfg = {
     $schema: './agent-models.schema.json',
@@ -54,16 +55,17 @@ function baseConfig(overrides = {}) {
         permissions_mode: 'bypassPermissions',
         auth_mode: 'oauth',
       },
-      cerebras: {
-        launcher: 'cerebras',
-        model: 'gpt-oss-120b',
+      incapaz: {
+        launcher: 'gemini-google',
+        model: 'gemini-3.8-flash-medium',
         spawn_args_template: ['--model', '{model}', '{user_prompt}'],
-        output_parser: 'openai-sse',
-        quota_error_types: ['rate_limit_exceeded'],
+        output_parser: 'gemini-stream',
+        quota_error_types: ['quota_exceeded'],
         supports_tool_use: false,
         capabilities: [],
         prompt_caching: { supported: false },
-        credentials_env: ['CEREBRAS_API_KEY'],
+        credentials_env: ['GEMINI_API_KEY'],
+        auth_mode: 'oauth',
         permissions_mode: 'bypassPermissions',
       },
       deterministic: {
@@ -137,20 +139,20 @@ test('CA-2 · required_capabilities arbitraria fuera del enum hace fallar el sch
 
 // ─── CA-3 / Gherkin #1 · Rechazo fail-closed ─────────────────────────────────
 
-test('CA-3 / Gherkin #1 · cerebras en fallback de rol agéntico ⇒ rechazo [FAIL-CLOSED]', () => {
+test('CA-3 / Gherkin #1 · provider incapaz en fallback de rol agéntico ⇒ rechazo [FAIL-CLOSED]', () => {
   const cfg = baseConfig();
-  cfg.skills['backend-dev'].fallbacks = [{ provider: 'cerebras', model_override: 'gpt-oss-120b' }];
+  cfg.skills['backend-dev'].fallbacks = [{ provider: 'incapaz', model_override: 'gemini-3.8-flash-medium' }];
   const errs = capErrors(validateMod.validateExecutionCapabilities(cfg));
   assert.equal(errs.length, 1, 'exactamente un rechazo de capability');
   assert.match(errs[0].message, /rol "backend-dev"/);
-  assert.match(errs[0].message, /provider "cerebras"/);
+  assert.match(errs[0].message, /provider "incapaz"/);
   assert.match(errs[0].message, /agentic-tool-use/);
   assert.equal(errs[0].path, '#/skills/backend-dev/fallbacks/0');
 });
 
-test('CA-3 · cerebras como provider primario de rol agéntico ⇒ rechazo', () => {
+test('CA-3 · provider incapaz como primario de rol agéntico ⇒ rechazo', () => {
   const cfg = baseConfig();
-  cfg.skills['qa'] = { provider: 'cerebras', required_capabilities: ['agentic-tool-use'] };
+  cfg.skills['qa'] = { provider: 'incapaz', required_capabilities: ['agentic-tool-use'] };
   const errs = capErrors(validateMod.validateExecutionCapabilities(cfg));
   const qaErr = errs.find((e) => e.path === '#/skills/qa/provider');
   assert.ok(qaErr, 'debe rechazar el primario incapaz');
@@ -161,15 +163,16 @@ test('CA-3 / SEC-3 · provider SIN capabilities declaradas en rol agéntico ⇒ 
   const cfg = baseConfig();
   // Provider capaz de tool_use pero sin declarar `capabilities` → fail-closed.
   cfg.providers.nocap = {
-    launcher: 'nvidia-nim',
-    model: 'deepseek-ai/deepseek-v4-flash-0731',
-    spawn_args_template: ['--model', '{model}', '{user_prompt}'],
+    launcher: 'codex',
+    model: 'gpt-5.5',
+    spawn_args_template: ['exec', '--model', '{model}', '{user_prompt}'],
     output_parser: 'openai-sse',
-    quota_error_types: ['rate_limit_exceeded'],
+    quota_error_types: ['insufficient_quota'],
     supports_tool_use: true,
     // capabilities AUSENTE a propósito.
     prompt_caching: { supported: false },
-    credentials_env: ['NVIDIA_NIM_API_KEY'],
+    credentials_env: ['OPENAI_API_KEY'],
+    auth_mode: 'oauth',
     permissions_mode: 'bypassPermissions',
   };
   cfg.skills['backend-dev'].fallbacks = [{ provider: 'nocap' }];
@@ -180,21 +183,21 @@ test('CA-3 / SEC-3 · provider SIN capabilities declaradas en rol agéntico ⇒ 
 
 test('CA-3 · el mensaje [FAIL-CLOSED] no interpola env/keys (SEC-5)', () => {
   const cfg = baseConfig();
-  cfg.skills['backend-dev'].fallbacks = [{ provider: 'cerebras' }];
+  cfg.skills['backend-dev'].fallbacks = [{ provider: 'incapaz' }];
   const errs = capErrors(validateMod.validateExecutionCapabilities(cfg));
   for (const e of errs) {
-    assert.ok(!/API_KEY|sk-|Bearer|CEREBRAS_API_KEY/.test(e.message), 'sin secretos/env en el mensaje');
+    assert.ok(!/API_KEY|sk-|Bearer|GEMINI_API_KEY/.test(e.message), 'sin secretos/env en el mensaje');
   }
 });
 
 // ─── CA-4 · Roles agénticos exigen; razonamiento no ──────────────────────────
 
-test('CA-4 / CA-5 · rol de razonamiento con cerebras en fallback ⇒ pasa sin ruido', () => {
+test('CA-4 / CA-5 · rol de razonamiento con provider incapaz en fallback ⇒ pasa sin ruido', () => {
   const cfg = baseConfig();
   // review NO declara required_capabilities → sin exigencia.
   cfg.skills['review'] = {
     provider: 'anthropic',
-    fallbacks: [{ provider: 'cerebras', model_override: 'gpt-oss-120b' }],
+    fallbacks: [{ provider: 'incapaz', model_override: 'gemini-3.8-flash-medium' }],
   };
   const errs = capErrors(validateMod.validateExecutionCapabilities(cfg));
   assert.equal(errs.length, 0, 'sin required_capabilities no hay exigencia');
@@ -205,7 +208,7 @@ test('CA-4 · required_capabilities:[] equivale a sin exigencia', () => {
   cfg.skills['review'] = {
     provider: 'anthropic',
     required_capabilities: [],
-    fallbacks: [{ provider: 'cerebras' }],
+    fallbacks: [{ provider: 'incapaz' }],
   };
   const errs = capErrors(validateMod.validateExecutionCapabilities(cfg));
   assert.equal(errs.length, 0);
@@ -219,7 +222,7 @@ test('CA-5 / Gherkin #2 · anthropic en backend-dev (requiere agentic-tool-use) 
   assert.equal(errs.length, 0, 'provider capaz pasa sin errores de capability');
 });
 
-test('CA-5 · fallbacks capaces (codex/gemini/nvidia declaran la capability) ⇒ sin errores', () => {
+test('CA-5 · fallbacks capaces (codex/gemini declaran la capability) ⇒ sin errores', () => {
   const cfg = baseConfig();
   cfg.providers.gemini = {
     launcher: 'gemini-google',
@@ -258,12 +261,15 @@ test('CA-6 · config real agent-models.json ⇒ cero errores de capability', () 
   assert.equal(errs.length, 0, `config real no debe tener offenders de capability: ${JSON.stringify(errs)}`);
 });
 
-test('CA-6 · config real ⇒ qa NO tiene cerebras en fallback', () => {
+test('CA-6 · config real ⇒ qa sólo lista fallbacks capaces', () => {
   const raw = fs.readFileSync(validateMod.CANONICAL_JSON_PATH, 'utf8');
   const config = JSON.parse(raw);
   const qaFallbacks = (config.skills.qa && config.skills.qa.fallbacks) || [];
   const providers = qaFallbacks.map((f) => (typeof f === 'string' ? f : f.provider));
-  assert.ok(!providers.includes('cerebras'), 'qa no debe listar cerebras (offender limpiado)');
+  for (const p of providers) {
+    const caps = (config.providers[p] && config.providers[p].capabilities) || [];
+    assert.ok(caps.includes('agentic-tool-use'), `qa no debe listar un fallback incapaz: ${p}`);
+  }
   assert.deepEqual(config.skills.qa.required_capabilities, ['agentic-tool-use']);
 });
 
@@ -273,10 +279,12 @@ test('CA-6 · config real ⇒ deterministic declara agentic-tool-use', () => {
   assert.deepEqual(config.providers.deterministic.capabilities, ['agentic-tool-use']);
 });
 
-test('CA-6 · config real ⇒ cerebras declara capabilities vacío (incapaz)', () => {
+test('CA-6 · config real ⇒ ningún provider retirado en #6563 sigue declarado', () => {
   const raw = fs.readFileSync(validateMod.CANONICAL_JSON_PATH, 'utf8');
   const config = JSON.parse(raw);
-  assert.deepEqual(config.providers.cerebras.capabilities, []);
+  for (const retirado of ['cerebras', 'nvidia-nim', 'kimi-moonshot']) {
+    assert.equal(config.providers[retirado], undefined, `${retirado} no debe estar en la config real`);
+  }
 });
 
 // ─── CA-3 · Boot fail-fast: validate() completo sobre config con offender ─────
@@ -287,7 +295,7 @@ test('CA-3 · validate() sobre config con offender ⇒ ok:false (boot abortaría
     provider: 'anthropic',
     model_override: 'claude-opus-4-7',
     required_capabilities: ['agentic-tool-use'],
-    fallbacks: [{ provider: 'cerebras', model_override: 'gpt-oss-120b' }],
+    fallbacks: [{ provider: 'incapaz', model_override: 'gemini-3.8-flash-medium' }],
   };
   const file = tmpFile(cfg);
   const res = validateMod.validate(file);
@@ -301,8 +309,8 @@ test('CA-3 · validate() sobre config con offender ⇒ ok:false (boot abortaría
 test('UX · varios offenders se listan todos en una pasada', () => {
   const cfg = baseConfig();
   cfg.skills['backend-dev'].fallbacks = [
-    { provider: 'cerebras' },
-    { provider: 'cerebras', model_override: 'zai-glm-4.7' },
+    { provider: 'incapaz' },
+    { provider: 'incapaz', model_override: 'gemini-3.8-flash-low' },
   ];
   const errs = capErrors(validateMod.validateExecutionCapabilities(cfg));
   assert.equal(errs.length, 2, 'no corta en el primer offender');

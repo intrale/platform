@@ -8,7 +8,8 @@ const path = require('path');
 // PRECONDICION por par `(actor, provider)`. La review de #6274 rechazo la
 // version anterior justamente por duplicar esa frontera: empujaba `--model`
 // con `String(model)` sin pasar por `sanitizeModelId`, dejaba fuera a
-// `kimi-moonshot` (un `propagated:false` mudo con el flag en `enabled:true`) y
+// un provider de launcher `claude` distinto de anthropic (un `propagated:false`
+// mudo con el flag en `enabled:true`; era `kimi-moonshot`, retirado en #6563) y
 // mantenia una copia byte por byte de `PROVIDER_MODEL_ENV`.
 const modelPropagation = require('./model-propagation');
 
