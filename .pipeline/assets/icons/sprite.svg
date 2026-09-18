@@ -579,17 +579,24 @@
           fill="currentColor" stroke="none"/>
   </symbol>
 
-  <!-- ic-provider-gemini: dos rombos entrelazados (gemini = gemelos).
-       Evoca la dualidad sin replicar el logo oficial de Google.
-       Dos cuadrados rotados 45deg con leve overlap. -->
-  <symbol id="ic-provider-gemini" viewBox="0 0 24 24">
-    <path d="M9 4 L14 9 L9 14 L4 9 Z"
-          fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
-    <path d="M15 10 L20 15 L15 20 L10 15 Z"
-          fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
-    <!-- Punto central de cada rombo para anclar visualmente -->
-    <circle cx="9"  cy="9"  r="1.2" fill="currentColor"/>
-    <circle cx="15" cy="15" r="1.2" fill="currentColor"/>
+  <!-- ic-provider-antigravity: objeto que levita sobre el suelo (anti-gravedad).
+       Reemplaza a ic-provider-gemini (#6861): el provider corre sobre Antigravity
+       CLI (`agy`), no sobre Gemini CLI; la metafora "gemelos" nombraba lo que no era.
+       Composicion: linea de suelo abajo, chevron de empuje hacia arriba en el medio
+       y esfera anillada arriba (r=3.25 + punto). Distinto de ic-provider-nvidia-nim
+       (nodo + satelites conectados) y de ic-provider-groq (rayo en circulo).
+       Stroke 1.75 / 1.6 como el resto de la familia; legible a 16px. -->
+  <symbol id="ic-provider-antigravity" viewBox="0 0 24 24">
+    <!-- Suelo -->
+    <line x1="4.5" y1="20.25" x2="19.5" y2="20.25"
+          stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/>
+    <!-- Empuje ascendente (chevron) -->
+    <path d="M8.25 16.5 L12 12.75 L15.75 16.5"
+          fill="none" stroke="currentColor" stroke-width="1.75"
+          stroke-linecap="round" stroke-linejoin="round"/>
+    <!-- Esfera que levita -->
+    <circle cx="12" cy="7" r="3.25" fill="none" stroke="currentColor" stroke-width="1.75"/>
+    <circle cx="12" cy="7" r="1.2" fill="currentColor"/>
   </symbol>
 
   <!-- ic-provider-cerebras: wafer-scale (chip grande con grid interno denso).
