@@ -118,8 +118,8 @@ const DENIED_FLAGS = Object.freeze([
 //
 // `openai-sse` lo usa openai-codex (el handler `_detectOpenAI` en
 // lib/quota-exhausted.js parsea el shape canónico `event=error data.error.type`
-// y el alternativo `response.error`). `antigravity-stream-json` (#6861, ex
-// `gemini-stream`) parsea el `--output-format stream-json` de `agy` (handler
+// y el alternativo `response.error`). `antigravity-stream-json` (#6861, reemplaza al
+// parser anterior del provider) parsea el `--output-format stream-json` de `agy` (handler
 // `_detectAntigravity`). `ollama-jsonl` se retiró en #6563 junto con el launcher.
 const ALLOWED_OUTPUT_PARSERS = Object.freeze([
   'anthropic-stream-json',

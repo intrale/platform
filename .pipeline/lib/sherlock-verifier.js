@@ -159,7 +159,7 @@ const MAX_INCONSISTENCIES = 5;
 // de `lib/multi-provider/completion-client.js`.
 // #6563 — cerebras y nvidia-nim se retiraron del plantel; se quitan de acá
 // (no se dejan comentados) para que una reintroducción no pase silenciosa.
-// #6861 — el shim HTTP de AI Studio (ex `gemini-google`) también se retiró:
+// #6861 — el shim HTTP de AI Studio (del ex "Gemini (Google)") también se retiró:
 // no servía ningún id del catálogo de Antigravity (404 en toda la cascada).
 // `antigravity` es un provider de spawn puro: Sherlock lo alcanza por
 // `spawnAntigravityComplete` (ver SPAWN_COMPLETION_PROVIDERS).

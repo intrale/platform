@@ -2,7 +2,7 @@
 // providers/antigravity.js — Handler del provider `antigravity` (Antigravity CLI)
 //
 // Implementa el contrato del wrapper de agent-launcher para Antigravity CLI
-// (binario `agy`, ex provider `gemini-google` hasta #6861) usando OAuth de
+// (binario `agy`, ex provider "Gemini (Google)" hasta #6861) usando OAuth de
 // cuenta Google. No existe fallback al Gemini CLI gratuito (retirado) ni a
 // ningún endpoint HTTP: es un provider de spawn puro.
 //

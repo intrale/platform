@@ -20,8 +20,8 @@
 // Historial de retiros (no reintroducir sin criterio de admisión):
 //   - Groq: #3368 (mayo 2026).
 //   - cerebras / nvidia-nim: #6563, con sus endpoints y allowlists.
-//   - shim HTTP de Google AI Studio (ex
-//     `gemini-google`): #6861. Era un endpoint HTTP distinto del CLI `agy` que
+//   - shim HTTP de Google AI Studio (del ex provider
+//     "Gemini (Google)"): #6861. Era un endpoint HTTP distinto del CLI `agy` que
 //     corre el provider `antigravity`; desde #6858 no servía ningún id del
 //     catálogo (404) y consumía una API key de Google sin razón (#5331, #7299).
 //

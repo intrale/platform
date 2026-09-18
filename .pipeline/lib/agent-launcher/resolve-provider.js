@@ -33,7 +33,7 @@ const PROVIDER_HANDLERS = {
     'deterministic': require('./providers/deterministic'),
     // Los proveedores gratuitos (cerebras, nvidia-nim, kimi-moonshot; groq ya
     // había salido en #3353) fueron retirados en #6563: sus handlers se
-    // borraron del mapa y del filesystem. `antigravity` (#6861, ex gemini-google) es el tercer eslabón vigente.
+    // borraron del mapa y del filesystem. `antigravity` (#6861, ex "Gemini (Google)") es el tercer eslabón vigente.
 };
 
 const VALID_PROVIDERS = Object.freeze(Object.keys(PROVIDER_HANDLERS));

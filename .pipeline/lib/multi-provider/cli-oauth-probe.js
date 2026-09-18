@@ -25,7 +25,7 @@
 // distingue "instalado sin licencia" de "instalado y con licencia". Ese camino
 // es async y vive en `probeCliProviderLive`; `probeCliProvider` (sync) sigue
 // existiendo para la presencia del binario y la back-compat de tests. El flag
-// `AGY_LICENSE_READY` (`readiness_env`) se ELIMINÓ: un flag de entorno local no
+// de readiness por entorno (`readiness_env`) se ELIMINÓ en #6857: un flag de entorno local no
 // puede saber si la licencia está activa (#6225).
 // =============================================================================
 'use strict';

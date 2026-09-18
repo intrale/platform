@@ -1,7 +1,7 @@
 // =============================================================================
 // quota-adapters/antigravity.js — "Sin dato" deliberado (#3092 M2a + #3220 + #4202).
 //
-// #3220 — rename `gemini` → `gemini-google` (sign-off 2026-05-15); #6861 —
+// #3220 — rename a "Gemini (Google)" (sign-off 2026-05-15); #6861 —
 // rename final a `antigravity`, el nombre de lo que corre (Antigravity CLI).
 //
 // Por qué este adapter devuelve SIEMPRE "sin dato" (`not_implemented`,

@@ -3,7 +3,7 @@
 // (Antigravity CLI, `agy`) — #6857 (split de #6856), cierra #6225.
 //
 // HASTA #6857 el health de `antigravity` se resolvía leyendo un flag de
-// entorno local (`AGY_LICENSE_READY === '1'`): sin round-trip al proveedor. Un
+// entorno local (el flag `readiness_env`, retirado en #6857): sin round-trip al proveedor. Un
 // flag puede estar puesto con la licencia vencida, o vacío con la licencia
 // activa — que era exactamente el estado en producción ("pagaba una licencia y
 // esa licencia no se reflejaba"). Ambos casos mienten.

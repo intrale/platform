@@ -253,7 +253,7 @@ const SKILL_ICONS = {
 
 // #6861 (D10) — normalización de HISTÓRICO en lectura, por tabla explícita.
 // Los jsonl de costos/métricas persistidos antes del rename traen
-// `"provider":"gemini-google"` (y algún alias corto). Las claves de entrada
+// el id anterior del provider (y algún alias corto). Las claves de entrada
 // viejas se mapean al bucket vigente para que el histórico no se pierda ni
 // caiga en `unknown`. Son claves de LECTURA de datos ya escritos, nunca valores
 // válidos de config ni aliases de runtime (SEC-1).

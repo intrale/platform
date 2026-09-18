@@ -466,7 +466,7 @@ La política vive en [`.pipeline/lib/model-propagation.js`](../../.pipeline/lib/
 |---|---|---|---|
 | `anthropic` | `claude` | argv | `['--model', id]` — dos elementos separados del array |
 | `openai-codex` | `codex` | env | `CODEX_MODEL` → el handler la traduce a `-m <id>` |
-| `antigravity` | `antigravity` | env | `ANTIGRAVITY_MODEL` → `--model <id>`. **Única fuente**: `AGY_MODEL` se ignora y queda en `modelTrace.ignoredEnv` (#6334, cerrado en #6858) |
+| `antigravity` | `antigravity` | env | `ANTIGRAVITY_MODEL` → `--model <id>`. **Única fuente** que lee el handler (#6334 → #6858 → #6861) |
 | `deterministic` | `node` | — | no aplica (Node puro, sin LLM) |
 
 Los nombres de las variables viven en `PROVIDER_MODEL_ENV`
@@ -480,27 +480,29 @@ agente pasa por esa rama y la propagación habría quedado como código muerto.
 El launcher recibe el env ya construido por cualquiera de los dos caminos del
 pulpo y le agrega la variable ahí.
 
-#### Precedencia de la variable de modelo en `antigravity` (#6334 → #6858)
+#### Precedencia de la variable de modelo en `antigravity` (#6334 → #6858 → #6861)
 
-Hasta #6858 el handler leía `env.AGY_MODEL || env.ANTIGRAVITY_MODEL`. Como el pulpo
-**nunca** propaga `AGY_MODEL` (no está en `PROVIDER_MODEL_ENV` ni en ningún scope
-de `build-child-env.js`), un `AGY_MODEL` exportado en el entorno del operador —o
-heredado por un path sin aislar— **pisaba** al modelo propagado, y la traza del
-launcher afirmaba "propagué X" mientras el CLI corría con Y.
+`ANTIGRAVITY_MODEL` es la **única** variable de entorno que el handler lee para
+decidir el `--model` del CLI. La propaga exclusivamente `PROVIDER_MODEL_ENV`
+([`lib/build-child-env.js`](../../.pipeline/lib/build-child-env.js)); ninguna otra
+variable del entorno del operador llega al handler. El nombre se eligió nuevo en
+#6861 a propósito: la variable con prefijo del binario que se leía hasta #6858
+había quedado envenenada (un export viejo en el entorno del operador pisaba el
+modelo del pulpo en silencio, #6334), y reusarla habría reactivado ese export.
 
 Regla vigente (`providers/antigravity.js::resolveModelFromEnv`):
 
-| Env del hijo | `--model` que corre | `modelTrace` | Log del launcher |
-|---|---|---|---|
-| `ANTIGRAVITY_MODEL=X` | `X` | `{ applied:true, model:X, source:'ANTIGRAVITY_MODEL', ignoredEnv:[] }` | — |
-| `ANTIGRAVITY_MODEL=X` + `AGY_MODEL=Y` | `X` | `{ applied:true, model:X, source:'ANTIGRAVITY_MODEL', ignoredEnv:['AGY_MODEL'] }` | `ℹ️ … IGNORÓ AGY_MODEL presente en el env; modelo efectivo "X" (fuente: ANTIGRAVITY_MODEL)` |
-| sólo `AGY_MODEL=Y` | *(sin flag: default del CLI)* | `{ applied:false, reason:'agy_model_env_ignored', ignoredEnv:['AGY_MODEL'] }` | `⚠️ … descartó el flag --model (razón: agy_model_env_ignored)` + `ℹ️ … IGNORÓ AGY_MODEL` |
-| ninguna | *(sin flag)* | *(sin clave — regresión cero)* | — |
+| Env del hijo | `--model` que corre | `modelTrace` |
+|---|---|---|
+| `ANTIGRAVITY_MODEL=X` | `X` | `{ applied:true, model:X, source:'ANTIGRAVITY_MODEL' }` |
+| ninguna (o vacía) | *(sin flag: default del CLI)* | `{ applied:false, source:'cli-default' }` |
 
 La traza nunca puede afirmar un modelo distinto del que corrió: el string del
-`modelTrace` es literalmente el que va en argv. Guardrail en
-`tests/antigravity-model-env-4869.test.js` (el código del handler no puede volver a
-leer `AGY_MODEL` como fuente ni pasar `--effort`).
+`modelTrace` es literalmente el que va en argv. El sufijo del id
+(`-high/-medium/-low`) es el único canal de esfuerzo; el handler nunca pasa
+`--effort`. Guardrails: `tests/antigravity-model-env-4869.test.js` (el handler lee
+sólo `ANTIGRAVITY_MODEL`) y `tests/model-propagation.test.js` (paridad
+`PROVIDER_MODEL_ENV['antigravity']` ↔ `MODEL_ENV_VAR` del handler).
 
 **Caída a un proveedor de respaldo:** se propaga el modelo del proveedor
 **efectivo**, nunca el del primario. El launcher usa `effective.provider` /
@@ -1394,7 +1396,34 @@ catálogo `deepseek-ai/deepseek-v4-flash-0731` / `moonshotai/kimi-k2-instruct`, 
 topology check) se conserva en el historial de git de este archivo. Para volver a
 habilitarlo, seguir §17.
 
-### 8.10 Antigravity (`antigravity`) — catálogo de modelos y verificación automática (#6858)
+### 8.10 Antigravity CLI (`antigravity`) — qué es, dónde vive, cómo se autentica, cómo verificar la licencia, catálogo (#6858, #6861)
+
+Para un lector que no conoce la historia, esto es todo lo que hace falta saber:
+
+1. **Qué CLI corre.** El provider `antigravity` (launcher `antigravity`,
+   `output_parser: antigravity-stream-json`) lanza **Antigravity CLI**, binario
+   `agy`, con `--output-format stream-json`. Hasta #6861 el provider se llamaba
+   "Gemini (Google)", nombre que confundía con el Gemini CLI gratuito
+   (`@google/gemini-cli`), que **no forma parte del pipeline**: no hay fallback a
+   ese CLI ni a ningún endpoint HTTP (el shim a Google AI Studio se retiró en
+   #6861; la key residual de AI Studio se revoca en #7286).
+2. **Dónde vive el binario.** `%LOCALAPPDATA%gyingy.exe`; se puede
+   apuntar a otro con la env var `ANTIGRAVITY_BIN`
+   (`detectLauncher`: `ANTIGRAVITY_BIN` → `%LOCALAPPDATA%gyingy.exe` → PATH).
+   Las otras dos variables del provider son `ANTIGRAVITY_MODEL` (§3.7) y
+   `ANTIGRAVITY_PRINT_TIMEOUT` (timeout del turno `-p`). Son las únicas tres:
+   las constantes `AGY_*` del código nombran el contrato del binario, no env vars.
+3. **Cómo se autentica.** OAuth de la cuenta Google, iniciado con `agy`
+   interactivo (`auth_mode: oauth`). **Sin API key**: el pipeline no inyecta
+   ninguna credencial al proceso hijo y `credentials_env` está vacío.
+4. **Cómo verificar que la licencia está activa.** Round-trip real
+   `agy models` (no interactivo, no consume cuota de generación): el health-cron
+   lo corre y publica `cli_catalog_ok` (verde), `cli_license_unavailable` (rojo:
+   instalado pero sin sesión/licencia), `cli_unavailable` (rojo: binario
+   ausente) o `cli_contract_mismatch` (rojo: versión del CLI fuera del pin). A
+   mano, desde Git Bash: `MSYS_NO_PATHCONV=1 agy -p "/usage" --output-format json`
+   muestra la cuota de la sesión (ver más abajo por qué la variable).
+
 
 **Cuota y tier (#6564).** El tier contratado no es observable automáticamente
 con `agy` 1.2.4: `/usage` expone cuota, pero no el nombre del plan, y no existe
