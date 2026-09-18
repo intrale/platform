@@ -339,8 +339,8 @@ test('#4541 CA-2: tool_result con "usage limit" NO setea flag (falso positivo de
 
 test('CA-2 _selectErrorTypeForFlag cae al primer elemento de la allowlist si no puede extraer', () => {
     const verdict = { errorClass: 'quota_exhausted', evidence: 'texto libre sin shape' };
-    const errorType = dispatcher._selectErrorTypeForFlag('gemini-google', verdict, {
-        KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER: { 'gemini-google': ['quota_exceeded', 'resource_exhausted'] },
+    const errorType = dispatcher._selectErrorTypeForFlag('antigravity', verdict, {
+        KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER: { 'antigravity': ['quota_exceeded', 'resource_exhausted'] },
     });
     assert.equal(errorType, 'quota_exceeded');
 });

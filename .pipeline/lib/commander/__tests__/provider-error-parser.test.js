@@ -92,12 +92,9 @@ test('OpenAI/Codex SSE error.type=insufficient_quota clasifica quota_exhausted',
     assert.equal(r.shouldFallback, true);
 });
 
-test('Gemini API JSON error.code=resource_exhausted clasifica quota_exhausted', () => {
-    const fx = loadFixture('gemini-api-resource-exhausted.json');
-    const r = parseProviderError(fx.raw, { provider: fx.provider, transport: fx.transport });
-    assert.equal(r.errorClass, 'quota_exhausted');
-    assert.equal(r.shouldFallback, true);
-});
+// (#6861) El caso "Gemini API JSON error.code=resource_exhausted" se eliminó junto
+// con su fixture: era un error HTTP de Google AI Studio y el shim que lo producía
+// se retiró. El parser de stream de agy se cubre en tests/antigravity-usage-contract-7290.test.js.
 
 test('OpenAI context_length_exceeded clasifica permanent_failure con shouldFallback=true', () => {
     const fx = loadFixture('openai-api-context-length.json');
@@ -412,7 +409,7 @@ test('parseProviderError soporta SSE truncado a mitad de frame', () => {
 
 test('API directa: status 401 clasifica auth', () => {
     const raw = '{"error":{"type":"authentication_error","status":401,"message":"Invalid API key"}}';
-    const r = parseProviderError(raw, { provider: 'gemini-google', transport: 'api' });
+    const r = parseProviderError(raw, { provider: 'antigravity', transport: 'api' });
     assert.equal(r.errorClass, 'auth');
     assert.equal(r.shouldFallback, true);
     assert.equal(r.retriable, false);
@@ -420,14 +417,14 @@ test('API directa: status 401 clasifica auth', () => {
 
 test('API directa: status 503 clasifica transient_5xx', () => {
     const raw = '{"error":{"type":"overloaded_error","status":503,"message":"Service unavailable"}}';
-    const r = parseProviderError(raw, { provider: 'gemini-google', transport: 'api' });
+    const r = parseProviderError(raw, { provider: 'antigravity', transport: 'api' });
     assert.equal(r.errorClass, 'transient_5xx');
     assert.equal(r.shouldFallback, true);
 });
 
 test('API directa: status 429 sin allowlist match clasifica rate_limit', () => {
     const raw = '{"error":{"status":429,"message":"Too many requests"}}';
-    const r = parseProviderError(raw, { provider: 'gemini-google', transport: 'api' });
+    const r = parseProviderError(raw, { provider: 'antigravity', transport: 'api' });
     assert.equal(r.errorClass, 'rate_limit');
 });
 
@@ -552,11 +549,11 @@ test('_selectErrorTypeForFlag cae al primer elemento de la allowlist si no puede
     const mp = require('../multi-provider');
     const fakeQuota = {
         KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER: {
-            'gemini-google': ['quota_exceeded', 'resource_exhausted'],
+            'antigravity': ['quota_exceeded', 'resource_exhausted'],
         },
     };
     const verdict = { errorClass: 'quota_exhausted', evidence: 'texto libre sin shape' };
-    const errorType = mp._selectErrorTypeForFlag('gemini-google', verdict, fakeQuota);
+    const errorType = mp._selectErrorTypeForFlag('antigravity', verdict, fakeQuota);
     assert.equal(errorType, 'quota_exceeded');
 });
 

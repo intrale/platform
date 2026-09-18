@@ -52,7 +52,7 @@ const path = require('path');
 const VALID_PROVIDERS = Object.freeze([
     'anthropic',
     'openai-codex',
-    'gemini-google',
+    'antigravity',
 ]);
 
 // TTL default 20 min (igual orden de magnitud que el reset de cuota corto).

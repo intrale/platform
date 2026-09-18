@@ -20,7 +20,7 @@
 //         scratch, el issue y el skill si vienen en `env`.
 //
 // El smoke contra el binario real (CA-1: archivo real + `git status`) vive en
-// `tests/smoke/gemini-add-dir.smoke.js` — requiere OAuth y cuota, no corre acá.
+// `tests/smoke/antigravity-add-dir.smoke.js` — requiere OAuth y cuota, no corre acá.
 // =============================================================================
 
 const test = require('node:test');
@@ -31,7 +31,7 @@ const path = require('node:path');
 const { spawn } = require('node:child_process');
 
 const ROOT = path.resolve(__dirname, '..', '..');
-const provider = require('../lib/agent-launcher/providers/gemini-google');
+const provider = require('../lib/agent-launcher/providers/antigravity');
 
 function tmpDir(prefix) {
     return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -108,7 +108,7 @@ test('#6859: buildSpawn traduce el cwd a `--add-dir <cwd>` y lo mantiene en spaw
     provider._setLauncherForTesting({ kind: 'native-exe', cmd: 'agy', prefixArgs: [], shell: false });
     try {
         const cwd = path.join(ROOT, 'app');
-        const spawnDef = provider.buildSpawn({ args: ['-p', 'hola'], cwd, env: { GEMINI_MODEL: 'gemini-3.8-flash-low' } });
+        const spawnDef = provider.buildSpawn({ args: ['-p', 'hola'], cwd, env: { ANTIGRAVITY_MODEL: 'gemini-3.8-flash-low' } });
         const idx = spawnDef.args.indexOf('--add-dir');
         assert.ok(idx >= 0, 'falta --add-dir');
         assert.equal(spawnDef.args[idx + 1], cwd);
@@ -151,7 +151,7 @@ test('#6859: `extraDirs` agrega un `--add-dir` por directorio adicional (el flag
 test('#6859 (CA-4): sin cwd buildSpawn lanza AGY_WORKSPACE_REQUIRED con mensaje accionable (scratch, issue y skill)', () => {
     provider._setLauncherForTesting({ kind: 'native-exe', cmd: 'agy', prefixArgs: [], shell: false });
     try {
-        const env = { GEMINI_MODEL: 'gemini-3.8-flash-low', PIPELINE_ISSUE: '6859', PIPELINE_SKILL: 'android-dev' };
+        const env = { ANTIGRAVITY_MODEL: 'gemini-3.8-flash-low', PIPELINE_ISSUE: '6859', PIPELINE_SKILL: 'android-dev' };
         const casos = [
             { cwd: undefined, etiqueta: 'undefined' },
             { cwd: null, etiqueta: 'null' },
@@ -207,12 +207,12 @@ test('#6859 (CA-2/CA-3): el archivo aparece en el cwd pedido y el scratch queda 
         const spawnDef = provider.buildSpawn({
             args: ['-p', 'crear marca-6859.txt en el directorio actual'],
             cwd: worktree,
-            env: { ...process.env, AGY_FAKE_SCRATCH: scratch, GEMINI_MODEL: 'gemini-3.8-flash-low' },
+            env: { ...process.env, AGY_FAKE_SCRATCH: scratch, ANTIGRAVITY_MODEL: 'gemini-3.8-flash-low' },
         });
         const r = await runSpawn(spawnDef);
         assert.equal(r.code, 0, r.stderr);
         // El CLI reporta SUCCESS — eso NO alcanza como evidencia (es lo que engañaba).
-        const result = provider._parseGeminiJson(r.stdout);
+        const result = provider._parseAntigravityJson(r.stdout);
         assert.equal(result.status, 'SUCCESS');
         // CA-2: el archivo está en el worktree pedido.
         assert.deepEqual(listFiles(worktree), ['marca-6859.txt'], 'el archivo tiene que estar en el cwd pedido');
@@ -234,7 +234,7 @@ test('#6859 (regresión): el mismo fake SIN --add-dir escribe en el scratch repo
     fs.mkdirSync(scratch);
     try {
         // Argv legacy (pre-#6859): sin workspace, tal como lo armaba el handler.
-        const legacyArgs = provider._translateClaudeArgsToGemini(['-p', 'x'], { GEMINI_MODEL: 'gemini-3.8-flash-low' });
+        const legacyArgs = provider._translateClaudeArgsToAntigravity(['-p', 'x'], { ANTIGRAVITY_MODEL: 'gemini-3.8-flash-low' });
         assert.ok(!legacyArgs.includes('--add-dir'));
         const r = await runSpawn({
             cmd: process.execPath,
@@ -243,7 +243,7 @@ test('#6859 (regresión): el mismo fake SIN --add-dir escribe en el scratch repo
             spawnOpts: { cwd: worktree, stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, AGY_FAKE_SCRATCH: scratch }, windowsHide: true },
         });
         assert.equal(r.code, 0, r.stderr);
-        assert.equal(provider._parseGeminiJson(r.stdout).status, 'SUCCESS', 'el CLI dice SUCCESS igual: por eso el bug era silencioso');
+        assert.equal(provider._parseAntigravityJson(r.stdout).status, 'SUCCESS', 'el CLI dice SUCCESS igual: por eso el bug era silencioso');
         assert.deepEqual(listFiles(worktree), [], 'el cwd del proceso NO se usa: quedó vacío');
         assert.deepEqual(listFiles(scratch), ['marca-legacy.txt'], 'el archivo cayó al scratch fantasma');
     } finally {
@@ -254,7 +254,7 @@ test('#6859 (regresión): el mismo fake SIN --add-dir escribe en el scratch repo
 // Guardrail de código: el handler no puede volver a armar el argv sin `--add-dir`
 // ni a aceptar un cwd ausente en silencio.
 test('#6859: guardrail — el handler emite --add-dir y valida el cwd en buildSpawn', () => {
-    const codigo = fs.readFileSync(path.join(ROOT, '.pipeline/lib/agent-launcher/providers/gemini-google.js'), 'utf8')
+    const codigo = fs.readFileSync(path.join(ROOT, '.pipeline/lib/agent-launcher/providers/antigravity.js'), 'utf8')
         .split('\n').filter((l) => !l.trim().startsWith('//')).join('\n');
     assert.match(codigo, /'--add-dir'/, 'el flag tiene que emitirse desde el handler');
     assert.match(codigo, /assertWorkspaceDir\(cwd, 'cwd'/, 'buildSpawn valida el cwd antes de armar el argv');

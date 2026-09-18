@@ -22,7 +22,7 @@
 //     "providers":  {
 //       "anthropic": { "api_key": "..." },
 //       "openai":    { "api_key": "..." },
-//       "google":    { "api_key": "..." }         // mapea al provider 'gemini-google'
+//       (antigravity NO tiene entrada: autentica por OAuth del CLI, #6861)
 //     }
 //   }
 //
@@ -98,19 +98,18 @@ const MANAGED_KEYS = Object.freeze([
         cli_binary: 'codex',
     },
     {
-        provider: 'gemini-google',
-        label: 'Gemini (Antigravity CLI)',
+        provider: 'antigravity',
+        label: 'Antigravity CLI',
         editable: false,
-        reason: 'Antigravity CLI usa OAuth; la licencia se habilita fuera del almacén de API keys.',
-        // Los paths legacy se conservan sólo para compatibilidad de lectura;
-        // editable:false impide administrar una API key para este provider OAuth.
-        canonicalPath: 'providers.google.api_key',
-        legacyField: 'gemini_google_api_key',
+        reason: 'Antigravity CLI autentica por OAuth de cuenta Google (login interactivo de `agy`); no usa API key.',
+        // #6861 — sin `canonicalPath` ni `legacyField` a propósito: la entrada
+        // `providers.google.api_key` (la key de Google AI Studio) se retiró
+        // de ENV_MAPPING y del manifiesto. No hay key que leer ni administrar.
         auth_mode: 'oauth',
         cli_binary: 'agy',
         // #6857 — el estado sale de un round-trip real (`agy models`), no de
-        // un flag de entorno. `readiness_env: 'AGY_LICENSE_READY'` se eliminó:
-        // ver `cli-oauth-probe.js#probeCliProviderLive` y `agy-catalog-probe.js`.
+        // un flag de entorno local: ver `cli-oauth-probe.js#probeCliProviderLive`
+        // y `agy-catalog-probe.js`.
         catalog_probe: 'agy',
         cli_contract: { min_version: '1.2.0', max_tested_version: '1.2.5' },
         free_tier_notes: 'Antigravity CLI; disponibilidad sujeta a sesión OAuth y licencia/billing.',
@@ -190,7 +189,7 @@ function detectFormat(data) {
     }
     // Si tiene alguna flat key conocida → legacy.
     for (const spec of MANAGED_KEYS) {
-        if (Object.prototype.hasOwnProperty.call(data, spec.legacyField)) return 'legacy';
+        if (spec.legacyField && Object.prototype.hasOwnProperty.call(data, spec.legacyField)) return 'legacy';
     }
     // Vacío o desconocido: asumimos canonical (caso de archivo recién creado).
     return 'canonical';
@@ -198,6 +197,8 @@ function detectFormat(data) {
 
 function readKeyFromData(spec, data, format) {
     if (!data) return undefined;
+    // Provider CLI-OAuth sin key gestionada (#6861: antigravity).
+    if (!spec.canonicalPath && !spec.legacyField) return undefined;
     if (format === 'legacy') return data[spec.legacyField];
     return getNested(data, spec.canonicalPath);
 }
@@ -231,8 +232,8 @@ function listKeys({ secretsPath, fsImpl = fs } = {}) {
 
         return {
             provider: spec.provider,
-            jsonField: spec.legacyField, // Compat: la UI/log ya consumen `jsonField`. Mantenemos el alias.
-            canonicalPath: spec.canonicalPath,
+            jsonField: spec.legacyField || null, // Compat: la UI/log ya consumen `jsonField`. Mantenemos el alias.
+            canonicalPath: spec.canonicalPath || null,
             label: spec.label,
             editable: spec.editable,
             reason: spec.reason || null,

@@ -69,7 +69,7 @@ test('#6190 el log real del agente (con header del pipeline) también clasifica 
 test('#6190 la clasificación no depende del provider en uso (402 es universal)', () => {
     // `status: 402` no es un marcador propietario: cualquier provider que lo
     // emita está diciendo lo mismo. No debe requerir allowlist por provider.
-    for (const provider of ['anthropic', 'openai-codex', 'gemini-google']) {
+    for (const provider of ['anthropic', 'openai-codex', 'antigravity']) {
         const r = parser.parseProviderError(FRAME_402_REAL, { ...CTX_CLI_MUERTE, provider });
         assert.strictEqual(r.errorClass, 'quota_exhausted',
             `provider ${provider}: un 402 debe leerse como cuota agotada`);
@@ -118,10 +118,10 @@ test('#6190 el marcador estructurado del propio provider gana sin necesidad de s
 });
 
 test('#6190 el allowlist NO cruza providers (CA-5 #3077)', () => {
-    // `usage_limit_error` es marcador de anthropic. Con provider gemini-google y
+    // `usage_limit_error` es marcador de anthropic. Con provider antigravity y
     // SIN status numérico, no debe clasificarse como cuota por el marcador ajeno.
     const frame = '{"error":{"code":"usage_limit_error","message":"algo"}}';
-    const r = parser.parseProviderError(frame, { ...CTX_CLI_MUERTE, provider: 'gemini-google' });
+    const r = parser.parseProviderError(frame, { ...CTX_CLI_MUERTE, provider: 'antigravity' });
     assert.notStrictEqual(r.errorClass, 'quota_exhausted',
         'matchear un marcador de otro provider viola el scope por provider');
 });

@@ -189,7 +189,7 @@ function computeUsageSince(activityLogPath, sinceMs) {
         if (evt.model === 'deterministic') continue;
         // CA-5.1 (#3357): filtrar por provider — solo Anthropic cuenta al
         // plan Max. Sesiones con provider explícito distinto (openai-codex,
-        // gemini-google, etc.) NO consumen cuota Anthropic.
+        // antigravity, etc.) NO consumen cuota Anthropic.
         // Eventos sin `provider` se asumen Anthropic (compat con log histórico
         // anterior a M2 multi-provider, donde no se emitía el campo).
         if (evt.provider && evt.provider !== 'anthropic') continue;

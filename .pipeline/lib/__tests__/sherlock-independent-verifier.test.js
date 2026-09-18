@@ -373,7 +373,7 @@ function fakeResidencyOk() {
     };
 }
 // #6563 — el fixture usa el único provider HTTP del plantel (cerebras retirado).
-const TEST_CHAIN = [{ provider: 'gemini-google', model: 'gemini-3.8-flash-medium' }];
+const TEST_CHAIN = [{ provider: 'antigravity', model: 'gemini-3.8-flash-medium' }];
 
 test('verify(): con issueNumber, inyecta independentEvidence al prompt y emite evento audit', async () => {
     const dir = mkTmpPipelineDir();

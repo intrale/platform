@@ -2521,7 +2521,7 @@ function historialTimelineSlice(state, ctx, opts) {
 //     el TOP-LEVEL del objeto retornado — son el resultado del adapter de
 //     Anthropic, idéntico byte-a-byte al shape pre-#3357. Esto evita romper
 //     consumidores del banner del dashboard.
-//   - Campo nuevo `providers: { anthropic, openai-codex, gemini-google, ... }` expone
+//   - Campo nuevo `providers: { anthropic, openai-codex, antigravity, ... }` expone
 //     el shape multi-provider para la UI nueva del kpi panel (CA-UX-2).
 //
 // #4202 — `providers[p]` se NORMALIZA al shape de cliente
@@ -2534,7 +2534,7 @@ function historialTimelineSlice(state, ctx, opts) {
 // buckets sesión/semanal por proveedor sigue la decisión validada por PO:
 //   - anthropic: session ← session.pct; weekly ← pct (números REALES de /usage).
 //   - openai-codex: session = "sin dato" (null); weekly ← realPct ?? pct (budget mensual).
-//   - gemini-google + resto: ambos "sin dato" salvo que el adapter dé un pct real.
+//   - antigravity + resto: ambos "sin dato" salvo que el adapter dé un pct real.
 // `confidence` (#4597): ya NO deriva del snapshot OCR (deprecado). Para TODOS los
 // providers es 'fresh' cuando el adapter respondió `ok` con un pct válido, y
 // 'missing' ("sin dato") cuando no. El adapter Anthropic degrada a
@@ -2603,7 +2603,7 @@ function quotaSlice(state, ctx) {
     // proveedores retirados: `groq` en #3353, `cerebras`/`nvidia-nim` en #6563).
     // Blinda contra un provider fantasma si la lectura de config falla. El path
     // config-driven (abajo) es el primario.
-    let declaredProviders = ['anthropic', 'openai-codex', 'gemini-google'];
+    let declaredProviders = ['anthropic', 'openai-codex', 'antigravity'];
     try {
         const modelsPath = path.join(PIPELINE, 'agent-models.json');
         const models = safeReadJson(modelsPath, null);

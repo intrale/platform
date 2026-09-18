@@ -94,14 +94,14 @@ const DEFAULT_PROVIDER_KEY = 'anthropic';
 const PROVIDER_LABELS = {
   anthropic: 'Anthropic',
   'openai-codex': 'OpenAI Codex',
-  'gemini-google': 'Gemini',
+  'antigravity': 'Antigravity',
   deterministic: 'Deterministico',
 };
 // Aliases de provider-key → canónica (algún codepath usa el alias corto).
+// #6861 — `antigravity` no tiene alias (SEC-1): el id viejo no se acepta.
 const PROVIDER_ALIASES = {
   openai: 'openai-codex',
   codex: 'openai-codex',
-  gemini: 'gemini-google',
   claude: 'anthropic',
 };
 

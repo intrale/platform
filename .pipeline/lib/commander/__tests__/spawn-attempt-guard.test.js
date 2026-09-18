@@ -76,7 +76,7 @@ test('CA-1/CA-2 — attempt no lanza → devuelve su valor, sin degradado', () =
 test('CA-3/SR-D — reason custom se propaga al degradado', () => {
   let seenReason = null;
   guard.runGuardedSpawnAttempt({
-    provider: 'gemini-google',
+    provider: 'antigravity',
     reason: 'custom_reason',
     attempt: () => { throw new Error('x'); },
     onSyncThrow: (_p, reason) => { seenReason = reason; },

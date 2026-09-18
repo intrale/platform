@@ -490,6 +490,8 @@ function providerToken(provider) {
     if (p === 'openai') return '--provider-openai';
     if (p === 'openai-codex' || p === 'codex') return '--provider-openai-codex';
     if (p === 'deterministic') return '--provider-deterministic';
+    // #6861 — token propio del provider (antes caía en unknown: gap latente).
+    if (p === 'antigravity') return '--provider-antigravity';
     // Allowlist cerrada (regla R6 anti-fallback): todo provider fuera del set
     // cae a unknown. Los proveedores gratuitos se retiraron en #6563.
     return '--provider-unknown';
@@ -1319,7 +1321,7 @@ async function loadCommanderDistribution(window) {
         const map = {
             anthropic: '#d97706',
             'openai-codex': '#10a37f',
-            'gemini-google': '#4285f4',
+            'antigravity': '#4285f4',
         };
         return map[p] || '#6b7280';
     };

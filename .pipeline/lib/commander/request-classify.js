@@ -53,7 +53,7 @@ const PROVIDER_DESCONOCIDO = 'desconocido';
 // disponible (caso edge en tests/arranque). Se filtra `deterministic` (no es un
 // provider de chat con cuota). Coincide con el set declarado por los CA.
 const FALLBACK_PROVIDERS = Object.freeze([
-  'anthropic', 'openai-codex', 'gemini-google',
+  'anthropic', 'openai-codex', 'antigravity',
 ]);
 
 // Path FIJO al `agent-models.json` (dos niveles arriba de `lib/commander/`).

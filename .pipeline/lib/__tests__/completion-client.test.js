@@ -6,7 +6,7 @@
 //
 // Cobertura:
 //   - Allowlist anti-SSRF (providers + modelos).
-//   - Schema OpenAI-compat parseado correctamente (gemini-google, único HTTP).
+//   - Schema OpenAI-compat parseado correctamente.
 //   - Errores tipados: timeout, 401, 429+quota vs rate, 5xx, schema drift,
 //     body cap 64KB.
 //   - Linter tests (CA seguridad): el módulo NO desactiva TLS y NO lee
@@ -16,8 +16,12 @@
 //
 // Nota: el issue #3342 original listaba Groq como provider, pero #3368 lo
 // removió del pipeline antes del desarrollo; cerebras y nvidia-nim se retiraron
-// en #6563. El cliente cubre hoy un único provider HTTP: gemini-google (shim
-// OpenAI-compat). Los casos genéricos usan gemini-google como fixture.
+// en #6563 y el shim de Google AI Studio (ex `gemini-google`) en #6861. El
+// plantel HTTP de producción está VACÍO: para seguir cubriendo el cliente los
+// casos genéricos inyectan un provider de prueba vía
+// `_setProviderTablesForTesting` (URL https literal, id `openai` porque su
+// key tiene spec en secrets-rw.MANAGED_KEYS). Los tests de allowlist verifican
+// además que en producción NADIE pasa.
 // =============================================================================
 'use strict';
 
@@ -28,6 +32,21 @@ const path = require('node:path');
 const os = require('node:os');
 
 const completion = require('../multi-provider/completion-client');
+
+// #6861 — provider de prueba inyectado (ver nota del header).
+const TEST_PROVIDER = 'openai';
+const TEST_MODEL = 'test-model-a';
+const TEST_ENDPOINTS = Object.freeze({
+    [TEST_PROVIDER]: Object.freeze({
+        url: 'https://api.openai.com/v1/chat/completions',
+        method: 'POST',
+        authHeader: 'authorization',
+        authFormat: 'bearer',
+    }),
+});
+const TEST_MODELS = Object.freeze({ [TEST_PROVIDER]: Object.freeze([TEST_MODEL, 'test-model-b']) });
+completion._setProviderTablesForTesting({ endpoints: TEST_ENDPOINTS, models: TEST_MODELS });
+test.after(() => completion._resetProviderTablesForTesting());
 
 function tmpDir() { return fs.mkdtempSync(path.join(os.tmpdir(), 'mp-comp-')); }
 function writeKeys(file, keys) { fs.writeFileSync(file, JSON.stringify(keys)); }
@@ -80,14 +99,39 @@ function fakeHttp({ status = 200, body = '', simulateTimeout = false, chunks } =
 
 // ─── Allowlist anti-SSRF ────────────────────────────────────────────────────
 
-test('isAllowedProvider acepta solo gemini-google', () => {
-    assert.equal(completion.isAllowedProvider('gemini-google'), true);
+test('#6861: en producción el plantel HTTP está vacío — isAllowedProvider rechaza TODO (incluido el id viejo)', () => {
+    completion._resetProviderTablesForTesting();
+    try {
+        assert.deepEqual(completion.PROVIDER_COMPLETION_ENDPOINTS, {});
+        assert.deepEqual(completion.PROVIDER_MODELS_ALLOWLIST, {});
+        for (const p of ['antigravity', 'gemini-google', 'gemini', 'google', 'openai', 'anthropic', 'openai-codex', '']) {
+            assert.equal(completion.isAllowedProvider(p), false, `${p || '(vacío)'} no tiene endpoint HTTP`);
+        }
+        assert.equal(completion.isAllowedModel('antigravity', 'gemini-3.8-flash-medium'), false,
+            'sin shim no hay modelo HTTP allowlisteado para antigravity');
+    } finally {
+        completion._setProviderTablesForTesting({ endpoints: TEST_ENDPOINTS, models: TEST_MODELS });
+    }
+});
+
+test('#6861: el hook de test sólo acepta endpoints https literales', () => {
+    assert.throws(() => completion._setProviderTablesForTesting({ endpoints: { x: { url: 'http://evil', method: 'POST' } } }), /https/);
+    assert.throws(() => completion._setProviderTablesForTesting({ endpoints: { x: { url: 'file:///etc/passwd', method: 'POST' } } }), /https/);
+    // El throw no dejó tablas a medias: el provider de prueba sigue vigente.
+    assert.equal(completion.isAllowedProvider(TEST_PROVIDER), true);
+});
+
+test('isAllowedProvider acepta solo el provider inyectado', () => {
+    assert.equal(completion.isAllowedProvider(TEST_PROVIDER), true);
+    assert.equal(completion.isAllowedProvider('antigravity'), false, 'antigravity es spawn puro (#6861)');
+    assert.equal(completion.isAllowedProvider('gemini-google'), false, 'id viejo retirado (#6861)');
     // Groq fue removido del pipeline en #3368 — no debe estar acá.
     assert.equal(completion.isAllowedProvider('groq'), false, 'groq removido del pipeline (#3368)');
     // #6563 — cerebras y nvidia-nim retirados: NO deben reaparecer en la allowlist.
     assert.equal(completion.isAllowedProvider('cerebras'), false, 'cerebras retirado del pipeline (#6563)');
     assert.equal(completion.isAllowedProvider('nvidia-nim'), false, 'nvidia-nim retirado del pipeline (#6563)');
     assert.equal(completion.isAllowedProvider('anthropic'), false, 'anthropic usa OAuth/Claude Code, NO completion-client');
+    assert.equal(completion.isAllowedProvider('openai-codex'), false, 'codex usa OAuth/CLI, NO completion-client');
     assert.equal(completion.isAllowedProvider('attacker.com'), false);
     assert.equal(completion.isAllowedProvider('file://etc/passwd'), false);
     assert.equal(completion.isAllowedProvider(''), false);
@@ -100,13 +144,13 @@ test('complete devuelve unknown_provider para providers fuera de allowlist', asy
 });
 
 test('complete devuelve invalid_model si el model no está en allowlist del provider', async () => {
-    const r = await completion.complete({ provider: 'gemini-google', model: 'gpt-4', prompt: 'hi' });
+    const r = await completion.complete({ provider: TEST_PROVIDER, model: 'gpt-4', prompt: 'hi' });
     assert.equal(r.ok, false);
     assert.equal(r.error.type, 'invalid_model');
 });
 
 test('complete devuelve invalid_model si model está vacío', async () => {
-    const r = await completion.complete({ provider: 'gemini-google', model: '', prompt: 'hi' });
+    const r = await completion.complete({ provider: TEST_PROVIDER, model: '', prompt: 'hi' });
     assert.equal(r.ok, false);
     assert.equal(r.error.type, 'invalid_model');
 });
@@ -114,10 +158,10 @@ test('complete devuelve invalid_model si model está vacío', async () => {
 test('complete devuelve invalid_response si falta prompt y messages', async () => {
     const dir = tmpDir();
     const f = path.join(dir, 'config.json');
-    writeKeys(f, { gemini_google_api_key: 'AIzaSyTest_1234567890abcdef000' });
+    writeKeys(f, { openai_api_key: 'sk-test_1234567890abcdef000' });
     const r = await completion.complete({
-        provider: 'gemini-google',
-        model: 'gemini-3.8-flash-medium',
+        provider: TEST_PROVIDER,
+        model: TEST_MODEL,
         secretsPath: f,
     });
     assert.equal(r.ok, false);
@@ -129,8 +173,8 @@ test('complete devuelve no_key_configured cuando falta la key', async () => {
     const f = path.join(dir, 'config.json');
     writeKeys(f, {});
     const r = await completion.complete({
-        provider: 'gemini-google',
-        model: 'gemini-3.8-flash-medium',
+        provider: TEST_PROVIDER,
+        model: TEST_MODEL,
         prompt: 'hi',
         secretsPath: f,
     });
@@ -142,40 +186,40 @@ test('complete devuelve no_key_configured cuando falta la key', async () => {
 
 // #6563 — casos de éxito de cerebras y nvidia-nim retirados con los providers.
 
-test('complete Gemini-Google éxito devuelve schema normalizado (shim OpenAI-compat)', async () => {
+test('complete éxito devuelve schema normalizado (OpenAI-compat)', async () => {
     const dir = tmpDir();
     const f = path.join(dir, 'config.json');
-    writeKeys(f, { gemini_google_api_key: 'AIzaSyTest_1234567890abcdef000' });
+    writeKeys(f, { openai_api_key: 'sk-test_1234567890abcdef000' });
     const r = await completion.complete({
-        provider: 'gemini-google',
-        model: 'gemini-3.8-flash-medium',
+        provider: TEST_PROVIDER,
+        model: TEST_MODEL,
         prompt: 'ping',
         secretsPath: f,
         httpImpl: fakeHttp({
             status: 200,
             body: JSON.stringify({
-                choices: [{ message: { content: 'pong gemini' } }],
+                choices: [{ message: { content: 'pong test' } }],
                 usage: { prompt_tokens: 7, completion_tokens: 4 },
-                model: 'gemini-3.8-flash-medium',
+                model: TEST_MODEL,
             }),
         }),
     });
     assert.equal(r.ok, true);
-    assert.equal(r.content, 'pong gemini');
+    assert.equal(r.content, 'pong test');
     assert.equal(r.inputTokens, 7);
     assert.equal(r.outputTokens, 4);
-    assert.equal(r.provider, 'gemini-google');
-    assert.equal(r.model, 'gemini-3.8-flash-medium');
+    assert.equal(r.provider, TEST_PROVIDER);
+    assert.equal(r.model, TEST_MODEL);
     assert.ok(typeof r.durationMs === 'number' && r.durationMs >= 0);
 });
 
 test('complete con messages preformado (multi-turn) en lugar de prompt funciona', async () => {
     const dir = tmpDir();
     const f = path.join(dir, 'config.json');
-    writeKeys(f, { gemini_google_api_key: 'AIzaSyTest_1234567890abcdef000' });
+    writeKeys(f, { openai_api_key: 'sk-test_1234567890abcdef000' });
     const r = await completion.complete({
-        provider: 'gemini-google',
-        model: 'gemini-3.8-flash-medium',
+        provider: TEST_PROVIDER,
+        model: TEST_MODEL,
         messages: [
             { role: 'system', content: 'sos murble' },
             { role: 'user', content: 'hola' },
@@ -186,7 +230,7 @@ test('complete con messages preformado (multi-turn) en lugar de prompt funciona'
             body: JSON.stringify({
                 choices: [{ message: { content: 'hola humano' } }],
                 usage: { prompt_tokens: 12, completion_tokens: 2 },
-                model: 'gemini-3.8-flash-medium',
+                model: TEST_MODEL,
             }),
         }),
     });
@@ -197,10 +241,10 @@ test('complete con messages preformado (multi-turn) en lugar de prompt funciona'
 test('complete tolera usage faltante — devuelve 0 tokens en vez de fallar', async () => {
     const dir = tmpDir();
     const f = path.join(dir, 'config.json');
-    writeKeys(f, { gemini_google_api_key: 'AIzaSyTest_1234567890abcdef000' });
+    writeKeys(f, { openai_api_key: 'sk-test_1234567890abcdef000' });
     const r = await completion.complete({
-        provider: 'gemini-google',
-        model: 'gemini-3.8-flash-medium',
+        provider: TEST_PROVIDER,
+        model: TEST_MODEL,
         prompt: 'ping',
         secretsPath: f,
         httpImpl: fakeHttp({
@@ -221,10 +265,10 @@ test('complete tolera usage faltante — devuelve 0 tokens en vez de fallar', as
 test('complete con timeout → error.type = timeout', async () => {
     const dir = tmpDir();
     const f = path.join(dir, 'config.json');
-    writeKeys(f, { gemini_google_api_key: 'AIzaSyTest_1234567890abcdef000' });
+    writeKeys(f, { openai_api_key: 'sk-test_1234567890abcdef000' });
     const r = await completion.complete({
-        provider: 'gemini-google',
-        model: 'gemini-3.8-flash-medium',
+        provider: TEST_PROVIDER,
+        model: TEST_MODEL,
         prompt: 'ping',
         timeoutMs: 50,
         secretsPath: f,
@@ -237,10 +281,10 @@ test('complete con timeout → error.type = timeout', async () => {
 test('complete con 401 → error.type=auth_error, reason=invalid_credentials', async () => {
     const dir = tmpDir();
     const f = path.join(dir, 'config.json');
-    writeKeys(f, { gemini_google_api_key: 'AIzaSyTest_1234567890abcdef000' });
+    writeKeys(f, { openai_api_key: 'sk-test_1234567890abcdef000' });
     const r = await completion.complete({
-        provider: 'gemini-google',
-        model: 'gemini-3.8-flash-medium',
+        provider: TEST_PROVIDER,
+        model: TEST_MODEL,
         prompt: 'ping',
         secretsPath: f,
         httpImpl: fakeHttp({ status: 401, body: '{"error":{"message":"Invalid API Key"}}' }),
@@ -254,10 +298,10 @@ test('complete con 401 → error.type=auth_error, reason=invalid_credentials', a
 test('complete con 403 → error.type=auth_error, reason=forbidden', async () => {
     const dir = tmpDir();
     const f = path.join(dir, 'config.json');
-    writeKeys(f, { gemini_google_api_key: 'AIzaSyTest_1234567890abcdef000' });
+    writeKeys(f, { openai_api_key: 'sk-test_1234567890abcdef000' });
     const r = await completion.complete({
-        provider: 'gemini-google',
-        model: 'gemini-3.8-flash-medium',
+        provider: TEST_PROVIDER,
+        model: TEST_MODEL,
         prompt: 'ping',
         secretsPath: f,
         httpImpl: fakeHttp({ status: 403, body: '{"error":{"message":"Forbidden"}}' }),
@@ -269,10 +313,10 @@ test('complete con 403 → error.type=auth_error, reason=forbidden', async () =>
 test('complete con 429 + insufficient_quota → http_error reason=quota_exhausted', async () => {
     const dir = tmpDir();
     const f = path.join(dir, 'config.json');
-    writeKeys(f, { gemini_google_api_key: 'AIzaSyTest_1234567890abcdef000' });
+    writeKeys(f, { openai_api_key: 'sk-test_1234567890abcdef000' });
     const r = await completion.complete({
-        provider: 'gemini-google',
-        model: 'gemini-3.8-flash-medium',
+        provider: TEST_PROVIDER,
+        model: TEST_MODEL,
         prompt: 'ping',
         secretsPath: f,
         httpImpl: fakeHttp({ status: 429, body: '{"error":{"code":"insufficient_quota"}}' }),
@@ -284,10 +328,10 @@ test('complete con 429 + insufficient_quota → http_error reason=quota_exhauste
 test('complete con 429 plain rate_limit_exceeded → http_error reason=rate_limited', async () => {
     const dir = tmpDir();
     const f = path.join(dir, 'config.json');
-    writeKeys(f, { gemini_google_api_key: 'AIzaSyTest_1234567890abcdef000' });
+    writeKeys(f, { openai_api_key: 'sk-test_1234567890abcdef000' });
     const r = await completion.complete({
-        provider: 'gemini-google',
-        model: 'gemini-3.8-flash-medium',
+        provider: TEST_PROVIDER,
+        model: TEST_MODEL,
         prompt: 'ping',
         secretsPath: f,
         httpImpl: fakeHttp({ status: 429, body: '{"error":{"code":"rate_limit_exceeded"}}' }),
@@ -299,10 +343,10 @@ test('complete con 429 plain rate_limit_exceeded → http_error reason=rate_limi
 test('complete con 5xx → http_error reason=unknown con detail acotado', async () => {
     const dir = tmpDir();
     const f = path.join(dir, 'config.json');
-    writeKeys(f, { gemini_google_api_key: 'AIzaSyTest_1234567890abcdef000' });
+    writeKeys(f, { openai_api_key: 'sk-test_1234567890abcdef000' });
     const r = await completion.complete({
-        provider: 'gemini-google',
-        model: 'gemini-3.8-flash-medium',
+        provider: TEST_PROVIDER,
+        model: TEST_MODEL,
         prompt: 'ping',
         secretsPath: f,
         httpImpl: fakeHttp({ status: 503, body: 'Service unavailable' }),
@@ -315,10 +359,10 @@ test('complete con 5xx → http_error reason=unknown con detail acotado', async 
 test('complete con 2xx pero body no JSON → invalid_response reason=schema_drift', async () => {
     const dir = tmpDir();
     const f = path.join(dir, 'config.json');
-    writeKeys(f, { gemini_google_api_key: 'AIzaSyTest_1234567890abcdef000' });
+    writeKeys(f, { openai_api_key: 'sk-test_1234567890abcdef000' });
     const r = await completion.complete({
-        provider: 'gemini-google',
-        model: 'gemini-3.8-flash-medium',
+        provider: TEST_PROVIDER,
+        model: TEST_MODEL,
         prompt: 'ping',
         secretsPath: f,
         httpImpl: fakeHttp({ status: 200, body: '<html>oops</html>' }),
@@ -327,13 +371,13 @@ test('complete con 2xx pero body no JSON → invalid_response reason=schema_drif
     assert.equal(r.error.reason, 'schema_drift');
 });
 
-test('complete con 2xx pero sin choices[0].message.content → invalid_response (Gemini beta drift)', async () => {
+test('complete con 2xx pero sin choices[0].message.content → invalid_response (schema drift)', async () => {
     const dir = tmpDir();
     const f = path.join(dir, 'config.json');
-    writeKeys(f, { gemini_google_api_key: 'AIzaSyTest_1234567890abcdef000' });
+    writeKeys(f, { openai_api_key: 'sk-test_1234567890abcdef000' });
     const r = await completion.complete({
-        provider: 'gemini-google',
-        model: 'gemini-3.8-flash-medium',
+        provider: TEST_PROVIDER,
+        model: TEST_MODEL,
         prompt: 'ping',
         secretsPath: f,
         httpImpl: fakeHttp({
@@ -352,12 +396,12 @@ test('complete con 2xx pero sin choices[0].message.content → invalid_response 
 test('complete con body > 64KB → invalid_response reason=body_too_large', async () => {
     const dir = tmpDir();
     const f = path.join(dir, 'config.json');
-    writeKeys(f, { gemini_google_api_key: 'AIzaSyTest_1234567890abcdef000' });
+    writeKeys(f, { openai_api_key: 'sk-test_1234567890abcdef000' });
     // Generamos 100KB de payload — supera MAX_BODY_BYTES = 64KB.
     const big = 'A'.repeat(100 * 1024);
     const r = await completion.complete({
-        provider: 'gemini-google',
-        model: 'gemini-3.8-flash-medium',
+        provider: TEST_PROVIDER,
+        model: TEST_MODEL,
         prompt: 'ping',
         secretsPath: f,
         httpImpl: fakeHttp({ status: 200, body: big }),
@@ -373,10 +417,10 @@ test('complete NO expone la API key cruda en la respuesta (success path)', async
     const dir = tmpDir();
     const f = path.join(dir, 'config.json');
     const secretKey = 'AIzaSy_VERY_SECRET_DO_NOT_LEAK_1234567890';
-    writeKeys(f, { gemini_google_api_key: secretKey });
+    writeKeys(f, { openai_api_key: secretKey });
     const r = await completion.complete({
-        provider: 'gemini-google',
-        model: 'gemini-3.8-flash-medium',
+        provider: TEST_PROVIDER,
+        model: TEST_MODEL,
         prompt: 'ping',
         secretsPath: f,
         httpImpl: fakeHttp({
@@ -395,10 +439,10 @@ test('complete NO expone la API key cruda en la respuesta (error path 401)', asy
     const dir = tmpDir();
     const f = path.join(dir, 'config.json');
     const secretKey = 'AIzaSy_VERY_SECRET_DO_NOT_LEAK_1234567890';
-    writeKeys(f, { gemini_google_api_key: secretKey });
+    writeKeys(f, { openai_api_key: secretKey });
     const r = await completion.complete({
-        provider: 'gemini-google',
-        model: 'gemini-3.8-flash-medium',
+        provider: TEST_PROVIDER,
+        model: TEST_MODEL,
         prompt: 'ping',
         secretsPath: f,
         httpImpl: fakeHttp({ status: 401, body: '{"error":"Invalid"}' }),
@@ -412,7 +456,12 @@ test('complete NO expone la API key cruda en la respuesta (error path 401)', asy
 test('PROVIDER_COMPLETION_ENDPOINTS solo expone URLs HTTPS literales hardcoded (anti-SSRF)', () => {
     const endpoints = completion.PROVIDER_COMPLETION_ENDPOINTS;
     const providers = Object.keys(endpoints);
-    assert.ok(providers.length > 0, 'al menos un provider configurado');
+    // #6861 — vacío en producción; el invariante se sostiene para cualquier
+    // entrada futura (y para las tablas de prueba, abajo).
+    assert.equal(providers.length, 0, 'sin providers HTTP en producción (#6861)');
+    for (const [provider, spec] of Object.entries(TEST_ENDPOINTS)) {
+        assert.ok(spec.url.startsWith('https://'), `${provider} url debe ser HTTPS literal`);
+    }
     for (const [provider, spec] of Object.entries(endpoints)) {
         assert.ok(spec.url.startsWith('https://'), `${provider} url debe ser HTTPS literal`);
         assert.equal(typeof spec.url, 'string', `${provider} url debe ser string literal`);
@@ -480,22 +529,15 @@ test('LINTER: el módulo NO usa http:// (cleartext)', () => {
 
 // #6563 — casos de header de cerebras y nvidia-nim retirados con los providers.
 
-test('Gemini-Google usa Authorization Bearer (shim OpenAI-compat, NO key en query)', () => {
-    const spec = completion.PROVIDER_COMPLETION_ENDPOINTS['gemini-google'];
-    assert.equal(spec.authHeader, 'authorization');
-    assert.equal(spec.authFormat, 'bearer');
-    assert.ok(!spec.url.includes('?key='), 'Gemini OpenAI-compat NO debe llevar key en query string');
-    assert.ok(spec.url.includes('/v1beta/openai/chat/completions'),
-        'Gemini debe usar el shim OpenAI-compat de v1beta, no /v1beta/models/X:generateContent');
-});
-
-test('PROVIDER_MODELS_ALLOWLIST incluye los modelos que usa producción (snapshot agent-models.json)', () => {
-    // Sanity check defensivo: los modelos en producción deben estar en la
-    // allowlist. Si alguien cambia agent-models.json, este test pega antes
-    // que el dashboard.
+test('#6861 (CA-4/SEC-4): el shim de Google AI Studio se RETIRÓ del módulo, no se desactivó', () => {
+    assert.equal(completion.PROVIDER_COMPLETION_ENDPOINTS['antigravity'], undefined);
+    assert.equal(completion.PROVIDER_COMPLETION_ENDPOINTS['gemini-google'], undefined);
+    assert.equal(completion.PROVIDER_MODELS_ALLOWLIST['antigravity'], undefined);
+    assert.equal(completion.PROVIDER_MODELS_ALLOWLIST['gemini-google'], undefined);
+    assert.doesNotMatch(MODULE_SOURCE, /generativelanguage\.googleapis\.com/, 'sin endpoint de AI Studio');
+    assert.doesNotMatch(MODULE_SOURCE, /x-goog-api-key/, 'sin header de AI Studio');
+    assert.doesNotMatch(MODULE_SOURCE, /GEMINI_API_KEY/, 'sin consumidor de la key retirada');
     // #6563 — cerebras y nvidia-nim retirados: sus listas NO deben reaparecer.
-    assert.ok(completion.isAllowedModel('gemini-google', 'gemini-3.8-flash-medium'),
-        'gemini-google/gemini-3.8-flash-medium en producción debe estar allowlisted');
     assert.equal(completion.PROVIDER_MODELS_ALLOWLIST.cerebras, undefined,
         'cerebras retirado (#6563): sin allowlist de modelos');
     assert.equal(completion.PROVIDER_MODELS_ALLOWLIST['nvidia-nim'], undefined,
@@ -522,10 +564,10 @@ test('CA-CLIENT-4: caller pidiendo timeout > 0 se respeta sin cap (2026-06-02)',
     // cap absoluto, el valor se respeta tal cual (opt-in explícito del caller).
     const dir = tmpDir();
     const f = path.join(dir, 'config.json');
-    writeKeys(f, { gemini_google_api_key: 'AIzaSyTest_1234567890abcdef000' });
+    writeKeys(f, { openai_api_key: 'sk-test_1234567890abcdef000' });
     const r = await completion.complete({
-        provider: 'gemini-google',
-        model: 'gemini-3.8-flash-medium',
+        provider: TEST_PROVIDER,
+        model: TEST_MODEL,
         prompt: 'ping',
         timeoutMs: 999_999, // se respeta sin cap (ya no hay ABSOLUTE_MAX)
         secretsPath: f,
@@ -544,10 +586,10 @@ test('CA-CLIENT-4: caller pidiendo timeout > 0 se respeta sin cap (2026-06-02)',
 test('#3484: caller con timeoutMs negativo o inválido cae a DEFAULT_TIMEOUT_MS', async () => {
     const dir = tmpDir();
     const f = path.join(dir, 'config.json');
-    writeKeys(f, { gemini_google_api_key: 'AIzaSyTest_1234567890abcdef000' });
+    writeKeys(f, { openai_api_key: 'sk-test_1234567890abcdef000' });
     const r = await completion.complete({
-        provider: 'gemini-google',
-        model: 'gemini-3.8-flash-medium',
+        provider: TEST_PROVIDER,
+        model: TEST_MODEL,
         prompt: 'ping',
         timeoutMs: -100,
         secretsPath: f,
@@ -568,7 +610,7 @@ test('#3484: caller con timeoutMs negativo o inválido cae a DEFAULT_TIMEOUT_MS'
 // hardcoded ANTES fallaba con invalid_model y mataba un eslabón sano de la
 // cascada (caso real histórico: cerebras=gpt-oss-120b, provider retirado en
 // #6563). Ahora se acepta. Estos tests ejercitan la vía config-aware con
-// gemini-google y un id ficticio (`gemini-9.9-flash-test`) que queda fuera de
+// el provider de prueba y un id ficticio (`test-model-9.9-configured`) que queda fuera de
 // la lista hardcoded.
 
 function writeAgentModels(pipelineDir, json) {
@@ -578,14 +620,14 @@ function writeAgentModels(pipelineDir, json) {
 test('MP-04 · modelo configurado en agent-models.json pero NO en allowlist hardcoded → aceptado', async () => {
     const pipelineDir = tmpDir();
     writeAgentModels(pipelineDir, {
-        providers: { 'gemini-google': { model: 'gemini-9.9-flash-test' } },
+        providers: { [TEST_PROVIDER]: { model: 'test-model-9.9-configured' } },
         skills: {},
     });
     const f = path.join(pipelineDir, 'config.json');
-    writeKeys(f, { gemini_google_api_key: 'AIzaSyTest_1234567890abcdef000' });
+    writeKeys(f, { openai_api_key: 'sk-test_1234567890abcdef000' });
     const r = await completion.complete({
-        provider: 'gemini-google',
-        model: 'gemini-9.9-flash-test', // NO está en PROVIDER_MODELS_ALLOWLIST
+        provider: TEST_PROVIDER,
+        model: 'test-model-9.9-configured', // NO está en PROVIDER_MODELS_ALLOWLIST
         prompt: 'ping',
         pipelineDir,
         secretsPath: f,
@@ -601,14 +643,14 @@ test('MP-04 · modelo configurado en agent-models.json pero NO en allowlist hard
 test('MP-04 · modelo declarado como model_override de un fallback también se acepta', async () => {
     const pipelineDir = tmpDir();
     writeAgentModels(pipelineDir, {
-        providers: { 'gemini-google': { model: 'gemini-3.8-flash-medium' } },
-        skills: { qa: { provider: 'anthropic', fallbacks: [{ provider: 'gemini-google', model_override: 'gemini-9.9-flash-test' }] } },
+        providers: { [TEST_PROVIDER]: { model: TEST_MODEL } },
+        skills: { qa: { provider: 'anthropic', fallbacks: [{ provider: TEST_PROVIDER, model_override: 'test-model-9.9-configured' }] } },
     });
     const f = path.join(pipelineDir, 'config.json');
-    writeKeys(f, { gemini_google_api_key: 'AIzaSyTest_1234567890abcdef000' });
+    writeKeys(f, { openai_api_key: 'sk-test_1234567890abcdef000' });
     const r = await completion.complete({
-        provider: 'gemini-google',
-        model: 'gemini-9.9-flash-test',
+        provider: TEST_PROVIDER,
+        model: 'test-model-9.9-configured',
         prompt: 'ping',
         pipelineDir,
         secretsPath: f,
@@ -619,9 +661,9 @@ test('MP-04 · modelo declarado como model_override de un fallback también se a
 
 test('MP-04 · modelo NI en allowlist NI configurado sigue siendo invalid_model (defensa intacta)', async () => {
     const pipelineDir = tmpDir();
-    writeAgentModels(pipelineDir, { providers: { 'gemini-google': { model: 'gemini-3.8-flash-medium' } }, skills: {} });
+    writeAgentModels(pipelineDir, { providers: { [TEST_PROVIDER]: { model: TEST_MODEL } }, skills: {} });
     const r = await completion.complete({
-        provider: 'gemini-google',
+        provider: TEST_PROVIDER,
         model: 'modelo-arbitrario-no-declarado',
         prompt: 'hi',
         pipelineDir,
@@ -667,14 +709,14 @@ function fakeHttpSequence(responses) {
 test('MP-12 · 2xx con schema_drift en el 1er intento → reintenta y devuelve éxito en el 2do', async () => {
     const dir = tmpDir();
     const f = path.join(dir, 'config.json');
-    writeKeys(f, { gemini_google_api_key: 'AIzaSyTest_1234567890abcdef000' });
+    writeKeys(f, { openai_api_key: 'sk-test_1234567890abcdef000' });
     const http = fakeHttpSequence([
         { status: 200, body: '<html>blip</html>' }, // malformado
         { status: 200, body: JSON.stringify({ choices: [{ message: { content: 'recuperado' } }] }) },
     ]);
     const r = await completion.complete({
-        provider: 'gemini-google',
-        model: 'gemini-3.8-flash-medium',
+        provider: TEST_PROVIDER,
+        model: TEST_MODEL,
         prompt: 'ping',
         secretsPath: f,
         httpImpl: http,
@@ -687,11 +729,11 @@ test('MP-12 · 2xx con schema_drift en el 1er intento → reintenta y devuelve �
 test('MP-12 · schema_drift persistente en ambos intentos → invalid_response (sin retry infinito)', async () => {
     const dir = tmpDir();
     const f = path.join(dir, 'config.json');
-    writeKeys(f, { gemini_google_api_key: 'AIzaSyTest_1234567890abcdef000' });
+    writeKeys(f, { openai_api_key: 'sk-test_1234567890abcdef000' });
     const http = fakeHttpSequence([{ status: 200, body: '<html>roto</html>' }]);
     const r = await completion.complete({
-        provider: 'gemini-google',
-        model: 'gemini-3.8-flash-medium',
+        provider: TEST_PROVIDER,
+        model: TEST_MODEL,
         prompt: 'ping',
         secretsPath: f,
         httpImpl: http,
@@ -705,11 +747,11 @@ test('MP-12 · schema_drift persistente en ambos intentos → invalid_response (
 test('MP-12 · error NO-2xx (5xx) NO consume retry — cascada inmediata', async () => {
     const dir = tmpDir();
     const f = path.join(dir, 'config.json');
-    writeKeys(f, { gemini_google_api_key: 'AIzaSyTest_1234567890abcdef000' });
+    writeKeys(f, { openai_api_key: 'sk-test_1234567890abcdef000' });
     const http = fakeHttpSequence([{ status: 503, body: 'down' }]);
     const r = await completion.complete({
-        provider: 'gemini-google',
-        model: 'gemini-3.8-flash-medium',
+        provider: TEST_PROVIDER,
+        model: TEST_MODEL,
         prompt: 'ping',
         secretsPath: f,
         httpImpl: http,
@@ -728,10 +770,10 @@ test('MP-12 · error NO-2xx (5xx) NO consume retry — cascada inmediata', async
 test('#4353 CA-5 — 5xx con email en el body → error.detail redactado (no eco crudo)', async () => {
     const dir = tmpDir();
     const f = path.join(dir, 'config.json');
-    writeKeys(f, { gemini_google_api_key: 'AIzaSyTest_1234567890abcdef000' });
+    writeKeys(f, { openai_api_key: 'sk-test_1234567890abcdef000' });
     const r = await completion.complete({
-        provider: 'gemini-google',
-        model: 'gemini-3.8-flash-medium',
+        provider: TEST_PROVIDER,
+        model: TEST_MODEL,
         prompt: 'ping',
         secretsPath: f,
         // El upstream eco-a el mensaje del usuario, que traía un email (PII).
@@ -748,11 +790,11 @@ test('#4353 CA-5 — 5xx con email en el body → error.detail redactado (no eco
 test('#4353 CA-5 — detail acotado a DETAIL_MAX_BYTES (512) aunque el body sea enorme', async () => {
     const dir = tmpDir();
     const f = path.join(dir, 'config.json');
-    writeKeys(f, { gemini_google_api_key: 'AIzaSyTest_1234567890abcdef000' });
+    writeKeys(f, { openai_api_key: 'sk-test_1234567890abcdef000' });
     const hugeBody = 'x'.repeat(5000); // > 512 pero < MAX_BODY_BYTES (16KB, no truncated)
     const r = await completion.complete({
-        provider: 'gemini-google',
-        model: 'gemini-3.8-flash-medium',
+        provider: TEST_PROVIDER,
+        model: TEST_MODEL,
         prompt: 'ping',
         secretsPath: f,
         httpImpl: fakeHttp({ status: 503, body: hugeBody }),

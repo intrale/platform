@@ -209,7 +209,8 @@ function renderCostosClientScript() {
 //   - Detalle por skill con COLUMNA DE PROVEEDOR por fila (CA-5), nunca truncado.
 //   - «Cuota por proveedor»: una tarjeta por cada uno de los 3 proveedores con
 //     su modelo de límite propio (CA-2). Los gratuitos Groq/Cerebras/NVIDIA
-//     se retiraron en #6563; el único free tier vigente es Gemini.
+//     se retiraron en #6563; Antigravity (#6861) corre por licencia (cuota
+//     fija de suscripción, sin costo por token), no como free tier.
 //
 // HTML/CSS NATIVO scoped a `#costos-redesign` (sin librería de charting →
 // cumple REQ-SEC supply-chain A06/A08). Todo dato dinámico pasa por
@@ -220,15 +221,17 @@ function renderCostosClientScript() {
 
 // Orden de apilado FIJO bottom→top, determinístico entre renders. `openai-codex`
 // es el provider real de Codex en el activity-log; `deterministic` apila último.
-const PROVIDER_STACK_ORDER = ['anthropic', 'openai-codex', 'gemini'];
-const CHART_STACK_ORDER = ['anthropic', 'openai-codex', 'gemini', 'deterministic'];
+const PROVIDER_STACK_ORDER = ['anthropic', 'openai-codex', 'antigravity'];
+const CHART_STACK_ORDER = ['anthropic', 'openai-codex', 'antigravity', 'deterministic'];
 
 // Identidad por proveedor alineada al mockup MIZPÁ (color + etiqueta + tier +
 // si es free tier). Paleta scoped a #costos-redesign vía las clases de segmento.
 const PROVIDER_META = {
     'anthropic':     { label: 'Claude',        color: '#34D9E0', tier: 'PLAN MAX', tierCls: 'max',  free: false },
     'openai-codex':  { label: 'Codex',         color: '#A78BFA', tier: 'PAGO',     tierCls: 'pay',  free: false },
-    'gemini':        { label: 'Gemini',        color: '#60A5FA', tier: 'FREE',     tierCls: 'free', free: true },
+    // #6861 (contrato UX U4): licencia = cuota fija de suscripción, ni PAGO
+    // (consume créditos por token) ni FREE. `free:false` + `tierCls:'lic'`.
+    'antigravity':   { label: 'Antigravity',   color: '#60A5FA', tier: 'LICENCIA', tierCls: 'lic',  free: false },
     'deterministic': { label: 'Deterministas', color: '#FBBF24', tier: 'DET',      tierCls: 'det',  free: false },
     'unknown':       { label: 'Otros',         color: '#8A93A6', tier: '—',        tierCls: 'det',  free: false },
 };
@@ -236,7 +239,7 @@ const PROVIDER_META = {
 // Clave CSS corta por proveedor (para las clases de segmento .seg-cl, etc.).
 const PROVIDER_SEG = {
     'anthropic': 'cl', 'openai-codex': 'cx',
-    'gemini': 'gm', 'deterministic': 'de', 'unknown': 'un',
+    'antigravity': 'ag', 'deterministic': 'de', 'unknown': 'un',
 };
 
 // Íconos por skill (decorativos, aria-hidden). Default genérico para skills no
@@ -248,17 +251,33 @@ const SKILL_ICONS = {
     'backend-dev': '🧩', 'android-dev': '🤖', 'web-dev': '🌐', historia: '📖',
 };
 
+// #6861 (D10) — normalización de HISTÓRICO en lectura, por tabla explícita.
+// Los jsonl de costos/métricas persistidos antes del rename traen
+// `"provider":"gemini-google"` (y algún alias corto). Las claves de entrada
+// viejas se mapean al bucket vigente para que el histórico no se pierda ni
+// caiga en `unknown`. Son claves de LECTURA de datos ya escritos, nunca valores
+// válidos de config ni aliases de runtime (SEC-1).
+const HISTORIC_PROVIDER_KEYS = {
+    'gemini-google': 'antigravity', // histórico pre-#6861
+    'gemini': 'antigravity',        // histórico pre-#6861
+    'antigravity': 'antigravity',
+};
+
 // Normaliza claves de proveedor que llegan con alias del activity-log a la
-// clave canónica del catálogo. Defensivo ante variantes (`claude`, `google`…).
+// clave canónica del catálogo. Defensivo ante variantes (`claude`, `openai`…).
 function normProvider(p) {
     const s = String(p || '').toLowerCase();
     if (!s) return 'unknown';
+    if (Object.prototype.hasOwnProperty.call(HISTORIC_PROVIDER_KEYS, s)) return HISTORIC_PROVIDER_KEYS[s];
     if (s.includes('anthropic') || s.includes('claude')) return 'anthropic';
     if (s.includes('codex') || s.includes('openai')) return 'openai-codex';
-    if (s.includes('gemini') || s.includes('google')) return 'gemini';
     if (s.includes('determ')) return 'deterministic';
     return PROVIDER_META[s] ? s : 'unknown';
 }
+
+// Proveedores sin costo por token: free tier (`free:true`) o licencia de
+// suscripción (`tierCls:'lic'`, Antigravity). Gobierna el copy "sin costo".
+function isNoTokenCost(meta) { return !!(meta && (meta.free || meta.tierCls === 'lic')); }
 
 function providerMeta(p) { return PROVIDER_META[normProvider(p)] || PROVIDER_META.unknown; }
 function providerColor(p) { return providerMeta(p).color; }
@@ -438,7 +457,7 @@ function deriveMission(slice, ds) {
         const c = Number((v && v.cost_usd) || 0);
         totalCost += c;
         if (p === 'anthropic' || p === 'openai-codex') paid += c;
-        if (PROVIDER_META[p] && PROVIDER_META[p].free) freeSessions += Number((v && v.sessions) || 0);
+        if (isNoTokenCost(PROVIDER_META[p])) freeSessions += Number((v && v.sessions) || 0);
     }
     const paidPct = totalCost > 0 ? (paid / totalCost) * 100 : 0;
 
@@ -459,12 +478,12 @@ function renderMissionBanner(slice) {
             ? '<span class="cz-pill-warn">REVISÁ EL RITMO</span>'
             : '<span class="cz-pill-ok">EN RANGO</span>';
         const desc = alarm
-            ? 'El promedio diario proyecta un cierre de mes por encima del tope. Casi todo el gasto se concentra en los proveedores pagos (Claude y Codex); los free tier no suman costo. Ajustá el presupuesto o el mix de proveedores.'
-            : 'El ritmo actual proyecta un cierre de mes dentro del tope configurado. El proveedor free tier (Gemini) absorbe carga a costo cero.';
+            ? 'El promedio diario proyecta un cierre de mes por encima del tope. Casi todo el gasto se concentra en los proveedores pagos (Claude y Codex); free tier y licencia no suman costo por token. Ajustá el presupuesto o el mix de proveedores.'
+            : 'El ritmo actual proyecta un cierre de mes dentro del tope configurado. La licencia Antigravity absorbe carga sin costo por token.';
 
         const topHtml = m.top
             ? `<div class="cz-oldest-val"><span class="cz-oldest-skill">${escapeHtmlText(m.top.skill)}</span> · ${escapeHtmlText(fmtUsd(m.top.total))}</div>`
-              + `<div class="cz-oldest-sub">Corrió en ${escapeHtmlText(providerLabel(m.top.provider))}. ${PROVIDER_META[m.top.provider] && PROVIDER_META[m.top.provider].free ? 'Ya corre en free tier.' : 'Mirá si conviene derivarlo a un proveedor free tier.'}</div>`
+              + `<div class="cz-oldest-sub">Corrió en ${escapeHtmlText(providerLabel(m.top.provider))}. ${isNoTokenCost(PROVIDER_META[m.top.provider]) ? 'Ya corre sin costo por token.' : 'Mirá si conviene derivarlo a un proveedor sin costo por token.'}</div>`
             : '<div class="cz-oldest-val">sin datos por skill todavía</div>';
 
         return `<section class="cz-mission ${alarm ? 'cz-mission-alarm' : 'cz-mission-ok'}" role="${alarm ? 'alert' : 'status'}" aria-label="Estado de presupuesto de costos">
@@ -549,7 +568,7 @@ function renderCostosChart(slice) {
             : '';
 
         const emptyNote = !hasData
-            ? `<div class="cz-empty">Sin consumo registrado en los últimos 14 días. Las barras se llenan a medida que terminan agentes (los free tier y deterministas suman $0).</div>`
+            ? `<div class="cz-empty">Sin consumo registrado en los últimos 14 días. Las barras se llenan a medida que terminan agentes (los free tier, la licencia Antigravity y los deterministas suman $0).</div>`
             : '';
 
         return `<div class="cz-chart-wrap">
@@ -634,7 +653,7 @@ function renderProjectionsCards(slice) {
         const m = deriveMission(slice, deriveDailySeries(slice));
         const mix = `<div class="cz-mixnote">
   <div class="cz-mk">💡 Mix de proveedores</div>
-  <div class="cz-mv"><b>${escapeHtmlText(m.paidPct.toFixed(1))}%</b> del gasto sale de <b>Claude + Codex</b> (pagos). Gemini absorbió <b>${escapeHtmlText(String(m.freeSessions))} sesiones</b> a costo cero. Subir su cuota libera presupuesto pago.</div>
+  <div class="cz-mv"><b>${escapeHtmlText(m.paidPct.toFixed(1))}%</b> del gasto sale de <b>Claude + Codex</b> (pagos). Antigravity (licencia) absorbió <b>${escapeHtmlText(String(m.freeSessions))} sesiones</b> sin costo por token. Derivarle más carga libera presupuesto pago.</div>
 </div>`;
 
         return `<div class="cz-projcards">${weeklyCard}${monthlyCard}${devCard}</div>${mix}`;
@@ -670,7 +689,7 @@ function renderDrillDown(slice) {
         }).join('');
 
         return `<div class="cz-skilltable">${rows}</div>
-  <div class="cz-foot">ℹ️ Se listan <b>todos</b> los skills del período, nunca se truncan ni se resumen con «+X más». El chip muestra el proveedor con el que corrió cada skill. Los <code>$0.00</code> son free tier o deterministas. Detalle saneado: sólo skill, proveedor, costo y sesiones — sin paths, prompts ni tokens.</div>`;
+  <div class="cz-foot">ℹ️ Se listan <b>todos</b> los skills del período, nunca se truncan ni se resumen con «+X más». El chip muestra el proveedor con el que corrió cada skill. Los <code>$0.00</code> son free tier, licencia o deterministas. Detalle saneado: sólo skill, proveedor, costo y sesiones — sin paths, prompts ni tokens.</div>`;
     } catch (e) {
         return `<div class="cz-empty">Detalle por skill no disponible.</div>`;
     }
@@ -728,22 +747,24 @@ function renderProviderQuota(slice) {
             + metric('📊 Hoy (uso)', null, sessionsOf('openai-codex') + ' ses.', 'linear-gradient(90deg,#A78BFA,#60A5FA)');
         const codexReset = 'Cuota de plan OpenAI · reset semanal · uso real por activity-log';
 
-        // FREE — requests/día (sesiones) + tokens/día estimado.
-        const freeCard = (key, color) => {
-            const sess = sessionsOf(key);
-            const metrics =
-                metric('📨 Requests/día', null, sess + ' req', color)
-                + metric('🔢 Tokens/día', null, 'estimado', color);
-            return card(key, metrics, 'Free tier · límite diario de requests/tokens · reset diario · <span class="cz-est">estimado</span>');
-        };
+        // ANTIGRAVITY (#6861, contrato UX U6) — licencia: requests/día (sesiones)
+        // + % semanal del plan. La medición semanal vive en /providers (#6564,
+        // `agy /usage`); si esta vista no la tiene a mano muestra "sin medir",
+        // nunca inventa un número.
+        const agWeeklyPct = (s.antigravityWeeklyPct != null && Number.isFinite(Number(s.antigravityWeeklyPct)))
+            ? Number(s.antigravityWeeklyPct) : null;
+        const antigravityMetrics =
+            metric('📨 Requests/día', null, sessionsOf('antigravity') + ' req', 'linear-gradient(90deg,#60A5FA,#34D9E0)')
+            + metric('🔆 Semanal (plan)', agWeeklyPct, agWeeklyPct == null ? 'sin medir' : null, 'linear-gradient(90deg,#8AB4F8,#4285F4)');
+        const antigravityReset = 'Licencia · cuota semanal medida en /providers · requests <span class="cz-est">estimados</span> (activity-log)';
 
         const cards = [
             card('anthropic', claudeMetrics, claudeReset),
             card('openai-codex', codexMetrics, codexReset),
-            freeCard('gemini', 'linear-gradient(90deg,#60A5FA,#34D9E0)'),
+            card('antigravity', antigravityMetrics, antigravityReset),
         ].join('');
 
-        return `<div class="cz-quotanote">Todos los proveedores tienen su techo. <b>Claude</b> (Plan Max) y <b>Codex</b> (pago) son los que tienen costo; <b>Gemini</b> corre en free tier con límites diarios de requests/tokens. Donde el proveedor no expone API de cuota, el valor es <b>estimado</b> desde el uso del activity-log.</div>
+        return `<div class="cz-quotanote">Todos los proveedores tienen su techo. <b>Claude</b> (Plan Max), <b>Codex</b> (pago) y <b>Antigravity</b> (licencia) tienen cuota de plan. Donde el proveedor no expone API de cuota, el valor es <b>estimado</b> desde el uso del activity-log.</div>
   <div class="cz-pqgrid">${cards}</div>`;
     } catch (e) {
         return `<div class="cz-empty">Cuota por proveedor no disponible.</div>`;
@@ -821,21 +842,23 @@ function panelHeader(icon, title, sub, tip) {
 const PROVIDER_DISPLAY = {
     anthropic: 'Anthropic',
     'openai-codex': 'OpenAI / Codex',
-    'gemini-google': 'Gemini (Google AI Studio)',
+    'antigravity': 'Antigravity CLI',
     deterministic: 'Determinístico',
 };
 // Clasificación canónica free/pago (feedback_free-providers-rule.md · UX-G2).
-// tier: 'pay' | 'free' | 'det'. Determina el chip y el orden de filas (UX-G4:
-// pagos → free → determinístico).
+// tier: 'pay' | 'lic' | 'free' | 'det'. Determina el chip y el orden de filas
+// (UX-G4 + #6861 U8: pagos → licencia → free → determinístico, de mayor a
+// menor costo marginal).
 const PROVIDER_TIER = {
     anthropic: 'pay',
     'openai-codex': 'pay',
-    'gemini-google': 'free',
+    'antigravity': 'lic',
     deterministic: 'det',
 };
-const TIER_ORDER = { pay: 0, free: 1, det: 2, unknown: 3 };
+const TIER_ORDER = { pay: 0, lic: 1, free: 2, det: 3, unknown: 4 };
 const TIER_CHIP = {
     pay: { cls: 'cz-ptier-pay', label: 'Pago' },
+    lic: { cls: 'cz-ptier-lic', label: 'Licencia' },
     free: { cls: 'cz-ptier-free', label: 'Free' },
     det: { cls: 'cz-ptier-det', label: 'Sin costo' },
     unknown: { cls: 'cz-ptier-pay', label: '—' },
@@ -865,8 +888,8 @@ function renderProviderCostBreakdown(slice) {
     // UX-G4: orden estable — pagos primero, luego free, determinístico al final;
     // dentro del mismo tier, por tokens desc para relevancia de costo.
     rows.sort((a, b) => {
-        const ta = TIER_ORDER[a.tier] != null ? TIER_ORDER[a.tier] : 3;
-        const tb = TIER_ORDER[b.tier] != null ? TIER_ORDER[b.tier] : 3;
+        const ta = TIER_ORDER[a.tier] != null ? TIER_ORDER[a.tier] : TIER_ORDER.unknown;
+        const tb = TIER_ORDER[b.tier] != null ? TIER_ORDER[b.tier] : TIER_ORDER.unknown;
         if (ta !== tb) return ta - tb;
         return b.tokensTotal - a.tokensTotal;
     });
@@ -894,7 +917,7 @@ function renderCostosRedesign(slice) {
         inner = `${renderMissionBanner(slice)}
   <div class="cz-grid">
     <div class="cz-panel">
-      ${panelHeader('📊', 'Consumo diario por proveedor', 'últimos 14 días · US$ por día, apilado por los 3 proveedores + deterministas', 'Cada barra es un día; los colores apilan cuánto gastó cada proveedor. Claude y Codex son pagos; Gemini corre en free tier (US$ 0). La línea punteada es el presupuesto diario.')}
+      ${panelHeader('📊', 'Consumo diario por proveedor', 'últimos 14 días · US$ por día, apilado por los 3 proveedores + deterministas', 'Cada barra es un día; los colores apilan cuánto gastó cada proveedor. Claude y Codex son pagos; Antigravity corre por licencia (US$ 0 por token). La línea punteada es el presupuesto diario.')}
       ${renderCostosChart(slice)}
       ${renderBudgetForm(slice)}
     </div>
@@ -904,15 +927,15 @@ function renderCostosRedesign(slice) {
     </div>
   </div>
   <div class="cz-panel">
-    ${panelHeader('🧮', 'Costo por proveedor', 'telemetría granular por ejecución — tokens y sesiones desglosados por proveedor real', 'Lee la telemetría append-only por ejecución (provider-cost.jsonl). Provider como dimensión primaria: Anthropic y OpenAI/Codex son pagos; Gemini corre en free tier; el determinístico no consume cuota LLM. Si todavía no hay registros, muestra un estado vacío explícito en vez de ceros.')}
+    ${panelHeader('🧮', 'Costo por proveedor', 'telemetría granular por ejecución — tokens y sesiones desglosados por proveedor real', 'Lee la telemetría append-only por ejecución (provider-cost.jsonl). Provider como dimensión primaria: Anthropic y OpenAI/Codex son pagos; Antigravity corre por licencia; el determinístico no consume cuota LLM. Si todavía no hay registros, muestra un estado vacío explícito en vez de ceros.')}
     ${renderProviderCostBreakdown(slice)}
   </div>
   <div class="cz-panel">
-    ${panelHeader('🧩', 'Detalle por skill', 'skill, proveedor que lo corrió, costo y sesiones — sin paths, prompts ni tokens', 'Cuánto consumió cada rol de agente y en qué proveedor corrió. Los $0.00 corren en free tier (Gemini) o son deterministas.')}
+    ${panelHeader('🧩', 'Detalle por skill', 'skill, proveedor que lo corrió, costo y sesiones — sin paths, prompts ni tokens', 'Cuánto consumió cada rol de agente y en qué proveedor corrió. Los $0.00 corren por licencia (Antigravity) o son deterministas.')}
     ${renderDrillDown(slice)}
   </div>
   <div class="cz-panel">
-    ${panelHeader('🔌', 'Cuota por proveedor', 'límites y consumo de los 3 proveedores del pipeline — no solo Anthropic', 'Cada proveedor tiene su propio modelo de límite: Claude por sesión 5h + semanal (Plan Max), Codex por plan pago, y el free tier (Gemini) por requests y tokens diarios. Las cuotas que el proveedor no expone por API se estiman desde el activity-log.')}
+    ${panelHeader('🔌', 'Cuota por proveedor', 'límites y consumo de los 3 proveedores del pipeline — no solo Anthropic', 'Cada proveedor tiene su propio modelo de límite: Claude por sesión 5h + semanal (Plan Max), Codex por plan pago, y Antigravity por la cuota semanal de su licencia (medida en /providers). Las cuotas que el proveedor no expone por API se estiman desde el activity-log.')}
     ${renderProviderQuota(slice)}
   </div>`;
     } catch (e) {
@@ -995,7 +1018,7 @@ function costosRedesignStyle() {
 #costos-redesign .cz-seg{width:100%}
 #costos-redesign .cz-seg-cl{background:linear-gradient(180deg,#34D9E0,#2596b8)}
 #costos-redesign .cz-seg-cx{background:linear-gradient(180deg,#A78BFA,#7c5cff)}
-#costos-redesign .cz-seg-gm{background:linear-gradient(180deg,#60A5FA,#3b73c4)}
+#costos-redesign .cz-seg-ag{background:linear-gradient(180deg,#60A5FA,#3b73c4)}
 #costos-redesign .cz-seg-de{background:linear-gradient(180deg,#FBBF24,#d99a12)}
 #costos-redesign .cz-seg-un{background:linear-gradient(180deg,#8A93A6,#5B6376)}
 #costos-redesign .cz-bx{font-size:9.5px;color:var(--cz-mut2);font-weight:700}
@@ -1067,7 +1090,7 @@ function costosRedesignStyle() {
 #costos-redesign .cz-pq-cl::before{background:#34D9E0}
 #costos-redesign .cz-pq-cx::before{background:#A78BFA}
 #costos-redesign .cz-pq-gq::before{background:#FB923C}
-#costos-redesign .cz-pq-gm::before{background:#60A5FA}
+#costos-redesign .cz-pq-ag::before{background:#60A5FA}
 #costos-redesign .cz-pq-cb::before{background:#34D399}
 #costos-redesign .cz-pqtop{display:flex;align-items:center;gap:8px}
 #costos-redesign .cz-pqtop .cz-pd{width:11px;height:11px}
@@ -1075,6 +1098,7 @@ function costosRedesignStyle() {
 #costos-redesign .cz-ptier{margin-left:auto;font-size:8.5px;font-weight:800;letter-spacing:.5px;padding:3px 7px;border-radius:7px}
 #costos-redesign .cz-ptier-pay{color:#fecaca;background:rgba(248,113,113,.13);border:1px solid rgba(248,113,113,.3)}
 #costos-redesign .cz-ptier-max{color:#c9bcff;background:rgba(167,139,250,.13);border:1px solid rgba(167,139,250,.32)}
+#costos-redesign .cz-ptier-lic{color:#CBD9F9;background:rgba(138,180,248,.13);border:1px solid rgba(138,180,248,.32)}
 #costos-redesign .cz-ptier-free{color:#7ee2bd;background:rgba(52,211,153,.12);border:1px solid rgba(52,211,153,.3)}
 #costos-redesign .cz-ptier-det{color:#fde68a;background:rgba(251,191,36,.12);border:1px solid rgba(251,191,36,.3)}
 #costos-redesign .cz-pl{display:flex;align-items:baseline;justify-content:space-between;font-size:10px;font-weight:700;color:var(--cz-mut2);gap:8px}
@@ -1103,4 +1127,12 @@ module.exports = {
     renderBudgetClientScript,
     renderCostosRedesign,
     PROVIDER_STACK_ORDER,
+    // #6861 — expuestos para el test de normalización de histórico (D10) y del
+    // tier de licencia (contrato UX U4/U8).
+    normProvider,
+    PROVIDER_META,
+    HISTORIC_PROVIDER_KEYS,
+    PROVIDER_TIER,
+    TIER_ORDER,
+    TIER_CHIP,
 };

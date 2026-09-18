@@ -48,7 +48,7 @@ test('isValidProvider acepta solo la allowlist', () => {
     withSandbox((mod) => {
         assert.equal(mod.isValidProvider('anthropic'), true);
         assert.equal(mod.isValidProvider('openai-codex'), true);
-        assert.equal(mod.isValidProvider('gemini-google'), true);
+        assert.equal(mod.isValidProvider('antigravity'), true);
         // deterministic NO es un provider de IA → no apagable.
         assert.equal(mod.isValidProvider('deterministic'), false);
         // #6563 — providers retirados del plantel: ya no son apagables.
@@ -98,21 +98,21 @@ test('set es idempotente: apagar dos veces no duplica la entrada', () => {
 
 test('clear re-habilita y devuelve true; clear de no-apagado devuelve false', () => {
     withSandbox((mod) => {
-        mod.setProviderDisabled('gemini-google', NOAUDIT);
-        assert.equal(mod.clearProviderDisabled('gemini-google', NOAUDIT), true);
-        assert.equal(mod.isProviderDisabled('gemini-google', NOAUDIT), false);
+        mod.setProviderDisabled('antigravity', NOAUDIT);
+        assert.equal(mod.clearProviderDisabled('antigravity', NOAUDIT), true);
+        assert.equal(mod.isProviderDisabled('antigravity', NOAUDIT), false);
         // Segundo clear: ya no estaba apagado.
-        assert.equal(mod.clearProviderDisabled('gemini-google', NOAUDIT), false);
+        assert.equal(mod.clearProviderDisabled('antigravity', NOAUDIT), false);
     });
 });
 
 test('clear de un provider no afecta a los demás apagados', () => {
     withSandbox((mod) => {
         mod.setProviderDisabled('anthropic', NOAUDIT);
-        mod.setProviderDisabled('gemini-google', NOAUDIT);
+        mod.setProviderDisabled('antigravity', NOAUDIT);
         mod.clearProviderDisabled('anthropic', NOAUDIT);
         assert.equal(mod.isProviderDisabled('anthropic', NOAUDIT), false);
-        assert.equal(mod.isProviderDisabled('gemini-google', NOAUDIT), true);
+        assert.equal(mod.isProviderDisabled('antigravity', NOAUDIT), true);
     });
 });
 
@@ -134,9 +134,9 @@ test('TTL: entrada vencida se drena en lectura (auto-restaurado)', () => {
 test('TTL vencido se persiste como drenado: el archivo refleja la limpieza', () => {
     withSandbox((mod) => {
         const t0 = 2_000_000_000_000;
-        mod.setProviderDisabled('gemini-google', { ttlMs: 1000, now: t0, auditLogEnabled: false });
+        mod.setProviderDisabled('antigravity', { ttlMs: 1000, now: t0, auditLogEnabled: false });
         mod.setProviderDisabled('anthropic', { ttlMs: null, now: t0, auditLogEnabled: false });
-        // Lectura post-vencimiento de gemini-google: lo drena, conserva anthropic.
+        // Lectura post-vencimiento de antigravity: lo drena, conserva anthropic.
         const list = mod.listDisabledProviders({ now: t0 + 5000, auditLogEnabled: false });
         const names = list.disabled.map((e) => e.name);
         assert.deepEqual(names, ['anthropic']);
@@ -249,7 +249,7 @@ test('el archivo se borra cuando no quedan entradas activas', () => {
 test('clearAll borra el archivo entero', () => {
     withSandbox((mod) => {
         mod.setProviderDisabled('anthropic', NOAUDIT);
-        mod.setProviderDisabled('gemini-google', NOAUDIT);
+        mod.setProviderDisabled('antigravity', NOAUDIT);
         assert.equal(mod.clearAll(NOAUDIT), true);
         assert.equal(fs.existsSync(mod.flagFile()), false);
         // clearAll sobre archivo ausente → false.

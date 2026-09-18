@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // =============================================================================
-// gemini-adapter.smoke.js — Smoke E2E del adapter gemini-google
+// antigravity-adapter.smoke.js — Smoke E2E del adapter antigravity
 //
 // Objetivo: invocar el provider real (no mockeado) y verificar que el
 // pipeline buildSpawn → child_process.spawn → parseTokensFromLog cierra el
@@ -15,7 +15,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 
-const provider = require('../../lib/agent-launcher/providers/gemini-google.js');
+const provider = require('../../lib/agent-launcher/providers/antigravity.js');
 
 const TIMEOUT_MS = 90_000;
 const PROMPT = 'Responde exactamente con la palabra OK y nada mas. No expliques nada.';
@@ -72,7 +72,7 @@ async function main() {
     const dtMs = Date.now() - t0;
 
     const raw = fs.readFileSync(logPath, 'utf8');
-    const obj = provider._parseGeminiJson(raw);
+    const obj = provider._parseAntigravityJson(raw);
 
     console.log('---');
     console.log(`[smoke] exit_code      = ${exitCode}`);

@@ -77,13 +77,13 @@ function runN(chain, deps, n, requiresToolUse = false) {
 // CA-1 — Reparto entre providers sanos.
 // ---------------------------------------------------------------------------
 test('CA-1 — reparto entre ≥2 sanos: ninguno concentra el 100%', () => {
-    const chain = ['anthropic', 'openai-codex', 'gemini-google'];
+    const chain = ['anthropic', 'openai-codex', 'antigravity'];
     const deps = makeDeps({
         // Todos con cuota plena e igual para observar reparto por calidad.
         quota: {
             anthropic: { status: 'ok', pct: 100, gated: false },
             'openai-codex': { status: 'ok', pct: 100, gated: false },
-            'gemini-google': { status: 'ok', pct: 100, gated: false },
+            'antigravity': { status: 'ok', pct: 100, gated: false },
         },
         store: makeMemoryStore(),
     });
@@ -93,7 +93,7 @@ test('CA-1 — reparto entre ≥2 sanos: ninguno concentra el 100%', () => {
     // Los 3 sanos reciben al menos una selección (nadie queda en 0, nadie 100%).
     assert.ok(counts.anthropic > 0, 'anthropic debe recibir selecciones');
     assert.ok(counts['openai-codex'] > 0, 'codex debe recibir selecciones');
-    assert.ok(counts['gemini-google'] > 0, 'gemini debe recibir selecciones');
+    assert.ok(counts['antigravity'] > 0, 'gemini debe recibir selecciones');
     assert.ok(counts.anthropic < 60, 'ningún provider concentra el 100%');
     // El primario (mejor calidad) conserva la mayoría relativa.
     assert.ok(
@@ -101,7 +101,7 @@ test('CA-1 — reparto entre ≥2 sanos: ninguno concentra el 100%', () => {
         'el primario recibe más que el segundo en calidad',
     );
     assert.ok(
-        counts['openai-codex'] >= counts['gemini-google'],
+        counts['openai-codex'] >= counts['antigravity'],
         'el orden de calidad se refleja en el reparto',
     );
 });
@@ -122,7 +122,7 @@ test('CA-1 — único sano SÍ puede concentrar el 100%', () => {
 // ---------------------------------------------------------------------------
 test('CA-2 — con cuota plena, los pesos respetan QUALITY_ORDER', () => {
     const candidates = [
-        { provider: 'gemini-google', quotaPct: 100 },
+        { provider: 'antigravity', quotaPct: 100 },
         { provider: 'anthropic', quotaPct: 100 },
         { provider: 'openai-codex', quotaPct: 100 },
     ];
@@ -130,7 +130,7 @@ test('CA-2 — con cuota plena, los pesos respetan QUALITY_ORDER', () => {
     const byProvider = Object.fromEntries(weights.map((w) => [w.provider, w.weight]));
 
     assert.ok(byProvider.anthropic > byProvider['openai-codex'], 'Claude > Codex');
-    assert.ok(byProvider['openai-codex'] > byProvider['gemini-google'], 'Codex > Gemini');
+    assert.ok(byProvider['openai-codex'] > byProvider['antigravity'], 'Codex > Gemini');
 });
 
 test('CA-2 — primario conserva mayoría del peso mientras cuota >= min', () => {
@@ -164,14 +164,14 @@ test('CA-2 — cuota del primario por debajo del umbral degrada su peso', () => 
 // CA-3 — Provider gateado por shouldGateSpawn → 0 selecciones.
 // ---------------------------------------------------------------------------
 test('CA-3 — provider gateado por shouldGateSpawn recibe 0 selecciones', () => {
-    const chain = ['anthropic', 'gemini-google'];
-    const deps = makeDeps({ gated: ['gemini-google'], store: makeMemoryStore() });
+    const chain = ['anthropic', 'antigravity'];
+    const deps = makeDeps({ gated: ['antigravity'], store: makeMemoryStore() });
 
     const candidates = _buildCandidateSet({ chain, requiresToolUse: false, deps });
     assert.deepEqual(candidates.map((c) => c.provider), ['anthropic']);
 
     const counts = runN(chain, deps, 30);
-    assert.equal(counts['gemini-google'], undefined);
+    assert.equal(counts['antigravity'], undefined);
     assert.equal(counts.anthropic, 30);
 });
 
@@ -188,11 +188,11 @@ test('CA-4 — provider sin credencial recibe 0 selecciones', () => {
 });
 
 test('CA-4 — provider con credencial PLACEHOLDER/REVOKED recibe 0 selecciones', () => {
-    const chain = ['anthropic', 'openai-codex', 'gemini-google'];
+    const chain = ['anthropic', 'openai-codex', 'antigravity'];
     const deps = makeDeps({
         creds: {
             'openai-codex': 'sk-REVOKED-xxxx',
-            'gemini-google': 'sk-PLACEHOLDER-yyyy',
+            'antigravity': 'sk-PLACEHOLDER-yyyy',
         },
         placeholders: ['REVOKED', 'PLACEHOLDER'],
         store: makeMemoryStore(),
@@ -212,9 +212,9 @@ test('CA-4 — credencial vacía o whitespace se trata como ausente', () => {
 // CA-5 — Request tool-use no va a provider no-tool.
 // ---------------------------------------------------------------------------
 test('CA-5 — requiresToolUse excluye providers con supports_tool_use=false', () => {
-    const chain = ['anthropic', 'openai-codex', 'gemini-google'];
+    const chain = ['anthropic', 'openai-codex', 'antigravity'];
     const deps = makeDeps({
-        toolUse: { anthropic: true, 'openai-codex': false, 'gemini-google': false },
+        toolUse: { anthropic: true, 'openai-codex': false, 'antigravity': false },
         store: makeMemoryStore(),
     });
     const candidates = _buildCandidateSet({ chain, requiresToolUse: true, deps });
@@ -222,17 +222,17 @@ test('CA-5 — requiresToolUse excluye providers con supports_tool_use=false', (
 
     const counts = runN(chain, deps, 20, true);
     assert.equal(counts['openai-codex'], undefined);
-    assert.equal(counts['gemini-google'], undefined);
+    assert.equal(counts['antigravity'], undefined);
     assert.equal(counts.anthropic, 20);
 });
 
 test('CA-5 — sin requiresToolUse, un provider no-tool SÍ es candidato', () => {
-    const chain = ['anthropic', 'gemini-google'];
-    const deps = makeDeps({ toolUse: { anthropic: true, 'gemini-google': false } });
+    const chain = ['anthropic', 'antigravity'];
+    const deps = makeDeps({ toolUse: { anthropic: true, 'antigravity': false } });
     const candidates = _buildCandidateSet({ chain, requiresToolUse: false, deps });
     assert.deepEqual(
         candidates.map((c) => c.provider).sort(),
-        ['anthropic', 'gemini-google'],
+        ['anthropic', 'antigravity'],
     );
 });
 
@@ -276,7 +276,7 @@ test('A02 — reason NO contiene material de credencial', () => {
 // A08.4 — Estado SWRR corrupto NO habilita provider inelegible (fail-closed).
 // ---------------------------------------------------------------------------
 test('A08.4 — estado SWRR corrupto no habilita provider gateado/sin-credencial', () => {
-    const chain = ['anthropic', 'openai-codex', 'gemini-google'];
+    const chain = ['anthropic', 'openai-codex', 'antigravity'];
     // Store devuelve basura (no parsea a { current: {} }).
     const corruptStore = {
         readState: () => 'no-soy-un-objeto-valido',
@@ -284,7 +284,7 @@ test('A08.4 — estado SWRR corrupto no habilita provider gateado/sin-credencial
     };
     const deps = makeDeps({
         gated: ['openai-codex'],              // inelegible por gate
-        creds: { 'gemini-google': null },        // inelegible por credencial
+        creds: { 'antigravity': null },        // inelegible por credencial
         store: corruptStore,
     });
 

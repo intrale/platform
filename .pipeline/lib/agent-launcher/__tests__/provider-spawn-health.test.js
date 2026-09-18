@@ -37,7 +37,7 @@ test('una sola muerte NO apaga el provider (umbral 2 por default)', () => {
     const dir = tmpPipeline();
     const disabled = fakeDisabledModule();
     const r = psh.recordProviderSpawnDeath({
-        pipelineDir: dir, provider: 'gemini-google', skill: 'po', issue: 4630,
+        pipelineDir: dir, provider: 'antigravity', skill: 'po', issue: 4630,
         disabledModule: disabled,
     });
     assert.equal(r.consecutiveDeaths, 1);
@@ -49,21 +49,21 @@ test('al alcanzar el umbral se apaga el provider (backoff a nivel provider)', ()
     const dir = tmpPipeline();
     const disabled = fakeDisabledModule();
     // Muertes de dos issues distintos (contador es POR PROVIDER, no por issue).
-    psh.recordProviderSpawnDeath({ pipelineDir: dir, provider: 'gemini-google', skill: 'po', issue: 4630, disabledModule: disabled });
-    const r = psh.recordProviderSpawnDeath({ pipelineDir: dir, provider: 'gemini-google', skill: 'ux', issue: 4588, disabledModule: disabled });
+    psh.recordProviderSpawnDeath({ pipelineDir: dir, provider: 'antigravity', skill: 'po', issue: 4630, disabledModule: disabled });
+    const r = psh.recordProviderSpawnDeath({ pipelineDir: dir, provider: 'antigravity', skill: 'ux', issue: 4588, disabledModule: disabled });
     assert.equal(r.consecutiveDeaths, 2);
     assert.equal(r.disabled, true);
     assert.equal(disabled.calls.length, 1);
-    assert.equal(disabled.calls[0].provider, 'gemini-google');
+    assert.equal(disabled.calls[0].provider, 'antigravity');
     assert.equal(disabled.calls[0].opts.source, 'spawn-death');
     assert.ok(disabled.calls[0].opts.ttlMs > 0);
 });
 
 test('el estado se persiste POR PROVIDER, nunca por (skill,issue)', () => {
     const dir = tmpPipeline();
-    psh.recordProviderSpawnDeath({ pipelineDir: dir, provider: 'gemini-google', skill: 'po', issue: 4630, disabledModule: fakeDisabledModule() });
+    psh.recordProviderSpawnDeath({ pipelineDir: dir, provider: 'antigravity', skill: 'po', issue: 4630, disabledModule: fakeDisabledModule() });
     const raw = psh._readRaw(dir);
-    assert.deepEqual(Object.keys(raw.providers), ['gemini-google']);
+    assert.deepEqual(Object.keys(raw.providers), ['antigravity']);
     // No hay ninguna clave que mezcle skill/issue (la penalización no toca al issue).
     const serialized = JSON.stringify(raw);
     assert.equal(/4630|po:/.test(serialized), false);
@@ -72,13 +72,13 @@ test('el estado se persiste POR PROVIDER, nunca por (skill,issue)', () => {
 test('corrida sana resetea el contador (recordProviderHealthy)', () => {
     const dir = tmpPipeline();
     const disabled = fakeDisabledModule();
-    psh.recordProviderSpawnDeath({ pipelineDir: dir, provider: 'gemini-google', skill: 'po', issue: 1, disabledModule: disabled });
-    assert.equal(psh.peekProviderSpawnHealth({ pipelineDir: dir, provider: 'gemini-google' }).consecutiveDeaths, 1);
-    const cleared = psh.recordProviderHealthy({ pipelineDir: dir, provider: 'gemini-google' });
+    psh.recordProviderSpawnDeath({ pipelineDir: dir, provider: 'antigravity', skill: 'po', issue: 1, disabledModule: disabled });
+    assert.equal(psh.peekProviderSpawnHealth({ pipelineDir: dir, provider: 'antigravity' }).consecutiveDeaths, 1);
+    const cleared = psh.recordProviderHealthy({ pipelineDir: dir, provider: 'antigravity' });
     assert.equal(cleared, true);
-    assert.equal(psh.peekProviderSpawnHealth({ pipelineDir: dir, provider: 'gemini-google' }), null);
+    assert.equal(psh.peekProviderSpawnHealth({ pipelineDir: dir, provider: 'antigravity' }), null);
     // Tras el reset, una nueva muerte arranca de 1 (no acumula con la vieja).
-    const r = psh.recordProviderSpawnDeath({ pipelineDir: dir, provider: 'gemini-google', skill: 'po', issue: 2, disabledModule: disabled });
+    const r = psh.recordProviderSpawnDeath({ pipelineDir: dir, provider: 'antigravity', skill: 'po', issue: 2, disabledModule: disabled });
     assert.equal(r.consecutiveDeaths, 1);
     assert.equal(r.disabled, false);
 });
@@ -87,9 +87,9 @@ test('ventana deslizante: muerte fuera de ventana reinicia el contador', () => {
     const dir = tmpPipeline();
     const disabled = fakeDisabledModule();
     const t0 = 1_000_000;
-    psh.recordProviderSpawnDeath({ pipelineDir: dir, provider: 'gemini-google', skill: 'po', issue: 1, now: t0, windowMs: 1000, disabledModule: disabled });
+    psh.recordProviderSpawnDeath({ pipelineDir: dir, provider: 'antigravity', skill: 'po', issue: 1, now: t0, windowMs: 1000, disabledModule: disabled });
     // 2s después → ventana vencida → cuenta reinicia a 1, no llega a umbral.
-    const r = psh.recordProviderSpawnDeath({ pipelineDir: dir, provider: 'gemini-google', skill: 'po', issue: 2, now: t0 + 2000, windowMs: 1000, disabledModule: disabled });
+    const r = psh.recordProviderSpawnDeath({ pipelineDir: dir, provider: 'antigravity', skill: 'po', issue: 2, now: t0 + 2000, windowMs: 1000, disabledModule: disabled });
     assert.equal(r.consecutiveDeaths, 1);
     assert.equal(r.disabled, false);
     assert.equal(disabled.calls.length, 0);
@@ -98,7 +98,7 @@ test('ventana deslizante: muerte fuera de ventana reinicia el contador', () => {
 test('providers distintos no se cruzan', () => {
     const dir = tmpPipeline();
     const disabled = fakeDisabledModule();
-    psh.recordProviderSpawnDeath({ pipelineDir: dir, provider: 'gemini-google', skill: 'po', issue: 1, disabledModule: disabled });
+    psh.recordProviderSpawnDeath({ pipelineDir: dir, provider: 'antigravity', skill: 'po', issue: 1, disabledModule: disabled });
     const r = psh.recordProviderSpawnDeath({ pipelineDir: dir, provider: 'cerebras', skill: 'po', issue: 1, disabledModule: disabled });
     assert.equal(r.consecutiveDeaths, 1);
     assert.equal(r.disabled, false);
@@ -106,7 +106,7 @@ test('providers distintos no se cruzan', () => {
 
 test('fail-open: sin pipelineDir o provider devuelve no-op sin lanzar', () => {
     assert.doesNotThrow(() => {
-        const r = psh.recordProviderSpawnDeath({ provider: 'gemini-google' });
+        const r = psh.recordProviderSpawnDeath({ provider: 'antigravity' });
         assert.equal(r.disabled, false);
         assert.equal(r.consecutiveDeaths, 0);
     });
@@ -115,7 +115,7 @@ test('fail-open: sin pipelineDir o provider devuelve no-op sin lanzar', () => {
 
 test('archivo de estado se crea con 0o600 (no en Windows)', () => {
     const dir = tmpPipeline();
-    psh.recordProviderSpawnDeath({ pipelineDir: dir, provider: 'gemini-google', skill: 'po', issue: 1, disabledModule: fakeDisabledModule() });
+    psh.recordProviderSpawnDeath({ pipelineDir: dir, provider: 'antigravity', skill: 'po', issue: 1, disabledModule: fakeDisabledModule() });
     const file = psh.stateFile(dir);
     assert.ok(fs.existsSync(file));
     if (process.platform !== 'win32') {
@@ -181,8 +181,8 @@ test('#6238 threshold:1 apaga con UNA sola muerte (credencial es deterministica)
 test('#6238 no-regresion: sin source explicito el disable sigue siendo spawn-death', () => {
     const dir = tmpPipeline();
     const disabled = fakeDisabledStore();
-    psh.recordProviderSpawnDeath({ pipelineDir: dir, provider: 'gemini-google', disabledModule: disabled });
-    psh.recordProviderSpawnDeath({ pipelineDir: dir, provider: 'gemini-google', disabledModule: disabled });
+    psh.recordProviderSpawnDeath({ pipelineDir: dir, provider: 'antigravity', disabledModule: disabled });
+    psh.recordProviderSpawnDeath({ pipelineDir: dir, provider: 'antigravity', disabledModule: disabled });
     assert.equal(disabled.calls.set[0].opts.source, 'spawn-death');
     assert.equal(psh.DEFAULT_DISABLE_SOURCE, 'spawn-death');
 });
@@ -256,14 +256,14 @@ test('#6238 fail-open: un disabledModule roto no rompe recordProviderHealthy', (
         getDisabledEntry() { throw new Error('roto'); },
         clearProviderDisabled() { throw new Error('roto'); },
     };
-    psh.recordProviderSpawnDeath({ pipelineDir: dir, provider: 'gemini-google', disabledModule: fakeDisabledStore() });
+    psh.recordProviderSpawnDeath({ pipelineDir: dir, provider: 'antigravity', disabledModule: fakeDisabledStore() });
     let cleared;
     assert.doesNotThrow(() => {
-        cleared = psh.recordProviderHealthy({ pipelineDir: dir, provider: 'gemini-google', disabledModule: broken });
+        cleared = psh.recordProviderHealthy({ pipelineDir: dir, provider: 'antigravity', disabledModule: broken });
     });
     // El contador igual se resetea: el fallo del disable no bloquea el reset.
     assert.equal(cleared, true);
-    assert.equal(psh.peekProviderSpawnHealth({ pipelineDir: dir, provider: 'gemini-google' }), null);
+    assert.equal(psh.peekProviderSpawnHealth({ pipelineDir: dir, provider: 'antigravity' }), null);
 });
 
 test('#6238 aislamiento: un pipelineDir de prueba NUNCA toca el provider-disabled real', () => {

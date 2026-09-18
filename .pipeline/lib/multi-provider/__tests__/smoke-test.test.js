@@ -30,7 +30,7 @@ function fixtureAgentModels() {
         providers: {
             anthropic:       { launcher: 'claude', model: 'claude-opus-4-7', credentials_env: ['ANTHROPIC_API_KEY'] },
             'openai-codex':  { launcher: 'codex',  model: 'gpt-5-codex',     credentials_env: ['OPENAI_API_KEY'] },
-            'gemini-google': { launcher: 'gemini', model: 'gemini-3.8-flash-medium',credentials_env: ['GEMINI_API_KEY'] },
+            'antigravity': { launcher: 'gemini', model: 'gemini-3.8-flash-medium',credentials_env: ['GEMINI_API_KEY'] },
             'cerebras':      { launcher: 'cerebras',model:'llama-3.3-70b',  credentials_env: ['CEREBRAS_API_KEY'] },
             'nvidia-nim':    { launcher: 'nvidia', model:'deepseek-v4',     credentials_env: ['NVIDIA_NIM_API_KEY'] },
             deterministic:   { launcher: 'node',   model: 'deterministic' },
@@ -43,7 +43,7 @@ function fixtureAgentModels() {
             'refinar': { provider: 'anthropic' },     // sin fallbacks → single-provider
             'qa': {
                 provider: 'anthropic',
-                fallbacks: [{ provider: 'openai-codex' }, { provider: 'gemini-google' }, { provider: 'cerebras' }],
+                fallbacks: [{ provider: 'openai-codex' }, { provider: 'antigravity' }, { provider: 'cerebras' }],
             },
             'build': { provider: 'deterministic' },   // excluido
             'security': {
@@ -77,7 +77,7 @@ test('buildMatrixFromAgentModels marca refinar × non-anthropic como N/A · sing
     const models = fixtureAgentModels();
     const matrix = smoke.buildMatrixFromAgentModels(models);
     const refinarCells = matrix.filter(c => c.skill === 'refinar');
-    // refinar tiene un cell por provider LLM (anthropic, openai-codex, gemini-google, cerebras, nvidia-nim)
+    // refinar tiene un cell por provider LLM (anthropic, openai-codex, antigravity, cerebras, nvidia-nim)
     assert.equal(refinarCells.length, 5);
     const anthropicCell = refinarCells.find(c => c.provider === 'anthropic');
     const cerebrasCell = refinarCells.find(c => c.provider === 'cerebras');

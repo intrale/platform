@@ -164,7 +164,7 @@ function listConfiguredProviders() {
     if (livePing && livePing.PROVIDER_PING_ENDPOINTS) {
         return Object.keys(livePing.PROVIDER_PING_ENDPOINTS);
     }
-    return ['anthropic', 'openai-codex', 'gemini-google'];
+    return ['anthropic', 'openai-codex', 'antigravity'];
 }
 
 /**

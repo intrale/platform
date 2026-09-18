@@ -1,5 +1,5 @@
 {
-  "_doc": "Fixture de #5888 (CA-1/CA-12). Copia LOCAL — esta parte del split NO edita el agent-models.json real (R-K). Cada modelo entra por UNA sola de las 4 fuentes, para que el test pueda demostrar que ninguna se saltea. #6563 — cerebras, nvidia-nim y kimi-moonshot retirados del plantel: el único provider en alcance del cruce es gemini-google, así que las 4 fuentes viven sobre él. El modelo muerto es `gemini-2.5-flash` (id del Gemini CLI gratuito retirado, ausente del catálogo de Antigravity).",
+  "_doc": "Fixture de #5888 (CA-1/CA-12). Copia LOCAL — esta parte del split NO edita el agent-models.json real (R-K). Cada modelo entra por UNA sola de las 4 fuentes, para que el test pueda demostrar que ninguna se saltea. #6563 — cerebras, nvidia-nim y kimi-moonshot retirados del plantel: el único provider en alcance del cruce es antigravity, así que las 4 fuentes viven sobre él. El modelo muerto es `gemini-2.5-flash` (id del Gemini CLI gratuito retirado, ausente del catálogo de Antigravity).",
   "default_provider": "anthropic",
   "providers": {
     "anthropic": {
@@ -8,7 +8,7 @@
     "openai-codex": {
       "model": "gpt-5.5"
     },
-    "gemini-google": {
+    "antigravity": {
       "_fuente": "1 (providers[].model) y 2 (alternative_models[]). El default del provider y el alternativo están VIVOS; el modelo muerto entra sólo por el fallback de un skill (fuente 4).",
       "model": "gemini-3.8-flash-medium",
       "alternative_models": [
@@ -21,8 +21,8 @@
   },
   "skills": {
     "guru": {
-      "_fuente": "3 (skills[].model_override) — sobre gemini-google.",
-      "provider": "gemini-google",
+      "_fuente": "3 (skills[].model_override) — sobre antigravity.",
+      "provider": "antigravity",
       "model_override": "gemini-3.1-pro-low",
       "fallbacks": []
     },
@@ -32,7 +32,7 @@
       "model_override": "claude-opus-4-7",
       "fallbacks": [
         {
-          "provider": "gemini-google",
+          "provider": "antigravity",
           "model_override": "gemini-2.5-flash"
         }
       ]

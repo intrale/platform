@@ -68,7 +68,7 @@ function mixedEntries() {
     return [
         fakeEntry('anthropic', 'Anthropic', 'absent', { editable: false, reason: 'OAuth/MAX' }),
         fakeEntry('openai', 'OpenAI / Codex', 'present'),
-        fakeEntry('gemini-google', 'Gemini (Google AI Studio)', 'present'),
+        fakeEntry('antigravity', 'Gemini (Google AI Studio)', 'present'),
     ];
 }
 
@@ -107,7 +107,7 @@ test('CA-2 · una fila por proveedor con key, salud, tier, catálogo y kill-swit
         assert.match(html, /FREE/, 'leyenda FREE derivada de billing');
         assert.ok(!/PLAN MAX/.test(html), 'sin leyenda hardcodeada por provider');
         // Los 3 providers canónicos por data-provider.
-        for (const p of ['anthropic', 'openai', 'gemini-google']) {
+        for (const p of ['anthropic', 'openai', 'antigravity']) {
             assert.ok(html.includes('data-provider="' + p + '"'), 'falta data-provider ' + p);
         }
     } finally { restoreListKeys(); }
@@ -238,7 +238,7 @@ test('SEC estático · sin inputs de password, sin textarea, sin handlers inline
 
 test('UX · tokens --provider-* DEFINIDOS en el documento (no solo referenciados)', () => {
     const html = providers.renderProviders();
-    for (const token of ['--provider-anthropic:', '--provider-gemini:', '--provider-openai:', '--provider-unknown:']) {
+    for (const token of ['--provider-anthropic:', '--provider-antigravity:', '--provider-openai:', '--provider-unknown:']) {
         assert.ok(html.includes(token), 'el documento debe DEFINIR ' + token.slice(0, -1));
     }
     const inert = providers.renderInert('boom');
@@ -337,7 +337,7 @@ test('Smoke · GET /dashboard?view=providers → 200', async () => {
 test('SEC · anti-leak cross-route: 0 keys completas en cada ruta', async () => {
     setListKeys(() => [
         fakeEntry('openai', 'OpenAI / Codex', 'present', { masked: 'sk-fake123456****wxyz' }),
-        fakeEntry('gemini-google', 'Gemini (Google AI Studio)', 'present', { masked: 'AIza-aa11****zz99' }),
+        fakeEntry('antigravity', 'Gemini (Google AI Studio)', 'present', { masked: 'AIza-aa11****zz99' }),
     ]);
     const { server, port } = await startEphemeralServer();
     try {

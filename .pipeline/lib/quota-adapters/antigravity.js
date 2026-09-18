@@ -1,17 +1,16 @@
 // =============================================================================
-// quota-adapters/gemini-google.js — "Sin dato" deliberado (#3092 M2a + #3220 + #4202).
+// quota-adapters/antigravity.js — "Sin dato" deliberado (#3092 M2a + #3220 + #4202).
 //
-// #3220 — rename `gemini` → `gemini-google` (sign-off 2026-05-15) para
-// alinear el naming con el resto del pipeline V3 multi-provider.
+// #3220 — rename `gemini` → `gemini-google` (sign-off 2026-05-15); #6861 —
+// rename final a `antigravity`, el nombre de lo que corre (Antigravity CLI).
 //
 // Por qué este adapter devuelve SIEMPRE "sin dato" (`not_implemented`,
 // `pct: null`) y no se implementa un cálculo real (#4202 CA-4):
 //
-//   * El **free tier** de Gemini (Google AI Studio) NO expone consumo
-//     acumulado por API: solo publica límites de tasa (RPM/RPD — requests por
-//     minuto/día) y responde `429` cuando se exceden. No hay un endpoint ni
-//     un campo de "uso del período" equivalente al panel de Anthropic ni al
-//     costo mensual de Codex.
+//   * Antigravity CLI NO expone por API un consumo acumulado del período:
+//     la única medición es el % semanal del plan que devuelve `agy /usage`
+//     (#6564, lo consume el health en /providers). No hay un endpoint ni un
+//     campo equivalente al panel de Anthropic ni al costo mensual de Codex.
 //
 //   * Inventar un % a partir de RPM/RPD sería un número no confiable que
 //     induciría a decisiones equivocadas de rebalanceo multi-provider. Mostrar
@@ -32,7 +31,7 @@
 const { ADAPTER_STATUS, emptyResult } = require('./_shape');
 
 function geminiGoogleAdapter(_sessionData) {
-    return emptyResult('gemini-google', ADAPTER_STATUS.NOT_IMPLEMENTED,
+    return emptyResult('antigravity', ADAPTER_STATUS.NOT_IMPLEMENTED,
         'Cuota Antigravity CLI: sin dato; disponibilidad determinada por sesión OAuth y licencia/billing');
 }
 

@@ -62,7 +62,7 @@ const TUESDAY = '2026-06-09';
 test('isValidProvider acepta solo la allowlist reusada de provider-disabled', () => {
     withSandbox((mod) => {
         assert.equal(mod.isValidProvider('anthropic'), true);
-        assert.equal(mod.isValidProvider('gemini-google'), true);
+        assert.equal(mod.isValidProvider('antigravity'), true);
         assert.equal(mod.isValidProvider('groq'), false); // NO está en allowlist real
         assert.equal(mod.isValidProvider('../../etc/passwd'), false);
         assert.equal(mod.isValidProvider(null), false);
@@ -158,7 +158,7 @@ test('granularidad por provider: apagar anthropic no afecta a gemini', () => {
             timezone: TZ,
         }, NOAUDIT);
         assert.equal(mod.isProviderActiveNow('anthropic', arMs(MONDAY, 12, 0), NOAUDIT), false);
-        assert.equal(mod.isProviderActiveNow('gemini-google', arMs(MONDAY, 12, 0), NOAUDIT), true);
+        assert.equal(mod.isProviderActiveNow('antigravity', arMs(MONDAY, 12, 0), NOAUDIT), true);
     });
 });
 
@@ -268,7 +268,7 @@ test('listProviderSchedules incluye todos los providers válidos con isActiveNow
         const list = mod.listProviderSchedules({ ...NOAUDIT, now: new Date(arMs(MONDAY, 12, 0)) });
         assert.equal(Object.keys(list).length, mod.VALID_PROVIDERS.length);
         assert.equal(list['anthropic'].isActiveNow, false);
-        assert.equal(list['gemini-google'].isActiveNow, true);
+        assert.equal(list['antigravity'].isActiveNow, true);
         assert.ok('nextTransition' in list['anthropic']);
     });
 });

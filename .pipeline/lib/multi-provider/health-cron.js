@@ -171,7 +171,7 @@ const CATALOG_CHECK_MAX_HOURS = 168;   // 7 días
 // `anthropic` / `openai` quedan fuera porque corren por CLI-OAuth y `ping()`
 // hace short-circuit antes del HTTP. nvidia-nim y cerebras (que también se
 // cruzaban acá) se retiraron en #6563.
-const CATALOG_CHECK_PROVIDERS = Object.freeze(['gemini-google']);
+const CATALOG_CHECK_PROVIDERS = Object.freeze(['antigravity']);
 
 // #5888 G-7/CA-13 — El cron nombra a Codex `openai`; `agent-models.json` lo
 // nombra `openai-codex`. El mapeo queda EXPLÍCITO para que el día que Codex
@@ -187,7 +187,7 @@ function jitterMs(rangeMs = JITTER_RANGE_MS, rng = Math.random) {
 // #4402 CA-3 — Cadencia configurable vía config.yaml
 //
 // Lee `multi_provider.health.interval_minutes` de `.pipeline/config.yaml`.
-// Clamp `[1, 240]` min con piso duro ≥60s (RS-5.5, anti-DoS: Gemini RPM 15).
+// Clamp `[1, 240]` min con piso duro ≥60s (RS-5.5, anti-DoS del round-trip `agy models`).
 //
 // #5172 (D-D / CA-12) — DOS cambios acá:
 //
@@ -537,7 +537,7 @@ async function pingAllProviders({ providers, prevSnapshot, secretsPath, fsImpl =
         // #3802 — Providers CLI-OAuth (Claude Code / Codex): validar la CLI, no
         // la API key. Pinear la key da falso rojo porque el pipeline NO la usa.
         if (spec.auth_mode === 'oauth') {
-            // #6857 — para specs con `catalog_probe` (gemini-google/agy) esto
+            // #6857 — para specs con `catalog_probe` (antigravity/agy) esto
             // hace un round-trip REAL al CLI (con cache TTL en state/); para
             // el resto es el scan de PATH de siempre. Fail-closed ante error.
             try {
@@ -645,7 +645,7 @@ async function pingAllProviders({ providers, prevSnapshot, secretsPath, fsImpl =
         }
 
         let planCheck;
-        if (spec.provider === 'gemini-google') {
+        if (spec.provider === 'antigravity') {
             let measured = { reason_code: 'cli_license_unavailable', checked_at: new Date(nowMs).toISOString() };
             if (pingResult.reason === 'cli_catalog_ok') {
                 try { measured = await planProbe({ fsImpl, stateDir, nowMs }); }
@@ -780,7 +780,7 @@ function emitAlerts({ snapshot, prevSnapshot, telegramSender, dedupFile, fsImpl 
         }
 
         // #6564: segundo tick sin cuota verificable; dedupe independiente.
-        if (p.provider === 'gemini-google' && p.reason_code !== 'cli_license_unavailable'
+        if (p.provider === 'antigravity' && p.reason_code !== 'cli_license_unavailable'
             && p.reason_code !== 'cli_unavailable') {
             const decision = healthAlerts.decidePlanEvent({ provider: p.provider, providerState: p.state,
                 planCheck: p.plan_check, now, dedupFile, fsImpl });
@@ -852,8 +852,8 @@ function formatAlertText(payload) {
     if (payload.event === 'plan_tier_unknown') {
         const state = payload.provider_state === 'red' ? '🔴 CAÍDO'
             : payload.provider_state === 'yellow' ? '🟡 DEGRADADO' : '🟢 SANO';
-        return '⚠️ *Plan sin verificar* — `gemini-google` sigue ' + state
-            + ', pero Gemini (Antigravity CLI) no pudo verificar la cuota del plan. '
+        return '⚠️ *Plan sin verificar* — `antigravity` sigue ' + state
+            + ', pero Antigravity CLI no pudo verificar la cuota del plan. '
             + 'Hasta confirmarlo no se lo cuenta como plan contratado. Revisá la sesión de agy o confirmá el plan a mano.\n'
             + '(`plan_tier_unknown` x' + payload.consecutive_count + ') · Observado: ' + payload.observed_at;
     }
@@ -864,7 +864,7 @@ function formatAlertText(payload) {
     // #5888 UX-5/CA-17 — Rama propia del eje de MODELO, ANTES de la genérica.
     //
     // La genérica elige el emoji por el estado del PROVIDER: con provider sano +
-    // modelo muerto saldría `🩺 … 🟢 gemini-google → GREEN`, y en un canal que el
+    // modelo muerto saldría `🩺 … 🟢 antigravity → GREEN`, y en un canal que el
     // operador escanea por emoji 🟢 significa "ignorar". La única alerta que
     // produce esta barrera llegaría camuflada de buena noticia.
     //

@@ -54,7 +54,7 @@ function gemini(raw) {
 // #6563 (kimi-moonshot / cerebras / nvidia-nim) ya no tienen extractor.
 const EXTRACTORS = Object.freeze({
     anthropic,
-    'gemini-google': gemini,
+    'antigravity': gemini,
     'openai-codex': null,
     deterministic: null,
 });

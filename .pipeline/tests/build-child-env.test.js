@@ -373,8 +373,8 @@ test('#4306: provider OAuth con la key PRESENTE tampoco la inyecta (env-isolatio
         skill: 'qa',
         processEnv: fullOperatorEnv(), // incluye OPENAI_API_KEY
         skillConfigOverride: {
-            skill: { provider: 'gemini-google' },
-            providers: { 'gemini-google': { launcher: 'gemini-google', auth_mode: 'oauth', credentials_env: ['GEMINI_API_KEY'] } },
+            skill: { provider: 'antigravity' },
+            providers: { 'antigravity': { launcher: 'antigravity', auth_mode: 'oauth', credentials_env: ['GEMINI_API_KEY'] } },
         },
     });
     assert.equal(env.OPENAI_API_KEY, undefined);
@@ -1010,7 +1010,7 @@ function providersDeTest() {
     return {
         anthropic: { credentials_env: ['ANTHROPIC_API_KEY'], auth_mode: 'api_key' },
         'openai-codex': { credentials_env: ['OPENAI_API_KEY'], auth_mode: 'api_key' },
-        'gemini-google': { auth_mode: 'oauth' },
+        'antigravity': { auth_mode: 'oauth' },
         cerebras: { credentials_env: ['CEREBRAS_API_KEY'] },
         'kimi-moonshot': { credentials_env: ['ANTHROPIC_AUTH_TOKEN'], auth_mode: 'api_key' },
     };
@@ -1073,8 +1073,8 @@ test('#5799: con el gate cerrado no se pide snapshot ni se llama a la API de #57
 // -----------------------------------------------------------------------------
 test('#5799: un provider oauth no requiere snapshot (autentica fuera del env)', () => {
     const providersCfg = providersDeTest();
-    assert.equal(providerRequiresCredential('gemini-google', providersCfg), false);
-    assert.equal(isSnapshotRequired({ config: cfgSnapshot(true), provider: 'gemini-google', providersCfg }), false);
+    assert.equal(providerRequiresCredential('antigravity', providersCfg), false);
+    assert.equal(isSnapshotRequired({ config: cfgSnapshot(true), provider: 'antigravity', providersCfg }), false);
 });
 
 test('#5799: un provider con credentials_env requiere snapshot con el gate abierto', () => {

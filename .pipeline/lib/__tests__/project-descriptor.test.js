@@ -36,7 +36,7 @@ function validDescriptor(overrides = {}) {
       admissionLabels: ['Ready'],
       routing: [{ label: 'area:backend', capability: 'backend' }],
     },
-    providers: { order: ['anthropic', 'openai-codex', 'gemini-google'] },
+    providers: { order: ['anthropic', 'openai-codex', 'antigravity'] },
     pullRequests: { policy: 'required' },
     credentials: [{ ref: '~/.claude/secrets/credentials.json#acme', scopes: ['github'] }],
     capabilities: [{ interface: 'backend', skills: ['backend-dev'] }],
@@ -78,7 +78,7 @@ test('#4849: deriveProviderOrder respeta override valido y devuelve copia defens
   const desc = validDescriptor({ providers: { order: ['openai-codex', 'anthropic'] } });
   const first = d.deriveProviderOrder(desc);
   assert.deepEqual(first, ['openai-codex', 'anthropic']);
-  first.push('gemini-google');
+  first.push('antigravity');
   assert.deepEqual(d.deriveProviderOrder(desc), ['openai-codex', 'anthropic']);
   assert.notEqual(first, desc.providers.order);
 });
@@ -90,7 +90,7 @@ test('#4849: deriveProviderOrder rechaza retirados (groq #3353, cerebras #6563),
   assert.throws(() => d.deriveProviderOrder({ providers: { order: ['unknown-provider'] } }), /provider no permitido/);
   assert.throws(() => d.deriveProviderOrder({ providers: { order: ['anthropic', 'anthropic'] } }), /duplicado/);
   assert.throws(() => d.deriveProviderOrder({ providers: { order: [] } }), /cantidad fuera de rango/);
-  assert.throws(() => d.deriveProviderOrder({ providers: { order: ['anthropic', 'openai-codex', 'gemini-google', 'extra'] } }), /cantidad fuera de rango/);
+  assert.throws(() => d.deriveProviderOrder({ providers: { order: ['anthropic', 'openai-codex', 'antigravity', 'extra'] } }), /cantidad fuera de rango/);
   assert.throws(() => d.deriveProviderOrder({ providers: { order: 'anthropic' } }), /order debe ser una lista/);
 });
 
@@ -745,10 +745,10 @@ test('#4805 CA-7: round-trip real en disco — status durable + integrity válid
 test('#4851: providers.order valido y pullRequests.policy valida pasan con contrato cerrado', () => {
   const res = d.validateDescriptor(validDescriptor({
     pullRequests: { policy: 'direct-to-main' },
-    providers: { order: ['openai-codex', 'anthropic', 'gemini-google'] },
+    providers: { order: ['openai-codex', 'anthropic', 'antigravity'] },
   }));
   assert.equal(res.valid, true, JSON.stringify(res.errors));
-  assert.deepEqual(d.deriveProviderOrder(res.descriptor), ['openai-codex', 'anthropic', 'gemini-google']);
+  assert.deepEqual(d.deriveProviderOrder(res.descriptor), ['openai-codex', 'anthropic', 'antigravity']);
   assert.equal(d.derivePullRequestPolicy(res.descriptor), 'direct-to-main');
 });
 
@@ -765,7 +765,7 @@ test('#4851: providers.order default seguro no contiene proveedores retirados', 
   delete desc.providers;
   const res = d.validateDescriptor(desc);
   assert.equal(res.valid, true, JSON.stringify(res.errors));
-  assert.deepEqual(d.deriveProviderOrder(res.descriptor), ['anthropic', 'openai-codex', 'gemini-google']);
+  assert.deepEqual(d.deriveProviderOrder(res.descriptor), ['anthropic', 'openai-codex', 'antigravity']);
   assert.ok(!d.deriveProviderOrder(res.descriptor).some((id) => /groq|cerebras|nvidia/i.test(id)));
 });
 

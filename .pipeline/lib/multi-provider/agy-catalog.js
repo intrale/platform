@@ -11,12 +11,13 @@
 // falla si divergen — no un chequeo hecho a mano una sola vez.
 //
 // Qué cruza (`collectConfiguredGeminiModels` + `crossCheck`):
-//   config  — providers['gemini-google'].model, .alternative_models[],
+//   config  — providers['antigravity'].model, .alternative_models[],
 //             skills.*.model_override y skills.*.fallbacks[].model_override
-//             cuando el provider del eslabón es gemini-google.
-//   barrera 1 — ALLOWED_MODELS_BY_LAUNCHER['gemini-google']  (agent-models-validate.js)
-//   barrera 2 — PROVIDER_MODELS_ALLOWLIST['gemini-google']   (completion-client.js)
-//   barrera 3 — CATALOG['gemini-google'][].id                (model-catalog.js)
+//             cuando el provider del eslabón es antigravity.
+//   barrera 1 — ALLOWED_MODELS_BY_LAUNCHER['antigravity']  (agent-models-validate.js)
+//   barrera 2 — CATALOG['antigravity'][].id                (model-catalog.js)
+//   (La tercera, PROVIDER_MODELS_ALLOWLIST de completion-client.js, se retiró
+//   en #6861 junto con el shim HTTP de AI Studio: antigravity es spawn puro.)
 //
 // Semántica del veredicto:
 //   dead     — id configurado o allowlisted que el CLI NO devuelve. Es un
@@ -29,9 +30,9 @@
 //
 // Fuente: `agy models` escribe a stdout una línea `id<TAB>label` por modelo y
 // un spinner a stderr. Tarda ~3 s (va a red), por eso hay caché en memoria con
-// TTL. Nunca se usa el ping HTTP a generativelanguage.googleapis.com
-// (live-ping.js): ese es el catálogo de AI Studio, donde los ids retirados SÍ
-// existen — cruzar contra él es lo que dejó pasar el defecto original.
+// TTL. Nunca se cruza contra un catálogo HTTP de Google: el de AI Studio (que
+// el pipeline pingeaba hasta #6861) es OTRO catálogo, donde los ids retirados
+// SÍ existen — cruzar contra él es lo que dejó pasar el defecto original.
 //
 // Dónde corre:
 //   - test  → lib/__tests__/agy-catalog.test.js (offline con fixture + en vivo
@@ -39,7 +40,7 @@
 //   - smoke → paso 4 de .pipeline/smoke-test.sh (`node agy-catalog.js --check`).
 //   - CLI   → `node .pipeline/lib/multi-provider/agy-catalog.js [--check] [--json]`
 //
-// Seguridad: el binario se resuelve igual que el handler (AGY_BIN → ubicación
+// Seguridad: el binario se resuelve igual que el handler (ANTIGRAVITY_BIN → ubicación
 // oficial → PATH), se ejecuta con execFile (sin shell) y argv fijo `['models']`.
 // Los ids que devuelve el CLI se filtran por AGY_MODEL_ID_RE antes de entrar a
 // cualquier comparación o log (una línea rara de stdout no llega a Telegram).
@@ -50,7 +51,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const childProcess = require('node:child_process');
 
-const PROVIDER = 'gemini-google';
+const PROVIDER = 'antigravity';
 const AGY_MODELS_ARGS = Object.freeze(['models']);
 const AGY_MODELS_TIMEOUT_MS = 30_000;
 const DEFAULT_CACHE_TTL_MS = 10 * 60 * 1000;
@@ -59,14 +60,14 @@ const DEFAULT_CACHE_TTL_MS = 10 * 60 * 1000;
 const AGY_MODEL_ID_RE = /^[a-z0-9][a-z0-9.-]{0,63}$/;
 
 // -----------------------------------------------------------------------------
-// resolveAgyBin(env) — misma cascada que providers/gemini-google.js::detectLauncher
+// resolveAgyBin(env) — misma cascada que providers/antigravity.js::detectLauncher
 // pero sobre un `env` inyectable (el módulo no lee process.env a escondidas).
 // -----------------------------------------------------------------------------
 function resolveAgyBin(env, fsImpl) {
     const e = env || {};
     const _fs = fsImpl || fs;
-    if (typeof e.AGY_BIN === 'string' && e.AGY_BIN.length > 0) {
-        return { cmd: e.AGY_BIN, kind: 'configured-native' };
+    if (typeof e.ANTIGRAVITY_BIN === 'string' && e.ANTIGRAVITY_BIN.length > 0) {
+        return { cmd: e.ANTIGRAVITY_BIN, kind: 'configured-native' };
     }
     const local = e.LOCALAPPDATA;
     if (typeof local === 'string' && local.length > 0) {
@@ -162,7 +163,7 @@ function _resetCacheForTesting() { _cache = { at: 0, result: null }; }
 // -----------------------------------------------------------------------------
 // collectConfiguredGeminiModels(agentModels) → Map<id, string[]> (id → fuentes)
 //
-// Las 4 fuentes de #5888 restringidas al provider gemini-google. Cada id se
+// Las 4 fuentes de #5888 restringidas al provider antigravity. Cada id se
 // anota con TODAS las rutas donde aparece para que el mensaje de error sea
 // accionable ("qué archivo, qué skill").
 // -----------------------------------------------------------------------------
@@ -202,17 +203,16 @@ function collectConfiguredGeminiModels(agentModels) {
 }
 
 // -----------------------------------------------------------------------------
-// loadBarriers() → { validate: string[], completion: string[], catalog: string[] }
+// loadBarriers() → { validate: string[], catalog: string[] }
 //
-// Lazy require para que el CLI y los tests puedan cargar este módulo sin
-// arrastrar completion-client (que abre sockets al usarse, no al requerirse,
-// pero igual conviene mantener el grafo chico).
+// Lazy require para que el CLI y los tests puedan cargar este módulo con el
+// grafo chico. #6861: la barrera `completion` (PROVIDER_MODELS_ALLOWLIST) se
+// retiró con el shim HTTP; quedan las dos que gobiernan el spawn.
 // -----------------------------------------------------------------------------
 function loadBarriers() {
     const validate = require('../agent-models-validate').ALLOWED_MODELS_BY_LAUNCHER[PROVIDER] || [];
-    const completion = require('./completion-client').PROVIDER_MODELS_ALLOWLIST[PROVIDER] || [];
     const catalog = (require('./model-catalog').CATALOG[PROVIDER] || []).map((m) => m.id);
-    return { validate: validate.slice(), completion: completion.slice(), catalog: catalog.slice() };
+    return { validate: validate.slice(), catalog: catalog.slice() };
 }
 
 function loadAgentModels(pipelineDir) {
@@ -242,7 +242,6 @@ function crossCheck(opts) {
     };
     for (const [id, srcs] of configured) srcs.forEach((s) => add(id, `agent-models.json:${s}`));
     for (const id of barriers.validate) add(id, 'ALLOWED_MODELS_BY_LAUNCHER (agent-models-validate.js)');
-    for (const id of barriers.completion) add(id, 'PROVIDER_MODELS_ALLOWLIST (completion-client.js)');
     for (const id of barriers.catalog) add(id, 'CATALOG (model-catalog.js)');
 
     const dead = [];
@@ -252,7 +251,7 @@ function crossCheck(opts) {
     dead.sort((a, b) => a.id.localeCompare(b.id));
 
     const unlisted = [];
-    const barrierNames = [['validate', 'ALLOWED_MODELS_BY_LAUNCHER'], ['completion', 'PROVIDER_MODELS_ALLOWLIST'], ['catalog', 'CATALOG']];
+    const barrierNames = [['validate', 'ALLOWED_MODELS_BY_LAUNCHER'], ['catalog', 'CATALOG']];
     for (const id of catalog) {
         const missingFrom = barrierNames
             .filter(([key]) => !barriers[key].includes(id))
@@ -264,7 +263,7 @@ function crossCheck(opts) {
     const configuredCount = configured.size;
     const ok = dead.length === 0;
     const summary = ok
-        ? `OK: ${configuredCount} id(s) configurados y ${sources.size} id(s) en total (config + 3 barreras) `
+        ? `OK: ${configuredCount} id(s) configurados y ${sources.size} id(s) en total (config + 2 barreras) `
             + `están en el catálogo de agy (${catalog.size} modelos)`
             + (unlisted.length ? `; ${unlisted.length} id(s) del CLI sin adoptar (aviso, no bloquea)` : '')
         : `FALLA: ${dead.length} id(s) NO existen en el catálogo de agy (${catalog.size} modelos): `

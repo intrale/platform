@@ -58,7 +58,7 @@ const PROVIDERS = {
     anthropic: require('./agent-launcher/providers/anthropic'),
     deterministic: require('./agent-launcher/providers/deterministic'),
     'openai-codex': require('./agent-launcher/providers/openai-codex'),
-    'gemini-google': require('./agent-launcher/providers/gemini-google'),
+    'antigravity': require('./agent-launcher/providers/antigravity'),
 };
 
 // #3082 (CA-S3 / CA-8): cache liviano de required_permissions por skill,
@@ -385,31 +385,14 @@ function launchAgent({
     // #6272 — el handler es la última frontera antes de argv y revalida el id por
     // su cuenta (defensa en profundidad). Si ahí lo rechazó, dejamos traza: sin
     // esto un desacuerdo entre las dos validaciones sería invisible.
-    // #6858 (review) — `agy_model_env_ignored` NO es un descarte: nunca hubo un
-    // `--model` propagado (sólo AGY_MODEL en el env, que el handler ignora por
-    // diseño). Ese caso ya lo narra el ℹ️ de abajo; sin esta exclusión salían
-    // los dos logs y el ⚠️ afirmaba un descarte que no ocurrió.
-    if (spawnDef.modelTrace && spawnDef.modelTrace.applied === false
-        && spawnDef.modelTrace.reason !== 'agy_model_env_ignored') {
+    if (spawnDef.modelTrace && spawnDef.modelTrace.applied === false) {
         log('agent-launcher', `⚠️ ${skill}:#${issue} el handler ${effective.provider} descartó el flag --model `
             + `(razón: ${spawnDef.modelTrace.reason}); el agente arranca con el default del CLI. El spawn NO se aborta.`);
-    }
-    // #6334/#6858 — el handler ignoró una variable de modelo que NO es la que
-    // propaga PROVIDER_MODEL_ENV (ej. `AGY_MODEL` exportada por el operador).
-    // Se deja constancia para que la traza pueda afirmar qué modelo corrió y de
-    // qué fuente salió: nunca un "propagué X" que en runtime fue Y.
-    if (spawnDef.modelTrace && Array.isArray(spawnDef.modelTrace.ignoredEnv)
-        && spawnDef.modelTrace.ignoredEnv.length > 0) {
-        const efectivo = spawnDef.modelTrace.model
-            ? `modelo efectivo "${spawnDef.modelTrace.model}" (fuente: ${spawnDef.modelTrace.source})`
-            : 'el agente arranca con el default del CLI';
-        log('agent-launcher', `ℹ️ ${skill}:#${issue} el handler ${effective.provider} IGNORÓ `
-            + `${spawnDef.modelTrace.ignoredEnv.join(', ')} presente en el env; ${efectivo}.`);
     }
     const child = _spawn(spawnDef.cmd, spawnDef.args, spawnDef.spawnOpts);
 
     // #4529 — payload grande (system foldeado + prompt) por STDIN, no por argv:
-    // los providers no-Anthropic (codex/gemini) devuelven
+    // los providers no-Anthropic (codex/antigravity) devuelven
     // `stdinPayload` y esperan leerlo por stdin (evita `spawn ENAMETOOLONG` en
     // Windows). Sólo escribimos+cerramos cuando hay payload: si es null (Anthropic
     // interactivo), no tocamos stdin para no romper el chat operador→agente.

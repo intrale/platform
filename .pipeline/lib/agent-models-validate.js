@@ -43,8 +43,10 @@ const { capabilityNames } = require('./execution-capabilities');
 // Allowlist de launchers permitidos. El schema deriva su enum de esta lista
 // (composición programática), evitando drift schema↔código (refinamiento Guru #1).
 //
-// #3220 — incorporación multi-provider sign-off 2026-05-15:
-//   - `gemini-google` (rename ex-`gemini`, naming coherente con el sign-off).
+// #3220 — incorporación multi-provider sign-off 2026-05-15 (entonces `gemini`).
+// #6861 (2026-09-18) — el launcher se llama `antigravity` por REEMPLAZO: es el
+//   nombre de lo que corre (Antigravity CLI, binario `agy`). El id anterior no
+//   es alias ni valor aceptado; declararlo falla el boot con mensaje accionable.
 //
 // #3353 (mayo 2026) — Groq fue descontinuado por política de bloqueos
 // arbitrarios. El launcher 'groq' se removió de la allowlist; cualquier
@@ -58,7 +60,7 @@ const { capabilityNames } = require('./execution-capabilities');
 const ALLOWED_LAUNCHERS = Object.freeze([
   'claude',
   'codex',
-  'gemini-google',
+  'antigravity',
   'node',
 ]);
 
@@ -70,7 +72,7 @@ const ALLOWED_LAUNCHERS = Object.freeze([
 const OAUTH_CAPABLE_LAUNCHERS = Object.freeze([
   'claude',         // Claude Max (OAuth)
   'codex',          // ChatGPT Plus (codex login)
-  'gemini-google',  // cuenta Google (gemini login)
+  'antigravity',    // cuenta Google (login OAuth interactivo de `agy`)
 ]);
 
 // Launchers que requieren shell:true en spawn (caso heredado del .cmd shim de
@@ -116,12 +118,13 @@ const DENIED_FLAGS = Object.freeze([
 //
 // `openai-sse` lo usa openai-codex (el handler `_detectOpenAI` en
 // lib/quota-exhausted.js parsea el shape canónico `event=error data.error.type`
-// y el alternativo `response.error`). Gemini conserva su `gemini-stream`
-// declarativo. `ollama-jsonl` se retiró en #6563 junto con el launcher.
+// y el alternativo `response.error`). `antigravity-stream-json` (#6861, ex
+// `gemini-stream`) parsea el `--output-format stream-json` de `agy` (handler
+// `_detectAntigravity`). `ollama-jsonl` se retiró en #6563 junto con el launcher.
 const ALLOWED_OUTPUT_PARSERS = Object.freeze([
   'anthropic-stream-json',
   'openai-sse',
-  'gemini-stream',
+  'antigravity-stream-json',
   'none',
 ]);
 
@@ -167,7 +170,8 @@ const ALLOWED_MODELS_BY_LAUNCHER = Object.freeze({
   // lib/multi-provider/agy-catalog.js (test agy-catalog.test.js + paso 4 del
   // smoke-test.sh): un id acá que el CLI ya no devuelva hace fallar el cruce.
   // Al editar: reemplazar, bumpear CATALOG_VERSION en model-catalog.js y
-  // sincronizar PROVIDER_MODELS_ALLOWLIST en completion-client.js.
+  // sincronizar CATALOG en lib/multi-provider/model-catalog.js (#6861: la
+  // tercera barrera, PROVIDER_MODELS_ALLOWLIST, se retiró con el shim HTTP).
   //
   // Canal de esfuerzo: el sufijo `-high/-medium/-low` del id es el ÚNICO canal
   // (nunca se pasa `--effort` además), así la traza afirma exactamente lo que
@@ -178,7 +182,7 @@ const ALLOWED_MODELS_BY_LAUNCHER = Object.freeze({
   // adversariality parcial cuando coincide en provider con el Commander. La
   // policy de swap intra-provider vive en
   // lib/sherlock-verifier.js::resolveSherlockProvider (CA-3).
-  'gemini-google': Object.freeze([
+  'antigravity': Object.freeze([
     'gemini-3.8-flash-high',
     'gemini-3.8-flash-medium',
     'gemini-3.8-flash-low',
@@ -247,7 +251,9 @@ const ALLOWED_CREDENTIAL_ENV_VARS = Object.freeze([
   'ANTHROPIC_API_KEY',
   'OPENAI_API_KEY',
   'GOOGLE_API_KEY',
-  'GEMINI_API_KEY',
+  // #6861 — la key de Google AI Studio se retiró: el provider
+  // `antigravity` autentica por OAuth del CLI y no existe consumidor HTTP.
+  // Declararla en `credentials_env` vuelve a fallar el boot (lista restrictiva).
   // #3353 (mayo 2026) — `GROQ_API_KEY` se removió de la allowlist porque Groq
   // fue descontinuado: cualquier agent-models.json que lo declare ahora falla
   // el boot por env var fuera de allowlist, con mensaje accionable.
@@ -1102,7 +1108,7 @@ function validateCrossReferences(config, options = {}) {
  *
  * Bypass para `auth_mode: "oauth"` (#4306, generaliza #3154): los providers
  * que autentican vía login del CLI (`claude` OAuth Max, `codex` ChatGPT Plus,
- * `gemini-google` cuenta Google) no usan API key por env — su token vive en
+ * `antigravity` cuenta Google) no usan API key por env — su token vive en
  * stores locales (`~/.claude/.credentials.json`, `~/.codex`, cuenta Google).
  * Cualquier `credentials_env` declarado para un provider OAuth se ignora a
  * propósito en este chequeo (es informativo). Para el resto de launchers
@@ -1112,7 +1118,7 @@ function validateCrossReferences(config, options = {}) {
  * Compat: seguimos bypaseando `launcher === 'claude'` aunque no declare
  * `auth_mode`, porque históricamente Anthropic se autenticó por OAuth Max sin
  * el flag. El nuevo camino declarativo (`auth_mode`) lo cubre y además habilita
- * codex/gemini. La coherencia `oauth ⇒ launcher CLI` se valida como error de
+ * codex/antigravity. La coherencia `oauth ⇒ launcher CLI` se valida como error de
  * carga en validateCrossReferences (fail-closed, #4306 CA-3) para evitar
  * fail-open si un provider HTTP se etiqueta `oauth` por error.
  *
@@ -1498,10 +1504,10 @@ function stringifyContextValue(v) {
  * crash; la validación primaria ocurre en validateCrossReferences.
  *
  * Casos:
- *   resolveFallbackEntry('gemini-google')                     → { provider: 'gemini-google', model_override: null }
+ *   resolveFallbackEntry('antigravity')                     → { provider: 'antigravity', model_override: null }
  *   resolveFallbackEntry({ provider: 'openai-codex', model_override: 'gpt-5' })
  *                                                             → { provider: 'openai-codex', model_override: 'gpt-5' }
- *   resolveFallbackEntry({ provider: 'gemini-google' })       → { provider: 'gemini-google', model_override: null }
+ *   resolveFallbackEntry({ provider: 'antigravity' })       → { provider: 'antigravity', model_override: null }
  *   resolveFallbackEntry(null|123|[])                         → null
  *   resolveFallbackEntry({ })                                 → null (sin provider)
  */

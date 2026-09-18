@@ -305,8 +305,8 @@ no la arregla ningún reinicio — corregí el store primero.
 
 ## Gemini (Google AI Studio — free tier)
 
-> **NO REPONER salvo que vuelva un consumidor.** El provider `gemini-google`
-> autentica por OAuth con `agy` (ver `providers/gemini-google.js`: «Auth: OAuth
+> **NO REPONER salvo que vuelva un consumidor.** El provider `antigravity`
+> autentica por OAuth con `agy` (ver `providers/antigravity.js`: «Auth: OAuth
 > via `agy`; nunca API key») y `agent-models.json` no le declara
 > `credentials_env`. Ningún módulo lee `GEMINI_API_KEY`, por eso el manifiesto la
 > declara `required_when: never` + `consumer_status: no_consumer`. Cargarla no

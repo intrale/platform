@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // =============================================================================
-// gemini-add-dir.smoke.js — Smoke E2E de #6859 contra el binario REAL de agy
+// antigravity-add-dir.smoke.js — Smoke E2E de #6859 contra el binario REAL de agy
 //
 // Evidencia de CA-1 y CA-3 del issue, que no se pueden fabricar con un fake:
 //   CA-1  un agente despachado a este provider sobre un worktree escribe EN ESE
@@ -17,7 +17,7 @@
 // como prueba de nada.
 //
 // Requiere: agy instalado y logueado (OAuth) + cuota. No corre en `node --test`.
-//   node .pipeline/tests/smoke/gemini-add-dir.smoke.js [--model gemini-3.7-flash-low]
+//   node .pipeline/tests/smoke/antigravity-add-dir.smoke.js [--model gemini-3.7-flash-low]
 // Exit 0 = PASS, 1 = FAIL, 2 = error de infraestructura (agy ausente, etc.).
 // =============================================================================
 'use strict';
@@ -27,14 +27,14 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const provider = require('../../lib/agent-launcher/providers/gemini-google.js');
+const provider = require('../../lib/agent-launcher/providers/antigravity.js');
 
 const TIMEOUT_MS = 180_000;
 const argvModel = (() => {
     const i = process.argv.indexOf('--model');
     return i >= 0 ? process.argv[i + 1] : null;
 })();
-const MODEL = argvModel || process.env.GEMINI_MODEL || 'gemini-3.7-flash-low';
+const MODEL = argvModel || process.env.ANTIGRAVITY_MODEL || 'gemini-3.7-flash-low';
 
 function listDir(dir) {
     try { return fs.readdirSync(dir).sort(); } catch { return []; }
@@ -75,7 +75,7 @@ async function main() {
     const spawnCfg = provider.buildSpawn({
         args: ['-p', prompt],
         cwd: worktree,
-        env: { ...process.env, GEMINI_MODEL: MODEL },
+        env: { ...process.env, ANTIGRAVITY_MODEL: MODEL },
         interactive_supported: false,
     });
     console.log(`[smoke-6859] spawn.args   = ${JSON.stringify(spawnCfg.args)}`);
@@ -97,7 +97,7 @@ async function main() {
         child.on('error', (err) => { clearTimeout(timer); console.error('[smoke-6859] spawn error:', err); resolve(-1); });
     });
     const dtMs = Date.now() - t0;
-    const result = provider._parseGeminiJson(stdout);
+    const result = provider._parseAntigravityJson(stdout);
 
     // Evidencia sobre disco (lo único que vale).
     const markerPath = path.join(worktree, marker);

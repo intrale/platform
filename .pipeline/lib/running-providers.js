@@ -29,7 +29,7 @@
 //     un marker viejo (proceso muerto sin limpiar) se ignora al leer.
 //   - CA-6: `clearRunningProvider` borra la entrada en `onSpawnExit`.
 //   - CA-8: naming canónico — `writeRunningProvider` normaliza alias
-//     (`openai`/`codex` → `openai-codex`, `gemini` → `gemini-google`) para que
+//     (`openai`/`codex` → `openai-codex`, `gemini` → `antigravity`) para que
 //     `PROVIDER_LABELS` resuelva el label correcto.
 //
 // Concurrencia: read-modify-write atómico (tmp + rename). El rename es atómico
@@ -61,8 +61,8 @@ const ALLOWED_FIELDS = Object.freeze(['provider', 'model', 'source', 'startedAt'
 const PROVIDER_ALIASES = Object.freeze({
     openai: 'openai-codex',
     codex: 'openai-codex',
-    gemini: 'gemini-google',
-    google: 'gemini-google',
+    gemini: 'antigravity',
+    google: 'antigravity',
     claude: 'anthropic',
 });
 

@@ -544,9 +544,9 @@ const PROVIDER_DEF_OPENAI = Object.freeze({
 });
 
 const PROVIDER_DEF_GEMINI = Object.freeze({
-    launcher: 'gemini-google',
+    launcher: 'antigravity',
     model: 'gemini-3.8-flash-medium',
-    output_parser: 'gemini-stream',
+    output_parser: 'antigravity-stream-json',
     quota_error_types: ['quota_exceeded', 'resource_exhausted'],
     resets_at_cap_max_days: 31,
 });
@@ -650,7 +650,7 @@ test('codex ChatGPT · setFlag(usage_limit_reached) sin resets_at usa ventana co
         assert.equal(deltaMs, q.CODEX_USAGE_LIMIT_RESET_MS, 'reset debe ser la ventana corta rolling (1h), no el fallback semanal');
         // Verifica la cascada: codex gateado, gemini libre.
         assert.equal(q.shouldGateSpawn('po', { provider: 'openai-codex', now }), true);
-        assert.equal(q.shouldGateSpawn('po', { provider: 'gemini-google', now }), false);
+        assert.equal(q.shouldGateSpawn('po', { provider: 'antigravity', now }), false);
     } finally {
         delete process.env.PIPELINE_DIR_OVERRIDE;
         fs.rmSync(tmp, { recursive: true, force: true });
@@ -900,7 +900,7 @@ test('CA-9 / SEC-8 #3077 · snapshot_threshold_90 NO está en allowlist openai-c
     const meta = q.KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER;
     assert.ok(meta.anthropic.includes('snapshot_threshold_90'), 'anthropic incluye snapshot_threshold_90');
     assert.ok(!meta['openai-codex'].includes('snapshot_threshold_90'), 'openai-codex NO incluye snapshot_threshold_90');
-    assert.ok(!meta['gemini-google'].includes('snapshot_threshold_90'), 'gemini-google NO incluye snapshot_threshold_90');
+    assert.ok(!meta['antigravity'].includes('snapshot_threshold_90'), 'antigravity NO incluye snapshot_threshold_90');
 });
 
 // -----------------------------------------------------------------------------
@@ -1130,7 +1130,7 @@ test('lifecycle multi-provider · flag anthropic + skill openai pasa + skill ant
 });
 
 // =============================================================================
-// #3220 — Tests multi-provider sign-off 2026-05-15 (gemini-google, cerebras)
+// #3220 — Tests multi-provider sign-off 2026-05-15 (antigravity, cerebras)
 // #3353 — Tests específicos de groq eliminados: provider descontinuado.
 // #6563 — cerebras / nvidia-nim / kimi-moonshot retirados del plantel. Los
 //         casos que ejercitaban infraestructura genérica (parser openai-sse,
@@ -1146,11 +1146,11 @@ const PROVIDER_DEF_OPENAI_COMPAT = Object.freeze({
     resets_at_cap_max_days: 31,
 });
 
-test('#3220 + #3353 + #6563 · KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER incluye gemini-google (sin groq ni cerebras)', () => {
+test('#3220 + #3353 + #6563 · KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER incluye antigravity (sin groq ni cerebras)', () => {
     const tmp = newTmpDir();
     const q = freshModule(tmp);
     const meta = q.KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER;
-    assert.ok(meta['gemini-google'], 'falta gemini-google');
+    assert.ok(meta['antigravity'], 'falta antigravity');
     // #3353 — groq fue removido tras la descontinuación.
     assert.ok(!meta.groq, 'groq debería estar removido tras #3353');
     // #6563 — providers retirados del plantel: fuera de la meta-allowlist.
@@ -1158,19 +1158,19 @@ test('#3220 + #3353 + #6563 · KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER incluye gemin
         assert.ok(!meta[retired], `${retired} debería estar removido tras #6563`);
     }
     // El plantel vigente es exactamente éste.
-    assert.deepEqual(Object.keys(meta).sort(), ['anthropic', 'gemini-google', 'openai-codex']);
+    assert.deepEqual(Object.keys(meta).sort(), ['anthropic', 'antigravity', 'openai-codex']);
     // Inmutabilidad
     assert.ok(Object.isFrozen(meta));
-    assert.ok(Object.isFrozen(meta['gemini-google']));
+    assert.ok(Object.isFrozen(meta['antigravity']));
     assert.ok(Object.isFrozen(meta['openai-codex']));
     // Valores esperados
-    assert.deepEqual([...meta['gemini-google']].sort(), ['quota_exceeded', 'resource_exhausted']);
+    assert.deepEqual([...meta['antigravity']].sort(), ['quota_exceeded', 'resource_exhausted']);
     // #5978 — 'insufficient_quota' es el `code` del 402 de billing de los
     // OpenAI-compat (ver quota-exhausted-bare-error-5978.test.js). Sin él, el 402
     // no seteaba flag de cuota y el provider muerto seguía en la cadena.
     assert.ok(meta['openai-codex'].includes('insufficient_quota'));
     // Rename: bare 'gemini' ya no existe
-    assert.ok(!meta.gemini, "key 'gemini' debe haber sido renombrado a 'gemini-google'");
+    assert.ok(!meta.gemini, "key 'gemini' debe haber sido renombrado a 'antigravity'");
 });
 
 test('#3220 · detectQuotaError(openai-sse) matchea SSE event=error data.error.type', () => {
@@ -1238,13 +1238,13 @@ test('#3220 · setFlag con provider=openai-codex (segundo caso) + maxDays=31 pro
     assert.equal(persisted.provider, 'openai-codex');
 });
 
-test('#3220 · flag openai-codex NO limpia con clearFlag(provider=gemini-google) (scope cross-provider)', () => {
+test('#3220 · flag openai-codex NO limpia con clearFlag(provider=antigravity) (scope cross-provider)', () => {
     const tmp = newTmpDir();
     const q = freshModule(tmp);
     const now = Date.parse('2026-05-15T00:00:00Z');
     const resetsAt = new Date(now + 24 * 60 * 60 * 1000).toISOString();
     q.setFlag({ errorType: 'insufficient_quota', provider: 'openai-codex', resetsAt, now, maxDays: 31 });
-    assert.equal(q.clearFlag({ provider: 'gemini-google' }), false, 'gemini-google no debería limpiar flag de openai-codex');
+    assert.equal(q.clearFlag({ provider: 'antigravity' }), false, 'antigravity no debería limpiar flag de openai-codex');
     assert.equal(q.isQuotaExhausted({ now }), true);
     assert.equal(q.clearFlag({ provider: 'openai-codex' }), true, 'openai-codex sí limpia su propio flag');
     assert.equal(q.isQuotaExhausted({ now }), false);
@@ -1320,12 +1320,12 @@ test('#4353 CA-3 · el drenado es scoped: un éxito de X NO revalida el flag de 
     const q = freshModule(tmpDir);
     try {
         const resetsAt = Date.now() + 3600 * 1000;
-        // Flag activo de gemini-google (otro provider).
-        q.setFlag({ errorType: 'quota_exhausted', provider: 'gemini-google', resetsAt });
+        // Flag activo de antigravity (otro provider).
+        q.setFlag({ errorType: 'quota_exhausted', provider: 'antigravity', resetsAt });
         // Un éxito de openai-codex NO debe drenar el flag de gemini.
         const drained = q.clearFlag({ event: 'success_spawn_fallback', reason: 'commander_fallback_success', provider: 'openai-codex' });
         assert.equal(drained, false, 'no debe drenar el flag de otro provider');
-        assert.equal(q.shouldGateSpawn('telegram-commander', { provider: 'gemini-google' }), true, 'gemini sigue gated');
+        assert.equal(q.shouldGateSpawn('telegram-commander', { provider: 'antigravity' }), true, 'gemini sigue gated');
     } finally {
         delete process.env.PIPELINE_DIR_OVERRIDE;
         fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -1349,7 +1349,7 @@ test('#4731 · dos proveedores agotados COEXISTEN sin pisarse (CA-3)', () => {
     // Ambos gatean su propio provider; ninguno gatea al otro fuera de scope.
     assert.equal(q.shouldGateSpawn('po', { provider: 'anthropic', now }), true);
     assert.equal(q.shouldGateSpawn('po', { provider: 'openai-codex', now }), true);
-    assert.equal(q.shouldGateSpawn('po', { provider: 'gemini-google', now }), false);
+    assert.equal(q.shouldGateSpawn('po', { provider: 'antigravity', now }), false);
     // El espejo top-level apunta al reset más próximo (codex, +1h).
     assert.equal(persisted.provider, 'openai-codex');
 });

@@ -57,9 +57,9 @@ test('resultado fuera del enum → sin badge de resultado (defensivo)', () => {
 
 // --- T-4 provider chip --------------------------------------------------------
 test('provider se renderiza como chip cmd-provider', () => {
-  const html = buildResultBadges({ resultado: 'ok', provider: 'gemini-google' }, escapeHtml);
+  const html = buildResultBadges({ resultado: 'ok', provider: 'antigravity' }, escapeHtml);
   assert.ok(html.includes('cmd-provider'));
-  assert.ok(html.includes('gemini-google'));
+  assert.ok(html.includes('antigravity'));
 });
 
 test('sin provider → no se renderiza chip de provider', () => {
@@ -97,12 +97,12 @@ test('todo campo dinámico pasa por escapeHtml — provider malicioso se escapa'
 test('caso completo (ok + provider + cross) produce los 3 fragmentos', () => {
   const html = buildResultBadges({
     resultado: 'fallback',
-    provider: 'gemini-google',
+    provider: 'antigravity',
     sameProviderVerification: false,
   }, escapeHtml);
   assert.ok(html.includes('cmd-result-fallback'));
   assert.ok(html.includes('cmd-provider'));
-  assert.ok(html.includes('gemini-google'));
+  assert.ok(html.includes('antigravity'));
   assert.ok(html.includes('cmd-verif-cross'));
 });
 

@@ -261,11 +261,11 @@ const KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER = Object.freeze({
         // error_type sintético emitido por _detectOpenAI (no viene del CLI).
         'usage_limit_reached',
     ]),
-    // #3220 — rename ex-`gemini` → `gemini-google` (sign-off 2026-05-15).
+    // #3220 — rename ex-`gemini` → `antigravity` (sign-off 2026-05-15).
     // Coordinación cross-archivo: ALLOWED_LAUNCHERS, ALLOWED_PROVIDERS y
     // adapter filename. Single source of truth para naming en pipeline V3.
-    // #7290: _detectGemini valida status ERROR + error string del evento result.
-    'gemini-google': Object.freeze([
+    // #7290: _detectAntigravity valida status ERROR + error string del evento result.
+    'antigravity': Object.freeze([
         'quota_exceeded',
         'resource_exhausted',
     ]),
@@ -1948,7 +1948,7 @@ function _detectOpenAI(evt, allowlist, opts = {}) {
  * @returns {{ matched: boolean, errorType?: string, provider?: string }}
  */
 // #7290: sólo errores estructurales del resultado, nunca contenido generado.
-function _detectGemini(evt, allowlist) {
+function _detectAntigravity(evt, allowlist) {
     if (!evt || evt.event !== 'result' || !evt.result || typeof evt.result !== 'object') return { matched: false };
     const r = evt.result;
     if (r.status !== 'ERROR' || typeof r.error !== 'string' || !r.error) return { matched: false };
@@ -1976,8 +1976,8 @@ function detectQuotaError(parsedEvent, providerDef, opts = {}) {
         result = _detectAnthropic(parsedEvent, allowlist);
     } else if (parser === 'openai-sse') {
         result = _detectOpenAI(parsedEvent, allowlist);
-    } else if (parser === 'gemini-stream') {
-        result = _detectGemini(parsedEvent, allowlist);
+    } else if (parser === 'antigravity-stream-json') {
+        result = _detectAntigravity(parsedEvent, allowlist);
     } else {
         // `output_parser` sin detector de eventos (`none`, el de deterministic):
         // no aplica detección de cuota basada en eventos. `ollama-jsonl` se
@@ -2192,7 +2192,7 @@ module.exports = {
     _writeJsonAtomic: writeJsonAtomic,
     _detectAnthropic,
     _detectOpenAI,
-    _detectGemini,
+    _detectAntigravity,
     _CLI_1M_CONTEXT_GLITCH_PATTERN,
     _CODEX_USAGE_LIMIT_PATTERN,
     // #7161 — reset anunciado por el propio mensaje de control de codex.

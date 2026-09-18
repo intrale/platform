@@ -333,17 +333,17 @@ test('codex pasa `-` como posicional y foldea persona+mensaje para stdin (#4529)
 });
 
 // -----------------------------------------------------------------------------
-// 6b. Provider 'gemini-google' real (post adapter): launchAgent dispara el
+// 6b. Provider 'antigravity' real (post adapter): launchAgent dispara el
 //     spawn del gemini CLI traduciendo los args estilo Claude al shape Gemini
 //     (`agy --input-format stream-json … --model <model>`, #6857).
 // -----------------------------------------------------------------------------
-test('launchAgent con provider gemini-google spawnea agy con args traducidos', () => {
+test('launchAgent con provider antigravity spawnea agy con args traducidos', () => {
     const modelsPath = path.join(PIPELINE, 'agent-models.json');
     const fsi = fakeFs([modelsPath], {
         [modelsPath]: JSON.stringify({
             defaults: { model: 'claude-opus-4-7' },
             skills: {
-                guru: { provider: 'gemini-google', model: 'gemini-3.8-flash-medium' },
+                guru: { provider: 'antigravity', model: 'gemini-3.8-flash-medium' },
             },
         }),
     });
@@ -351,7 +351,7 @@ test('launchAgent con provider gemini-google spawnea agy con args traducidos', (
 
     // Forzamos un launcher determinístico (evita depender de fs real para
     // detectar el bundle / shim de gemini).
-    PROVIDERS['gemini-google']._setLauncherForTesting({
+    PROVIDERS['antigravity']._setLauncherForTesting({
         kind: 'native-exe',
         cmd: '/fake/agy',
         prefixArgs: [],
@@ -363,14 +363,14 @@ test('launchAgent con provider gemini-google spawnea agy con args traducidos', (
             issue: 1,
             args: ['-p', 'probe', '--system-prompt-file', '/tmp/sys.md'],
             cwd: ROOT,
-            env: { GEMINI_MODEL: 'gemini-3.8-flash-medium' },
+            env: { ANTIGRAVITY_MODEL: 'gemini-3.8-flash-medium' },
             PIPELINE,
             ROOT,
             fsImpl: fsi,
             spawnImpl: spi,
         });
     } finally {
-        PROVIDERS['gemini-google']._resetLauncherCacheForTesting();
+        PROVIDERS['antigravity']._resetLauncherCacheForTesting();
     }
     assert.equal(spi.calls.length, 1);
     const call = spi.calls[0];
@@ -386,11 +386,11 @@ test('launchAgent con provider gemini-google spawnea agy con args traducidos', (
 });
 
 // -----------------------------------------------------------------------------
-// 6c. parseTokensFromLog de gemini-google agrega tokens multi-modelo y el
+// 6c. parseTokensFromLog de antigravity agrega tokens multi-modelo y el
 //     detector de cuota matchea por shape estructural.
 // -----------------------------------------------------------------------------
-test('gemini-google parseTokensFromLog agrega tokens de todos los modelos', () => {
-    const gemini = PROVIDERS['gemini-google'];
+test('antigravity parseTokensFromLog agrega tokens de todos los modelos', () => {
+    const gemini = PROVIDERS['antigravity'];
     const logPath = '/tmp/gemini.json';
     const payload = JSON.stringify({
         session_id: 'abc',
@@ -409,8 +409,8 @@ test('gemini-google parseTokensFromLog agrega tokens de todos los modelos', () =
     assert.equal(tokens.cache_read, 10);        // 10 + 0
 });
 
-test('gemini-google detectQuotaExhausted matchea RESOURCE_EXHAUSTED por shape', () => {
-    const gemini = PROVIDERS['gemini-google'];
+test('antigravity detectQuotaExhausted matchea RESOURCE_EXHAUSTED por shape', () => {
+    const gemini = PROVIDERS['antigravity'];
     const QE = require('../lib/quota-exhausted');
     const logPath = '/tmp/gemini-err.json';
     const payload = JSON.stringify({

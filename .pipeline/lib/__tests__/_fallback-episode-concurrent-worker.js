@@ -31,7 +31,7 @@ if (!stateDir || !provider || !nowRaw) {
 }
 
 // Fail-closed: sólo providers sintéticos declarados por el test.
-const ALLOWED_PROVIDERS = ['openai-codex', 'cerebras', 'gemini-google'];
+const ALLOWED_PROVIDERS = ['openai-codex', 'cerebras', 'antigravity'];
 if (!ALLOWED_PROVIDERS.includes(provider)) {
     console.error(`worker: provider ${provider} no está en la allowlist sintética`);
     process.exit(5);
@@ -63,7 +63,7 @@ try {
             providers: {
                 'openai-codex': { billing: 'paid', supports_tool_use: true },
                 cerebras: { billing: 'free', supports_tool_use: false },
-                'gemini-google': { billing: 'free', supports_tool_use: true },
+                'antigravity': { billing: 'free', supports_tool_use: true },
             },
         },
         heartbeatMs: 6 * 60 * 60 * 1000,

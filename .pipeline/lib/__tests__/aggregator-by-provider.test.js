@@ -42,7 +42,7 @@ test('CA-2.2: buildSnapshot emite totals.by_provider con un bucket por provider'
     const { file } = mkTmpLog([
         { event: 'session:end', ts: new Date(now - 1000).toISOString(), provider: 'anthropic',    model: 'claude-sonnet-4', tokens_in: 100, tokens_out: 50, duration_ms: 1000, skill: 'po' },
         { event: 'session:end', ts: new Date(now - 2000).toISOString(), provider: 'openai-codex', model: 'gpt-5-codex',     tokens_in: 200, tokens_out: 80, duration_ms: 1000, skill: 'po' },
-        { event: 'session:end', ts: new Date(now - 3000).toISOString(), provider: 'gemini-google', model: 'gemini-flash',    tokens_in: 300, tokens_out: 120, duration_ms: 1000, skill: 'po' },
+        { event: 'session:end', ts: new Date(now - 3000).toISOString(), provider: 'antigravity', model: 'gemini-flash',    tokens_in: 300, tokens_out: 120, duration_ms: 1000, skill: 'po' },
     ]);
     const agg = loadAggregatorWithLogFile(file);
 
@@ -54,8 +54,8 @@ test('CA-2.2: buildSnapshot emite totals.by_provider con un bucket por provider'
     assert.equal(byProv.anthropic.tokens_out, 50);
     assert.ok(byProv['openai-codex'], 'bucket openai-codex presente');
     assert.equal(byProv['openai-codex'].tokens_in, 200);
-    assert.ok(byProv['gemini-google'], 'bucket gemini-google presente');
-    assert.equal(byProv['gemini-google'].tokens_in, 300);
+    assert.ok(byProv['antigravity'], 'bucket antigravity presente');
+    assert.equal(byProv['antigravity'].tokens_in, 300);
 });
 
 test('CA-2.2: buildSnapshot atribuye eventos sin provider a la clave `unknown`', async () => {

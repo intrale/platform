@@ -5,7 +5,7 @@
 // Cobertura (CA-1..CA-5):
 //   - CA-1: provider fuera de allowlist en primary o fallback → ok:false.
 //   - CA-2: fail-closed sobre provider inventado (ni APPROVED ni FORBIDDEN).
-//   - CA-3: assert positivo — android-dev/web-dev con gemini-google no rechazados.
+//   - CA-3: assert positivo — android-dev/web-dev con antigravity no rechazados.
 //   - CA-4: contra agent-models.json real editado → ok:true.
 //   - CA-5: errores accionables sin fuga de secrets/tokens/paths.
 // =============================================================================
@@ -33,7 +33,7 @@ test('CA-1: backend-dev con provider vetado en fallback devuelve ok:false', () =
         provider: 'anthropic',
         fallbacks: [
           { provider: 'openai-codex' },
-          { provider: 'gemini-google' },
+          { provider: 'antigravity' },
         ],
       },
     },
@@ -42,7 +42,7 @@ test('CA-1: backend-dev con provider vetado en fallback devuelve ok:false', () =
   assert.equal(res.ok, false);
   assert.equal(res.errors.length, 1);
   assert.match(res.errors[0], /backend-dev/);
-  assert.match(res.errors[0], /gemini-google/);
+  assert.match(res.errors[0], /antigravity/);
   assert.match(res.errors[0], /fallback\[1\]/);
 });
 
@@ -105,7 +105,7 @@ test('CA-2 (fail-closed): provider inventado no aprobado ni vetado devuelve ok:f
 // -----------------------------------------------------------------------------
 // CA-3 — No romper skills no sensibles (assert positivo)
 // -----------------------------------------------------------------------------
-test('CA-3: android-dev y web-dev con gemini-google no son rechazados', () => {
+test('CA-3: android-dev y web-dev con antigravity no son rechazados', () => {
   const config = {
     skills: {
       'backend-dev': {
@@ -114,11 +114,11 @@ test('CA-3: android-dev y web-dev con gemini-google no son rechazados', () => {
       },
       'android-dev': {
         provider: 'anthropic',
-        fallbacks: [{ provider: 'gemini-google' }, { provider: 'nvidia-nim' }],
+        fallbacks: [{ provider: 'antigravity' }, { provider: 'nvidia-nim' }],
       },
       'web-dev': {
         provider: 'anthropic',
-        fallbacks: [{ provider: 'gemini-google' }, { provider: 'nvidia-nim' }],
+        fallbacks: [{ provider: 'antigravity' }, { provider: 'nvidia-nim' }],
       },
     },
   };
@@ -156,7 +156,7 @@ test('CA-5: los mensajes de error no filtran secrets/tokens/paths', () => {
   const config = {
     skills: {
       'backend-dev': {
-        provider: 'gemini-google',
+        provider: 'antigravity',
         // Datos sensibles que NUNCA deben aparecer en los mensajes.
         credentials_env: 'GEMINI_API_KEY',
         token: 'sk-super-secreto-123',
@@ -191,7 +191,7 @@ test('robustez: config vacía/ausente devuelve ok:true sin lanzar', () => {
 
 test('robustez: skill sensible ausente no es violación', () => {
   const res = validateFreeExclusions({
-    skills: { 'android-dev': { provider: 'gemini-google' } },
+    skills: { 'android-dev': { provider: 'antigravity' } },
   });
   assert.equal(res.ok, true);
 });

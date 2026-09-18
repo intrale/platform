@@ -135,7 +135,7 @@ test('CA-5: adapter OK + critical real → gated, SIN re-probe (no se reincorpor
 
 test('el re-probe NO se dispara para providers != openai-codex', () => {
     let probeCalls = 0;
-    for (const provider of ['gemini-google', 'cerebras', 'anthropic']) {
+    for (const provider of ['antigravity', 'cerebras', 'anthropic']) {
         const r = providerHealth.assessProviderQuota(provider, {
             quotaUsageImpl: quotaImpl({ adapterStatus: 'no_usage_data', status: 'unknown', pct: null }),
             probeCodexImpl: () => { probeCalls += 1; return { ok: true }; },

@@ -23,7 +23,7 @@ const APPROVED_FOR_SENSITIVE = ['anthropic', 'openai-codex', 'deterministic'];
 // Solo enriquece mensajes — NUNCA fuente del veredicto (fail-closed).
 // #6563 — recortada a Gemini (único free vigente hasta #6564); cerebras, groq y
 // nvidia-nim se retiraron del pipeline. El candado sigue siendo la allowlist.
-const FORBIDDEN_FOR_SENSITIVE = ['gemini-google'];
+const FORBIDDEN_FOR_SENSITIVE = ['antigravity'];
 
 /**
  * @param {{skills?: Object}} config config estilo `agent-models.json`.

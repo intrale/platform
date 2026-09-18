@@ -31,7 +31,7 @@ const commanderMP = require('../../commander/multi-provider');
 const { assertCopyLimpio } = require('../../__tests__/helpers/forbidden-copy-patterns');
 
 // agent-models.json mínimo: telegram-commander con primario anthropic (paid),
-// fallback openai-codex (paid) y gemini-google (free hasta #6564). auth_mode oauth sin
+// fallback openai-codex (paid) y antigravity (free hasta #6564). auth_mode oauth sin
 // secretos requeridos en el test → determinístico. La CLAVE del issue es el
 // campo `billing` por provider (fuente de verdad de "¿hay pago?").
 function agentModels() {
@@ -46,8 +46,8 @@ function agentModels() {
                 launcher: 'codex', model: 'gpt-5.5', auth_mode: 'oauth',
                 credentials_env: ['OPENAI_API_KEY'], billing: 'paid',
             },
-            'gemini-google': {
-                launcher: 'gemini-google', model: 'gemini-3.8-flash-medium', auth_mode: 'oauth',
+            'antigravity': {
+                launcher: 'antigravity', model: 'gemini-3.8-flash-medium', auth_mode: 'oauth',
                 credentials_env: [], billing: 'free',
             },
         },
@@ -57,7 +57,7 @@ function agentModels() {
                 model_override: 'claude-sonnet-4-6',
                 fallbacks: [
                     { provider: 'openai-codex', model_override: 'gpt-5.5' },
-                    { provider: 'gemini-google', model_override: 'gemini-3.8-flash-medium' },
+                    { provider: 'antigravity', model_override: 'gemini-3.8-flash-medium' },
                 ],
             },
         },
@@ -141,7 +141,7 @@ test('#4870 CA-1 · Anthropic + Codex gateados + Gemini (free) sano → isReduce
         // Sanity: la resolución real salta al free sano con billing 'free'.
         const res = commanderMP.resolveCommanderProvider({ pipelineDir: tmp, log: () => {} });
         assert.equal(res.gated, false);
-        assert.equal(res.provider, 'gemini-google', 'la cadena efectiva usa el free sano');
+        assert.equal(res.provider, 'antigravity', 'la cadena efectiva usa el free sano');
         assert.equal(res.providerBilling, 'free', 'el candidato resuelto es free');
     });
 });
@@ -176,7 +176,7 @@ test('#4870 CA-4 · sin flags (primario Anthropic pago sano) → isReducedMode=f
 test('#4870 CA-5 · Anthropic + Codex + Gemini TODOS gateados → gated:true → isReducedMode=false', () => {
     withTempPipeline({
         'agent-models.json': JSON.stringify(agentModels()),
-        'quota-exhausted.json': quotaFlagMulti(['anthropic', 'openai-codex', 'gemini-google']),
+        'quota-exhausted.json': quotaFlagMulti(['anthropic', 'openai-codex', 'antigravity']),
     }, (tmp) => {
         // La cadena entera gateada NO es modo reducido (es "todos caídos").
         assert.equal(commanderMP.isReducedMode({ pipelineDir: tmp }), false);

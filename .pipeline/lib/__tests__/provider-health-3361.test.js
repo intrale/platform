@@ -86,7 +86,7 @@ test('CA-13/17: getProviderHealth NO devuelve campos sensibles (api_key/secret/t
     // Mock pingImpl: simulamos respuestas variadas sin tocar la red.
     const fakePing = async ({ provider }) => {
         if (provider === 'openai') return { ok: true, reason: 'authenticated', provider, statusCode: 200, latency_ms: 12 };
-        if (provider === 'gemini-google') return { ok: false, reason: 'quota_exhausted', provider, statusCode: 429, latency_ms: 10 };
+        if (provider === 'antigravity') return { ok: false, reason: 'quota_exhausted', provider, statusCode: 429, latency_ms: 10 };
         return { ok: false, reason: 'no_key_configured', provider };
     };
 
@@ -128,8 +128,8 @@ test('CA-16: live-ping devuelve no_key_configured (NO invalid_credentials) cuand
     //
     // #6563 — cerebras y nvidia-nim (los providers api_key que ejercían este
     // gate) se retiraron; el plantel entero (anthropic, openai/codex,
-    // gemini-google vía Antigravity) es CLI-OAuth. Para que el gate de key
-    // siga probado, se re-declara temporalmente a gemini-google como api_key
+    // antigravity vía Antigravity) es CLI-OAuth. Para que el gate de key
+    // siga probado, se re-declara temporalmente a antigravity como api_key
     // en la lista gestionada que consulta `ping()` (mismo patrón que
     // multi-provider-live-ping.test.js); cualquier provider api_key que se
     // re-alte en el plantel entra al mismo loop sin tocar este test.
@@ -140,7 +140,7 @@ test('CA-16: live-ping devuelve no_key_configured (NO invalid_credentials) cuand
         [],
         'post-#6563 no queda ningún provider api_key en el plantel (todos CLI-OAuth)',
     );
-    secretsRw.MANAGED_KEYS = Object.freeze(REAL_MANAGED_KEYS.map(k => (k.provider === 'gemini-google'
+    secretsRw.MANAGED_KEYS = Object.freeze(REAL_MANAGED_KEYS.map(k => (k.provider === 'antigravity'
         ? Object.freeze({ ...k, auth_mode: 'api_key', catalog_probe: undefined, cli_binary: undefined })
         : k)));
     try {

@@ -115,7 +115,7 @@ function resolveRankingForSkill(models, skill) {
  *   - Cada var del array debe estar en processEnv con valor no-vacío y
  *     no-placeholder.
  *   - Excepción: provider con `auth_mode: 'oauth'` autentica vía login del CLI
- *     (`claude`, `codex`, `gemini-google`), no por env var. Skipeamos su
+ *     (`claude`, `codex`, `antigravity`), no por env var. Skipeamos su
  *     validación de env — la key declarada en `credentials_env` es informativa,
  *     no se usa (igual que agent-models-validate.js). #4306.
  *   - #6612: la exención la decide `auth_mode`, NO el launcher. Ver la nota

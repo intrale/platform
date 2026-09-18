@@ -12,13 +12,13 @@ const assert = require('node:assert/strict');
 const { classifyPrematureDeath } = require('../provider-death-classifier');
 
 test('muerte <15s code=1 con provider fallback → provider-death (no penaliza al issue)', () => {
-    // Gherkin: Anthropic gateado, fallback gemini-google muere al spawn en 5s.
+    // Gherkin: Anthropic gateado, fallback antigravity muere al spawn en 5s.
     const v = classifyPrematureDeath({
         code: 1, elapsedSec: 5, hasVerdict: false,
-        source: 'fallback', provider: 'gemini-google',
+        source: 'fallback', provider: 'antigravity',
     });
     assert.equal(v.kind, 'provider-death');
-    assert.match(v.reason, /gemini-google/);
+    assert.match(v.reason, /antigravity/);
 });
 
 test('muerte <15s code=1 con primary disponible → agent-death (SÍ penaliza — CA-5)', () => {
@@ -41,7 +41,7 @@ test('source ausente (resolver falló) → agent-death (fail-closed conservador)
 test('exit 0 → normal (no es muerte prematura) aunque sea fallback', () => {
     const v = classifyPrematureDeath({
         code: 0, elapsedSec: 5, hasVerdict: false,
-        source: 'fallback', provider: 'gemini-google',
+        source: 'fallback', provider: 'antigravity',
     });
     assert.equal(v.kind, 'normal');
     assert.equal(v.reason, 'not_premature');
@@ -50,7 +50,7 @@ test('exit 0 → normal (no es muerte prematura) aunque sea fallback', () => {
 test('vivió ≥ umbral → normal aunque code≠0 y fallback', () => {
     const v = classifyPrematureDeath({
         code: 1, elapsedSec: 40, hasVerdict: false,
-        source: 'fallback', provider: 'gemini-google',
+        source: 'fallback', provider: 'antigravity',
     });
     assert.equal(v.kind, 'normal');
 });
@@ -58,7 +58,7 @@ test('vivió ≥ umbral → normal aunque code≠0 y fallback', () => {
 test('con veredicto válido → normal (no muerte prematura, #2524)', () => {
     const v = classifyPrematureDeath({
         code: 1, elapsedSec: 2, hasVerdict: true,
-        source: 'fallback', provider: 'gemini-google',
+        source: 'fallback', provider: 'antigravity',
     });
     assert.equal(v.kind, 'normal');
     assert.equal(v.reason, 'verdict');
@@ -83,7 +83,7 @@ test('provider deterministic nunca es provider-death (skill Node puro)', () => {
 test('umbral configurable (prematureSec)', () => {
     const v = classifyPrematureDeath({
         code: 1, elapsedSec: 20, hasVerdict: false,
-        source: 'fallback', provider: 'gemini-google',
+        source: 'fallback', provider: 'antigravity',
         prematureSec: 30,
     });
     assert.equal(v.kind, 'provider-death');
@@ -127,7 +127,7 @@ test('#6238 precedencia: credential-death gana sobre provider-death', () => {
     // LLM), pero con la firma de credencial en el tail.
     const v = classifyPrematureDeath({
         code: 1, elapsedSec: 3, hasVerdict: false,
-        source: 'fallback', provider: 'gemini-google',
+        source: 'fallback', provider: 'antigravity',
         logTail: CRED_TAIL(),
     });
     assert.equal(v.kind, 'credential-death');
@@ -194,7 +194,7 @@ test('#6238 anti-inyección: la frase en un tool_result de tercero NO apaga el p
 test('#6238 5xx terminal (sólo frame B) sigue siendo provider-death por fallback', () => {
     const v = classifyPrematureDeath({
         code: 1, elapsedSec: 4, hasVerdict: false,
-        source: 'fallback', provider: 'gemini-google',
+        source: 'fallback', provider: 'antigravity',
         logTail: fixture('frame-b-only-5xx.jsonl'),
     });
     assert.equal(v.kind, 'provider-death');
@@ -217,7 +217,7 @@ test('#6238 fail-closed: detector que TIRA en un spawn por fallback → provider
     const boom = { detectCredentialDeath() { throw new Error('detector roto'); } };
     const v = classifyPrematureDeath({
         code: 1, elapsedSec: 2, hasVerdict: false,
-        source: 'fallback', provider: 'gemini-google',
+        source: 'fallback', provider: 'antigravity',
         logTail: CRED_TAIL(), detector: boom,
     });
     assert.equal(v.kind, 'provider-death');
@@ -232,7 +232,7 @@ test('#6238 fail-closed: logTail ausente/vacío/no-string preserva la conducta p
         assert.equal(prim.kind, 'agent-death', `logTail=${JSON.stringify(tail)}`);
         const fb = classifyPrematureDeath({
             code: 1, elapsedSec: 2, hasVerdict: false,
-            source: 'fallback', provider: 'gemini-google', logTail: tail,
+            source: 'fallback', provider: 'antigravity', logTail: tail,
         });
         assert.equal(fb.kind, 'provider-death', `logTail=${JSON.stringify(tail)}`);
     }

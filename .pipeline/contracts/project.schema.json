@@ -94,7 +94,7 @@
           "uniqueItems": true,
           "items": {
             "type": "string",
-            "enum": ["anthropic", "openai-codex", "gemini-google"]
+            "enum": ["anthropic", "openai-codex", "antigravity"]
           }
         }
       }

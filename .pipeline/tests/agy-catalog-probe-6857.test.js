@@ -4,7 +4,7 @@
 // licencia por un health con round-trip real (`agy models`).
 //
 // Cubre:
-//   CA-2  no disponible con AGY_BIN inexistente y con CLI "deslogueado"
+//   CA-2  no disponible con ANTIGRAVITY_BIN inexistente y con CLI "deslogueado"
 //   CA-3  el estado sale del round-trip, no de una env var
 //   CA-4  tres estados distinguibles (probe + snapshot + dashboard)
 //   TTL   cache en filesystem, invalidación, `force`
@@ -22,7 +22,7 @@ const { probeCliProviderLive, probeCliProvider } = require('../lib/multi-provide
 const healthCron = require('../lib/multi-provider/health-cron');
 const healthAlerts = require('../lib/multi-provider/health-alerts');
 const secrets = require('../lib/multi-provider/secrets-rw');
-const handler = require('../lib/agent-launcher/providers/gemini-google');
+const handler = require('../lib/agent-launcher/providers/antigravity');
 const { DURABLE_RED_REASONS, evaluateHealthGate } = require('../lib/agent-launcher/dispatch-with-fallback');
 const providersView = require('../views/dashboard/providers');
 const pauseCause = require('../lib/provider-pause-cause');
@@ -86,7 +86,7 @@ test('parseModelsOutput: extrae ids por TAB, ignora "Fetching…", dedup y sanea
 });
 
 // ─── resolveAgyBinary: paridad con detectLauncher ───────────────────────────
-test('resolveAgyBinary usa el MISMO orden que detectLauncher (AGY_BIN → oficial → PATH)', () => {
+test('resolveAgyBinary usa el MISMO orden que detectLauncher (ANTIGRAVITY_BIN → oficial → PATH)', () => {
     const dir = tmpDir();
     const { env, exe } = installedEnv(dir);
     // 1) oficial
@@ -95,15 +95,15 @@ test('resolveAgyBinary usa el MISMO orden que detectLauncher (AGY_BIN → oficia
     assert.equal(r1.kind, 'native-exe');
     assert.equal(r1.available, true);
     assert.equal(handler._detectLauncherFresh(env, fs, 'win32').cmd, r1.cmd, 'launcher y probe miran el mismo binario');
-    // 2) AGY_BIN gana sobre la oficial
+    // 2) ANTIGRAVITY_BIN gana sobre la oficial
     const custom = path.join(dir, 'custom-agy.exe');
     fs.writeFileSync(custom, 'stub');
-    const r2 = agyProbe.resolveAgyBinary({ env: { ...env, AGY_BIN: custom }, platform: 'win32' });
+    const r2 = agyProbe.resolveAgyBinary({ env: { ...env, ANTIGRAVITY_BIN: custom }, platform: 'win32' });
     assert.equal(r2.cmd, custom);
     assert.equal(r2.kind, 'configured-native');
     assert.equal(r2.available, true);
-    // 3) AGY_BIN inexistente → NO disponible (CA-2), aunque la oficial exista
-    const r3 = agyProbe.resolveAgyBinary({ env: { ...env, AGY_BIN: path.join(dir, 'no-existe.exe') }, platform: 'win32' });
+    // 3) ANTIGRAVITY_BIN inexistente → NO disponible (CA-2), aunque la oficial exista
+    const r3 = agyProbe.resolveAgyBinary({ env: { ...env, ANTIGRAVITY_BIN: path.join(dir, 'no-existe.exe') }, platform: 'win32' });
     assert.equal(r3.available, false);
     assert.equal(r3.kind, 'configured-native');
     // 4) sin oficial ni PATH → path-fallback no disponible
@@ -215,9 +215,9 @@ test('cache: dentro del TTL no hay round-trip; vencido o con force sí; el binar
     assert.equal(r4.cached, false);
     assert.equal(spawn.calls.length, 3, 'force: round-trip aunque la cache esté fresca');
 
-    // La cache NO tapa un binario que desapareció (CA-2 con AGY_BIN roto).
+    // La cache NO tapa un binario que desapareció (CA-2 con ANTIGRAVITY_BIN roto).
     const roto = await agyProbe.probeAgyCatalog({
-        ...base, env: { ...env, AGY_BIN: path.join(dir, 'no-existe.exe') }, nowMs: NOW + agyProbe.DEFAULT_TTL_MS + 3,
+        ...base, env: { ...env, ANTIGRAVITY_BIN: path.join(dir, 'no-existe.exe') }, nowMs: NOW + agyProbe.DEFAULT_TTL_MS + 3,
     });
     assert.equal(roto.reason, 'cli_unavailable');
     assert.equal(spawn.calls.length, 3);
@@ -272,7 +272,7 @@ test('cache: un archivo corrupto o de otra versión se ignora (fail-closed → r
 
 // ─── probeCliProviderLive (capa compartida health-cron / live-ping) ─────────
 test('probeCliProviderLive: gemini con catalog_probe → tres reasons; anthropic/codex sin cambios', async () => {
-    const gemini = secrets.MANAGED_KEYS.find((k) => k.provider === 'gemini-google');
+    const gemini = secrets.MANAGED_KEYS.find((k) => k.provider === 'antigravity');
     const ok = await probeCliProviderLive(gemini, {
         catalogProbe: async () => ({ ok: true, reason: 'cli_catalog_ok', detail: 'catalog_ok', models: ['a', 'b'], model_count: 2, latency_ms: 1900, checked_at: new Date(NOW).toISOString(), cached: false, launcher_kind: 'native-exe' }),
     });
@@ -314,7 +314,7 @@ test('probeCliProviderLive: gemini con catalog_probe → tres reasons; anthropic
 // ─── Integración health-cron: snapshot con los tres estados ─────────────────
 async function snapshotWith(catalogResult, extra = {}) {
     const results = await healthCron.pingAllProviders({
-        providers: [secrets.MANAGED_KEYS.find((k) => k.provider === 'gemini-google')],
+        providers: [secrets.MANAGED_KEYS.find((k) => k.provider === 'antigravity')],
         cliProbe: () => true,
         catalogProbe: async () => catalogResult,
         planProbe: async () => ({ reason_code: 'plan_tier_unknown', checked_at: new Date(NOW).toISOString() }),
@@ -323,7 +323,7 @@ async function snapshotWith(catalogResult, extra = {}) {
         now: NOW,
         ...extra,
     });
-    return results.find((r) => r.provider === 'gemini-google');
+    return results.find((r) => r.provider === 'antigravity');
 }
 
 test('health-cron: catálogo poblado → green / cli_catalog_ok con cli_probe en el snapshot', async () => {
@@ -351,7 +351,7 @@ test('health-cron: sin licencia → red / cli_license_unavailable; sin binario �
 });
 
 test('health-cron: el catálogo real alimenta el cruce de vigencia #5888 (deja de quedar `unavailable`)', async () => {
-    const expect = new Map([['gemini-google', ['gemini-3.8-flash-medium', 'gemini-3-flash-preview']]]);
+    const expect = new Map([['antigravity', ['gemini-3.8-flash-medium', 'gemini-3-flash-preview']]]);
     const g = await snapshotWith(
         { ok: true, reason: 'cli_catalog_ok', detail: 'catalog_ok', models: ['gemini-3.8-flash-medium'], model_count: 1, checked_at: new Date(NOW).toISOString() },
         { checkCatalog: true, expectModelsByProvider: expect },
@@ -367,14 +367,14 @@ test('health-cron: el catálogo real alimenta el cruce de vigencia #5888 (deja d
 
 test('health-cron: un catalogProbe que revienta deja rojo fail-closed, nunca verde ni excepción', async () => {
     const results = await healthCron.pingAllProviders({
-        providers: [secrets.MANAGED_KEYS.find((k) => k.provider === 'gemini-google')],
+        providers: [secrets.MANAGED_KEYS.find((k) => k.provider === 'antigravity')],
         cliProbe: () => true,
         catalogProbe: async () => { throw new Error('boom'); },
         quotaAssessImpl: () => ({ adapterStatus: 'unknown', status: 'unknown', pct: null, gated: false, reason_code: null }),
         defaultProvider: 'anthropic',
         now: NOW,
     });
-    const g = results.find((r) => r.provider === 'gemini-google');
+    const g = results.find((r) => r.provider === 'antigravity');
     assert.equal(g.state, 'red');
     assert.equal(g.reason_code, 'cli_license_unavailable');
 });
@@ -389,9 +389,9 @@ test('launcher: buildSpawn usa --input-format stream-json y manda system+prompt 
         const plan = handler.buildSpawn({
             args: ['-p', 'hola mundo', '--system-prompt-file', sysFile],
             cwd: dir,
-            // #6858 — el handler lee SÓLO GEMINI_MODEL (la variable que propaga
+            // #6858 — el handler lee SÓLO ANTIGRAVITY_MODEL (la variable que propaga
             // PROVIDER_MODEL_ENV); AGY_MODEL se ignora y se reporta en modelTrace.
-            env: { GEMINI_MODEL: 'gemini-3.8-flash-low' },
+            env: { ANTIGRAVITY_MODEL: 'gemini-3.8-flash-low' },
         });
         assert.equal(plan.modelTrace && plan.modelTrace.model, 'gemini-3.8-flash-low');
         assert.deepEqual(plan.args, [
@@ -415,23 +415,23 @@ test('launcher: buildSpawn usa --input-format stream-json y manda system+prompt 
     }
 });
 
-test('launcher: _parseGeminiJson localiza el `result` en un log NDJSON y sigue aceptando el JSON único', () => {
+test('launcher: _parseAntigravityJson localiza el `result` en un log NDJSON y sigue aceptando el JSON único', () => {
     const ndjson = [
         '{"event":"init","conversation_id":"c1","init":{"model":"gemini-3.8-flash-low"}}',
         '{"event":"step_update","step_update":{"conversation_id":"c1","state":"ACTIVE","text_delta":"{\\"result\\":"}}',
         '{"event":"result","result":{"conversation_id":"c1","status":"SUCCESS","response":"OK","usage":{"total_tokens":42}}}',
         '',
     ].join('\n');
-    const r = handler._parseGeminiJson(ndjson);
+    const r = handler._parseAntigravityJson(ndjson);
     assert.equal(r.conversation_id, 'c1');
     assert.equal(r.status, 'SUCCESS');
     assert.equal(r.usage.total_tokens, 42);
     // JSON único (--output-format json) sigue funcionando.
-    assert.deepEqual(handler._parseGeminiJson('{"conversation_id":"c2","status":"ERROR"}'), { conversation_id: 'c2', status: 'ERROR' });
+    assert.deepEqual(handler._parseAntigravityJson('{"conversation_id":"c2","status":"ERROR"}'), { conversation_id: 'c2', status: 'ERROR' });
     // Log truncado sin evento `result` → cae a la estrategia vieja: nunca tira,
     // y lo que devuelva no puede traer `error`/`usage` que confundan a los
     // detectores (el frame `init` no los tiene).
-    const trunc = handler._parseGeminiJson('{"event":"init","conversation_id":"c3"}\n{"event":"step_update"');
+    const trunc = handler._parseAntigravityJson('{"event":"init","conversation_id":"c3"}\n{"event":"step_update"');
     assert.ok(trunc === null || (typeof trunc === 'object' && !('error' in trunc) && !('usage' in trunc)));
 });
 
@@ -442,9 +442,9 @@ test('dispatch: cli_catalog_ok NO es durable (no gatea); los dos rojos sí', () 
     assert.equal(DURABLE_RED_REASONS.has('cli_unavailable'), true);
     const snapshot = {
         ts: new Date(NOW).toISOString(),
-        providers: [{ provider: 'gemini-google', state: 'green', reason_code: 'cli_catalog_ok', last_checked_at: new Date(NOW - 60_000).toISOString() }],
+        providers: [{ provider: 'antigravity', state: 'green', reason_code: 'cli_catalog_ok', last_checked_at: new Date(NOW - 60_000).toISOString() }],
     };
-    assert.equal(evaluateHealthGate('gemini-google', snapshot, NOW).gated, false, 'verde real → elegible en la cascada');
+    assert.equal(evaluateHealthGate('antigravity', snapshot, NOW).gated, false, 'verde real → elegible en la cascada');
 });
 
 // ─── Invariantes de vocabulario (#5888) ─────────────────────────────────────
@@ -493,7 +493,7 @@ test('dashboard /providers: el render SSR contiene los tres labels y "catálogo 
     assert.match(src, /SIN LICENCIA/);
     // Render real de una fila por cada estado (SSR, sin browser).
     const fila = (over) => providersView.renderProviderRow({
-        key: 'gemini-google', disabledKey: 'gemini-google', name: 'Gemini', accent: 'var(--provider-gemini)',
+        key: 'antigravity', disabledKey: 'antigravity', name: 'Antigravity', accent: 'var(--provider-antigravity)',
         tier: 'FREE', tierKind: 'free', tierIcon: '🟩', masked: null, fingerprint: null, keyStatus: 'not_applicable',
         editable: false, reason: null, authMode: 'oauth', freeTierNotes: null,
         catalogCheck: null, quota: null, session: null,
@@ -573,7 +573,7 @@ for (const failure of [{ rc: 1 }, { error: true }, { throws: true }, { hang: tru
 
 test('contrato: override del spec llega al probe y cli_version al snapshot', async () => {
     const { env } = installedEnv(tmpDir());
-    const gemini = secrets.MANAGED_KEYS.find(k => k.provider === 'gemini-google');
+    const gemini = secrets.MANAGED_KEYS.find(k => k.provider === 'antigravity');
     const fake = fakeVersionSpawn({ version: '1.2.4' });
     const r = await probeCliProviderLive({ ...gemini, cli_contract: { min_version: '1.2.5', max_tested_version: '1.2.5' } }, { env, spawnImpl: fake, noCache: true });
     assert.equal(r.reason, 'cli_contract_mismatch'); assert.equal(r.cli_probe.cli_version, '1.2.4');

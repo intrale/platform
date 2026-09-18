@@ -19,12 +19,12 @@
 // =============================================================================
 'use strict';
 
-// 2026-09-16.1 — #6858: alta del provider `gemini-google` con el catálogo real
+// 2026-09-16.1 — #6858: alta del provider `antigravity` con el catálogo real
 // de Antigravity (hasta acá el dashboard no mostraba ninguna fila Gemini pese
 // a que 9 skills lo tienen en su cadena).
 // 2026-09-16.2 — #6563: baja de `kimi-moonshot` (retirado del pipeline junto
 // con cerebras y nvidia-nim; el plantel queda en anthropic, openai-codex y
-// gemini-google).
+// antigravity).
 const CATALOG_VERSION = '2026-09-16.2';
 
 // #6858 — Helper para las 14 filas de Antigravity. El catálogo del CLI codifica
@@ -117,7 +117,7 @@ const CATALOG = Object.freeze({
     // fuera del provider (credenciales + integridad de main); Pro-low → po/ux,
     // Pro-high → architect, Flash-high → perf, Sonnet-vía-Google → Commander,
     // Flash-medium → Sherlock. Sólo cambia este campo: ids intactos.
-    'gemini-google': Object.freeze([
+    'antigravity': Object.freeze([
         agyModel('gemini-3.8-flash-high', 'Gemini 3.8 Flash (High)', {
             capabilities: ['chat', 'tools', 'vision', 'reasoning'],
             recommended_for: ['perf'],

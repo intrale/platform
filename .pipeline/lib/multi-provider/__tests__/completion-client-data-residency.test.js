@@ -65,7 +65,7 @@ function fakeHttp({ status = 200, body } = {}) {
 // el chequeo de key ocurre ANTES del gate, así que sin key nunca probaríamos
 // el gate.
 // #6563 — el único provider HTTP que queda en completion-client es el shim de
-// AI Studio de `gemini-google` (cerebras/nvidia-nim retirados).
+// AI Studio de `antigravity` (cerebras/nvidia-nim retirados).
 function keyFileForGemini() {
     const f = path.join(tmpDir(), 'config.json');
     writeKeys(f, { gemini_google_api_key: 'AIzaSyTest_1234567890abcdef000' });
@@ -77,7 +77,7 @@ function keyFileForGemini() {
 test('#4404 · positivo: paths permitidos → complete() despacha (doRequest invocado)', async () => {
     const { impl, state } = fakeHttp({ status: 200 });
     const r = await completion.complete({
-        provider: 'gemini-google',
+        provider: 'antigravity',
         model: 'gemini-3.8-flash-medium',
         prompt: 'hola',
         paths: ['docs/pipeline/multi-provider.md', 'README.md'],
@@ -92,7 +92,7 @@ test('#4404 · positivo: paths permitidos → complete() despacha (doRequest inv
 test('#4404 · positivo: sin paths (default []) el gate es transparente', async () => {
     const { impl, state } = fakeHttp({ status: 200 });
     const r = await completion.complete({
-        provider: 'gemini-google',
+        provider: 'antigravity',
         model: 'gemini-3.8-flash-medium',
         prompt: 'hola',
         secretsPath: keyFileForGemini(),
@@ -107,7 +107,7 @@ test('#4404 · positivo: sin paths (default []) el gate es transparente', async 
 test('#4404 · negativo: path excluido (application.conf) → data_residency_blocked, sin dispatch', async () => {
     const { impl, state } = fakeHttp({ status: 200 });
     const r = await completion.complete({
-        provider: 'gemini-google',
+        provider: 'antigravity',
         model: 'gemini-3.8-flash-medium',
         prompt: 'analizá esto',
         // Excluido para non_anthropic por el sidecar real (**/application.conf).
@@ -132,7 +132,7 @@ test('#4404 · negativo: appendAudit invocado con {path,motivo,pattern} al bloqu
         appendAudit: (arg) => { auditCalls.push(arg); return { written: (arg.blocked || []).length }; },
     };
     const r = await completion.complete({
-        provider: 'gemini-google',
+        provider: 'antigravity',
         model: 'gemini-3.8-flash-medium',
         prompt: 'x',
         paths: ['config/secrets/service-account.json'],
@@ -163,7 +163,7 @@ test('#4404 · sidecar inválido (loadExclusionsOrThrow lanza) → data_residenc
         appendAudit() { throw new Error('no debería llamarse'); },
     };
     const r = await completion.complete({
-        provider: 'gemini-google',
+        provider: 'antigravity',
         model: 'gemini-3.8-flash-medium',
         prompt: 'x',
         paths: ['README.md'],
@@ -187,7 +187,7 @@ test('#4404 · filterPathsForProvider lanza → data_residency_blocked, sin disp
         appendAudit() {},
     };
     const r = await completion.complete({
-        provider: 'gemini-google',
+        provider: 'antigravity',
         model: 'gemini-3.8-flash-medium',
         prompt: 'x',
         paths: ['README.md'],

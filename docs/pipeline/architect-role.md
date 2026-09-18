@@ -129,7 +129,7 @@ Patrón ya usado por `handoff` y `delivery` — consistencia visual del feed del
 
 **Decisión firmada:** Sonnet 4.7 → Codex (gpt-5-codex) → Gemini (gemini-2.0-flash) → Cerebras (llama-3.3-70b).
 
-> **Actualización #6563 (2026-09-16):** Cerebras fue dado de baja del ruteo; la cadena vigente del `architect` en `agent-models.json` es `anthropic (sonnet-4-6) → openai-codex (gpt-5.5) → gemini-google (gemini-3.8-flash-high)`.
+> **Actualización #6563 (2026-09-16):** Cerebras fue dado de baja del ruteo; la cadena vigente del `architect` en `agent-models.json` es `anthropic (sonnet-4-6) → openai-codex (gpt-5.5) → antigravity (gemini-3.8-flash-high)`.
 
 **NO incluye Haiku 4.5** — justificación del PO en `criterios`:
 
@@ -147,7 +147,7 @@ Patrón ya usado por `handoff` y `delivery` — consistencia visual del feed del
       "model_override": "gpt-5-codex"
     },
     {
-      "provider": "gemini-google",
+      "provider": "antigravity",
       "model_override": "gemini-2.0-flash"
     },
     {
@@ -388,7 +388,7 @@ Hoy `.pipeline/audit/` contiene solo `multi-provider-health.jsonl` y `agent-mode
   "phase": "criterios",            // o "aprobacion" para Fase 2
   "model_requested": "claude-sonnet-4-7",
   "model_used": "claude-sonnet-4-7",   // distinto si hubo fallback
-  "fallback_chain_used": [],            // ["openai-codex", "gemini-google"] si hubo fallbacks
+  "fallback_chain_used": [],            // ["openai-codex", "antigravity"] si hubo fallbacks
   "tokens_in": 234123,
   "tokens_out": 12456,
   "cache_read": 1820000,

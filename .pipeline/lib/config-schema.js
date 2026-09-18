@@ -123,14 +123,15 @@ class ConfigParseViolation extends Error {
 
 // -----------------------------------------------------------------------------
 // Providers válidos para multi_provider.order (calidad primero, costo después).
-// Acepta tanto los ids cortos como los canónicos usados en agent-models.json.
+// Acepta los ids cortos de claude/codex y los canónicos usados en agent-models.json.
+// #6861 — `antigravity` NO tiene alias: el id viejo del provider no se acepta.
 // -----------------------------------------------------------------------------
 
 // Los proveedores gratuitos (groq, cerebras, nvidia-nim) se retiraron en #6563.
 const PROVIDER_ENUM = Object.freeze([
     'claude', 'anthropic',
     'codex', 'openai-codex',
-    'gemini', 'gemini-google',
+    'antigravity',
 ]);
 
 // -----------------------------------------------------------------------------

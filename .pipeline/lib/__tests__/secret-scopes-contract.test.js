@@ -157,13 +157,13 @@ test('CA-5 — los vendors de almacenamiento no coinciden con los ids de runtime
     // Ancla del error mas caro del issue: si alguien "unifica" ambas listas,
     // esto se pone rojo.
     // #6563 — plantel de runtime tras retirar cerebras / nvidia-nim / kimi-moonshot.
-    const idsDeRuntime = ['anthropic', 'openai-codex', 'gemini-google'];
+    const idsDeRuntime = ['anthropic', 'openai-codex', 'antigravity'];
 
     assert.notDeepEqual([...PROVIDER_VENDORS].sort(), [...idsDeRuntime].sort());
     assert.ok(PROVIDER_VENDORS.includes('openai'), '`openai` es el vendor de almacenamiento de `openai-codex`');
-    assert.ok(PROVIDER_VENDORS.includes('google'), '`google` es el vendor de almacenamiento de `gemini-google`');
+    assert.ok(PROVIDER_VENDORS.includes('google'), '`google` es el vendor de almacenamiento de `antigravity`');
     assert.equal(PROVIDER_VENDORS.includes('openai-codex'), false);
-    assert.equal(PROVIDER_VENDORS.includes('gemini-google'), false);
+    assert.equal(PROVIDER_VENDORS.includes('antigravity'), false);
     assert.equal(PROVIDER_VENDORS.includes('moonshot'), false, 'moonshot se retiro con Kimi en #6563');
 });
 

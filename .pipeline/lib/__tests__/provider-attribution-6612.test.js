@@ -9,7 +9,7 @@
 // 88 bytes (sólo el header que escribe el Pulpo) y no hay ningún registro en
 // `spawn-exit-*.jsonl` para esa corrida.
 //
-// La cadena de fallback de `po` fue anthropic → openai-codex → gemini-google →
+// La cadena de fallback de `po` fue anthropic → openai-codex → antigravity →
 // cerebras → kimi-moonshot, y el dispatcher eligió `kimi-moonshot`. Kimi es un
 // drop-in de Claude Code: `launcher: 'claude'` + `auth_mode: 'api_key'` +
 // `credentials_env: ['ANTHROPIC_AUTH_TOKEN']`. Ese token no estaba cargado, así
@@ -68,7 +68,7 @@ test('#6612 CA-1 · kimi-moonshot SIN ANTHROPIC_AUTH_TOKEN → ok:false (no se e
 test('#6612 CA-1b · las defs REALES de agent-models.json no reabren el caso', () => {
     const providers = readRealProviders();
     assert.ok(Object.keys(providers).length > 0, 'agent-models.json declara providers');
-    // Con el plantel vigente (anthropic/openai-codex/gemini-google por OAuth,
+    // Con el plantel vigente (anthropic/openai-codex/antigravity por OAuth,
     // deterministic sin credencial) el loop no encuentra candidatos: el valor
     // del test es que se dispare solo si alguien vuelve a declarar un drop-in
     // por API key. La regla en sí se cubre en CA-1 y CA-1c con fixtures inline.
@@ -170,11 +170,11 @@ test('#6612 CA-2b · el consumo es one-shot (no apaga el provider dos veces)', (
     const dir = tmpPipelineDir('oneshot');
     try {
         sfState.recordSpawnFailure({
-            pipelineDir: dir, provider: 'gemini-google', skill: 'review', issue: 4242,
+            pipelineDir: dir, provider: 'antigravity', skill: 'review', issue: 4242,
             signature: 'error_code:ENOENT',
         });
         const uno = sfState.consumeSpawnFailureAnyProvider({ pipelineDir: dir, skill: 'review', issue: 4242 });
-        assert.equal(uno && uno.provider, 'gemini-google');
+        assert.equal(uno && uno.provider, 'antigravity');
         const dos = sfState.consumeSpawnFailureAnyProvider({ pipelineDir: dir, skill: 'review', issue: 4242 });
         assert.equal(dos, null, 'el segundo barrido no debe reencontrar el marker consumido');
     } finally {

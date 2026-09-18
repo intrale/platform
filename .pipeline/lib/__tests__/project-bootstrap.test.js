@@ -143,20 +143,20 @@ test('CA-D2: dry-run expone ruteo resuelto contra la allowlist (skills validados
 test('#4851: dry-run expone providers y politica de PR efectivos', () => {
   const desc = validDescriptor({
     pullRequests: { policy: 'direct-to-main' },
-    providers: { order: ['gemini-google', 'openai-codex', 'anthropic'] },
+    providers: { order: ['antigravity', 'openai-codex', 'anthropic'] },
   });
   const res = b.runBootstrap({ descriptor: desc, mode: 'dry-run' });
   assert.equal(res.ok, true, JSON.stringify(res.errors));
-  assert.deepEqual(res.dryRun.providerOrder, ['gemini-google', 'openai-codex', 'anthropic']);
+  assert.deepEqual(res.dryRun.providerOrder, ['antigravity', 'openai-codex', 'anthropic']);
   assert.equal(res.dryRun.pullRequestPolicy, 'direct-to-main');
-  assert.match(res.human, /gemini-google/);
+  assert.match(res.human, /antigravity/);
   assert.match(res.human, /direct-to-main/);
 });
 
 test('#4851: dry-run deriva defaults seguros cuando providers/politica faltan', () => {
   const res = b.runBootstrap({ descriptor: validDescriptor(), mode: 'dry-run' });
   assert.equal(res.ok, true, JSON.stringify(res.errors));
-  assert.deepEqual(res.dryRun.providerOrder, ['anthropic', 'openai-codex', 'gemini-google']);
+  assert.deepEqual(res.dryRun.providerOrder, ['anthropic', 'openai-codex', 'antigravity']);
   assert.equal(res.dryRun.pullRequestPolicy, 'required');
 });
 

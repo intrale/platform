@@ -65,7 +65,7 @@ function toctouResolver(healthyFree) {
             source: 'all-gated',
             skipReasons: [
                 { provider: 'openai-codex', reason: 'spawn_throw', details: 'launcher murió al arrancar' },
-                { provider: 'gemini-google', reason: 'quota_exhausted', details: 'rate limited' },
+                { provider: 'antigravity', reason: 'quota_exhausted', details: 'rate limited' },
                 { provider: 'cerebras', reason: 'no_credentials', details: 'CEREBRAS_API_KEY ausente' },
             ],
         };
@@ -81,10 +81,10 @@ test('#4438 CA-1 — anthropic gateado + codex spawn_throw + TOCTOU → escala a
         failedProvider: 'openai-codex',
         triedNonAnthropic: new Set(['openai-codex']),
         primaryProvider: 'anthropic',
-        resolveExcluding: toctouResolver(['gemini-google', 'cerebras', 'nvidia-nim']),
+        resolveExcluding: toctouResolver(['antigravity', 'cerebras', 'nvidia-nim']),
     });
     assert.equal(plan.action, 'retry', 'debe escalar, no rendirse');
-    assert.equal(plan.next.provider, 'gemini-google', 'debe recorrer la cadena free hasta el primer sano');
+    assert.equal(plan.next.provider, 'antigravity', 'debe recorrer la cadena free hasta el primer sano');
     // El set de exclusión DEBE incluir anthropic (el fix) además de codex.
     assert.ok(plan.exclude.includes('anthropic'), 'exclude debe forzar anthropic (turno gateado)');
     assert.ok(plan.exclude.includes('openai-codex'), 'exclude conserva el provider ya intentado');
@@ -96,9 +96,9 @@ test('#4438 CA-1 — anthropic gateado + codex spawn_throw + TOCTOU → escala a
 // para dejar explícita la diferencia que produce el fix.
 // -----------------------------------------------------------------------------
 test('#4438 CA-4 — el resolver devuelve anthropic si anthropic NO se excluye (firma del bug)', () => {
-    const resolver = toctouResolver(['gemini-google']);
+    const resolver = toctouResolver(['antigravity']);
     assert.equal(resolver(['openai-codex']).provider, 'anthropic', 'reproduce el bug del TOCTOU');
-    assert.equal(resolver(['anthropic', 'openai-codex']).provider, 'gemini-google', 'con anthropic excluido, camina la cadena');
+    assert.equal(resolver(['anthropic', 'openai-codex']).provider, 'antigravity', 'con anthropic excluido, camina la cadena');
 });
 
 // -----------------------------------------------------------------------------
@@ -117,7 +117,7 @@ test('#4438 CA-2 — toda la cadena agotada → giveup con chainEvaluated comple
     assert.ok(Array.isArray(plan.chainEvaluated) && plan.chainEvaluated.length >= 3,
         'chainEvaluated debe traer TODOS los eslabones evaluados, no sólo el spawneado');
     const providers = plan.chainEvaluated.map((s) => s.provider);
-    assert.ok(providers.includes('gemini-google') && providers.includes('cerebras'),
+    assert.ok(providers.includes('antigravity') && providers.includes('cerebras'),
         'la telemetría no debe ocultar gemini/cerebras');
 });
 
@@ -165,13 +165,13 @@ test('#4438 CA-4 — escalado directo: gemini sano en la cadena → retry con ge
         primaryProvider: 'anthropic',
         resolveExcluding: (exclude) => {
             const ex = new Set(exclude);
-            return ex.has('gemini-google')
+            return ex.has('antigravity')
                 ? { provider: null, gated: true, skipReasons: [] }
-                : { provider: 'gemini-google', gated: false, skipReasons: [] };
+                : { provider: 'antigravity', gated: false, skipReasons: [] };
         },
     });
     assert.equal(plan.action, 'retry');
-    assert.equal(plan.next.provider, 'gemini-google');
+    assert.equal(plan.next.provider, 'antigravity');
 });
 
 // -----------------------------------------------------------------------------
@@ -181,7 +181,7 @@ test('#4438 CA-4 — escalado directo: gemini sano en la cadena → retry con ge
 test('#4438 CA-3 — redactSkipReasons redacta secrets en details, preserva provider/reason', () => {
     const raw = [
         { provider: 'openai-codex', reason: 'spawn_throw', details: 'Authorization: Bearer sk-ant-api03-abcdef0123456789abcdef0123456789 falló' },
-        { provider: 'gemini-google', reason: 'quota_exhausted', details: 'rate limited' },
+        { provider: 'antigravity', reason: 'quota_exhausted', details: 'rate limited' },
     ];
     const red = cmp.redactSkipReasons(raw);
     assert.equal(red.length, 2);
@@ -212,7 +212,7 @@ test('#4438 CA-3 — fallback_chain_exhausted audita chain_evaluated redactado (
             chainTried: ['openai-codex'],
             chainEvaluated: [
                 { provider: 'openai-codex', reason: 'spawn_throw', details: 'key sk-ant-api03-DEADBEEF0123456789abcdef0123456789 en el stack' },
-                { provider: 'gemini-google', reason: 'quota_exhausted', details: 'rate limited' },
+                { provider: 'antigravity', reason: 'quota_exhausted', details: 'rate limited' },
                 { provider: 'cerebras', reason: 'no_credentials', details: 'sin API key' },
             ],
             prompt: 'hola',
@@ -226,7 +226,7 @@ test('#4438 CA-3 — fallback_chain_exhausted audita chain_evaluated redactado (
         assert.ok(Array.isArray(entry.chain_evaluated), 'chain_evaluated debe persistirse como array');
         assert.equal(entry.chain_evaluated.length, 3, 'TODOS los eslabones evaluados quedan registrados');
         const providers = entry.chain_evaluated.map((s) => s.provider);
-        assert.deepEqual(providers, ['openai-codex', 'gemini-google', 'cerebras']);
+        assert.deepEqual(providers, ['openai-codex', 'antigravity', 'cerebras']);
         // El secreto NO debe aparecer en NINGÚN lugar del JSONL persistido.
         assert.ok(!/sk-ant-api03-DEADBEEF/.test(content), 'la API key NO debe persistirse en claro');
     } finally { cleanup(dir); }
@@ -264,13 +264,13 @@ test('#4438/#4440 — cannedAllProvidersFailedResponse nunca filtra secretos ni 
         verifiedAllFailed: true,
         chainEvaluated: [
             { provider: 'openai-codex', reason: 'spawn_throw', details: 'token sk-ant-api03-SECRET0123456789abcdef0123456789 filtrado' },
-            { provider: 'gemini-google', reason: 'quota_exhausted', details: 'sin cuota' },
+            { provider: 'antigravity', reason: 'quota_exhausted', details: 'sin cuota' },
         ],
     });
     assert.ok(!/sk-ant-api03-SECRET/.test(msg), 'el mensaje al operador NO debe contener la API key');
     // #4440 CA-2 — el copy visible ya NO enumera providers/modelos/motivos.
     assert.ok(!/openai-codex/.test(msg), 'no expone el provider intentado');
-    assert.ok(!/gemini-google/.test(msg), 'no expone el resto de la cadena');
+    assert.ok(!/antigravity/.test(msg), 'no expone el resto de la cadena');
     assert.ok(!/quota_exhausted|spawn_throw/.test(msg), 'no expone motivos técnicos por eslabón');
     // Los comandos determinísticos siguen anunciados (accionabilidad UX).
     assert.match(msg, /\/status/);

@@ -21,7 +21,7 @@
     }
   ],
   "providers": {
-    "order": ["anthropic", "openai-codex", "gemini-google"]
+    "order": ["anthropic", "openai-codex", "antigravity"]
   },
   "pullRequests": {
     "policy": "required"

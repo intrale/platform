@@ -235,7 +235,7 @@ test('CA-4: anti prompt-injection persistido — instrucción inyectada queda tr
 test('CA-4: providers no confiables (free-tier) NO se persisten', async () => {
   const dir = tmpDir();
   const convo = syntheticSession(54);
-  const freeTier = () => ({ text: 'resumen desde gemini', model: 'gemini-3.8-flash-medium', provider: 'gemini-google' });
+  const freeTier = () => ({ text: 'resumen desde gemini', model: 'gemini-3.8-flash-medium', provider: 'antigravity' });
   const rec = await mod.recompactIfNeeded(convo, { chatId: 3, storeFile: storeIn(dir), summarizer: freeTier });
   assert.equal(rec.recompacted, false);
   assert.match(rec.reason, /untrusted_provider/);

@@ -13,10 +13,10 @@
 //
 // #6563 — cerebras y nvidia-nim (los providers api_key que ejercían el cruce
 // por HTTP) se retiraron del plantel; el único provider en alcance del cruce es
-// gemini-google. Como gemini-google es CLI-OAuth (Antigravity, #6857) y
+// antigravity. Como antigravity es CLI-OAuth (Antigravity, #6857) y
 // `ping()` hace short-circuit antes del HTTP, los casos que ejercitan la rama
 // HTTP del cruce (descarga del catálogo, cap de bytes, contención del body)
-// re-declaran temporalmente a gemini-google como `api_key` en la lista
+// re-declaran temporalmente a antigravity como `api_key` en la lista
 // gestionada — mismo patrón que multi-provider-live-ping.test.js. El modelo
 // muerto pasa a ser `gemini-2.5-flash` (id del Gemini CLI gratuito retirado,
 // ausente del catálogo de Antigravity).
@@ -41,15 +41,15 @@ const FIXTURES = path.join(__dirname, 'fixtures');
 const readFixture = (f) => JSON.parse(fs.readFileSync(path.join(FIXTURES, f), 'utf8'));
 const rawFixture = (f) => fs.readFileSync(path.join(FIXTURES, f), 'utf8');
 
-const CATALOG_GEMINI = readFixture('catalog-gemini.json');
+const CATALOG_GEMINI = readFixture('catalog-antigravity.json');
 const AGENT_MODELS = readFixture('agent-models-catalog-check.json');
 
 const DEAD_MODEL = 'gemini-2.5-flash';
 const LIVE_MODEL = 'gemini-3.8-flash-medium';
 
-const SPEC_GEMINI = livePing.PROVIDER_PING_ENDPOINTS['gemini-google'];
+const SPEC_GEMINI = livePing.PROVIDER_PING_ENDPOINTS['antigravity'];
 
-// #6563 — ver nota del header: re-declaración temporal de gemini-google como
+// #6563 — ver nota del header: re-declaración temporal de antigravity como
 // provider api_key para ejercitar la rama HTTP del cruce. `getRawKey` /
 // `listKeys` siguen usando la spec real (path legacy `gemini_google_api_key`).
 const secretsRw = require('../multi-provider/secrets-rw');
@@ -136,13 +136,13 @@ test.beforeEach(() => livePing._resetPingThrottle());
 
 test('CA-1: el modelo muerto se detecta aunque exista SÓLO como fallbacks[].model_override', () => {
     const byProvider = healthCron.configuredModelsByProvider(AGENT_MODELS);
-    const gemini = byProvider.get('gemini-google');
-    assert.ok(gemini, 'gemini-google debe tener modelos configurados');
+    const gemini = byProvider.get('antigravity');
+    assert.ok(gemini, 'antigravity debe tener modelos configurados');
     assert.ok(gemini.has(DEAD_MODEL), 'el modelo del fallback debe entrar al cruce');
     // Y en el fixture NO está en ningún otro lado: si el cruce sólo mirara
     // `providers[].model` este assert fallaría.
-    assert.notEqual(AGENT_MODELS.providers['gemini-google'].model, DEAD_MODEL);
-    assert.equal(AGENT_MODELS.providers['gemini-google'].alternative_models.includes(DEAD_MODEL), false);
+    assert.notEqual(AGENT_MODELS.providers['antigravity'].model, DEAD_MODEL);
+    assert.equal(AGENT_MODELS.providers['antigravity'].alternative_models.includes(DEAD_MODEL), false);
 
     const out = livePing._crossCheckCatalog({
         spec: SPEC_GEMINI,
@@ -157,13 +157,13 @@ test('CA-1: el modelo muerto se detecta aunque exista SÓLO como fallbacks[].mod
 test('CA-1: `configuredModelsByProvider` cubre las 4 fuentes, una por fuente', () => {
     const by = healthCron.configuredModelsByProvider(AGENT_MODELS);
     // fuente 1 — providers[].model
-    assert.ok(by.get('gemini-google').has(LIVE_MODEL));
+    assert.ok(by.get('antigravity').has(LIVE_MODEL));
     // fuente 2 — providers[].alternative_models[]
-    assert.ok(by.get('gemini-google').has('gemini-3.7-flash-medium'));
+    assert.ok(by.get('antigravity').has('gemini-3.7-flash-medium'));
     // fuente 3 — skills[].model_override
-    assert.ok(by.get('gemini-google').has('gemini-3.1-pro-low'));
+    assert.ok(by.get('antigravity').has('gemini-3.1-pro-low'));
     // fuente 4 — skills[].fallbacks[].model_override
-    assert.ok(by.get('gemini-google').has(DEAD_MODEL));
+    assert.ok(by.get('antigravity').has(DEAD_MODEL));
 });
 
 test('CA-1: el cruce es por par (provider, model_id) — un id de Anthropic no se busca en el catálogo de Gemini', () => {
@@ -174,18 +174,18 @@ test('CA-1: el cruce es por par (provider, model_id) — un id de Anthropic no s
     const enGemini = livePing._crossCheckCatalog({
         spec: SPEC_GEMINI,
         result: reqResult({ body: CATALOG_GEMINI }),
-        expectModels: healthCron.expectModelsForPing(AGENT_MODELS).get('gemini-google'),
+        expectModels: healthCron.expectModelsForPing(AGENT_MODELS).get('antigravity'),
     });
     assert.equal(enGemini.models.some((m) => m.model_id === 'claude-opus-4-7'), false,
         'un modelo de Anthropic no debe siquiera evaluarse contra el catálogo de Gemini');
     assert.deepEqual(enGemini.models.filter((m) => !m.alive), [{ model_id: DEAD_MODEL, alive: false }],
-        'sólo el par (gemini-google, modelo muerto) sale como ausente');
+        'sólo el par (antigravity, modelo muerto) sale como ausente');
 });
 
 test('CA-1: `expectModelsForPing` sólo cubre el provider en alcance y usa el mapeo de nombres', () => {
     const m = healthCron.expectModelsForPing(AGENT_MODELS);
-    // #6563 — cerebras y nvidia-nim retirados: queda gemini-google.
-    assert.deepEqual(Array.from(m.keys()), ['gemini-google']);
+    // #6563 — cerebras y nvidia-nim retirados: queda antigravity.
+    assert.deepEqual(Array.from(m.keys()), ['antigravity']);
     assert.equal(m.has('anthropic'), false);
     assert.equal(m.has('openai'), false);
     assert.equal(m.has('openai-codex'), false);
@@ -291,8 +291,8 @@ for (const status of [401, 403, 429, 500]) {
 test('CA-3 fila 6: timeout / error de red ⇒ model_check_unavailable, nunca dead', async () => {
     const dir = tmpDir();
     const secretsPath = secretsWith(dir, GEMINI_KEY);
-    const r = await withHttpPingProviders(['gemini-google'], () => livePing.ping({
-        provider: 'gemini-google',
+    const r = await withHttpPingProviders(['antigravity'], () => livePing.ping({
+        provider: 'antigravity',
         secretsPath,
         httpImpl: fakeHttp({ error: Object.assign(new Error('Timeout'), { code: 'ETIMEDOUT' }) }),
         expectModels: [DEAD_MODEL],
@@ -381,7 +381,7 @@ test('CA-4/R-C/S-E: pertenencia ASIMÉTRICA — ∈ ALLOWED_REASON_CODES y ∉ D
 test('CA-5: un evento de modelo no cambia `state` ni `reason_code` del provider en el snapshot', async () => {
     const dir = tmpDir();
     const secretsPath = secretsWith(dir, GEMINI_KEY);
-    const result = await withHttpPingProviders(['gemini-google'], () => healthCron.runOnce({
+    const result = await withHttpPingProviders(['antigravity'], () => healthCron.runOnce({
         stateDir: path.join(dir, 'state'),
         auditDir: path.join(dir, 'audit'),
         secretsPath,
@@ -401,7 +401,7 @@ test('CA-5: un evento de modelo no cambia `state` ni `reason_code` del provider 
         dedupFile: path.join(dir, 'dedup.json'),
         skipAudit: true,
     }));
-    const gemini = result.snapshot.providers.find((p) => p.provider === 'gemini-google');
+    const gemini = result.snapshot.providers.find((p) => p.provider === 'antigravity');
     assert.equal(gemini.state, 'green', 'Gemini sigue sirviendo el resto de su catálogo');
     assert.equal(gemini.reason_code, 'authenticated', 'el eje de salud queda intacto');
     assert.equal(gemini.catalog_check.state, 'not_in_catalog', 'el evento viaja por el eje de modelo');
@@ -434,7 +434,7 @@ test('CA-6/S-A: con sanitizeModelId → null la alerta IGUAL se emite, sin el id
     const dir = tmpDir();
     const crudo = 'evil`[click](http://evil)`';
     const decision = healthAlerts.decideModelEvent({
-        provider: 'gemini-google',
+        provider: 'antigravity',
         modelId: crudo,
         providerState: 'green',
         now: Date.parse('2026-08-13T13:00:00.000Z'),
@@ -452,7 +452,7 @@ test('CA-6/S-A: con sanitizeModelId → null la alerta IGUAL se emite, sin el id
 test('CA-6/CA-17: el texto de la alerta afirma que el provider sigue sano y nombra la consecuencia', () => {
     const dir = tmpDir();
     const decision = healthAlerts.decideModelEvent({
-        provider: 'gemini-google',
+        provider: 'antigravity',
         modelId: DEAD_MODEL,
         providerState: 'green',
         now: Date.parse('2026-08-13T13:00:00.000Z'),
@@ -466,7 +466,7 @@ test('CA-6/CA-17: el texto de la alerta afirma que el provider sigue sano y nomb
     assert.ok(texto.includes('van a fallar al despachar'), 'nombra la consecuencia, no sólo el hecho');
     // UX-5: NO puede leerse como el mensaje rutinario de salud.
     assert.equal(/🩺 \*Multi-Provider Health\*/.test(texto), false);
-    assert.equal(/`gemini-google` → `GREEN`/.test(texto), false);
+    assert.equal(/`antigravity` → `GREEN`/.test(texto), false);
 });
 
 test('CA-17/R-D: la key de dedup del evento de modelo no colisiona con la del eje de salud', () => {
@@ -474,21 +474,21 @@ test('CA-17/R-D: la key de dedup del evento de modelo no colisiona con la del ej
     const dedupFile = path.join(dir, 'dedup.json');
     const t0 = Date.parse('2026-08-13T13:00:00.000Z');
 
-    const d1 = healthAlerts.decideModelEvent({ provider: 'gemini-google', modelId: DEAD_MODEL, providerState: 'green', now: t0, dedupFile });
+    const d1 = healthAlerts.decideModelEvent({ provider: 'antigravity', modelId: DEAD_MODEL, providerState: 'green', now: t0, dedupFile });
     assert.equal(d1.shouldEmit, true);
-    healthAlerts.recordModelEvent({ provider: 'gemini-google', modelId: DEAD_MODEL, sent: true, now: t0, dedupFile });
+    healthAlerts.recordModelEvent({ provider: 'antigravity', modelId: DEAD_MODEL, sent: true, now: t0, dedupFile });
 
     // Dentro de la ventana de 24h no se repite (condición persistente, 1/día).
-    const d2 = healthAlerts.decideModelEvent({ provider: 'gemini-google', modelId: DEAD_MODEL, providerState: 'green', now: t0 + 6 * 3600e3, dedupFile });
+    const d2 = healthAlerts.decideModelEvent({ provider: 'antigravity', modelId: DEAD_MODEL, providerState: 'green', now: t0 + 6 * 3600e3, dedupFile });
     assert.equal(d2.shouldEmit, false);
     assert.equal(d2.reasonNoEmit, 'dedup_window');
 
     // …pero la alerta de SALUD del mismo provider sigue libre de emitir.
-    const salud = healthAlerts.decide({ provider: 'gemini-google', state: 'red', reasonCode: 'invalid_credentials', now: t0 + 60e3, dedupFile });
+    const salud = healthAlerts.decide({ provider: 'antigravity', state: 'red', reasonCode: 'invalid_credentials', now: t0 + 60e3, dedupFile });
     assert.equal(salud.shouldEmit, true, 'el evento de modelo no puede suprimir la alerta de salud');
 
     // Y pasadas 24h el recordatorio vuelve.
-    const d3 = healthAlerts.decideModelEvent({ provider: 'gemini-google', modelId: DEAD_MODEL, providerState: 'green', now: t0 + 25 * 3600e3, dedupFile });
+    const d3 = healthAlerts.decideModelEvent({ provider: 'antigravity', modelId: DEAD_MODEL, providerState: 'green', now: t0 + 25 * 3600e3, dedupFile });
     assert.equal(d3.shouldEmit, true);
 });
 
@@ -498,7 +498,7 @@ test('CA-17/D-3: model_check_unavailable NO emite a Telegram', () => {
     const snapshot = {
         ts: '2026-08-13T13:00:00.000Z',
         providers: [{
-            provider: 'gemini-google', state: 'green', reason_code: 'authenticated',
+            provider: 'antigravity', state: 'green', reason_code: 'authenticated',
             catalog_check: { state: 'unavailable', checked_at: '2026-08-13T13:00:00.000Z', reason_code: 'model_check_unavailable', models: [] },
         }],
     };
@@ -522,7 +522,7 @@ test('CA-7: el flujo completo con catálogo vacío no modifica ningún archivo d
     const hashAntes = crypto.createHash('sha256').update(fs.readFileSync(configFile)).digest('hex');
 
     const secretsPath = secretsWith(dir, GEMINI_KEY);
-    await withHttpPingProviders(['gemini-google'], () => healthCron.runOnce({
+    await withHttpPingProviders(['antigravity'], () => healthCron.runOnce({
         stateDir: path.join(dir, 'state'),
         auditDir: path.join(dir, 'audit'),
         secretsPath,
@@ -590,14 +590,14 @@ test('CA-10: dos ticks dentro del TTL ⇒ UNA sola descarga de catálogo', async
         intervalMs: 5 * 60e3,
     };
     const t0 = Date.parse('2026-08-13T13:00:00.000Z');
-    await withHttpPingProviders(['gemini-google'], async () => {
+    await withHttpPingProviders(['antigravity'], async () => {
         await healthCron.tickIfDue({ ...base, now: t0 });
         await healthCron.tickIfDue({ ...base, now: t0 + 10 * 60e3 });   // 10 min después
-        assert.deepEqual(conCatalogo, ['gemini-google'], 'el 2do tick no vuelve a bajar el catálogo');
+        assert.deepEqual(conCatalogo, ['antigravity'], 'el 2do tick no vuelve a bajar el catálogo');
 
         // Fuera del TTL sí vuelve a descargar.
         await healthCron.tickIfDue({ ...base, now: t0 + 7 * 3600e3 });
-        assert.deepEqual(conCatalogo, ['gemini-google', 'gemini-google']);
+        assert.deepEqual(conCatalogo, ['antigravity', 'antigravity']);
     });
 });
 
@@ -632,13 +632,13 @@ test('CA-10/R-E: carry-over — el tick intermedio conserva el catalog_check pre
         intervalMs: 5 * 60e3,
     };
     const t0 = Date.parse('2026-08-13T13:00:00.000Z');
-    await withHttpPingProviders(['gemini-google'], async () => {
+    await withHttpPingProviders(['antigravity'], async () => {
         const r1 = await healthCron.tickIfDue({ ...base, now: t0 });
-        const cc1 = r1.snapshot.providers.find((p) => p.provider === 'gemini-google').catalog_check;
+        const cc1 = r1.snapshot.providers.find((p) => p.provider === 'antigravity').catalog_check;
         assert.equal(cc1.state, 'not_in_catalog');
 
         const r2 = await healthCron.tickIfDue({ ...base, now: t0 + 10 * 60e3 });
-        const cc2 = r2.snapshot.providers.find((p) => p.provider === 'gemini-google').catalog_check;
+        const cc2 = r2.snapshot.providers.find((p) => p.provider === 'antigravity').catalog_check;
         assert.deepEqual(cc2, cc1, 'sin carry-over la celda parpadearía a "nunca verificada" cada 5 min');
     });
 });
@@ -661,8 +661,8 @@ test('CA-11/R-A: el catálogo del tercero NO aparece en el retorno de ping(), ni
         models: [...CATALOG_GEMINI.models, { name: 'models/otro-modelo-remoto', description: MARCADOR }],
     });
 
-    const r = await withHttpPingProviders(['gemini-google'], () => livePing.ping({
-        provider: 'gemini-google', secretsPath,
+    const r = await withHttpPingProviders(['antigravity'], () => livePing.ping({
+        provider: 'antigravity', secretsPath,
         httpImpl: fakeHttp({ status: 200, body: bodyRemoto }),
         expectModels: [DEAD_MODEL],
     }));
@@ -673,7 +673,7 @@ test('CA-11/R-A: el catálogo del tercero NO aparece en el retorno de ping(), ni
     assert.deepEqual(r.catalog_check.models, [{ model_id: DEAD_MODEL, alive: false }],
         'sólo `{model_id, alive}` con ids NUESTROS');
 
-    const result = await withHttpPingProviders(['gemini-google'], () => healthCron.runOnce({
+    const result = await withHttpPingProviders(['antigravity'], () => healthCron.runOnce({
         stateDir: path.join(dir, 'state'), auditDir: path.join(dir, 'audit'), secretsPath,
         checkCatalog: true, agentModelsConfig: AGENT_MODELS,
         httpImpl: fakeHttp({ status: 200, body: bodyRemoto }),
@@ -695,8 +695,8 @@ test('CA-11/R-B: el fragmento del body no-JSON no viaja en `detail` ni en nada q
     const dir = tmpDir();
     const secretsPath = secretsWith(dir, GEMINI_KEY);
     const SECRETO = 'FRAGMENTO_QUE_NO_DEBE_SALIR';
-    const r = await withHttpPingProviders(['gemini-google'], () => livePing.ping({
-        provider: 'gemini-google', secretsPath,
+    const r = await withHttpPingProviders(['antigravity'], () => livePing.ping({
+        provider: 'antigravity', secretsPath,
         httpImpl: fakeHttp({ status: 200, body: `<html><title>${SECRETO}</title></html>` }),
         expectModels: [DEAD_MODEL],
     }));
@@ -733,8 +733,8 @@ test('CA-11/S-C/R-F: un stream que supera MAX_CATALOG_BYTES destruye el socket y
     const gigante = '{"models":[' + '{"name":"models/x"},'.repeat(80_000) + '{"name":"models/y"}]}';
     assert.ok(Buffer.byteLength(gigante) > livePing.MAX_CATALOG_BYTES);
     const t0 = Date.now();
-    const r = await withHttpPingProviders(['gemini-google'], () => livePing.ping({
-        provider: 'gemini-google', secretsPath,
+    const r = await withHttpPingProviders(['antigravity'], () => livePing.ping({
+        provider: 'antigravity', secretsPath,
         httpImpl: fakeHttp({ status: 200, body: gigante, chunkSize: 256 * 1024 }),
         expectModels: [DEAD_MODEL],
     }));
@@ -756,8 +756,8 @@ test('CA-11: ningún model_id se concatena a una URL de ping', async () => {
     const dir = tmpDir();
     const secretsPath = secretsWith(dir, GEMINI_KEY);
     const http = fakeHttp({ status: 200, body: JSON.stringify(CATALOG_GEMINI) });
-    await withHttpPingProviders(['gemini-google'], () =>
-        livePing.ping({ provider: 'gemini-google', secretsPath, httpImpl: http, expectModels: [DEAD_MODEL] }));
+    await withHttpPingProviders(['antigravity'], () =>
+        livePing.ping({ provider: 'antigravity', secretsPath, httpImpl: http, expectModels: [DEAD_MODEL] }));
     assert.equal(http.calls.length, 1);
     const { path: reqPath, hostname } = http.calls[0];
     assert.equal(reqPath, '/v1beta/models?pageSize=1000');
@@ -772,8 +772,8 @@ test('CA-11: ningún model_id se concatena a una URL de ping', async () => {
 test('R-J: el ping SIN expectModels no baja catálogo y devuelve el shape de HEAD', async () => {
     const dir = tmpDir();
     const secretsPath = secretsWith(dir, GEMINI_KEY);
-    const r = await withHttpPingProviders(['gemini-google'], () => livePing.ping({
-        provider: 'gemini-google', secretsPath,
+    const r = await withHttpPingProviders(['antigravity'], () => livePing.ping({
+        provider: 'antigravity', secretsPath,
         httpImpl: fakeHttp({ status: 200, body: JSON.stringify(CATALOG_GEMINI) }),
     }));
     assert.deepEqual(Object.keys(r).sort(), ['latency_ms', 'ok', 'provider', 'reason', 'statusCode'].sort());
@@ -785,8 +785,8 @@ test('R-J: el ping SIN expectModels no baja catálogo y devuelve el shape de HEA
 test('R-J: expectModels vacío se comporta como ausente', async () => {
     const dir = tmpDir();
     const secretsPath = secretsWith(dir, GEMINI_KEY);
-    const r = await withHttpPingProviders(['gemini-google'], () => livePing.ping({
-        provider: 'gemini-google', secretsPath,
+    const r = await withHttpPingProviders(['antigravity'], () => livePing.ping({
+        provider: 'antigravity', secretsPath,
         httpImpl: fakeHttp({ status: 200, body: JSON.stringify(CATALOG_GEMINI) }),
         expectModels: [],
     }));
@@ -798,8 +798,8 @@ test('R-J: expectModels vacío se comporta como ausente', async () => {
 // =============================================================================
 
 test('CA-13/D-1: alcance explícito y mapeo openai ↔ openai-codex', () => {
-    // #6563 — cerebras y nvidia-nim retirados: el alcance queda en gemini-google.
-    assert.deepEqual(healthCron.CATALOG_CHECK_PROVIDERS.slice(), ['gemini-google']);
+    // #6563 — cerebras y nvidia-nim retirados: el alcance queda en antigravity.
+    assert.deepEqual(healthCron.CATALOG_CHECK_PROVIDERS.slice(), ['antigravity']);
     for (const fuera of ['anthropic', 'openai-codex', 'openai', 'cerebras', 'nvidia-nim', 'kimi-moonshot']) {
         assert.equal(healthCron.CATALOG_CHECK_PROVIDERS.includes(fuera), false, `${fuera} fuera de alcance`);
     }
@@ -835,9 +835,9 @@ test('CA-9/D-6: el reason code nuevo tampoco cae al default silencioso de provid
     for (const code of ['model_not_in_catalog', 'model_check_unavailable']) {
         fs.writeFileSync(path.join(dir, 'multi-provider-health.json'), JSON.stringify({
             ts: '2026-08-13T13:00:00.000Z',
-            providers: [{ provider: 'gemini-google', label: 'Gemini', state: 'red', reason_code: code }],
+            providers: [{ provider: 'antigravity', label: 'Gemini', state: 'red', reason_code: code }],
         }));
-        const res = ppc.classifyPauseCause(['gemini-google'], { stateDir: dir, now: Date.parse('2026-08-13T13:00:00.000Z') });
+        const res = ppc.classifyPauseCause(['antigravity'], { stateDir: dir, now: Date.parse('2026-08-13T13:00:00.000Z') });
         assert.notEqual(res.providers[0].text, 'motivo desconocido', `${code} no puede caer al default`);
         assert.notEqual(res.providers[0].cause, 'auth',
             `${code} no es causa de auth: encabezaría el mensaje como si el proveedor estuviera inutilizable`);
@@ -870,7 +870,7 @@ test('CA-18: las 7 etiquetas coinciden LITERAL con la tabla acordada con ux', ()
 // Modelo mínimo de una fila, con los campos que consume el render.
 function filaProv(over = {}) {
     return {
-        key: 'gemini-google', disabledKey: 'gemini-google', name: 'Gemini', accent: 'var(--provider-gemini)',
+        key: 'antigravity', disabledKey: 'antigravity', name: 'Antigravity', accent: 'var(--provider-antigravity)',
         tier: 'FREE', tierKind: 'free', tierIcon: '🟩', masked: 'AIzaSy…aaaa', fingerprint: 'abc123',
         keyStatus: 'present', editable: true, reason: null, authMode: 'api_key', freeTierNotes: null,
         healthState: 'green', healthReason: 'authenticated', catalogCheck: null, quota: null,
@@ -945,7 +945,7 @@ test('CA-8: la antigüedad real llega hasta el HTML de la pantalla, no sólo al 
         ],
         meta: {
             total: 2, healthy: 2, degraded: [],
-            modelsOutOfCatalog: [{ providerKey: 'gemini-google', providerName: 'Gemini', modelId: DEAD_MODEL }],
+            modelsOutOfCatalog: [{ providerKey: 'antigravity', providerName: 'Gemini', modelId: DEAD_MODEL }],
             absorber: { name: 'Claude', loadPct: 10 }, defaultProvider: 'anthropic',
             defaultChain: ['Claude'], agents: [], healthTs: null, dispatchTotal: 5,
         },
@@ -958,7 +958,7 @@ test('CA-8: la antigüedad real llega hasta el HTML de la pantalla, no sólo al 
 test('CA-15/UX-3: providers verdes + 1 modelo fuera de catálogo ⇒ el banner NO dice TODO OK y sí nombra el par', () => {
     const meta = {
         total: 3, healthy: 3, degraded: [],
-        modelsOutOfCatalog: [{ providerKey: 'gemini-google', providerName: 'Gemini', modelId: DEAD_MODEL }],
+        modelsOutOfCatalog: [{ providerKey: 'antigravity', providerName: 'Gemini', modelId: DEAD_MODEL }],
         absorber: { name: 'Claude', loadPct: 41 }, defaultProvider: 'anthropic',
         defaultChain: [], agents: [], healthTs: null, dispatchTotal: 120,
     };
@@ -975,7 +975,7 @@ test('CA-15/UX-3: providers verdes + 1 modelo fuera de catálogo ⇒ el banner N
     assert.ok(/role="region" aria-label="[^"]*modelos[^"]*"/.test(html), html.slice(0, 400));
 
     // Plural.
-    meta.modelsOutOfCatalog.push({ providerKey: 'gemini-google', providerName: 'Gemini', modelId: 'gemini-2.0-flash' });
+    meta.modelsOutOfCatalog.push({ providerKey: 'antigravity', providerName: 'Gemini', modelId: 'gemini-2.0-flash' });
     assert.ok(providersView.renderMissionBanner(meta).includes('2 MODELOS FUERA DE CATÁLOGO'));
 });
 
@@ -994,7 +994,7 @@ test('CA-15: con un provider degradado Y un modelo fuera de catálogo, ninguno d
     const meta = {
         total: 3, healthy: 2,
         degraded: [{ name: 'Codex', healthReason: 'invalid_credentials' }],
-        modelsOutOfCatalog: [{ providerKey: 'gemini-google', providerName: 'Gemini', modelId: DEAD_MODEL }],
+        modelsOutOfCatalog: [{ providerKey: 'antigravity', providerName: 'Gemini', modelId: DEAD_MODEL }],
         absorber: { name: 'Claude', loadPct: 41 }, defaultProvider: 'anthropic',
         defaultChain: [], agents: [], healthTs: null, dispatchTotal: 120,
     };
@@ -1012,24 +1012,24 @@ test('E2E: catálogo real de Gemini sin el modelo del fallback ⇒ snapshot + al
     const dir = tmpDir();
     const secretsPath = secretsWith(dir, GEMINI_KEY);
     const enviados = [];
-    const result = await withHttpPingProviders(['gemini-google'], () => healthCron.runOnce({
+    const result = await withHttpPingProviders(['antigravity'], () => healthCron.runOnce({
         stateDir: path.join(dir, 'state'), auditDir: path.join(dir, 'audit'), secretsPath,
         checkCatalog: true, agentModelsConfig: AGENT_MODELS,
-        httpImpl: fakeHttp({ status: 200, body: rawFixture('catalog-gemini.json') }),
+        httpImpl: fakeHttp({ status: 200, body: rawFixture('catalog-antigravity.json') }),
         cliProbe: () => false,
         telegramSender: (p) => { enviados.push(p); return true; },
         dedupFile: path.join(dir, 'dedup.json'), skipAudit: true,
         now: Date.parse('2026-08-13T13:00:00.000Z'),
     }));
 
-    const gemini = result.snapshot.providers.find((p) => p.provider === 'gemini-google');
+    const gemini = result.snapshot.providers.find((p) => p.provider === 'antigravity');
     assert.equal(gemini.state, 'green');
     assert.equal(gemini.catalog_check.state, 'not_in_catalog');
     assert.deepEqual(gemini.catalog_check.models.filter((m) => !m.alive), [{ model_id: DEAD_MODEL, alive: false }]);
 
     const alerta = enviados.find((p) => p.event === 'model_not_in_catalog');
     assert.ok(alerta, 'debe emitirse la alerta del eje de modelo');
-    assert.equal(alerta.provider, 'gemini-google');
+    assert.equal(alerta.provider, 'antigravity');
     assert.equal(alerta.model_id, DEAD_MODEL);
     assert.equal(alerta.provider_state, 'green');
     assert.match(healthCron.formatAlertText(alerta), /^⚠️/);
@@ -1038,10 +1038,10 @@ test('E2E: catálogo real de Gemini sin el modelo del fallback ⇒ snapshot + al
 test('E2E: los providers fuera de alcance no llevan catalog_check en el snapshot', async () => {
     const dir = tmpDir();
     const secretsPath = secretsWith(dir, GEMINI_KEY);
-    const result = await withHttpPingProviders(['gemini-google'], () => healthCron.runOnce({
+    const result = await withHttpPingProviders(['antigravity'], () => healthCron.runOnce({
         stateDir: path.join(dir, 'state'), auditDir: path.join(dir, 'audit'), secretsPath,
         checkCatalog: true, agentModelsConfig: AGENT_MODELS,
-        httpImpl: fakeHttp({ status: 200, body: rawFixture('catalog-gemini.json') }),
+        httpImpl: fakeHttp({ status: 200, body: rawFixture('catalog-antigravity.json') }),
         cliProbe: () => false, telegramSender: () => true,
         dedupFile: path.join(dir, 'dedup.json'), skipAudit: true,
     }));

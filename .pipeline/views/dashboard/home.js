@@ -996,7 +996,7 @@ function homeStyles() {
  * elige POR ATRIBUTO allowlisteado, nunca inyectando el id crudo (CA-6/A03). */
 .quota-exhausted-banner[data-provider="openai-codex"] { border-left-color: var(--provider-openai-codex); }
 .quota-exhausted-banner[data-provider="anthropic"]    { border-left-color: var(--provider-anthropic); }
-.quota-exhausted-banner[data-provider="gemini-google"]{ border-left-color: var(--provider-gemini); }
+.quota-exhausted-banner[data-provider="antigravity"]{ border-left-color: var(--provider-antigravity); }
 
 /* Global: 0 proveedores LLM disponibles → ámbar de alarma controlada. */
 .quota-exhausted-banner[data-scope="global"] {
@@ -1056,7 +1056,7 @@ function homeStyles() {
 }
 .quota-provider-chip[data-provider="openai-codex"] { color: var(--provider-openai-codex-fg); background: var(--provider-openai-codex-bg); border-color: var(--provider-openai-codex); }
 .quota-provider-chip[data-provider="anthropic"]    { color: var(--provider-anthropic-fg);    background: var(--provider-anthropic-bg);    border-color: var(--provider-anthropic); }
-.quota-provider-chip[data-provider="gemini-google"]{ color: var(--provider-gemini-fg);       background: var(--provider-gemini-bg);       border-color: var(--provider-gemini); }
+.quota-provider-chip[data-provider="antigravity"]{ color: var(--provider-antigravity-fg);  background: var(--provider-antigravity-bg);  border-color: var(--provider-antigravity); }
 .quota-provider-chip .quota-provider-dot {
     width: 8px; height: 8px; border-radius: 50%;
     background: currentColor;
@@ -2027,13 +2027,13 @@ ${(() => { try { return _commanderActivity ? _commanderActivity.commanderActivit
 }
 .mz-now .active-card-prov[data-prov="anthropic"]::before { background: #FB923C; }
 .mz-now .active-card-prov[data-prov="codex"]::before { background: #34D399; }
-.mz-now .active-card-prov[data-prov="gemini"]::before { background: #60A5FA; }
+.mz-now .active-card-prov[data-prov="antigravity"]::before { background: #60A5FA; }
 /* #4284 (CA-UX-1) — colores por provider-key CANÓNICA (el data-prov sale del id
-   canónico de PROVIDER_LABELS: openai-codex, gemini-google, etc.). Sin estas
+   canónico de PROVIDER_LABELS: openai-codex, antigravity, etc.). Sin estas
    reglas, el dot del provider EFECTIVO (ej. fallback a Codex) quedaría incoloro
    justo cuando más importa distinguirlo. */
 .mz-now .active-card-prov[data-prov="openai-codex"]::before { background: #34D399; }
-.mz-now .active-card-prov[data-prov="gemini-google"]::before { background: #60A5FA; }
+.mz-now .active-card-prov[data-prov="antigravity"]::before { background: #60A5FA; }
 .mz-now .active-card-prov[data-prov="deterministic"]::before { background: #94A3B8; }
 /* Eyebrow "CORRE" sobre el tiempo (mockup .ameta). */
 .mz-now .active-card-time { position: relative; }
@@ -2642,7 +2642,7 @@ async function tickQuota(){
 // emitidos por _mzWinCell (mz-qm-<key>-<slot>-{tag,bar,pct,rst}) — NO re-render.
 //
 // La key de cada fila ES el id canonico del slice (anthropic / openai-codex /
-// gemini-google). El lookup en d.providers usa esa misma
+// antigravity). El lookup en d.providers usa esa misma
 // key directamente; los buckets del slice (session/weekly) mapean a las ventanas
 // corta/larga (short/long).
 
@@ -2650,14 +2650,14 @@ async function tickQuota(){
 // que el operador lea la ausencia como un bug.
 const QUOTA_SINDATO_REASON = {
     'session-openai-codex': 'Codex opera por eventos (usage-limit): no hay ventana de 5h con %.',
-    'session-gemini-google': 'Free tier de Gemini: el % por minuto se hidrata desde metadatos de la API cuando estén disponibles.',
-    'week-gemini-google': 'Free tier de Gemini: el % diario se hidrata desde metadatos de la API cuando estén disponibles.',
+    'session-antigravity': 'Licencia Antigravity: la ventana de 5 h se mide con agy /usage; sin medición fresca la celda queda en n/d.',
+    'week-antigravity': 'Licencia Antigravity: % semanal medido con agy /usage (bucket gemini-weekly); sin medición fresca la celda queda en n/d.',
 };
 const QUOTA_SINDATO_DEFAULT = 'Sin dato de cuota disponible para este proveedor en esta ventana.';
 
 // Umbral de color por cuota DISPONIBLE (CA #4533): verde=holgado, ámbar=medio,
 // rojo=agotado. 0% disponible (= consumo 100%) => rojo AGOTADA.
-// Sirve a las celdas gauge del FREE-TIER (gemini), cuyo
+// Sirve a las celdas gauge de antigravity (modo 'gauge'), cuyo
 // available es la disponibilidad genuina (100*remaining/limit, provider-quota
 // .js:166) y NO un "100 - consumido". #4884 NO toca esta semántica (CA-5).
 function _mzThresholdClass(avail){
@@ -2779,7 +2779,7 @@ function _mzHydrateWinCell(key, slot, b){
     //     Se pinta b.pct — el consumido CRUDO del motor — para evitar la doble
     //     negacion (100 - (100 - pct)); si el slice no trajera pct se degrada
     //     a "100 - available", que es su equivalente exacto.
-    //   - RESTO DE LOS GAUGE (gemini-google) -> vista DISPONIBLE, SIN
+    //   - RESTO DE LOS GAUGE (antigravity) -> vista DISPONIBLE, SIN
     //     CAMBIOS. Para los free-tiers
     //     available es la disponibilidad genuina (100*remaining/limit,
     //     provider-quota.js:166), no un "100 - consumido": invertirla seria un
@@ -2916,11 +2916,10 @@ var QUOTA_PROVIDER_NAMES = {
     'anthropic': '\\u0041nthropic',
     'openai-codex': '\\u0043odex',
     'openai': '\\u004FpenAI',
-    'gemini-google': '\\u0047emini',
-    'gemini': '\\u0047emini'
+    'antigravity': '\\u0041ntigravity'
 };
 var QUOTA_PROVIDER_TOKENS = {
-    'anthropic':1,'openai-codex':1,'gemini-google':1
+    'anthropic':1,'openai-codex':1,'antigravity':1
 };
 var QUOTA_REASON_LABELS = {
     'usage_limit_reached':'límite de uso del plan',
@@ -4641,13 +4640,12 @@ const QUOTA_PROVIDER_NAMES = {
     'anthropic': 'Anthropic',
     'openai-codex': 'Codex',
     'openai': 'OpenAI',
-    'gemini-google': 'Gemini',
-    'gemini': 'Gemini',
+    'antigravity': 'Antigravity',
 };
 // Ids con regla CSS `[data-provider]` (acento/chip). Fuera de esta allowlist se
 // usa el estilo `unknown` y NO se emite el id crudo como data-provider.
 const QUOTA_PROVIDER_TOKENS = new Set([
-    'anthropic', 'openai-codex', 'gemini-google',
+    'anthropic', 'openai-codex', 'antigravity',
 ]);
 const QUOTA_REASON_LABELS = {
     'usage_limit_reached': 'límite de uso del plan',
@@ -5139,7 +5137,7 @@ function renderKpiGrid(state) {
       ${renderKpiCard({ id: 'kpi-active', valueId: 'kpi-active-value', icon: '🟢', label: 'Agentes activos', sub: 'ejecutando ahora', title: 'Agentes en ejecución (incluye Commander cuando atiende).' })}
       ${renderKpiCard({ id: 'kpi-queue', valueId: 'kpi-queue-value', icon: '⏩', label: 'En cola', sub: 'próximos a lanzar', title: 'Issues esperando en la cola del pipeline.' })}
       ${renderKpiCard({ id: 'kpi-bounce', valueId: 'kpi-bounce-value', icon: '↩', label: '% Rebote · 7d', sub: 'issues con ≥1 rebote', title: '% de issues con ≥1 rebote sobre issues terminados en los últimos 7 días. Hover para breakdown por fase.' })}
-      ${renderKpiCard({ id: 'kpi-tokens', valueId: 'kpi-tokens-value', icon: '⚡', label: 'Tokens · 24h', sub: 'todos los providers', title: 'Tokens consumidos en las últimas 24h, sumados todos los providers (Claude · Codex · Gemini). Hover para breakdown.' })}
+      ${renderKpiCard({ id: 'kpi-tokens', valueId: 'kpi-tokens-value', icon: '⚡', label: 'Tokens · 24h', sub: 'todos los providers', title: 'Tokens consumidos en las últimas 24h, sumados todos los providers (Claude · Codex · Antigravity). Hover para breakdown.' })}
       ${renderKpiCard({ id: 'kpi-cycle', valueId: 'kpi-cycle-value', icon: '⏱', label: 'Duración por agente', sub: 'mediana por marker', title: 'Mediana de duración por agente/fase (cap 7d). NO es cycle time DORA — esa métrica vive separada.' })}
     </section>`;
 }
@@ -5675,7 +5673,7 @@ function renderMissionBanner(state) {
 // Fila de proveedor para las cuotas desglosadas (CA-6). El % real por proveedor
 // lo hidrata `tickProviderQuota` (#4202) leyendo `/api/dash/quota` →
 // `providers[<id-canónico>].{session|weekly}` = {pct, confidence}. La `key` de la
-// fila ES ese id canónico (anthropic / openai-codex / gemini-google — ver
+// fila ES ese id canónico (anthropic / openai-codex / antigravity — ver
 // MZ_PROVIDER_META), por lo que renderProviderQuotaRows itera
 // las mismas keys y no necesita tabla de traducción.
 //
@@ -5692,7 +5690,7 @@ function renderMissionBanner(state) {
 // `ALLOWED_PROVIDERS` en `lib/quota-adapters/index.js`.
 //
 // La `key` de cada entrada ES el id canónico de hidratación (anthropic /
-// openai-codex / gemini-google) y DEBE coincidir EXACTO con el id que emite el
+// openai-codex / antigravity) y DEBE coincidir EXACTO con el id que emite el
 // slice `/api/dash/quota` (d.providers[key]).
 //
 // `src`: fuente fidedigna del % (CA #4533) — CLI (OAuth) o API. `color`: un hue
@@ -5701,7 +5699,8 @@ function renderMissionBanner(state) {
 const MZ_PROVIDER_META = Object.freeze({
     'anthropic':     { name: 'Anthropic',  color: 'var(--in-warn,#d29922)',   src: 'CLI' },
     'openai-codex':  { name: 'Codex',      color: 'var(--in-ok,#3fb950)',     src: 'CLI' },
-    'gemini-google': { name: 'Gemini',     color: 'var(--in-info,#58a6ff)',   src: 'API' },
+    // #6861 — `src: 'CLI'`: la cuota se mide con `agy /usage` (OAuth), no hay endpoint HTTP.
+    'antigravity':   { name: 'Antigravity', color: 'var(--provider-antigravity,#8AB4F8)', src: 'CLI' },
 });
 const MZ_ACTIVE_PROVIDERS = Object.freeze(Object.keys(MZ_PROVIDER_META));
 
@@ -5712,7 +5711,7 @@ const MZ_ACTIVE_PROVIDERS = Object.freeze(Object.keys(MZ_PROVIDER_META));
 const MZ_PROVIDER_WINDOWS = Object.freeze({
     'anthropic':     { short: '5h',   long: 'Sem' },
     'openai-codex':  { short: 'Roll', long: 'Sem' },
-    'gemini-google': { short: 'Min',  long: 'Día' },
+    'antigravity': { short: 'Min',  long: 'Día' },
 });
 
 // Celda de ventana (skeleton). `slot` in {short,long}. La hidratación

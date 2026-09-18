@@ -141,7 +141,7 @@ const CAPABILITY_MATRIX = Object.freeze({
     }),
 
     // -------------------------------------------------------------------------
-    // FREE PROVIDER (#3220 / #3243) — gemini-google. (cerebras y nvidia-nim
+    // FREE PROVIDER (#3220 / #3243) — antigravity. (cerebras y nvidia-nim
     // tenían celdas idénticas; se retiraron del pipeline en #6563.)
     //
     // Defecto #2 del portero (#3820): el provider figura en las cadenas de
@@ -160,7 +160,7 @@ const CAPABILITY_MATRIX = Object.freeze({
     // conceder MENOS, esta celda se recorta (mismo flujo que CA-19 para Codex:
     // doc + parity test + CODEOWNERS).
     // -------------------------------------------------------------------------
-    'gemini-google': Object.freeze({
+    'antigravity': Object.freeze({
         bypassPermissions: immutableSet([
             'file_read',
             'file_write_repo',

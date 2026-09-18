@@ -46,7 +46,7 @@ function fakeSpawn(output, options = {}) {
 function options(t, spawnImpl) {
     const stateDir = temp(t), exe = path.join(stateDir, 'agy.exe');
     fs.writeFileSync(exe, 'fake');
-    return { stateDir, env: { AGY_BIN: exe }, platform: 'win32', spawnImpl, nowMs: NOW };
+    return { stateDir, env: { ANTIGRAVITY_BIN: exe }, platform: 'win32', spawnImpl, nowMs: NOW };
 }
 
 test('acepta ambos grupos y persiste sólo campos permitidos', async t => {
@@ -118,7 +118,7 @@ for (const failure of [{ hang: true }, { throws: true }, { rc: 1 }, { overflow: 
 
 test('cron mantiene salud, cuenta ticks, reinicia racha y omite probe sin sesión', async t => {
     const stateDir = temp(t);
-    const spec = secrets.MANAGED_KEYS.find(s => s.provider === 'gemini-google');
+    const spec = secrets.MANAGED_KEYS.find(s => s.provider === 'antigravity');
     let called = 0;
     const opts = { providers: [spec], stateDir, now: NOW,
         catalogProbe: async () => ({ ok: true, reason: 'cli_catalog_ok', models: ['gemini'], checked_at: new Date(NOW).toISOString() }),
@@ -140,7 +140,7 @@ test('cron mantiene salud, cuenta ticks, reinicia racha y omite probe sin sesió
 
 test('alerta al segundo tick con dedupe durable de 24h separado de salud', t => {
     const dedupFile = path.join(temp(t), 'dedup.json');
-    const row = { provider: 'gemini-google', state: 'green', reason_code: 'cli_catalog_ok',
+    const row = { provider: 'antigravity', state: 'green', reason_code: 'cli_catalog_ok',
         plan_check: { reason_code: 'plan_tier_unknown', consecutive_count: 1 } };
     const texts = [];
     const run = now => cron.emitAlerts({ snapshot: { providers: [row] }, dedupFile, now,
@@ -159,7 +159,7 @@ test('alerta al segundo tick con dedupe durable de 24h separado de salud', t => 
 
 test('sin sesión emite sólo la alerta existente y un envío fallido se reintenta', t => {
     const dedupFile = path.join(temp(t), 'dedup.json');
-    const p = { provider: 'gemini-google', state: 'red', reason_code: 'cli_license_unavailable',
+    const p = { provider: 'antigravity', state: 'red', reason_code: 'cli_license_unavailable',
         plan_check: { reason_code: 'plan_tier_unknown', consecutive_count: 2 } };
     const out = cron.emitAlerts({ snapshot: { providers: [p] }, dedupFile, now: NOW, telegramSender: () => true });
     assert.deepEqual(out.map(x => x.kind), ['red']);
@@ -168,10 +168,10 @@ test('sin sesión emite sólo la alerta existente y un envío fallido se reinten
 });
 
 test('SSR diferencia tres estados y rechaza mediciones viejas, futuras o incompletas', () => {
-    const p = { key: 'gemini-google', healthReason: 'cli_catalog_ok', planCheck: check() };
+    const p = { key: 'antigravity', healthReason: 'cli_catalog_ok', planCheck: check() };
     const good = view.renderPlanBadge(p, NOW);
     assert.match(good, /PLAN CON CUOTA · 99% SEMANAL/);
-    assert.match(good, /Gemini Models.*Claude y GPT/s);
+    assert.match(good, /bucket gemini-weekly.*bucket 3p-weekly \(Claude y GPT\)/s);
     assert.match(good, /23\/09 16:14 UTC/);
     assert.doesNotMatch(good, /@|token|conversation_id|🟩|🟧|🟦|🟨/);
     for (const now of [NOW - 1, NOW + 1800001]) assert.match(view.renderPlanBadge(p, now), /PLAN · SIN VERIFICAR/);

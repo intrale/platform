@@ -85,7 +85,7 @@ test('CA-2: los scopes resultantes se afirman VALOR POR VALOR', () => {
 
   // `providers` se expande desde PROVIDER_VENDORS (almacenamiento), nunca desde
   // LIVE_PROVIDER_IDS (runtime): son vocabularios distintos (`openai` vs
-  // `openai-codex`, `google` vs `gemini-google`). (Hasta #6563 la prueba era
+  // `openai-codex`, `google` vs `antigravity`). (Hasta #6563 la prueba era
   // `moonshot`, vendor sin id de runtime; se retiró junto con Kimi.)
   assert.equal(resultantes.includes('providers:openai'), true);
   assert.equal(d.LIVE_PROVIDER_IDS.includes('openai'), false);

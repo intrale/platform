@@ -13,11 +13,11 @@ const os = require('node:os');
 const livePing = require('../multi-provider/live-ping');
 
 // #6563 — Tras la baja de cerebras/nvidia-nim no queda en el plantel ningún
-// provider que se pinguee por API key: anthropic, codex y gemini-google
+// provider que se pinguee por API key: anthropic, codex y antigravity
 // (Antigravity) son OAuth y `ping()` hace short-circuit por el probe del CLI.
 // El camino HTTP (throttle facturable, clasificación de status, endpoints
 // literales anti-SSRF) se conserva como infraestructura, así que para
-// ejercitarlo estos tests re-declaran temporalmente a `gemini-google` (y a
+// ejercitarlo estos tests re-declaran temporalmente a `antigravity` (y a
 // `anthropic` cuando hace falta un segundo provider) como `api_key` en la
 // lista gestionada que consulta `ping()`. `getRawKey` sigue usando la spec
 // real (paths canónico/legacy de cada provider). Se restaura al terminar.
@@ -72,7 +72,7 @@ function fakeHttp({ status = 200, body = '' } = {}) {
 test('isAllowedProvider acepta solo los providers conocidos', () => {
     assert.equal(livePing.isAllowedProvider('anthropic'), true);
     assert.equal(livePing.isAllowedProvider('openai'), true);
-    assert.equal(livePing.isAllowedProvider('gemini-google'), true);
+    assert.equal(livePing.isAllowedProvider('antigravity'), true);
     assert.equal(livePing.isAllowedProvider('cerebras'), false, 'retirado en #6563');
     assert.equal(livePing.isAllowedProvider('attacker.com'), false);
     assert.equal(livePing.isAllowedProvider('file://etc/passwd'), false);
@@ -91,9 +91,9 @@ test('ping devuelve no_key_configured cuando falta la key (provider api_key)', a
     writeKeys(f, {});
     // #4402 — `openai` pasó a auth_mode:'oauth' (short-circuit CLI). #6563 — ya
     // no queda provider api_key en el plantel: se ejercita el gate con
-    // `gemini-google` re-declarado como api_key (ver helper arriba).
-    const r = await withHttpPingProviders(['gemini-google'], () =>
-        livePing.ping({ provider: 'gemini-google', secretsPath: f }));
+    // `antigravity` re-declarado como api_key (ver helper arriba).
+    const r = await withHttpPingProviders(['antigravity'], () =>
+        livePing.ping({ provider: 'antigravity', secretsPath: f }));
     assert.equal(r.ok, false);
     assert.equal(r.reason, 'no_key_configured');
 });
@@ -192,7 +192,7 @@ test('RS-5.1/5.2 — el resultado OAuth NO contiene material de token/credencial
 test('isAllowedProvider acepta sólo el free provider vivo (#3260 + #3353 + #6563)', () => {
     // #3353 — groq removido; #6563 — cerebras y nvidia-nim retirados.
     assert.equal(livePing.isAllowedProvider('groq'), false, 'groq debería estar removido tras #3353');
-    assert.equal(livePing.isAllowedProvider('gemini-google'), true);
+    assert.equal(livePing.isAllowedProvider('antigravity'), true);
     assert.equal(livePing.isAllowedProvider('cerebras'), false, 'cerebras retirado en #6563');
     assert.equal(livePing.isAllowedProvider('nvidia-nim'), false, 'nvidia-nim retirado en #6563');
 });
@@ -205,7 +205,7 @@ test('ping Gemini-Google usa el probe CLI-OAuth y no una API key HTTP', async ()
     writeKeys(f, { gemini_google_api_key: 'AIzaSyTest_1234567890abcdef000' });
     let httpCalls = 0;
     const r = await livePing.ping({
-        provider: 'gemini-google',
+        provider: 'antigravity',
         secretsPath: f,
         cliProbe: () => false,
         httpImpl: () => { httpCalls++; },
@@ -216,7 +216,7 @@ test('ping Gemini-Google usa el probe CLI-OAuth y no una API key HTTP', async ()
 });
 
 // ─── Camino HTTP por API key (clasificación de status) ───────────────────────
-// #6563 — se ejercita con `gemini-google` re-declarado como api_key (helper).
+// #6563 — se ejercita con `antigravity` re-declarado como api_key (helper).
 
 const GEMINI_KEY = { gemini_google_api_key: 'AIzaSyTest_1234567890abcdef000' };
 
@@ -224,19 +224,19 @@ test('ping HTTP con status 200 devuelve authenticated', async () => {
     const dir = tmpDir();
     const f = path.join(dir, 'config.json');
     writeKeys(f, GEMINI_KEY);
-    const r = await withHttpPingProviders(['gemini-google'], () =>
-        livePing.ping({ provider: 'gemini-google', secretsPath: f, httpImpl: fakeHttp({ status: 200 }) }));
+    const r = await withHttpPingProviders(['antigravity'], () =>
+        livePing.ping({ provider: 'antigravity', secretsPath: f, httpImpl: fakeHttp({ status: 200 }) }));
     assert.equal(r.ok, true);
     assert.equal(r.reason, 'authenticated');
-    assert.equal(r.provider, 'gemini-google');
+    assert.equal(r.provider, 'antigravity');
 });
 
 test('ping HTTP con 401 → invalid_credentials', async () => {
     const dir = tmpDir();
     const f = path.join(dir, 'config.json');
     writeKeys(f, GEMINI_KEY);
-    const r = await withHttpPingProviders(['gemini-google'], () =>
-        livePing.ping({ provider: 'gemini-google', secretsPath: f, httpImpl: fakeHttp({ status: 401 }) }));
+    const r = await withHttpPingProviders(['antigravity'], () =>
+        livePing.ping({ provider: 'antigravity', secretsPath: f, httpImpl: fakeHttp({ status: 401 }) }));
     assert.equal(r.ok, false);
     assert.equal(r.reason, 'invalid_credentials');
 });
@@ -245,8 +245,8 @@ test('ping HTTP con 403 → forbidden', async () => {
     const dir = tmpDir();
     const f = path.join(dir, 'config.json');
     writeKeys(f, GEMINI_KEY);
-    const r = await withHttpPingProviders(['gemini-google'], () =>
-        livePing.ping({ provider: 'gemini-google', secretsPath: f, httpImpl: fakeHttp({ status: 403 }) }));
+    const r = await withHttpPingProviders(['antigravity'], () =>
+        livePing.ping({ provider: 'antigravity', secretsPath: f, httpImpl: fakeHttp({ status: 403 }) }));
     assert.equal(r.reason, 'forbidden');
 });
 
@@ -254,8 +254,8 @@ test('ping HTTP con 429 + insufficient_quota → quota_exhausted', async () => {
     const dir = tmpDir();
     const f = path.join(dir, 'config.json');
     writeKeys(f, GEMINI_KEY);
-    const r = await withHttpPingProviders(['gemini-google'], () => livePing.ping({
-        provider: 'gemini-google',
+    const r = await withHttpPingProviders(['antigravity'], () => livePing.ping({
+        provider: 'antigravity',
         secretsPath: f,
         httpImpl: fakeHttp({ status: 429, body: '{"error":{"code":"insufficient_quota"}}' }),
     }));
@@ -266,8 +266,8 @@ test('ping HTTP con 429 plain → rate_limited', async () => {
     const dir = tmpDir();
     const f = path.join(dir, 'config.json');
     writeKeys(f, GEMINI_KEY);
-    const r = await withHttpPingProviders(['gemini-google'], () => livePing.ping({
-        provider: 'gemini-google',
+    const r = await withHttpPingProviders(['antigravity'], () => livePing.ping({
+        provider: 'antigravity',
         secretsPath: f,
         httpImpl: fakeHttp({ status: 429, body: '{"error":{"code":"rate_limit_exceeded"}}' }),
     }));
@@ -277,11 +277,11 @@ test('ping HTTP con 429 plain → rate_limited', async () => {
 test('#6563 — PROVIDER_PING_ENDPOINTS no conserva endpoints de providers retirados', () => {
     assert.equal('cerebras' in livePing.PROVIDER_PING_ENDPOINTS, false);
     assert.equal('nvidia-nim' in livePing.PROVIDER_PING_ENDPOINTS, false);
-    assert.deepEqual(Object.keys(livePing.PROVIDER_PING_ENDPOINTS).sort(), ['anthropic', 'gemini-google', 'openai']);
+    assert.deepEqual(Object.keys(livePing.PROVIDER_PING_ENDPOINTS).sort(), ['anthropic', 'antigravity', 'openai']);
 });
 
 test('Gemini usa GET de listado de modelos (SR-3: nunca /v1/chat/completions)', () => {
-    const spec = livePing.PROVIDER_PING_ENDPOINTS['gemini-google'];
+    const spec = livePing.PROVIDER_PING_ENDPOINTS['antigravity'];
     assert.equal(spec.method, 'GET', 'el ping debe ser GET');
     assert.ok(!spec.url.includes('chat/completions'), 'el ping debe usar el listado (no completions)');
     assert.equal(spec.body(), null, 'el ping no debe enviar body');
@@ -298,7 +298,7 @@ test('PROVIDER_PING_ENDPOINTS solo expone URLs HTTPS literales hardcoded (anti-S
 });
 
 test('Gemini-Google usa header x-goog-api-key, NUNCA query string (SR-2)', () => {
-    const spec = livePing.PROVIDER_PING_ENDPOINTS['gemini-google'];
+    const spec = livePing.PROVIDER_PING_ENDPOINTS['antigravity'];
     assert.ok(!spec.url.includes('?key='), 'Gemini URL no debe llevar key en query');
     const headers = spec.headers('AIzaTEST');
     assert.ok(headers['x-goog-api-key'], 'Gemini debe usar header x-goog-api-key');
@@ -317,8 +317,8 @@ test('#5888 R-J: ping sin expectModels devuelve exactamente el shape de HEAD', a
     const dir = tmpDir();
     const f = path.join(dir, 'config.json');
     writeKeys(f, GEMINI_KEY);
-    const r = await withHttpPingProviders(['gemini-google'], () => livePing.ping({
-        provider: 'gemini-google',
+    const r = await withHttpPingProviders(['antigravity'], () => livePing.ping({
+        provider: 'antigravity',
         secretsPath: f,
         httpImpl: fakeHttp({ status: 200, body: '{"models":[{"name":"models/gemini-3.8-flash-medium"}]}' }),
     }));
@@ -329,7 +329,7 @@ test('#5888 R-J: ping sin expectModels devuelve exactamente el shape de HEAD', a
 });
 
 test('#5888: la URL de Gemini incorpora ?pageSize=1000 sin dejar de ser literal (cond. 8)', () => {
-    const spec = livePing.PROVIDER_PING_ENDPOINTS['gemini-google'];
+    const spec = livePing.PROVIDER_PING_ENDPOINTS['antigravity'];
     assert.equal(spec.url, 'https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000');
     // Sigue sin nada derivado de config ni de env.
     assert.ok(!/process\.env/.test(String(spec.url)));

@@ -67,7 +67,7 @@ test.beforeEach(() => {
 // -----------------------------------------------------------------------------
 // #6858 (rebote review) — el default (provider, model) del judge tiene que ser
 // servible por el transporte que lo recibe. La regresión fue apuntar el
-// default a `gemini-google` con un id de Antigravity: ese endpoint es el shim
+// default a `antigravity` con un id de Antigravity: ese endpoint es el shim
 // de AI Studio y devolvía 404 por construcción → fail-open en cada llamada +
 // circuit breaker abierto → el Commander perdía el juez semántico en silencio.
 //
@@ -78,7 +78,7 @@ test.beforeEach(() => {
 //       día vuelve a HTTP, pasa `isAllowedModel` y tiene endpoint);
 //   (b) el modelo del default está en `ALLOWED_MODELS_BY_LAUNCHER.codex` del
 //       validador (sin depender de agent-models.json ni de env);
-//   (c) el default NO es un provider retirado ni el shim HTTP de gemini-google.
+//   (c) el default NO es un provider retirado ni el shim HTTP de antigravity.
 // -----------------------------------------------------------------------------
 const RETIRED_PROVIDERS = ['cerebras', 'nvidia-nim', 'kimi-moonshot', 'ollama', 'groq'];
 
@@ -106,8 +106,8 @@ function assertServible(provider, model, label) {
         `${label}: el endpoint debe ser HTTPS literal`);
     assert.equal(completion.isAllowedModel(provider, model), true,
         `${label}: model '${model}' no está en PROVIDER_MODELS_ALLOWLIST['${provider}']`);
-    assert.notEqual(provider, 'gemini-google',
-        'gemini-google en completion-client es AI Studio HTTP: no sirve los ids de Antigravity (404)');
+    assert.notEqual(provider, 'antigravity',
+        'antigravity en completion-client es AI Studio HTTP: no sirve los ids de Antigravity (404)');
 }
 
 test('#6858/#6563: el default (provider, model) de semantic-dedup es servible por spawn de Codex', () => {
@@ -136,7 +136,7 @@ test('#6563: dispatchComplete rutea openai-codex/anthropic al spawn y el resto a
     try {
         await sd.dispatchComplete({ provider: 'openai-codex', model: 'gpt-5.5', prompt: 'p', temperature: 0, maxTokens: 10 });
         await sd.dispatchComplete({ provider: 'anthropic', prompt: 'p', timeoutMs: 1234 });
-        await sd.dispatchComplete({ provider: 'gemini-google', model: 'x', prompt: 'p' });
+        await sd.dispatchComplete({ provider: 'antigravity', model: 'x', prompt: 'p' });
     } finally {
         sherlock._spawnCodexComplete = origCodex;
         sherlock._spawnAnthropicComplete = origAnthropic;
@@ -146,7 +146,7 @@ test('#6563: dispatchComplete rutea openai-codex/anthropic al spawn y el resto a
     assert.equal(seen[0][1].model, 'gpt-5.5');
     assert.equal(seen[0][1].timeoutMs, sd.DEFAULT_SPAWN_TIMEOUT_MS, 'sin timeoutMs explícito aplica el presupuesto default');
     assert.equal(seen[1][1].timeoutMs, 1234);
-    assert.equal(seen[2][1].provider, 'gemini-google');
+    assert.equal(seen[2][1].provider, 'antigravity');
 });
 
 test('#6563: dispatchComplete nunca lanza — una excepción del spawn se devuelve como ok:false', async () => {

@@ -386,13 +386,13 @@ test('todo consumer_status=resolved nombra consumidores que existen en el repo',
 
 test('toda clave providers.* resolved esta declarada en credentials_env de agent-models', () => {
   // El candado con dientes: `resolved` no es una opinion, es verificable contra
-  // el artefacto que cablea los providers. gemini-google autentica por OAuth via
+  // el artefacto que cablea los providers. antigravity autentica por OAuth via
   // `agy` y NO declara credentials_env, por eso su api_key no puede ser resolved.
   const models = JSON.parse(fs.readFileSync(path.join(ROOT, '.pipeline', 'agent-models.json'), 'utf8'));
   const declaradas = new Set(Object.values(models.providers || {})
     .flatMap((provider) => provider.credentials_env || []));
   // #6563 — ancla explicita: tras retirar cerebras / nvidia-nim / kimi-moonshot
-  // solo anthropic y openai-codex declaran credentials_env (gemini-google es
+  // solo anthropic y openai-codex declaran credentials_env (antigravity es
   // OAuth puro y no declara ninguna).
   assert.deepEqual([...declaradas].sort(), ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY'],
     `credentials_env vacio o no parseado: ${declaradas.size}`);

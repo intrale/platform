@@ -55,7 +55,7 @@ try {
 }
 // #4869 — un servicio Windows conserva el PATH con el que arrancó y no ve
 // instalaciones posteriores. Refrescar agy en este mismo proceso garantiza
-// que todos los agentes hijos hereden PATH y AGY_BIN sin reiniciar el host.
+// que todos los agentes hijos hereden PATH y ANTIGRAVITY_BIN sin reiniciar el host.
 require('./lib/ensure-agy-in-path').ensureAgyInProcessPath();
 
 const yaml = require('js-yaml');
@@ -262,7 +262,7 @@ const glitchRetry = require('./lib/commander/glitch-retry');
 const commanderMP = require('./lib/commander/multi-provider');
 // #6563 — El subsistema "API pelada" (context-pack + RAG para providers REST sin
 // filesystem) se retiró junto con cerebras/nvidia-nim: los tres proveedores
-// vigentes (anthropic, openai-codex, gemini-google) son agénticos y ven el repo.
+// vigentes (anthropic, openai-codex, antigravity) son agénticos y ven el repo.
 // #3577 — Detectores in-stream del Commander en modo SHADOW (parte 1/2 del
 // split de #3472). Observan first-byte/stream-gap/eof-premature/transient-5xx
 // y los emiten al audit log SIN matar el primario ni spawnear secundario.
@@ -16515,7 +16515,7 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
           try {
             sysFile = path.join(PIPELINE, 'commander-system-prompt.md');
             // #6563 — La persona va tal cual: los providers de respaldo vigentes
-            // (openai-codex, gemini-google) son agénticos y ven el repo, así que
+            // (openai-codex, antigravity) son agénticos y ven el repo, así que
             // ya no hay augment de contexto ni RAG por provider.
             const systemForProvider = fallbackParts.systemPrompt;
             fs.writeFileSync(sysFile, systemForProvider, 'utf8');

@@ -112,7 +112,7 @@ test('CA-8: naming canónico — alias se normalizan a la provider-key de PROVID
     const map = rp.readRunningProviders({ pipelineRoot: root, now: () => 2 });
     assert.equal(map['k:openai'].provider, 'openai-codex');
     assert.equal(map['k:codex'].provider, 'openai-codex');
-    assert.equal(map['k:gemini'].provider, 'gemini-google');
+    assert.equal(map['k:gemini'].provider, 'antigravity');
 
     // normalizeProvider directo (helper exportado).
     assert.equal(rp.normalizeProvider('openai-codex'), 'openai-codex');

@@ -10,8 +10,8 @@
 // Uso:
 //   node .pipeline/tools/multi-provider-smoke-test.js                          # matriz completa
 //   node .pipeline/tools/multi-provider-smoke-test.js --skill=guru             # solo guru × *
-//   node .pipeline/tools/multi-provider-smoke-test.js --provider=gemini-google  # solo * × gemini-google
-//   node .pipeline/tools/multi-provider-smoke-test.js --skill=qa --provider=gemini-google
+//   node .pipeline/tools/multi-provider-smoke-test.js --provider=antigravity  # solo * × antigravity
+//   node .pipeline/tools/multi-provider-smoke-test.js --skill=qa --provider=antigravity
 //   node .pipeline/tools/multi-provider-smoke-test.js --dry-run                # sin invocar providers
 //                                                                              # (genera coverage con stub PASS)
 //   node .pipeline/tools/multi-provider-smoke-test.js --no-telegram            # no encolar sign-off

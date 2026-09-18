@@ -34,7 +34,7 @@
 const QUALITY_ORDER = [
     'anthropic',
     'openai-codex',
-    'gemini-google',
+    'antigravity',
 ];
 
 // Skill del Commander conversacional para el gate por agotamiento (#3077).

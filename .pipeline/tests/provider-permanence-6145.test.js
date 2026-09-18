@@ -36,7 +36,7 @@ const AGENT_MODELS = {
     providers: {
         anthropic: { billing: 'paid', model: 'claude-opus-4-7' },
         'openai-codex': { billing: 'paid', model: 'gpt-5.5' },
-        'gemini-google': { billing: 'free', model: 'gemini-3.8-flash-medium' },
+        'antigravity': { billing: 'free', model: 'gemini-3.8-flash-medium' },
         cerebras: { billing: 'free', model: 'gpt-oss-120b' },
         'nvidia-nim': { billing: 'free', model: 'deepseek-v4' },
         'kimi-moonshot': { billing: 'free', model: 'kimi-k2-6' },
@@ -51,7 +51,7 @@ const CONFIG_YAML = [
     '    anthropic: 7',
     '    openai-codex: 1',
     '    cerebras: 1',
-    '    gemini-google: 1',
+    '    antigravity: 1',
     '    nvidia-nim: 1',
     'multi_provider:',
     '  health:',
@@ -71,7 +71,7 @@ const HEALTH = {
     providers: [
         { provider: 'anthropic', state: 'green', reason_code: 'cli_oauth_ok', latency_ms: null },
         { provider: 'openai', state: 'green', reason_code: 'cli_oauth_ok', latency_ms: null },
-        { provider: 'gemini-google', state: 'red', reason_code: 'cli_license_unavailable', latency_ms: null },
+        { provider: 'antigravity', state: 'red', reason_code: 'cli_license_unavailable', latency_ms: null },
         { provider: 'cerebras', state: 'green', reason_code: 'authenticated', latency_ms: 674 },
         { provider: 'nvidia-nim', state: 'green', reason_code: 'authenticated', latency_ms: 15959 },
     ],
@@ -128,7 +128,7 @@ function makeFixture({ corromper = false, config = CONFIG_YAML } = {}) {
 
     // --- Día 1 -------------------------------------------------------------
     // cerebras: aporta sostenido (sano).
-    // gemini-google: aporta poco Y su bloqueo dominante es NUESTRO flag local.
+    // antigravity: aporta poco Y su bloqueo dominante es NUESTRO flag local.
     writeChained(dia1, [
         ...repeat(200, () => entry('fallback_selected', 'cerebras', { skill: 'pipeline-dev' })),
         ...repeat(100, () => entry('fallback_selected', 'cerebras', { skill: 'telegram-commander' })),
@@ -141,15 +141,15 @@ function makeFixture({ corromper = false, config = CONFIG_YAML } = {}) {
         // rev-3: kill-switch del operador sobre cerebras. NO baja su tasa; sólo
         // alimenta la columna `gatedByOperator` y el bucket del operador.
         ...repeat(80, () => entry('fallback_provider_disabled', 'cerebras')),
-        ...repeat(10, () => entry('fallback_selected', 'gemini-google', { skill: 'telegram-sherlock' })),
+        ...repeat(10, () => entry('fallback_selected', 'antigravity', { skill: 'telegram-sherlock' })),
         // rev-2: los 400 gateos por NUESTRO flag de entorno ya no entran al
         // denominador. Para que gemini siga teniendo muestra suficiente y tasa
         // baja (el escenario que el techo `rol_acotado` protege), el fixture le
         // suma bloqueos por cupo, que sí son imputables al proveedor.
-        ...repeat(250, () => entry('fallback_health_gated', 'gemini-google', {
+        ...repeat(250, () => entry('fallback_health_gated', 'antigravity', {
             health_reason: 'quota_exhausted',
         })),
-        ...repeat(400, () => entry('fallback_health_gated', 'gemini-google', {
+        ...repeat(400, () => entry('fallback_health_gated', 'antigravity', {
             health_reason: 'cli_license_unavailable',
         })),
         // Ruido que NO debe entrar al denominador (política horaria).
@@ -239,11 +239,11 @@ test('el reporte end-to-end produce un veredicto por proveedor con la evidencia 
         assert.strictEqual(r.metrics.cerebras.operatorGates.kill_switch, 80);
         assert.strictEqual(r.metrics.cerebras.evaluables, 570, '420 wins + 150 bloqueos del proveedor');
 
-        // gemini-google: tasa por debajo del umbral PERO por causa nuestra.
-        assert.ok(r.metrics['gemini-google'].contributionRate < 0.05);
-        assert.strictEqual(r.metrics['gemini-google'].dominantBlock, 'observabilidad_local');
+        // antigravity: tasa por debajo del umbral PERO por causa nuestra.
+        assert.ok(r.metrics['antigravity'].contributionRate < 0.05);
+        assert.strictEqual(r.metrics['antigravity'].dominantBlock, 'observabilidad_local');
         assert.strictEqual(
-            r.verdicts['gemini-google'].verdict,
+            r.verdicts['antigravity'].verdict,
             contribution.VERDICT.ROL_ACOTADO,
             'el caso Gemini se recupera, no se da de baja',
         );
@@ -278,7 +278,7 @@ test('la tabla renderizada declara la causa de cada ausencia y ordena por aporte
         }
 
         // Latencia: instrumentada para los api_key, declarada para los CLI-OAuth.
-        const gemini = dataRows.find((l) => l.startsWith('| gemini-google'));
+        const gemini = dataRows.find((l) => l.startsWith('| antigravity'));
         assert.ok(gemini.includes(contribution.ABSENCE.NO_INSTRUMENTADO));
         assert.ok(gemini.includes('cli_license_unavailable'), 'el reason_code textual es buscable en los logs');
         const cerebras = dataRows.find((l) => l.startsWith('| cerebras'));
@@ -519,7 +519,7 @@ test('la derivacion real de declared marca sin_declarar solo a kimi-moonshot', (
         assert.strictEqual(declared.anthropic.billing, 'paid');
         assert.strictEqual(declared['openai-codex'].billing, 'paid');
         assert.strictEqual(declared.cerebras.declaredInConfig, true);
-        assert.strictEqual(declared['gemini-google'].declaredInConfig, true);
+        assert.strictEqual(declared['antigravity'].declaredInConfig, true);
         assert.strictEqual(declared['nvidia-nim'].declaredInConfig, true);
         assert.strictEqual(declared['kimi-moonshot'].declaredInConfig, false, '#6153');
         assert.ok(!('deterministic' in declared), 'el ejecutor local no es un proveedor de la cadena');
@@ -744,12 +744,12 @@ test('el gateo por observabilidad local no entra al denominador de gemini', () =
     const { root, pipelineDir } = makeFixture();
     try {
         const r = run(pipelineDir);
-        const g = r.metrics['gemini-google'];
+        const g = r.metrics['antigravity'];
         assert.strictEqual(g.gatedByLocalObservability, 400, 'los 400 gateos por flag propio, aparte');
         assert.strictEqual(g.evaluables, 260, '10 aportes + 250 bloqueos por cupo');
         assert.strictEqual(g.dominantBlock, 'observabilidad_local');
         assert.strictEqual(
-            r.verdicts['gemini-google'].verdict,
+            r.verdicts['antigravity'].verdict,
             contribution.VERDICT.ROL_ACOTADO,
             'techo rol_acotado: el caso Gemini se recupera, no se da de baja',
         );

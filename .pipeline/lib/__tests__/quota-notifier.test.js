@@ -695,7 +695,7 @@ test('#4565 · regresión: Number() sobre ISO daba NaN → "--:--"; parseResetsA
 test('#4565 · providerLabel mapea claves a labels humanos, nunca la clave cruda', () => {
   assert.equal(providerLabel('anthropic'), 'Anthropic');
   assert.equal(providerLabel('openai-codex'), 'OpenAI Codex');
-  assert.equal(providerLabel('gemini-google'), 'Gemini');
+  assert.equal(providerLabel('antigravity'), 'Gemini');
   // Aliases
   assert.equal(providerLabel('openai'), 'OpenAI Codex');
   assert.equal(providerLabel('codex'), 'OpenAI Codex');
@@ -750,9 +750,9 @@ test('#4565 · mensaje de restaurada nombra el provider recuperado', () => {
     setIntervalFn: clock.setIntervalFn,
     clearIntervalFn: clock.clearIntervalFn,
     getQueuedAgentsCount: () => 0,
-    getCommanderProvider: () => 'gemini-google',
+    getCommanderProvider: () => 'antigravity',
   });
-  notifier.onFlagSet(makeFlag(clock, { provider: 'gemini-google' }));
+  notifier.onFlagSet(makeFlag(clock, { provider: 'antigravity' }));
   clock.advance(10 * 60 * 1000); // > 5min
   notifier.onFlagCleared();
   const closeMsg = sender.sent[sender.sent.length - 1].text;

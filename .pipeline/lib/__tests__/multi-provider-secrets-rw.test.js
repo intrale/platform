@@ -128,7 +128,7 @@ test('listKeys lee del formato CANONICAL nested', () => {
     // nested — éste es exactamente el caso que rompía el dashboard antes de
     // #3313. #3353 eliminó groq y #6563 cerebras/nvidia-nim, así que ya no
     // aparecen en este listado aunque el JSON conserve sus claves.
-    assert.equal(byProvider['gemini-google'].status, 'present');
+    assert.equal(byProvider['antigravity'].status, 'present');
     assert.equal(byProvider.groq, undefined, 'groq debería estar removido tras #3353');
     assert.equal(byProvider.cerebras, undefined, 'cerebras debería estar removido tras #6563');
     assert.equal(byProvider['nvidia-nim'], undefined, 'nvidia-nim debería estar removido tras #6563');
@@ -146,8 +146,8 @@ test('listKeys lee del formato LEGACY flat (fallback)', () => {
 
     assert.equal(byProvider.openai.status, 'present');
     assert.equal(byProvider.anthropic.status, 'placeholder');
-    // El legacy no incluye gemini-google → absent.
-    assert.equal(byProvider['gemini-google'].status, 'absent');
+    // El legacy no incluye antigravity → absent.
+    assert.equal(byProvider['antigravity'].status, 'absent');
 });
 
 test('rotateKey rechaza provider no gestionado', () => {
@@ -295,8 +295,8 @@ test('getRawKey lee la key real del CANONICAL nested', () => {
         },
     }));
     assert.equal(secrets.getRawKey({ provider: 'openai', secretsPath: file }), 'sk-real-1234567890abcdef0000');
-    // 'gemini-google' (UI) mapea a 'providers.google.api_key' en canonical.
-    assert.equal(secrets.getRawKey({ provider: 'gemini-google', secretsPath: file }), 'AIza-real-1234567890abcdef');
+    // 'antigravity' (UI) mapea a 'providers.google.api_key' en canonical.
+    assert.equal(secrets.getRawKey({ provider: 'antigravity', secretsPath: file }), 'AIza-real-1234567890abcdef');
     assert.equal(secrets.getRawKey({ provider: 'anthropic', secretsPath: file }), null, 'PLACEHOLDER → null');
 });
 
@@ -311,8 +311,8 @@ test('getRawKey lee del LEGACY flat cuando el canonical no existe', () => {
 
 // ─── Plantel de providers (#3260 + #3313 + #3353 + #6563) ───────────────────
 
-// #6563 — ancla del plantel gestionado: anthropic + openai + gemini-google.
-const PLANTEL_MANAGED = ['anthropic', 'openai', 'gemini-google'];
+// #6563 — ancla del plantel gestionado: anthropic + openai + antigravity.
+const PLANTEL_MANAGED = ['anthropic', 'openai', 'antigravity'];
 
 test('MANAGED_KEYS refleja el plantel vigente y excluye los providers retirados', () => {
     const providers = secrets.MANAGED_KEYS.map(k => k.provider);
@@ -324,15 +324,15 @@ test('MANAGED_KEYS refleja el plantel vigente y excluye los providers retirados'
     assert.ok(!providers.includes('nvidia-nim'), 'nvidia-nim debería estar removido tras #6563');
 
     const byP = Object.fromEntries(secrets.MANAGED_KEYS.map(k => [k.provider, k]));
-    assert.equal(byP['gemini-google'].canonicalPath, 'providers.google.api_key');
+    assert.equal(byP['antigravity'].canonicalPath, 'providers.google.api_key');
     assert.equal(byP.openai.canonicalPath, 'providers.openai.api_key');
     assert.equal(byP.anthropic.canonicalPath, 'providers.anthropic.api_key');
 });
 
 // #6563 — el caso "free providers son editable=true" se retiró con cerebras y
-// nvidia-nim: el único free vivo (gemini-google) es OAuth y no rota API keys.
-test('gemini-google (único free vivo) es OAuth: editable=false con free_tier_notes', () => {
-    const gemini = secrets.MANAGED_KEYS.find(k => k.provider === 'gemini-google');
+// nvidia-nim: el único free vivo (antigravity) es OAuth y no rota API keys.
+test('antigravity (único free vivo) es OAuth: editable=false con free_tier_notes', () => {
+    const gemini = secrets.MANAGED_KEYS.find(k => k.provider === 'antigravity');
     assert.equal(gemini.editable, false, 'Gemini OAuth no rota API keys vía UI');
     assert.equal(gemini.auth_mode, 'oauth');
     assert.ok(gemini.free_tier_notes);
@@ -370,7 +370,7 @@ test('listKeys de free provider incluye free_tier_notes en metadata', () => {
         providers: { google: { api_key: 'AIza_aaaaaaaaaaaaaaaaaaaaaa' } },
     }));
     const out = secrets.listKeys({ secretsPath: file });
-    const gemini = out.find(k => k.provider === 'gemini-google');
+    const gemini = out.find(k => k.provider === 'antigravity');
     assert.equal(gemini.status, 'present');
     assert.ok(gemini.free_tier_notes, 'free_tier_notes debe estar en la metadata listKeys');
 });

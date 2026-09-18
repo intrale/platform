@@ -38,7 +38,7 @@
 //
 // ADAPTERS DE PROVIDER (estado 2026-09-16, #6563)
 // -----------------------------------------------
-// Los 3 providers (`anthropic`, `openai-codex`, `gemini-google`) tienen
+// Los 3 providers (`anthropic`, `openai-codex`, `antigravity`) tienen
 // **adapter real** en lib/agent-launcher/providers/*.js (PRs #3792/#3793/#3794
 // cerraron los últimos stubs del histórico #3198; los free cerebras/nvidia-nim
 // fueron retirados en #6563). `buildSpawn` ya NO tira `_notImplemented` para
@@ -293,7 +293,7 @@ function isCommanderChainGated(opts = {}) {
 //
 // Modo reducido = TODOS los providers PAGOS (billing:'paid' → Anthropic, Codex)
 // están gateados por cuota, PERO queda al menos un provider FREE sano en la chain
-// (billing:'free' → Gemini, único free vigente tras #6563). En ese estado el Commander NO
+// (billing:'free' → antigravity, único free vigente hasta el flip de #7338). En ese estado el Commander NO
 // ejecuta acciones: responde un aviso advisory (cannedReducedModeResponse) y NO
 // spawnea el free (decisión de PO D1 — least-privilege, no quema free tier).
 //
@@ -918,7 +918,7 @@ function formatFallbackNotice({ primaryProvider, fallbackProvider, errorCode, su
         ? MOTIVES[code]
         : 'motivo no confirmado';
     // #6179 — `fallbackProvider` se interpolaba CRUDO acá: un id interno
-    // (p. ej. `gemini-google`) viajaba tal cual al chat. Todo copy visible que
+    // (p. ej. `antigravity`) viajaba tal cual al chat. Todo copy visible que
     // nombre un proveedor pasa por `publicProviderLabel` (SEC-5), que es
     // fail-closed: lo que no está en la allowlist pública cae al genérico.
     const motorLabel = publicProviderLabel(fallbackProvider, 'un motor de respaldo');
@@ -974,9 +974,9 @@ function publicProviderLabel(provider, fallbackLabel = null) {
 // #6563 — Mensaje de espera por eslabón cuando la cadena entera está gateada.
 //
 // Precisión del PO: con el plantel reducido a tres proveedores agénticos
-// (anthropic, openai-codex, gemini-google), cuando los tres están agotados o
+// (anthropic, openai-codex, antigravity), cuando los tres están agotados o
 // fuera de ventana el operador tiene que ver el estado de CADA UNO
-// ("Claude en reposo hasta 07:00 · Codex sin cuota hasta 14:30 · Gemini sin
+// ("Claude en reposo hasta 07:00 · Codex sin cuota hasta 14:30 · Antigravity sin
 // cuota"), nunca un genérico "cadena agotada" ni el nombre de un proveedor
 // retirado. La línea se arma SÓLO desde tablas cerradas:
 //   - etiqueta: `_CHAIN_WAIT_LABELS` (allowlist; un id fuera de ella se omite,
@@ -994,7 +994,7 @@ const _CHAIN_WAIT_LABELS = Object.freeze({
     'anthropic': 'Claude',
     'anthropic-claude': 'Claude',
     'openai-codex': 'Codex',
-    'gemini-google': 'Gemini',
+    'antigravity': 'Antigravity',
 });
 
 const _SKIP_REASON_WAIT_COPY = Object.freeze({
@@ -1269,7 +1269,7 @@ const _DURAC_KEYS = {
  * existe una (CA-7).
  *
  * Describe el ESCALÓN de capacidad, nunca el id del proveedor (CA-5): al
- * operador no le sirve saber que corre con `gemini-google`, le sirve saber que el
+ * operador no le sirve saber que corre con `antigravity`, le sirve saber que el
  * pipeline no puede ejecutar comandos. Un nombre propio sólo aparecería si
  * `publicProviderLabel` lo devolviera desde la allowlist pública, y esa
  * allowlist tiene dos entradas, ambas de proveedores pagos, por diseño.
@@ -1534,7 +1534,7 @@ function auditCommanderRequest(opts = {}) {
         // #3501 CA-5 — Campos específicos del evento `sherlock_model_swap`.
         // Solo se incluyen cuando el caller (sherlock-verifier) los provee
         // para que el operador pueda filtrar con jq sin parser ad-hoc:
-        //   jq 'select(.event=="sherlock_model_swap" and .provider_effective=="gemini-google")'
+        //   jq 'select(.event=="sherlock_model_swap" and .provider_effective=="antigravity")'
         swapModelOrigen,
         swapModelDestino,
         swapReason,
@@ -2226,7 +2226,7 @@ function extractFallbackReply(stdout) {
 // _parseSingleJsonObject — parsea el stdout como UN objeto JSON. Tolera prefijo
 // o sufijo de ruido (warnings de stderr mezclados, líneas parciales) recortando
 // del primer `{` al último `}`. Devuelve el objeto o null. Mismo criterio
-// robusto que `providers/gemini-google.js#_parseGeminiJson`, replicado acá para
+// robusto que `providers/antigravity.js#_parseAntigravityJson`, replicado acá para
 // no acoplar el commander a un provider puntual.
 // -----------------------------------------------------------------------------
 function _parseSingleJsonObject(raw) {
@@ -2299,7 +2299,7 @@ function cannedAllGatedResponse(resolution = null, opts = {}) {
     const skipReasons = (resolution && Array.isArray(resolution.skipReasons))
         ? resolution.skipReasons
         : [];
-    // #6563 — estado por eslabón (Claude · Codex · Gemini) al pie del canned.
+    // #6563 — estado por eslabón (Claude · Codex · Antigravity) al pie del canned.
     const chainLine = describeGatedChain(resolution, opts);
     const withChain = (text) => (chainLine ? `${text}\n${chainLine}` : text);
     const reason = resolution && typeof resolution.reason === 'string'

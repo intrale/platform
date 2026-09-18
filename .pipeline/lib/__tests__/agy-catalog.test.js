@@ -67,7 +67,7 @@ test('parseAgyModelsOutput: ignora spinner, líneas vacías, CRLF, escapes ANSI 
 test('fetchAgyModels: ejecuta el binario con argv fijo ["models"], sin shell, y cachea por TTL', () => {
     const calls = [];
     const execFileSync = (cmd, args, opts) => { calls.push({ cmd, args, opts }); return FIXTURE_TSV; };
-    const env = { AGY_BIN: 'C:\\fake\\agy.exe' };
+    const env = { ANTIGRAVITY_BIN: 'C:\\fake\\agy.exe' };
     let clock = 1_000_000;
     const now = () => clock;
 
@@ -107,8 +107,8 @@ test('fetchAgyModels: CLI ausente → cli_unavailable; CLI que falla → cli_fai
     assert.equal(r3.error, 'empty_catalog');
 });
 
-test('resolveAgyBin: misma cascada que el handler (AGY_BIN → %LOCALAPPDATA%\\agy\\bin\\agy.exe → PATH)', () => {
-    assert.equal(agyCatalog.resolveAgyBin({ AGY_BIN: '/x/agy' }).cmd, '/x/agy');
+test('resolveAgyBin: misma cascada que el handler (ANTIGRAVITY_BIN → %LOCALAPPDATA%\\agy\\bin\\agy.exe → PATH)', () => {
+    assert.equal(agyCatalog.resolveAgyBin({ ANTIGRAVITY_BIN: '/x/agy' }).cmd, '/x/agy');
     const fsImpl = { existsSync: (p) => p.endsWith(path.join('agy', 'bin', 'agy.exe')) };
     const win = agyCatalog.resolveAgyBin({ LOCALAPPDATA: 'C:\\Users\\op\\AppData\\Local' }, fsImpl);
     assert.equal(win.kind, 'native-exe');
@@ -116,23 +116,23 @@ test('resolveAgyBin: misma cascada que el handler (AGY_BIN → %LOCALAPPDATA%\\a
 });
 
 // -----------------------------------------------------------------------------
-// collectConfiguredGeminiModels — las 4 fuentes, sólo gemini-google
+// collectConfiguredGeminiModels — las 4 fuentes, sólo antigravity
 // -----------------------------------------------------------------------------
-test('collectConfiguredGeminiModels: junta provider.model, alternative_models, model_override y fallbacks sólo de gemini-google', () => {
+test('collectConfiguredGeminiModels: junta provider.model, alternative_models, model_override y fallbacks sólo de antigravity', () => {
     const cfg = {
         providers: {
-            'gemini-google': { model: 'a', alternative_models: ['b'] },
+            'antigravity': { model: 'a', alternative_models: ['b'] },
             anthropic: { model: 'claude-opus-4-7', alternative_models: ['no-entra'] },
         },
         skills: {
-            guru: { provider: 'gemini-google', model_override: 'c', fallbacks: [{ provider: 'anthropic', model_override: 'no-entra' }] },
-            qa: { provider: 'anthropic', model_override: 'no-entra', fallbacks: [{ provider: 'gemini-google', model_override: 'd' }, { provider: 'gemini-google', model_override: 'a' }] },
+            guru: { provider: 'antigravity', model_override: 'c', fallbacks: [{ provider: 'anthropic', model_override: 'no-entra' }] },
+            qa: { provider: 'anthropic', model_override: 'no-entra', fallbacks: [{ provider: 'antigravity', model_override: 'd' }, { provider: 'antigravity', model_override: 'a' }] },
         },
     };
     const got = agyCatalog.collectConfiguredGeminiModels(cfg);
     assert.deepEqual([...got.keys()].sort(), ['a', 'b', 'c', 'd']);
-    assert.deepEqual(got.get('a'), ['providers.gemini-google.model', 'skills.qa.fallbacks[1].model_override']);
-    assert.deepEqual(got.get('b'), ['providers.gemini-google.alternative_models[0]']);
+    assert.deepEqual(got.get('a'), ['providers.antigravity.model', 'skills.qa.fallbacks[1].model_override']);
+    assert.deepEqual(got.get('b'), ['providers.antigravity.alternative_models[0]']);
     assert.deepEqual(got.get('c'), ['skills.guru.model_override']);
     assert.deepEqual(got.get('d'), ['skills.qa.fallbacks[0].model_override']);
 });
@@ -143,9 +143,9 @@ test('collectConfiguredGeminiModels: matriz firmada #6860, 6 ids en 8 rutas y 6 
         'claude-sonnet-4-6': ['skills.telegram-commander.fallbacks[1].model_override'],
         'gemini-3.1-pro-high': ['skills.architect.fallbacks[1].model_override'],
         'gemini-3.1-pro-low': ['skills.po.fallbacks[0].model_override', 'skills.ux.fallbacks[0].model_override'],
-        'gemini-3.7-flash-medium': ['providers.gemini-google.alternative_models[0]'],
+        'gemini-3.7-flash-medium': ['providers.antigravity.alternative_models[0]'],
         'gemini-3.8-flash-high': ['skills.perf.fallbacks[1].model_override'],
-        'gemini-3.8-flash-medium': ['providers.gemini-google.model', 'skills.telegram-sherlock.fallbacks[1].model_override'],
+        'gemini-3.8-flash-medium': ['providers.antigravity.model', 'skills.telegram-sherlock.fallbacks[1].model_override'],
     });
     const rutas = [...got.values()].flat();
     assert.equal(rutas.length, 8, 'provider.model + alternative_models[0] + 6 fallbacks');
@@ -156,10 +156,10 @@ test('collectConfiguredGeminiModels: matriz firmada #6860, 6 ids en 8 rutas y 6 
         assert.deepEqual(REAL_CONFIG.skills[skill].fallbacks.map(f => f.provider), ['openai-codex']);
     }
     for (const skill of ['po', 'ux']) {
-        assert.deepEqual(REAL_CONFIG.skills[skill].fallbacks.map(f => f.provider), ['gemini-google', 'openai-codex']);
+        assert.deepEqual(REAL_CONFIG.skills[skill].fallbacks.map(f => f.provider), ['antigravity', 'openai-codex']);
     }
     for (const skill of ['architect', 'perf', 'telegram-commander', 'telegram-sherlock']) {
-        assert.deepEqual(REAL_CONFIG.skills[skill].fallbacks.map(f => f.provider), ['openai-codex', 'gemini-google']);
+        assert.deepEqual(REAL_CONFIG.skills[skill].fallbacks.map(f => f.provider), ['openai-codex', 'antigravity']);
     }
 });
 
@@ -167,19 +167,19 @@ test('collectConfiguredGeminiModels: matriz firmada #6860, 6 ids en 8 rutas y 6 
 // crossCheck — semántica dead / unlisted
 // -----------------------------------------------------------------------------
 test('crossCheck: un id configurado ausente del catálogo es `dead` y baja ok a false, con la ruta exacta', () => {
-    const cfg = { providers: { 'gemini-google': { model: 'gemini-3-flash-preview', alternative_models: ['gemini-3.7-flash-medium'] } }, skills: {} };
+    const cfg = { providers: { 'antigravity': { model: 'gemini-3-flash-preview', alternative_models: ['gemini-3.7-flash-medium'] } }, skills: {} };
     const r = agyCatalog.crossCheck({
         catalogIds: FIXTURE_IDS, agentModels: cfg,
         barriers: { validate: FIXTURE_IDS, completion: FIXTURE_IDS, catalog: FIXTURE_IDS },
     });
     assert.equal(r.ok, false);
-    assert.deepEqual(r.dead, [{ id: 'gemini-3-flash-preview', sources: ['agent-models.json:providers.gemini-google.model'] }]);
+    assert.deepEqual(r.dead, [{ id: 'gemini-3-flash-preview', sources: ['agent-models.json:providers.antigravity.model'] }]);
     assert.match(r.summary, /FALLA: 1 id\(s\)/);
-    assert.match(r.summary, /gemini-3-flash-preview ← agent-models\.json:providers\.gemini-google\.model/);
+    assert.match(r.summary, /gemini-3-flash-preview ← agent-models\.json:providers\.antigravity\.model/);
 });
 
 test('crossCheck: un id muerto en CUALQUIERA de las tres barreras también falla (reemplazo, no agregado)', () => {
-    const cfg = { providers: { 'gemini-google': { model: 'gemini-3.8-flash-medium' } }, skills: {} };
+    const cfg = { providers: { 'antigravity': { model: 'gemini-3.8-flash-medium' } }, skills: {} };
     for (const [barrier, nombre] of [['validate', 'ALLOWED_MODELS_BY_LAUNCHER'], ['completion', 'PROVIDER_MODELS_ALLOWLIST'], ['catalog', 'CATALOG']]) {
         const barriers = { validate: FIXTURE_IDS, completion: FIXTURE_IDS, catalog: FIXTURE_IDS, [barrier]: [...FIXTURE_IDS, 'gemini-2.5-flash'] };
         const r = agyCatalog.crossCheck({ catalogIds: FIXTURE_IDS, agentModels: cfg, barriers });
@@ -191,7 +191,7 @@ test('crossCheck: un id muerto en CUALQUIERA de las tres barreras también falla
 });
 
 test('crossCheck: un modelo NUEVO del CLI que ninguna barrera conoce es `unlisted` (aviso) y NO baja ok', () => {
-    const cfg = { providers: { 'gemini-google': { model: 'gemini-3.8-flash-medium' } }, skills: {} };
+    const cfg = { providers: { 'antigravity': { model: 'gemini-3.8-flash-medium' } }, skills: {} };
     const r = agyCatalog.crossCheck({
         catalogIds: [...FIXTURE_IDS, 'gemini-4.0-flash-high'], agentModels: cfg,
         barriers: { validate: FIXTURE_IDS, completion: FIXTURE_IDS, catalog: FIXTURE_IDS },
@@ -211,9 +211,9 @@ test('CA-1/CA-3: config real + las tres barreras reales están 100% en el catál
     assert.deepEqual(r.unlisted, [], 'las tres barreras son espejo exacto del catálogo del CLI');
 
     const barreras = {
-        ALLOWED_MODELS_BY_LAUNCHER: ALLOWED_MODELS_BY_LAUNCHER['gemini-google'],
-        PROVIDER_MODELS_ALLOWLIST: PROVIDER_MODELS_ALLOWLIST['gemini-google'],
-        CATALOG: CATALOG['gemini-google'].map((m) => m.id),
+        ALLOWED_MODELS_BY_LAUNCHER: ALLOWED_MODELS_BY_LAUNCHER['antigravity'],
+        PROVIDER_MODELS_ALLOWLIST: PROVIDER_MODELS_ALLOWLIST['antigravity'],
+        CATALOG: CATALOG['antigravity'].map((m) => m.id),
     };
     for (const [nombre, ids] of Object.entries(barreras)) {
         assert.deepEqual([...ids].sort(), [...FIXTURE_IDS].sort(), `${nombre} == agy models`);
@@ -232,7 +232,7 @@ test('CA-1/CA-3: config real + las tres barreras reales están 100% en el catál
 });
 
 test('CA-3: el CATALOG del dashboard trae label humano de agy, sin precios inventados y con recommended_for coherente con la config', () => {
-    const byId = new Map(CATALOG['gemini-google'].map((m) => [m.id, m]));
+    const byId = new Map(CATALOG['antigravity'].map((m) => [m.id, m]));
     const fixture = new Map(agyCatalog.parseAgyModelsOutput(FIXTURE_TSV).map((m) => [m.id, m.label]));
     for (const [id, label] of fixture) {
         assert.equal(byId.get(id).label, label, `label de ${id} = nombre humano que devuelve agy models`);
@@ -248,7 +248,7 @@ test('CA-3: el CATALOG del dashboard trae label humano de agy, sin precios inven
 });
 
 test('CA-5: el modelo alternativo del provider es de una familia distinta al primario (adversarialidad #3501)', () => {
-    const p = REAL_CONFIG.providers['gemini-google'];
+    const p = REAL_CONFIG.providers['antigravity'];
     const familia = (id) => id.replace(/-(high|medium|low)$/, '');
     assert.equal(p.alternative_models.length, 1);
     assert.notEqual(familia(p.alternative_models[0]), familia(p.model));
@@ -273,7 +273,7 @@ test('checkAgainstCli: con el catálogo real y la config real → ok; con un id 
     assert.equal(ok.check.dead.length, 0);
 
     const roto = JSON.parse(JSON.stringify(REAL_CONFIG));
-    roto.skills.po.fallbacks.find((f) => f.provider === 'gemini-google').model_override = 'gemini-3-flash-preview';
+    roto.skills.po.fallbacks.find((f) => f.provider === 'antigravity').model_override = 'gemini-3-flash-preview';
     const bad = agyCatalog.checkAgainstCli({ env: {}, execFileSync: exec, cacheTtlMs: 0, agentModels: roto });
     assert.equal(bad.ok, false);
     assert.equal(bad.reason, 'dead_models');

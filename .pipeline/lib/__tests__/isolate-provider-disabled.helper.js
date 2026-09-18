@@ -9,7 +9,7 @@
 // módulo real `provider-disabled`, que lee el estado GLOBAL de disco
 // (`.pipeline/provider-disabled.json`). Cuando el pulpo drena un provider en
 // runtime (health-probe / cuota agotada), esos tests flipeaban a rojo — p.ej.
-// esperaban `openai-codex` y obtenían `gemini-google` / `cerebras` / `all-gated`
+// esperaban `openai-codex` y obtenían `antigravity` / `cerebras` / `all-gated`
 // según qué provider estuviera drenado en el instante de correr la suite. Un
 // falso positivo puro dependiente del reloj/estado, no de un bug de producción.
 //

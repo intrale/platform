@@ -26,7 +26,7 @@
 //    hash-chain (`hash_prev`/`hash_self`). PROHIBIDO leer de
 //    `.claude/activity-log.jsonl`: esa fuente mide sesiones de agente ya
 //    arrancado y da CERO para los proveedores que despachan cientos de veces
-//    sin sesion propia (gemini-google, y en su momento los free retirados en
+//    sin sesion propia (antigravity, y en su momento los free retirados en
 //    #6563) — decidir con ella daria de baja justo a los que aportan. Hay un
 //    test que falla si este archivo la importa.
 // 4. "SIN DATO" => `no_evaluable`, JAMAS "no aporta" (REQ-SEC-2c). Un proveedor
@@ -860,7 +860,7 @@ function evaluatePermanence(metrics, thresholds, chainCtx = {}) {
     // otro chequeo, unas lineas mas arriba), los 2 pagos satisfacian el
     // invariante de forma VACUA: el contador nunca bajaba de `min_survivors` y
     // el guard no se disparaba NUNCA para los gratuitos. Con el `declared` real
-    // de produccion de entonces (anthropic + openai-codex pagos; gemini-google +
+    // de produccion de entonces (anthropic + openai-codex pagos; antigravity +
     // dos free retirados en #6563) el criterio proponia vaciar la cadena de
     // gratuitos entera de una sola vez, sin que el invariante interviniera.
     //

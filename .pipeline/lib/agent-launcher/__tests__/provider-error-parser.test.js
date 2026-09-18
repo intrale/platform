@@ -509,7 +509,7 @@ test('matriz: classifyRetriable: rate_limit, transient_5xx y cli_1m_context_glit
 
 test('CA-6/B: 429 vía API directa clasifica rate_limit con shouldFallback=true', () => {
     const raw = '{"error":{"status":429,"message":"Too many requests"}}';
-    const r = parseProviderError(raw, { provider: 'gemini-google', transport: 'api' });
+    const r = parseProviderError(raw, { provider: 'antigravity', transport: 'api' });
     assert.equal(r.errorClass, 'rate_limit');
     assert.equal(r.shouldFallback, true);
 });
@@ -639,7 +639,7 @@ const MATRIZ_AUTH = [
         ],
     },
     {
-        provider: 'gemini-google',
+        provider: 'antigravity',
         positives: [
             {
                 nombre: 'status UNAUTHENTICATED con ErrorInfo API_KEY_INVALID',
@@ -726,7 +726,7 @@ test('#5795 [deterministic] el adapter determinista NUNCA clasifica autenticacio
 test('#5795 los cuatro adapters vivos implementan el contrato detectAuthenticationRejected', () => {
     const { PROVIDER_HANDLERS } = require('../resolve-provider');
     // #6563 — plantel vigente; cerebras/nvidia-nim/kimi-moonshot retirados.
-    const esperados = ['anthropic', 'openai-codex', 'gemini-google', 'deterministic'];
+    const esperados = ['anthropic', 'openai-codex', 'antigravity', 'deterministic'];
     assert.deepEqual(Object.keys(PROVIDER_HANDLERS).sort(), [...esperados].sort(),
         'el plantel de adapters cambió: actualizar la matriz #5795');
     for (const nombre of esperados) {

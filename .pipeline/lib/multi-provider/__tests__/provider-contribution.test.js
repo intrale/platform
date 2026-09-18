@@ -56,14 +56,14 @@ function manyBlocked(n, provider, extra = {}) {
     return many(n, 'fallback_health_gated', provider, { health_reason: 'quota_exhausted', ...extra });
 }
 
-// #6563 — el plantel real quedo con un solo free (gemini-google). El criterio
+// #6563 — el plantel real quedo con un solo free (antigravity). El criterio
 // es generico y su invariante de cadena minima necesita VARIOS no-pagos para
 // probarse, asi que los tests declaran dos free sinteticos (`free-uno`,
 // `free-dos`) ademas de Gemini; no son proveedores del pipeline.
 const DECLARED = {
     anthropic: { billing: 'paid', declaredInConfig: true },
     'openai-codex': { billing: 'paid', declaredInConfig: true },
-    'gemini-google': { billing: 'free', declaredInConfig: true },
+    'antigravity': { billing: 'free', declaredInConfig: true },
     'free-uno': { billing: 'free', declaredInConfig: true },
     'free-dos': { billing: 'free', declaredInConfig: true },
 };
@@ -244,13 +244,13 @@ test('un proveedor sin muestra suficiente queda no_evaluable y nunca candidato a
 });
 
 test('sin dato en la ventana no equivale a no aporta', () => {
-    // gemini-google está declarado pero NO aparece ni una vez en la ventana.
+    // antigravity está declarado pero NO aparece ni una vez en la ventana.
     const entries = many(500, 'fallback_selected', 'free-uno');
     const { verdicts } = evaluate(entries);
 
-    assert.strictEqual(verdicts['gemini-google'].verdict, mod.VERDICT.NO_EVALUABLE);
-    assert.strictEqual(verdicts['gemini-google'].evidence, null, 'sin evidencia, no evidencia vacía en cero');
-    assert.notStrictEqual(verdicts['gemini-google'].verdict, mod.VERDICT.CANDIDATO_BAJA);
+    assert.strictEqual(verdicts['antigravity'].verdict, mod.VERDICT.NO_EVALUABLE);
+    assert.strictEqual(verdicts['antigravity'].evidence, null, 'sin evidencia, no evidencia vacía en cero');
+    assert.notStrictEqual(verdicts['antigravity'].verdict, mod.VERDICT.CANDIDATO_BAJA);
 });
 
 // -----------------------------------------------------------------------------
@@ -268,15 +268,15 @@ test('un gateo durable por cli_license_unavailable no baja la tasa de aporte', (
         // gemini: 120 aportes + 30 bloqueos imputables al proveedor => 150
         // evaluables reales, 80 % de tasa. Los 1.000 gateos por un flag de
         // entorno NUESTRO no entran al denominador.
-        ...many(120, 'fallback_selected', 'gemini-google'),
-        ...manyBlocked(30, 'gemini-google'),
-        ...many(1000, 'fallback_health_gated', 'gemini-google', {
+        ...many(120, 'fallback_selected', 'antigravity'),
+        ...manyBlocked(30, 'antigravity'),
+        ...many(1000, 'fallback_health_gated', 'antigravity', {
             health_state: 'red',
             health_reason: 'cli_license_unavailable',
         }),
     ];
     const { metrics, verdicts } = evaluate(entries);
-    const g = metrics['gemini-google'];
+    const g = metrics['antigravity'];
 
     // Lo que el nombre promete, asertado de verdad:
     assert.strictEqual(g.gatedByLocalObservability, 1000, 'los gateos propios se cuentan aparte');
@@ -291,8 +291,8 @@ test('un gateo durable por cli_license_unavailable no baja la tasa de aporte', (
     assert.ok(120 / 1150 < g.contributionRate, 'incluir el gateo propio deprimiría la tasa');
 
     assert.strictEqual(g.dominantBlock, 'observabilidad_local', 'la columna propia se mantiene');
-    assert.strictEqual(verdicts['gemini-google'].verdict, mod.VERDICT.MANTENER);
-    assert.notStrictEqual(verdicts['gemini-google'].verdict, mod.VERDICT.CANDIDATO_BAJA);
+    assert.strictEqual(verdicts['antigravity'].verdict, mod.VERDICT.MANTENER);
+    assert.notStrictEqual(verdicts['antigravity'].verdict, mod.VERDICT.CANDIDATO_BAJA);
 });
 
 test('el techo rol_acotado sigue tapando la baja si aun asi la tasa queda baja', () => {
@@ -302,19 +302,19 @@ test('el techo rol_acotado sigue tapando la baja si aun asi la tasa queda baja',
     // la baja sin corregir antes el chequeo.
     const entries = [
         ...many(300, 'fallback_selected', 'free-uno'),   // sostiene la cadena
-        ...many(2, 'fallback_selected', 'gemini-google'),
-        ...manyBlocked(200, 'gemini-google'),
-        ...many(1000, 'fallback_health_gated', 'gemini-google', {
+        ...many(2, 'fallback_selected', 'antigravity'),
+        ...manyBlocked(200, 'antigravity'),
+        ...many(1000, 'fallback_health_gated', 'antigravity', {
             health_state: 'red',
             health_reason: 'cli_license_unavailable',
         }),
     ];
     const { metrics, verdicts } = evaluate(entries);
 
-    assert.ok(metrics['gemini-google'].contributionRate < 0.05, 'la tasa sí quedó baja');
-    assert.strictEqual(metrics['gemini-google'].dominantBlock, 'observabilidad_local');
+    assert.ok(metrics['antigravity'].contributionRate < 0.05, 'la tasa sí quedó baja');
+    assert.strictEqual(metrics['antigravity'].dominantBlock, 'observabilidad_local');
     assert.strictEqual(
-        verdicts['gemini-google'].verdict,
+        verdicts['antigravity'].verdict,
         mod.VERDICT.ROL_ACOTADO,
         'techo rol_acotado: no se propone la baja sin corregir antes el chequeo',
     );
@@ -420,8 +420,8 @@ test('el invariante de cadena minima no lo satisfacen los pagos de forma vacua',
     // ENTERA de una sola vez: el incidente del 19/08 auto-infligido.
     const entries = [
         // gemini: 5 aportes sobre 505 evaluables, bloqueo imputable al proveedor.
-        ...many(5, 'fallback_selected', 'gemini-google'),
-        ...many(500, 'fallback_health_gated', 'gemini-google', {
+        ...many(5, 'fallback_selected', 'antigravity'),
+        ...many(500, 'fallback_health_gated', 'antigravity', {
             health_state: 'red', health_reason: 'quota_exhausted',
         }),
         ...many(5, 'fallback_selected', 'free-uno'),
@@ -434,7 +434,7 @@ test('el invariante de cadena minima no lo satisfacen los pagos de forma vacua',
     ];
     const { metrics, verdicts } = evaluate(entries);
 
-    for (const free of ['gemini-google', 'free-uno', 'free-dos']) {
+    for (const free of ['antigravity', 'free-uno', 'free-dos']) {
         assert.ok(metrics[free].contributionRate < 0.05, `${free}: la tasa cruda justifica el candidato`);
         assert.strictEqual(
             verdicts[free].verdict,
@@ -458,7 +458,7 @@ test('con gratuitos sanos de sobra el criterio si marca al que no aporta', () =>
     // Contracara del test anterior: sin este, el invariante podría estar
     // bloqueando SIEMPRE y el criterio no marcaría nunca a nadie (CA-6 vacío).
     const entries = [
-        ...many(500, 'fallback_selected', 'gemini-google'),   // aporta
+        ...many(500, 'fallback_selected', 'antigravity'),   // aporta
         ...many(500, 'fallback_selected', 'free-uno'),        // aporta
         ...many(5, 'fallback_selected', 'free-dos'),        // no aporta
         ...manyBlocked(500, 'free-dos'),
@@ -467,7 +467,7 @@ test('con gratuitos sanos de sobra el criterio si marca al que no aporta', () =>
     ];
     const { verdicts } = evaluate(entries);
 
-    assert.strictEqual(verdicts['gemini-google'].verdict, mod.VERDICT.MANTENER);
+    assert.strictEqual(verdicts['antigravity'].verdict, mod.VERDICT.MANTENER);
     assert.strictEqual(verdicts['free-uno'].verdict, mod.VERDICT.MANTENER);
     assert.strictEqual(
         verdicts['free-dos'].verdict,
@@ -481,7 +481,7 @@ test('min_survivors alto exige mas gratuitos sanos antes de marcar a nadie', () 
     // Mismo escenario que el anterior pero pidiendo 3 sobrevivientes gratuitos:
     // sólo hay 2, así que el candidato se revierte.
     const entries = [
-        ...many(500, 'fallback_selected', 'gemini-google'),
+        ...many(500, 'fallback_selected', 'antigravity'),
         ...many(500, 'fallback_selected', 'free-uno'),
         ...many(5, 'fallback_selected', 'free-dos'),
         ...manyBlocked(500, 'free-dos'),
@@ -632,11 +632,11 @@ test('el reparto por rol separa lo conversacional de los agentes del pipeline', 
 });
 
 test('la latencia no instrumentada se declara, nunca se inventa ni se estima', () => {
-    const entries = many(10, 'fallback_selected', 'gemini-google');
+    const entries = many(10, 'fallback_selected', 'antigravity');
     const healthSnapshot = {
         ts: '2026-08-19T11:41:13.000Z',
         providers: [
-            { provider: 'gemini-google', state: 'red', reason_code: 'cli_license_unavailable', latency_ms: null },
+            { provider: 'antigravity', state: 'red', reason_code: 'cli_license_unavailable', latency_ms: null },
             { provider: 'free-uno', state: 'green', reason_code: 'authenticated', latency_ms: 674 },
         ],
     };
@@ -645,8 +645,8 @@ test('la latencia no instrumentada se declara, nunca se inventa ni se estima', (
         { now: NOW, healthSnapshot },
     );
 
-    assert.strictEqual(metrics['gemini-google'].lastPingMs, null);
-    assert.strictEqual(metrics['gemini-google'].lastPingReason, mod.ABSENCE.NO_INSTRUMENTADO);
+    assert.strictEqual(metrics['antigravity'].lastPingMs, null);
+    assert.strictEqual(metrics['antigravity'].lastPingReason, mod.ABSENCE.NO_INSTRUMENTADO);
     assert.strictEqual(metrics['free-uno'].lastPingMs, 674);
     assert.strictEqual(metrics['free-uno'].lastPingReason, null);
     assert.strictEqual(metrics['free-uno'].lastPingAt, '2026-08-19T11:41:13.000Z', 'el dato viaja fechado');
@@ -727,7 +727,7 @@ test('los cinco literales de veredicto son exactamente los que lee el operador',
 test('el costo de failover se atribuye por separado a la politica horaria', () => {
     const entries = [
         ...many(500, 'primary_inactive_by_schedule', null, { primary_provider: 'anthropic' }),
-        ...many(200, 'fallback_health_gated', 'gemini-google', { health_reason: 'cli_license_unavailable' }),
+        ...many(200, 'fallback_health_gated', 'antigravity', { health_reason: 'cli_license_unavailable' }),
         ...many(200, 'fallback_selected', 'free-uno'),
         ...many(100, 'chain_exhausted', null),
     ];
@@ -794,7 +794,7 @@ test('la whitelist de campos es cerrada y no incluye campos de texto libre', () 
 
 test('el modulo no lee activity-log.jsonl', () => {
     // Riesgo 1 del issue: alimentar el criterio con `.claude/activity-log.jsonl`
-    // daría de baja a gemini-google (y a los free retirados en #6563), que tienen
+    // daría de baja a antigravity (y a los free retirados en #6563), que tienen
     // ~0 registros ahí y cientos de selecciones reales en el log de dispatch.
     // Grep estático sobre el fuente — mismo patrón que el guard de append-only.
     const source = fs.readFileSync(MODULE_PATH, 'utf8');

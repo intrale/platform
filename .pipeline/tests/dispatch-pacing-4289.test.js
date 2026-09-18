@@ -53,7 +53,7 @@ function fakeResolver(skill, opts) {
     const provider = sk.provider;
     return { provider, model: (models.providers[provider] || {}).model || 'm', handler: { name: `${provider}-fake` }, source: 'agent-models' };
 }
-function fakeHandlerResolver(valid = ['anthropic', 'openai-codex', 'gemini-google']) {
+function fakeHandlerResolver(valid = ['anthropic', 'openai-codex', 'antigravity']) {
     return (name) => { if (!valid.includes(name)) throw new Error(`[fake] ${name} inválido`); return { name: `${name}-fake` }; };
 }
 // Módulo de pacing fake: estado por proveedor desde un mapa.
@@ -72,7 +72,7 @@ function models() {
     return {
         defaults: { model: 'claude-x' },
         default_provider: 'anthropic',
-        providers: { anthropic: { model: 'claude-x' }, 'openai-codex': { model: 'gpt-x' }, 'gemini-google': { model: 'gem-x' } },
+        providers: { anthropic: { model: 'claude-x' }, 'openai-codex': { model: 'gpt-x' }, 'antigravity': { model: 'gem-x' } },
         skills: {
             guru: { provider: 'anthropic', fallbacks: ['openai-codex'] },
             'lone-wolf': { provider: 'anthropic' }, // sin fallbacks

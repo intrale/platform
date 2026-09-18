@@ -6,18 +6,24 @@
 //   - El spawn de CLI (`claude`/`codex`/etc.) agrega 2-5s de overhead de arranque.
 //   - El Sherlock verifier (#3331) requiere latencia <1s → necesita invocar el
 //     provider directamente vía API HTTP, sin pasar por CLI.
-//   - Los adapters de spawn (`openai-codex`, `gemini-google`, `anthropic`) ya
+//   - Los adapters de spawn (`openai-codex`, `antigravity`, `anthropic`) ya
 //     son reales (histórico #3198, cerrado por PRs #3792/#3793/#3794). Este
-//     módulo sigue siendo el camino HTTP in-process para el shim OpenAI-compat
-//     (sin overhead de spawn), usado por la cascada de Sherlock y el health;
-//     los providers OAuth (anthropic/codex) van por spawn.
+//     módulo es el camino HTTP in-process para providers OpenAI-compat (sin
+//     overhead de spawn), usado por la cascada de Sherlock y el health; los
+//     providers OAuth (anthropic/codex/antigravity) van por spawn.
 //
-// Providers cubiertos (alineados con FREE_PROVIDERS en health-alerts.js):
-//   - gemini-google  (shim OpenAI-compat de AI Studio v1beta; ver nota abajo)
+// Providers cubiertos: NINGUNO hoy. La tabla `PROVIDER_COMPLETION_ENDPOINTS`
+// queda vacía a propósito y el módulo se conserva como infraestructura
+// (anti-SSRF, allowlist de modelos, clasificación HTTP) para el próximo
+// provider OpenAI-compat que se admita (#6562).
 //
-// Nota: Groq fue removido del pipeline en #3368 (mayo 2026); cerebras y
-// nvidia-nim (los otros dos free OpenAI-compat que vivían acá) se retiraron en
-// #6563 junto con sus endpoints y allowlists de modelos. No reintroducirlos.
+// Historial de retiros (no reintroducir sin criterio de admisión):
+//   - Groq: #3368 (mayo 2026).
+//   - cerebras / nvidia-nim: #6563, con sus endpoints y allowlists.
+//   - shim HTTP de Google AI Studio (ex
+//     `gemini-google`): #6861. Era un endpoint HTTP distinto del CLI `agy` que
+//     corre el provider `antigravity`; desde #6858 no servía ningún id del
+//     catálogo (404) y consumía una API key de Google sin razón (#5331, #7299).
 //
 // Defensa SSRF (OWASP A10):
 //   - URLs hardcoded por provider en `PROVIDER_COMPLETION_ENDPOINTS` (frozen).
@@ -60,17 +66,8 @@
 //
 // IMPORTANTE — Rate limiting:
 //   Este cliente NO implementa rate-limiter ni retries con backoff. Es
-//   responsabilidad del caller (ej. Sherlock #3331) respetar los free-tier
-//   límites publicados:
-//     - Gemini Google: RPM 15 / RPD 1500 / TPM 1M (free)
-//   Ver `docs/pipeline/multi-provider.md` §8.
-//
-// IMPORTANTE — Gemini OpenAI-compat es BETA:
-//   `https://generativelanguage.googleapis.com/v1beta/openai/chat/completions`
-//   es un shim OpenAI-compatible que Google expone en v1beta. Riesgo bajo de
-//   breaking changes pero documentado como dependencia externa. Si Google rompe
-//   el shim, el test `caso: schema drift de Gemini → invalid_response` debería
-//   pegar primero en el cron de health.
+//   responsabilidad del caller (ej. Sherlock #3331) respetar los límites
+//   publicados por cada provider. Ver `docs/pipeline/multi-provider.md` §8.
 // =============================================================================
 'use strict';
 
@@ -96,72 +93,49 @@ const httpClassifier = require('../http-error-classifier');
 //      .pipeline/lib/__tests__/completion-client.test.js.
 // ---------------------------------------------------------------------------
 const PROVIDER_COMPLETION_ENDPOINTS = Object.freeze({
-    'gemini-google': Object.freeze({
-        // BETA shim. Documentado en el header del módulo. Riesgo aceptable
-        // porque normaliza el body al schema OpenAI y nos evita maintain dos
-        // mapeos distintos (`:generateContent` devuelve `usageMetadata`).
-        //
-        // ATENCIÓN (#6858 / #7298): este endpoint es el shim HTTP de **AI
-        // Studio** (`generativelanguage.googleapis.com`), NO el CLI `agy` de
-        // Antigravity que usa el launcher. Desde #6858 la allowlist de abajo es
-        // el catálogo de Antigravity y AI Studio NO sirve ninguno de esos ids
-        // (medido: `gemini-3.8-flash-medium` → HTTP 404 "is not found"). Hoy
-        // esta ruta no tiene ningún (provider, model) que responda ok=true:
-        // NO apuntarle un default (semantic-dedup ya se quemó con eso; desde
-        // #6563 su default va por spawn de Codex). Los únicos callers que la
-        // recorren son la cascada del Sherlock (`HTTP_COMPLETION_PROVIDERS` en
-        // sherlock-verifier.js), que tolera el fallo y sigue al próximo
-        // provider, y el health. La entrada se conserva (#6563 retiró cerebras
-        // y nvidia-nim, no este shim) hasta que #6564 la reconcilie o retire.
-        url: 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions',
-        method: 'POST',
-        // El shim OpenAI-compat de Google acepta Authorization Bearer.
-        authHeader: 'authorization',
-        authFormat: 'bearer',
-    }),
+    // #6861 — vacío a propósito (ver header). Cada entrada futura:
+    //   '<provider>': Object.freeze({ url: 'https://...', method: 'POST',
+    //                                 authHeader: 'authorization', authFormat: 'bearer' })
 });
 
 // Allowlist de modelos por provider — defensa-en-profundidad contra `model`
 // arbitrario que provoque 400 ruidosos con eco en el body (info leak menor).
 // El `model` viaja como field del body JSON (no en la URL) → NO abre SSRF, pero
-// igual filtramos. Los modelos en producción salen de `.pipeline/agent-models.json`:
-// gemini-google=gemini-3.8-flash-medium (#6858). Las listas de cerebras y
-// nvidia-nim se retiraron con sus providers en #6563 (se quitan, no se dejan
-// al lado, para que ninguna reintroducción pase silenciosa por esta barrera).
-// Si la lista se queda corta, agregar acá + test.
-const PROVIDER_MODELS_ALLOWLIST = Object.freeze({
-    // #6858 (2026-09-16) — catálogo REAL de Antigravity (`agy models`, CLI
-    // 1.2.4) por REEMPLAZO: `gemini-1.5-*`, `gemini-2.0-*` y `gemini-2.5-*` eran
-    // ids de AI Studio / Gemini CLI gratuito (retirado) y NO existen en
-    // Antigravity. Se quitan, no se dejan al lado. Espejo exacto de
-    // ALLOWED_MODELS_BY_LAUNCHER['gemini-google'] (lib/agent-models-validate.js)
-    // y del CATALOG de model-catalog.js; las tres se cruzan contra el CLI en
-    // lib/multi-provider/agy-catalog.js.
-    //
-    // OJO: esta lista gobierna el shim HTTP de AI Studio de arriba
-    // (PROVIDER_COMPLETION_ENDPOINTS['gemini-google']), NO al CLI `agy`. AI
-    // Studio no sirve ninguno de estos ids → por esta ruta HTTP todo
-    // `complete({provider:'gemini-google'})` devuelve 404 hoy. Se mantiene el
-    // espejo del catálogo a propósito (agy-catalog.js cruza las tres barreras
-    // contra `agy models`; un id de AI Studio acá saldría como `dead`). Ningún
-    // default HTTP del pipeline debe apuntar acá (ver semantic-dedup.js).
-    'gemini-google': Object.freeze([
-        'gemini-3.8-flash-high',
-        'gemini-3.8-flash-medium',
-        'gemini-3.8-flash-low',
-        'gemini-3.7-flash-high',
-        'gemini-3.7-flash-medium',
-        'gemini-3.7-flash-low',
-        'gemini-3.6-flash-high',
-        'gemini-3.6-flash-medium',
-        'gemini-3.6-flash-low',
-        'gemini-3.1-pro-high',
-        'gemini-3.1-pro-low',
-        'claude-sonnet-4-6',
-        'claude-opus-4-6-thinking',
-        'gpt-oss-120b-medium',
-    ]),
-});
+// igual filtramos. Los modelos en producción salen de `.pipeline/agent-models.json`
+// (MP-04 los une a esta lista). Sin providers HTTP la tabla queda vacía (#6861:
+// el espejo del catálogo de Antigravity se fue con el shim; las barreras de ese
+// provider son ALLOWED_MODELS_BY_LAUNCHER y CATALOG, cruzadas en agy-catalog.js).
+const PROVIDER_MODELS_ALLOWLIST = Object.freeze({});
+
+// ---------------------------------------------------------------------------
+// #6861 — Tablas efectivas + hook de test.
+//
+// Con el plantel HTTP vacío, la única forma de seguir cubriendo el cliente
+// (auth, schema drift, cap de body, retries, redacción) es inyectar un provider
+// de PRUEBA. El hook sólo acepta URLs `https:` literales (misma barrera que
+// producción), se resetea explícitamente y NO se usa en ningún camino de
+// runtime: el pulpo, Sherlock y el health leen las constantes congeladas de
+// arriba a través de estas mismas variables, que por default las apuntan.
+// ---------------------------------------------------------------------------
+let _endpoints = PROVIDER_COMPLETION_ENDPOINTS;
+let _modelsAllowlist = PROVIDER_MODELS_ALLOWLIST;
+
+function _setProviderTablesForTesting({ endpoints, models } = {}) {
+    const eps = endpoints && typeof endpoints === 'object' ? endpoints : {};
+    for (const [prov, spec] of Object.entries(eps)) {
+        let u;
+        try { u = new URL(spec && spec.url); } catch { u = null; }
+        if (!u || u.protocol !== 'https:') {
+            throw new Error(`_setProviderTablesForTesting: endpoint de ${prov} debe ser https literal`);
+        }
+    }
+    _endpoints = Object.freeze({ ...eps });
+    _modelsAllowlist = Object.freeze({ ...(models && typeof models === 'object' ? models : {}) });
+}
+function _resetProviderTablesForTesting() {
+    _endpoints = PROVIDER_COMPLETION_ENDPOINTS;
+    _modelsAllowlist = PROVIDER_MODELS_ALLOWLIST;
+}
 
 // Timeout default — 0 = SIN timeout (decisión Leo 2026-06-02 voz). El cliente
 // espera lo que tarde el provider; la resiliencia ante un provider colgado la
@@ -235,11 +209,11 @@ function getConfiguredModels(pipelineDir, fsImpl) {
 }
 
 function isAllowedProvider(provider) {
-    return Object.prototype.hasOwnProperty.call(PROVIDER_COMPLETION_ENDPOINTS, provider);
+    return Object.prototype.hasOwnProperty.call(_endpoints, provider);
 }
 
 function isAllowedModel(provider, model, configuredByProvider) {
-    const list = PROVIDER_MODELS_ALLOWLIST[provider];
+    const list = _modelsAllowlist[provider];
     if (list && list.indexOf(model) >= 0) return true;
     // Config-aware: aceptar modelos declarados por un humano en agent-models.json.
     const cfgSet = configuredByProvider && configuredByProvider[provider];
@@ -251,7 +225,7 @@ function isAllowedModel(provider, model, configuredByProvider) {
 // complete — invoca una completion contra el provider OpenAI-compatible.
 //
 // Args:
-//   - provider:    'gemini-google' (allowlisted en PROVIDER_COMPLETION_ENDPOINTS).
+//   - provider:    id allowlisted en PROVIDER_COMPLETION_ENDPOINTS (hoy ninguno, #6861).
 //   - model:       string en PROVIDER_MODELS_ALLOWLIST[provider].
 //   - prompt:      string del prompt (se envía como user message).
 //   - messages:    opcional, array de {role, content}; si no se pasa, se
@@ -447,7 +421,7 @@ async function complete({
         };
     }
 
-    const spec = PROVIDER_COMPLETION_ENDPOINTS[provider];
+    const spec = _endpoints[provider];
     const body = JSON.stringify({
         model,
         messages: finalMessages,
@@ -665,4 +639,7 @@ module.exports = {
     PROVIDER_MODELS_ALLOWLIST,
     DEFAULT_TIMEOUT_MS,
     MAX_BODY_BYTES,
+    // #6861 — sólo tests (ver comentario del hook).
+    _setProviderTablesForTesting,
+    _resetProviderTablesForTesting,
 };

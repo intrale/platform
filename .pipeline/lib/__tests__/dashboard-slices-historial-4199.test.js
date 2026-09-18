@@ -91,10 +91,10 @@ test('facets expone skills/providers/eventTypes presentes en el período', () =>
         entry({ issue: '20', skill: 'backend-dev', resultado: 'rechazado', reboteNumero: 1, finishedAt: NOW - 9 * MIN }),
         entry({ issue: '30', skill: 'qa', estado: 'trabajando', resultado: null, finishedAt: 0, startedAt: NOW - 1 * MIN }),
     ] };
-    const resolveProvider = (skill) => ({ 'pipeline-dev': 'anthropic', 'backend-dev': 'openai-codex', 'qa': 'gemini-google' }[skill] || null);
+    const resolveProvider = (skill) => ({ 'pipeline-dev': 'anthropic', 'backend-dev': 'openai-codex', 'qa': 'antigravity' }[skill] || null);
     const r = historialTimelineSlice(state, { now: NOW }, { resolveProvider });
     assert.deepEqual(r.facets.skills, ['backend-dev', 'pipeline-dev', 'qa']);
-    assert.deepEqual(r.facets.providers, ['anthropic', 'gemini-google', 'openai-codex']);
+    assert.deepEqual(r.facets.providers, ['anthropic', 'antigravity', 'openai-codex']);
     // eventTypes en orden canónico, solo los presentes
     assert.deepEqual(r.facets.eventTypes, ['merge', 'rebote', 'ejecucion']);
 });

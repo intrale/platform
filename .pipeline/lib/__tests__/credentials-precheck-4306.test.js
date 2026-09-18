@@ -18,9 +18,9 @@ test('#4306: openai-codex (auth_mode oauth) SIN OPENAI_API_KEY → ok:true', () 
     assert.deepEqual(r, { ok: true });
 });
 
-test('#4306: gemini-google (auth_mode oauth) SIN GEMINI_API_KEY → ok:true', () => {
-    const def = { launcher: 'gemini-google', auth_mode: 'oauth', credentials_env: ['GEMINI_API_KEY'] };
-    const r = _validateProviderCredentials('gemini-google', def, {});
+test('#4306: antigravity (auth_mode oauth) SIN GEMINI_API_KEY → ok:true', () => {
+    const def = { launcher: 'antigravity', auth_mode: 'oauth', credentials_env: ['GEMINI_API_KEY'] };
+    const r = _validateProviderCredentials('antigravity', def, {});
     assert.deepEqual(r, { ok: true });
 });
 

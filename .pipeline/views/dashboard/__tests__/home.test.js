@@ -262,11 +262,11 @@ test('#4189: renderHomeHTML emite el layout MIZPÁ (banner + panel + grilla 2-co
     assert.ok(html.includes('id="mz-sig-healthy"'),
         'estado compacto con señal accionable "proveedores sanos"');
     // #4249/#4533: la matriz usa los ids canónicos de ALLOWED_PROVIDERS
-    // (openai-codex, gemini-google, etc.). Se renderizan los 5 proveedores activos
+    // (openai-codex, antigravity, etc.). Se renderizan los 5 proveedores activos
     // en su ventana corta (short) y larga (long).
     assert.ok(html.includes('id="mz-qm-anthropic-short-bar"') && html.includes('id="mz-qm-anthropic-long-bar"')
         && html.includes('id="mz-qm-openai-codex-short-bar"')
-        && html.includes('id="mz-qm-gemini-google-short-bar"')
+        && html.includes('id="mz-qm-antigravity-short-bar"')
         && !html.includes('id="mz-qm-cerebras-long-bar"')
         && !html.includes('id="mz-qm-nvidia-nim-long-bar"'),
         'matriz proveedor×ventana con ids canónicos Anthropic/Codex/Gemini (CA-6, #4533) y sin retirados (#6563)');

@@ -26,16 +26,16 @@ test('ALLOWED_PROVIDERS exporta lista freezada de providers conocidos', () => {
     assert.ok(Array.isArray(ALLOWED_PROVIDERS));
     assert.ok(ALLOWED_PROVIDERS.includes('anthropic'));
     assert.ok(ALLOWED_PROVIDERS.includes('openai-codex'));
-    // #3220 — rename `gemini` → `gemini-google`.
+    // #3220 — rename `gemini` → `antigravity`.
     // #3353 — `groq` removido tras descontinuación del provider.
     // #6563 — `cerebras`, `nvidia-nim`, `kimi-moonshot` y `ollama` retirados del plantel.
-    assert.ok(ALLOWED_PROVIDERS.includes('gemini-google'));
+    assert.ok(ALLOWED_PROVIDERS.includes('antigravity'));
     assert.ok(ALLOWED_PROVIDERS.includes('deterministic'));
     for (const retired of ['groq', 'cerebras', 'nvidia-nim', 'kimi-moonshot', 'ollama']) {
         assert.ok(!ALLOWED_PROVIDERS.includes(retired), `${retired} debería estar fuera de la allowlist`);
     }
     assert.deepEqual([...ALLOWED_PROVIDERS].sort(),
-        ['anthropic', 'deterministic', 'gemini-google', 'openai-codex']);
+        ['anthropic', 'deterministic', 'antigravity', 'openai-codex']);
     assert.equal(Object.isFrozen(ALLOWED_PROVIDERS), true,
         'ALLOWED_PROVIDERS debe estar freezada (defensa contra mutación en runtime)');
 });
@@ -114,8 +114,8 @@ test('fail-secure: si el adapter lanza excepción, dispatch devuelve error sin p
 test('fail-secure: si el adapter devuelve no-objeto, dispatch devuelve error', () => {
     const adaptersDir = require.resolve('../../quota-adapters');
     delete require.cache[adaptersDir];
-    // #3220 — adapter renombrado a gemini-google.
-    const fakeGeminiPath = require.resolve('../../quota-adapters/gemini-google');
+    // #3220 — adapter renombrado a antigravity.
+    const fakeGeminiPath = require.resolve('../../quota-adapters/antigravity');
     delete require.cache[fakeGeminiPath];
     require.cache[fakeGeminiPath] = {
         id: fakeGeminiPath,
@@ -127,7 +127,7 @@ test('fail-secure: si el adapter devuelve no-objeto, dispatch devuelve error', (
     };
 
     const { quotaUsage } = require('../../quota-adapters');
-    const r = quotaUsage('gemini-google', {});
+    const r = quotaUsage('antigravity', {});
     assert.equal(r.adapterStatus, 'error');
     assert.match(r.errorReason, /shape inválido|shape invalido/);
 

@@ -179,7 +179,7 @@ function sembrarCadenasDivergentes(tmp) {
             provider: 'anthropic',
             model_override: 'claude-sonnet-4-6',
             fallbacks: [
-                { provider: 'gemini-google', model_override: 'gemini-3.8-flash-medium' },
+                { provider: 'antigravity', model_override: 'gemini-3.8-flash-medium' },
                 { provider: 'cerebras', model_override: 'gpt-oss-120b' },
             ],
         },
@@ -399,8 +399,8 @@ test('#5456 CA-4 — el proveedor anunciado sale del resolver REAL, no de un lit
 test('#5456 CA-4 — se consulta la cadena del COMMANDER, no la de Sherlock', () => {
     withTempPipeline((tmp) => {
         // Cadenas divergentes en el primer fallback: commander→openai-codex,
-        // sherlock→gemini-google. El default del resolver crudo es Sherlock, así
-        // que si el wiring no fija el skill, esto devuelve gemini-google.
+        // sherlock→antigravity. El default del resolver crudo es Sherlock, así
+        // que si el wiring no fija el skill, esto devuelve antigravity.
         sembrarCadenasDivergentes(tmp);
         agotarAnthropic();
 
@@ -415,7 +415,7 @@ test('#5456 CA-4 — se consulta la cadena del COMMANDER, no la de Sherlock', ()
             notify: () => false,
             auditLog: { appendChained: () => {} },
         });
-        assert.equal(sherlock.provider, 'gemini-google',
+        assert.equal(sherlock.provider, 'antigravity',
             'sanity del fixture: sin skill explícito el resolver cae en la cadena de Sherlock');
     });
 });
@@ -448,7 +448,7 @@ test('#5456 CA-1 — ningún id interno de provider/model/skill llega a la cola 
             .join('\n');
 
         for (const id of [
-            'openai-codex', 'gemini-google', 'cerebras', 'anthropic',
+            'openai-codex', 'antigravity', 'cerebras', 'anthropic',
             commanderMP.COMMANDER_SKILL, commanderMP.SHERLOCK_SKILL,
             'sherlock-verify', 'gpt-5.4', 'gpt-oss-120b', 'Cross-provider fallback',
         ]) {

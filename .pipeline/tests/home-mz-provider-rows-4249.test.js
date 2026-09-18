@@ -29,7 +29,7 @@ const {
 // Proveedores activos esperados, alineados con agent-models.json y
 // ALLOWED_PROVIDERS (ids canónicos). Los gratuitos retirados quedan fuera
 // (Groq en #3353; Cerebras y NVIDIA NIM en #6563).
-const EXPECTED_PROVIDERS = ['anthropic', 'openai-codex', 'gemini-google'];
+const EXPECTED_PROVIDERS = ['anthropic', 'openai-codex', 'antigravity'];
 
 test('CA-A1 — _mzProviderMatrix renderiza una fila por cada proveedor activo (3)', () => {
     const html = _mzProviderMatrix();
@@ -75,20 +75,20 @@ test('#4533 — cada proveedor rotula su ventana real (5h/Sem, Min/Día, Roll)',
     assert.match(anth, />Sem</, 'Anthropic ventana larga = Sem');
     const codex = _mzProviderMatrixRow('openai-codex');
     assert.match(codex, />Roll</, 'Codex ventana corta = Roll');
-    const gem = _mzProviderMatrixRow('gemini-google');
+    const gem = _mzProviderMatrixRow('antigravity');
     assert.match(gem, />Min</, 'Gemini ventana corta = Min');
     assert.match(gem, />Día</, 'Gemini ventana larga = Día');
     // Los labels del skeleton derivan de MZ_PROVIDER_WINDOWS (fuente única SSR).
     assert.equal(MZ_PROVIDER_WINDOWS.anthropic.short, '5h');
-    assert.equal(MZ_PROVIDER_WINDOWS['gemini-google'].long, 'Día');
+    assert.equal(MZ_PROVIDER_WINDOWS['antigravity'].long, 'Día');
 });
 
 test('#4533 — la fila muestra la fuente fidedigna del proveedor (CLI/API)', () => {
     assert.match(_mzProviderMatrixRow('anthropic'), /· CLI/, 'Anthropic: fuente CLI');
     assert.match(_mzProviderMatrixRow('openai-codex'), /· CLI/, 'Codex: fuente CLI');
-    assert.match(_mzProviderMatrixRow('gemini-google'), /· API/, 'Gemini: fuente API');
+    assert.match(_mzProviderMatrixRow('antigravity'), /· API/, 'Gemini: fuente API');
     // La fuente declarada en la meta coincide con lo renderizado.
-    assert.equal(MZ_PROVIDER_META['gemini-google'].src, 'API');
+    assert.equal(MZ_PROVIDER_META['antigravity'].src, 'API');
 });
 
 test('CA-A5 / security — un label con markup no produce HTML ejecutable (XSS)', () => {

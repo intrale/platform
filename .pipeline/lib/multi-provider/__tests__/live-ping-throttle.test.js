@@ -23,11 +23,11 @@ const fs = require('node:fs');
 const livePing = require('../live-ping');
 
 // #6563 — Tras la baja de cerebras/nvidia-nim no queda en el plantel ningún
-// provider que se pinguee por API key: anthropic, codex y gemini-google
+// provider que se pinguee por API key: anthropic, codex y antigravity
 // (Antigravity) son OAuth y `ping()` hace short-circuit por el probe del CLI.
 // El camino HTTP (throttle facturable, clasificación de status, endpoints
 // literales anti-SSRF) se conserva como infraestructura, así que para
-// ejercitarlo estos tests re-declaran temporalmente a `gemini-google` (y a
+// ejercitarlo estos tests re-declaran temporalmente a `antigravity` (y a
 // `anthropic` cuando hace falta un segundo provider) como `api_key` en la
 // lista gestionada que consulta `ping()`. `getRawKey` sigue usando la spec
 // real (paths canónico/legacy de cada provider). Se restaura al terminar.
@@ -75,7 +75,7 @@ function makeHttpMock() {
 }
 
 // Escribe un secrets.json canónico temporal con una key real para el provider
-// (path canónico `providers.<id>.api_key`; para gemini-google el id es
+// (path canónico `providers.<id>.api_key`; para antigravity el id es
 // `google`), de modo que getRawKey devuelva la key y el ping llegue al gate.
 function writeSecrets(provider, value) {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mp-ping-'));
@@ -89,14 +89,14 @@ test('cooldown: 2 POST consecutivos dentro del intervalo → el 2do es rate_limi
     const { httpImpl, state } = makeHttpMock();
     const secretsPath = writeSecrets('google', 'AIza-test-realkey-1234567890');
 
-    const first = await withHttpPingProviders(['gemini-google'], () => livePing.ping({
-        provider: 'gemini-google', secretsPath, httpImpl, nowMs: 1_000, minIntervalMs: 10_000,
+    const first = await withHttpPingProviders(['antigravity'], () => livePing.ping({
+        provider: 'antigravity', secretsPath, httpImpl, nowMs: 1_000, minIntervalMs: 10_000,
     }));
     assert.equal(first.ok, true, 'el 1er ping debe llegar al provider y resolver ok');
     assert.equal(state.calls, 1, 'el 1er ping dispara exactamente 1 HTTP saliente');
 
-    const second = await withHttpPingProviders(['gemini-google'], () => livePing.ping({
-        provider: 'gemini-google', secretsPath, httpImpl, nowMs: 2_000, minIntervalMs: 10_000,
+    const second = await withHttpPingProviders(['antigravity'], () => livePing.ping({
+        provider: 'antigravity', secretsPath, httpImpl, nowMs: 2_000, minIntervalMs: 10_000,
     }));
     assert.equal(second.ok, false, 'el 2do ping dentro del cooldown debe fallar');
     assert.equal(second.reason, 'rate_limited_local', 'reason esperado del throttle local');
@@ -110,9 +110,9 @@ test('concurrencia: un 2do ping mientras el 1ro está in-flight → rate_limited
     const secretsPath = writeSecrets('google', 'AIza-test-realkey-1234567890');
 
     // No await del primero: queda in-flight cuando lanzamos el segundo.
-    const [p1, second] = await withHttpPingProviders(['gemini-google'], async () => {
-        const first = livePing.ping({ provider: 'gemini-google', secretsPath, httpImpl, minIntervalMs: 10_000 });
-        const sec = await livePing.ping({ provider: 'gemini-google', secretsPath, httpImpl, minIntervalMs: 10_000 });
+    const [p1, second] = await withHttpPingProviders(['antigravity'], async () => {
+        const first = livePing.ping({ provider: 'antigravity', secretsPath, httpImpl, minIntervalMs: 10_000 });
+        const sec = await livePing.ping({ provider: 'antigravity', secretsPath, httpImpl, minIntervalMs: 10_000 });
         await first; // dejar resolver el primero antes de restaurar la lista gestionada
         return [first, sec];
     });
@@ -128,9 +128,9 @@ test('pasado el intervalo, el ping se vuelve a permitir', async () => {
     const { httpImpl, state } = makeHttpMock();
     const secretsPath = writeSecrets('google', 'AIza-test-realkey-1234567890');
 
-    const again = await withHttpPingProviders(['gemini-google'], async () => {
-        await livePing.ping({ provider: 'gemini-google', secretsPath, httpImpl, nowMs: 1_000, minIntervalMs: 10_000 });
-        return livePing.ping({ provider: 'gemini-google', secretsPath, httpImpl, nowMs: 1_000 + 10_001, minIntervalMs: 10_000 });
+    const again = await withHttpPingProviders(['antigravity'], async () => {
+        await livePing.ping({ provider: 'antigravity', secretsPath, httpImpl, nowMs: 1_000, minIntervalMs: 10_000 });
+        return livePing.ping({ provider: 'antigravity', secretsPath, httpImpl, nowMs: 1_000 + 10_001, minIntervalMs: 10_000 });
     });
 
     assert.equal(again.ok, true, 'tras superar el intervalo el ping vuelve a pasar');
@@ -144,7 +144,7 @@ test('el cooldown aísla por proveedor (no cruza providers)', async () => {
     // Mismo archivo de secrets con dos providers api_key (paths canónicos que
     // matchean sus ids). #4402 — `openai` pasó a OAuth (short-circuit CLI, sin
     // HTTP) y #6563 retiró los api_key puros, así que para probar el aislamiento
-    // del cooldown HTTP re-declaramos como api_key a gemini-google + anthropic.
+    // del cooldown HTTP re-declaramos como api_key a antigravity + anthropic.
     fs.writeFileSync(secretsPath, JSON.stringify({
         providers: {
             google: { api_key: 'AIza-test-realkey-1234567890' },
@@ -152,8 +152,8 @@ test('el cooldown aísla por proveedor (no cruza providers)', async () => {
         },
     }));
 
-    const [a, b] = await withHttpPingProviders(['gemini-google', 'anthropic'], async () => [
-        await livePing.ping({ provider: 'gemini-google', secretsPath, httpImpl, nowMs: 1_000, minIntervalMs: 10_000 }),
+    const [a, b] = await withHttpPingProviders(['antigravity', 'anthropic'], async () => [
+        await livePing.ping({ provider: 'antigravity', secretsPath, httpImpl, nowMs: 1_000, minIntervalMs: 10_000 }),
         await livePing.ping({ provider: 'anthropic', secretsPath, httpImpl, nowMs: 1_000, minIntervalMs: 10_000 }),
     ]);
 

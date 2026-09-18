@@ -560,12 +560,12 @@ function onSpawnExit(opts = {}) {
             })
             : null;
 
-        // #6857 — un spawn REAL de gemini-google rechazado por credencial es
+        // #6857 — un spawn REAL de antigravity rechazado por credencial es
         // evidencia más fresca que la cache del probe de catálogo (TTL 15 min):
         // se invalida para que el próximo tick del health vuelva a hacer
         // round-trip y el deslogueo se refleje antes de que venza el TTL.
         // Best-effort, sólo borra un archivo de cache; nunca toca el veredicto.
-        if (authProjection && !opts.telemetryOnly && isGeminiGoogleProvider(provider)) {
+        if (authProjection && !opts.telemetryOnly && isAntigravityProvider(provider)) {
             try {
                 require('../multi-provider/agy-catalog-probe').invalidateCache({
                     stateDir: pipelineDir ? path.join(pipelineDir, 'state') : undefined,
@@ -831,11 +831,11 @@ const DURABLE_RED_REASONS = Object.freeze(new Set([
                                // (agy). Fail-closed durable: sin licencia el
                                // provider no puede autenticarse y `agy` bloquea
                                // en OAuth hasta timeout → el agente muere con
-                               // exit 1. Gatearlo saca a gemini-google de la
+                               // exit 1. Gatearlo saca a antigravity de la
                                // cascada sin tumbar el dispatch (cae al
                                // siguiente provider). #6857: el rojo ahora sale
                                // de un round-trip real (`agy models` vacío /
-                               // rc≠0 / timeout), ya no de AGY_LICENSE_READY;
+                               // rc≠0 / timeout), no de un flag local;
                                // se levanta solo al reautenticar el CLI.
     'quota_exhausted',         // sin cuota — el flag de cuota ya lo cubre, doble defensa
     'quota_exhausted_real',    // #4283 — cuota REAL agotada (≥90%, #4202): logueado pero sin cuota usable
@@ -848,10 +848,10 @@ const HEALTH_PROVIDER_ALIAS = Object.freeze({
     'openai-codex': 'openai',
 });
 
-// #6857 — nombres con los que el pipeline se refiere al provider Google.
-function isGeminiGoogleProvider(provider) {
+// #6857/#6861 — el provider Antigravity tiene UN solo id (sin aliases, SEC-1).
+function isAntigravityProvider(provider) {
     const p = String(provider || '').toLowerCase();
-    return p === 'gemini-google' || p === 'google' || p === 'gemini';
+    return p === 'antigravity';
 }
 
 // Lee el snapshot de health. Best-effort: cualquier error → null (fail-open).

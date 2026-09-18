@@ -4,7 +4,7 @@
 //
 // PROBLEMA QUE RESUELVE
 // ---------------------
-// Un provider de fallback (ej. `gemini-google`) que "resuelve como viable" pero
+// Un provider de fallback (ej. `antigravity`) que "resuelve como viable" pero
 // muere al spawn en 4-5s debe marcarse INVÁLIDO para que el resolver lo saltee,
 // igual que ya hace con los providers gated o apagados. El cooldown por
 // muerte-de-provider se registra a nivel PROVIDER (backoff), no al (skill,issue):
@@ -25,7 +25,7 @@
 // PERSISTENCIA: `.pipeline/state/provider-spawn-health.json`
 //   {
 //     "providers": {
-//       "gemini-google": {
+//       "antigravity": {
 //         "consecutiveDeaths": 2,
 //         "firstDeathAt": "2026-07-11T...", "lastDeathAt": "2026-07-11T...",
 //         "windowExpiresAt": "2026-07-11T..."

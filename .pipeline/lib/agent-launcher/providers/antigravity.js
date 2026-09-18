@@ -1,8 +1,10 @@
 // =============================================================================
-// providers/gemini-google.js — Handler real del provider Google Gemini
+// providers/antigravity.js — Handler del provider `antigravity` (Antigravity CLI)
 //
 // Implementa el contrato del wrapper de agent-launcher para Antigravity CLI
-// (`agy --print`) usando OAuth. No existe fallback al cliente retirado.
+// (binario `agy`, ex provider `gemini-google` hasta #6861) usando OAuth de
+// cuenta Google. No existe fallback al Gemini CLI gratuito (retirado) ni a
+// ningún endpoint HTTP: es un provider de spawn puro.
 //
 // Wiring acá:
 //   1) detectLauncher — binario nativo configurado, ubicación oficial Windows
@@ -13,28 +15,33 @@
 //      STDIN como NDJSON (`--input-format stream-json`, que a su vez exige
 //      `--output-format stream-json`): `--print` ya NO admite ir sin valor y
 //      un prompt en argv reventaría con ENAMETOOLONG en Windows (#4529).
-//      Gemini NO tiene flag de system prompt, así que el contenido del
+//      agy NO tiene flag de system prompt, así que el contenido del
 //      `--system-prompt-file` se foldea al inicio del prompt.
 //      #6859 — el `cwd` se traduce ADEMÁS a `--add-dir <cwd>` (ver bloque
 //      "Workspace" más abajo): agy ignora el cwd del proceso y sin ese flag
 //      escribe en un scratch propio reportando SUCCESS.
 //   3) parseTokensFromLog — agrega los tokens reportados por el CLI. Con
 //      `--output-format stream-json` el log es NDJSON y el objeto útil es el
-//      `result` del evento `{"event":"result"}`; `_parseGeminiJson` lo
+//      `result` del evento `{"event":"result"}`; `_parseAntigravityJson` lo
 //      localiza. usage.* y error string respetan el contrato de agy 1.2.x (#7290).
 //   4) detectQuotaExhausted — inspecciona el objeto `error` del JSON y matchea
 //      por shape estructural (status/code/reason normalizados a lowercase)
 //      contra la allowlist canónica en `quota-exhausted.js`
-//      (`KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER['gemini-google']`).
+//      (`KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER['antigravity']`).
 //
 // Auth: OAuth via `agy`; nunca API key. El health (#6857) sale de un
 // round-trip real al CLI (`agy models`, ver multi-provider/agy-catalog-probe.js),
-// que spawnea EXACTAMENTE el `cmd` que devuelve `detectLauncher()`. Ya no
-// existe el flag `AGY_LICENSE_READY`: un flag local no puede saber si la
-// licencia está activa.
+// que spawnea EXACTAMENTE el `cmd` que devuelve `detectLauncher()`. No hay
+// flag local de "licencia lista": un flag local no puede saber si la licencia
+// está activa.
+//
+// Env vars (#6861, prefijo único `ANTIGRAVITY_`): `ANTIGRAVITY_BIN` (override
+// del binario, sólo del process.env del pulpo), `ANTIGRAVITY_MODEL` (modelo,
+// la inyecta build-child-env.js) y `ANTIGRAVITY_PRINT_TIMEOUT`. Las constantes
+// `AGY_*` de este archivo nombran el contrato del binario `agy`, no env vars.
 //
 // Seguridad:
-//  - Ruta oficial hardcoded y override AGY_BIN, sin require dinámico.
+//  - Ruta oficial hardcoded y override ANTIGRAVITY_BIN, sin require dinámico.
 //  - Args como argv estricto y shell:false.
 //  - Detección de cuota SOLO por shape estructural sobre campos dedicados de
 //    error (status/code/reason). NUNCA substring sobre `response` (canal de
@@ -76,14 +83,14 @@ const path = require('node:path');
 const authRejection = require('../auth-rejection');
 
 // -----------------------------------------------------------------------------
-// detectLauncher — AGY_BIN, ubicación oficial Windows o PATH.
+// detectLauncher — ANTIGRAVITY_BIN, ubicación oficial Windows o PATH.
 //
 // #6857 — `env` / `fsImpl` / `platform` son inyectables para que el probe de
 // salud (`agy-catalog-probe.js`) resuelva el binario con LA MISMA función que
 // el launcher y ambos miren el mismo archivo. Sin argumentos se comporta igual
 // que siempre (process.env / fs / process.platform).
 //
-// Orden: `AGY_BIN` explícito → `%LOCALAPPDATA%\agy\bin\agy.exe` (ubicación
+// Orden: `ANTIGRAVITY_BIN` explícito → `%LOCALAPPDATA%\agy\bin\agy.exe` (ubicación
 // oficial; ese dir está sólo en el PATH de USUARIO, no en el de máquina, así
 // que desde los servicios del pipeline el fallback al PATH no lo encuentra) →
 // `agy` pelado en el PATH.
@@ -92,8 +99,8 @@ function detectLauncher(env, fsImpl, platform) {
     const _env = env || process.env;
     const _fs = fsImpl || fs;
     const _platform = platform || process.platform;
-    if (_env.AGY_BIN) {
-        return { kind: 'configured-native', cmd: _env.AGY_BIN, prefixArgs: [], shell: false };
+    if (_env.ANTIGRAVITY_BIN) {
+        return { kind: 'configured-native', cmd: _env.ANTIGRAVITY_BIN, prefixArgs: [], shell: false };
     }
     const windowsBin = path.join(_env.LOCALAPPDATA || '', 'agy', 'bin', 'agy.exe');
     let officialExists = false;
@@ -113,10 +120,10 @@ function _setLauncherForTesting(launcher) { cachedLauncher = launcher; }
 function _resetLauncherCacheForTesting() { cachedLauncher = null; }
 
 // -----------------------------------------------------------------------------
-// translateClaudeArgsToGemini — extrae prompt y system file del args estilo
-// Claude CLI y arma el argv de Gemini. Args desconocidos se descartan
+// translateClaudeArgsToAntigravity — extrae prompt y system file del args estilo
+// Claude CLI y arma el argv de agy. Args desconocidos se descartan
 // silenciosamente (el shape de stream-json/--verbose/--permission-mode no
-// aplica a Gemini).
+// aplica a agy).
 //
 // Contrato de entrada (lo que el pulpo construye en pulpo.js:5846):
 //   ['-p', userPrompt, '--system-prompt-file', systemFile, ...]
@@ -152,7 +159,7 @@ const AGY_STREAM_INPUT_ARGS = Object.freeze(['--input-format', 'stream-json', '-
 function encodeStreamJsonPayload(prompt) {
     return JSON.stringify({ event: 'user', message: { role: 'user', content: String(prompt == null ? '' : prompt) } }) + '\n';
 }
-function foldGeminiPayload(args, env, fsImpl) {
+function foldAntigravityPayload(args, env, fsImpl) {
     const _fs = fsImpl || fs;
     let userPrompt = null;
     let systemFile = null;
@@ -161,7 +168,7 @@ function foldGeminiPayload(args, env, fsImpl) {
         if (a === '-p') { userPrompt = args[i + 1]; i++; }
         else if (a === '--system-prompt-file') { systemFile = args[i + 1]; i++; }
     }
-    // Foldear el system file al prompt (Gemini no tiene --system).
+    // Foldear el system file al prompt (agy no tiene --system).
     let prompt = typeof userPrompt === 'string' ? userPrompt : '';
     if (systemFile && typeof systemFile === 'string') {
         let systemText = null;
@@ -175,45 +182,39 @@ function foldGeminiPayload(args, env, fsImpl) {
 
 // -----------------------------------------------------------------------------
 // MODEL_ENV_VAR / resolveModelFromEnv — precedencia EXPLÍCITA del modelo (#6334,
-// cerrado en #6858).
+// cerrado en #6858, prefijo unificado en #6861).
 //
-// El modelo llega al handler por UNA sola variable: `GEMINI_MODEL`, que es la
-// que declara `PROVIDER_MODEL_ENV['gemini-google']` en lib/build-child-env.js y
-// la que inyecta agent-launcher.js cuando la propagación (#6272) aplica. Hasta
-// #6858 el handler leía `env.AGY_MODEL || env.GEMINI_MODEL`: como el pulpo nunca
-// propaga `AGY_MODEL`, un valor exportado en el entorno del operador (o heredado
-// por un path sin aislar) PISABA al modelo propagado y la traza del launcher
-// afirmaba un modelo que no corrió.
-//
-// Regla: `AGY_MODEL` se IGNORA siempre. Si está presente se reporta en
-// `modelTrace.ignoredEnv` para que el launcher deje constancia en el log.
-// Sin `GEMINI_MODEL` no se pasa `--model` y el CLI usa su propio default.
+// El modelo llega al handler por UNA sola variable: `ANTIGRAVITY_MODEL`, que es
+// la que declara `PROVIDER_MODEL_ENV['antigravity']` en lib/build-child-env.js
+// y la que inyecta agent-launcher.js cuando la propagación (#6272) aplica. El
+// nombre es nuevo a propósito: ninguna variable exportada en el entorno del
+// operador (los nombres viejos con prefijo del CLI retirado o del binario)
+// llega al handler, porque sólo lo que propaga build-child-env.js entra al
+// env del child.
+// Sin `ANTIGRAVITY_MODEL` no se pasa `--model` y el CLI usa su propio default.
 //
 // Canal de esfuerzo: el sufijo `-high/-medium/-low` del id es el ÚNICO canal.
 // Nunca se agrega `--effort` (agy lo expone como flag aparte): dos canales para
 // lo mismo harían que la traza no pudiera afirmar qué esfuerzo corrió.
 // -----------------------------------------------------------------------------
-const MODEL_ENV_VAR = 'GEMINI_MODEL';
-const IGNORED_MODEL_ENV_VARS = Object.freeze(['AGY_MODEL']);
+const MODEL_ENV_VAR = 'ANTIGRAVITY_MODEL';
 
 function resolveModelFromEnv(env) {
     const e = env && typeof env === 'object' ? env : {};
     const raw = e[MODEL_ENV_VAR];
-    const model = (typeof raw === 'string' && raw.length > 0) ? raw : null;
-    const ignoredEnv = IGNORED_MODEL_ENV_VARS.filter((k) => typeof e[k] === 'string' && e[k].length > 0);
+    const model = (typeof raw === 'string' && raw.trim().length > 0) ? raw.trim() : null;
     return {
         model,
         source: model ? MODEL_ENV_VAR : 'cli-default',
-        ignoredEnv,
     };
 }
 
-function translateClaudeArgsToGemini(args, env, workspace) {
-    // Modelo: SÓLO `GEMINI_MODEL` (ver resolveModelFromEnv). Sin ella dejamos al
-    // CLI elegir su default. El pulpo inyecta GEMINI_MODEL desde agent-launcher.js
-    // (propagación #6272) con el id resuelto para el skill (#6271).
+function translateClaudeArgsToAntigravity(args, env, workspace) {
+    // Modelo: SÓLO `ANTIGRAVITY_MODEL` (ver resolveModelFromEnv). Sin ella dejamos
+    // al CLI elegir su default. El pulpo inyecta ANTIGRAVITY_MODEL desde
+    // agent-launcher.js (propagación #6272) con el id resuelto para el skill (#6271).
     const { model } = resolveModelFromEnv(env);
-    const timeout = (env && env.AGY_PRINT_TIMEOUT) || '5m';
+    const timeout = (env && env.ANTIGRAVITY_PRINT_TIMEOUT) || '5m';
     const out = [...AGY_STREAM_INPUT_ARGS, ...AGY_HARDENING_ARGS, '--dangerously-skip-permissions', '--print-timeout', timeout];
     // #6859 — workspace explícito: agy ignora el cwd del proceso.
     const ws = workspace && typeof workspace === 'object' ? workspace : {};
@@ -278,7 +279,7 @@ function assertWorkspaceDir(value, label, env) {
 // child_process.spawn.
 //
 // `args` vienen en formato Claude (ver pulpo.js:5846); acá los traducimos al
-// shape Gemini y prependemos el prefijo del launcher detectado.
+// shape de agy y prependemos el prefijo del launcher detectado.
 //
 // `cwd` (#6859) — OBLIGATORIO y absoluto: se traduce a `--add-dir <cwd>` y se
 // mantiene en `spawnOpts.cwd`. `extraDirs` (opcional, string[]) agrega un
@@ -286,14 +287,11 @@ function assertWorkspaceDir(value, label, env) {
 // vacío o relativo → `Error` con `code='AGY_WORKSPACE_REQUIRED'` (ver
 // `assertWorkspaceDir`); nunca se cae al scratch del CLI.
 //
-// `modelTrace` (#6334/#6858) — misma forma que el handler de Anthropic para que
-// agent-launcher.js lo audite sin casos especiales:
-//   { applied: true,  model, source: 'GEMINI_MODEL', reason: 'ok', ignoredEnv }
-//   { applied: false, model: null, source: 'cli-default',
-//     reason: 'agy_model_env_ignored', ignoredEnv: ['AGY_MODEL'] }
-//     → sólo cuando NO hay GEMINI_MODEL pero sí un AGY_MODEL que se ignoró; el
-//       launcher loguea que el agente arranca con el default del CLI.
-// Sin ninguna de las dos variables NO se agrega la clave (regresión cero).
+// `modelTrace` (#6334/#6858/#6861) — misma forma que el handler de Anthropic
+// para que agent-launcher.js lo audite sin casos especiales:
+//   { applied: true, model, source: 'ANTIGRAVITY_MODEL', reason: 'ok' }
+// Sin `ANTIGRAVITY_MODEL` NO se agrega la clave (regresión cero): el agente
+// arranca con el default del CLI y no hay nada que auditar.
 // -----------------------------------------------------------------------------
 function buildSpawn({ args, cwd, env, interactive_supported, extraDirs }) {
     const launcher = getLauncher();
@@ -302,28 +300,20 @@ function buildSpawn({ args, cwd, env, interactive_supported, extraDirs }) {
     const workspaceCwd = assertWorkspaceDir(cwd, 'cwd', env);
     const workspaceExtra = (Array.isArray(extraDirs) ? extraDirs : [])
         .map((d) => assertWorkspaceDir(d, 'extraDirs[]', env));
-    const geminiArgs = translateClaudeArgsToGemini(args || [], env || {}, { cwd: workspaceCwd, extraDirs: workspaceExtra });
+    const agyArgs = translateClaudeArgsToAntigravity(args || [], env || {}, { cwd: workspaceCwd, extraDirs: workspaceExtra });
     // #4529 — payload (system foldeado + mensaje) por STDIN, nunca por argv.
     // stdin SIEMPRE 'pipe'; el caller escribe `stdinPayload` y cierra stdin.
     // #6857 — serializado como NDJSON para `--input-format stream-json`.
-    const stdinPayload = encodeStreamJsonPayload(foldGeminiPayload(args || [], env || {}));
+    const stdinPayload = encodeStreamJsonPayload(foldAntigravityPayload(args || [], env || {}));
     // #6334/#6858 — traza del modelo que realmente viaja en `--model`.
     const resolved = resolveModelFromEnv(env || {});
     let modelTrace = null;
     if (resolved.model) {
-        modelTrace = {
-            applied: true, model: resolved.model, source: resolved.source,
-            reason: 'ok', ignoredEnv: resolved.ignoredEnv,
-        };
-    } else if (resolved.ignoredEnv.length > 0) {
-        modelTrace = {
-            applied: false, model: null, source: resolved.source,
-            reason: 'agy_model_env_ignored', ignoredEnv: resolved.ignoredEnv,
-        };
+        modelTrace = { applied: true, model: resolved.model, source: resolved.source, reason: 'ok' };
     }
     return {
         cmd: launcher.cmd,
-        args: [...launcher.prefixArgs, ...geminiArgs],
+        args: [...launcher.prefixArgs, ...agyArgs],
         kind: launcher.kind,
         // #4529 — payload grande por stdin (paridad con el path primario).
         stdinPayload,
@@ -342,9 +332,9 @@ function buildSpawn({ args, cwd, env, interactive_supported, extraDirs }) {
 }
 
 // -----------------------------------------------------------------------------
-// _parseGeminiJson — extrae el objeto JSON del log de gemini (-o json).
+// _parseAntigravityJson — extrae el objeto JSON del log de agy (-o json).
 //
-// Gemini escribe a stdout un único objeto JSON. El log puede tener prefijo o
+// agy escribe a stdout un único objeto JSON. El log puede tener prefijo o
 // sufijo basura (warnings residuales si stderr se mezcló, o líneas parciales).
 // Estrategia robusta:
 //   0. #6857 — Si el log es NDJSON (`--output-format stream-json`), devolver
@@ -355,7 +345,7 @@ function buildSpawn({ args, cwd, env, interactive_supported, extraDirs }) {
 //   2. Si falla, recortar del primer `{` al último `}` y reintentar.
 // Devuelve el objeto parseado o null.
 // -----------------------------------------------------------------------------
-function _parseGeminiJson(raw) {
+function _parseAntigravityJson(raw) {
     if (!raw || typeof raw !== 'string') return null;
     const trimmed = raw.trim();
     // 0. NDJSON: buscar de atrás hacia adelante el evento `result`.
@@ -400,7 +390,7 @@ function _parseGeminiJson(raw) {
 // #6858 — Shape de agy 1.2.4 (medido en vivo el 2026-09-16 con `--output-format
 // json` y re-medido con `--output-format stream-json` — #7298 — donde el mismo
 // objeto viaja dentro del evento `{"event":"result","result":{...}}` que
-// `_parseGeminiJson` desenvuelve; fixture agy-stream-json-1.2.4.ndjson):
+// `_parseAntigravityJson` desenvuelve; fixture agy-stream-json-1.2.4.ndjson):
 //   { "status": "SUCCESS", "response": "OK\n", "usage": {
 //       "input_tokens": 13049, "output_tokens": 22, "thinking_tokens": 21,
 //       "cache_read_tokens": 0, "total_tokens": 13071 } }
@@ -413,7 +403,7 @@ function parseTokensFromLog(logPath, fsImpl) {
     const totals = { input: 0, output: 0, cache_read: 0, cache_create: 0, tool_calls: 0 };
     let raw = '';
     try { raw = _fs.readFileSync(logPath, 'utf8'); } catch { return totals; }
-    const obj = _parseGeminiJson(raw);
+    const obj = _parseAntigravityJson(raw);
     if (!obj || typeof obj !== 'object') return totals;
     const usage = obj.usage;
     if (usage && typeof usage === 'object') {
@@ -442,9 +432,9 @@ function parseTokensFromLog(logPath, fsImpl) {
 }
 
 // -----------------------------------------------------------------------------
-// detectQuotaExhausted — inspecciona el objeto `error` del JSON de gemini y
+// detectQuotaExhausted — inspecciona el objeto `error` del JSON de agy y
 // matchea por shape estructural contra la allowlist canónica del provider en
-// `quota-exhausted.js` (`KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER['gemini-google']`
+// `quota-exhausted.js` (`KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER['antigravity']`
 // = ['quota_exceeded', 'resource_exhausted']).
 //
 // Google reporta cuota agotada con status `RESOURCE_EXHAUSTED` (enum) y/o
@@ -479,7 +469,7 @@ function _extractErrorTokens(err) {
 function detectQuotaExhausted(logPath, cfg, quotaExhaustedModule, fsImpl) {
     const _fs = fsImpl || fs;
     if (!quotaExhaustedModule) return { matched: false };
-    const allowlist = (quotaExhaustedModule.KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER || {})['gemini-google']
+    const allowlist = (quotaExhaustedModule.KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER || {})['antigravity']
         || (cfg && cfg.error_types)
         || [];
     if (!allowlist || allowlist.length === 0) return { matched: false };
@@ -488,11 +478,11 @@ function detectQuotaExhausted(logPath, cfg, quotaExhaustedModule, fsImpl) {
     try { raw = _fs.readFileSync(logPath, 'utf8'); } catch { return { matched: false }; }
     if (!raw) return { matched: false };
 
-    const obj = _parseGeminiJson(raw);
+    const obj = _parseAntigravityJson(raw);
     if (!obj) return { matched: false };
 
     if (typeof obj.error === 'string') {
-        return quotaExhaustedModule._detectGemini({ event: 'result', result: obj }, allowlist);
+        return quotaExhaustedModule._detectAntigravity({ event: 'result', result: obj }, allowlist);
     }
 
     // El error puede venir como `error` directo o anidado en `error.error`.
@@ -539,7 +529,7 @@ function detectQuotaExhausted(logPath, cfg, quotaExhaustedModule, fsImpl) {
 //   invalid_argument / failed_precondition / not_found (permanentes)
 // -----------------------------------------------------------------------------
 const detectAuthenticationRejected = authRejection.makeDetector({
-    adapter: 'gemini-google',
+    adapter: 'antigravity',
     positives: ['unauthenticated', 'api_key_invalid', 'api_key_expired', 'access_token_expired'],
     negatives: [
         'permission_denied', 'api_key_service_blocked', 'api_key_http_referrer_blocked',
@@ -551,7 +541,7 @@ const detectAuthenticationRejected = authRejection.makeDetector({
 });
 
 module.exports = {
-    name: 'gemini-google',
+    name: 'antigravity',
     detectLauncher: getLauncher,
     buildSpawn,
     parseTokensFromLog,
@@ -559,12 +549,11 @@ module.exports = {
     detectAuthenticationRejected,
     // exports internos para tests
     _detectLauncherFresh: detectLauncher,
-    _translateClaudeArgsToGemini: translateClaudeArgsToGemini,
+    _translateClaudeArgsToAntigravity: translateClaudeArgsToAntigravity,
     // #6334/#6858 — precedencia explícita del modelo.
     MODEL_ENV_VAR,
-    IGNORED_MODEL_ENV_VARS,
     resolveModelFromEnv,
-    _foldGeminiPayload: foldGeminiPayload,
+    _foldAntigravityPayload: foldAntigravityPayload,
     _encodeStreamJsonPayload: encodeStreamJsonPayload,
     AGY_STREAM_INPUT_ARGS,
     AGY_HARDENING_ARGS,
@@ -573,7 +562,7 @@ module.exports = {
     AGY_SCRATCH_RELATIVE,
     agyScratchDir,
     assertWorkspaceDir,
-    _parseGeminiJson,
+    _parseAntigravityJson,
     _extractErrorTokens,
     _setLauncherForTesting,
     _resetLauncherCacheForTesting,
