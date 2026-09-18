@@ -35,7 +35,8 @@ const fakeCredentialStore = {
   providers: {
     openai: { api_key: 'fake-openai' },
     anthropic: { api_key: 'fake-anthropic' },
-    google: { api_key: 'fake-google' },
+    // #6861 — providers.google.api_key (key de AI Studio) salio del store y del
+    // manifiesto: `antigravity` autentica por OAuth del CLI.
   },
   google_drive: {
     _note: 'metadata',
@@ -410,17 +411,23 @@ test('toda clave providers.* resolved esta declarada en credentials_env de agent
     assert.ok(declaradas.has(entry.env_var),
       `${entry.name}: ${entry.env_var} no figura en ningun credentials_env`);
   }
-  // Control negativo: revertir google a resolved tiene que romper este candado.
+  // Control negativo: una clave providers.* declarada resolved sin figurar en
+  // ningun credentials_env tiene que romper este candado. Hasta #6861 el caso
+  // real era `providers.google.api_key` (retirada del manifiesto junto con el
+  // shim HTTP de AI Studio); ahora se inyecta una entrada sintetica FAKE-*.
   const revertida = structuredClone(manifest);
-  const google = revertida.entries.find((entry) => entry.name === 'providers.google.api_key');
-  assert.equal(google.consumer_status, 'no_consumer');
-  assert.equal(google.required_when, 'never');
-  google.consumer_status = 'resolved';
+  assert.equal(revertida.entries.some((entry) => entry.name === 'providers.google.api_key'), false,
+    'providers.google.api_key se retiro del manifiesto en #6861');
+  revertida.entries.push({
+    name: 'providers.fake.api_key', service: 'providers', source: 'store',
+    env_var: 'FAKE_PROVIDER_API_KEY', required_when: 'never', hydration: 'eager',
+    consumer_status: 'resolved', consumers: ['.pipeline/pulpo.js'],
+  });
   const rotas = revertida.entries
     .filter((entry) => entry.service === 'providers' && entry.consumer_status === 'resolved')
     .filter((entry) => !declaradas.has(entry.env_var))
     .map((entry) => entry.name);
-  assert.deepEqual(rotas, ['providers.google.api_key']);
+  assert.deepEqual(rotas, ['providers.fake.api_key']);
 });
 
 test('ningun provider fail-fast puede declararse no_consumer/never en el manifiesto', () => {

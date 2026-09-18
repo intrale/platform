@@ -160,7 +160,6 @@
                 "google_drive",
                 "multimedia",
                 "providers:anthropic",
-                "providers:google",
                 "providers:openai",
                 "r2",
                 "telegram"
@@ -178,7 +177,6 @@
                 "google_drive",
                 "multimedia",
                 "providers:anthropic",
-                "providers:google",
                 "providers:openai",
                 "r2",
                 "telegram"
@@ -196,7 +194,6 @@
                 "google_drive",
                 "multimedia",
                 "providers:anthropic",
-                "providers:google",
                 "providers:openai",
                 "r2",
                 "telegram"

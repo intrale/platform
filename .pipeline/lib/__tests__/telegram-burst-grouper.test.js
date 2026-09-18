@@ -209,7 +209,7 @@ test('CA-3 / S-5: enumeración preserva provider+status+error_class de cada inte
     assert.match(txt, /skill=verificacion\\-sherlock/);
     // Cada provider debe aparecer enumerado, con offset relativo `[+Nms]`.
     assert.match(txt, /cerebras/);
-    assert.match(txt, /gemini\\-google/);
+    assert.match(txt, /antigravity/);
     assert.match(txt, /nvidia\\-nim/);
     assert.match(txt, /groq/);
     // Cada error_class preservado.

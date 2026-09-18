@@ -372,8 +372,18 @@ function fakeResidencyOk() {
         filterPathsForProvider: () => ({ blocked: [], allowed: [], policy: 'allow' }),
     };
 }
-// #6563 — el fixture usa el único provider HTTP del plantel (cerebras retirado).
+// #6563 — el fixture usaba el único provider HTTP del plantel (cerebras retirado).
+// #6861 — antigravity dejó de ser HTTP (el shim de AI Studio se retiró) y
+// Sherlock lo alcanza por spawn de `agy` (`spawnAntigravityComplete`). Sin el
+// fake de spawn, verify() intentaría el binario real: `viaAntigravity` adapta el
+// completionClient de captura a esa vía (mismo patrón que sherlock-verifier.test.js).
 const TEST_CHAIN = [{ provider: 'antigravity', model: 'gemini-3.8-flash-medium' }];
+function viaAntigravity(client) {
+    return {
+        completionClient: client,
+        spawnAntigravity: (opts) => client.complete(Object.assign({ provider: 'antigravity' }, opts)),
+    };
+}
 
 test('verify(): con issueNumber, inyecta independentEvidence al prompt y emite evento audit', async () => {
     const dir = mkTmpPipelineDir();
@@ -397,7 +407,7 @@ test('verify(): con issueNumber, inyecta independentEvidence al prompt y emite e
         issueNumber: 3722,
         pipelineDir: dir,
         independentVerifier: fakeIV,
-        completionClient: fakeCompletionCapture(cap),
+        ...viaAntigravity(fakeCompletionCapture(cap)),
         configLoader: () => ({ sherlock_enabled: true }),
         quotaModule: fakeQuotaAllPass(),
         dispatchModule: fakeDispatcher(TEST_CHAIN),
@@ -434,7 +444,7 @@ test('verify(): SIN issueNumber NO corre el collector (back-compat puro)', async
         analysis: 'a', originalRequest: '?', systemState: 's',
         pipelineDir: dir,
         independentVerifier: fakeIV,
-        completionClient: fakeCompletionCapture(cap),
+        ...viaAntigravity(fakeCompletionCapture(cap)),
         configLoader: () => ({ sherlock_enabled: true }),
         quotaModule: fakeQuotaAllPass(),
         dispatchModule: fakeDispatcher(TEST_CHAIN),
@@ -456,7 +466,7 @@ test('verify(): collector que lanza NO rompe la verificación (fail-open) y emit
         issueNumber: 3846,
         pipelineDir: dir,
         independentVerifier: fakeIV,
-        completionClient: fakeCompletionCapture(cap),
+        ...viaAntigravity(fakeCompletionCapture(cap)),
         configLoader: () => ({ sherlock_enabled: true }),
         quotaModule: fakeQuotaAllPass(),
         dispatchModule: fakeDispatcher(TEST_CHAIN),

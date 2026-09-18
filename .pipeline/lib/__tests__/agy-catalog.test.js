@@ -1,7 +1,13 @@
 'use strict';
 // =============================================================================
 // agy-catalog.test.js — #6858: cruce automático de los ids de Antigravity
-// (config + 3 barreras) contra el catálogo real del CLI (`agy models`).
+// (config + barreras) contra el catálogo real del CLI (`agy models`).
+//
+// #6861 — las tres barreras que se cruzan son `agent-models.json` (config),
+// `ALLOWED_MODELS_BY_LAUNCHER['antigravity']` y `CATALOG['antigravity']`. La
+// ex tercera barrera de código, `PROVIDER_MODELS_ALLOWLIST['antigravity']` de
+// completion-client.js, se retiró con el shim HTTP de AI Studio: antigravity
+// es spawn puro por `agy` y no tiene allowlist HTTP.
 //
 // Offline: fixture `fixtures/agy-models-2026-09-16.tsv` (salida cruda y real del
 // CLI 1.2.4 medida el 2026-09-16). En vivo: si el binario está instalado, el
@@ -178,10 +184,12 @@ test('crossCheck: un id configurado ausente del catálogo es `dead` y baja ok a 
     assert.match(r.summary, /gemini-3-flash-preview ← agent-models\.json:providers\.antigravity\.model/);
 });
 
-test('crossCheck: un id muerto en CUALQUIERA de las tres barreras también falla (reemplazo, no agregado)', () => {
+test('crossCheck: un id muerto en CUALQUIERA de las barreras de código también falla (reemplazo, no agregado)', () => {
     const cfg = { providers: { 'antigravity': { model: 'gemini-3.8-flash-medium' } }, skills: {} };
-    for (const [barrier, nombre] of [['validate', 'ALLOWED_MODELS_BY_LAUNCHER'], ['completion', 'PROVIDER_MODELS_ALLOWLIST'], ['catalog', 'CATALOG']]) {
-        const barriers = { validate: FIXTURE_IDS, completion: FIXTURE_IDS, catalog: FIXTURE_IDS, [barrier]: [...FIXTURE_IDS, 'gemini-2.5-flash'] };
+    // #6861 — quedan dos barreras de código (la de completion-client se retiró
+    // con el shim HTTP); junto con la config son las tres que cruza el módulo.
+    for (const [barrier, nombre] of [['validate', 'ALLOWED_MODELS_BY_LAUNCHER'], ['catalog', 'CATALOG']]) {
+        const barriers = { validate: FIXTURE_IDS, catalog: FIXTURE_IDS, [barrier]: [...FIXTURE_IDS, 'gemini-2.5-flash'] };
         const r = agyCatalog.crossCheck({ catalogIds: FIXTURE_IDS, agentModels: cfg, barriers });
         assert.equal(r.ok, false, `${nombre} con id retirado debe fallar`);
         assert.equal(r.dead.length, 1);
@@ -194,11 +202,12 @@ test('crossCheck: un modelo NUEVO del CLI que ninguna barrera conoce es `unliste
     const cfg = { providers: { 'antigravity': { model: 'gemini-3.8-flash-medium' } }, skills: {} };
     const r = agyCatalog.crossCheck({
         catalogIds: [...FIXTURE_IDS, 'gemini-4.0-flash-high'], agentModels: cfg,
-        barriers: { validate: FIXTURE_IDS, completion: FIXTURE_IDS, catalog: FIXTURE_IDS },
+        barriers: { validate: FIXTURE_IDS, catalog: FIXTURE_IDS },
     });
     assert.equal(r.ok, true, 'un modelo nuevo del vendor nunca dispara rollback del pipeline');
-    assert.deepEqual(r.unlisted, [{ id: 'gemini-4.0-flash-high', missingFrom: ['ALLOWED_MODELS_BY_LAUNCHER', 'PROVIDER_MODELS_ALLOWLIST', 'CATALOG'] }]);
+    assert.deepEqual(r.unlisted, [{ id: 'gemini-4.0-flash-high', missingFrom: ['ALLOWED_MODELS_BY_LAUNCHER', 'CATALOG'] }]);
     assert.match(r.summary, /1 id\(s\) del CLI sin adoptar \(aviso, no bloquea\)/);
+    assert.match(r.summary, /config \+ 2 barreras/, '#6861: el resumen cuenta las dos barreras de código que quedan');
 });
 
 // -----------------------------------------------------------------------------
@@ -207,12 +216,23 @@ test('crossCheck: un modelo NUEVO del CLI que ninguna barrera conoce es `unliste
 test('CA-1/CA-3: config real + las tres barreras reales están 100% en el catálogo de agy (snapshot 2026-09-16) y sin ids retirados', () => {
     const r = agyCatalog.crossCheck({ catalogIds: FIXTURE_IDS, agentModels: REAL_CONFIG });
     assert.equal(r.ok, true, r.summary);
+    assert.equal(r.provider, 'antigravity');
     assert.deepEqual(r.dead, []);
-    assert.deepEqual(r.unlisted, [], 'las tres barreras son espejo exacto del catálogo del CLI');
+    assert.deepEqual(r.unlisted, [], 'las barreras de código son espejo exacto del catálogo del CLI');
+
+    // #6861 — las tres barreras usan la clave nueva: la config (`providers.
+    // antigravity` + eslabones con provider antigravity, cruzada arriba) y las
+    // dos de código, ambas indexadas por `antigravity`.
+    assert.ok(Array.isArray(REAL_CONFIG.providers.antigravity.alternative_models), 'config: providers.antigravity');
+    assert.equal('gemini-google' in REAL_CONFIG.providers, false, 'config: sin el id viejo');
+    assert.equal('gemini-google' in ALLOWED_MODELS_BY_LAUNCHER, false);
+    assert.equal('gemini-google' in CATALOG, false);
+    // La ex barrera HTTP no vuelve por accidente: la tabla está vacía.
+    assert.deepEqual(PROVIDER_MODELS_ALLOWLIST, {}, '#6861: sin allowlist HTTP para antigravity ni para nadie');
+    assert.equal(PROVIDER_MODELS_ALLOWLIST['antigravity'], undefined);
 
     const barreras = {
         ALLOWED_MODELS_BY_LAUNCHER: ALLOWED_MODELS_BY_LAUNCHER['antigravity'],
-        PROVIDER_MODELS_ALLOWLIST: PROVIDER_MODELS_ALLOWLIST['antigravity'],
         CATALOG: CATALOG['antigravity'].map((m) => m.id),
     };
     for (const [nombre, ids] of Object.entries(barreras)) {

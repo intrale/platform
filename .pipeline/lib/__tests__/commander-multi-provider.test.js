@@ -594,7 +594,7 @@ test('CA-1 / CA-2 — agent-models.json real tiene telegram-commander con orden 
     const chain = (cmd.fallbacks || []).map(f => f.provider);
     // #3353 — groq removido del orden de fallback del telegram-commander.
     // #6563 — cerebras y nvidia-nim retirados: la cadena queda en el plantel
-    // agéntico vigente (Codex → Gemini).
+    // agéntico vigente (Codex → Antigravity).
     assert.deepEqual(chain, ['openai-codex', 'antigravity']);
     // #6860 — matriz Antigravity firmada (Decisión 1: sí): el Commander cae a
     // Claude Sonnet vía Google y el Sherlock a Flash-medium (familia distinta,
@@ -1014,10 +1014,10 @@ test('#4306 CA-6 — REQ-SEC-4: el mensaje nunca incluye valores de credenciales
 // =============================================================================
 const _WAIT_NOW = Date.UTC(2026, 8, 16, 12, 0, 0); // 09:00 en Buenos Aires
 
-function makeWaitDeps({ codexResetMs, geminiResetMs, claudeRest } = {}) {
+function makeWaitDeps({ codexResetMs, antigravityResetMs, claudeRest } = {}) {
     const providers = [];
     if (codexResetMs) providers.push({ provider: 'openai-codex', resets_at_ms: codexResetMs });
-    if (geminiResetMs) providers.push({ provider: 'antigravity', resets_at_ms: geminiResetMs });
+    if (antigravityResetMs) providers.push({ provider: 'antigravity', resets_at_ms: antigravityResetMs });
     return {
         now: _WAIT_NOW,
         quotaModule: {
@@ -1028,10 +1028,10 @@ function makeWaitDeps({ codexResetMs, geminiResetMs, claudeRest } = {}) {
     };
 }
 
-test('#6563 — cadena agotada: el canned nombra a Claude, Codex y Gemini con su causa y su hora', () => {
+test('#6563 — cadena agotada: el canned nombra a Claude, Codex y Antigravity con su causa y su hora', () => {
     const deps = makeWaitDeps({
         codexResetMs: _WAIT_NOW + 2.5 * 3600 * 1000,   // hoy 11:30 BA
-        geminiResetMs: _WAIT_NOW + 30 * 3600 * 1000,   // mañana 15:00 BA
+        antigravityResetMs: _WAIT_NOW + 30 * 3600 * 1000,   // mañana 15:00 BA
         claudeRest: { resting: true, atHHMM: '07:00', when: 'tomorrow', minutesFromNow: 1320 },
     });
     const canned = cmp.cannedAllGatedResponse({
@@ -1047,7 +1047,7 @@ test('#6563 — cadena agotada: el canned nombra a Claude, Codex y Gemini con su
     assert.match(lines[0], /sin cuota disponible/, 'el titular histórico se conserva');
     assert.equal(
         lines[1],
-        'Claude en reposo hasta mañana 07:00 · Codex sin cuota hasta 11:30 · Gemini sin cuota hasta mañana 15:00',
+        'Claude en reposo hasta mañana 07:00 · Codex sin cuota hasta 11:30 · Antigravity sin cuota hasta mañana 15:00',
     );
 });
 
@@ -1060,7 +1060,7 @@ test('#6563 — sin hora conocida el eslabón igual se nombra con su causa (nunc
             { provider: 'antigravity', reason: 'health_gate' },
         ],
     }, makeWaitDeps());
-    assert.equal(line, 'Claude sin cuota · Codex sin cuota · Gemini caído temporalmente');
+    assert.equal(line, 'Claude sin cuota · Codex sin cuota · Antigravity caído temporalmente');
     assert.doesNotMatch(line, /cadena agotada/i);
 });
 
@@ -1084,7 +1084,7 @@ test('#6563 — el detalle crudo del skip y un código desconocido no se interpo
             { provider: 'antigravity', reason: 'codigo_inventado_del_dispatcher', details: 'env_missing_or_placeholder:GEMINI_API_KEY' },
         ],
     }, makeWaitDeps());
-    assert.equal(line, 'Gemini no disponible');
+    assert.equal(line, 'Antigravity no disponible');
 });
 
 test('#6563 — sin skipReasons ni chainTried el canned queda igual que antes (una sola línea)', () => {

@@ -141,7 +141,7 @@ test('CA-5 — el codigo no deriva ni compara PROVIDER_VENDORS contra el vocabul
     // Sobre el source SIN comentarios: lo que se prohibe es la DERIVACION, no
     // la mencion. El comentario explicativo es obligatorio (se verifica abajo).
     assert.equal(/LIVE_PROVIDER_IDS/.test(SOURCE_CODE_ONLY), false,
-        'derivar de LIVE_PROVIDER_IDS renombraria dos scopes (openai / google)');
+        'derivar de LIVE_PROVIDER_IDS renombraria un scope (openai) e inventaria otro (antigravity)');
     assert.equal(/project-descriptor/.test(SOURCE_CODE_ONLY), false);
 });
 
@@ -161,7 +161,10 @@ test('CA-5 — los vendors de almacenamiento no coinciden con los ids de runtime
 
     assert.notDeepEqual([...PROVIDER_VENDORS].sort(), [...idsDeRuntime].sort());
     assert.ok(PROVIDER_VENDORS.includes('openai'), '`openai` es el vendor de almacenamiento de `openai-codex`');
-    assert.ok(PROVIDER_VENDORS.includes('google'), '`google` es el vendor de almacenamiento de `antigravity`');
+    // #6861 — `antigravity` autentica por OAuth del CLI: NO tiene vendor de
+    // almacenamiento. `google` (la key de AI Studio) se retiro con el shim HTTP.
+    assert.equal(PROVIDER_VENDORS.includes('google'), false,
+        '`google` se retiro en #6861 junto con providers.google.api_key');
     assert.equal(PROVIDER_VENDORS.includes('openai-codex'), false);
     assert.equal(PROVIDER_VENDORS.includes('antigravity'), false);
     assert.equal(PROVIDER_VENDORS.includes('moonshot'), false, 'moonshot se retiro con Kimi en #6563');
@@ -173,8 +176,9 @@ test('CA-5 — los vendors de almacenamiento no coinciden con los ids de runtime
 
 // #6563 — ancla: 12 → 9 entradas al retirar providers:cerebras, providers:nvidia
 // y providers:moonshot (6 scopes raiz sin `providers` + 3 vendors).
-test('CA-6 — DESCRIPTOR_SCOPE_ENUM tiene las 9 entradas esperadas y esta ordenado', () => {
-    assert.equal(DESCRIPTOR_SCOPE_ENUM.length, 9);
+// #6861 — ancla: 9 → 8 al retirar providers:google (6 scopes raiz + 2 vendors).
+test('CA-6 — DESCRIPTOR_SCOPE_ENUM tiene las 8 entradas esperadas y esta ordenado', () => {
+    assert.equal(DESCRIPTOR_SCOPE_ENUM.length, 8);
     // `providers` pelado se reemplaza por un `providers:<vendor>` por vendor.
     assert.equal(DESCRIPTOR_SCOPE_ENUM.length, (SECRET_SCOPES.length - 1) + PROVIDER_VENDORS.length);
     assert.deepEqual([...DESCRIPTOR_SCOPE_ENUM], [...DESCRIPTOR_SCOPE_ENUM].sort());
@@ -202,14 +206,14 @@ test('CA-6.2 — el inverso es determinista: ningun scope raiz contiene el separ
         assert.equal(vendor.includes(VAULT_SCOPE_SEP), false, `el vendor "${vendor}" contiene el separador`);
     }
 
-    // Decoder de referencia: si el mapeo es reversible, esto reconstruye los 9.
+    // Decoder de referencia: si el mapeo es reversible, esto reconstruye los 8.
     const decode = (segmento) => segmento.split(VAULT_SCOPE_SEP).join(':');
     for (const scope of DESCRIPTOR_SCOPE_ENUM) {
         assert.equal(decode(scopeVaultSegment(scope)), scope, `no reversible: "${scope}"`);
     }
 });
 
-test('CA-6.3 — el borde del vault acepta los 9 segmentos', () => {
+test('CA-6.3 — el borde del vault acepta los 8 segmentos', () => {
     // NO se copia SEGMENT_RE: `secret-vault.js` documenta que los regex no se
     // exportan a proposito, porque exportarlos habilita justamente la copia que
     // este issue viene a eliminar. Se valida con la funcion exportada, que es

@@ -38,11 +38,13 @@ test('CA-A1 — _mzProviderMatrix renderiza una fila por cada proveedor activo (
     assert.equal(rowCount, MZ_ACTIVE_PROVIDERS.length, 'la cantidad de filas debe igualar a los proveedores activos');
 });
 
-test('CA-A1 — Anthropic, Codex y Gemini presentes; ningún retirado (Groq, Cerebras, NVIDIA)', () => {
+test('CA-A1 — Anthropic, Codex y Antigravity presentes; ningún retirado (Groq, Cerebras, NVIDIA)', () => {
     const html = _mzProviderMatrix();
     assert.match(html, /Anthropic/, 'falta la fila de Anthropic');
     assert.match(html, /Codex/, 'falta la fila de Codex');
-    assert.match(html, /Gemini/, 'falta la fila de Gemini');
+    // #6861 — la fila del provider renombrado se rotula `Antigravity`.
+    assert.match(html, /Antigravity/, 'falta la fila de Antigravity');
+    assert.doesNotMatch(html, /Gemini/, 'el rótulo viejo `Gemini` no debe renderizarse (#6861)');
     assert.doesNotMatch(html, /Groq|Cerebras|NVIDIA/i, 'los proveedores retirados (#3353, #6563) no deben renderizarse');
 });
 
@@ -75,9 +77,9 @@ test('#4533 — cada proveedor rotula su ventana real (5h/Sem, Min/Día, Roll)',
     assert.match(anth, />Sem</, 'Anthropic ventana larga = Sem');
     const codex = _mzProviderMatrixRow('openai-codex');
     assert.match(codex, />Roll</, 'Codex ventana corta = Roll');
-    const gem = _mzProviderMatrixRow('antigravity');
-    assert.match(gem, />Min</, 'Gemini ventana corta = Min');
-    assert.match(gem, />Día</, 'Gemini ventana larga = Día');
+    const agy = _mzProviderMatrixRow('antigravity');
+    assert.match(agy, />Min</, 'Antigravity ventana corta = Min');
+    assert.match(agy, />Día</, 'Antigravity ventana larga = Día');
     // Los labels del skeleton derivan de MZ_PROVIDER_WINDOWS (fuente única SSR).
     assert.equal(MZ_PROVIDER_WINDOWS.anthropic.short, '5h');
     assert.equal(MZ_PROVIDER_WINDOWS['antigravity'].long, 'Día');
@@ -86,9 +88,11 @@ test('#4533 — cada proveedor rotula su ventana real (5h/Sem, Min/Día, Roll)',
 test('#4533 — la fila muestra la fuente fidedigna del proveedor (CLI/API)', () => {
     assert.match(_mzProviderMatrixRow('anthropic'), /· CLI/, 'Anthropic: fuente CLI');
     assert.match(_mzProviderMatrixRow('openai-codex'), /· CLI/, 'Codex: fuente CLI');
-    assert.match(_mzProviderMatrixRow('antigravity'), /· API/, 'Gemini: fuente API');
+    // #6861 — Antigravity autentica y mide cuota por el CLI `agy` (OAuth), ya
+    // no por la API HTTP de AI Studio.
+    assert.match(_mzProviderMatrixRow('antigravity'), /· CLI/, 'Antigravity: fuente CLI');
     // La fuente declarada en la meta coincide con lo renderizado.
-    assert.equal(MZ_PROVIDER_META['antigravity'].src, 'API');
+    assert.equal(MZ_PROVIDER_META['antigravity'].src, 'CLI');
 });
 
 test('CA-A5 / security — un label con markup no produce HTML ejecutable (XSS)', () => {

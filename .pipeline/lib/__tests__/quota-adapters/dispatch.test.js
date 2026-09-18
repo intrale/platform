@@ -26,7 +26,7 @@ test('ALLOWED_PROVIDERS exporta lista freezada de providers conocidos', () => {
     assert.ok(Array.isArray(ALLOWED_PROVIDERS));
     assert.ok(ALLOWED_PROVIDERS.includes('anthropic'));
     assert.ok(ALLOWED_PROVIDERS.includes('openai-codex'));
-    // #3220 — rename `gemini` → `antigravity`.
+    // #3220 — rename `gemini` → `gemini-google`; #6861 — rename `gemini-google` → `antigravity`.
     // #3353 — `groq` removido tras descontinuación del provider.
     // #6563 — `cerebras`, `nvidia-nim`, `kimi-moonshot` y `ollama` retirados del plantel.
     assert.ok(ALLOWED_PROVIDERS.includes('antigravity'));
@@ -35,7 +35,7 @@ test('ALLOWED_PROVIDERS exporta lista freezada de providers conocidos', () => {
         assert.ok(!ALLOWED_PROVIDERS.includes(retired), `${retired} debería estar fuera de la allowlist`);
     }
     assert.deepEqual([...ALLOWED_PROVIDERS].sort(),
-        ['anthropic', 'deterministic', 'antigravity', 'openai-codex']);
+        ['anthropic', 'antigravity', 'deterministic', 'openai-codex']);
     assert.equal(Object.isFrozen(ALLOWED_PROVIDERS), true,
         'ALLOWED_PROVIDERS debe estar freezada (defensa contra mutación en runtime)');
 });

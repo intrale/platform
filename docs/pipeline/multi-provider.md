@@ -413,7 +413,6 @@ classifyHttpError(statusCode, responseBody, provider) → {
 | 402 | billing | quota_exhausted | **true** |
 | 429 + body matches `QUOTA_BODY_PATTERN` | billing | quota_exhausted | **true** |
 | 429 (sin match de quota) | rate_limit | rate_limited | **true** |
-| 400 + body matches `GEMINI_API_KEY_INVALID_PATTERN` | auth | invalid_credentials | false |
 | 5xx | transient | server_error | false |
 | null / NaN / "abc" / fuera de [100, 599] | unknown | unclassified | false |
 | Otros 4xx (404, 422, …) | unknown | unclassified | false |
@@ -1407,9 +1406,9 @@ Para un lector que no conoce la historia, esto es todo lo que hace falta saber:
    (`@google/gemini-cli`), que **no forma parte del pipeline**: no hay fallback a
    ese CLI ni a ningún endpoint HTTP (el shim a Google AI Studio se retiró en
    #6861; la key residual de AI Studio se revoca en #7286).
-2. **Dónde vive el binario.** `%LOCALAPPDATA%gyingy.exe`; se puede
+2. **Dónde vive el binario.** `%LOCALAPPDATA%\agy\bin\agy.exe`; se puede
    apuntar a otro con la env var `ANTIGRAVITY_BIN`
-   (`detectLauncher`: `ANTIGRAVITY_BIN` → `%LOCALAPPDATA%gyingy.exe` → PATH).
+   (`detectLauncher`: `ANTIGRAVITY_BIN` → `%LOCALAPPDATA%\agy\bin\agy.exe` → PATH).
    Las otras dos variables del provider son `ANTIGRAVITY_MODEL` (§3.7) y
    `ANTIGRAVITY_PRINT_TIMEOUT` (timeout del turno `-p`). Son las únicas tres:
    las constantes `AGY_*` del código nombran el contrato del binario, no env vars.
@@ -2521,7 +2520,7 @@ la ejecución (no inventada).
 > keys literales. Las credenciales se hidratan con el cargador único
 > [`.pipeline/lib/credentials.js`](../../.pipeline/lib/credentials.js) (fuente
 > `~/.claude/secrets/credentials.json`) y se referencian por placeholder
-> (`$ANTHROPIC_API_KEY`, `$OPENAI_API_KEY`, `$GEMINI_API_KEY`, …).
+> (`$ANTHROPIC_API_KEY`, `$OPENAI_API_KEY`, …; `antigravity` no usa API key, autentica por OAuth del CLI `agy`).
 > **Regla del proyecto:** las API keys se cargan por terminal de Windows, **nunca
 > por Telegram**, y viven solo en `credentials.json`. Toda evidencia (logs,
 > screenshots) va **redactada** — sin JWT, `Authorization`, ni keys visibles.

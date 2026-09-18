@@ -626,16 +626,18 @@ test('CA-6b: cada entrada del artefacto lleva level, label de texto, service, ne
 // -----------------------------------------------------------------------------
 // U9 / CA-6b — `label` es copy corto en español, nunca el `name` crudo.
 // La tabla canónica la entrega UX en
-// `.pipeline/assets/mockups/5243/ux-labels-5243.md` (26 entradas originales, 23 tras #6563; 1:1 con el
+// `.pipeline/assets/mockups/5243/ux-labels-5243.md` (26 entradas originales, 23 tras #6563,
+// 22 tras #6861; 1:1 con el
 // manifiesto). El aviso al operador es la única superficie de usuario de esta
 // historia y #5230 consume este contrato.
 // -----------------------------------------------------------------------------
 
-test('U9: SECRET_LABELS cubre 1:1 las 23 entradas del manifiesto real', () => {
+test('U9: SECRET_LABELS cubre 1:1 las 22 entradas del manifiesto real', () => {
   const real = require('../../secrets-manifest.json');
   const nombres = real.entries.map((e) => e.name);
-  // #5242 trajo 26; #6563 retiró providers.{cerebras,nvidia,moonshot}.api_key.
-  assert.equal(nombres.length, 23, 'el manifiesto trae 23 entradas (26 de #5242 - 3 retiradas en #6563)');
+  // #5242 trajo 26; #6563 retiró providers.{cerebras,nvidia,moonshot}.api_key;
+  // #6861 retiró providers.google.api_key (la key de AI Studio, sin uso en runtime).
+  assert.equal(nombres.length, 22, 'el manifiesto trae 22 entradas (26 de #5242 - 3 retiradas en #6563 - 1 en #6861)');
 
   for (const name of nombres) {
     const label = sh.SECRET_LABELS[name];

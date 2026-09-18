@@ -23,6 +23,26 @@ const os = require('node:os');
 
 const completion = require('../completion-client');
 
+// #6861 — Provider HTTP de PRUEBA inyectado.
+//
+// El plantel HTTP de producción quedó VACÍO (cerebras/nvidia-nim en #6563; el
+// shim de Google AI Studio del ex "gemini-google" en #6861: antigravity es
+// spawn puro por `agy`). El gate data-residency vive DENTRO de `complete()` y
+// se conserva como infraestructura para el próximo provider OpenAI-compat, así
+// que lo ejercitamos con un provider de prueba vía `_setProviderTablesForTesting`
+// (URL https literal). El id es `openai` porque su key tiene spec en
+// `secrets-rw.MANAGED_KEYS` (`openai_api_key` legacy) y `getRawKey` la lee
+// con la lógica real; para el filtro data-residency es `non_anthropic`, que es
+// exactamente la categoría que el gate debe bloquear. Mismo patrón que
+// lib/__tests__/completion-client.test.js.
+const TEST_PROVIDER = 'openai';
+const TEST_MODEL = 'test-model-a';
+completion._setProviderTablesForTesting({
+    endpoints: { [TEST_PROVIDER]: { url: 'https://api.openai.com/v1/chat/completions', method: 'POST', authHeader: 'authorization', authFormat: 'bearer' } },
+    models: { [TEST_PROVIDER]: [TEST_MODEL] },
+});
+test.after(() => completion._resetProviderTablesForTesting());
+
 function tmpDir() { return fs.mkdtempSync(path.join(os.tmpdir(), 'mp-drf-')); }
 function writeKeys(file, keys) { fs.writeFileSync(file, JSON.stringify(keys)); }
 
@@ -33,7 +53,7 @@ function fakeHttp({ status = 200, body } = {}) {
     const _body = body != null ? body : JSON.stringify({
         choices: [{ message: { content: 'ok' } }],
         usage: { prompt_tokens: 3, completion_tokens: 5 },
-        model: 'gemini-3.8-flash-medium',
+        model: TEST_MODEL,
     });
     const impl = {
         request(opts, cb) {
@@ -61,14 +81,12 @@ function fakeHttp({ status = 200, body } = {}) {
     return { impl, state };
 }
 
-// Credencial válida (formato de secrets-rw) para que el gate se alcance:
-// el chequeo de key ocurre ANTES del gate, así que sin key nunca probaríamos
-// el gate.
-// #6563 — el único provider HTTP que queda en completion-client es el shim de
-// AI Studio de `antigravity` (cerebras/nvidia-nim retirados).
-function keyFileForGemini() {
+// Credencial válida (formato legacy de secrets-rw) para que el gate se
+// alcance: el chequeo de key ocurre ANTES del gate, así que sin key nunca
+// probaríamos el gate. #6861 — key del provider de prueba (ver arriba).
+function keyFileForTestProvider() {
     const f = path.join(tmpDir(), 'config.json');
-    writeKeys(f, { gemini_google_api_key: 'AIzaSyTest_1234567890abcdef000' });
+    writeKeys(f, { openai_api_key: 'sk-test-1234567890abcdef0000' });
     return f;
 }
 
@@ -77,11 +95,11 @@ function keyFileForGemini() {
 test('#4404 · positivo: paths permitidos → complete() despacha (doRequest invocado)', async () => {
     const { impl, state } = fakeHttp({ status: 200 });
     const r = await completion.complete({
-        provider: 'antigravity',
-        model: 'gemini-3.8-flash-medium',
+        provider: TEST_PROVIDER,
+        model: TEST_MODEL,
         prompt: 'hola',
         paths: ['docs/pipeline/multi-provider.md', 'README.md'],
-        secretsPath: keyFileForGemini(),
+        secretsPath: keyFileForTestProvider(),
         httpImpl: impl,
     });
     assert.equal(state.dispatched, true, 'con paths permitidos el gate deja despachar');
@@ -92,10 +110,10 @@ test('#4404 · positivo: paths permitidos → complete() despacha (doRequest inv
 test('#4404 · positivo: sin paths (default []) el gate es transparente', async () => {
     const { impl, state } = fakeHttp({ status: 200 });
     const r = await completion.complete({
-        provider: 'antigravity',
-        model: 'gemini-3.8-flash-medium',
+        provider: TEST_PROVIDER,
+        model: TEST_MODEL,
         prompt: 'hola',
-        secretsPath: keyFileForGemini(),
+        secretsPath: keyFileForTestProvider(),
         httpImpl: impl,
     });
     assert.equal(state.dispatched, true);
@@ -107,12 +125,12 @@ test('#4404 · positivo: sin paths (default []) el gate es transparente', async 
 test('#4404 · negativo: path excluido (application.conf) → data_residency_blocked, sin dispatch', async () => {
     const { impl, state } = fakeHttp({ status: 200 });
     const r = await completion.complete({
-        provider: 'antigravity',
-        model: 'gemini-3.8-flash-medium',
+        provider: TEST_PROVIDER,
+        model: TEST_MODEL,
         prompt: 'analizá esto',
         // Excluido para non_anthropic por el sidecar real (**/application.conf).
         paths: ['users/src/main/resources/application.conf'],
-        secretsPath: keyFileForGemini(),
+        secretsPath: keyFileForTestProvider(),
         httpImpl: impl,
     });
     assert.equal(state.dispatched, false, 'un path bloqueado NUNCA debe llegar a doRequest');
@@ -132,11 +150,11 @@ test('#4404 · negativo: appendAudit invocado con {path,motivo,pattern} al bloqu
         appendAudit: (arg) => { auditCalls.push(arg); return { written: (arg.blocked || []).length }; },
     };
     const r = await completion.complete({
-        provider: 'antigravity',
-        model: 'gemini-3.8-flash-medium',
+        provider: TEST_PROVIDER,
+        model: TEST_MODEL,
         prompt: 'x',
         paths: ['config/secrets/service-account.json'],
-        secretsPath: keyFileForGemini(),
+        secretsPath: keyFileForTestProvider(),
         httpImpl: impl,
         drfImpl: drfSpy,
     });
@@ -163,11 +181,11 @@ test('#4404 · sidecar inválido (loadExclusionsOrThrow lanza) → data_residenc
         appendAudit() { throw new Error('no debería llamarse'); },
     };
     const r = await completion.complete({
-        provider: 'antigravity',
-        model: 'gemini-3.8-flash-medium',
+        provider: TEST_PROVIDER,
+        model: TEST_MODEL,
         prompt: 'x',
         paths: ['README.md'],
-        secretsPath: keyFileForGemini(),
+        secretsPath: keyFileForTestProvider(),
         httpImpl: impl,
         drfImpl: drfBroken,
     });
@@ -187,11 +205,11 @@ test('#4404 · filterPathsForProvider lanza → data_residency_blocked, sin disp
         appendAudit() {},
     };
     const r = await completion.complete({
-        provider: 'antigravity',
-        model: 'gemini-3.8-flash-medium',
+        provider: TEST_PROVIDER,
+        model: TEST_MODEL,
         prompt: 'x',
         paths: ['README.md'],
-        secretsPath: keyFileForGemini(),
+        secretsPath: keyFileForTestProvider(),
         httpImpl: impl,
         drfImpl: drfThrow,
     });

@@ -126,30 +126,37 @@ test('CA-16: live-ping devuelve no_key_configured (NO invalid_credentials) cuand
     // key: se validan por CLI y devuelven cli_oauth_ok/cli_unavailable. Se
     // excluyen de esta aserción (su camino se cubre en live-ping.test.js).
     //
-    // #6563 — cerebras y nvidia-nim (los providers api_key que ejercían este
-    // gate) se retiraron; el plantel entero (anthropic, openai/codex,
-    // antigravity vía Antigravity) es CLI-OAuth. Para que el gate de key
-    // siga probado, se re-declara temporalmente a antigravity como api_key
-    // en la lista gestionada que consulta `ping()` (mismo patrón que
-    // multi-provider-live-ping.test.js); cualquier provider api_key que se
-    // re-alte en el plantel entra al mismo loop sin tocar este test.
-    const REAL_MANAGED_KEYS = secretsRw.MANAGED_KEYS;
-    const oauthReales = new Set(REAL_MANAGED_KEYS.filter(k => k.auth_mode === 'oauth').map(k => k.provider));
+    // #6563 / #6861 — cerebras y nvidia-nim (los providers api_key que ejercían
+    // este gate) se retiraron y el shim HTTP de AI Studio también; el plantel
+    // entero (anthropic, openai/codex, antigravity) es CLI-OAuth y la tabla de
+    // endpoints HTTP no tiene ningún provider api_key. Para que el gate de key
+    // siga probado, se inyecta un provider HTTP ficticio por el hook
+    // `_setPingEndpointsForTesting` (mismo patrón que
+    // multi-provider-live-ping.test.js); como no tiene key gestionada en
+    // MANAGED_KEYS ni en el archivo vacío, `ping()` debe cortar en el gate de
+    // key. Cualquier provider api_key que se re-alte en el plantel entra al
+    // mismo loop sin tocar este test.
+    const oauthReales = new Set(secretsRw.MANAGED_KEYS.filter(k => k.auth_mode === 'oauth').map(k => k.provider));
     assert.deepEqual(
         Object.keys(livePing.PROVIDER_PING_ENDPOINTS).filter(p => !oauthReales.has(p)),
         [],
-        'post-#6563 no queda ningún provider api_key en el plantel (todos CLI-OAuth)',
+        'post-#6563/#6861 no queda ningún provider api_key en el plantel (todos CLI-OAuth)',
     );
-    secretsRw.MANAGED_KEYS = Object.freeze(REAL_MANAGED_KEYS.map(k => (k.provider === 'antigravity'
-        ? Object.freeze({ ...k, auth_mode: 'api_key', catalog_probe: undefined, cli_binary: undefined })
-        : k)));
+    assert.equal('antigravity' in livePing.PROVIDER_PING_ENDPOINTS, false, '#6861: antigravity no se pinguea por HTTP');
+    const FAKE_PROVIDER = 'fake-http';
+    livePing._setPingEndpointsForTesting({
+        [FAKE_PROVIDER]: {
+            url: 'https://ping.fake-http.invalid/v1/models',
+            method: 'GET',
+            body: () => null,
+            headers: (key) => ({ authorization: `Bearer ${key}` }),
+            interpret: (status, body) => livePing._classifyForLivePing(FAKE_PROVIDER, status, body),
+        },
+    });
     try {
-        const oauthProviders = new Set(
-            secretsRw.MANAGED_KEYS.filter(k => k.auth_mode === 'oauth').map(k => k.provider),
-        );
-        const providers = Object.keys(livePing.PROVIDER_PING_ENDPOINTS)
-            .filter(p => !oauthProviders.has(p));
+        const providers = [FAKE_PROVIDER];
         assert.ok(providers.length >= 1, 'al menos 1 provider api_key para ejercer el gate');
+        assert.equal(livePing.isAllowedProvider(FAKE_PROVIDER), true, 'el provider inyectado es conocido para el ping');
 
         for (const provider of providers) {
             // cliProbe no aplica a providers api_key; el gate de key se ejerce igual.
@@ -163,7 +170,7 @@ test('CA-16: live-ping devuelve no_key_configured (NO invalid_credentials) cuand
                 provider + ': invalid_credentials es un veredicto distinto que requiere un 401 real del provider');
         }
     } finally {
-        secretsRw.MANAGED_KEYS = REAL_MANAGED_KEYS;
+        livePing._resetPingEndpointsForTesting();
     }
 });
 

@@ -68,7 +68,8 @@ function mixedEntries() {
     return [
         fakeEntry('anthropic', 'Anthropic', 'absent', { editable: false, reason: 'OAuth/MAX' }),
         fakeEntry('openai', 'OpenAI / Codex', 'present'),
-        fakeEntry('antigravity', 'Gemini (Google AI Studio)', 'present'),
+        // #6861 — label humano `Antigravity CLI` (spec de secrets-rw); OAuth puro.
+        fakeEntry('antigravity', 'Antigravity CLI', 'absent', { editable: false, reason: 'OAuth agy' }),
     ];
 }
 
@@ -100,10 +101,10 @@ test('CA-2 · una fila por proveedor con key, salud, tier, catálogo y kill-swit
         assert.match(html, /prov-model|prov-models-empty/, 'catálogo de modelos en línea');
         assert.match(html, /data-action="toggle-kill"/, 'kill-switch por fila');
         // #6563 — tiers derivados de `billing` en agent-models.json (fuente única):
-        // Claude y Codex declaran `paid`, Gemini `free`. Sin leyenda hardcodeada.
+        // Claude y Codex declaran `paid`, Antigravity `free`. Sin leyenda hardcodeada.
         assert.match(html, /prov-tier-paid/, 'Claude/Codex = PAGO (billing paid)');
         assert.match(html, /PAGO/, 'leyenda PAGO derivada de billing');
-        assert.match(html, /prov-tier-free/, 'Gemini = FREE (billing free)');
+        assert.match(html, /prov-tier-free/, 'Antigravity = FREE (billing free)');
         assert.match(html, /FREE/, 'leyenda FREE derivada de billing');
         assert.ok(!/PLAN MAX/.test(html), 'sin leyenda hardcodeada por provider');
         // Los 3 providers canónicos por data-provider.
@@ -124,15 +125,15 @@ test('CA-2b · Anthropic/OAuth muestra "OAuth / MAX" sin API key ni input', () =
 test('CA-3 · banner de misión diagnostica cadena degradada con métricas', () => {
     const meta = {
         total: 3, healthy: 2,
-        degraded: [{ name: 'Gemini', healthReason: 'timeout' }],
+        degraded: [{ name: 'Antigravity', healthReason: 'timeout' }],
         absorber: { name: 'Codex', loadPct: 40 },
         defaultProvider: 'anthropic',
-        defaultChain: ['Claude', 'Codex', 'Gemini'],
+        defaultChain: ['Claude', 'Codex', 'Antigravity'],
         agents: ['backend-dev'], healthTs: null, dispatchTotal: 570,
     };
     const banner = providers.renderMissionBanner(meta);
     assert.match(banner, /degradada/, 'diagnostica cadena degradada');
-    assert.match(banner, /Gemini/, 'nombra al provider afectado');
+    assert.match(banner, /Antigravity/, 'nombra al provider afectado');
     assert.match(banner, /2 <span class="u">de 3/, 'sanos N/total');
     assert.match(banner, /Codex/, 'nombra quién absorbe el fallback');
     assert.match(banner, /40%/, 'nivel de absorción del fallback');
@@ -153,7 +154,7 @@ test('CA-3b · banner en calma cuando no hay degradados', () => {
 });
 
 test('CA-4 · franja por agente con cadena DEFAULT y agentes que la pisan', () => {
-    const meta = { defaultChain: ['Claude', 'Codex', 'Gemini'], agents: ['backend-dev', 'qa', 'po'] };
+    const meta = { defaultChain: ['Claude', 'Codex', 'Antigravity'], agents: ['backend-dev', 'qa', 'po'] };
     const strip = providers.renderAgentStrip(meta);
     assert.match(strip, /prov-chain/, 'render de la cadena DEFAULT');
     assert.match(strip, /Claude/);
@@ -259,7 +260,8 @@ test('buildProvidersModel nunca lanza y devuelve el set canónico', () => {
     const model = providers.buildProvidersModel();
     assert.ok(Array.isArray(model.providers));
     assert.equal(model.providers.length, 3);
-    assert.deepEqual(model.providers.map((p) => p.name), ['Claude', 'Codex', 'Gemini']);
+    // #6861 — el nombre visible del provider renombrado es `Antigravity`.
+    assert.deepEqual(model.providers.map((p) => p.name), ['Claude', 'Codex', 'Antigravity']);
     // #6563 — el tier sale de `billing` (agent-models.json), no de una tabla por provider.
     assert.deepEqual(model.providers.map((p) => p.tierKind), ['paid', 'paid', 'free']);
     assert.ok(model.meta.absorber, 'identifica al absorber');
@@ -337,7 +339,9 @@ test('Smoke · GET /dashboard?view=providers → 200', async () => {
 test('SEC · anti-leak cross-route: 0 keys completas en cada ruta', async () => {
     setListKeys(() => [
         fakeEntry('openai', 'OpenAI / Codex', 'present', { masked: 'sk-fake123456****wxyz' }),
-        fakeEntry('antigravity', 'Gemini (Google AI Studio)', 'present', { masked: 'AIza-aa11****zz99' }),
+        // #6861 — antigravity ya no administra key; el fixture conserva una
+        // entrada `present` con masked sintético para ejercitar el anti-leak.
+        fakeEntry('antigravity', 'Antigravity CLI', 'present', { masked: 'fake-aa11****zz99' }),
     ]);
     const { server, port } = await startEphemeralServer();
     try {

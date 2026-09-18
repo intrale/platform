@@ -51,13 +51,17 @@ test('listProviders deriva los providers de ENV_MAPPING (sin hardcoding)', () =>
     const names = providers.listProviders().map((p) => p.name);
     // #6563 — los proveedores gratuitos (cerebras / nvidia / moonshot) se
     // retiraron de ENV_MAPPING; el wizard ofrece sólo el plantel vigente.
-    assert.deepEqual([...names].sort(), ['anthropic', 'google', 'openai']);
+    // #6861 — `google` (la key de AI Studio) también salió: antigravity
+    // autentica por OAuth del CLI y no tiene api_key que configurar.
+    assert.deepEqual([...names].sort(), ['anthropic', 'openai']);
 });
 
 test('validateStep rechaza providers fuera de la allowlist (R#4 path-traversal)', () => {
     const dir = tmpDir();
     const { flow } = makeFlow(dir);
-    for (const bad of ['../etc/passwd', 'openai_api_key', 'google.api_key', '__proto__', '']) {
+    // `google` dejó de ser provider del wizard en #6861: hoy es un nombre más
+    // fuera de la allowlist.
+    for (const bad of ['../etc/passwd', 'openai_api_key', 'google.api_key', 'google', '__proto__', '']) {
         assert.equal(flow.validateStep(0, { provider: bad }), false, `${bad} no debería pasar`);
     }
     assert.equal(flow.validateStep(0, { provider: 'openai' }), true);

@@ -132,7 +132,7 @@ test('payload NO incluye API key, fingerprint, body ni headers', () => {
 // prueba con un set inyectado de tres free hipotéticos.
 const TRES_FREE = new Set(['antigravity', 'free-a', 'free-b']);
 
-test('#6563 — FREE_PROVIDERS queda recortado a Gemini (no eliminado)', () => {
+test('#6563 — FREE_PROVIDERS queda recortado a Antigravity (no eliminado)', () => {
     assert.deepEqual([...alerts.FREE_PROVIDERS], ['antigravity']);
     assert.equal(alerts.MULTI_DOWN_MIN_RED, 3);
 });
@@ -165,7 +165,7 @@ test('decideMultiDown emite cuando 3+ free providers en rojo', () => {
     const r = alerts.decideMultiDown({ snapshot, dedupFile: f, freeProviders: TRES_FREE });
     assert.equal(r.shouldEmit, true);
     assert.equal(r.red_count, 3);
-    assert.deepEqual(r.payload.providers_red, ['free-a', 'free-b', 'antigravity']);
+    assert.deepEqual(r.payload.providers_red, ['antigravity', 'free-a', 'free-b']);
 });
 
 test('decideMultiDown NO emite cuando solo 2 free providers en rojo', () => {

@@ -414,17 +414,33 @@ test('C1 · audit fallback_health_gated NO contiene API keys ni tokens', () => {
 // D. REQ-SEC-4 — validación de modelos at-request es FAIL-CLOSED
 // =============================================================================
 test('D1 · modelo fuera de allowlist+config → invalid_model (fail-closed, no fail-open)', async () => {
-    // antigravity (#6563: único provider HTTP del plantel) solo permite los
-    // ids de su allowlist hardcoded; un modelo arbitrario no declarado en
-    // config debe ser RECHAZADO antes del HTTP.
-    const r = await completionClient.complete({
-        provider: 'antigravity',
-        model: 'modelo-que-no-existe-999',
-        prompt: 'hola',
-        pipelineDir: '/nonexistent-pipeline-dir', // sin config → no agrega nada a la allowlist
+    // #6861 — el plantel HTTP de producción está vacío (el shim de AI Studio de
+    // antigravity se retiró; el provider es spawn puro por `agy`). Para probar
+    // el gate de modelos inyectamos un provider de prueba con allowlist
+    // acotada (mismo patrón que lib/__tests__/completion-client.test.js): un
+    // modelo arbitrario no declarado ni en la allowlist ni en config debe ser
+    // RECHAZADO antes del HTTP.
+    completionClient._setProviderTablesForTesting({
+        endpoints: { 'test-http': { url: 'https://api.test-http.invalid/v1/chat/completions', method: 'POST', authHeader: 'authorization', authFormat: 'bearer' } },
+        models: { 'test-http': ['modelo-permitido-1'] },
     });
-    assert.equal(r.ok, false);
-    assert.equal(r.error.type, 'invalid_model', 'rechaza fail-closed, no intenta el request');
+    try {
+        const r = await completionClient.complete({
+            provider: 'test-http',
+            model: 'modelo-que-no-existe-999',
+            prompt: 'hola',
+            pipelineDir: '/nonexistent-pipeline-dir', // sin config → no agrega nada a la allowlist
+        });
+        assert.equal(r.ok, false);
+        assert.equal(r.error.type, 'invalid_model', 'rechaza fail-closed, no intenta el request');
+    } finally {
+        completionClient._resetProviderTablesForTesting();
+    }
+    // Y en producción antigravity ni siquiera es un provider HTTP: cae antes,
+    // como `unknown_provider` (fail-closed por partida doble).
+    const prod = await completionClient.complete({ provider: 'antigravity', model: 'gemini-3.8-flash-medium', prompt: 'hola' });
+    assert.equal(prod.ok, false);
+    assert.equal(prod.error.type, 'unknown_provider');
 });
 
 test('D2 · provider fuera de la allowlist de endpoints → unknown_provider (fail-closed)', async () => {

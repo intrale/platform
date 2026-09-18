@@ -456,40 +456,65 @@ test('CA-3: buildSpawn de Anthropic revalida por su cuenta (defensa en profundid
 // =============================================================================
 
 // =============================================================================
-// #6858 (review) — con SÓLO `AGY_MODEL` en el env (sin ANTIGRAVITY_MODEL propagado)
-// el handler de antigravity devuelve `modelTrace.applied=false` con
-// `reason: 'agy_model_env_ignored'`. Eso NO es un descarte de `--model` (nunca
-// hubo uno): el launcher tiene que loguear únicamente el ℹ️ "IGNORÓ AGY_MODEL"
-// y NO el ⚠️ "descartó el flag --model", que afirmaba un descarte inexistente.
+// #6858 / #6861 — `ANTIGRAVITY_MODEL` es la ÚNICA fuente del modelo del handler
+// de antigravity. `AGY_MODEL` y `GEMINI_MODEL` ya NO se leen ni se "ignoran con
+// traza" (#6861 retiró IGNORED_MODEL_ENV_VARS y el campo `ignoredEnv` del
+// modelTrace): tenerlas en el env equivale a un env vacío — sin `--model`, sin
+// `modelTrace`, sin ℹ️ de ignorado y sin el ⚠️ de descarte del flag.
 // =============================================================================
-test('#6858: sólo AGY_MODEL en el env → ℹ️ IGNORÓ sin el ⚠️ de descarte del flag --model', () => {
-    const { spawnCall, spawnCalls, logs } = launch({
+test('#6858/#6861: sólo AGY_MODEL/GEMINI_MODEL en el env equivale a env vacío — sin --model, sin traza, sin log', () => {
+    const conSombra = launch({
         provider: 'antigravity',
         model: 'gemini-3.8-flash-medium',
         config: undefined, // propagación apagada: no llega ANTIGRAVITY_MODEL al hijo
-        env: { AGY_MODEL: 'gemini-1.0-legacy' },
+        env: { AGY_MODEL: 'gemini-1.0-legacy', GEMINI_MODEL: 'gemini-1.0-legacy' },
     });
-    assert.equal(spawnCalls.length, 1, 'el spawn ocurre igual');
-    assert.ok(!spawnCall.args.includes('--model'), 'sin ANTIGRAVITY_MODEL no viaja --model');
-    assert.ok(!spawnCall.args.includes('gemini-1.0-legacy'), 'AGY_MODEL nunca llega a argv');
+    const sinSombra = launch({
+        provider: 'antigravity',
+        model: 'gemini-3.8-flash-medium',
+        config: undefined,
+        env: {},
+    });
+    assert.equal(conSombra.spawnCalls.length, 1, 'el spawn ocurre igual');
+    // Mismo argv que con el env vacío: las variables legacy no son fuente.
+    assert.deepEqual(conSombra.spawnCall.args, sinSombra.spawnCall.args);
+    assert.ok(!conSombra.spawnCall.args.includes('--model'), 'sin ANTIGRAVITY_MODEL no viaja --model');
+    assert.ok(!conSombra.spawnCall.args.includes('gemini-1.0-legacy'), 'AGY_MODEL/GEMINI_MODEL nunca llegan a argv');
+    assert.equal(conSombra.spawnCall.opts.env.ANTIGRAVITY_MODEL, undefined,
+        'las variables legacy no se traducen a ANTIGRAVITY_MODEL');
 
-    const log = logs.joined();
-    assert.ok(/IGNORÓ AGY_MODEL/.test(log), 'debe constar que AGY_MODEL se ignoró');
+    // Sin rastro en el log: ni ℹ️ de ignorado ni ⚠️ de descarte (nunca hubo --model).
+    const log = conSombra.logs.joined();
+    assert.ok(!/IGNORÓ/.test(log), 'ya no existe la rama "IGNORÓ AGY_MODEL" (#6861)');
+    assert.ok(!/AGY_MODEL|GEMINI_MODEL/.test(log), 'las variables legacy no dejan rastro en el log');
     assert.ok(!/descartó el flag --model/.test(log),
         'no hubo --model propagado: el ⚠️ de descarte es engañoso y no debe salir');
 });
 
-test('#6858: con ANTIGRAVITY_MODEL propagado y AGY_MODEL presente, el --model viaja y no sale ningún ⚠️', () => {
-    const { spawnCall, logs } = launch({
+test('#6858/#6861: con ANTIGRAVITY_MODEL propagado y AGY_MODEL/GEMINI_MODEL presentes, el --model viaja y no sale ningún aviso', () => {
+    const conSombra = launch({
         provider: 'antigravity',
         model: 'gemini-3.8-flash-medium',
         config: cfg({ enabled: true, default_mode: 'on' }),
-        env: { AGY_MODEL: 'gemini-1.0-legacy' },
+        env: { AGY_MODEL: 'gemini-1.0-legacy', GEMINI_MODEL: 'gemini-1.0-legacy' },
     });
-    assert.deepEqual(spawnCall.args.slice(-2), ['--model', 'gemini-3.8-flash-medium']);
-    const log = logs.joined();
+    const sinSombra = launch({
+        provider: 'antigravity',
+        model: 'gemini-3.8-flash-medium',
+        config: cfg({ enabled: true, default_mode: 'on' }),
+        env: {},
+    });
+    // El modelo propagado viaja como `--model` al final del argv, idéntico al
+    // caso sin las variables legacy en el env.
+    assert.deepEqual(conSombra.spawnCall.args.slice(-2), ['--model', 'gemini-3.8-flash-medium']);
+    assert.deepEqual(conSombra.spawnCall.args, sinSombra.spawnCall.args);
+    assert.equal(conSombra.spawnCall.opts.env.ANTIGRAVITY_MODEL, 'gemini-3.8-flash-medium');
+    assert.ok(!conSombra.spawnCall.args.includes('gemini-1.0-legacy'), 'AGY_MODEL/GEMINI_MODEL nunca llegan a argv');
+
+    const log = conSombra.logs.joined();
     assert.ok(!/descartó el flag --model/.test(log));
-    assert.ok(/IGNORÓ AGY_MODEL/.test(log), 'la sombra de AGY_MODEL se sigue reportando');
+    assert.ok(!/IGNORÓ/.test(log), 'ya no existe la rama "IGNORÓ AGY_MODEL" (#6861)');
+    assert.ok(!/AGY_MODEL|GEMINI_MODEL/.test(log), 'las variables legacy no dejan rastro en el log');
 });
 
 test('CA-5: en dry-run el comando es idéntico al de flag apagado y queda la traza', () => {
