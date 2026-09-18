@@ -655,16 +655,27 @@ test('--hasta acota la ventana y viaja en el comando reproducible', () => {
 test('main devuelve 0 con la ventana sana, 2 sin datos verificables y 1 ante error', () => {
     const { root, pipelineDir } = makeFixture();
     const capt = () => { const o = { s: '', write(t) { this.s += t; } }; return o; };
+    // rev-4 (#6860) — el reloj del CLI se fija igual que en `run()`. Sin esto,
+    // `main` usaba `Date.now()` y la ventana de 30 días dejaba afuera los logs
+    // del fixture (17/18-08-2026) a partir del 2026-09-17: el test devolvía 2
+    // ("sin datos verificables") por el calendario, no por el código.
+    const relojFijo = { now: NOW };
     try {
         const out = capt(); const err = capt();
-        assert.strictEqual(cli.main([`--pipeline-dir=${pipelineDir}`], { stdout: out, stderr: err }), 0);
+        assert.strictEqual(
+            cli.main([`--pipeline-dir=${pipelineDir}`], { stdout: out, stderr: err, args: relojFijo }),
+            0,
+        );
         assert.match(out.s, /CONCLUSIÓN/);
         assert.match(out.s, /Procedencia de los umbrales/);
         assert.strictEqual(err.s, '');
 
         // --json emite SOLO el JSON canónico, parseable.
         const j = capt();
-        assert.strictEqual(cli.main([`--pipeline-dir=${pipelineDir}`, '--json'], { stdout: j, stderr: capt() }), 0);
+        assert.strictEqual(
+            cli.main([`--pipeline-dir=${pipelineDir}`, '--json'], { stdout: j, stderr: capt(), args: relojFijo }),
+            0,
+        );
         const parsed = JSON.parse(j.s);
         assert.strictEqual(parsed.integrity.chainOk, true);
         assert.ok(parsed.latencyDisclaimer.includes('#6152'), 'el gap de latencia viaja en el JSON');
@@ -673,7 +684,10 @@ test('main devuelve 0 con la ventana sana, 2 sin datos verificables y 1 ante err
         const roto = makeFixture({ corromper: true });
         try {
             const o2 = capt();
-            assert.strictEqual(cli.main([`--pipeline-dir=${roto.pipelineDir}`], { stdout: o2, stderr: capt() }), 2);
+            assert.strictEqual(
+                cli.main([`--pipeline-dir=${roto.pipelineDir}`], { stdout: o2, stderr: capt(), args: relojFijo }),
+                2,
+            );
         } finally {
             fs.rmSync(roto.root, { recursive: true, force: true });
         }
@@ -681,7 +695,7 @@ test('main devuelve 0 con la ventana sana, 2 sin datos verificables y 1 ante err
         // Flag inválido => 1, sin emitir reporte.
         const o3 = capt(); const e3 = capt();
         assert.strictEqual(
-            cli.main([`--pipeline-dir=${pipelineDir}`, '--umbral-tasa=9'], { stdout: o3, stderr: e3 }),
+            cli.main([`--pipeline-dir=${pipelineDir}`, '--umbral-tasa=9'], { stdout: o3, stderr: e3, args: relojFijo }),
             1,
         );
         assert.strictEqual(o3.s, '', 'no emite reporte con argumentos inválidos');
