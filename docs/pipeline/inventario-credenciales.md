@@ -82,10 +82,7 @@ superficie del issue **#5220**, no del pipeline vivo.
 |---|---|---|---|---|
 | `providers.openai.api_key` | OpenAI | kernel | durable | **sí** — unificación de fuentes |
 | `providers.anthropic.api_key` | Anthropic | kernel | durable | **sí** — decidir alta o declarar N/A (el pipeline usa OAuth Max) |
-| `providers.moonshot.api_key` | Kimi / Moonshot | kernel | durable | **sí** — alta pendiente en el store |
 | `providers.google.api_key` | Google AI Studio / Gemini | kernel | durable | **sí** |
-| `providers.cerebras.api_key` | Cerebras Cloud | kernel | durable | **sí** |
-| `providers.nvidia.api_key` | NVIDIA NIM | kernel | durable | **sí** |
 | `openai_api_key` / `anthropic_api_key` (respaldo ad-hoc) | OpenAI / Anthropic | kernel | durable | **sí** — almacén adicional no declarado en el épico; absorber o eliminar |
 | `ANTHROPIC_API_KEY` (backend) | Anthropic | **producto** | volátil | **sí** — dueño producto, namespaceado en #5219 |
 

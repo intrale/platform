@@ -213,7 +213,7 @@ function consumeSpawnFailure(opts = {}) {
  * dispatcher minutos antes, en otro proceso, y esa decisión no viaja al
  * barrido de huérfanos. Cuando el consumo se hacía con un provider hardcodeado
  * (`'openai-codex'`), la muerte al spawnear de CUALQUIER otro provider de la
- * cadena (kimi-moonshot, gemini, cerebras, nvidia) no encontraba su marker y
+ * cadena (gemini, o los free retirados en #6563) no encontraba su marker y
  * se le cobraba al ISSUE: consumía sus 3 reintentos y terminaba en un rechazo
  * de contenido sintetizado. Este lector cierra ese hueco: busca por
  * (skill, issue) y devuelve el marker con el provider que efectivamente falló,

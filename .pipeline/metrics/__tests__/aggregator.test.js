@@ -583,7 +583,7 @@ test('dailyByProvider expone serie cruzada día×proveedor (CA-1)', async () => 
     // provider explícito por evento (el helper sessionEnd no lo incluye).
     const events = [
         { event: 'session:end', skill: 'guru', provider: 'anthropic', model: 'claude', tokens_in: 1000, tokens_out: 0, duration_ms: 1000, ts: '2026-06-09T10:00:00Z' },
-        { event: 'session:end', skill: 'po', provider: 'groq', model: 'llama', tokens_in: 500, tokens_out: 0, duration_ms: 1000, ts: '2026-06-09T11:00:00Z' },
+        { event: 'session:end', skill: 'po', provider: 'gemini-google', model: 'gemini-flash', tokens_in: 500, tokens_out: 0, duration_ms: 1000, ts: '2026-06-09T11:00:00Z' },
         { event: 'session:end', skill: 'guru', provider: 'anthropic', model: 'claude', tokens_in: 700, tokens_out: 0, duration_ms: 1000, ts: '2026-06-10T09:00:00Z' },
     ];
     fs.writeFileSync(trace.LOG_FILE, events.map(e => JSON.stringify(e)).join('\n') + '\n', 'utf8');
@@ -591,7 +591,7 @@ test('dailyByProvider expone serie cruzada día×proveedor (CA-1)', async () => 
     assert.ok(Array.isArray(snap.dailyByProvider));
     // Una entrada por día×proveedor.
     const keys = snap.dailyByProvider.map(r => `${r.day}|${r.provider}`).sort();
-    assert.deepEqual(keys, ['2026-06-09|anthropic', '2026-06-09|groq', '2026-06-10|anthropic']);
+    assert.deepEqual(keys, ['2026-06-09|anthropic', '2026-06-09|gemini-google', '2026-06-10|anthropic']);
     for (const r of snap.dailyByProvider) {
         assert.ok(typeof r.day === 'string' && typeof r.provider === 'string');
         assert.ok(typeof r.cost_usd === 'number' && typeof r.sessions === 'number');

@@ -118,7 +118,8 @@ const CLASSIFIER_VERSION = '1.0';
 //   - Anthropic: usage_limit_error, weekly_quota
 //   - OpenAI/Codex: insufficient_quota, billing_hard_limit
 //   - Gemini: resource_exhausted, quota_exceeded
-//   - Cerebras: quota / monthly_limit
+//   - monthly_limit / day_limit: heredados de los free retirados en #6563;
+//     se conservan como defensa cross-provider.
 // PROHIBIDO ampliar este regex con cuantificadores no-acotados o `.*` libre.
 const QUOTA_BODY_PATTERN = /\b(?:quota|insufficient_quota|monthly_limit|day_limit|tokens_per_day|usage_limit|usage_limit_error|weekly_quota|weekly_quota_exhausted|billing_hard_limit_reached|resource_exhausted|quota_exceeded)\b/i;
 

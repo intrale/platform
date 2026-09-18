@@ -8,7 +8,7 @@
 //
 // Dado el set de providers de una `chain` (derivada de `fallbacks[]`), filtra
 // los SANOS (fail-closed) y reparte la selección entre ellos combinando:
-//   - el orden de calidad canónico (Claude > Codex > Groq > Gemini > Cerebras),
+//   - el orden de calidad canónico (Claude > Codex > Gemini),
 //   - la cuota DISPONIBLE de cada provider,
 // para evitar que un único provider se agote y tumbe al Commander.
 //
@@ -28,15 +28,13 @@
 // =============================================================================
 
 // Orden de calidad canónico (memoria project_multi-provider-default-order:
-// Claude > Codex > Groq > Gemini > Cerebras). NVIDIA-NIM cierra la cola.
-// Cualquier provider fuera de esta lista recibe la menor prioridad de calidad.
+// Claude > Codex > Gemini). Los free groq/cerebras/nvidia-nim que cerraban la
+// cola fueron retirados en #6563. Cualquier provider fuera de esta lista recibe
+// la menor prioridad de calidad.
 const QUALITY_ORDER = [
     'anthropic',
     'openai-codex',
-    'groq',
     'gemini-google',
-    'cerebras',
-    'nvidia-nim',
 ];
 
 // Skill del Commander conversacional para el gate por agotamiento (#3077).

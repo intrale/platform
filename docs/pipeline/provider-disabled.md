@@ -28,7 +28,7 @@ Persistencia: `.pipeline/provider-disabled.json`
 {
   "disabled": [
     { "name": "anthropic", "disabled_at": "2026-06-03T20:00:00.000Z", "ttl_expires_at": "2026-06-03T20:20:00.000Z" },
-    { "name": "cerebras",  "disabled_at": "2026-06-03T20:05:00.000Z" }
+    { "name": "gemini-google",  "disabled_at": "2026-06-03T20:05:00.000Z" }
   ]
 }
 ```
@@ -38,7 +38,7 @@ Persistencia: `.pipeline/provider-disabled.json`
 - Archivo ausente == **ningún provider apagado** (todos encendidos).
 
 Providers válidos (allowlist, espejo de `resolve-provider.js`):
-`anthropic`, `openai-codex`, `gemini-google`, `cerebras`, `nvidia-nim`.
+`anthropic`, `openai-codex`, `gemini-google` (plantel post-#6563).
 `deterministic` **no** es apagable (no es un provider de IA).
 
 ## TTL
@@ -59,10 +59,10 @@ Script: `.pipeline/scripts/manage-providers.sh` (bash, delega en el módulo Node
 
 # Apagar por una duración explícita (s|m|h|d)
 .pipeline/scripts/manage-providers.sh disable anthropic --ttl 2h
-.pipeline/scripts/manage-providers.sh disable cerebras  --ttl 90s
+.pipeline/scripts/manage-providers.sh disable gemini-google --ttl 90s
 
 # Apagar permanente (hasta enable / clear-all)
-.pipeline/scripts/manage-providers.sh disable cerebras --ttl never
+.pipeline/scripts/manage-providers.sh disable gemini-google --ttl never
 
 # Encender un provider
 .pipeline/scripts/manage-providers.sh enable anthropic

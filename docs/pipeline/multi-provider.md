@@ -31,7 +31,7 @@
 
 ## 1. Agregar un proveedor nuevo
 
-> **Estado actual:** el pipeline tiene tres providers operativos (`anthropic`, `openai-codex`, `deterministic`) y dos provistos como stubs para futura activación (`gemini`, `ollama`). Esta sección describe el procedimiento end-to-end para que un dev nuevo pueda dar de alta un proveedor sin leer código fuente.
+> **Estado actual (2026-09-16, post [#6563](https://github.com/intrale/platform/issues/6563)):** el plantel es de **tres proveedores LLM** — `anthropic`, `openai-codex` y `gemini-google` (launcher `agy` de Antigravity, encendido en #6857) — más `deterministic` para los skills sin LLM. Los proveedores gratuitos `cerebras`, `nvidia-nim` y `kimi-moonshot` (y los remanentes `ollama`/`groq` del código) fueron dados de baja en #6563 por el criterio de admisión de [§16](#16-criterio-de-admisión-de-proveedores-6562). Esta sección describe el procedimiento end-to-end para dar de alta un proveedor sin leer código fuente; para **volver a habilitar uno retirado**, ver [§17](#17-plan-de-rollback--re-alta-de-un-proveedor-dado-de-baja-6563).
 
 ### 1.1 Checklist de 6 puntos de toque
 
@@ -90,10 +90,10 @@ Estructura literal aceptada por el schema Ajv 2020-12 ([`.pipeline/agent-models.
 
 **Claves:**
 
-- `launcher` — alias del binario CLI. Debe estar en `ALLOWED_LAUNCHERS` (`claude`, `codex`, `gemini`, `ollama`, `node`). El schema deriva su enum por inyección programática, no por copia literal: editar la constante en JS basta.
+- `launcher` — alias del binario CLI. Debe estar en `ALLOWED_LAUNCHERS` (`claude`, `codex`, `gemini-google`, `node`). El schema deriva su enum por inyección programática, no por copia literal: editar la constante en JS basta.
 - `model` — modelo por default si el skill no sobreescribe.
 - `spawn_args_template` — argv que recibe el child. Las llaves `{user_prompt}`, `{system_file}`, `{script_path}`, `{issue}`, `{trabajando_path}`, `{model}` son los **únicos placeholders válidos** (`ALLOWED_PLACEHOLDERS`). Sustitución 1:1 a elemento del argv — **nunca concatenación shell**.
-- `output_parser` — normalizador del output. Valores: `anthropic-stream-json`, `openai-sse`, `gemini-stream`, `ollama-jsonl`, `none` (deterministic).
+- `output_parser` — normalizador del output. Valores: `anthropic-stream-json`, `openai-sse`, `gemini-stream`, `none` (deterministic).
 - `quota_error_types` — strings que el detector de cuota (`lib/quota-exhausted.js`) marca como "cuota agotada" para este provider. Cada item cross-validado contra la **meta-allowlist** en `KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER` ([#3077](https://github.com/intrale/platform/issues/3077) SEC-2, defensa anti supply-chain).
 
   > **Shapes que entiende el handler `openai-sse`** ([#5978](https://github.com/intrale/platform/issues/5978)). El discriminador se lee de campos de **control**, nunca de texto libre ni del canal de contenido del modelo, y sólo matchea si el provider **declaró** ese tipo:
@@ -104,12 +104,12 @@ Estructura literal aceptada por el schema Ajv 2020-12 ([`.pipeline/agent-models.
   > | `response.error` | `{"type":"response.error","error":{"type":"quota_exceeded"}}` | `error.type` |
   > | **Desnudo** | `{"error":{"status":402,"message":"Payment required…","code":"insufficient_quota"}}` | `error.type` → `error.code` |
   >
-  > El shape **desnudo** es el que devuelve Cerebras (y varios OpenAI-compat) al agotarse el crédito. Antes de #5978 era invisible para el detector: el 402 no seteaba flag de cuota, el resolver seguía eligiendo el provider muerto, y cada relanzamiento quemaba un reintento **del issue** hasta rebotarlo como *"Huérfano tras 3 reintentos"*. Al agregar un provider OpenAI-compat nuevo, verificá con qué shape reporta el agotamiento antes de confiar en el failover.
+  > El shape **desnudo** es el que devuelven varios OpenAI-compat al agotarse el crédito (lo devolvía Cerebras, retirado en #6563; el handler se conserva porque `openai-sse` sigue siendo el parser de Codex). Antes de #5978 era invisible para el detector: el 402 no seteaba flag de cuota, el resolver seguía eligiendo el provider muerto, y cada relanzamiento quemaba un reintento **del issue** hasta rebotarlo como *"Huérfano tras 3 reintentos"*. Al agregar un provider OpenAI-compat nuevo, verificá con qué shape reporta el agotamiento antes de confiar en el failover.
 - `resets_at_cap_max_days` — cap superior del `resets_at` cuando el provider reporta cuota agotada (cuotas semanales = 7, mensuales = 31). Aplicado en `capResetsAt()` para evitar "drenado natural" falso por un `reset_at` lejano malicioso ([#3077](https://github.com/intrale/platform/issues/3077) SEC-6).
 - `supports_tool_use` — `true` / `false` / `"limited"`. Define paridad funcional cross-provider.
 - `prompt_caching` — capacidades de cache (`supported`, `auto`, `ttl_seconds_default`, `ttl_seconds_extended`). Necesario para normalizar costos cross-provider.
 - `credentials_env` — env vars que **deben existir al boot del pulpo** si algún skill referencia este provider. Cada item validado contra `ALLOWED_CREDENTIAL_ENV_VARS` ([#3080](https://github.com/intrale/platform/issues/3080) SEC-3, anti-exfiltración de `PATH`/`AWS_SECRET_ACCESS_KEY` por declaración). **Cuando `auth_mode` es `"oauth"` este campo es opcional e informativo** — no se exige la key al boot ni se inyecta al child (ver abajo).
-- `auth_mode` — `"oauth"` | `"api_key"` (default `"api_key"` si está ausente). Declara **cómo** autentica el provider ([#3361](https://github.com/intrale/platform/issues/3361), generalizado por [#4306](https://github.com/intrale/platform/issues/4306)). Los providers OAuth/CLI login (`anthropic` → Claude Max, `openai-codex` → ChatGPT Plus vía `codex login`, `gemini-google` → cuenta Google) autentican vía login interactivo del CLI; su token vive en stores locales (`~/.claude/.credentials.json`, `~/.codex`, cuenta Google) y **nunca pasa por una env var**. Por eso, con `auth_mode: "oauth"`: (a) el pre-check de credenciales (`credentials-precheck.js`) y el boot validator (`agent-models-validate.js`) **bypassean** la exigencia de `credentials_env`; (b) `build-child-env.js` **no exige ni inyecta** la key al env del child (env-isolation). Los providers HTTP por API key pelada (`cerebras`, `nvidia-nim`) **NO** llevan `auth_mode` (quedan `api_key` por default) y siguen exigiendo su key. **Coherencia fail-closed:** `agent-models-validate.js` rechaza al cargar (`error`, no warning) un provider `oauth` cuyo `launcher` no sea de login CLI (`claude` / `codex` / `gemini-google`) — un provider HTTP/local marcado `oauth` correría sin credencial.
+- `auth_mode` — `"oauth"` | `"api_key"` (default `"api_key"` si está ausente). Declara **cómo** autentica el provider ([#3361](https://github.com/intrale/platform/issues/3361), generalizado por [#4306](https://github.com/intrale/platform/issues/4306)). Los providers OAuth/CLI login (`anthropic` → Claude Max, `openai-codex` → ChatGPT Plus vía `codex login`, `gemini-google` → cuenta Google) autentican vía login interactivo del CLI; su token vive en stores locales (`~/.claude/.credentials.json`, `~/.codex`, cuenta Google) y **nunca pasa por una env var**. Por eso, con `auth_mode: "oauth"`: (a) el pre-check de credenciales (`credentials-precheck.js`) y el boot validator (`agent-models-validate.js`) **bypassean** la exigencia de `credentials_env`; (b) `build-child-env.js` **no exige ni inyecta** la key al env del child (env-isolation). Un provider HTTP por API key pelada (como lo eran `cerebras` y `nvidia-nim` hasta su baja en [#6563](https://github.com/intrale/platform/issues/6563); hoy no queda ninguno en el plantel) **NO** lleva `auth_mode` (queda `api_key` por default) y sigue exigiendo su key. **Coherencia fail-closed:** `agent-models-validate.js` rechaza al cargar (`error`, no warning) un provider `oauth` cuyo `launcher` no sea de login CLI (`claude` / `codex` / `gemini-google`) — un provider HTTP/local marcado `oauth` correría sin credencial.
 - `permissions_mode` — modo de permisos del CLI. Mapeado a la matriz capability×(provider, mode) de [`docs/pipeline-multi-provider/permission-mapping.md`](../pipeline-multi-provider/permission-mapping.md).
 - `admission` — declaración de las **tres condiciones de admisión** ([#6562](https://github.com/intrale/platform/issues/6562), [§16](#16-criterio-de-admisión-de-proveedores-6562)): `cli_edits_files`, `reports_usage`, `terms_no_training`. Fail-closed: campo ausente = no cumple. `non_llm: true` exime a los ejecutores sin LLM; `exception { reason, until, issue }` mantiene temporalmente en el ruteo a uno que no cumple. Un proveedor referenciado por el ruteo que no declare las tres en `true` rompe el boot y el guardado desde el dashboard con un mensaje `[provider-admission]` que nombra la condición incumplida.
 
@@ -380,7 +380,7 @@ Si necesitás una restricción más fina ("este skill solo puede usar Haiku o So
 
 Antes de [#3486](https://github.com/intrale/platform/issues/3486) la decisión "¿este código HTTP del provider debería disparar fallback?" estaba duplicada en tres archivos:
 
-- `lib/multi-provider/completion-client.js` — matriz statusCode→reason para los free providers OpenAI-compat (Cerebras, Gemini, NVIDIA NIM).
+- `lib/multi-provider/completion-client.js` — matriz statusCode→reason para el camino HTTP OpenAI-compat (hoy sólo `gemini-google`; Cerebras y NVIDIA NIM retirados en #6563).
 - `lib/multi-provider/live-ping.js` — un `interpret(status, bodyExcerpt)` por provider, con regex literales duplicados.
 - `lib/commander/provider-error-parser.js` — path `transport: 'api'` con su propia matriz para 401/403/429/5xx.
 
@@ -452,10 +452,10 @@ classifyHttpError(statusCode, responseBody, provider) → {
 Declarar un modelo en `agent-models.json` no alcanzaba para que el agente lo usara.
 Hasta #6272 el pipeline **resolvía** el modelo (`effective.model` en
 `lib/agent-launcher.js`) y lo **logueaba**, pero nunca lo pasaba al hijo: Anthropic
-jamás recibía `--model`, y `CODEX_MODEL` / `GEMINI_MODEL` / `CEREBRAS_MODEL` /
-`NVIDIA_NIM_MODEL` nunca se seteaban para agentes (sólo las completaban
-`lib/sherlock-verifier.js` y `lib/commander/glitch-retry.js`). Resultado: los cinco
-proveedores corrían con el **default de su CLI**, no con lo declarado.
+jamás recibía `--model`, y `CODEX_MODEL` / `GEMINI_MODEL` (y las variables de los
+proveedores gratuitos entonces vigentes) nunca se seteaban para agentes (sólo las
+completaban `lib/sherlock-verifier.js` y `lib/commander/glitch-retry.js`). Resultado:
+todos los proveedores corrían con el **default de su CLI**, no con lo declarado.
 
 #### Canales por proveedor
 
@@ -465,11 +465,8 @@ La política vive en [`.pipeline/lib/model-propagation.js`](../../.pipeline/lib/
 | Proveedor | Launcher | Canal | Cómo llega |
 |---|---|---|---|
 | `anthropic` | `claude` | argv | `['--model', id]` — dos elementos separados del array |
-| `kimi-moonshot` | `claude` | argv | idem (reusa el `buildSpawn` de Anthropic) |
 | `openai-codex` | `codex` | env | `CODEX_MODEL` → el handler la traduce a `-m <id>` |
 | `gemini-google` | `gemini-google` | env | `GEMINI_MODEL` → `--model <id>`. **Única fuente**: `AGY_MODEL` se ignora y queda en `modelTrace.ignoredEnv` (#6334, cerrado en #6858) |
-| `cerebras` | `cerebras` | env | `CEREBRAS_MODEL` → `--model <id>` |
-| `nvidia-nim` | `nvidia-nim` | env | `NVIDIA_NIM_MODEL` → `--model <id>` |
 | `deterministic` | `node` | — | no aplica (Node puro, sin LLM) |
 
 Los nombres de las variables viven en `PROVIDER_MODEL_ENV`
@@ -544,10 +541,11 @@ Dos whitelists, por canal:
   `^[A-Za-z0-9._\-\[\]]{1,64}$`. Estricta porque `detectLauncher` de Anthropic
   puede devolver `shell:true` (tiers cmd-shim / path-fallback) y ahí un
   metacaracter escala a `cmd.exe`.
-- **env** (`MODEL_ENV_WHITELIST`): agrega **sólo** la barra `/`, porque los ids
-  reales de NVIDIA NIM son namespaced (`deepseek-ai/deepseek-v4-flash-0731`).
-  Sin eso, la propagación sería inalcanzable para NVIDIA. La `/` no es
-  metacaracter de `cmd.exe`, y los providers de este canal corren `shell:false`.
+- **env** (`MODEL_ENV_WHITELIST`): agrega **sólo** la barra `/`, porque hay
+  catálogos con ids namespaced (`vendor/model`; era el caso de NVIDIA NIM,
+  retirado en #6563, y se conserva para no cerrar la puerta a un catálogo así).
+  La `/` no es metacaracter de `cmd.exe`, y los providers de este canal corren
+  `shell:false`.
 
 Orden de validación: `typeof` → cap de longitud → whitelist. Si algo no valida, el
 flag/env **se omite** con una `reason` tipada (`not_a_string`,
@@ -568,8 +566,9 @@ pero el agente arranca igual: es un error de config, no una muerte de agente.
 
 > **Ojo con la asimetría:** `ALLOWED_MODELS_BY_LAUNCHER` indexa por **launcher**,
 > mientras que `multi-provider/model-catalog.js` indexa por **provider**. No son
-> intercambiables — `kimi-moonshot` es un provider que reusa el launcher `claude`.
-> El cruce mapea provider → launcher leyendo `providers.<p>.launcher`.
+> intercambiables — un provider puede reusar el launcher de otro (lo hacía
+> `kimi-moonshot` con `claude`, retirado en #6563). El cruce mapea provider →
+> launcher leyendo `providers.<p>.launcher`.
 
 #### Guardrail anti-regresión
 
@@ -682,26 +681,38 @@ Convenciones:
 
 > **Nota #3353 (mayo 2026):** `groq` fue descontinuado por política de bloqueos
 > arbitrarios del proveedor. Las cadenas de fallback debajo ya no lo incluyen.
+>
+> **Nota #6563 (2026-09-16):** `cerebras`, `nvidia-nim` y `kimi-moonshot` fueron dados
+> de baja (criterio de admisión §16). Las cadenas se recortaron **por eliminación del
+> eslabón**, sin reordenar lo que queda: el orden canónico del sign-off se conserva.
+> La tabla de abajo es el estado **vigente** de `agent-models.json` (modelos incluidos;
+> `sonnet-4-6`/`gpt-5.5`/`gemini-3.8-*` son los ids reales verificados en #6858 y
+> 2026-06-04). Sumar `gemini-google` a los skills que hoy quedan con dos eslabones es
+> decisión del orden canónico (sign-off del operador) y del auditor #6809, no de #6563.
 
-| Skill | Primary | Fallback 1 | Fallback 2 | Fallback 3 | Notas |
-|-------|---------|------------|------------|------------|-------|
-| `backend-dev` | claude / opus-4-7 | openai-codex / gpt-5-codex | cerebras / llama-3.3-70b | — | Gemini **EXCLUIDO** (toca secrets/prod) |
-| `pipeline-dev` | claude / opus-4-7 | openai-codex / gpt-5-codex | cerebras / llama-3.3-70b | — | Gemini **EXCLUIDO** (toca secrets/prod) |
-| `android-dev` | anthropic / claude-opus-4-7 | openai-codex / gpt-5.5 | nvidia-nim / deepseek-ai/deepseek-v4-flash-0731 | — | Gemini **EXCLUIDO**: escribe código que va a main |
-| `web-dev` | anthropic / claude-opus-4-7 | openai-codex / gpt-5.5 | nvidia-nim / deepseek-ai/deepseek-v4-flash-0731 | — | Gemini **EXCLUIDO**: escribe código que va a main |
-| `security` | claude / opus-4-7 | openai-codex / gpt-5-codex | cerebras / llama-3.3-70b | — | Gemini **EXCLUIDO** (gate pre-merge sensible) |
-| `qa` | anthropic / claude-sonnet-4-6 | openai-codex / gpt-5.4 | — | — | Gemini **EXCLUIDO**: carga credenciales AWS |
-| `review` | claude / sonnet-4-7 | openai-codex / gpt-5-codex | cerebras / llama-3.3-70b | — | Gemini **EXCLUIDO** (lee diffs con secrets/JWT) |
-| `po` | anthropic / claude-sonnet-4-6 | gemini-google / gemini-3.1-pro-low | openai-codex / gpt-5.4 | cerebras / gpt-oss-120b | Redacta y valida; Google antes de Codex, sign-off #6860; 4º respaldo kimi-moonshot/kimi-k2-6 |
-| `ux` | anthropic / claude-sonnet-4-6 | gemini-google / gemini-3.1-pro-low | openai-codex / gpt-5.4 | cerebras / gpt-oss-120b | Redacta y valida; Google antes de Codex, sign-off #6860 |
-| `doc` | claude / sonnet-4-7 | openai-codex / gpt-5-codex | cerebras / llama-3.3-70b | — | Gemini **EXCLUIDO** (estrategia de producto) |
-| `planner` | claude / sonnet-4-7 | openai-codex / gpt-5-codex | cerebras / llama-3.3-70b | — | Gemini **EXCLUIDO** (roadmap/estrategia) |
-| `guru` | claude / sonnet-4-7 | openai-codex / gpt-5-codex | cerebras / llama-3.3-70b | nvidia-nim / deepseek-v4-flash-0731 | Gemini **EXCLUIDO** (fragmentos código) |
-| `ops` | claude / sonnet-4-7 | openai-codex / gpt-5-codex | cerebras / llama-3.3-70b | — | Gemini **EXCLUIDO sí o sí** (procesa API keys / AWS creds / Cognito) |
-| `perf` | anthropic / claude-sonnet-4-6 | openai-codex / gpt-5.5 | gemini-google / gemini-3.8-flash-high | cerebras / gpt-oss-120b | Analiza builds sin credenciales de infraestructura |
-| `auth` | claude / sonnet-4-7 | openai-codex / gpt-5-codex | cerebras / llama-3.3-70b | — | Gemini **EXCLUIDO** (config interna del entorno) |
+| Skill | Primary | Fallback 1 | Fallback 2 | Notas |
+|-------|---------|------------|------------|-------|
+| `backend-dev` | anthropic / opus-4-7 | openai-codex / gpt-5.5 | — | Gemini **EXCLUIDO** (toca secrets/prod) |
+| `pipeline-dev` | anthropic / opus-4-7 | openai-codex / gpt-5.5 | — | Gemini **EXCLUIDO** (toca secrets/prod) |
+| `android-dev` | anthropic / opus-4-7 | openai-codex / gpt-5.5 | — | Gemini **EXCLUIDO**: escribe código que va a main (#6860) |
+| `web-dev` | anthropic / opus-4-7 | openai-codex / gpt-5.5 | — | Gemini **EXCLUIDO**: escribe código que va a main (#6860) |
+| `security` | anthropic / opus-4-7 | openai-codex / gpt-5.5 | — | Gemini **EXCLUIDO** (gate pre-merge sensible) |
+| `qa` | anthropic / sonnet-4-6 | openai-codex / gpt-5.4 | — | Gemini **EXCLUIDO**: el child carga credenciales AWS (#6860) |
+| `review` | anthropic / sonnet-4-6 | openai-codex / gpt-5.5 | — | Gemini **EXCLUIDO** (lee diffs con secrets/JWT) |
+| `po` | anthropic / sonnet-4-6 | gemini-google / gemini-3.1-pro-low | openai-codex / gpt-5.4 | Redacta y valida; Google antes de Codex (Decisión 2, sign-off #6860). Vision pendiente de #7314 |
+| `ux` | anthropic / sonnet-4-6 | gemini-google / gemini-3.1-pro-low | openai-codex / gpt-5.4 | Redacta y valida; Google antes de Codex (Decisión 2, sign-off #6860). Vision pendiente de #7314 |
+| `doc` | anthropic / sonnet-4-6 | openai-codex / gpt-5.5 | — | Gemini **EXCLUIDO** (estrategia de producto) |
+| `planner` | anthropic / sonnet-4-6 | openai-codex / gpt-5.5 | — | Gemini **EXCLUIDO** (roadmap/estrategia) |
+| `guru` | anthropic / sonnet-4-6 | openai-codex / gpt-5.5 | — | Gemini **EXCLUIDO** (fragmentos código) |
+| `architect` | anthropic / sonnet-4-6 | openai-codex / gpt-5.5 | gemini-google / gemini-3.1-pro-high | Diseña sobre código público, sin secrets — Pro-high (#6860) |
+| `ops` | anthropic / sonnet-4-6 | openai-codex / gpt-5.5 | — | Gemini **EXCLUIDO sí o sí** (procesa API keys / AWS creds / Cognito) |
+| `perf` | anthropic / sonnet-4-6 | openai-codex / gpt-5.5 | gemini-google / gemini-3.8-flash-high | Analiza builds sin credenciales — Flash-high (#6860) |
+| `auth` | anthropic / sonnet-4-6 | openai-codex / gpt-5.5 | — | Gemini **EXCLUIDO** (config interna del entorno) |
+| `refinar` | anthropic / sonnet-4-6 | openai-codex / gpt-5.4 | — | Gemini **EXCLUIDO** (backlog/estrategia) |
+| `telegram-commander` | anthropic / sonnet-4-6 | openai-codex / gpt-5.4 | gemini-google / claude-sonnet-4-6 | Chat del operador — Sonnet vía Google (Decisión 1, sign-off #6860); modo reducido mientras billing sea free (#7338) |
+| `telegram-sherlock` | anthropic / haiku-4-5 | openai-codex / gpt-5.4-mini | gemini-google / gemini-3.8-flash-medium | Verificador — sube de Flash-low; familia distinta del Commander (#3501, #6860) |
 
-> **Sobre la nota "sonnet-4-7" vs "sonnet-4-6" de la memoria:** la memoria original escribió `sonnet-4-6` para varios skills; el catálogo `ALLOWED_MODELS_BY_LAUNCHER` declara `claude-sonnet-4-7` siguiendo la convención del cluster (4-7 para Opus, 4-5 para Haiku). El JSON canónico usa `claude-sonnet-4-7` (modelo validado en la allowlist). Si Anthropic libera `claude-sonnet-4-6` en algún momento, agregarlo a `ALLOWED_MODELS_BY_LAUNCHER.claude` requiere review humano.
+> **Sobre "sonnet-4-7" vs "sonnet-4-6":** el JSON canónico usa `claude-sonnet-4-6` desde el 2026-06-04 (sign-off Leo; `claude-sonnet-4-7` no existe en el catálogo de Anthropic y el CLI lo rechazaba). Cualquier cambio de modelo en `ALLOWED_MODELS_BY_LAUNCHER.claude` requiere review humano.
 
 > **Sobre `tester` y `build` (deterministic):** la memoria `project_multi-provider-per-agent-order` originalmente proponía `build` con un free provider y `tester`=claude-sonnet como primary LLM. Sin embargo, **ambos skills son determinísticos** — corren como Node scripts (`.pipeline/skills-deterministicos/{build,tester}.js`) y la allowlist hardcoded `DETERMINISTIC_SKILLS = ['build', 'tester', 'linter', 'delivery']` en `resolve-provider.js` fuerza spawn determinístico ignorando lo que diga `agent-models.json`. Declararlos con LLM declarativo y `fallbacks[]` en el JSON crea **drift entre fuentes de verdad** (mismo patrón del incidente #3157 que costó $2.72/h en builds). Por eso `agent-models.json` los declara con la forma mínima `{provider: deterministic}` igual que `linter` y `delivery`, y `deterministic-skills-coherence.test.js` lo enforce. Si alguna vez se introduce una variante LLM-augmented (ej. `tester --from-gherkin`), se trata como un skill nuevo con su propia entrada, no se mezcla con el determinístico.
 
@@ -717,8 +728,8 @@ Cierre verificable para levantar la exclusión: **(a)** Workspace/Enterprise/GCP
 
 | Skill | Modelo en gemini-google | Posición | Bucket (dato de cuota, no criterio de asignación) | Justificación |
 |---|---|---|---|---|
-| android-dev | **EXCLUIDO** | Sin eslabón Google | — | Escribe código que llega a main; conserva Codex → NVIDIA. |
-| web-dev | **EXCLUIDO** | Sin eslabón Google | — | Escribe código que llega a main; conserva Codex → NVIDIA. |
+| android-dev | **EXCLUIDO** | Sin eslabón Google | — | Escribe código que llega a main; conserva sólo Codex (NVIDIA dado de baja en #6563). |
+| web-dev | **EXCLUIDO** | Sin eslabón Google | — | Escribe código que llega a main; conserva sólo Codex (NVIDIA dado de baja en #6563). |
 | qa | **EXCLUIDO** | Sin eslabón Google | — | El child recibe credenciales AWS; conserva sólo Codex. |
 | po | gemini-3.1-pro-low | 1º respaldo, antes de Codex (`fallbacks[0]`) | Gemini | Redacta y valida; Pro-low aporta criterio sin consumir el bucket Claude. Vision pendiente de #7314. |
 | ux | gemini-3.1-pro-low | 1º respaldo, antes de Codex (`fallbacks[0]`) | Gemini | Redacta y valida; comparte el criterio de PO sin credenciales de infraestructura. Vision pendiente de #7314. |
@@ -727,9 +738,9 @@ Cierre verificable para levantar la exclusión: **(a)** Workspace/Enterprise/GCP
 | telegram-commander | claude-sonnet-4-6 | 2º respaldo, después de Codex (`fallbacks[1]`) | Claude | Mantiene el piso de calidad del operador bajo el consentimiento de privacidad para Google. |
 | telegram-sherlock | gemini-3.8-flash-medium | 2º respaldo, después de Codex (`fallbacks[1]`) | Gemini | Sube desde Flash-low y conserva familia distinta del Commander (#3501). |
 | Sin skill | claude-opus-4-6-thinking — no asignado | — | Claude | Comparte cuota con Sonnet; no hay un caso de uso que justifique su mayor consumo. |
-| Sin skill | gpt-oss-120b-medium — no asignado | — | Claude/GPT | Ya existe gpt-oss-120b en Cerebras; preserva el bucket Claude. |
+| Sin skill | gpt-oss-120b-medium — no asignado | — | Claude/GPT | Sin caso de uso que lo justifique; consumiría el bucket compartido con Sonnet (Cerebras, que lo ofrecía, fue dado de baja en #6563). |
 
-Los defaults `gemini-3.8-flash-medium` y alternativo `gemini-3.7-flash-medium` no cambian. El sufijo del ID es el único canal de esfuerzo: no se añade `--effort`. No cambian `billing`, `admission` ni la excepción que vence el 2026-10-31 (#6563). Commander **sigue en modo reducido** mientras `billing: free`; #6564 cerró sin cambiarlo y #7338 registra el seguimiento del flip. Esta matriz no promete una activación inmediata del chat.
+Los defaults `gemini-3.8-flash-medium` y alternativo `gemini-3.7-flash-medium` no cambian. El sufijo del ID es el único canal de esfuerzo: no se añade `--effort`. No cambian `billing`, `admission` ni la excepción de admisión (reasignada a #6564 por #6563, vence el 2026-12-31). Commander **sigue en modo reducido** mientras `billing: free`; #6564 cerró sin cambiarlo y #7338 registra el seguimiento del flip. Esta matriz no promete una activación inmediata del chat.
 
 **Evidencia de tool_use (CA-5), 2026-09-18 UTC, agy 1.2.5.** Por modelo se ejecutó `node .pipeline/tests/smoke/gemini-add-dir.smoke.js --model <id>`, con instrumentación efímera del resultado para registrar `usage`. El smoke usa `provider.buildSpawn` y `--add-dir`, crea un repo temporal y verifica contenido exacto `6859-OK`, presencia en git status y scratch sin archivos nuevos. Los temporales se eliminan después del PASS.
 
@@ -947,26 +958,33 @@ curl http://localhost:8080/api/metrics/quota | jq '.'
 
 ## 6. Referencia rápida
 
-### 6.1 Tabla resumen: skills → provider → modelo (al 2026-05-14)
+### 6.1 Tabla resumen: skills → provider → modelo → cadena (al 2026-09-16, post #6563)
 
-| Skill | Provider | Modelo efectivo | Tipo |
-|-------|----------|-----------------|------|
-| guru | anthropic | claude-opus-4-7 | LLM |
-| security | anthropic | claude-opus-4-7 | LLM |
-| po | anthropic | claude-opus-4-7 | LLM |
-| ux | anthropic | claude-opus-4-7 | LLM |
-| planner | anthropic | claude-opus-4-7 | LLM |
-| review | anthropic | claude-opus-4-7 | LLM |
-| refinar | anthropic | claude-opus-4-7 | LLM |
-| backend-dev | anthropic | claude-opus-4-7 | LLM |
-| android-dev | anthropic | claude-opus-4-7 | LLM |
-| web-dev | anthropic | claude-opus-4-7 | LLM |
-| pipeline-dev | anthropic | claude-opus-4-7 | LLM |
-| qa | anthropic | claude-opus-4-7 | LLM |
-| tester | deterministic | — | Node puro |
-| build | deterministic | — | Node puro |
-| linter | deterministic | — | Node puro |
-| delivery | deterministic | — | Node puro |
+| Skill | Provider | Modelo efectivo | Cadena de fallback | Tipo |
+|-------|----------|-----------------|--------------------|------|
+| backend-dev | anthropic | claude-opus-4-7 | anthropic → openai-codex | LLM |
+| pipeline-dev | anthropic | claude-opus-4-7 | anthropic → openai-codex | LLM |
+| android-dev | anthropic | claude-opus-4-7 | anthropic → openai-codex → gemini-google | LLM |
+| web-dev | anthropic | claude-opus-4-7 | anthropic → openai-codex → gemini-google | LLM |
+| build | deterministic | — | — | Node puro |
+| tester | deterministic | — | — | Node puro |
+| security | anthropic | claude-opus-4-7 | anthropic → openai-codex | LLM |
+| qa | anthropic | claude-sonnet-4-6 | anthropic → openai-codex → gemini-google | LLM |
+| review | anthropic | claude-sonnet-4-6 | anthropic → openai-codex | LLM |
+| po | anthropic | claude-sonnet-4-6 | anthropic → openai-codex → gemini-google | LLM |
+| ux | anthropic | claude-sonnet-4-6 | anthropic → openai-codex → gemini-google | LLM |
+| doc | anthropic | claude-sonnet-4-6 | anthropic → openai-codex | LLM |
+| planner | anthropic | claude-sonnet-4-6 | anthropic → openai-codex | LLM |
+| guru | anthropic | claude-sonnet-4-6 | anthropic → openai-codex | LLM |
+| architect | anthropic | claude-sonnet-4-6 | anthropic → openai-codex → gemini-google | LLM |
+| ops | anthropic | claude-sonnet-4-6 | anthropic → openai-codex | LLM |
+| perf | anthropic | claude-sonnet-4-6 | anthropic → openai-codex → gemini-google | LLM |
+| auth | anthropic | claude-sonnet-4-6 | anthropic → openai-codex | LLM |
+| refinar | anthropic | claude-sonnet-4-6 | anthropic → openai-codex | LLM |
+| linter | deterministic | — | — | Node puro |
+| delivery | deterministic | — | — | Node puro |
+| telegram-commander | anthropic | claude-sonnet-4-6 | anthropic → openai-codex → gemini-google | LLM |
+| telegram-sherlock | anthropic | claude-haiku-4-5 | anthropic → openai-codex → gemini-google | LLM |
 
 > **Verificar el estado canónico:** `cat .pipeline/agent-models.json` o **Tab "2 · Por agente"** del dashboard.
 
@@ -1159,7 +1177,14 @@ Implementado por: [#3198](https://github.com/intrale/platform/issues/3198) (cons
 
 ## 8. Hardening de free providers (#3260 + #3353)
 
-Los **3 providers free vivos** (Gemini-Google, Cerebras, NVIDIA NIM) son la **red de salvataje** del pipeline cuando se agota la cuota de Claude / Codex. El issue [#3260](https://github.com/intrale/platform/issues/3260) (ola N+5) endurece esa red con healthchecks periódicos, validación semanal de keys, panel "Health" del dashboard, alertas Telegram con dedupe + back-off, y este procedimiento operativo. NVIDIA NIM se sumó en [#3243](https://github.com/intrale/platform/issues/3243) (ola N+5). **Groq fue descontinuado en [#3353](https://github.com/intrale/platform/issues/3353)** (mayo 2026) por política inestable de restricciones del proveedor.
+> **Estado post-#6563 (2026-09-16):** de los tres providers free que endureció esta sección
+> sólo queda **`gemini-google`** (hoy vía Antigravity con licencia paga; su `billing` sigue
+> declarado `free` hasta que #6564 verifique el plan). `cerebras` y `nvidia-nim` fueron dados
+> de baja por el criterio de admisión (§16). Todo lo que sigue (health cron, rotación de keys,
+> alertas) aplica a Gemini; las menciones a Cerebras/NVIDIA quedan como registro de diseño.
+> Re-alta: §17.
+
+Los providers free eran la **red de salvataje** del pipeline cuando se agota la cuota de Claude / Codex. El issue [#3260](https://github.com/intrale/platform/issues/3260) (ola N+5) endurece esa red con healthchecks periódicos, validación semanal de keys, panel "Health" del dashboard, alertas Telegram con dedupe + back-off, y este procedimiento operativo. NVIDIA NIM se sumó en [#3243](https://github.com/intrale/platform/issues/3243) (ola N+5). **Groq fue descontinuado en [#3353](https://github.com/intrale/platform/issues/3353)** (mayo 2026) por política inestable de restricciones del proveedor.
 
 ### Criterio de selección de free providers
 
@@ -1179,10 +1204,12 @@ Groq fue descontinuado (mayo 2026) por no cumplir criterio de estabilidad operat
 | Provider | RPM | RPD | Tokens/día | Endpoint usado en healthcheck | Notas |
 |----------|----:|----:|-----------:|--------------------------------|-------|
 | `gemini-google` | 15 | 1500 | 1M tokens | `GET https://generativelanguage.googleapis.com/v1beta/models` | Auth con header `x-goog-api-key` (la key NUNCA en query string — `key` ya está en `SENSITIVE_QUERY_KEYS`). 400 con `API_KEY_INVALID` ⇒ `invalid_credentials`. |
-| `cerebras` | 30 | sin cap docu | ~60K tokens/min | `GET https://api.cerebras.ai/v1/models` | Free tier sólo modelos llama-* (sin Mistral). 429 con `insufficient` ⇒ `quota_exhausted`. |
-| `nvidia-nim` | _no publicado_ | _no publicado_ | _no publicado_ | `GET https://integrate.api.nvidia.com/v1/models` | NVIDIA no publica RPM/RPD/TPM del free tier — la observación queda pendiente del cron de health (medición empírica, ver #3327). 429 con `insufficient_quota / monthly` ⇒ `quota_exhausted`. |
 
-Cron de healthchecks: cada 15min × 3 providers = **288 requests/día por provider**, holgadamente dentro de cualquier free tier conocido. La validación semanal de keys (CA-2) reusa el mismo endpoint `/models` (no consume cuota). Groq fue descontinuado en #3353 y ya no se incluye en el cron.
+> `cerebras` y `nvidia-nim` se retiraron en #6563; sus filas (límites, endpoints de
+> health) viven en el historial de git de este archivo y se restauran con el
+> procedimiento de §17.
+
+Cron de healthchecks: cada 15min por provider = **96 requests/día por provider**, holgadamente dentro de cualquier free tier conocido. La validación semanal de keys (CA-2) reusa el mismo endpoint `/models` (no consume cuota). Groq fue descontinuado en #3353 y ya no se incluye en el cron.
 
 ### 8.2 Rotar una API key sin downtime (CA-5)
 
@@ -1190,7 +1217,7 @@ Cron de healthchecks: cada 15min × 3 providers = **288 requests/día por provid
 
 Procedimiento:
 
-1. **Generar la nueva key en el portal del provider** (Google AI Studio / Cerebras dashboard / NVIDIA build.nvidia.com). NO revocar la vieja todavía.
+1. **Generar la nueva key en el portal del provider** (Google AI Studio). NO revocar la vieja todavía.
 2. **Rotar vía UI del dashboard:**
    - Abrir `http://localhost:8080/dashboard.html#multi-provider`.
    - Tab **1 · Proveedores** → click "Rotar key" en el provider afectado.
@@ -1279,17 +1306,17 @@ node -e "console.log(JSON.stringify(require('./.pipeline/lib/multi-provider/secr
 
 #### 8.8.1 Procedimiento recomendado
 
-1. Generá / obtené la API key en el portal del provider (Google AI Studio, Cerebras dashboard, NVIDIA build.nvidia.com, etc.).
+1. Generá / obtené la API key en el portal del provider (Google AI Studio, etc.).
 2. **Guardá la key en un archivo local** bajo `~/.claude/secrets/` (fuera del repo):
    ```bash
-   # Ejemplo: agregar CEREBRAS key
+   # Ejemplo: agregar GEMINI key
    mkdir -p ~/.claude/secrets
-   printf '%s' '<la-key>' > ~/.claude/secrets/cerebras.txt
-   chmod 600 ~/.claude/secrets/cerebras.txt
+   printf '%s' '<la-key>' > ~/.claude/secrets/gemini.txt
+   chmod 600 ~/.claude/secrets/gemini.txt
    ```
 3. **Por Telegram, mandá únicamente el path absoluto**, ej:
    ```
-   actualizar cerebras key, está en ~/.claude/secrets/cerebras.txt
+   actualizar gemini key, está en ~/.claude/secrets/gemini.txt
    ```
 4. El commander (cuando se cablee `8.8.2`) leerá el archivo desde disco, validará el path contra la whitelist, hará la rotación vía `secrets.rotateKey()` y devolverá confirmación. La key nunca toca el canal.
 
@@ -1347,7 +1374,7 @@ Estos archivos ya están en `.gitignore`. Si te encontrás des-ignorándolos a p
 
 Si por error pegaste una key directamente en el chat:
 
-1. **Revocá la key inmediatamente en el portal del provider** (Google AI Studio / Cerebras dashboard / NVIDIA build.nvidia.com → Settings → API Keys → Delete). El sanitizer/redactor cubre el flanco a futuro, pero la key vieja sigue siendo válida hasta que la revoques upstream.
+1. **Revocá la key inmediatamente en el portal del provider** (Google AI Studio → Settings → API Keys → Delete). El sanitizer/redactor cubre el flanco a futuro, pero la key vieja sigue siendo válida hasta que la revoques upstream.
 2. **Generá una nueva** y seguila el procedimiento §8.8.1.
 3. **Verificá los archivos que vivieron mientras la key estaba expuesta**:
    ```bash
@@ -1355,57 +1382,15 @@ Si por error pegaste una key directamente en el chat:
    ```
    Si aparece, sabés que el incidente queda registrado y sirve para correlación.
 4. **Issue de scrubbing retroactivo**: si querés limpiar el historial existente, ver [#3317](https://github.com/intrale/platform/issues/3317) (necesita aprobación humana, `needs-human`).
-### 8.9 NVIDIA NIM — guía operativa específica (#3243)
+### 8.9 NVIDIA NIM — retirado en #6563
 
-NVIDIA NIM es uno de los 3 free providers vivos (junto con Gemini y Cerebras, post #3353). Hostea ~80 modelos OpenAI-compatible en `integrate.api.nvidia.com`, con catálogo enfocado en razonamiento (DeepSeek V4-Flash-0731 desde #5887; el V4 anterior con SWE-bench 80.6% fue retirado del catálogo) y agentic loops (Kimi K2.6, tool use 96.6%) — complementario a los llamas de Cerebras y a Gemini 2.0 Flash.
-
-**Cómo obtener la API key:**
-
-1. Crear cuenta gratis en [`https://build.nvidia.com`](https://build.nvidia.com) (signup con email/Google/GitHub).
-2. Panel "API Keys" → "Generate Personal Key".
-3. Copiar la key (`nvapi-…`) — el portal NO permite re-mostrarla después de cerrar el modal.
-4. Setearla **vía UI del dashboard** (sección 8.2), tab "1 · Proveedores" → "Rotar key" en la fila `nvidia-nim`. NO editar `telegram-config.json` a mano.
-
-**Modelos disponibles en el catálogo del pipeline:**
-
-| Modelo | Capabilities | Context window | Uso recomendado |
-|--------|--------------|----------------|-----------------|
-| `deepseek-ai/deepseek-v4-flash-0731` | `reasoning`, `coding`, `long_context` | no verificada | Razonamiento técnico y análisis de código. **Sin benchmarks verificados**: los números que figuraban acá (SWE-bench Verified 80.6%, LiveCodeBench 93.5%) y la ventana de 1M tokens eran del modelo DeepSeek retirado y **no** se heredan a este modelo — no medir ≠ suponer (#5887). |
-| `moonshotai/kimi-k2-instruct` | `agentic`, `tool_use`, `long_context` | 128K tokens | Loops agentic con muchos tool calls (tool use success 96.6%, long-horizon 13h / 300 sub-agents) |
-
-> **Migración 2026-08-13 (#5887).** El modelo DeepSeek que este provider tenía configurado llegó a end-of-life el 2026-08-07T09:00:00Z y devolvía HTTP 410 en toda invocación, matando sin trabajo a todo agente que cayera a NVIDIA en su cadena de fallback. Sucesor verificado **en vivo** ese mismo día contra `integrate.api.nvidia.com`: (a) `GET /v1/models` → HTTP 200, `deepseek-ai/deepseek-v4-flash-0731` presente en el catálogo (102 modelos) y el id anterior **ausente**; (b) `POST /v1/chat/completions` con `tools[]` → HTTP 200, `finish_reason: tool_calls`, `tool_calls[0].function.name = read_file`. La (b) no es opcional: la capability `agentic-tool-use` se **declara** en el provider, no se mide, y un sucesor sin tool_use bootearía gates de confianza (`security`, `telegram-sherlock`) que no pueden leer archivos y fallan en abierto. Pin con sufijo de fecha (`-0731`), nunca alias flotante.
-
-Para agregar más modelos del catálogo NVIDIA NIM (ej. `gpt-oss-120b` opcional), seguir sección 3.2: editar `ALLOWED_MODELS_BY_LAUNCHER['nvidia-nim']` en `lib/agent-models-validate.js` + agregar entry en `agent-models.json` con el namespace `vendor/model`. El boot del pulpo cross-valida.
-
-**Free tier — observación empírica pendiente (#3327):**
-
-NVIDIA **NO publica** rate limits ni monthly quota del free tier. Las decisiones operativas (cuándo cortar, cuándo escalar a paid) dependen de telemetría real del cron de health durante las primeras 2 semanas post-activación. Mientras tanto:
-
-- `provider-exhaustion-pause.js` desactiva temporalmente el provider si responde 429 repetido (mismo comportamiento que Cerebras).
-- El cron de health (cada 15min × `/v1/models`) genera baseline de latencia y disponibilidad sin consumir cuota de completions.
-
-**Hosting topology check — gate pre-activación (#3243 SR-12):**
-
-NVIDIA NIM permite que **partners** (3rd parties) hosteen modelos del catálogo en infra propia. Antes de flippear el provider a `activo` en runtime:
-
-- Verificar en `build.nvidia.com` que `deepseek-ai/deepseek-v4-flash-0731` y `moonshotai/kimi-k2-instruct` aparecen como **"NVIDIA-direct"** (no "NIM Partner redeploy").
-- Si alguno es partner, documentar el hop adicional acá y validar contra la matriz de policy TOS/DPA de #3084 antes de activar.
-- Estado actual: **pendiente de verificación** (al merge de #3243 los modelos quedan declarados como "configurados pero inactivos" hasta completar este check + la fila TOS/DPA en #3084).
-
-**Comparativa cross-provider (free tier):**
-
-| Provider | Modelo principal | Foco | Context | Naming |
-|----------|------------------|------|---------|--------|
-| Gemini | `gemini-2.0-flash` | Generalista (sin código sensible — TOS entrena) | 1M | sin namespace |
-| Cerebras | `llama-3.3-70b` | Velocidad inference | 128K | sin namespace |
-| **NVIDIA NIM** | **`deepseek-v4-flash-0731` / `kimi-k2`** | **Razonamiento / agentic** | **no verificada (DeepSeek)** | **`vendor/model`** |
-
-NVIDIA NIM aporta razonamiento de calidad alta en free tier — Cerebras es velocidad sobre llama, Gemini es generalista. Es **complementario**, no redundante. (Groq fue descontinuado en #3353.)
-
-**Asignación de skills (al merge de #3243):**
-
-- `guru` (análisis técnico): `nvidia-nim` queda como **último fallback** con `deepseek-ai/deepseek-v4-flash-0731` (se migró tras el end-of-life del modelo DeepSeek anterior; ver #5887). Anthropic sigue primero (sign-off Leo 2026-05-15).
-- Resto de skills: sin asignación todavía. Promover NVIDIA NIM arriba en otros skills requiere sign-off humano explícito.
+NVIDIA NIM (`nvidia-nim`, sumado en #3243, migrado de modelo en #5887) fue **dado de baja
+del ruteo el 2026-09-16** por el criterio de admisión de §16: no reportaba consumo
+verificable (quota-adapter `not_implemented`) y sus términos no tenían verificación
+documentada. La guía operativa que vivía acá (obtención de key en `build.nvidia.com`,
+catálogo `deepseek-ai/deepseek-v4-flash-0731` / `moonshotai/kimi-k2-instruct`, hosting
+topology check) se conserva en el historial de git de este archivo. Para volver a
+habilitarlo, seguir §17.
 
 ### 8.10 Antigravity (`gemini-google`) — catálogo de modelos y verificación automática (#6858)
 
@@ -1487,13 +1472,62 @@ ahí entraría en bucle de rollback sin arreglar nada.
 > allowlist (la 2ª barrera) es el catálogo de Antigravity: AI Studio no sirve
 > ninguno de esos ids (`gemini-3.8-flash-medium` → HTTP 404). Por esa ruta hoy
 > **ningún** `complete({provider:'gemini-google'})` responde `ok=true`. Ningún
-> default HTTP del pipeline debe apuntar ahí: el juez semántico de duplicados
-> (`lib/semantic-dedup.js`, usado por el Commander al crear issues) usa
-> `cerebras` + `gpt-oss-120b`, y un test fija que su default pasa
-> `isAllowedModel` y tiene endpoint. El único caller que recorre la entrada es
-> la cascada del Sherlock, que tolera el fallo y sigue al próximo provider. La
-> reconciliación o retiro de la entrada es alcance de la baja de AI Studio
-> (#6563).
+> default HTTP del pipeline debe apuntar ahí: desde #6563 (baja de los
+> gratuitos) el juez semántico de duplicados (`lib/semantic-dedup.js`, usado
+> por el Commander al crear issues) ya no tiene ningún provider HTTP servible y
+> corre por **spawn del CLI OAuth** (`openai-codex` por default, `anthropic`
+> como alternativa) con la contención descrita abajo; un test fija que su
+> default es servible por ese transporte. El único caller que recorre la
+> entrada HTTP de Gemini es la cascada del Sherlock, que tolera el fallo y
+> sigue al próximo provider.
+
+**Contención del juez semántico por spawn (#6563, hallazgo security del rebote 1).**
+Un CLI de agente no es un cliente HTTP: por default corre con bypass de
+sandbox/aprobaciones, hereda el env del pulpo y tiene cwd en el repo. El prompt
+del juez lleva hasta 25 títulos de issues abiertos del repo público (contenido
+no confiable), así que una inyección podía convertirse en bash con GH_TOKEN /
+AWS_* / *_API_KEY en la máquina del operador. `dispatchComplete` restituye el
+"juez sin agencia" con tres medidas, todas fijadas por
+`tests/semantic-dedup-judge-no-agency-6563.test.js`:
+
+| Medida | codex | claude |
+|--------|-------|--------|
+| `sandbox: 'read-only'` | `--sandbox read-only` (nunca `--dangerously-bypass-approvals-and-sandbox`) | `--strict-mcp-config --disable-slash-commands --permission-mode dontAsk --tools ""` (`ANTHROPIC_READ_ONLY_ARGS`; sólo con launcher `shell:false`, ver abajo) |
+| `envPolicy: 'minimal'` | `buildMinimalCliEnv`: `SYSTEM_ALLOWLIST` + `CLI_OAUTH_ALLOWLIST` (`CODEX_HOME`, `CLAUDE_CONFIG_DIR`) + `CODEX_MODEL`/`CLAUDE_PROJECT_DIR`. Sin `PIPELINE_*`, sin credenciales. | ídem |
+| cwd | temporal vacío (`%TEMP%/semantic-dedup-judge-*`), borrado en `finally` | ídem |
+
+Además, cada título de candidato pasa por `detectInjection` → redact →
+truncate (`safeField`), igual que el issue propuesto, y no puede fabricar
+líneas extra dentro de `<datos>`.
+
+Las dos opciones (`sandbox`, `envPolicy`) viven en
+`sherlock-verifier._spawnCodexComplete/_spawnAnthropicComplete` y son
+**opt-in**: el fiscal Sherlock conserva el bypass y el env heredado (filtrado
+por #5462). Las tablas de políticas son cerradas: un valor desconocido se
+reporta como `spawn_unavailable`, nunca degrada al default con agencia.
+
+> Verificado en vivo el 2026-09-17: con `--tools ""` **solo**, el child de
+> `claude` sigue cargando los MCP del operador (Gmail/Drive/Calendar) — el
+> evento `system/init` los lista. Con `--strict-mcp-config` (sin
+> `--mcp-config`) el `init` reporta `tools: []`, `mcp_servers: []`,
+> `slash_commands: []` y un prompt que exige crear un archivo, correr bash y
+> mandar un mail no produce ningún `tool_use`. `--bare` no sirve: exige
+> `ANTHROPIC_API_KEY` (nunca lee OAuth).
+
+**Read-only exige `shell:false` (rebote 2 de #6563, CWE-88).** `--tools ""`
+depende de un argumento *vacío*. Si el launcher de `claude` cae a un tier con
+`shell:true` (`cmd-shim` / `path-fallback` de `providers/anthropic.js`), Node
+concatena el argv con espacio sin citar (DEP0190) y el `""` desaparece: el child
+recibe `--tools --strict-mcp-config` y `--tools` se traga el flag siguiente como
+valor. En vivo eso dejó al juez con los MCP del operador conectados aunque los
+flags "estuvieran". Dos defensas, ambas fijadas en el mismo test:
+
+1. **Fail-closed**: `spawnAnthropicComplete` con `sandbox: 'read-only'` rechaza
+   spawnear si `spawnOpts.shell` o el launcher detectado usan shell
+   (`assertNoShellForReadOnly`) → `spawn_unavailable` → el juez cae en
+   `ninguna`. El fiscal Sherlock (bypass legacy) no se ve afectado.
+2. **Orden**: `--tools ""` es el **último** par de `ANTHROPIC_READ_ONLY_ARGS`,
+   así que ni concatenado tiene un flag de seguridad que tragarse.
 
 **Cómo medir un modelo nuevo antes de configurarlo** (CA-4 de #6858; desde #7298
 el transporte es `--input-format/--output-format stream-json` con el prompt por
@@ -1678,7 +1712,7 @@ parseProviderError(rawOutput, ctx) → {
 }
 
 ctx = {
-  provider: 'anthropic' | 'openai-codex' | 'gemini-google' | 'cerebras' | 'nvidia-nim',
+  provider: 'anthropic' | 'openai-codex' | 'gemini-google',
   transport: 'api' | 'cli',
   timedOut?: boolean,
   exitCode?: number | null,
@@ -2028,7 +2062,7 @@ Bajo `restart.js`, el pulpo viejo y el nuevo pueden solapar unos segundos. Sin l
 | `eof_premature` | `⚠️ <primario> cortó la respuesta antes de tiempo — reintentando con <secundario>.` |
 | `rate_limit` | `⚠️ <primario> pegó contra el rate-limit a mitad del turno — reintentando con <secundario>.` |
 
-Si el secundario no soporta tool_use (ej. cerebras), se agrega segunda línea ℹ️ (UX-G3):
+Si el secundario no soporta tool_use (hoy ninguno del plantel; lo era Cerebras, retirado en #6563), se agrega segunda línea ℹ️ (UX-G3):
 
 ```
 ℹ️ Modo conversacional: el commander no puede ejecutar comandos del pipeline en este request.
@@ -2130,7 +2164,7 @@ Eventos en el audit log del día permiten calcular (futuro endpoint dashboard `/
 
 Sherlock acepta dos transportes para invocar providers:
 
-- **HTTP completion-client** (`lib/multi-provider/completion-client.js`) — para providers OpenAI-compat: `cerebras`, `gemini-google`, `nvidia-nim`.
+- **HTTP completion-client** (`lib/multi-provider/completion-client.js`) — para providers OpenAI-compat: hoy sólo `gemini-google` (`cerebras` y `nvidia-nim` retirados en #6563).
 - **Spawn CLI** (`lib/agent-launcher/providers/anthropic.js::buildSpawn`) — para Anthropic. **Opción B** del issue #3484, elegida por: (a) reusa la infra existente y bien testeada, (b) evita refactor multi-schema del cliente HTTP para soportar la Anthropic Messages API (que no es OpenAI-compat), (c) recommendation explícita de PO y guru en la fase `criterios`.
 
 Codex (`openai-codex`) sigue siendo stub ([#3076](https://github.com/intrale/platform/issues/3076) H3 pendiente) — Sherlock lo salta con gracia cuando aparece en la chain.
@@ -2139,7 +2173,7 @@ Codex (`openai-codex`) sigue siendo stub ([#3076](https://github.com/intrale/pla
 
 | Comportamiento | Pre-#3484 | Post-#3484 |
 |---|---|---|
-| Filtro de providers | Solo HTTP-compatible (`cerebras`, `gemini-google`, `nvidia-nim`) | Cualquier provider con handler implementado (HTTP o spawn) |
+| Filtro de providers | Solo HTTP-compatible (entonces `cerebras`, `gemini-google`, `nvidia-nim`) | Cualquier provider con handler implementado (HTTP o spawn) |
 | Exclusión cross-provider | Forzaba provider != Commander | Removida — permite same-provider (riesgo aceptado) |
 | Timeout local | Default 10s, clamp absoluto 30s | Removido — delegado a `completion-client` (90s default, 180s cap) |
 | Phrasing F-5/F-6 | Genérico, jerga técnica | Empático, primera persona, invita feedback (CA-UX-3, CA-UX-4) |
@@ -2227,7 +2261,7 @@ Mejora incremental sobre §12.4. Cuando Sherlock termina usando el mismo provide
 |---|---|---|
 | `commander=anthropic/opus`, sherlock chain ofrece `anthropic/haiku` (config #3221) | `same_provider:true`, `same_model:false` — sherlock usa haiku, NO dispara swap | Igual — el `model_override` ya diferencia, swap es no-op |
 | `commander=gemini-google/gemini-2.0-flash`, chain ofrece `gemini-google/gemini-2.0-flash` (mismo modelo) | `same_provider:true`, `same_model:true` — adversariality reducida aceptada | El resolver lee `alternative_models[]` del provider y elige `gemini-1.5-flash`; emite `sherlock_model_swap`. Resultado final: `sameModel:false` |
-| `commander=cerebras/llama-3.3-70b`, chain ofrece `cerebras/llama-3.3-70b`, provider SIN `alternative_models` declarado | `same_provider:true`, `same_model:true` — aceptado | Igual — default-safe, política inactiva (opt-in puro) |
+| `commander=openai-codex/gpt-5.4`, chain ofrece `openai-codex/gpt-5.4`, provider SIN `alternative_models` declarado | `same_provider:true`, `same_model:true` — aceptado | Igual — default-safe, política inactiva (opt-in puro) |
 
 #### Cómo configurarlo
 
@@ -2237,12 +2271,8 @@ En `agent-models.json` se declara `alternative_models: string[]` opcional dentro
 {
   "providers": {
     "gemini-google": {
-      "model": "gemini-2.0-flash",
-      "alternative_models": ["gemini-1.5-flash"]
-    },
-    "cerebras": {
-      "model": "llama-3.3-70b",
-      "alternative_models": ["llama-3.1-70b"]
+      "model": "gemini-3.8-flash-medium",
+      "alternative_models": ["gemini-3.7-flash-medium"]
     }
   }
 }
@@ -2460,7 +2490,7 @@ la ejecución (no inventada).
 > keys literales. Las credenciales se hidratan con el cargador único
 > [`.pipeline/lib/credentials.js`](../../.pipeline/lib/credentials.js) (fuente
 > `~/.claude/secrets/credentials.json`) y se referencian por placeholder
-> (`$ANTHROPIC_API_KEY`, `$GROQ_API_KEY`, `$GEMINI_API_KEY`, `$CEREBRAS_API_KEY`, …).
+> (`$ANTHROPIC_API_KEY`, `$OPENAI_API_KEY`, `$GEMINI_API_KEY`, …).
 > **Regla del proyecto:** las API keys se cargan por terminal de Windows, **nunca
 > por Telegram**, y viven solo en `credentials.json`. Toda evidencia (logs,
 > screenshots) va **redactada** — sin JWT, `Authorization`, ni keys visibles.
@@ -2482,7 +2512,7 @@ node .pipeline/tools/multi-provider-smoke-test.js --help
 node .pipeline/tools/multi-provider-smoke-test.js
 
 # Acotar a una celda concreta (útil para diagnosticar un provider)
-node .pipeline/tools/multi-provider-smoke-test.js --skill=guru --provider=cerebras
+node .pipeline/tools/multi-provider-smoke-test.js --skill=qa --provider=gemini-google
 
 # Ensayo sin invocar providers (coverage con PASS stub) — no gasta cuota
 node .pipeline/tools/multi-provider-smoke-test.js --dry-run --no-telegram --no-create-issues
@@ -2502,13 +2532,13 @@ para 'multi-provider-smoke-test'. Activar '.pausa' (halt total) O extender
 ```
 
 **Salida esperada dentro de ventana** (ejemplo real, `--dry-run` acotado a
-`guru × cerebras`; con credenciales presentes vía `credentials.js`):
+`qa × gemini-google`; con credenciales presentes vía `credentials.js`):
 
 ```text
 [smoke-test] Pipeline detenido (.pausa) — ventana segura.
-[smoke-test] Matriz construida: 95 combinaciones (skills LLM × providers LLM).
+[smoke-test] Matriz construida: 57 combinaciones (skills LLM × providers LLM).
 [smoke-test] Tras filtros CLI: 1 combinaciones.
-[smoke-test] Credenciales cerebras: OK (credenciales presentes)
+[smoke-test] Credenciales gemini-google: OK (credenciales presentes)
 [smoke-test] Skipped (--dry-run)
 [smoke-test] coverage.json escrito (1 entries, summary={"pass":1,"warn":0,"fail":0,...})
 { "ok": true, "run_id": "run-...", "summary": { "pass": 1, ... },
@@ -2543,7 +2573,7 @@ y stripear CR/LF anti log-injection):
 
 | Campo | Tipo | Significado |
 |---|---|---|
-| `provider` | string | provider resuelto (`anthropic`, `openai-codex`, `cerebras`, …) |
+| `provider` | string | provider resuelto (`anthropic`, `openai-codex`, `gemini-google`, …) |
 | `skill` | string | skill del agente (`backend-dev`, `guru`, …) |
 | `issue` | number\|null | número de issue procesado |
 | `tokens_in` | number | tokens de entrada (total canónico del adapter) |
@@ -2794,9 +2824,9 @@ se pierde trabajo):
 🚫 guru:#4405 — Cadena completa exhausted:
   → anthropic (DESCARTADO: quota_exhausted (sin cuota) — weekly 100%)
   → openai-codex (DESCARTADO: health_gate (health rojo reciente) — 429 hace 3min)
-  → cerebras (DESCARTADO: provider_inactive_by_schedule (fuera de horario) — 22:00-08:00)
+  → gemini-google (DESCARTADO: provider_inactive_by_schedule (fuera de horario) — 22:00-08:00)
   RESULTADO: all-gated, devuelvo a pendiente/ para retry
-  Chain evaluada: anthropic → openai-codex → cerebras (3 eslabones evaluados)
+  Chain evaluada: anthropic → openai-codex → gemini-google (3 eslabones evaluados)
 ```
 
 > Ambos bloques se generaron con el `formatProviderResolutionLog` real. Para
@@ -3141,7 +3171,7 @@ fail-closed**: un campo ausente vale *no declaró* (no cumple) y el mensaje lo d
     "cli_edits_files": true,
     "reports_usage": false,
     "terms_no_training": false,
-    "exception": { "reason": "baja programada en #6563", "until": "2026-10-31", "issue": 6563 }
+    "exception": { "reason": "plan pago pendiente de verificación en #6564", "until": "2026-12-31", "issue": 6564 }
   }
   ```
 
@@ -3188,34 +3218,36 @@ node .pipeline/lib/agent-models-validate.js          # OK / lista de errores acc
 node .pipeline/validate-agent-models.js              # CLI humanizado (#3089)
 ```
 
-### 16.4 Evaluación vigente (medición 2026-09-16)
+### 16.4 Evaluación vigente (medición 2026-09-16, actualizada post-#6563)
 
-Los proveedores configurados al momento de implementar el criterio, evaluados contra las
-tres condiciones. Las columnas repiten literalmente lo declarado en `agent-models.json`.
-Fuente de la medición: tabla del issue #6562 (estado al 25/08/2026), `capabilities` /
-`supports_tool_use` del JSON, los quota-adapters de `.pipeline/lib/quota-adapters/`
-(`gemini-google`, `nvidia-nim` y `cerebras` devuelven `not_implemented`; `kimi-moonshot` no
-tiene adapter) y la [tabla de TOS](../pipeline-multi-provider/data-residency.md).
+Los proveedores configurados, evaluados contra las tres condiciones. Las columnas repiten
+literalmente lo declarado en `agent-models.json`. Fuente de la medición: tabla del issue
+#6562 (estado al 25/08/2026), `capabilities` / `supports_tool_use` del JSON, los
+quota-adapters de `.pipeline/lib/quota-adapters/` (`gemini-google` devuelve
+`not_implemented`) y la [tabla de TOS](../pipeline-multi-provider/data-residency.md).
 
 | Proveedor | Edita archivos | Reporta consumo | Términos sin entrenamiento | Veredicto | Cómo sigue |
 |---|---|---|---|---|---|
 | `anthropic` | sí | sí, real | sí | **admisible** | — |
 | `openai-codex` | sí | sí, real | sí | **admisible** | — |
-| `gemini-google` | sí (CLI propia) | no | no (TOS del tier free de AI Studio entrena con prompts) | no admisible — excepción vigente | baja en #6563; excepción hasta 2026-10-31 |
-| `nvidia-nim` | sí | no (adapter `not_implemented`) | no (sin verificación documentada → `false`) | no admisible — excepción vigente | baja en #6563; excepción hasta 2026-10-31 |
-| `cerebras` | **no** (API pelada sin tool_use) | no | no (sin verificación documentada → `false`) | no admisible — excepción vigente | baja en #6563; excepción hasta 2026-10-31 |
-| `kimi-moonshot` | **no** | no (sin adapter) | no (sin verificación documentada → `false`) | no admisible — excepción vigente | baja en #6563; excepción hasta 2026-10-31 |
+| `gemini-google` | sí (CLI `agy` de Antigravity) | no (adapter `not_implemented`; parser de `usage.*` es #7288) | no (licencia paga de Antigravity sin verificación documentada todavía) | no admisible — excepción vigente | #6564 verifica el plan pago y documenta términos; excepción hasta 2026-12-31 |
 | `deterministic` | n/a | n/a | n/a | exento (sin LLM) | `non_llm: true` |
 
-**Decisión registrada:** los cuatro proveedores no admisibles siguen en las cadenas de 19 de
-23 skills **únicamente** por `admission.exception` con vencimiento e issue #6563. Este issue
-fija el criterio y lo hace cumplir; la remoción de las cadenas es alcance de #6563 (que
-depende de éste). Si #6563 no cierra antes del vencimiento, el boot del Pulpo rechaza la
-configuración con el mensaje de §16.3 — es fail-closed a propósito: la excepción se
-extiende editando la fecha en un PR trazable, nunca se ignora en silencio.
+**Retirados en #6563 (2026-09-16):** `nvidia-nim` (no reportaba consumo, términos sin
+verificar), `cerebras` (API pelada sin tool_use, no reportaba consumo) y `kimi-moonshot`
+(sin tool_use por el endpoint compatible, sin quota-adapter). Ya no existen en
+`agent-models.json` ni en el código; la re-alta se hace por §17.
+
+**Decisión registrada:** `gemini-google` es el único proveedor del plantel que sigue en las
+cadenas **únicamente** por `admission.exception`, ahora atada a #6564 (plan pago de Gemini).
+Si #6564 no cierra antes del 2026-12-31, el boot del Pulpo rechaza la configuración con el
+mensaje de §16.3 — es fail-closed a propósito: la excepción se extiende editando la fecha en
+un PR trazable (cap `ADMISSION_EXCEPTION_MAX_DAYS`), nunca se ignora en silencio. Ninguna
+excepción del JSON referencia a #6563.
 
 **Pendiente (recomendación #7285):** cross-validar `reports_usage` contra el quota-adapter
 real (`not_implemented` ⇒ no puede declarar `true`). Hoy la declaración es manual.
+**Pendiente (recomendación #7304):** preaviso de vencimiento de `admission.exception`.
 
 ### 16.5 Tests
 
@@ -3223,6 +3255,147 @@ real (`not_implemented` ⇒ no puede declarar `true`). Hoy la declaración es ma
 node --test .pipeline/tests/provider-admission-6562.test.js    # Gherkin 1:1 + fail-closed + excepción + policy JSON/doc
 node --test .pipeline/lib/__tests__/agent-models-validate.test.js
 ```
+
+---
+
+## 17. Plan de rollback — re-alta de un proveedor dado de baja (#6563)
+
+La baja de #6563 **no es un `git revert`**: es una re-alta con excepción temporal. Así el
+rollback vence solo (cap de 120 días, §16.2) y obliga a decidir de nuevo; nunca reinstala
+un proveedor "para siempre" ni salta el guardrail de admisión. El procedimiento sirve para
+cualquiera de los retirados (`cerebras`, `nvidia-nim`, `kimi-moonshot`) y para el caso en
+que la cadena de tres resulte insuficiente.
+
+### 17.1 Qué se restaura y de dónde
+
+Todo lo removido vive en el commit de la baja. `SHA_BAJA` es el merge commit del PR de
+#6563 en `main`; `SHA_BAJA^` es el estado inmediatamente anterior, con el proveedor
+completo.
+
+| Pieza | Path (estado en `SHA_BAJA^`) |
+|---|---|
+| Bloque de configuración | `providers.<x>` en `.pipeline/agent-models.json` (+ los `fallbacks[]` de cada skill donde iba) |
+| Adapter de launcher | `.pipeline/lib/agent-launcher/providers/<x>.js` (+ `runners/<x>-runner.js` para `cerebras`/`nvidia-nim`) y su registro en `resolve-provider.js` |
+| Quota-adapter | `.pipeline/lib/quota-adapters/<x>.js` + switch/allowlist en `quota-adapters/index.js`. **Sólo `cerebras` y `nvidia-nim`**: `kimi-moonshot` nunca tuvo quota-adapter ni runner (su cuota se detectaba por `KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER`) |
+| Allowlists del validador | `ALLOWED_LAUNCHERS`, `ALLOWED_MODELS_BY_LAUNCHER`, `ALLOWED_CREDENTIAL_ENV_VARS` en `.pipeline/lib/agent-models-validate.js`; `enum` informativo de `launcher` en `agent-models.schema.json`; `KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER` en `lib/quota-exhausted.js` |
+| Secretos | `secrets-manifest.json`, `lib/credentials.js`, `lib/secret-scopes.js`, `kernel-bootstrap/motor-9.1-secret-allowlist.json` |
+| Superficie del operador | filas en `views/dashboard/{providers,onboarding-wizard,home,multi-provider}.js`; tokens `--provider-<x>*` (`assets/design-tokens.css`) y símbolo `ic-provider-<x>` (`assets/icons/sprite.svg`) |
+
+### 17.2 Comandos
+
+```bash
+# 0. Precondiciones: rama nueva desde main, pipeline en ventana segura.
+export PATH="/c/Workspaces/gh-cli/bin:$PATH"
+git fetch origin && git switch -c agent/<issue-nuevo>-realta-<x> origin/main
+# SHA_BAJA = merge del PR que CERRÓ #6563. Se lee de GitHub (linked PR), no del texto
+# de los commits: `git log --grep '#6563'` también matchea #7295 y #7307, que sólo lo
+# mencionan, y `tail -1` devolvería el más antiguo (9867dc9c0, criterio de admisión).
+SHA_BAJA=$(gh api graphql -f query='{ repository(owner:"intrale", name:"platform") {
+  issue(number:6563) { closedByPullRequestsReferences(first:10) {
+    nodes { number merged mergeCommit { oid } } } } } }' \
+  --jq '.data.repository.issue.closedByPullRequestsReferences.nodes[] | select(.merged) | .mergeCommit.oid' \
+  | head -1)
+# Sanidad fail-closed: el merge de la baja BORRA los adapters retirados. Si el SHA no
+# los borra, no es ese commit y el resto del plan restauraría un estado equivocado.
+git diff --diff-filter=D --name-only "$SHA_BAJA^" "$SHA_BAJA" \
+  | grep -q '^\.pipeline/lib/agent-launcher/providers/cerebras\.js$' \
+  || { echo "SHA_BAJA='$SHA_BAJA' no es el merge de la baja de #6563"; exit 1; }
+X=nvidia-nim                                                          # proveedor a re-habilitar
+
+# 1. Backup del JSON vivo (misma convención que la UI del dashboard, §1.3).
+cp .pipeline/agent-models.json ".pipeline/agent-models.json.bak-$(date +%Y%m%d-%H%M%S)"
+
+# 2. Restaurar adapter (+ quota-adapter y runner, sólo si existían) desde el estado previo.
+#    El adapter de launcher es obligatorio para los tres. El quota-adapter y el runner
+#    existían sólo para cerebras y nvidia-nim: kimi-moonshot nunca tuvo ninguno de los dos
+#    (ver tabla 17.1), y un `git checkout` de un path inexistente aborta con `pathspec did
+#    not match`; por eso se comprueba la existencia antes de restaurar.
+git checkout "$SHA_BAJA^" -- ".pipeline/lib/agent-launcher/providers/$X.js"
+for f in ".pipeline/lib/quota-adapters/$X.js" ".pipeline/lib/agent-launcher/runners/$X-runner.js"; do
+  if git cat-file -e "$SHA_BAJA^:$f" 2>/dev/null; then git checkout "$SHA_BAJA^" -- "$f";
+  else echo "sin $f en SHA_BAJA^ (esperado para kimi-moonshot)"; fi
+done
+
+# 3. Volver a registrar el proveedor en las allowlists y el registro de handlers.
+#    Ver el diff exacto de la baja para cada archivo y aplicarlo al revés:
+git show "$SHA_BAJA" -- \
+  .pipeline/lib/agent-models-validate.js \
+  .pipeline/agent-models.schema.json \
+  .pipeline/lib/agent-launcher/resolve-provider.js \
+  .pipeline/lib/quota-adapters/index.js \
+  .pipeline/lib/quota-exhausted.js \
+  .pipeline/secrets-manifest.json .pipeline/lib/credentials.js .pipeline/lib/secret-scopes.js \
+  | grep -n "$X" | head -60
+#    (editar a mano: reponer la entrada en ALLOWED_LAUNCHERS / ALLOWED_MODELS_BY_LAUNCHER /
+#     ALLOWED_CREDENTIAL_ENV_VARS, el `case` del quota-adapter, el handler en
+#     PROVIDER_HANDLERS y la env var en el manifest de secretos)
+
+# 4. Reponer el bloque `providers.<x>` en agent-models.json desde el estado previo,
+#    y agregarle la excepción de admisión con issue NUEVO (nunca #6563) y vencimiento
+#    <= 120 días (ADMISSION_EXCEPTION_MAX_DAYS).
+X=$X SHA_BAJA=$SHA_BAJA node - <<'EOF'
+const fs = require('fs');
+const { execFileSync } = require('child_process');
+const X = process.env.X, SHA = process.env.SHA_BAJA;
+// execFileSync, no execSync: en Windows execSync pasa por cmd.exe, donde `^` es
+// carácter de escape y `git show SHA^:ruta` llega como `SHA:ruta` (estado POST-baja).
+const prev = JSON.parse(execFileSync('git', ['show', `${SHA}^:.pipeline/agent-models.json`], { encoding: 'utf8' }));
+const cur = JSON.parse(fs.readFileSync('.pipeline/agent-models.json', 'utf8'));
+cur.providers[X] = prev.providers[X];
+cur.providers[X].admission = {
+  ...cur.providers[X].admission,
+  exception: {
+    reason: 'rollback de #6563: la cadena de tres resultó insuficiente (<motivo medido>)',
+    until: '<YYYY-MM-DD, <= 120 días desde hoy>',
+    issue: 0, // <numero-del-issue-nuevo>
+  },
+};
+// Volver a colgarlo al FINAL de las cadenas donde iba (ver prev.skills.<s>.fallbacks).
+for (const [skill, cfg] of Object.entries(prev.skills)) {
+  const fb = (cfg.fallbacks || []).find(f => f.provider === X);
+  if (fb) (cur.skills[skill].fallbacks ||= []).push(fb);
+}
+fs.writeFileSync('.pipeline/agent-models.json', JSON.stringify(cur, null, 2).replace(/\n/g, '\r\n') + '\r\n');
+EOF
+
+# 5. Credencial del proveedor por terminal (NUNCA por Telegram), en el store externo.
+#    Ej. NVIDIA: NVIDIA_NIM_API_KEY en ~/.claude/secrets/credentials.json (§1.3).
+
+# 6. Validar la coherencia schema -> JSON -> allowlists y la excepción (hoy y al vencimiento).
+node .pipeline/lib/agent-models-validate.js
+node -e "const v=require('./.pipeline/lib/agent-models-validate.js');console.log(v.validate(undefined,{now:new Date('<until>T12:00:00Z')}).ok)"
+
+# 7. Tests del núcleo + cobertura de la cadena.
+node --test .pipeline/tests/validate-agent-models.test.js .pipeline/tests/provider-admission-6562.test.js \
+  ".pipeline/lib/__tests__/agent-models-validate*.test.js"
+node .pipeline/lib/multi-provider/validate-chains.js
+#    Matriz skill × provider en dry-run (sin spawn ni consumo de cuota). Exige ventana:
+#    pipeline con `.pausa` (halt total) o `.partial-pause.json` con
+#    `allowed_skills: ['multi-provider-smoke-test']`; si no, aborta con FATAL.
+node .pipeline/tools/multi-provider-smoke-test.js --dry-run --no-telegram --no-create-issues
+
+# 8. Restart y smoke test (mueve `pipeline-stable` si pasa; rollback automático si no).
+node .pipeline/restart.js
+bash .pipeline/smoke-test.sh
+
+# 9. PR con `Closes #<issue-nuevo>`: CODEOWNERS exige review humana de `.pipeline/`.
+```
+
+### 17.3 Reglas
+
+- **La excepción es obligatoria y temporal.** El guardrail (§16.3) rechaza la re-alta sin
+  `admission.exception { reason, until, issue }`, con `until` a más de 120 días o con
+  `issue` inexistente. Vencida, el boot vuelve a rechazar: hay que decidir de nuevo.
+- **Nunca `git revert` del PR de la baja.** Reintroduciría los tres proveedores a la vez, con
+  las excepciones vencidas (`until: 2026-10-31`, `issue: 6563`), y el boot fallaría igual.
+- **Un proveedor por PR.** El validador exige coherencia schema → JSON → allowlists; un estado
+  intermedio (adapter restaurado sin entrada en el JSON, o al revés) no arranca.
+- **La superficie del operador se restaura al final**, sólo si el proveedor vuelve a estar en
+  las cadenas: filas del dashboard/wizard desde `SHA_BAJA^`. Los tokens de color y el símbolo
+  del sprite quedaron reservados en el sistema de diseño, así que no hace falta rediseño.
+- **Salida del rollback:** o el proveedor cumple las tres condiciones de §16.1 y se le quita la
+  excepción, o se vuelve a dar de baja con este mismo procedimiento al revés (el PR de #6563
+  es la referencia de qué tocar).
 
 ---
 

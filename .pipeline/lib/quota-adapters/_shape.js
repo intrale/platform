@@ -33,8 +33,8 @@
 //                          operador debe revisar `errorReason`.
 //   - 'not_implemented' → provider declarado pero el adapter no está hecho
 //                          todavía (e.g. OpenAI/Codex stub durante M2a).
-//   - 'no_quota'        → provider SIN CONCEPTO de cuota (e.g. Ollama local,
-//                          skills deterministas). pct siempre `null`, status
+//   - 'no_quota'        → provider SIN CONCEPTO de cuota (e.g. skills
+//                          deterministas). pct siempre `null`, status
 //                          siempre 'no_quota'. NO significa "cuota agotada".
 //   - 'no_usage_data'   → el provider SÍ tiene cuota, pero no hay consumo
 //                          registrado este mes (e.g. Codex sin entradas en

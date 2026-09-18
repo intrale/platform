@@ -147,10 +147,7 @@ $ awk '...extraer identificador + dueño de cada fila de tabla...' docs/pipeline
 |---|---|---|---|
 | `providers.openai.api_key` | **(b)** | secreto que no rota fuera del rol de provisión | `shared/` — la clave es de la **cuenta** del provider y la cuota también; emitir una por host multiplicaría los puntos de rotación sin acotar el blast radius. |
 | `providers.anthropic.api_key` | **(b)** | ídem | `shared/`. El pipeline se autentica con OAuth Max: el alta puede terminar declarándose N/A (decisión de #5217). |
-| `providers.moonshot.api_key` | **(b)** | ídem | `shared/` — misma membresía. |
 | `providers.google.api_key` | **(b)** | ídem | `shared/` — misma membresía. |
-| `providers.cerebras.api_key` | **(b)** | ídem | `shared/` — misma membresía. |
-| `providers.nvidia.api_key` | **(b)** | ídem | `shared/` — misma membresía. |
 | `openai_api_key` / `anthropic_api_key` (respaldo ad-hoc) | **(b)** | consolidación, **no** alta nueva | Almacén adicional no declarado en el épico; resuelve contra las dos entradas de arriba y se elimina en #5217. |
 
 ### Google Drive / OAuth

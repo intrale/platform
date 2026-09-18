@@ -141,47 +141,26 @@ const CAPABILITY_MATRIX = Object.freeze({
     }),
 
     // -------------------------------------------------------------------------
-    // FREE PROVIDERS (#3220 / #3243) — gemini-google, cerebras, nvidia-nim.
+    // FREE PROVIDER (#3220 / #3243) — gemini-google. (cerebras y nvidia-nim
+    // tenían celdas idénticas; se retiraron del pipeline en #6563.)
     //
-    // Defecto #2 del portero (#3820): estos tres providers figuran en las
-    // cadenas de fallback de agent-models.json (resuelven a mode
-    // `bypassPermissions` vía resolvePermissionMode) pero NO tenían celda en la
-    // matriz → todo salto hacia ellos fallaba `mode_unknown` (fail-CLOSED).
+    // Defecto #2 del portero (#3820): el provider figura en las cadenas de
+    // fallback de agent-models.json (resuelve a mode `bypassPermissions` vía
+    // resolvePermissionMode) pero NO tenía celda en la matriz → todo salto
+    // hacia él fallaba `mode_unknown` (fail-CLOSED).
     //
-    // Corren como agentes autónomos del pipeline (CLIs propios) haciendo el
-    // mismo trabajo de dev/qa/análisis que Claude/Codex en modo autónomo. Por
-    // diseño conceden el set autónomo completo (idéntico a anthropic/bypass),
-    // SALVO file_write_outside_repo / bash_elevated / network_in que ningún
-    // provider del pipeline concede al spawn.
+    // Corre como agente autónomo del pipeline (CLI propio) haciendo el mismo
+    // trabajo de dev/qa/análisis que Claude/Codex en modo autónomo. Por diseño
+    // concede el set autónomo completo (idéntico a anthropic/bypass), SALVO
+    // file_write_outside_repo / bash_elevated / network_in que ningún provider
+    // del pipeline concede al spawn.
     //
-    // PROVISIONAL hasta #3198 (runtime real de wrappers): los handlers hoy son
-    // stubs. Cuando #3198 ejecute el binario real y un provider concreto
-    // demuestre conceder MENOS, esta celda se recorta (mismo flujo que CA-19
-    // para Codex: doc + parity test + CODEOWNERS).
+    // PROVISIONAL hasta #3198 (runtime real de wrappers): el handler hoy es un
+    // stub. Cuando #3198 ejecute el binario real y el provider demuestre
+    // conceder MENOS, esta celda se recorta (mismo flujo que CA-19 para Codex:
+    // doc + parity test + CODEOWNERS).
     // -------------------------------------------------------------------------
     'gemini-google': Object.freeze({
-        bypassPermissions: immutableSet([
-            'file_read',
-            'file_write_repo',
-            'bash',
-            'network_out',
-            'child_spawn',
-            'long_running_watcher',
-            'tool_use_gated',
-        ]),
-    }),
-    cerebras: Object.freeze({
-        bypassPermissions: immutableSet([
-            'file_read',
-            'file_write_repo',
-            'bash',
-            'network_out',
-            'child_spawn',
-            'long_running_watcher',
-            'tool_use_gated',
-        ]),
-    }),
-    'nvidia-nim': Object.freeze({
         bypassPermissions: immutableSet([
             'file_read',
             'file_write_repo',

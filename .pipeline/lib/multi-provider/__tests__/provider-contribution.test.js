@@ -56,12 +56,16 @@ function manyBlocked(n, provider, extra = {}) {
     return many(n, 'fallback_health_gated', provider, { health_reason: 'quota_exhausted', ...extra });
 }
 
+// #6563 — el plantel real quedo con un solo free (gemini-google). El criterio
+// es generico y su invariante de cadena minima necesita VARIOS no-pagos para
+// probarse, asi que los tests declaran dos free sinteticos (`free-uno`,
+// `free-dos`) ademas de Gemini; no son proveedores del pipeline.
 const DECLARED = {
     anthropic: { billing: 'paid', declaredInConfig: true },
     'openai-codex': { billing: 'paid', declaredInConfig: true },
     'gemini-google': { billing: 'free', declaredInConfig: true },
-    cerebras: { billing: 'free', declaredInConfig: true },
-    'nvidia-nim': { billing: 'free', declaredInConfig: true },
+    'free-uno': { billing: 'free', declaredInConfig: true },
+    'free-dos': { billing: 'free', declaredInConfig: true },
 };
 
 const THRESHOLDS = {
@@ -85,13 +89,13 @@ function evaluate(entries, { declared = DECLARED, thresholds = THRESHOLDS, chain
 
 test('el denominador excluye los gateos por ventana horaria', () => {
     const entries = [
-        ...many(50, 'fallback_selected', 'cerebras'),
-        ...manyBlocked(50, 'cerebras'),
+        ...many(50, 'fallback_selected', 'free-uno'),
+        ...manyBlocked(50, 'free-uno'),
         // 600 gateos por horario: si contaran, la tasa caería de 50% a ~7%.
-        ...many(300, 'primary_inactive_by_schedule', null, { primary_provider: 'cerebras' }),
-        ...many(300, 'fallback_provider_inactive_by_schedule', 'cerebras'),
+        ...many(300, 'primary_inactive_by_schedule', null, { primary_provider: 'free-uno' }),
+        ...many(300, 'fallback_provider_inactive_by_schedule', 'free-uno'),
     ];
-    const m = mod.computeContribution(entries, { now: NOW }).cerebras;
+    const m = mod.computeContribution(entries, { now: NOW })['free-uno'];
 
     assert.strictEqual(m.attempts, 700, 'los 700 eventos se cuentan como intentos');
     assert.strictEqual(m.gatedBySchedule, 600, 'los 600 de horario se aíslan');
@@ -102,11 +106,11 @@ test('el denominador excluye los gateos por ventana horaria', () => {
 
 test('chain_exhausted no se imputa a ningun proveedor', () => {
     const entries = [
-        ...many(10, 'fallback_selected', 'cerebras'),
+        ...many(10, 'fallback_selected', 'free-uno'),
         ...many(500, 'chain_exhausted', null, { primary_provider: 'anthropic' }),
     ];
     const metrics = mod.computeContribution(entries, { now: NOW });
-    assert.strictEqual(metrics.cerebras.attempts, 10);
+    assert.strictEqual(metrics['free-uno'].attempts, 10);
     assert.strictEqual(metrics.anthropic, undefined, 'chain_exhausted no crea filas de proveedor');
 });
 
@@ -125,10 +129,10 @@ test('el kill-switch del operador no baja la tasa de aporte del proveedor', () =
     // El caso exacto del rebote: 10 intentos reales, 10 aciertos (100%), mas 400
     // saltos porque NOSOTROS apagamos el proveedor.
     const entries = [
-        ...many(10, 'fallback_selected', 'cerebras'),
-        ...many(400, 'fallback_provider_disabled', 'cerebras'),
+        ...many(10, 'fallback_selected', 'free-uno'),
+        ...many(400, 'fallback_provider_disabled', 'free-uno'),
     ];
-    const m = mod.computeContribution(entries, { now: NOW }).cerebras;
+    const m = mod.computeContribution(entries, { now: NOW })['free-uno'];
 
     assert.strictEqual(m.attempts, 410);
     assert.strictEqual(m.gatedByOperator, 400, 'los 400 saltos son del operador, no del proveedor');
@@ -143,15 +147,15 @@ test('el kill-switch del operador nunca empuja a un proveedor sano a candidato a
     // Con dos gratuitos sanos el invariante de cadena minima no interviene, asi
     // que el veredicto sale del criterio puro (era `candidato_baja` en rev-2).
     const entries = [
-        ...many(10, 'fallback_selected', 'cerebras'),
-        ...many(400, 'fallback_provider_disabled', 'cerebras'),
-        ...many(300, 'fallback_selected', 'nvidia-nim'),
+        ...many(10, 'fallback_selected', 'free-uno'),
+        ...many(400, 'fallback_provider_disabled', 'free-uno'),
+        ...many(300, 'fallback_selected', 'free-dos'),
     ];
     const { verdicts } = evaluate(entries, { thresholds: { ...THRESHOLDS, min_sample: 10 } });
 
-    assert.strictEqual(verdicts.cerebras.verdict, mod.VERDICT.MANTENER,
+    assert.strictEqual(verdicts['free-uno'].verdict, mod.VERDICT.MANTENER,
         'apagar un proveedor a mano no puede leerse como que el proveedor no aporta');
-    assert.strictEqual(verdicts.cerebras.evidence.gatedByOperator, 400,
+    assert.strictEqual(verdicts['free-uno'].evidence.gatedByOperator, 400,
         'el audit deja constancia de cuanto del descarte fue decision nuestra');
 });
 
@@ -164,11 +168,11 @@ test('el primario y el fallback del mismo kill-switch se clasifican igual', () =
         'el freno de ritmo (#4289) tambien es una decision nuestra');
 
     const porPrimario = mod.computeContribution(
-        many(100, 'provider_disabled', null, { primary_provider: 'cerebras' }), { now: NOW },
-    ).cerebras;
+        many(100, 'provider_disabled', null, { primary_provider: 'free-uno' }), { now: NOW },
+    )['free-uno'];
     const porFallback = mod.computeContribution(
-        many(100, 'fallback_provider_disabled', 'cerebras'), { now: NOW },
-    ).cerebras;
+        many(100, 'fallback_provider_disabled', 'free-uno'), { now: NOW },
+    )['free-uno'];
 
     assert.strictEqual(porPrimario.evaluables, porFallback.evaluables, 'mismo denominador');
     assert.strictEqual(porPrimario.gatedByOperator, porFallback.gatedByOperator, 'mismo descuento');
@@ -177,9 +181,9 @@ test('el primario y el fallback del mismo kill-switch se clasifican igual', () =
 
 test('el freno de ritmo se cuenta aparte del kill-switch manual', () => {
     const m = mod.computeContribution([
-        ...many(30, 'fallback_provider_disabled', 'cerebras'),
-        ...many(12, 'fallback_pacing_budget_red', 'cerebras'),
-    ], { now: NOW }).cerebras;
+        ...many(30, 'fallback_provider_disabled', 'free-uno'),
+        ...many(12, 'fallback_pacing_budget_red', 'free-uno'),
+    ], { now: NOW })['free-uno'];
 
     assert.strictEqual(m.gatedByOperator, 42, 'ambos son gateo operativo');
     assert.deepStrictEqual(m.operatorGates, { kill_switch: 30, pacing: 12 },
@@ -198,9 +202,9 @@ test('fallback_also_gated se imputa al cupo del proveedor y no a la ventana hora
     assert.strictEqual(mod.EVENT_KIND.fallback_also_gated, 'cupo_gate');
 
     const m = mod.computeContribution([
-        ...many(40, 'fallback_selected', 'cerebras'),
-        ...many(300, 'fallback_also_gated', 'cerebras'),
-    ], { now: NOW }).cerebras;
+        ...many(40, 'fallback_selected', 'free-uno'),
+        ...many(300, 'fallback_also_gated', 'free-uno'),
+    ], { now: NOW })['free-uno'];
 
     assert.strictEqual(m.gatedBySchedule, 0, 'no es ventana horaria');
     assert.strictEqual(m.gatedByQuotaFlag, 300, 'tiene columna propia');
@@ -212,12 +216,12 @@ test('un gratuito seco cae en no_evaluable y nunca en candidato a baja por cupo 
     // Contracara del test anterior: excluir el flag de cuota no puede convertirse
     // en una via para que un proveedor sin un solo aporte pase por sano.
     const entries = [
-        ...many(500, 'fallback_selected', 'cerebras'),
-        ...many(5000, 'fallback_also_gated', 'nvidia-nim'),   // seco toda la ventana
+        ...many(500, 'fallback_selected', 'free-uno'),
+        ...many(5000, 'fallback_also_gated', 'free-dos'),   // seco toda la ventana
     ];
     const { verdicts } = evaluate(entries);
 
-    assert.strictEqual(verdicts['nvidia-nim'].verdict, mod.VERDICT.NO_EVALUABLE,
+    assert.strictEqual(verdicts['free-dos'].verdict, mod.VERDICT.NO_EVALUABLE,
         'invariante 2 del body: sin dato evaluable es "no evaluable", jamas "no aporta"');
 });
 
@@ -227,21 +231,21 @@ test('un gratuito seco cae en no_evaluable y nunca en candidato a baja por cupo 
 
 test('un proveedor sin muestra suficiente queda no_evaluable y nunca candidato a baja', () => {
     const entries = [
-        // cerebras: sano, sostiene la cadena.
-        ...many(200, 'fallback_selected', 'cerebras'),
-        // nvidia-nim: 99 evaluables < min_sample=100, y 0 aportes.
-        ...manyBlocked(99, 'nvidia-nim'),
+        // free-uno: sano, sostiene la cadena.
+        ...many(200, 'fallback_selected', 'free-uno'),
+        // free-dos: 99 evaluables < min_sample=100, y 0 aportes.
+        ...manyBlocked(99, 'free-dos'),
     ];
     const { verdicts } = evaluate(entries);
 
-    assert.strictEqual(verdicts['nvidia-nim'].verdict, mod.VERDICT.NO_EVALUABLE);
-    assert.notStrictEqual(verdicts['nvidia-nim'].verdict, mod.VERDICT.CANDIDATO_BAJA);
-    assert.match(verdicts['nvidia-nim'].reasons.join(' '), /muestra insuficiente/);
+    assert.strictEqual(verdicts['free-dos'].verdict, mod.VERDICT.NO_EVALUABLE);
+    assert.notStrictEqual(verdicts['free-dos'].verdict, mod.VERDICT.CANDIDATO_BAJA);
+    assert.match(verdicts['free-dos'].reasons.join(' '), /muestra insuficiente/);
 });
 
 test('sin dato en la ventana no equivale a no aporta', () => {
     // gemini-google está declarado pero NO aparece ni una vez en la ventana.
-    const entries = many(500, 'fallback_selected', 'cerebras');
+    const entries = many(500, 'fallback_selected', 'free-uno');
     const { verdicts } = evaluate(entries);
 
     assert.strictEqual(verdicts['gemini-google'].verdict, mod.VERDICT.NO_EVALUABLE);
@@ -260,7 +264,7 @@ test('un gateo durable por cli_license_unavailable no baja la tasa de aporte', (
     // la tasa de aporte: va a la columna bloqueo_observabilidad". Ahora el gateo
     // por causa NUESTRA queda fuera del denominador y el test asserta el número.
     const entries = [
-        ...many(300, 'fallback_selected', 'cerebras'),   // sostiene la cadena
+        ...many(300, 'fallback_selected', 'free-uno'),   // sostiene la cadena
         // gemini: 120 aportes + 30 bloqueos imputables al proveedor => 150
         // evaluables reales, 80 % de tasa. Los 1.000 gateos por un flag de
         // entorno NUESTRO no entran al denominador.
@@ -297,7 +301,7 @@ test('el techo rol_acotado sigue tapando la baja si aun asi la tasa queda baja',
     // de causa nuestra, el veredicto se topa en `rol_acotado`. Nunca se propone
     // la baja sin corregir antes el chequeo.
     const entries = [
-        ...many(300, 'fallback_selected', 'cerebras'),   // sostiene la cadena
+        ...many(300, 'fallback_selected', 'free-uno'),   // sostiene la cadena
         ...many(2, 'fallback_selected', 'gemini-google'),
         ...manyBlocked(200, 'gemini-google'),
         ...many(1000, 'fallback_health_gated', 'gemini-google', {
@@ -322,17 +326,17 @@ test('un bloqueo por causa del proveedor si habilita el candidato a baja', () =>
     // de `rol_acotado` podría estar aplicándose siempre y el criterio no
     // marcaría nunca a nadie.
     const entries = [
-        ...many(300, 'fallback_selected', 'cerebras'),
-        ...many(10, 'fallback_selected', 'nvidia-nim'),
-        ...many(1000, 'fallback_health_gated', 'nvidia-nim', {
+        ...many(300, 'fallback_selected', 'free-uno'),
+        ...many(10, 'fallback_selected', 'free-dos'),
+        ...many(1000, 'fallback_health_gated', 'free-dos', {
             health_state: 'red',
             health_reason: 'invalid_credentials',
         }),
     ];
     const { metrics, verdicts } = evaluate(entries);
 
-    assert.strictEqual(metrics['nvidia-nim'].dominantBlock, 'credencial');
-    assert.strictEqual(verdicts['nvidia-nim'].verdict, mod.VERDICT.CANDIDATO_BAJA);
+    assert.strictEqual(metrics['free-dos'].dominantBlock, 'credencial');
+    assert.strictEqual(verdicts['free-dos'].verdict, mod.VERDICT.CANDIDATO_BAJA);
 });
 
 // -----------------------------------------------------------------------------
@@ -341,8 +345,8 @@ test('un bloqueo por causa del proveedor si habilita el candidato a baja', () =>
 
 test('cadena de hash corrupta o archivo faltante impide evaluar a todos los proveedores', () => {
     const entries = [
-        ...many(500, 'fallback_selected', 'cerebras'),
-        ...manyBlocked(500, 'nvidia-nim'),
+        ...many(500, 'fallback_selected', 'free-uno'),
+        ...manyBlocked(500, 'free-dos'),
     ];
     const { verdicts } = evaluate(entries, { chainOk: false });
 
@@ -367,7 +371,7 @@ test('readWindow descarta el archivo con hash-chain rota y lo reporta', () => {
     };
     const fakeAuditLog = {
         verifyChain: (file) => ({ ok: !String(file).endsWith('2026-08-19.jsonl'), reason: 'hash_self mismatch' }),
-        readAll: () => [ev('fallback_selected', 'cerebras', { created_at: NOW - DAY })],
+        readAll: () => [ev('fallback_selected', 'free-uno', { created_at: NOW - DAY })],
     };
     const res = mod.readWindow({
         pipelineDir: '/fake',
@@ -389,17 +393,17 @@ test('readWindow descarta el archivo con hash-chain rota y lo reporta', () => {
 test('nunca marca candidato al ultimo proveedor sano de la cadena', () => {
     // Un solo proveedor gratuito declarado, y con tasa por debajo del umbral.
     // Marcarlo dejaría la cadena de gratuitos vacía => no se marca.
-    const declared = { cerebras: { billing: 'free', declaredInConfig: true } };
+    const declared = { 'free-uno': { billing: 'free', declaredInConfig: true } };
     const entries = [
-        ...many(5, 'fallback_selected', 'cerebras'),
-        ...manyBlocked(500, 'cerebras'),
+        ...many(5, 'fallback_selected', 'free-uno'),
+        ...manyBlocked(500, 'free-uno'),
     ];
     const { metrics, verdicts } = evaluate(entries, { declared });
 
-    assert.ok(metrics.cerebras.contributionRate < 0.05, 'la tasa cruda justifica el candidato');
-    assert.strictEqual(verdicts.cerebras.verdict, mod.VERDICT.ROL_ACOTADO);
-    assert.strictEqual(verdicts.cerebras.chainInvariantApplied, true);
-    assert.match(verdicts.cerebras.reasons.join(' '), /invariante de cadena minima/);
+    assert.ok(metrics['free-uno'].contributionRate < 0.05, 'la tasa cruda justifica el candidato');
+    assert.strictEqual(verdicts['free-uno'].verdict, mod.VERDICT.ROL_ACOTADO);
+    assert.strictEqual(verdicts['free-uno'].chainInvariantApplied, true);
+    assert.match(verdicts['free-uno'].reasons.join(' '), /invariante de cadena minima/);
 });
 
 // -----------------------------------------------------------------------------
@@ -420,17 +424,17 @@ test('el invariante de cadena minima no lo satisfacen los pagos de forma vacua',
         ...many(500, 'fallback_health_gated', 'gemini-google', {
             health_state: 'red', health_reason: 'quota_exhausted',
         }),
-        ...many(5, 'fallback_selected', 'cerebras'),
-        ...manyBlocked(500, 'cerebras'),
-        ...many(5, 'fallback_selected', 'nvidia-nim'),
-        ...manyBlocked(500, 'nvidia-nim'),
+        ...many(5, 'fallback_selected', 'free-uno'),
+        ...manyBlocked(500, 'free-uno'),
+        ...many(5, 'fallback_selected', 'free-dos'),
+        ...manyBlocked(500, 'free-dos'),
         // Los pagos, con muestra de sobra y aporte alto.
         ...many(500, 'fallback_selected', 'anthropic'),
         ...many(500, 'fallback_selected', 'openai-codex'),
     ];
     const { metrics, verdicts } = evaluate(entries);
 
-    for (const free of ['gemini-google', 'cerebras', 'nvidia-nim']) {
+    for (const free of ['gemini-google', 'free-uno', 'free-dos']) {
         assert.ok(metrics[free].contributionRate < 0.05, `${free}: la tasa cruda justifica el candidato`);
         assert.strictEqual(
             verdicts[free].verdict,
@@ -455,22 +459,22 @@ test('con gratuitos sanos de sobra el criterio si marca al que no aporta', () =>
     // bloqueando SIEMPRE y el criterio no marcaría nunca a nadie (CA-6 vacío).
     const entries = [
         ...many(500, 'fallback_selected', 'gemini-google'),   // aporta
-        ...many(500, 'fallback_selected', 'cerebras'),        // aporta
-        ...many(5, 'fallback_selected', 'nvidia-nim'),        // no aporta
-        ...manyBlocked(500, 'nvidia-nim'),
+        ...many(500, 'fallback_selected', 'free-uno'),        // aporta
+        ...many(5, 'fallback_selected', 'free-dos'),        // no aporta
+        ...manyBlocked(500, 'free-dos'),
         ...many(500, 'fallback_selected', 'anthropic'),
         ...many(500, 'fallback_selected', 'openai-codex'),
     ];
     const { verdicts } = evaluate(entries);
 
     assert.strictEqual(verdicts['gemini-google'].verdict, mod.VERDICT.MANTENER);
-    assert.strictEqual(verdicts.cerebras.verdict, mod.VERDICT.MANTENER);
+    assert.strictEqual(verdicts['free-uno'].verdict, mod.VERDICT.MANTENER);
     assert.strictEqual(
-        verdicts['nvidia-nim'].verdict,
+        verdicts['free-dos'].verdict,
         mod.VERDICT.CANDIDATO_BAJA,
         'quedan 2 gratuitos sanos: el invariante no aplica y el criterio marca',
     );
-    assert.strictEqual(verdicts['nvidia-nim'].chainInvariantApplied, undefined);
+    assert.strictEqual(verdicts['free-dos'].chainInvariantApplied, undefined);
 });
 
 test('min_survivors alto exige mas gratuitos sanos antes de marcar a nadie', () => {
@@ -478,16 +482,16 @@ test('min_survivors alto exige mas gratuitos sanos antes de marcar a nadie', () 
     // sólo hay 2, así que el candidato se revierte.
     const entries = [
         ...many(500, 'fallback_selected', 'gemini-google'),
-        ...many(500, 'fallback_selected', 'cerebras'),
-        ...many(5, 'fallback_selected', 'nvidia-nim'),
-        ...manyBlocked(500, 'nvidia-nim'),
+        ...many(500, 'fallback_selected', 'free-uno'),
+        ...many(5, 'fallback_selected', 'free-dos'),
+        ...manyBlocked(500, 'free-dos'),
         ...many(500, 'fallback_selected', 'anthropic'),
         ...many(500, 'fallback_selected', 'openai-codex'),
     ];
     const { verdicts } = evaluate(entries, { thresholds: { ...THRESHOLDS, min_survivors: 3 } });
 
-    assert.strictEqual(verdicts['nvidia-nim'].verdict, mod.VERDICT.ROL_ACOTADO);
-    assert.strictEqual(verdicts['nvidia-nim'].chainInvariantApplied, true);
+    assert.strictEqual(verdicts['free-dos'].verdict, mod.VERDICT.ROL_ACOTADO);
+    assert.strictEqual(verdicts['free-dos'].chainInvariantApplied, true);
 });
 
 // -----------------------------------------------------------------------------
@@ -498,11 +502,11 @@ test('el kill-switch del operador no le baja la tasa de aporte al proveedor', ()
     // `provider_disabled` es una decisión NUESTRA (kill-switch #3811), igual que
     // la ventana horaria. Contarlo en el denominador mediría al operador.
     const entries = [
-        ...many(300, 'fallback_selected', 'cerebras'),
-        ...many(100, 'fallback_selected', 'nvidia-nim'),
-        ...many(900, 'provider_disabled', 'x', { primary_provider: 'nvidia-nim' }),
+        ...many(300, 'fallback_selected', 'free-uno'),
+        ...many(100, 'fallback_selected', 'free-dos'),
+        ...many(900, 'provider_disabled', 'x', { primary_provider: 'free-dos' }),
     ];
-    const m = mod.computeContribution(entries, { now: NOW })['nvidia-nim'];
+    const m = mod.computeContribution(entries, { now: NOW })['free-dos'];
 
     assert.strictEqual(m.gatedByOperator, 900, 'se cuenta aparte, imputado al primario');
     assert.strictEqual(m.evaluables, 100, 'fuera del denominador');
@@ -514,11 +518,11 @@ test('el costo de failover reconcilia con las entradas leidas, sin eventos huerf
     // rev-2: el review encontró 261 eventos que quedaban FUERA del total y por lo
     // tanto fuera de los porcentajes, sin que el reporte lo mencionara.
     const entries = [
-        ...many(10, 'fallback_selected', 'cerebras'),
+        ...many(10, 'fallback_selected', 'free-uno'),
         ...many(5, 'primary_inactive_by_schedule', 'x', { primary_provider: 'anthropic' }),
         ...many(3, 'gated_no_fallbacks', 'x', { primary_provider: 'anthropic' }),
         ...many(2, 'provider_disabled', 'x', { primary_provider: 'anthropic' }),
-        ...many(7, 'evento_del_futuro_que_nadie_declaro', 'cerebras'),
+        ...many(7, 'evento_del_futuro_que_nadie_declaro', 'free-uno'),
     ];
     const fc = mod.computeFailoverCost(entries);
 
@@ -533,23 +537,23 @@ test('el costo de failover reconcilia con las entradas leidas, sin eventos huerf
 test('una ventana vacia se reporta como sin datos, nunca como cadena rota', () => {
     // rev-2: con 0 archivos el reporte decía "la cadena de hash no verificó
     // (0 archivo/s con integridad rota)" — una frase autocontradictoria.
-    const declared = { cerebras: { billing: 'free', declaredInConfig: true } };
+    const declared = { 'free-uno': { billing: 'free', declaredInConfig: true } };
     const verdicts = mod.evaluatePermanence({}, THRESHOLDS, {
         chainOk: false, noData: true, declared, now: NOW,
     });
-    assert.strictEqual(verdicts.cerebras.verdict, mod.VERDICT.NO_EVALUABLE);
-    assert.match(verdicts.cerebras.reasons.join(' '), /sin datos en la ventana/);
-    assert.ok(!verdicts.cerebras.reasons.join(' ').includes('rota'), 'no habla de corrupción');
+    assert.strictEqual(verdicts['free-uno'].verdict, mod.VERDICT.NO_EVALUABLE);
+    assert.match(verdicts['free-uno'].reasons.join(' '), /sin datos en la ventana/);
+    assert.ok(!verdicts['free-uno'].reasons.join(' ').includes('rota'), 'no habla de corrupción');
 
     const rota = mod.evaluatePermanence({}, THRESHOLDS, {
         chainOk: false, noData: false, declared, now: NOW,
     });
-    assert.match(rota.cerebras.reasons.join(' '), /cadena de hash rota/);
+    assert.match(rota['free-uno'].reasons.join(' '), /cadena de hash rota/);
 });
 
 test('un proveedor pago nunca es candidato a baja', () => {
     const entries = [
-        ...many(300, 'fallback_selected', 'cerebras'),
+        ...many(300, 'fallback_selected', 'free-uno'),
         // openai-codex: 1 aporte sobre 1001 evaluables, último aporte hace 40 días.
         ...many(1, 'fallback_selected', 'openai-codex', { created_at: NOW - 40 * DAY }),
         ...manyBlocked(1000, 'openai-codex'),
@@ -562,27 +566,27 @@ test('un proveedor pago nunca es candidato a baja', () => {
 
 test('un proveedor sin ningun aporte en la ventana queda marcado como candidato con evidencia', () => {
     const entries = [
-        ...many(500, 'fallback_selected', 'cerebras'),
-        ...manyBlocked(500, 'nvidia-nim'),   // cero wins
+        ...many(500, 'fallback_selected', 'free-uno'),
+        ...manyBlocked(500, 'free-dos'),   // cero wins
     ];
     const { verdicts } = evaluate(entries);
 
-    assert.strictEqual(verdicts['nvidia-nim'].verdict, mod.VERDICT.CANDIDATO_BAJA);
-    assert.strictEqual(verdicts['nvidia-nim'].evidence.wins, 0);
-    assert.strictEqual(verdicts['nvidia-nim'].evidence.evaluables, 500);
-    assert.match(verdicts['nvidia-nim'].reasons.join(' '), /sin ningun aporte real en la ventana/);
+    assert.strictEqual(verdicts['free-dos'].verdict, mod.VERDICT.CANDIDATO_BAJA);
+    assert.strictEqual(verdicts['free-dos'].evidence.wins, 0);
+    assert.strictEqual(verdicts['free-dos'].evidence.evaluables, 500);
+    assert.match(verdicts['free-dos'].reasons.join(' '), /sin ningun aporte real en la ventana/);
 });
 
 test('un proveedor que dejo de aportar hace mas dias que el umbral queda candidato', () => {
     const entries = [
-        ...many(500, 'fallback_selected', 'cerebras'),
-        ...many(400, 'fallback_selected', 'nvidia-nim', { created_at: NOW - 20 * DAY }),
-        ...manyBlocked(100, 'nvidia-nim'),
+        ...many(500, 'fallback_selected', 'free-uno'),
+        ...many(400, 'fallback_selected', 'free-dos', { created_at: NOW - 20 * DAY }),
+        ...manyBlocked(100, 'free-dos'),
     ];
     const { verdicts } = evaluate(entries);
 
-    assert.strictEqual(verdicts['nvidia-nim'].verdict, mod.VERDICT.CANDIDATO_BAJA);
-    assert.match(verdicts['nvidia-nim'].reasons.join(' '), /ultimo aporte hace 20\.0 dias/);
+    assert.strictEqual(verdicts['free-dos'].verdict, mod.VERDICT.CANDIDATO_BAJA);
+    assert.match(verdicts['free-dos'].reasons.join(' '), /ultimo aporte hace 20\.0 dias/);
 });
 
 // -----------------------------------------------------------------------------
@@ -591,38 +595,38 @@ test('un proveedor que dejo de aportar hace mas dias que el umbral queda candida
 
 test('un proveedor presente en el log y ausente de config se reporta sin_declarar', () => {
     const entries = [
-        ...many(500, 'fallback_selected', 'cerebras'),
-        ...many(73, 'fallback_selected', 'kimi-moonshot'),
+        ...many(500, 'fallback_selected', 'free-uno'),
+        ...many(73, 'fallback_selected', 'free-sin-declarar'),
     ];
     const { verdicts } = evaluate(entries);
 
-    assert.strictEqual(verdicts['kimi-moonshot'].verdict, mod.VERDICT.SIN_DECLARAR);
-    assert.strictEqual(verdicts['kimi-moonshot'].verdictLabel, 'sin declarar');
-    assert.notStrictEqual(verdicts['kimi-moonshot'].verdict, mod.VERDICT.CANDIDATO_BAJA);
+    assert.strictEqual(verdicts['free-sin-declarar'].verdict, mod.VERDICT.SIN_DECLARAR);
+    assert.strictEqual(verdicts['free-sin-declarar'].verdictLabel, 'sin declarar');
+    assert.notStrictEqual(verdicts['free-sin-declarar'].verdict, mod.VERDICT.CANDIDATO_BAJA);
 });
 
 test('un proveedor en agent-models pero ausente de config.yaml tambien es sin_declarar', () => {
     const declared = {
-        cerebras: { billing: 'free', declaredInConfig: true },
-        'kimi-moonshot': { billing: 'free', declaredInConfig: false },
+        'free-uno': { billing: 'free', declaredInConfig: true },
+        'free-sin-declarar': { billing: 'free', declaredInConfig: false },
     };
     const entries = [
-        ...many(500, 'fallback_selected', 'cerebras'),
-        ...manyBlocked(500, 'kimi-moonshot'),
+        ...many(500, 'fallback_selected', 'free-uno'),
+        ...manyBlocked(500, 'free-sin-declarar'),
     ];
     const { verdicts } = evaluate(entries, { declared });
 
-    assert.strictEqual(verdicts['kimi-moonshot'].verdict, mod.VERDICT.SIN_DECLARAR);
-    assert.match(verdicts['kimi-moonshot'].reasons.join(' '), /ausente de config\.yaml \(#6153\)/);
+    assert.strictEqual(verdicts['free-sin-declarar'].verdict, mod.VERDICT.SIN_DECLARAR);
+    assert.match(verdicts['free-sin-declarar'].reasons.join(' '), /ausente de config\.yaml \(#6153\)/);
 });
 
 test('el reparto por rol separa lo conversacional de los agentes del pipeline', () => {
     const entries = [
-        ...many(30, 'fallback_selected', 'cerebras', { skill: 'telegram-commander' }),
-        ...many(10, 'fallback_selected', 'cerebras', { skill: 'telegram-sherlock' }),
-        ...many(60, 'fallback_selected', 'cerebras', { skill: 'pipeline-dev' }),
+        ...many(30, 'fallback_selected', 'free-uno', { skill: 'telegram-commander' }),
+        ...many(10, 'fallback_selected', 'free-uno', { skill: 'telegram-sherlock' }),
+        ...many(60, 'fallback_selected', 'free-uno', { skill: 'pipeline-dev' }),
     ];
-    const m = mod.computeContribution(entries, { now: NOW }).cerebras;
+    const m = mod.computeContribution(entries, { now: NOW })['free-uno'];
 
     assert.deepStrictEqual(m.roleSplitPct, { conversacional: 40, pipeline: 60 });
 });
@@ -633,19 +637,19 @@ test('la latencia no instrumentada se declara, nunca se inventa ni se estima', (
         ts: '2026-08-19T11:41:13.000Z',
         providers: [
             { provider: 'gemini-google', state: 'red', reason_code: 'cli_license_unavailable', latency_ms: null },
-            { provider: 'cerebras', state: 'green', reason_code: 'authenticated', latency_ms: 674 },
+            { provider: 'free-uno', state: 'green', reason_code: 'authenticated', latency_ms: 674 },
         ],
     };
     const metrics = mod.computeContribution(
-        [...entries, ...many(10, 'fallback_selected', 'cerebras')],
+        [...entries, ...many(10, 'fallback_selected', 'free-uno')],
         { now: NOW, healthSnapshot },
     );
 
     assert.strictEqual(metrics['gemini-google'].lastPingMs, null);
     assert.strictEqual(metrics['gemini-google'].lastPingReason, mod.ABSENCE.NO_INSTRUMENTADO);
-    assert.strictEqual(metrics.cerebras.lastPingMs, 674);
-    assert.strictEqual(metrics.cerebras.lastPingReason, null);
-    assert.strictEqual(metrics.cerebras.lastPingAt, '2026-08-19T11:41:13.000Z', 'el dato viaja fechado');
+    assert.strictEqual(metrics['free-uno'].lastPingMs, 674);
+    assert.strictEqual(metrics['free-uno'].lastPingReason, null);
+    assert.strictEqual(metrics['free-uno'].lastPingAt, '2026-08-19T11:41:13.000Z', 'el dato viaja fechado');
 });
 
 test('la columna de latencia se llama ultimo live-ping y no mediana', () => {
@@ -656,9 +660,9 @@ test('la columna de latencia se llama ultimo live-ping y no mediana', () => {
     // recomendación en él. El rótulo ahora dice lo que el dato es.
     const healthSnapshot = {
         ts: '2026-08-19T11:41:13.000Z',
-        providers: [{ provider: 'cerebras', state: 'green', reason_code: 'authenticated', latency_ms: 674 }],
+        providers: [{ provider: 'free-uno', state: 'green', reason_code: 'authenticated', latency_ms: 674 }],
     };
-    const metrics = mod.computeContribution(many(10, 'fallback_selected', 'cerebras'), { now: NOW, healthSnapshot });
+    const metrics = mod.computeContribution(many(10, 'fallback_selected', 'free-uno'), { now: NOW, healthSnapshot });
     const header = mod.renderMarkdownTable(metrics, {}).split('\n')[0];
 
     assert.ok(header.includes('Último live-ping'), 'la columna se llama por lo que es');
@@ -668,7 +672,7 @@ test('la columna de latencia se llama ultimo live-ping y no mediana', () => {
 
 test('la tabla no usa guiones ni ceros para representar ausencia de medicion', () => {
     // Proveedor con CERO eventos evaluables: todas sus celdas deben decir por qué.
-    const metrics = mod.computeContribution(many(3, 'fallback_selected', 'cerebras'), { now: NOW });
+    const metrics = mod.computeContribution(many(3, 'fallback_selected', 'free-uno'), { now: NOW });
     metrics['proveedor-mudo'] = {
         provider: 'proveedor-mudo',
         attempts: 0,
@@ -724,7 +728,7 @@ test('el costo de failover se atribuye por separado a la politica horaria', () =
     const entries = [
         ...many(500, 'primary_inactive_by_schedule', null, { primary_provider: 'anthropic' }),
         ...many(200, 'fallback_health_gated', 'gemini-google', { health_reason: 'cli_license_unavailable' }),
-        ...many(200, 'fallback_selected', 'cerebras'),
+        ...many(200, 'fallback_selected', 'free-uno'),
         ...many(100, 'chain_exhausted', null),
     ];
     const cost = mod.computeFailoverCost(entries);
@@ -747,10 +751,10 @@ test('el costo de failover se atribuye por separado a la politica horaria', () =
 test('el reporte no copia raw_excerpt ni texto de prompts', () => {
     const SECRETO = 'PROMPT SENSIBLE: token sk-abc123 y ruta C:/Workspaces/secreto';
     const entries = [
-        ...many(300, 'fallback_selected', 'cerebras'),
-        ev('fallback_selected', 'cerebras', {
+        ...many(300, 'fallback_selected', 'free-uno'),
+        ev('fallback_selected', 'free-uno', {
             raw_excerpt: SECRETO,
-            chain_tried: ['anthropic', 'cerebras'],
+            chain_tried: ['anthropic', 'free-uno'],
             issue: '6145',
         }),
     ];
@@ -790,8 +794,8 @@ test('la whitelist de campos es cerrada y no incluye campos de texto libre', () 
 
 test('el modulo no lee activity-log.jsonl', () => {
     // Riesgo 1 del issue: alimentar el criterio con `.claude/activity-log.jsonl`
-    // daría de baja a gemini-google, cerebras y nvidia-nim, que tienen ~0
-    // registros ahí y cientos de selecciones reales en el log de dispatch.
+    // daría de baja a gemini-google (y a los free retirados en #6563), que tienen
+    // ~0 registros ahí y cientos de selecciones reales en el log de dispatch.
     // Grep estático sobre el fuente — mismo patrón que el guard de append-only.
     const source = fs.readFileSync(MODULE_PATH, 'utf8');
     const code = source

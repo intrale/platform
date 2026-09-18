@@ -31,9 +31,6 @@ Cada secreto cae en **exactamente una** de tres categorías:
 | `providers.openai.api_key` | `OPENAI_API_KEY` | **(b)** | API key de tercero: se crea la sustituta en el panel, se actualiza el vault y recién ahí se revoca la anterior. |
 | `providers.anthropic.api_key` | `ANTHROPIC_API_KEY` | **(c)** | El pipeline autentica con OAuth de Claude Max, no con API key. El cron ya la excluye por el sentinel `N/A (OAuth Max)`. |
 | `providers.google.api_key` | `GEMINI_API_KEY` | **(b)** | API key de AI Studio, rotación manual en el panel del emisor. |
-| `providers.cerebras.api_key` | `CEREBRAS_API_KEY` | **(b)** | Ídem, panel de Cerebras Cloud. |
-| `providers.nvidia.api_key` | `NVIDIA_NIM_API_KEY` | **(b)** | Ídem, panel de NVIDIA build. |
-| `providers.moonshot.api_key` | `ANTHROPIC_AUTH_TOKEN` | **(b)** | Token de Moonshot servido por la variable compatible con Anthropic; rotación manual en su consola. |
 | `google_drive.oauth_client_id` | `GOOGLE_OAUTH_CLIENT_ID` | **(c)** | Identificador público del cliente OAuth, no es secreto. |
 | `google_drive.oauth_client_secret` | `GOOGLE_OAUTH_CLIENT_SECRET` | **(b)** | Se rota desde la consola de Google Cloud y obliga a repetir el consentimiento. |
 | `google_drive.oauth_refresh_token` | `GOOGLE_OAUTH_REFRESH_TOKEN` | **(c)** | Lo emite y lo revoca Google; el ciclo de vida no lo controla el pipeline. |
@@ -51,7 +48,7 @@ cobra por secreto: encenderla sin que rote nada de verdad es costo sin control.
 
 | Tipo | Ejemplos | Rotación | Plazo |
 |---|---|---|---|
-| API key o token de tercero | Anthropic, OpenAI, Gemini, Cerebras, NVIDIA, Moonshot, Telegram | Manual: revocar en el emisor, crear reemplazo y actualizar el vault | 90 días como máximo; recordatorios T-14, T-7, T-3, T-1 y T-0 |
+| API key o token de tercero | Anthropic, OpenAI, Gemini, Telegram | Manual: revocar en el emisor, crear reemplazo y actualizar el vault | 90 días como máximo; recordatorios T-14, T-7, T-3, T-1 y T-0 |
 | OAuth administrado por tercero | refresh token de Google Drive | No crear una Lambda: el emisor controla refresh y revocación | Vigilar revocación y repetir consentimiento cuando corresponda |
 | Identificador no secreto | chat IDs, client ID, folder ID | No rota por calendario; cambia con el recurso | Revisar anualmente y al cambiar el recurso |
 | Secreto con emisor controlado por Intrale | Ninguno actualmente | Automática sólo si una función actualiza también al emisor | Según criticidad y después de probar el ciclo completo |

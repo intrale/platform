@@ -10,7 +10,7 @@
 // Uso:
 //   node .pipeline/tools/multi-provider-smoke-test.js                          # matriz completa
 //   node .pipeline/tools/multi-provider-smoke-test.js --skill=guru             # solo guru × *
-//   node .pipeline/tools/multi-provider-smoke-test.js --provider=cerebras       # solo * × cerebras
+//   node .pipeline/tools/multi-provider-smoke-test.js --provider=gemini-google  # solo * × gemini-google
 //   node .pipeline/tools/multi-provider-smoke-test.js --skill=qa --provider=gemini-google
 //   node .pipeline/tools/multi-provider-smoke-test.js --dry-run                # sin invocar providers
 //                                                                              # (genera coverage con stub PASS)
@@ -342,7 +342,8 @@ for (const cell of filteredMatrix) {
         }
     } else {
         // Invocación real (no implementada en este hijo A para providers reales —
-        // requiere wrappers de #3198 que aún están stub para gemini/cerebras/nvidia).
+        // requiere los wrappers de #3198 para los providers del plantel; cerebras
+        // y nvidia-nim ya no están en él desde #6563).
         // Por ahora marcamos SKIPPED con razón explícita para no romper la matriz.
         // Cuando #3198 entregue los wrappers reales, este bloque se reemplaza
         // por dispatch real via resolveSpawnWithFallback con FORCE_PROVIDER_OVERRIDE.

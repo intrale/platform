@@ -11,7 +11,8 @@
 //   {"error":{"status":402,"message":"Payment required to access this resource.
 //    Visit your billing tab.","code":"insufficient_quota"}}
 //
-// Cerebras se había quedado sin crédito. Pero `_detectOpenAI` sólo entendía los
+// Cerebras (retirado del plantel en #6563) se había quedado sin crédito. Pero
+// `_detectOpenAI` sólo entendía los
 // shapes CON sobre SSE (`{event:'error',data:{error:{type}}}`) o
 // `{type:'response.error',error:{type}}`, y buscaba el discriminador en `type`,
 // nunca en `code`. Resultado: `matched:false` ⇒ nunca se seteaba el flag de
@@ -30,6 +31,12 @@
 // control `type`/`code` del `error` de nivel raíz, y sólo cuentan si el provider
 // DECLARÓ ese error_type. Nada de substring sobre texto libre, nada de canal de
 // contenido del modelo.
+//
+// #6563 — cerebras, nvidia-nim y kimi-moonshot fueron retirados del plantel.
+// El shape desnudo es infraestructura genérica de `_detectOpenAI` (parser
+// `openai-sse`), así que la suite queda anclada al provider vigente que
+// conserva ese mismo camino: `openai-codex`, que declara `insufficient_quota`.
+// (`gemini-google` usa `gemini-stream` y no pasa por `_detectOpenAI`.)
 // =============================================================================
 'use strict';
 
@@ -41,23 +48,35 @@ const quota = require('../quota-exhausted.js');
 const models = require('../../agent-models.json');
 
 // Línea EXACTA observada en `.pipeline/logs/5459-ux.log` y hermanos (2026-08-22).
-const CEREBRAS_402_LINE =
+// El shape es el 402 estándar de los OpenAI-compat; el provider que lo emitió
+// (cerebras) ya no está en el plantel (#6563).
+const BARE_402_LINE =
     '{"error":{"status":402,"message":"Payment required to access this resource. Visit your billing tab.","code":"insufficient_quota"}}';
 
-test('#5978 el 402 desnudo de Cerebras se detecta como cuota agotada', () => {
-    const evt = JSON.parse(CEREBRAS_402_LINE);
-    const det = quota.detectQuotaError(evt, models.providers.cerebras);
+// Provider vigente que conserva el camino `_detectOpenAI` (parser openai-sse).
+const OPENAI_COMPAT = models.providers['openai-codex'];
+
+// Providers del JSON canónico que pasan por `_detectOpenAI`.
+const OPENAI_SSE_PROVIDERS = Object.entries(models.providers)
+    .filter(([, def]) => def && def.output_parser === 'openai-sse')
+    .map(([name]) => name);
+
+test('#5978 el 402 desnudo de un OpenAI-compat se detecta como cuota agotada', () => {
+    const evt = JSON.parse(BARE_402_LINE);
+    const det = quota.detectQuotaError(evt, OPENAI_COMPAT);
     assert.equal(det.matched, true, 'el 402 de billing debe matchear');
     assert.equal(det.errorType, 'insufficient_quota');
 });
 
 test('#5978 causa A (shape): el shape desnudo matchea en todo OpenAI-compat que lo declare', () => {
-    const evt = JSON.parse(CEREBRAS_402_LINE);
-    // nvidia-nim ya declaraba `insufficient_quota` y aun así no matcheaba antes
-    // del fix: prueba de que la falla era de SHAPE, no sólo de allowlist.
-    for (const p of ['nvidia-nim', 'kimi-moonshot', 'openai-codex']) {
+    const evt = JSON.parse(BARE_402_LINE);
+    // #6563 — antes del retiro, nvidia-nim ya declaraba `insufficient_quota` y
+    // aun así no matcheaba: prueba de que la falla era de SHAPE, no sólo de
+    // allowlist. Hoy el invariante se sostiene sobre los openai-sse vigentes.
+    assert.ok(OPENAI_SSE_PROVIDERS.length > 0, 'debe quedar al menos un provider openai-sse en el plantel');
+    for (const p of OPENAI_SSE_PROVIDERS) {
         const def = models.providers[p];
-        if (!def || def.output_parser !== 'openai-sse') continue;
+        if (!(def.quota_error_types || []).includes('insufficient_quota')) continue;
         assert.equal(
             quota.detectQuotaError(evt, def).matched, true,
             `${p} declara insufficient_quota y debe matchear el shape desnudo`,
@@ -65,11 +84,15 @@ test('#5978 causa A (shape): el shape desnudo matchea en todo OpenAI-compat que 
     }
 });
 
-test('#5978 causa B (allowlist): cerebras declara insufficient_quota en agent-models.json', () => {
-    assert.ok(
-        models.providers.cerebras.quota_error_types.includes('insufficient_quota'),
-        'sin el tipo declarado, el 402 vuelve a ser invisible',
-    );
+test('#5978 causa B (allowlist): todo OpenAI-compat vigente declara insufficient_quota en agent-models.json', () => {
+    // #6563 — antes se verificaba sobre cerebras (retirado). El invariante que
+    // importa es que ningún openai-sse del plantel deje el 402 invisible.
+    for (const p of OPENAI_SSE_PROVIDERS) {
+        assert.ok(
+            (models.providers[p].quota_error_types || []).includes('insufficient_quota'),
+            `${p}: sin el tipo declarado, el 402 vuelve a ser invisible`,
+        );
+    }
 });
 
 test('#5978 el JSON y la meta-allowlist de quota-exhausted quedan en sync', () => {
@@ -94,14 +117,19 @@ test('#5978 el JSON y la meta-allowlist de quota-exhausted quedan en sync', () =
 // -----------------------------------------------------------------------------
 
 test('#5978 fail-closed: un provider que NO declara el tipo no matchea', () => {
-    const evt = JSON.parse(CEREBRAS_402_LINE);
-    // gemini-google declara sólo quota_exceeded/resource_exhausted.
+    const evt = JSON.parse(BARE_402_LINE);
+    // gemini-google declara sólo quota_exceeded/resource_exhausted (y además no
+    // pasa por _detectOpenAI).
     assert.equal(quota.detectQuotaError(evt, models.providers['gemini-google']).matched, false);
+    // Mismo parser openai-sse pero sin `insufficient_quota` declarado: la
+    // allowlist manda, no el shape.
+    const sinTipo = { ...OPENAI_COMPAT, quota_error_types: ['billing_hard_limit_reached'] };
+    assert.equal(quota.detectQuotaError(evt, sinTipo).matched, false);
 });
 
 test('#5978 fail-closed: un error que no es de cuota no matchea', () => {
     for (const code of ['invalid_request', 'context_length_exceeded', 'server_error']) {
-        const det = quota.detectQuotaError({ error: { status: 400, code } }, models.providers.cerebras);
+        const det = quota.detectQuotaError({ error: { status: 400, code } }, OPENAI_COMPAT);
         assert.equal(det.matched, false, `"${code}" no es cuota y no debe matchear`);
     }
 });
@@ -109,26 +137,26 @@ test('#5978 fail-closed: un error que no es de cuota no matchea', () => {
 test('#5978 fail-closed: nunca se matchea por texto libre del mensaje', () => {
     // El mensaje menciona billing/payment pero el `code` no es de cuota.
     const evt = { error: { status: 400, message: 'Payment required insufficient_quota quota_exceeded', code: 'invalid_request' } };
-    assert.equal(quota.detectQuotaError(evt, models.providers.cerebras).matched, false);
+    assert.equal(quota.detectQuotaError(evt, OPENAI_COMPAT).matched, false);
 });
 
 test('#5978 fail-closed: el canal de contenido del modelo no puede inducir el match', () => {
     // El modelo devolviendo texto con el tipo adentro NO es un evento de error.
     const evt = { type: 'assistant', message: { content: [{ type: 'text', text: 'insufficient_quota' }] } };
-    assert.equal(quota.detectQuotaError(evt, models.providers.cerebras).matched, false);
+    assert.equal(quota.detectQuotaError(evt, OPENAI_COMPAT).matched, false);
 });
 
 test('#5978 fail-closed: error no-objeto o array no rompe ni matchea', () => {
     for (const bad of [{ error: 'insufficient_quota' }, { error: ['insufficient_quota'] }, { error: null }, {}, null]) {
-        const det = quota.detectQuotaError(bad, models.providers.cerebras);
+        const det = quota.detectQuotaError(bad, OPENAI_COMPAT);
         assert.equal(det.matched, false);
     }
 });
 
 test('#5978 el shape desnudo no pisa los shapes con sobre SSE', () => {
     // Shape canónico SSE sigue funcionando.
-    const sse = { event: 'error', data: { error: { type: 'rate_limit_exceeded' } } };
-    const det = quota.detectQuotaError(sse, models.providers.cerebras);
+    const sse = { event: 'error', data: { error: { type: 'billing_hard_limit_reached' } } };
+    const det = quota.detectQuotaError(sse, OPENAI_COMPAT);
     assert.equal(det.matched, true);
-    assert.equal(det.errorType, 'rate_limit_exceeded');
+    assert.equal(det.errorType, 'billing_hard_limit_reached');
 });

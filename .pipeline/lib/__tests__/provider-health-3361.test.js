@@ -81,16 +81,13 @@ test('CA-13/17: getProviderHealth NO devuelve campos sensibles (api_key/secret/t
     const secretsFile = writeKeys(dir, {
         openai_api_key: 'sk-VERY-SECRET-DO-NOT-LEAK-1234567890',
         gemini_google_api_key: 'AIzaSyVERY-SECRET-1234567890abcdef',
-        cerebras_api_key: 'csk-VERY-SECRET-1234567890abcdef',
-        nvidia_nim_api_key: 'nvapi-VERY-SECRET-1234567890',
     });
 
     // Mock pingImpl: simulamos respuestas variadas sin tocar la red.
     const fakePing = async ({ provider }) => {
         if (provider === 'openai') return { ok: true, reason: 'authenticated', provider, statusCode: 200, latency_ms: 12 };
         if (provider === 'gemini-google') return { ok: false, reason: 'quota_exhausted', provider, statusCode: 429, latency_ms: 10 };
-        if (provider === 'cerebras') return { ok: false, reason: 'no_key_configured', provider };
-        return { ok: false, reason: 'unknown', provider };
+        return { ok: false, reason: 'no_key_configured', provider };
     };
 
     const result = await providerHealth.getProviderHealth({
@@ -128,23 +125,45 @@ test('CA-16: live-ping devuelve no_key_configured (NO invalid_credentials) cuand
     // #4402 — Los providers OAuth (anthropic MAX / codex) NO siguen el gate de
     // key: se validan por CLI y devuelven cli_oauth_ok/cli_unavailable. Se
     // excluyen de esta aserción (su camino se cubre en live-ping.test.js).
-    const oauthProviders = new Set(
-        secretsRw.MANAGED_KEYS.filter(k => k.auth_mode === 'oauth').map(k => k.provider),
+    //
+    // #6563 — cerebras y nvidia-nim (los providers api_key que ejercían este
+    // gate) se retiraron; el plantel entero (anthropic, openai/codex,
+    // gemini-google vía Antigravity) es CLI-OAuth. Para que el gate de key
+    // siga probado, se re-declara temporalmente a gemini-google como api_key
+    // en la lista gestionada que consulta `ping()` (mismo patrón que
+    // multi-provider-live-ping.test.js); cualquier provider api_key que se
+    // re-alte en el plantel entra al mismo loop sin tocar este test.
+    const REAL_MANAGED_KEYS = secretsRw.MANAGED_KEYS;
+    const oauthReales = new Set(REAL_MANAGED_KEYS.filter(k => k.auth_mode === 'oauth').map(k => k.provider));
+    assert.deepEqual(
+        Object.keys(livePing.PROVIDER_PING_ENDPOINTS).filter(p => !oauthReales.has(p)),
+        [],
+        'post-#6563 no queda ningún provider api_key en el plantel (todos CLI-OAuth)',
     );
-    const providers = Object.keys(livePing.PROVIDER_PING_ENDPOINTS)
-        .filter(p => !oauthProviders.has(p));
-    assert.ok(providers.length >= 2, 'al menos 2 providers api_key en la allowlist');
+    secretsRw.MANAGED_KEYS = Object.freeze(REAL_MANAGED_KEYS.map(k => (k.provider === 'gemini-google'
+        ? Object.freeze({ ...k, auth_mode: 'api_key', catalog_probe: undefined, cli_binary: undefined })
+        : k)));
+    try {
+        const oauthProviders = new Set(
+            secretsRw.MANAGED_KEYS.filter(k => k.auth_mode === 'oauth').map(k => k.provider),
+        );
+        const providers = Object.keys(livePing.PROVIDER_PING_ENDPOINTS)
+            .filter(p => !oauthProviders.has(p));
+        assert.ok(providers.length >= 1, 'al menos 1 provider api_key para ejercer el gate');
 
-    for (const provider of providers) {
-        // cliProbe no aplica a providers api_key; el gate de key se ejerce igual.
-        const r = await livePing.ping({ provider, secretsPath: secretsFile });
-        assert.equal(r.ok, false, provider + ' sin key debe ser ok=false');
-        assert.equal(r.reason, 'no_key_configured',
-            provider + ' sin key debe devolver reason=no_key_configured (NO invalid_credentials). ' +
-            'Esto es la causa raíz del bug reportado en #3361 — un amarillo espurio en el dashboard ' +
-            'porque "no configurado" se confundía con "credencial inválida".');
-        assert.notEqual(r.reason, 'invalid_credentials',
-            provider + ': invalid_credentials es un veredicto distinto que requiere un 401 real del provider');
+        for (const provider of providers) {
+            // cliProbe no aplica a providers api_key; el gate de key se ejerce igual.
+            const r = await livePing.ping({ provider, secretsPath: secretsFile });
+            assert.equal(r.ok, false, provider + ' sin key debe ser ok=false');
+            assert.equal(r.reason, 'no_key_configured',
+                provider + ' sin key debe devolver reason=no_key_configured (NO invalid_credentials). ' +
+                'Esto es la causa raíz del bug reportado en #3361 — un amarillo espurio en el dashboard ' +
+                'porque "no configurado" se confundía con "credencial inválida".');
+            assert.notEqual(r.reason, 'invalid_credentials',
+                provider + ': invalid_credentials es un veredicto distinto que requiere un 401 real del provider');
+        }
+    } finally {
+        secretsRw.MANAGED_KEYS = REAL_MANAGED_KEYS;
     }
 });
 

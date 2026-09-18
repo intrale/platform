@@ -32,20 +32,11 @@ function tmpFile(content, ext = '.json') {
 // ruteo debe declarar las tres condiciones (fail-closed: ausente = no cumple).
 // Los helpers de abajo replican lo que declara el JSON canónico: los que
 // cumplen las tres van con capabilities agentic-tool-use (coherencia), y los
-// que no cumplen (cerebras: API pelada) entran sólo por excepción vigente.
+// que no cumplen entran sólo por excepción vigente (gemini-google hasta #6564).
 function admissionAdmitted() {
   return { cli_edits_files: true, reports_usage: true, terms_no_training: true };
 }
 
-function admissionWithException(days = 30) {
-  const until = new Date(Date.now() + days * 86400000).toISOString().slice(0, 10);
-  return {
-    cli_edits_files: false,
-    reports_usage: false,
-    terms_no_training: false,
-    exception: { reason: 'fixture de test — baja programada en #6563', until, issue: 6563 },
-  };
-}
 function baseValid() {
   return {
     $schema: './agent-models.schema.json',
@@ -193,12 +184,12 @@ test('CA-2 · validateOrExit invoca exitFn con el código correcto + escribe a s
 
 // ─── CA-3 · ALLOWED_LAUNCHERS source-of-truth + composición programática ────
 
-test('CA-3 · ALLOWED_LAUNCHERS expone los launchers permitidos (post #3353 = 7)', () => {
-  // #3220 — sumamos `gemini-google` (rename ex-`gemini`) y `cerebras`.
-  // #3243 — sumamos `nvidia-nim` (4to free provider, ola N+5).
+test('CA-3 · ALLOWED_LAUNCHERS expone los launchers permitidos (post #6563 = 4)', () => {
+  // #3220 — sumamos `gemini-google` (rename ex-`gemini`).
   // #3353 — eliminamos `groq` (mayo 2026) por política inestable de restricciones.
+  // #6563 — eliminamos los free (`cerebras`, `nvidia-nim`, `ollama`).
   assert.deepEqual([...validateMod.ALLOWED_LAUNCHERS].sort(),
-    ['cerebras', 'claude', 'codex', 'gemini-google', 'node', 'nvidia-nim', 'ollama']);
+    ['claude', 'codex', 'gemini-google', 'node']);
 });
 
 test('CA-3 · ALLOWED_LAUNCHERS es congelado (Object.freeze) — inmutabilidad', () => {
@@ -524,7 +515,8 @@ test('CA-3 · si schema literal disagrees con ALLOWED_LAUNCHERS, runtime gana (c
   // #3220 — 5 → 7 launchers (rename gemini→gemini-google + groq + cerebras).
   // #3243 — 7 → 8 launchers (nvidia-nim, 4to free provider ola N+5).
   // #3353 — 8 → 7 launchers (eliminación de groq, mayo 2026).
-  assert.equal(validateMod.ALLOWED_LAUNCHERS.length, 7);
+  // #6563 — 7 → 4 launchers (baja de cerebras, nvidia-nim y ollama).
+  assert.equal(validateMod.ALLOWED_LAUNCHERS.length, 4);
 });
 
 // =============================================================================
@@ -737,7 +729,7 @@ test('CA-3 · HARDCODED_SECRET_PATTERNS está congelado (inmutabilidad)', () => 
 
 // Helper #3154: baseValid() tiene anthropic con launcher=claude (OAuth bypass).
 // Para testear el camino "exige env var faltante" necesitamos un provider con
-// launcher distinto (codex/gemini/ollama/node) referenciado por algún skill.
+// launcher distinto (codex/gemini-google/node) referenciado por algún skill.
 function baseValidWithCodex() {
   const cfg = baseValid();
   cfg.providers['openai-codex'] = {
@@ -1032,9 +1024,11 @@ test('findHardcodedSecrets · ignora $schema en raíz (URL legítima)', () => {
 });
 
 // =============================================================================
-// #3220 — Tests multi-provider sign-off 2026-05-15 (gemini-google, cerebras)
+// #3220 — Tests multi-provider sign-off 2026-05-15 (gemini-google)
 // #3353 — Groq removido (mayo 2026): tests `providerGroq` y sus assertions
 // se eliminaron junto con el provider.
+// #6563 — Cerebras removido: tests `providerCerebras` eliminados; los que
+// probaban lógica genérica se reescribieron sobre gemini-google.
 // =============================================================================
 
 function providerGeminiGoogle() {
@@ -1053,46 +1047,37 @@ function providerGeminiGoogle() {
   };
 }
 
-function providerCerebras() {
-  return {
-    launcher: 'cerebras',
-    model: 'gpt-oss-120b',
-    spawn_args_template: ['--model', '{model}', '--system', '{system_file}', '{user_prompt}'],
-    output_parser: 'openai-sse',
-    quota_error_types: ['rate_limit_exceeded', 'quota_exceeded'],
-    supports_tool_use: false,
-    prompt_caching: { supported: false },
-    credentials_env: ['CEREBRAS_API_KEY'],
-    permissions_mode: 'bypassPermissions',
-    admission: admissionWithException(),
-  };
-}
-
-test('#3220 + #3353 · ALLOWED_LAUNCHERS incluye gemini-google y cerebras (sin groq)', () => {
+test('#3220 + #3353 + #6563 · ALLOWED_LAUNCHERS incluye gemini-google (sin groq ni free retirados)', () => {
   const launchers = [...validateMod.ALLOWED_LAUNCHERS];
   assert.ok(launchers.includes('gemini-google'), 'falta gemini-google');
-  assert.ok(launchers.includes('cerebras'), 'falta cerebras');
   // Rename: 'gemini' bare ya no está en la allowlist.
   assert.ok(!launchers.includes('gemini'), 'gemini bare debería estar renombrado a gemini-google');
   // #3353 — groq fue removido tras la descontinuación del provider.
   assert.ok(!launchers.includes('groq'), 'groq debería estar removido tras #3353');
+  // #6563 — los free retirados no pueden reintroducirse.
+  for (const retirado of ['cerebras', 'nvidia-nim', 'ollama']) {
+    assert.ok(!launchers.includes(retirado), `${retirado} debería estar removido tras #6563`);
+  }
 });
 
-test('#3220 + #3353 · ALLOWED_CREDENTIAL_ENV_VARS incluye CEREBRAS_API_KEY (sin GROQ_API_KEY)', () => {
+test('#3220 + #3353 + #6563 · ALLOWED_CREDENTIAL_ENV_VARS conserva GEMINI_API_KEY (sin keys de retirados)', () => {
   const vars = [...validateMod.ALLOWED_CREDENTIAL_ENV_VARS];
-  assert.ok(vars.includes('CEREBRAS_API_KEY'), 'falta CEREBRAS_API_KEY');
   assert.ok(vars.includes('GEMINI_API_KEY'), 'GEMINI_API_KEY debe permanecer');
   // #3353 — GROQ_API_KEY removida tras la descontinuación del provider.
   assert.ok(!vars.includes('GROQ_API_KEY'), 'GROQ_API_KEY debería estar removida tras #3353');
+  // #6563 — keys de los free retirados (y el token del drop-in de Kimi).
+  for (const retirada of ['CEREBRAS_API_KEY', 'NVIDIA_NIM_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'OLLAMA_HOST']) {
+    assert.ok(!vars.includes(retirada), `${retirada} debería estar removida tras #6563`);
+  }
 });
 
 test('#3220 + #3353 + #3501 · ALLOWED_MODELS_BY_LAUNCHER declara modelos por providers vivos (sin groq, con alternativos #3501)', () => {
   const models = validateMod.ALLOWED_MODELS_BY_LAUNCHER;
   assert.ok(models, 'ALLOWED_MODELS_BY_LAUNCHER debe exportarse');
   assert.ok(Object.isFrozen(models), 'top-level debe estar congelado');
-  // #4880 — `kimi-k2-6` se suma a la allowlist del launcher `claude` porque el
-  // provider `kimi-moonshot` reusa ese launcher (drop-in Anthropic-compat).
-  assert.deepEqual([...models.claude].sort(), ['claude-haiku-4-5', 'claude-opus-4-7', 'claude-sonnet-4-6', 'kimi-k2-6']);
+  // #6563 — `kimi-k2-6` (drop-in de Kimi sobre el launcher `claude`, #4880)
+  // salió de la allowlist junto con el provider.
+  assert.deepEqual([...models.claude].sort(), ['claude-haiku-4-5', 'claude-opus-4-7', 'claude-sonnet-4-6']);
   // #3799 — Sherlock baja su fallback Codex de gpt-5.4 → gpt-5.4-mini (sign-off Leo
   // 2026-06-02), por lo que gpt-5.4-mini se suma a la allowlist del launcher codex.
   assert.deepEqual([...models.codex].sort(), ['gpt-5.4', 'gpt-5.4-mini', 'gpt-5.5']);
@@ -1111,11 +1096,12 @@ test('#3220 + #3353 + #3501 · ALLOWED_MODELS_BY_LAUNCHER declara modelos por pr
   for (const retirado of ['gemini-2.0-flash', 'gemini-2.5-flash', 'gemini-3-flash-preview']) {
     assert.ok(!models['gemini-google'].includes(retirado), `${retirado} no puede reintroducirse`);
   }
-  // #3797 — Corrección free tier real de Cerebras: NO sirve modelos llama-*. Los
-  // únicos servibles son gpt-oss-120b (default) y zai-glm-4.7 (alternativo #3501).
-  assert.deepEqual([...models.cerebras].sort(), ['gpt-oss-120b', 'zai-glm-4.7']);
   // #3353 — `groq` no debe estar en la allowlist de modelos.
   assert.equal(models.groq, undefined, 'groq debería estar removido tras #3353');
+  // #6563 — tampoco los launchers de los free retirados.
+  for (const retirado of ['cerebras', 'nvidia-nim', 'ollama']) {
+    assert.equal(models[retirado], undefined, `${retirado} debería estar removido tras #6563`);
+  }
 });
 
 test('#3220 · provider gemini-google con campos completos → validación pasa', () => {
@@ -1152,25 +1138,15 @@ test('#3353 · provider groq declarado → rechazado por launcher fuera de allow
   } finally { fs.unlinkSync(file); }
 });
 
-test('#3220 · provider cerebras con campos completos → validación pasa', () => {
-  const cfg = baseValid();
-  cfg.providers.cerebras = providerCerebras();
-  const file = tmpFile(cfg);
-  try {
-    const r = validateMod.validate(file);
-    assert.equal(r.ok, true, JSON.stringify(r.errors));
-  } finally { fs.unlinkSync(file); }
-});
-
 // #3353 — test "groq con model fuera de ALLOWED_MODELS_BY_LAUNCHER" eliminado:
 // el launcher groq ya no existe en ALLOWED_LAUNCHERS, cualquier config con
 // groq es rechazada antes de evaluar el modelo.
 
-test('#3220 · cerebras con credentials_env=PATH → rechazado por allowlist (SEC-1)', () => {
+test('#3220 · gemini-google con credentials_env=PATH → rechazado por allowlist (SEC-1)', () => {
   const cfg = baseValid();
-  const p = providerCerebras();
-  p.credentials_env = ['CEREBRAS_API_KEY', 'PATH'];
-  cfg.providers.cerebras = p;
+  const p = providerGeminiGoogle();
+  p.credentials_env = ['GEMINI_API_KEY', 'PATH'];
+  cfg.providers['gemini-google'] = p;
   const file = tmpFile(cfg);
   try {
     const r = validateMod.validate(file);
@@ -1198,40 +1174,29 @@ test('#3220 · gemini-google con quota_error_type fuera de meta-allowlist → re
 // se removió de ALLOWED_CREDENTIAL_ENV_VARS junto con el provider; la
 // validación ahora rechaza groq antes de chequear env vars.
 
-test('#3220 · skill apuntando a cerebras con CEREBRAS_API_KEY presente → válido', () => {
+test('#3220 · skill apuntando a gemini-google con GEMINI_API_KEY presente → válido', () => {
   const cfg = baseValid();
-  cfg.providers.cerebras = providerCerebras();
-  cfg.skills.qa = { provider: 'cerebras' };
+  cfg.providers['gemini-google'] = providerGeminiGoogle();
+  cfg.skills.qa = { provider: 'gemini-google' };
   delete cfg.skills.qa.model_override;
   const file = tmpFile(cfg);
   try {
-    const r = validateMod.validate(file, { processEnv: { CEREBRAS_API_KEY: 'csk-fake-not-real-1234567890' } });
+    const r = validateMod.validate(file, { processEnv: { GEMINI_API_KEY: 'AIzafake-not-real-1234567890abcdef' } });
     assert.equal(r.ok, true, JSON.stringify(r.errors));
   } finally { fs.unlinkSync(file); }
 });
 
 test('#3220 · skill model_override fuera de allowlist del launcher del provider → rechazado', () => {
   const cfg = baseValid();
-  cfg.providers.cerebras = providerCerebras();
-  cfg.skills['cerebras-skill'] = { provider: 'cerebras', model_override: 'gpt-5-codex' };
+  cfg.providers['gemini-google'] = providerGeminiGoogle();
+  cfg.skills['gemini-skill'] = { provider: 'gemini-google', model_override: 'gpt-5-codex' };
   const file = tmpFile(cfg);
   try {
     const r = validateMod.validate(file);
     assert.equal(r.ok, false);
-    const e = r.errors.find((er) => er.path === '#/skills/cerebras-skill/model_override');
+    const e = r.errors.find((er) => er.path === '#/skills/gemini-skill/model_override');
     assert.ok(e, 'debe rechazar model_override que no pertenece al launcher del provider');
-    assert.match(e.message, /ALLOWED_MODELS_BY_LAUNCHER\["cerebras"\]/);
-  } finally { fs.unlinkSync(file); }
-});
-
-test('#3220 · output_parser openai-sse válido para cerebras (API drop-in OpenAI-compat)', () => {
-  // Confirma decisión PO: reusar openai-sse para Cerebras, no agregar parsers nuevos.
-  const cfg = baseValid();
-  cfg.providers.cerebras = providerCerebras();
-  const file = tmpFile(cfg);
-  try {
-    const r = validateMod.validate(file);
-    assert.equal(r.ok, true, JSON.stringify(r.errors));
+    assert.match(e.message, /ALLOWED_MODELS_BY_LAUNCHER\["gemini-google"\]/);
   } finally { fs.unlinkSync(file); }
 });
 
@@ -1257,17 +1222,21 @@ test('#3220 anti-leak · model con secret hardcoded NO leakea el valor en mensaj
   } finally { fs.unlinkSync(file); }
 });
 
-test('#3220 · agent-models.json canónico declara los 5 providers LLM + deterministic', () => {
+test('#3220 · agent-models.json canónico declara los 3 providers LLM + deterministic', () => {
   // Drift detector — el archivo canónico debe declarar todos los providers
-  // del sign-off 2026-05-15 + el deterministic.
+  // vigentes tras #6563 + el deterministic, y ninguno de los retirados.
   const raw = fs.readFileSync(validateMod.CANONICAL_JSON_PATH, 'utf8');
   const cfg = JSON.parse(raw);
   const keys = Object.keys(cfg.providers || {});
-  for (const expected of ['anthropic', 'openai-codex', 'gemini-google', 'cerebras', 'deterministic']) {
+  for (const expected of ['anthropic', 'openai-codex', 'gemini-google', 'deterministic']) {
     assert.ok(keys.includes(expected), `provider canónico falta: ${expected} (declarados: ${keys.join(', ')})`);
   }
   // #3353 — `groq` ya no debe estar declarado en el canónico.
   assert.ok(!keys.includes('groq'), 'groq debería estar removido del canónico tras #3353');
+  // #6563 — los free retirados tampoco.
+  for (const retirado of ['cerebras', 'nvidia-nim', 'kimi-moonshot']) {
+    assert.ok(!keys.includes(retirado), `${retirado} debería estar removido del canónico tras #6563`);
+  }
 });
 
 // =============================================================================
@@ -1301,23 +1270,9 @@ function providerOpenAICodex() {
   };
 }
 
-// providerGroqEntry se removió en #3353 — Groq descontinuado. Los tests que la
-// usaban ahora se construyen sobre providerCerebrasEntry o providerGeminiEntry.
-
-function providerCerebrasEntry() {
-  return {
-    launcher: 'cerebras',
-    model: 'gpt-oss-120b',
-    spawn_args_template: ['--model', '{model}', '--system', '{system_file}', '{user_prompt}'],
-    output_parser: 'openai-sse',
-    quota_error_types: ['rate_limit_exceeded', 'quota_exceeded'],
-    supports_tool_use: false,
-    prompt_caching: { supported: false },
-    credentials_env: ['CEREBRAS_API_KEY'],
-    permissions_mode: 'bypassPermissions',
-    admission: admissionWithException(),
-  };
-}
+// providerGroqEntry se removió en #3353 y providerCerebrasEntry en #6563
+// (providers descontinuados). Los tests que las usaban se construyen sobre
+// providerGeminiEntry.
 
 function providerGeminiEntry() {
   return {
@@ -1368,14 +1323,12 @@ test('#3221 happy path · skill con fallbacks objects {provider, model_override}
   const cfg = baseValid();
   cfg.providers['openai-codex'] = providerOpenAICodex();
   cfg.providers['gemini-google'] = providerGeminiEntry();
-  cfg.providers['cerebras'] = providerCerebrasEntry();
   cfg.skills['backend-dev'] = {
     provider: 'anthropic',
     model_override: 'claude-opus-4-7',
     fallbacks: [
       { provider: 'openai-codex', model_override: 'gpt-5.5' },
       { provider: 'gemini-google', model_override: 'gemini-3.8-flash-medium' },
-      { provider: 'cerebras', model_override: 'gpt-oss-120b' },
     ],
   };
   const file = tmpFile(cfg);
@@ -1404,12 +1357,12 @@ test('#3221 mixto · skill puede mezclar strings y objects en fallbacks', () => 
   // Ergonómico para migración progresiva: parte legacy + parte modelos pin-eados.
   const cfg = baseValid();
   cfg.providers['openai-codex'] = providerOpenAICodex();
-  cfg.providers['cerebras'] = providerCerebrasEntry();
+  cfg.providers['gemini-google'] = providerGeminiEntry();
   cfg.skills['planner'] = {
     provider: 'anthropic',
     fallbacks: [
       'openai-codex',
-      { provider: 'cerebras', model_override: 'gpt-oss-120b' },
+      { provider: 'gemini-google', model_override: 'gemini-3.8-flash-medium' },
     ],
   };
   const file = tmpFile(cfg);
@@ -1508,8 +1461,8 @@ test('#3221 · fallback object sin provider (objeto vacío) → error', () => {
 // ─── resolveFallbackEntry — normalización 1:1 ───────────────────────────────
 
 test('#3221 · resolveFallbackEntry(string) devuelve {provider, model_override:null}', () => {
-  const r = validateMod.resolveFallbackEntry('cerebras');
-  assert.deepEqual(r, { provider: 'cerebras', model_override: null });
+  const r = validateMod.resolveFallbackEntry('gemini-google');
+  assert.deepEqual(r, { provider: 'gemini-google', model_override: null });
 });
 
 test('#3221 · resolveFallbackEntry(object con model_override) devuelve {provider, model_override}', () => {
@@ -1518,8 +1471,8 @@ test('#3221 · resolveFallbackEntry(object con model_override) devuelve {provide
 });
 
 test('#3221 · resolveFallbackEntry(object sin model_override) devuelve {provider, model_override:null}', () => {
-  const r = validateMod.resolveFallbackEntry({ provider: 'cerebras' });
-  assert.deepEqual(r, { provider: 'cerebras', model_override: null });
+  const r = validateMod.resolveFallbackEntry({ provider: 'gemini-google' });
+  assert.deepEqual(r, { provider: 'gemini-google', model_override: null });
 });
 
 test('#3221 · resolveFallbackEntry rechaza shapes inválidos (null, number, array, object vacío) → null', () => {
@@ -1537,20 +1490,20 @@ test('#3221 · resolveFallbackEntry rechaza shapes inválidos (null, number, arr
 test('#3221 · resolveSkillChain devuelve primary primero, después fallbacks en orden', () => {
   const cfg = baseValid();
   cfg.providers['openai-codex'] = providerOpenAICodex();
-  cfg.providers['cerebras'] = providerCerebrasEntry();
+  cfg.providers['gemini-google'] = providerGeminiEntry();
   cfg.skills['backend-dev'] = {
     provider: 'anthropic',
     model_override: 'claude-opus-4-7',
     fallbacks: [
       { provider: 'openai-codex', model_override: 'gpt-5.5' },
-      { provider: 'cerebras', model_override: 'gpt-oss-120b' },
+      { provider: 'gemini-google', model_override: 'gemini-3.8-flash-medium' },
     ],
   };
   const chain = validateMod.resolveSkillChain(cfg, 'backend-dev');
   assert.equal(chain.length, 3);
   assert.deepEqual(chain[0], { provider: 'anthropic', model: 'claude-opus-4-7', source: 'primary' });
   assert.deepEqual(chain[1], { provider: 'openai-codex', model: 'gpt-5.5', source: 'fallback' });
-  assert.deepEqual(chain[2], { provider: 'cerebras', model: 'gpt-oss-120b', source: 'fallback' });
+  assert.deepEqual(chain[2], { provider: 'gemini-google', model: 'gemini-3.8-flash-medium', source: 'fallback' });
 });
 
 test('#3221 · resolveSkillChain con fallback string usa provider.model default', () => {

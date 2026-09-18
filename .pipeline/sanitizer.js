@@ -43,14 +43,15 @@ const P = {
     ANTHROPIC_KEY: '[REDACTED:ANTHROPIC_KEY]',
     OPENAI_KEY: '[REDACTED:OPENAI_KEY]',
     OPENAI_PROJECT_KEY: '[REDACTED:OPENAI_PROJECT_KEY]',
-    // GROQ_API_KEY: MANTENIDO post-#3353 como defense-in-depth.
-    // Groq fue descontinuado como provider (mayo 2026), pero las keys legacy
-    // con prefijo `gsk_` pueden seguir apareciendo en logs viejos, backups
-    // (`~/.claude/secrets/backups/`), rejection reports archivados y dumps de
-    // incidentes (#3310, #3348). Verificación empírica en #3353-rev-1 mostró
-    // que CONF_STRUCTURED genérico NO cubre 6 de 7 escenarios realistas
-    // (bare keys, JSON, `Key=`, `groq_api_key=`, etc.), por lo que el pattern
-    // explícito sigue siendo necesario para evitar regresión de leak.
+    // GROQ_API_KEY / CEREBRAS_API_KEY / NVIDIA_NIM_API_KEY: MANTENIDOS como
+    // defense-in-depth aunque los tres providers están dados de baja (Groq en
+    // #3353; Cerebras y NVIDIA NIM en #6563). Las keys legacy con prefijo
+    // `gsk_` / `csk-` / `nvapi-` pueden seguir apareciendo en logs viejos,
+    // backups (`~/.claude/secrets/backups/`), rejection reports archivados y
+    // dumps de incidentes (#3310, #3348). Verificación empírica en #3353-rev-1
+    // mostró que CONF_STRUCTURED genérico NO cubre 6 de 7 escenarios realistas
+    // (bare keys, JSON, `Key=`, `groq_api_key=`, etc.), por lo que los
+    // patterns explícitos siguen siendo necesarios para evitar regresión de leak.
     GROQ_API_KEY: '[REDACTED:GROQ_API_KEY]',
     CEREBRAS_API_KEY: '[REDACTED:CEREBRAS_API_KEY]',
     NVIDIA_NIM_API_KEY: '[REDACTED:NVIDIA_NIM_API_KEY]',
@@ -322,11 +323,12 @@ const PATTERNS = [
     },
 
     // -------------------------------------------------------------------------
-    // Free-tier providers (#3310, ola N+1 multi-provider)
+    // Free-tier providers dados de baja (#3310, ola N+1 multi-provider)
     //
-    // Patrones para credenciales de los providers que oficialmente son free
-    // (Cerebras, NVIDIA NIM) + legacy de Groq (descontinuado en #3353, pero
-    // las keys con prefijo `gsk_` siguen apareciendo en logs viejos y backups).
+    // Patrones para credenciales de providers que ya NO están en el pipeline:
+    // Groq (descontinuado en #3353), Cerebras y NVIDIA NIM (retirados en
+    // #6563). Se conservan como defense-in-depth: las keys con estos prefijos
+    // siguen pudiendo aparecer en logs viejos, backups y dumps de incidentes.
     // Mismo enfoque que las keys de Anthropic/OpenAI más arriba: lookbehind/
     // lookahead negativos sobre el charset del secreto + longitud mínima 40
     // para evitar falsos positivos sobre slugs, clases CSS o identificadores
@@ -351,7 +353,8 @@ const PATTERNS = [
         replace: () => P.GROQ_API_KEY,
     },
 
-    // Cerebras API key — formato `csk-<52 chars base62>`.
+    // Cerebras API key — formato `csk-<52 chars base62>`. Provider retirado en
+    // #6563; el pattern se mantiene como defense-in-depth (ver arriba).
     // El charset documentado por Cerebras incluye `_-`, pero exigimos mínimo
     // 40 chars alfanuméricos sólidos después del prefijo para no colisionar
     // con identificadores `csk-foo` cortos.
@@ -362,7 +365,8 @@ const PATTERNS = [
         replace: () => P.CEREBRAS_API_KEY,
     },
 
-    // NVIDIA NIM API key — formato `nvapi-<base64url ~50 chars>`.
+    // NVIDIA NIM API key — formato `nvapi-<base64url ~50 chars>`. Provider
+    // retirado en #6563; el pattern se mantiene como defense-in-depth.
     // El charset incluye `_-` (es base64url). El prefijo `nvapi-` no aparece
     // en código legítimo del repo.
     // Fuente: https://build.nvidia.com (sección "API Key").

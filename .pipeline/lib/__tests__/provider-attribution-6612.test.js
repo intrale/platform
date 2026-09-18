@@ -42,14 +42,16 @@ const { _validateProviderCredentials } = require('../commander/credentials-prech
 const sfState = require('../agent-launcher/spawn-failure-state');
 
 // -----------------------------------------------------------------------------
-// Definición REAL de kimi-moonshot, leída de agent-models.json para que el test
-// se entere si alguien cambia la declaración del provider (y no quede verde
-// contra un fixture inventado que ya no representa al repo).
+// Providers REALES de agent-models.json. #6563 — kimi-moonshot (el provider
+// del incidente) fue retirado del plantel; la def del incidente queda como
+// fixture inline en CA-1 y el archivo real se usa para garantizar que NINGÚN
+// provider vigente reproduzca el escenario (drop-in de claude con auth_mode
+// no-oauth sin token cargado) sin ser validado.
 // -----------------------------------------------------------------------------
-function readKimiDef() {
+function readRealProviders() {
     const p = path.join(__dirname, '..', '..', 'agent-models.json');
     const models = JSON.parse(fs.readFileSync(p, 'utf8'));
-    return (models.providers || {})['kimi-moonshot'] || null;
+    return models.providers || {};
 }
 
 // =============================================================================
@@ -63,21 +65,23 @@ test('#6612 CA-1 · kimi-moonshot SIN ANTHROPIC_AUTH_TOKEN → ok:false (no se e
     assert.equal(r.reason, 'env_missing_or_placeholder:ANTHROPIC_AUTH_TOKEN');
 });
 
-test('#6612 CA-1b · la def REAL de agent-models.json es la que dispara el caso', () => {
-    const def = readKimiDef();
-    assert.ok(def, 'kimi-moonshot debe seguir declarado en agent-models.json');
-    // Si alguna de estas dos deja de ser cierta, el escenario del incidente
-    // cambió y este test debe revisarse en vez de seguir verde por inercia.
-    assert.equal(def.launcher, 'claude', 'kimi sigue siendo drop-in del launcher claude');
-    assert.equal(def.auth_mode, 'api_key', 'kimi sigue autenticando por API key, no por OAuth');
-
-    const sinToken = _validateProviderCredentials('kimi-moonshot', def, {});
-    assert.equal(sinToken.ok, false, 'sin token: degradado');
-
-    const conToken = _validateProviderCredentials('kimi-moonshot', def, {
-        ANTHROPIC_AUTH_TOKEN: 'sk-moonshot-valor-de-prueba',
-    });
-    assert.deepEqual(conToken, { ok: true }, 'con token: sano');
+test('#6612 CA-1b · las defs REALES de agent-models.json no reabren el caso', () => {
+    const providers = readRealProviders();
+    assert.ok(Object.keys(providers).length > 0, 'agent-models.json declara providers');
+    // Con el plantel vigente (anthropic/openai-codex/gemini-google por OAuth,
+    // deterministic sin credencial) el loop no encuentra candidatos: el valor
+    // del test es que se dispare solo si alguien vuelve a declarar un drop-in
+    // por API key. La regla en sí se cubre en CA-1 y CA-1c con fixtures inline.
+    for (const [name, def] of Object.entries(providers)) {
+        const authMode = String(def.auth_mode || '').toLowerCase();
+        const envs = Array.isArray(def.credentials_env) ? def.credentials_env : [];
+        if (authMode === 'oauth' || envs.length === 0) continue;
+        // Todo provider real con auth_mode explícito no-oauth y credencial
+        // declarada tiene que degradarse sin su token, sea cual sea el launcher.
+        const sinToken = _validateProviderCredentials(name, def, {});
+        assert.equal(sinToken.ok, false, `${name}: sin token debe quedar degradado`);
+        assert.equal(sinToken.reason, `env_missing_or_placeholder:${envs[0]}`);
+    }
 });
 
 test('#6612 CA-1c · un auth_mode explícito no-oauth NUNCA queda exento por su launcher', () => {

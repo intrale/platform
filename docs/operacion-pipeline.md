@@ -222,7 +222,6 @@ Desde M2 (#3092 + #3065 §5.4) cada provider tiene su propia estrategia de medic
 | `anthropic` | `activity-log.jsonl` (proxy `duration_ms`) + snapshots Claude Desktop (#3055/#3057) | horas | semanal · domingo 21:00 hora local (ART por default; configurable vía `QUOTA_TZ_OFFSET_MIN`) | **operativo** |
 | `openai-codex` | `activity-log.jsonl` + tabla de precios local + budget USD (cap hard `MAX_MONTHLY_BUDGET_USD = 1000`) | tokens × precio → USD | mensual · día 1 calendario | stub `not_implemented` (M2b · ver #3075) |
 | `gemini` | TBD (post-M2) | TBD | mensual día 1 (Gemini API paga) | stub `not_implemented` |
-| `ollama` | — (corre local) | — | — | `no_quota` (sin cuota remota) |
 | `deterministic` | — (sin LLM) | — | — | `no_quota` |
 
 ### Estados que devuelve el adapter
@@ -232,7 +231,7 @@ Desde M2 (#3092 + #3065 §5.4) cada provider tiene su propia estrategia de medic
 - `unknown` — adapter no pudo calcular (datos faltantes). Banner muestra estado degradado en gris (`--in-fg-dim`), NO ámbar de cuota agotada.
 - `error` — adapter falló (parser roto, archivo corrupto). Banner muestra estado degradado + `errorReason` accionable.
 - `not_implemented` — provider declarado pero adapter pendiente. Banner muestra "Cuota \<provider\>: pendiente de implementar — ver #N".
-- `no_quota` — provider sin cuota (Ollama local, deterministic). Banner oculta esta entrada del agregado (no la cuenta como 0%).
+- `no_quota` — provider sin cuota (deterministic). Banner oculta esta entrada del agregado (no la cuenta como 0%).
 
 `status` (cuota propiamente dicha — solo válido cuando `adapterStatus === 'ok'`):
 - `ok` < 50% < `normal` < 75% ≤ `warning` < 90% ≤ `critical`
@@ -254,7 +253,7 @@ Cada adapter tiene tests en `lib/__tests__/quota-adapters/`:
 - `dispatch.test.js` — allowlist + fail-secure
 - `anthropic.test.js` — adapter Anthropic (incluye boundary de reset, JSONL corrupto, exclusión de `model:deterministic`)
 - `openai-codex.test.js` — stub + hard cap del budget
-- `no-quota.test.js` — Ollama, deterministic, Gemini
+- `no-quota.test.js` — deterministic, Gemini
 
 La regresión cero del banner está cubierta en `lib/__tests__/weekly-quota.test.js` con assertions byte-a-byte sobre los campos consumidos por `quotaExhaustedState`.
 

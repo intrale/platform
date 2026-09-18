@@ -333,19 +333,19 @@
         },
         {
             "file": "lib/__tests__/credentials-vault-5353.test.js",
-            "line": 771,
+            "line": 769,
             "variable": "(clave no resoluble)",
             "sentido": "(n/a)"
         },
         {
             "file": "lib/__tests__/credentials-vault-5353.test.js",
-            "line": 774,
+            "line": 772,
             "variable": "(clave no resoluble)",
             "sentido": "(n/a)"
         },
         {
             "file": "lib/__tests__/credentials-vault-5353.test.js",
-            "line": 774,
+            "line": 772,
             "variable": "(clave no resoluble)",
             "sentido": "(n/a)"
         },
@@ -543,13 +543,13 @@
         },
         {
             "file": "lib/agent-launcher/__tests__/dispatch-billing-flag.test.js",
-            "line": 73,
+            "line": 75,
             "variable": "QUOTA_RECONCILE_DISABLED",
             "sentido": "encender"
         },
         {
             "file": "lib/agent-launcher/__tests__/dispatch-billing-flag.test.js",
-            "line": 80,
+            "line": 82,
             "variable": "QUOTA_RECONCILE_DISABLED",
             "sentido": "encender"
         },
@@ -753,13 +753,13 @@
         },
         {
             "file": "tests/pulpo-agent-spawn-env-containment.test.js",
-            "line": 748,
+            "line": 789,
             "variable": "(clave no resoluble)",
             "sentido": "(n/a)"
         },
         {
             "file": "tests/pulpo-agent-spawn-env-containment.test.js",
-            "line": 755,
+            "line": 796,
             "variable": "(clave no resoluble)",
             "sentido": "(n/a)"
         },

@@ -36,21 +36,14 @@ const { ADAPTER_STATUS, emptyResult } = require('./_shape');
 // adapter en este directorio. Cualquier `provider` fuera de esta lista
 // hace fail-fast con `adapterStatus: 'error'`.
 // #3220 — Rename `gemini` → `gemini-google` (sign-off 2026-05-15). Adapter
-// stub trasladado a `gemini-google.js`. Sumamos también `cerebras` como stub
-// no-implementado — el wrapper real llega con #3198.
+// stub trasladado a `gemini-google.js`.
 //
-// #3353 (mayo 2026) — Groq fue descontinuado por política de bloqueos
-// arbitrarios. El adapter standalone y la entrada del switch se removieron.
-// #4533 — `nvidia-nim` se suma a la allowlist. API drop-in OpenAI-compatible
-// (headers `x-ratelimit-*`, idéntico a Cerebras). Adapter stub por ahora; la
-// cuota real se hidrata desde headers vía provider-quota.recordSample.
+// Providers retirados: groq (#3353) y cerebras / nvidia-nim / ollama (#6563).
+// Sus adapters standalone y las entradas del switch se removieron.
 const ALLOWED_PROVIDERS = Object.freeze([
     'anthropic',
     'openai-codex',
     'gemini-google',
-    'cerebras',
-    'nvidia-nim',
-    'ollama',
     'deterministic',
 ]);
 
@@ -66,9 +59,6 @@ function getAdapter(provider) {
         case 'anthropic':       return require('./anthropic');
         case 'openai-codex':    return require('./openai-codex');
         case 'gemini-google':   return require('./gemini-google');
-        case 'cerebras':        return require('./cerebras');
-        case 'nvidia-nim':      return require('./nvidia-nim');
-        case 'ollama':          return require('./ollama');
         case 'deterministic':   return require('./deterministic');
         default:                return null; // unreachable — la allowlist ya filtró.
     }

@@ -288,7 +288,7 @@ Casos especiales:
 - **`skill_result: "blocked"`** con `error: "sender_not_allowed"` →
   SEC-2 rechazó el mensaje (sender fuera de `TELEGRAM_ALLOWED_USER_IDS`).
 - **`skill_result: "blocked"`** con `error: "provider_not_anthropic"` →
-  SEC-5 rechazó el pedido (failover a Codex/Groq/etc.).
+  SEC-5 rechazó el pedido (failover a Codex/Gemini).
 - **`skill_result: "error"`** → Claude termino pero la respuesta no
   menciona invocación de skill ni issue creado → posible fallback
   silencioso (alerta forense).
@@ -298,7 +298,7 @@ Casos especiales:
 
 ### Bloqueo cuando el provider activo no es Anthropic (SEC-5)
 
-Los providers no-Anthropic (Groq/Cerebras/Gemini/Codex) no tienen Skill
+Los providers no-Anthropic (Codex/Gemini) no tienen Skill
 tool habilitado en el harness — intentar `/doc` o `/planner` allí
 caería en fallback silencioso con calidad degradada. Cuando el dispatcher
 (`commanderMP.resolveCommanderProvider`) resuelve a un provider distinto

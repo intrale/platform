@@ -58,14 +58,14 @@ test('cada item del timeline trae eventType y provider (resolver inyectado)', ()
         entry({ issue: '10', skill: 'pipeline-dev', prUrl: 'https://github.com/intrale/platform/pull/5' }),
         entry({ issue: '20', skill: 'backend-dev', resultado: 'rechazado', reboteNumero: 2, finishedAt: NOW - 10 * MIN }),
     ] };
-    const resolveProvider = (skill) => ({ 'pipeline-dev': 'anthropic', 'backend-dev': 'groq' }[skill] || null);
+    const resolveProvider = (skill) => ({ 'pipeline-dev': 'anthropic', 'backend-dev': 'openai-codex' }[skill] || null);
     const r = historialTimelineSlice(state, { now: NOW }, { resolveProvider });
     const items = flat(r);
     const byIssue = Object.fromEntries(items.map((h) => [h.issue, h]));
     assert.equal(byIssue['10'].eventType, 'merge');
     assert.equal(byIssue['10'].provider, 'anthropic');
     assert.equal(byIssue['20'].eventType, 'rebote');
-    assert.equal(byIssue['20'].provider, 'groq');
+    assert.equal(byIssue['20'].provider, 'openai-codex');
 });
 
 test('sin resolveProvider el provider degrada a null (CA-3)', () => {
@@ -91,10 +91,10 @@ test('facets expone skills/providers/eventTypes presentes en el período', () =>
         entry({ issue: '20', skill: 'backend-dev', resultado: 'rechazado', reboteNumero: 1, finishedAt: NOW - 9 * MIN }),
         entry({ issue: '30', skill: 'qa', estado: 'trabajando', resultado: null, finishedAt: 0, startedAt: NOW - 1 * MIN }),
     ] };
-    const resolveProvider = (skill) => ({ 'pipeline-dev': 'anthropic', 'backend-dev': 'groq', 'qa': 'gemini-google' }[skill] || null);
+    const resolveProvider = (skill) => ({ 'pipeline-dev': 'anthropic', 'backend-dev': 'openai-codex', 'qa': 'gemini-google' }[skill] || null);
     const r = historialTimelineSlice(state, { now: NOW }, { resolveProvider });
     assert.deepEqual(r.facets.skills, ['backend-dev', 'pipeline-dev', 'qa']);
-    assert.deepEqual(r.facets.providers, ['anthropic', 'gemini-google', 'groq']);
+    assert.deepEqual(r.facets.providers, ['anthropic', 'gemini-google', 'openai-codex']);
     // eventTypes en orden canónico, solo los presentes
     assert.deepEqual(r.facets.eventTypes, ['merge', 'rebote', 'ejecucion']);
 });
@@ -116,11 +116,11 @@ test('filtro por provider acota al proveedor pedido', () => {
         entry({ issue: '10', skill: 'pipeline-dev' }),
         entry({ issue: '20', skill: 'backend-dev', finishedAt: NOW - 9 * MIN }),
     ] };
-    const resolveProvider = (skill) => ({ 'pipeline-dev': 'anthropic', 'backend-dev': 'groq' }[skill] || null);
-    const r = historialTimelineSlice(state, { now: NOW }, { resolveProvider, provider: 'groq' });
+    const resolveProvider = (skill) => ({ 'pipeline-dev': 'anthropic', 'backend-dev': 'openai-codex' }[skill] || null);
+    const r = historialTimelineSlice(state, { now: NOW }, { resolveProvider, provider: 'openai-codex' });
     assert.equal(r.total, 1);
     assert.equal(flat(r)[0].issue, '20');
-    assert.equal(r.filters.provider, 'groq');
+    assert.equal(r.filters.provider, 'openai-codex');
 });
 
 test('eventType + provider combinados', () => {
@@ -129,7 +129,7 @@ test('eventType + provider combinados', () => {
         entry({ issue: '20', skill: 'backend-dev', resultado: 'rechazado', reboteNumero: 1, finishedAt: NOW - 9 * MIN }),
         entry({ issue: '30', skill: 'qa', resultado: 'rechazado', reboteNumero: 1, finishedAt: NOW - 8 * MIN }),
     ] };
-    const resolveProvider = (skill) => ({ 'pipeline-dev': 'anthropic', 'backend-dev': 'groq', 'qa': 'anthropic' }[skill] || null);
+    const resolveProvider = (skill) => ({ 'pipeline-dev': 'anthropic', 'backend-dev': 'openai-codex', 'qa': 'anthropic' }[skill] || null);
     const r = historialTimelineSlice(state, { now: NOW }, { resolveProvider, eventType: 'rebote', provider: 'anthropic' });
     assert.equal(r.total, 1);
     assert.equal(flat(r)[0].issue, '30');

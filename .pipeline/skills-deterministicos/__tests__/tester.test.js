@@ -769,7 +769,6 @@ test('#3092 rev-1 — isPipelineOnlyChange acepta qa/evidence/<issue>/*', () => 
         '.pipeline/lib/quota-adapters/deterministic.js',
         '.pipeline/lib/quota-adapters/gemini.js',
         '.pipeline/lib/quota-adapters/index.js',
-        '.pipeline/lib/quota-adapters/ollama.js',
         '.pipeline/lib/quota-adapters/openai-codex.js',
         '.pipeline/lib/weekly-quota.js',
         'docs/operacion-pipeline.md',

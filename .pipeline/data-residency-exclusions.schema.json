@@ -62,7 +62,7 @@
         },
         "providers": {
           "type": "array",
-          "description": "Categorías o nombres de providers a los que aplica esta exclusión. Categorías: `anthropic`, `deterministic`, `non_anthropic`. También puede listar providers nombrados (`openai-codex`, `gemini`, `ollama`, etc.) — el validador cruza contra el allowlist de agent-models.json.",
+          "description": "Categorías o nombres de providers a los que aplica esta exclusión. Categorías: `anthropic`, `deterministic`, `non_anthropic`. También puede listar providers nombrados (`openai-codex`, `gemini-google`, etc.) — el validador cruza contra el allowlist de agent-models.json.",
           "items": { "type": "string", "minLength": 1 },
           "minItems": 1,
           "uniqueItems": true

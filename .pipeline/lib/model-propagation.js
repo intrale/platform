@@ -21,7 +21,7 @@
 // -----------------------------------------------------------------------------
 // Canales por provider (`resolveTarget`)
 // -----------------------------------------------------------------------------
-//   - launcher `claude` (anthropic, kimi-moonshot) → flag `--model <id>` como
+//   - launcher `claude` (anthropic) → flag `--model <id>` como
 //     ELEMENTO SEPARADO del array de args. Nunca interpolación de string:
 //     `detectLauncher` puede devolver `shell:true` (tiers cmd-shim /
 //     path-fallback), así que un id con metacaracteres escalaría a `cmd.exe`.
@@ -70,8 +70,8 @@
 // (`lib/agent-models-validate.js`) — la MISMA tabla que ya valida el boot, no
 // un catálogo nuevo. Ojo con la asimetría: esa tabla indexa por **launcher**,
 // mientras que `multi-provider/model-catalog.js` indexa por **provider**. No son
-// intercambiables (`kimi-moonshot` es un provider que reusa el launcher
-// `claude`), así que acá mapeamos provider → launcher leyendo
+// intercambiables (un provider puede reusar el launcher de otro: hasta #6563
+// `kimi-moonshot` corría sobre `claude`), así que acá mapeamos provider → launcher leyendo
 // `providers.<p>.launcher` de `agent-models.json`, igual que hace
 // `validateCrossReferences`. Un id inválido se reporta como ERROR DE
 // CONFIGURACIÓN (traza accionable enumerando los válidos) y NO propaga: nunca
@@ -94,22 +94,21 @@ const { ALLOWED_MODELS_BY_LAUNCHER } = require('./agent-models-validate');
 //     porque `detectLauncher` de Anthropic puede devolver `shell:true` (tiers
 //     cmd-shim / path-fallback) y ahí un metacaracter escala a `cmd.exe`.
 //
-//   MODEL_ENV_WHITELIST: canal env. Agrega EXACTAMENTE un carácter, la barra
-//     `/`, porque los ids reales de NVIDIA NIM son namespaced
-//     (`deepseek-ai/deepseek-v4-flash-0731`, `moonshotai/kimi-k2-instruct`, ambos
-//     en ALLOWED_MODELS_BY_LAUNCHER['nvidia-nim']). Con la whitelist estricta,
-//     CA-2 sería inalcanzable para NVIDIA: su modelo declarado se rechazaría
-//     siempre. La `/` es segura en este canal: los providers que reciben el
-//     modelo por env corren con `shell:false` SIEMPRE (cerebras y nvidia-nim lo
-//     fijan en código; gemini-google también), y aun en el único que puede caer a
-//     `shell:true` (openai-codex, tiers cmd-shim / path-fallback) la `/` no es
-//     metacaracter de `cmd.exe` (`& | < > ^ " %` sí lo son, y ninguno pasa).
+//   MODEL_ENV_WHITELIST: canal env. Hoy coincide con la de argv: ningún
+//     provider vigente declara ids con caracteres fuera de ese set. Hasta #6563
+//     admitía además la barra `/` por los ids namespaced de NVIDIA NIM
+//     (`deepseek-ai/...`); al retirar ese provider la excepción se eliminó. Si
+//     un provider futuro la necesita, ampliarla SÓLO en este canal (los
+//     providers que reciben el modelo por env corren con `shell:false`, y en el
+//     único que puede caer a `shell:true` —openai-codex, tiers cmd-shim /
+//     path-fallback— hay que verificar que el carácter no sea metacaracter de
+//     `cmd.exe`: `& | < > ^ " %` sí lo son).
 //
 // Ambas mantienen el cap de longitud compartido y siguen rechazando espacios,
 // comillas, `$`, backticks, saltos de línea y todo el resto.
 // -----------------------------------------------------------------------------
 const MODEL_ARG_WHITELIST = MODEL_WHITELIST;
-const MODEL_ENV_WHITELIST = /^[A-Za-z0-9._\-[\]/]{1,64}$/;
+const MODEL_ENV_WHITELIST = MODEL_WHITELIST;
 
 // Modos válidos del flag. Cualquier otro valor en config se IGNORA (se cae al
 // siguiente nivel de precedencia) — un typo no debe encender la propagación.
@@ -118,7 +117,7 @@ const MODE_OFF = 'off';
 
 // Providers cuyo modelo viaja por argv (`--model`), no por env: los que corren
 // sobre el launcher `claude`. Constante de código, no derivada de input.
-const ARG_MODEL_PROVIDERS = Object.freeze(['anthropic', 'kimi-moonshot']);
+const ARG_MODEL_PROVIDERS = Object.freeze(['anthropic']);
 
 // El provider determinístico no tiene modelo: es Node puro.
 const NO_MODEL_PROVIDERS = Object.freeze(['deterministic']);
@@ -258,8 +257,8 @@ function resolveTarget(provider) {
 //
 // CA-6 — cruce contra ALLOWED_MODELS_BY_LAUNCHER *antes* del spawn. Mapea
 // provider → launcher vía `agent-models.json` (mismo camino que el boot). Si no
-// se puede determinar el launcher, o el launcher no tiene allowlist (node,
-// ollama), se acepta: ausencia de catálogo no es evidencia de invalidez.
+// se puede determinar el launcher, o el launcher no tiene allowlist (node),
+// se acepta: ausencia de catálogo no es evidencia de invalidez.
 // -----------------------------------------------------------------------------
 function validateDeclaredModel(opts) {
     const o = opts || {};

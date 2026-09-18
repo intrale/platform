@@ -141,32 +141,42 @@ test('CA-5 — el codigo no deriva ni compara PROVIDER_VENDORS contra el vocabul
     // Sobre el source SIN comentarios: lo que se prohibe es la DERIVACION, no
     // la mencion. El comentario explicativo es obligatorio (se verifica abajo).
     assert.equal(/LIVE_PROVIDER_IDS/.test(SOURCE_CODE_ONLY), false,
-        'derivar de LIVE_PROVIDER_IDS perderia Moonshot y renombraria tres scopes');
+        'derivar de LIVE_PROVIDER_IDS renombraria dos scopes (openai / google)');
     assert.equal(/project-descriptor/.test(SOURCE_CODE_ONLY), false);
 });
 
 test('CA-5 — hay un comentario junto a la constante que explica por que no es el vocabulario de runtime', () => {
     assert.ok(/LIVE_PROVIDER_IDS/.test(SOURCE),
         'sin la advertencia escrita, los dos vocabularios se parecen lo suficiente como para confundirlos');
-    assert.ok(/moonshot/i.test(SOURCE));
+    // El ejemplo vigente de la advertencia es el par `openai` != `openai-codex`
+    // (hasta #6563 lo era `moonshot`, retirado con Kimi).
+    assert.ok(/openai-codex/.test(SOURCE));
 });
 
 test('CA-5 — los vendors de almacenamiento no coinciden con los ids de runtime', () => {
     // Ancla del error mas caro del issue: si alguien "unifica" ambas listas,
     // esto se pone rojo.
-    const idsDeRuntime = ['anthropic', 'openai-codex', 'gemini-google', 'cerebras', 'nvidia-nim'];
+    // #6563 — plantel de runtime tras retirar cerebras / nvidia-nim / kimi-moonshot.
+    const idsDeRuntime = ['anthropic', 'openai-codex', 'gemini-google'];
 
     assert.notDeepEqual([...PROVIDER_VENDORS].sort(), [...idsDeRuntime].sort());
-    assert.ok(PROVIDER_VENDORS.includes('moonshot'), 'Moonshot solo existe del lado de almacenamiento');
+    assert.ok(PROVIDER_VENDORS.includes('openai'), '`openai` es el vendor de almacenamiento de `openai-codex`');
+    assert.ok(PROVIDER_VENDORS.includes('google'), '`google` es el vendor de almacenamiento de `gemini-google`');
     assert.equal(PROVIDER_VENDORS.includes('openai-codex'), false);
+    assert.equal(PROVIDER_VENDORS.includes('gemini-google'), false);
+    assert.equal(PROVIDER_VENDORS.includes('moonshot'), false, 'moonshot se retiro con Kimi en #6563');
 });
 
 // -----------------------------------------------------------------------------
 // CA-6 — scopeVaultSegment: inyectivo Y de inverso determinista
 // -----------------------------------------------------------------------------
 
-test('CA-6 — DESCRIPTOR_SCOPE_ENUM tiene las 12 entradas esperadas y esta ordenado', () => {
-    assert.equal(DESCRIPTOR_SCOPE_ENUM.length, 12);
+// #6563 — ancla: 12 → 9 entradas al retirar providers:cerebras, providers:nvidia
+// y providers:moonshot (6 scopes raiz sin `providers` + 3 vendors).
+test('CA-6 — DESCRIPTOR_SCOPE_ENUM tiene las 9 entradas esperadas y esta ordenado', () => {
+    assert.equal(DESCRIPTOR_SCOPE_ENUM.length, 9);
+    // `providers` pelado se reemplaza por un `providers:<vendor>` por vendor.
+    assert.equal(DESCRIPTOR_SCOPE_ENUM.length, (SECRET_SCOPES.length - 1) + PROVIDER_VENDORS.length);
     assert.deepEqual([...DESCRIPTOR_SCOPE_ENUM], [...DESCRIPTOR_SCOPE_ENUM].sort());
     assert.equal(DESCRIPTOR_SCOPE_ENUM.includes('providers'), false,
         '`providers` pelado no pertenece al vocabulario del descriptor: se expande por vendor');
@@ -192,14 +202,14 @@ test('CA-6.2 — el inverso es determinista: ningun scope raiz contiene el separ
         assert.equal(vendor.includes(VAULT_SCOPE_SEP), false, `el vendor "${vendor}" contiene el separador`);
     }
 
-    // Decoder de referencia: si el mapeo es reversible, esto reconstruye los 12.
+    // Decoder de referencia: si el mapeo es reversible, esto reconstruye los 9.
     const decode = (segmento) => segmento.split(VAULT_SCOPE_SEP).join(':');
     for (const scope of DESCRIPTOR_SCOPE_ENUM) {
         assert.equal(decode(scopeVaultSegment(scope)), scope, `no reversible: "${scope}"`);
     }
 });
 
-test('CA-6.3 — el borde del vault acepta los 12 segmentos', () => {
+test('CA-6.3 — el borde del vault acepta los 9 segmentos', () => {
     // NO se copia SEGMENT_RE: `secret-vault.js` documenta que los regex no se
     // exportan a proposito, porque exportarlos habilita justamente la copia que
     // este issue viene a eliminar. Se valida con la funcion exportada, que es

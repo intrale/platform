@@ -334,19 +334,20 @@ test('un id de modelo con metacaracteres NO llega al argv: lo corta la whitelist
 });
 
 // --- Bloqueante 2 de la review de #6274 -----------------------------------
-// `kimi-moonshot` corre sobre el launcher `claude` y recibe el modelo por
-// `--model` (esta en ARG_MODEL_PROVIDERS), pero el rollout solo contemplaba
-// `provider === 'anthropic'` y lo devolvia como `propagated:false` mudo con el
-// par en `enabled:true`. Al delegar en `resolveTarget`, el canal sale del mismo
-// catalogo que usa el launcher.
-test('kimi-moonshot propaga por --model igual que anthropic (no es un no-op mudo)', () => {
-  const root=fixture(); seed(root,[1,2].map(i=>({ts:`2026-08-20T0${i}:00:00Z`,skill:'guru',provider:'kimi-moonshot',exit_code:0,duration_ms:1})));
+// El rollout NO decide el canal por `provider === 'anthropic'`: delega en
+// `resolveTarget`, asi el canal sale del mismo catalogo que usa el launcher. Un
+// provider de env (gemini-google) propaga por su variable y nunca como un
+// `propagated:false` mudo con el par en `enabled:true`. (El caso original era
+// kimi-moonshot por --model; retirado en #6563.)
+test('un provider de canal env propaga por su variable igual que anthropic por --model (no es un no-op mudo)', () => {
+  const root=fixture(); seed(root,[1,2].map(i=>({ts:`2026-08-20T0${i}:00:00Z`,skill:'guru',provider:'gemini-google',exit_code:0,duration_ms:1})));
   r.captureBaseline(root);
   const config={...cfg,waves:[{actors:['guru']}]};
-  r.enablePair(root,'guru','kimi-moonshot',config);
-  assert.equal(r.shouldPropagate(root,'guru','kimi-moonshot'),true);
-  const out=r.applyToSpawn(root,'guru',{provider:'kimi-moonshot',model:'kimi-k2-6'},['-p','hola'],{});
-  assert.deepStrictEqual(out.args,['-p','hola','--model','kimi-k2-6']);
+  r.enablePair(root,'guru','gemini-google',config);
+  assert.equal(r.shouldPropagate(root,'guru','gemini-google'),true);
+  const out=r.applyToSpawn(root,'guru',{provider:'gemini-google',model:'gemini-3.8-flash-medium'},['-p','hola'],{});
+  assert.deepStrictEqual(out.args,['-p','hola']);
+  assert.equal(out.env.GEMINI_MODEL,'gemini-3.8-flash-medium');
   assert.equal(out.propagated,true);
 });
 

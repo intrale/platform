@@ -65,19 +65,21 @@ test('#4851: onboarding conserva 5 pasos y expone los campos del descriptor comp
     assert.ok(res.body.includes('data-provider-id="anthropic"'));
     assert.ok(res.body.includes('data-provider-id="openai-codex"'));
     assert.ok(res.body.includes('data-provider-id="gemini-google"'));
-    assert.ok(res.body.includes('data-provider-id="cerebras"'));
-    assert.ok(res.body.includes('data-provider-id="nvidia-nim"'));
+    // #6563 — los proveedores gratuitos retirados no son opción del wizard.
+    assert.ok(!res.body.includes('data-provider-id="cerebras"'), 'cerebras retirado en #6563');
+    assert.ok(!res.body.includes('data-provider-id="nvidia-nim"'), 'nvidia-nim retirado en #6563');
     assert.ok(res.body.includes('function owMoveProvider('));
     assert.ok(res.body.includes('function owProviderKey('));
     // #5724 rev-3 empezó a inlinear el sprite de íconos COMPLETO en el documento
     // de la vista (el banner de desync usa `<use href="#ic-pause-lock">` y sin el
     // sprite en el documento el símbolo no resuelve). Ese sprite es compartido por
-    // todo el dashboard y trae `ic-provider-groq` + su comentario: Groq sigue vivo
-    // como provider free en la vista multi-provider, así que el ícono debe seguir
-    // existiendo. Lo que #4851 prohíbe es que Groq aparezca como OPCIÓN del wizard,
-    // no que el sprite compartido pierda su símbolo — por eso la aserción se evalúa
-    // sobre el documento con el sprite descontado, más un chequeo explícito de que
-    // no hay provider `groq` ofrecido en el orden de providers.
+    // todo el dashboard y trae `ic-provider-groq` + su comentario: el símbolo se
+    // conserva como identidad visual reservada (proveedor dado de baja, #6563)
+    // para que un rollback no requiera rediseño. Lo que #4851 prohíbe es que Groq
+    // aparezca como OPCIÓN del wizard, no que el sprite compartido pierda su
+    // símbolo — por eso la aserción se evalúa sobre el documento con el sprite
+    // descontado, más un chequeo explícito de que no hay provider `groq` ofrecido
+    // en el orden de providers.
     let sprite = '';
     try { sprite = require('../../views/dashboard/nav-tabs').loadIconSprite(); } catch { /* sin sprite: se evalúa el documento entero */ }
     const bodySinSprite = sprite ? res.body.split(sprite).join('') : res.body;

@@ -99,24 +99,6 @@ test('Gemini API JSON error.code=resource_exhausted clasifica quota_exhausted', 
     assert.equal(r.shouldFallback, true);
 });
 
-test('Cerebras API JSON con code en allowlist quota clasifica quota_exhausted (convención del provider)', () => {
-    // Cerebras declara `rate_limit_exceeded` como quota_error_type en
-    // agent-models.json — para Cerebras, ese code ES cuota, no rate-limit
-    // transitorio. El parser respeta la convención declarativa.
-    const fx = loadFixture('cerebras-api-rate-limit.json');
-    const r = parseProviderError(fx.raw, { provider: fx.provider, transport: fx.transport });
-    assert.equal(r.errorClass, 'quota_exhausted');
-    assert.equal(r.shouldFallback, true);
-});
-
-test('Cerebras API JSON 429 sin code en allowlist clasifica rate_limit puro', () => {
-    const fx = loadFixture('cerebras-api-rate-limit-pure.json');
-    const r = parseProviderError(fx.raw, { provider: fx.provider, transport: fx.transport });
-    assert.equal(r.errorClass, 'rate_limit');
-    assert.equal(r.shouldFallback, true);
-    assert.equal(r.retriable, true, 'rate_limit puro es retriable con backoff');
-});
-
 test('OpenAI context_length_exceeded clasifica permanent_failure con shouldFallback=true', () => {
     const fx = loadFixture('openai-api-context-length.json');
     const r = parseProviderError(fx.raw, { provider: fx.provider, transport: fx.transport });

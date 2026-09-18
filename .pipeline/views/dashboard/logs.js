@@ -82,8 +82,6 @@ const PROVIDER_DISPLAY = Object.freeze({
     'openai-codex': 'Codex',
     'openai': 'Codex',
     'gemini-google': 'Gemini',
-    'cerebras': 'Cerebras',
-    'nvidia-nim': 'NVIDIA NIM',
     'deterministic': 'Determinístico',
 });
 

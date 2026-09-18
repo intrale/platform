@@ -16,10 +16,10 @@
 //      (multi-provider.js) partía la pantalla en solapas «Por agente»,
 //      «Catálogo», «Health», «Permission overrides». Acá todo se ve de corrido.
 //   2. UNA fila por proveedor: key enmascarada + fingerprint, salud en vivo con
-//      barra de carga/cuota, tier (🟦 PLAN MAX · 🟧 PAGO · FREE), catálogo de
+//      barra de carga/cuota, tier (🟧 PAGO · 🟩 FREE, derivado de `billing`), catálogo de
 //      modelos en línea y kill-switch — todo unificado en una sola línea legible.
 //   3. Banner de misión que DIAGNOSTICA la cadena leyendo el estado real de
-//      salud (sanos N/5, quién absorbe el fallback y a qué nivel, riesgo). Nada
+//      salud (sanos N/total, quién absorbe el fallback y a qué nivel, riesgo). Nada
 //      hardcodeado: si Gemini está en `red` el banner lo nombra.
 //   4. Franja «Por agente» compacta al pie: la cadena DEFAULT + sólo los agentes
 //      que la pisan (los deterministas build/tester/linter/delivery no listan).
@@ -88,22 +88,32 @@ function loadDesignTokens() { try { return fs.readFileSync(TOKENS_CSS_PATH, 'utf
 // ───────────────────────── Constantes de dominio ─────────────────────────
 
 // Orden canónico (memoria feedback_multi-provider-default-order: Claude > Codex
-// > … > FREE). El set real gestionado hoy es éste — Groq aún no está en
-// `agent-models.json`/`secrets-rw`, así que NO se inventa una fila para él
-// (honramos lo que está en código; si se agrega, aparece automáticamente).
-const PROVIDER_ORDER = Object.freeze(['anthropic', 'openai', 'gemini-google', 'cerebras', 'nvidia-nim']);
+// > Gemini). Plantel vigente tras la baja de los proveedores gratuitos en
+// #6563: sólo lo que está en `agent-models.json`/`secrets-rw` (si se agrega
+// un provider, aparece al sumarlo acá y al JSON; nunca se inventa una fila).
+const PROVIDER_ORDER = Object.freeze(['anthropic', 'openai', 'gemini-google']);
 
-// Metadata estable por provider (tier = constante de negocio, no estado de
-// salud). `disabledKey` mapea el nombre del provider de health/listKeys al de
-// `provider-disabled.VALID_PROVIDERS` (openai → openai-codex). `catalogKey`
-// mapea al `model-catalog`.
+// Metadata estable por provider (identidad visual y mapeo de claves; NO estado
+// de salud). `disabledKey` mapea el nombre del provider de health/listKeys al
+// de `provider-disabled.VALID_PROVIDERS` (openai → openai-codex). `catalogKey`
+// mapea al `model-catalog` y a `agent-models.json`.
+// #6563 — el tier (FREE/PAGO) ya NO se hardcodea por provider: se deriva del
+// `billing` declarado en `agent-models.json` (fuente única) vía `tierForBilling`.
 const PROVIDER_META = Object.freeze({
-    anthropic:       { name: 'Claude',     accent: '--provider-anthropic',  tier: 'PLAN MAX', tierKind: 'max',  tierIcon: '🟦', disabledKey: 'anthropic',    catalogKey: 'anthropic' },
-    openai:          { name: 'Codex',      accent: '--provider-openai',     tier: 'PAGO',     tierKind: 'paid', tierIcon: '🟧', disabledKey: 'openai-codex', catalogKey: 'openai-codex' },
-    'gemini-google': { name: 'Gemini',     accent: '--provider-gemini',     tierKind: 'measured', disabledKey: 'gemini-google', catalogKey: 'gemini-google' },
-    cerebras:        { name: 'Cerebras',   accent: '--provider-cerebras',   tier: 'FREE',     tierKind: 'free', tierIcon: '🟨', disabledKey: 'cerebras',     catalogKey: 'cerebras' },
-    'nvidia-nim':    { name: 'NVIDIA NIM', accent: '--provider-nvidia-nim', tier: 'FREE',     tierKind: 'free', tierIcon: '🟩', disabledKey: 'nvidia-nim',   catalogKey: 'nvidia-nim' },
+    anthropic:       { name: 'Claude',     accent: '--provider-anthropic',  disabledKey: 'anthropic',    catalogKey: 'anthropic' },
+    openai:          { name: 'Codex',      accent: '--provider-openai',     disabledKey: 'openai-codex', catalogKey: 'openai-codex' },
+    'gemini-google': { name: 'Gemini',     accent: '--provider-gemini',     disabledKey: 'gemini-google', catalogKey: 'gemini-google' },
 });
+
+// #6563 — Leyenda de tier derivada de `billing` (`agent-models.json`). Sin
+// `billing` declarado no se inventa una leyenda: la fila no muestra badge.
+const TIER_BY_BILLING = Object.freeze({
+    paid: Object.freeze({ tier: 'PAGO', tierKind: 'paid', tierIcon: '🟧' }),
+    free: Object.freeze({ tier: 'FREE', tierKind: 'free', tierIcon: '🟩' }),
+});
+function tierForBilling(billing) {
+    return TIER_BY_BILLING[billing] || { tier: null, tierKind: null, tierIcon: null };
+}
 
 // Estado de salud → severidad del status-badge + etiqueta humana.
 const HEALTH_SEVERITY = Object.freeze({ green: 'ok', yellow: 'warn', red: 'bad', unknown: 'info' });
@@ -468,20 +478,20 @@ function buildProvidersModel() {
 
         // Modelos: catálogo explícito si existe; si no, el modelo default de
         // agent-models.json (siempre hay al menos uno).
+        const pdef = agents.providers[meta.catalogKey] || agents.providers[key] || {};
         let models = catalog[meta.catalogKey] || [];
-        if (models.length === 0) {
-            const pdef = agents.providers[meta.catalogKey] || agents.providers[key] || {};
-            if (pdef.model) models = [pdef.model];
-        }
+        if (models.length === 0 && pdef.model) models = [pdef.model];
+        // #6563 — tier derivado de `billing` (fuente única: agent-models.json).
+        const tierMeta = tierForBilling(pdef.billing);
 
         return {
             key,
             disabledKey: meta.disabledKey,
             name: meta.name,
             accent: accentVar(key),
-            tier: meta.tier,
-            tierKind: meta.tierKind,
-            tierIcon: meta.tierIcon,
+            tier: tierMeta.tier,
+            tierKind: tierMeta.tierKind,
+            tierIcon: tierMeta.tierIcon,
             masked: k.masked || null,
             fingerprint: k.fingerprint || null,
             keyStatus: k.status || h.key_status || 'absent',
@@ -493,7 +503,7 @@ function buildProvidersModel() {
             // #5888 CA-16/R-C — `healthReason` queda INTACTO, reservado al eje de
             // salud del provider. Los reason codes del eje de modelo NO se
             // escriben acá: si lo hicieran, el operador leería
-            // "NVIDIA NIM · SANO · modelo fuera de catálogo" en un mismo renglón
+            // "Gemini · SANO · modelo fuera de catálogo" en un mismo renglón
             // cuyo `title` dice "Causa reportada por el health-cron", e
             // interpretaría el modelo muerto como la causa de la salud del
             // provider — contradiciendo CA-5 en la superficie visible aunque el
@@ -623,13 +633,15 @@ function renderPlanBadge(p, now = Date.now()) {
 }
 
 function renderTierBadge(p, now) {
+    // #6564 — Gemini muestra el eje de plan medido, no una leyenda estática.
     if (p.key === 'gemini-google') return renderPlanBadge(p, now);
-    const cls = 'prov-tier prov-tier-' + p.tierKind;
-    const title = p.tierKind === 'max' ? 'Plan MAX (suscripción Claude, sin costo por token)'
-        : p.tierKind === 'paid' ? 'Tier pago (consume créditos de la cuenta)'
+    // #6563 — sin `billing` declarado no hay leyenda que mostrar.
+    if (!p.tierKind || !p.tier) return '';
+    const cls = 'prov-tier prov-tier-' + escapeHtmlAttr(p.tierKind);
+    const title = p.tierKind === 'paid' ? 'Tier pago (consume créditos de la cuenta)'
         : 'Tier gratuito (free tier del proveedor)';
     return `<span class="${cls}" title="${escapeHtmlAttr(title)}">`
-        + `<span aria-hidden="true">${p.tierIcon}</span>${escapeHtmlText(p.tier)}</span>`;
+        + `<span aria-hidden="true">${p.tierIcon || ''}</span>${escapeHtmlText(p.tier)}</span>`;
 }
 
 function renderQuotaBar(p) {
@@ -1331,7 +1343,6 @@ const PANEL_CSS = `
 .prov-name { font-size: 15px; font-weight: 800; }
 .prov-tier { display: inline-flex; align-items: center; gap: 5px; font-size: 9.5px; font-weight: 800; letter-spacing: .5px;
   padding: 2px 8px; border-radius: 7px; width: fit-content; border: 1px solid transparent; }
-.prov-tier-max  { background: rgba(52,217,224,.14); color: #9fe9ee; border-color: rgba(52,217,224,.4); }
 .prov-tier-paid { background: var(--provider-anthropic-bg); color: var(--provider-anthropic-fg); border-color: var(--provider-anthropic-dim); }
 .prov-tier-free { background: var(--in-bg-2); color: var(--in-fg-dim); border-color: var(--in-border); }
 .prov-col { min-width: 0; }

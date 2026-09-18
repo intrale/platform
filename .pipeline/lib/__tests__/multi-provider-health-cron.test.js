@@ -52,14 +52,18 @@ test('updateRateLimitCounter: ok decae si hay hits previos', () => {
     assert.equal(healthCron.updateRateLimitCounter({ ok: true, reason: 'authenticated' }, { rate_limit_hit_24h: 3 }), 2);
 });
 
-test('listManagedAndPingable incluye los free providers vivos (#3260 + #3243 + #3353)', () => {
+test('listManagedAndPingable incluye el plantel vigente y excluye los retirados (#3353 + #6563)', () => {
     const providers = healthCron.listManagedAndPingable().map(p => p.provider);
     // #3353 — groq removido tras la descontinuación.
     assert.ok(!providers.includes('groq'), 'groq debería estar removido tras #3353');
+    // #6563 — cerebras, nvidia-nim y kimi-moonshot retirados del plantel.
+    assert.ok(!providers.includes('cerebras'), 'cerebras retirado en #6563');
+    assert.ok(!providers.includes('nvidia-nim'), 'nvidia-nim retirado en #6563');
+    assert.ok(!providers.includes('kimi-moonshot'), 'kimi-moonshot retirado en #6563');
+    // Plantel: anthropic, openai (codex) y gemini-google (Antigravity).
+    assert.ok(providers.includes('anthropic'), 'anthropic presente');
+    assert.ok(providers.includes('openai'), 'openai (codex) presente');
     assert.ok(providers.includes('gemini-google'), 'gemini-google presente');
-    assert.ok(providers.includes('cerebras'), 'cerebras presente');
-    // #3243 — NVIDIA NIM se sumó al pool de free providers gestionados.
-    assert.ok(providers.includes('nvidia-nim'), 'nvidia-nim presente');
 });
 
 test('tryAcquireLock: primero gana, segundo falla', () => {
@@ -192,33 +196,42 @@ test('isWeeklyDue: true si nunca corrió', () => {
     assert.equal(healthCron.isWeeklyDue({ stateFile }), true);
 });
 
-test('runOnce: pingea sólo los providers presentes en secretos', async () => {
+test('runOnce: los providers OAuth se validan por CLI, nunca por secretos ni ping HTTP', async () => {
+    // #6563 — sin cerebras/nvidia-nim no queda ningún provider api_key: el
+    // plantel entero es CLI-OAuth. El almacén de secretos vacío NO debe
+    // producir `no_key_configured` ni invocar `pingImpl`; el estado sale del
+    // probe de CLI por binario (claude / codex / agy).
     const dir = tmpDir();
     const stateDir = path.join(dir, 'state');
     const auditDir = path.join(dir, 'audit');
-    const secretsPath = makeSecretsFile(dir, {
-        cerebras_api_key: 'csk_test_aaaaaaaaaaaaaaaaaaaa',
-        // Gemini usa OAuth y no depende del almacén de API keys.
-    });
+    const secretsPath = makeSecretsFile(dir, {});
+    let pinged = 0;
     const result = await healthCron.runOnce({
         stateDir,
         auditDir,
         secretsPath,
-        pingImpl: fakePing({ cerebras: { ok: true, reason: 'authenticated', statusCode: 200 } }),
+        pingImpl: async () => { pinged++; return { ok: false, reason: 'unknown' }; },
         // #3802 — probe CLI fijo + sender/dedup aislados: el test no debe
         // depender del PATH real ni escribir en archivos reales del pipeline.
-        cliProbe: () => false,
+        cliProbe: (binary) => binary === 'claude',
         telegramSender: () => true,
         dedupFile: path.join(dir, 'dedup.json'),
         skipAudit: true,
     });
     assert.ok(Array.isArray(result.snapshot.providers));
-    const cerebras = result.snapshot.providers.find(p => p.provider === 'cerebras');
-    assert.equal(cerebras.state, 'green');
-    assert.equal(cerebras.reason_code, 'authenticated');
+    assert.equal(pinged, 0, 'ningún provider del plantel pasa por el ping HTTP con API key');
+    const anthropic = result.snapshot.providers.find(p => p.provider === 'anthropic');
+    assert.equal(anthropic.state, 'green');
+    assert.equal(anthropic.reason_code, 'cli_oauth_ok');
+    const openai = result.snapshot.providers.find(p => p.provider === 'openai');
+    assert.equal(openai.state, 'red');
+    assert.equal(openai.reason_code, 'cli_unavailable');
     const gemini = result.snapshot.providers.find(p => p.provider === 'gemini-google');
     assert.equal(gemini.state, 'red');
     assert.equal(gemini.reason_code, 'cli_unavailable');
+    for (const p of result.snapshot.providers) {
+        assert.notEqual(p.reason_code, 'no_key_configured', p.provider + ': OAuth no depende del almacén de keys');
+    }
 });
 
 // ─── #3802 — providers CLI-OAuth (Claude Code / Codex): validar CLI, no key.
@@ -305,88 +318,84 @@ test('runOnce: provider OAuth con CLI ausente → red (cli_unavailable)', async 
     assert.equal(anthropic.reason_code, 'cli_unavailable');
 });
 
-test('runOnce: CA-6 simulación — 2 free providers en rojo simultáneo (free counts)', async () => {
+test('runOnce: CA-6 simulación — 2 providers en rojo simultáneo → una alerta red por cada uno', async () => {
+    // #6563 — el caso original ponía en rojo a 2 de los 3 free providers
+    // (cerebras + gemini). Con un único free en el plantel, la misma
+    // propiedad (cada rojo simultáneo genera su alerta; el verde no) se prueba
+    // con gemini-google (free, Antigravity) + openai (codex) en rojo y
+    // anthropic en verde, todos por probe de CLI.
     const dir = tmpDir();
     const stateDir = path.join(dir, 'state');
     const auditDir = path.join(dir, 'audit');
-    const secretsPath = makeSecretsFile(dir, {
-        gemini_google_api_key: 'AIza_test_aaaaaaaaaaaaaaaaaaaa',
-        cerebras_api_key: 'csk_test_aaaaaaaaaaaaaaaaaaaa',
-        nvidia_nim_api_key: 'nvapi-test_aaaaaaaaaaaaaaaaaaaa',
-    });
+    const secretsPath = makeSecretsFile(dir, {});
     const result = await healthCron.runOnce({
         stateDir,
         auditDir,
         secretsPath,
-        pingImpl: fakePing({
-            'gemini-google': { ok: false, reason: 'quota_exhausted', statusCode: 429 },
-            cerebras: { ok: false, reason: 'invalid_credentials', statusCode: 401 },
-            'nvidia-nim': { ok: true, reason: 'authenticated', statusCode: 200 },
-        }),
         // #6857 — gemini-google es OAuth y su health hace round-trip REAL al
-        // CLI (`agy models`). Sin esto el test dependía del entorno (antes,
-        // del flag AGY_LICENSE_READY vacío) y ahora spawnearía el binario real.
-        cliProbe: () => false,
+        // CLI (`agy models`). El probe fijo por binario evita spawnear el real.
+        cliProbe: (binary) => binary === 'claude',
         telegramSender: () => true,
         dedupFile: path.join(dir, 'dedup.json'),
         skipAudit: true,
     });
-    // Filtrar a los 3 free providers vivos para verificar CA-6 (#3353).
-    const free = result.snapshot.providers.filter(p =>
-        ['gemini-google', 'cerebras', 'nvidia-nim'].includes(p.provider));
-    const reds = free.filter(p => p.state === 'red');
-    const greens = free.filter(p => p.state === 'green');
-    assert.equal(reds.length, 2, 'dos free providers en rojo');
+    const plantel = result.snapshot.providers.filter(p =>
+        ['gemini-google', 'openai', 'anthropic'].includes(p.provider));
+    const reds = plantel.filter(p => p.state === 'red');
+    const greens = plantel.filter(p => p.state === 'green');
+    assert.equal(reds.length, 2, 'dos providers en rojo');
     assert.equal(greens.length, 1, 'uno verde');
     const redAlerts = result.alerts.filter(a => a.kind === 'red');
-    const freeRedAlerts = redAlerts.filter(a =>
-        ['gemini-google', 'cerebras', 'nvidia-nim'].includes(a.provider));
-    assert.ok(freeRedAlerts.length >= 2, 'al menos una alerta por cada free provider rojo');
+    const redProviders = redAlerts.map(a => a.provider);
+    assert.ok(redProviders.includes('gemini-google'), 'alerta red para gemini-google');
+    assert.ok(redProviders.includes('openai'), 'alerta red para openai');
+    assert.ok(!redProviders.includes('anthropic'), 'el provider verde no alerta');
 });
 
-test('runOnce: 3+ free providers en rojo dispara alerta multi-down', async () => {
-    // Con los 3 free providers vivos (gemini, cerebras, nvidia-nim) todos en
-    // rojo, la alerta multi_down se dispara. El umbral es ≥3.
+test('runOnce: con un único free provider en el plantel el rojo de todos NO dispara multi-down (umbral 3 inalcanzable)', async () => {
+    // #6563 — antes: los 3 free (gemini, cerebras, nvidia-nim) en rojo disparaban
+    // multi_down (umbral ≥3). Con cerebras y nvidia-nim retirados FREE_PROVIDERS
+    // queda en { gemini-google }: el umbral es inalcanzable por construcción y
+    // el rojo de gemini lo cubre la alerta por provider. La lógica del umbral
+    // con 3 free inyectados sigue cubierta en multi-provider-health-alerts.test.js
+    // (`freeProviders`); acá se fija el comportamiento del cron con el plantel.
     const dir = tmpDir();
     const stateDir = path.join(dir, 'state');
     const auditDir = path.join(dir, 'audit');
-    const secretsPath = makeSecretsFile(dir, {
-        gemini_google_api_key: 'AIza_test_aaaaaaaaaaaaaaaaaaaa',
-        cerebras_api_key: 'csk_test_aaaaaaaaaaaaaaaaaaaa',
-        nvidia_nim_api_key: 'nvapi-test_aaaaaaaaaaaaaaaaaaaa',
-    });
+    const secretsPath = makeSecretsFile(dir, {});
     const result = await healthCron.runOnce({
         stateDir,
         auditDir,
         secretsPath,
-        pingImpl: fakePing({
-            'gemini-google': { ok: false, reason: 'quota_exhausted', statusCode: 429 },
-            cerebras: { ok: false, reason: 'invalid_credentials', statusCode: 401 },
-            'nvidia-nim': { ok: false, reason: 'invalid_credentials', statusCode: 401 },
-        }),
         cliProbe: () => false, // #6857 — ver comentario del test anterior.
         telegramSender: () => true,
         dedupFile: path.join(dir, 'dedup.json'),
         skipAudit: true,
     });
+    const reds = result.snapshot.providers.filter(p => p.state === 'red').map(p => p.provider);
+    assert.ok(reds.includes('gemini-google') && reds.includes('openai') && reds.includes('anthropic'),
+        'todo el plantel en rojo');
     const multi = result.alerts.find(a => a.kind === 'multi_down');
-    assert.ok(multi, 'debe haber alerta multi_down');
-    assert.equal(multi.payload.red_count, 3);
+    assert.equal(multi, undefined, 'con un solo free provider (gemini-google) no hay multi_down');
+    assert.ok(result.alerts.some(a => a.kind === 'red' && a.provider === 'gemini-google'),
+        'el rojo de gemini-google lo cubre la alerta por provider');
 });
 
 test('runOnce: el snapshot NO contiene fingerprint, masked ni body excerpt', async () => {
     const dir = tmpDir();
     const stateDir = path.join(dir, 'state');
     const auditDir = path.join(dir, 'audit');
-    const SECRET_KEY = 'csk_VERY_SECRET_DO_NOT_LEAK_aaaaaaaaaaaaaaaaaa';
-    const secretsPath = makeSecretsFile(dir, { cerebras_api_key: SECRET_KEY });
+    // #6563 — la key legacy de gemini sigue siendo leíble por secrets-rw
+    // (compatibilidad de lectura) aunque el provider sea OAuth: el snapshot no
+    // debe reflejarla bajo ninguna forma.
+    const SECRET_KEY = 'AIza_VERY_SECRET_DO_NOT_LEAK_aaaaaaaaaaaaaaaaaa';
+    const secretsPath = makeSecretsFile(dir, { gemini_google_api_key: SECRET_KEY });
     const result = await healthCron.runOnce({
         stateDir,
         auditDir,
         secretsPath,
-        pingImpl: fakePing({ cerebras: { ok: false, reason: 'invalid_credentials', statusCode: 401 } }),
         // #3802 — probe CLI fijo + sender/dedup aislados (sino el rojo de
-        // cerebras dispararía el sender por defecto contra archivos reales).
+        // gemini dispararía el sender por defecto contra archivos reales).
         cliProbe: () => false,
         telegramSender: () => true,
         dedupFile: path.join(dir, 'dedup.json'),
@@ -404,15 +413,15 @@ test('runOnce: el snapshot NO contiene fingerprint, masked ni body excerpt', asy
 test('runOnce: persiste snapshot a state/multi-provider-health.json', async () => {
     const dir = tmpDir();
     const stateDir = path.join(dir, 'state');
-    const secretsPath = makeSecretsFile(dir, { cerebras_api_key: 'csk_test_aaaaaaaaaaaaaaaaaaaa' });
+    const secretsPath = makeSecretsFile(dir, {});
     await healthCron.runOnce({
         stateDir,
         auditDir: path.join(dir, 'audit'),
         secretsPath,
-        pingImpl: fakePing({ cerebras: { ok: true, reason: 'authenticated', statusCode: 200 } }),
         // #3802 — fijar el probe de CLI para no depender del PATH real de la
-        // máquina (sino anthropic/codex darían verde y green_count != 1).
-        cliProbe: () => false,
+        // máquina. #6563 — el único verde es anthropic (claude en PATH);
+        // codex/agy ausentes → green_count == 1.
+        cliProbe: (binary) => binary === 'claude',
         // Aislar efectos: sender en memoria + dedup en tmp (sino escribe en
         // servicios/telegram/pendiente/ y ~/.claude/secrets/…dedup.json reales).
         telegramSender: () => true,
@@ -457,12 +466,12 @@ test('jitterMs: rng inyectable para reproducibilidad', () => {
 
 test('formatAlertText: payload válido genera texto markdown', () => {
     const t = healthCron.formatAlertText({
-        provider: 'cerebras',
+        provider: 'gemini-google',
         state: 'red',
         reason_code: 'invalid_credentials',
         observed_at: '2026-05-17T00:00:00Z',
     });
-    assert.ok(t.includes('cerebras'));
+    assert.ok(t.includes('gemini-google'));
     assert.ok(t.includes('RED'));
     assert.ok(t.includes('invalid_credentials'));
 });
@@ -484,7 +493,7 @@ test('formatAlertText: #4402 CA-4 — incluye el conteo consecutivo (xN) y nombr
 
 test('formatAlertText: sin consecutive_count no agrega xN', () => {
     const t = healthCron.formatAlertText({
-        provider: 'cerebras',
+        provider: 'gemini-google',
         state: 'red',
         reason_code: 'timeout',
         observed_at: '2026-07-02T00:00:00Z',
@@ -496,9 +505,9 @@ test('formatAlertText: multi_down lista los providers', () => {
     const t = healthCron.formatAlertText({
         event: 'multi_down',
         red_count: 3,
-        providers_red: ['gemini-google', 'cerebras', 'nvidia-nim'],
+        providers_red: ['gemini-google', 'openai', 'anthropic'],
         observed_at: '2026-05-17T00:00:00Z',
     });
     assert.ok(t.includes('Multi-Down'));
-    assert.ok(t.includes('cerebras'));
+    assert.ok(t.includes('gemini-google'));
 });

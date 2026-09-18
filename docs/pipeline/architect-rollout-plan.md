@@ -159,7 +159,7 @@ Datos de `.pipeline/metrics/snapshot.json` (ventana `all` al 2026-05-26):
 
 ### Salvaguardas operativas
 
-- **Quota detector ya calibrado** para el consumo actual. Si el architect dispara cuota agotada, fallback chain (Codex → Gemini → Cerebras) absorbe el pico. Sin gasto extra Anthropic.
+- **Quota detector ya calibrado** para el consumo actual. Si el architect dispara cuota agotada, fallback chain (Codex → Gemini; Cerebras retirado en #6563) absorbe el pico. Sin gasto extra Anthropic.
 - **`agent-models.json` con kill switch implícito:** remover la entrada `"architect"` desactiva el skill sin tocar config.yaml ni hooks.
 - **Audit log `.pipeline/audit/architect-tokens.jsonl`** permite reconstruir consumo retroactivo si la cuota se dispara. Visibilidad antes que el incidente.
 

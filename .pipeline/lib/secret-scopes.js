@@ -33,12 +33,14 @@ const SECRET_SCOPES = Object.freeze([
 //
 // NUNCA de `LIVE_PROVIDER_IDS` (project-descriptor.js), que es otro
 // vocabulario - el de RUNTIME:
-//   ['anthropic', 'openai-codex', 'gemini-google', 'cerebras', 'nvidia-nim']
-// Derivarlo de ahi perderia la credencial de Moonshot y renombraria tres
-// scopes. Los dos vocabularios se parecen lo suficiente como para confundirlos:
-// es el error mas caro que se puede cometer en este archivo.
+//   ['anthropic', 'openai-codex', 'gemini-google']
+// Derivarlo de ahi renombraria dos scopes (`openai` != `openai-codex`,
+// `google` != `gemini-google`). Los dos vocabularios se parecen lo suficiente
+// como para confundirlos: es el error mas caro que se puede cometer en este
+// archivo. (Historico: hasta #6563 la prueba era `moonshot`, vendor de
+// almacenamiento sin id de runtime propio; se retiro junto con Kimi.)
 const PROVIDER_VENDORS = Object.freeze([
-    'anthropic', 'openai', 'google', 'cerebras', 'nvidia', 'moonshot',
+    'anthropic', 'openai', 'google',
 ]);
 
 // Herencia cross-proyecto. La clasificacion es una PARTICION EXPLICITA de

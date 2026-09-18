@@ -64,7 +64,7 @@
         "output_parser": {
           "type": "string",
           "description": "Parser que normaliza el output del CLI al shape común (tokens_in, tokens_out, cache_read, cache_write). 'none' para providers determinísticos sin LLM.",
-          "enum": ["anthropic-stream-json", "openai-sse", "gemini-stream", "ollama-jsonl", "none"]
+          "enum": ["anthropic-stream-json", "openai-sse", "gemini-stream", "none"]
         },
         "quota_error_types": {
           "type": "array",

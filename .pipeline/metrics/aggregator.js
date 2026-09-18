@@ -56,7 +56,7 @@ function clampLookbackDays(value) {
 // silenciosamente.
 //
 // `openai-codex` es el nombre real del provider en `agent-models.json`; los
-// alias `openai`/`google`/`ollama` están listados por forward-compat (multi-
+// alias `openai`/`google` están listados por forward-compat (multi-
 // provider §5.1) — agregar aliases nuevos requiere actualizar también la
 // allowlist del schema en `agent-models.schema.json`.
 const PROVIDER_MODES = Object.freeze({
@@ -64,7 +64,6 @@ const PROVIDER_MODES = Object.freeze({
     'openai-codex': 'llm',
     openai: 'llm',
     google: 'llm',
-    ollama: 'llm',
     deterministic: 'deterministic',
 });
 
@@ -186,7 +185,7 @@ async function buildSnapshot(options) {
     const byAgentProvider = new Map();// `${skill}|${provider}` → bucket (TTS)
     const byAgentMode = new Map();    // `${skill}|${mode}` → bucket (#2488 — LLM vs determinístico)
     // (#3357 CA-2.2) Totals por provider para session:end. Permite que el
-    // dashboard muestre breakdown "Anthropic X · Codex Y · Groq Z" en el KPI
+    // dashboard muestre breakdown "Anthropic X · Codex Y · Gemini Z" en el KPI
     // de tokens 24h. Mismo shape que `emptyBucket()` para reusar `addToBucket`.
     const tokensByProvider = new Map(); // provider → bucket (session:end)
     const dailySeries = new Map();    // YYYY-MM-DD → { cost_usd, tts_cost_usd, sessions } (para proyecciones)
@@ -517,7 +516,7 @@ async function buildSnapshot(options) {
     // tiene la forma { tokens_in, tokens_out, cost_usd, sessions, cache_read,
     // cache_write, duration_ms, tool_calls } — mismo shape que `emptyBucket()`
     // post-`withAvg`. El consumidor (dashboard kpisSlice tokens24h) suma
-    // tokens_in+tokens_out y rinde Anthropic/Codex/Groq/etc separados.
+    // tokens_in+tokens_out y rinde Anthropic/Codex/Gemini/etc separados.
     const totalsByProvider = {};
     for (const [prov, bucket] of tokensByProvider.entries()) {
         totalsByProvider[prov] = withAvg(bucket);

@@ -50,18 +50,11 @@ function gemini(raw) {
     return null;
 }
 
-function openAiCompatible(raw) {
-    let found = null;
-    for (const obj of jsonLines(raw)) if (obj && typeof obj.model === 'string') found = obj.model;
-    return found;
-}
-
+// Extractores por provider vigente. Los proveedores gratuitos retirados en
+// #6563 (kimi-moonshot / cerebras / nvidia-nim) ya no tienen extractor.
 const EXTRACTORS = Object.freeze({
     anthropic,
-    'kimi-moonshot': anthropic,
     'gemini-google': gemini,
-    cerebras: openAiCompatible,
-    'nvidia-nim': openAiCompatible,
     'openai-codex': null,
     deterministic: null,
 });

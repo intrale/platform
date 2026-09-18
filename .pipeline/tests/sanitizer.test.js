@@ -702,17 +702,19 @@ test('panic dump simulado: apiKey="sk-ant-..." cae con placeholder específico',
 });
 
 // =============================================================================
-// Free-tier providers (#3310 + #3353): Groq (legacy), Cerebras, NVIDIA NIM
+// Free-tier providers dados de baja (#3310 + #3353 + #6563): Groq, Cerebras,
+// NVIDIA NIM
 //
 // Cobertura: positivo (redacta y no leakea) + negativo (prefijo similar pero
 // longitud insuficiente o sin prefijo exacto, NO se redacta). Idempotencia y
 // orden mixto incluidos.
 //
-// #3353 (mayo 2026): el provider Groq fue descontinuado, PERO el pattern
-// `gsk_*` se mantiene como defense-in-depth porque las keys legacy pueden
-// seguir apareciendo en backups (`~/.claude/secrets/backups/`), logs viejos
-// y dumps de incidentes archivados. Verificación empírica en rev-1 del fix
-// mostró que el genérico CONF_STRUCTURED NO cubre 6 de 7 escenarios
+// Los tres providers ya no están en el pipeline (Groq descontinuado en #3353;
+// Cerebras y NVIDIA NIM retirados en #6563), PERO los patterns `gsk_*` /
+// `csk-*` / `nvapi-*` se mantienen como defense-in-depth porque las keys
+// legacy pueden seguir apareciendo en backups (`~/.claude/secrets/backups/`),
+// logs viejos y dumps de incidentes archivados. Verificación empírica en rev-1
+// de #3353 mostró que el genérico CONF_STRUCTURED NO cubre 6 de 7 escenarios
 // realistas (bare keys, JSON quoted, `groq_api_key=`, `Key=`, etc.).
 // =============================================================================
 
@@ -795,7 +797,7 @@ test('NVIDIA_NIM_API_KEY negativo: nvapi sin guion no matchea', () => {
 
 // ─── Orden mixto + idempotencia free providers ─────────────────────────────
 
-test('orden mixto: los free providers (vivos + Groq legacy) se redactan c/u con su placeholder', () => {
+test('orden mixto: las keys legacy de los free providers retirados se redactan c/u con su placeholder', () => {
     const input = `groq=${FAKE_GROQ} cerebras=${FAKE_CEREBRAS} nim=${FAKE_NVIDIA_NIM}`;
     const out = sanitize(input);
     assert.ok(out.includes('[REDACTED:GROQ_API_KEY]'), `falta GROQ: ${out}`);

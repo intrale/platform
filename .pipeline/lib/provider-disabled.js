@@ -53,8 +53,6 @@ const VALID_PROVIDERS = Object.freeze([
     'anthropic',
     'openai-codex',
     'gemini-google',
-    'cerebras',
-    'nvidia-nim',
 ]);
 
 // TTL default 20 min (igual orden de magnitud que el reset de cuota corto).

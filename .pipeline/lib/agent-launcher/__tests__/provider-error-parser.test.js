@@ -552,7 +552,8 @@ test('CA-6/C: stream con primer byte pero sin tokens útiles cae a transient_5xx
 // =============================================================================
 // #5795 — Clasificación tipada `authentication_rejected` por provider.
 //
-// La matriz es PARAMETRIZADA sobre los siete adapters. Cada fila declara:
+// La matriz es PARAMETRIZADA sobre los cuatro adapters vivos (#6563: cerebras,
+// nvidia-nim y kimi-moonshot fueron retirados con su fila). Cada fila declara:
 //   - `positives`: frames reales del provider que SÍ tienen que clasificar.
 //   - `foreign`:   una señal válida para OTRO provider, que en este adapter
 //                  tiene que devolver "sin clasificación" (aislamiento).
@@ -653,57 +654,6 @@ const MATRIZ_AUTH = [
             ['API_KEY_SERVICE_BLOCKED', JSON.stringify({ error: { code: 403, status: 'PERMISSION_DENIED', details: [{ reason: 'API_KEY_SERVICE_BLOCKED' }] } })],
         ],
     },
-    {
-        provider: 'cerebras',
-        positives: [
-            {
-                nombre: 'invalid_api_key en shape OpenAI-compatible',
-                raw: JSON.stringify({ error: { type: 'invalid_request_error', code: 'invalid_api_key' } }),
-                esperado: { type: null, code: 'invalid_api_key' },
-            },
-            {
-                nombre: 'wrong_api_key del gateway de Cerebras',
-                raw: JSON.stringify({ error: { code: 'wrong_api_key' } }),
-                esperado: { type: null, code: 'wrong_api_key' },
-            },
-        ],
-        foreign: JSON.stringify({ error: { status: 'UNAUTHENTICATED' } }),
-        negatives: [
-            ['rate_limit_exceeded', JSON.stringify({ error: { code: 'rate_limit_exceeded' } })],
-            ['quota_exceeded', JSON.stringify({ error: { code: 'quota_exceeded' } })],
-        ],
-    },
-    {
-        provider: 'nvidia-nim',
-        positives: [
-            {
-                nombre: 'authentication_error en shape OpenAI-compatible',
-                raw: JSON.stringify({ error: { type: 'authentication_error' } }),
-                esperado: { type: 'authentication_error', code: null },
-            },
-        ],
-        foreign: JSON.stringify({ error: { status: 'UNAUTHENTICATED' } }),
-        negatives: [
-            // RFC-7807 del gateway: el unico indicio es `title`, que es PROSA.
-            ['RFC-7807 title Unauthorized (prosa, no clasifica)', JSON.stringify({ status: 401, title: 'Unauthorized', detail: 'no api key' })],
-            ['insufficient_quota', JSON.stringify({ error: { code: 'insufficient_quota' } })],
-        ],
-    },
-    {
-        provider: 'kimi-moonshot',
-        positives: [
-            {
-                nombre: 'invalid_authentication_error documentado por Moonshot',
-                raw: JSON.stringify({ error: { type: 'invalid_authentication_error', message: 'Invalid Authentication' } }),
-                esperado: { type: 'invalid_authentication_error', code: null },
-            },
-        ],
-        foreign: JSON.stringify({ error: { status: 'UNAUTHENTICATED' } }),
-        negatives: [
-            ['exceeded_current_quota_error', JSON.stringify({ error: { type: 'exceeded_current_quota_error' } })],
-            ['permission_denied_error', JSON.stringify({ error: { type: 'permission_denied_error' } })],
-        ],
-    },
 ];
 
 // Negativos que se corren contra TODOS los adapters (CA-2 del issue).
@@ -773,9 +723,12 @@ test('#5795 [deterministic] el adapter determinista NUNCA clasifica autenticacio
     );
 });
 
-test('#5795 los siete adapters implementan el contrato detectAuthenticationRejected', () => {
+test('#5795 los cuatro adapters vivos implementan el contrato detectAuthenticationRejected', () => {
     const { PROVIDER_HANDLERS } = require('../resolve-provider');
-    const esperados = ['anthropic', 'openai-codex', 'gemini-google', 'cerebras', 'nvidia-nim', 'kimi-moonshot', 'deterministic'];
+    // #6563 — plantel vigente; cerebras/nvidia-nim/kimi-moonshot retirados.
+    const esperados = ['anthropic', 'openai-codex', 'gemini-google', 'deterministic'];
+    assert.deepEqual(Object.keys(PROVIDER_HANDLERS).sort(), [...esperados].sort(),
+        'el plantel de adapters cambió: actualizar la matriz #5795');
     for (const nombre of esperados) {
         assert.ok(PROVIDER_HANDLERS[nombre], `falta el adapter ${nombre}`);
         assert.equal(

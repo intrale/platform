@@ -95,9 +95,6 @@ const PROVIDER_LABELS = {
   anthropic: 'Anthropic',
   'openai-codex': 'OpenAI Codex',
   'gemini-google': 'Gemini',
-  cerebras: 'Cerebras',
-  'nvidia-nim': 'NVIDIA NIM',
-  groq: 'Groq',
   deterministic: 'Deterministico',
 };
 // Aliases de provider-key → canónica (algún codepath usa el alias corto).

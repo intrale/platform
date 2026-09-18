@@ -36,9 +36,6 @@ const fakeCredentialStore = {
     openai: { api_key: 'fake-openai' },
     anthropic: { api_key: 'fake-anthropic' },
     google: { api_key: 'fake-google' },
-    cerebras: { api_key: 'fake-cerebras' },
-    nvidia: { api_key: 'fake-nvidia' },
-    moonshot: { api_key: 'fake-moonshot' },
   },
   google_drive: {
     _note: 'metadata',
@@ -336,9 +333,8 @@ test('el conjunto nominal de consumer_status=resolved esta anclado', () => {
     'telegram.leo_operator_chat_id',
     'providers.openai.api_key',
     'providers.anthropic.api_key',
-    'providers.cerebras.api_key',
-    'providers.nvidia.api_key',
-    'providers.moonshot.api_key',
+    // #6563 — providers.cerebras / nvidia / moonshot salieron del ancla junto
+    // con los providers retirados.
     'google_drive.drive_folder_id',
     'google_drive.oauth_client_id',
     'google_drive.oauth_client_secret',
@@ -395,19 +391,20 @@ test('toda clave providers.* resolved esta declarada en credentials_env de agent
   const models = JSON.parse(fs.readFileSync(path.join(ROOT, '.pipeline', 'agent-models.json'), 'utf8'));
   const declaradas = new Set(Object.values(models.providers || {})
     .flatMap((provider) => provider.credentials_env || []));
-  assert.ok(declaradas.size >= 4, `credentials_env vacio o no parseado: ${declaradas.size}`);
+  // #6563 — ancla explicita: tras retirar cerebras / nvidia-nim / kimi-moonshot
+  // solo anthropic y openai-codex declaran credentials_env (gemini-google es
+  // OAuth puro y no declara ninguna).
+  assert.deepEqual([...declaradas].sort(), ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY'],
+    `credentials_env vacio o no parseado: ${declaradas.size}`);
 
   const resueltasDeProviders = manifest.entries
     .filter((entry) => entry.service === 'providers' && entry.consumer_status === 'resolved');
-  // 5 = openai, anthropic, cerebras, nvidia, moonshot. `anthropic` entro al
-  // conjunto al corregir su `no_consumer` falso: su `ANTHROPIC_API_KEY` si
-  // figura en `credentials_env`, asi que el candado la acepta sin aflojarse.
+  // 2 = openai, anthropic (5 hasta #6563). `anthropic` entro al conjunto al
+  // corregir su `no_consumer` falso: su `ANTHROPIC_API_KEY` si figura en
+  // `credentials_env`, asi que el candado la acepta sin aflojarse.
   assert.deepEqual(resueltasDeProviders.map((entry) => entry.name), [
     'providers.openai.api_key',
     'providers.anthropic.api_key',
-    'providers.cerebras.api_key',
-    'providers.nvidia.api_key',
-    'providers.moonshot.api_key',
   ]);
   for (const entry of resueltasDeProviders) {
     assert.ok(declaradas.has(entry.env_var),
@@ -440,24 +437,24 @@ test('ningun provider fail-fast puede declararse no_consumer/never en el manifie
 
   // Espejo exacto de la condicion de build-child-env: la AUSENCIA de auth_mode
   // cae al camino api_key (default-safe), no al de oauth.
-  const exigenKey = Object.entries(models.providers || {})
+  const exigenKeyDe = (providers) => Object.entries(providers || {})
     .filter(([, provider]) => provider.auth_mode !== 'oauth')
     .flatMap(([nombre, provider]) => {
       const declarada = provider.credentials_env;
       const vars = Array.isArray(declarada) ? declarada : (declarada ? [declarada] : []);
       return vars.map((envVar) => [nombre, envVar]);
     });
-  // Ancla del universo cubierto: sin esto el filtro puede quedar vacio y el
-  // candado pasar por vacuidad.
-  assert.deepEqual(exigenKey, [
-    ['cerebras', 'CEREBRAS_API_KEY'],
-    ['nvidia-nim', 'NVIDIA_NIM_API_KEY'],
-    ['kimi-moonshot', 'ANTHROPIC_AUTH_TOKEN'],
-  ]);
+  // Ancla del universo cubierto. #6563 — tras retirar cerebras / nvidia-nim /
+  // kimi-moonshot el plantel es 100% OAuth (`deterministic` no declara
+  // credentials_env), asi que el universo real queda VACIO a proposito: si un
+  // provider api_key vuelve a entrar, esta ancla lo hace visible y el candado
+  // de abajo vuelve a tener dientes sin tocar codigo.
+  const exigenKey = exigenKeyDe(models.providers);
+  assert.deepEqual(exigenKey, []);
 
-  const ocultaConsumidor = (entries) => {
+  const ocultaConsumidor = (entries, universo = exigenKey) => {
     const porEnvVar = new Map(entries.map((entry) => [entry.env_var, entry]));
-    return exigenKey.filter(([, envVar]) => {
+    return universo.filter(([, envVar]) => {
       const entry = porEnvVar.get(envVar);
       return !entry
         || entry.consumer_status === 'no_consumer'
@@ -468,15 +465,27 @@ test('ningun provider fail-fast puede declararse no_consumer/never en el manifie
   assert.deepEqual(ocultaConsumidor(manifest.entries), [],
     'provider fail-fast declarado sin consumidor / no reponible en el manifiesto');
 
-  // Control negativo: volver moonshot a lo que publico la pasada rechazada
-  // tiene que romper este candado. Sin esto, el candado no prueba nada.
-  const revertida = structuredClone(manifest);
-  const moonshot = revertida.entries.find((entry) => entry.name === 'providers.moonshot.api_key');
-  assert.equal(moonshot.consumer_status, 'resolved');
-  assert.equal(moonshot.required_when, 'service_active');
-  moonshot.consumer_status = 'no_consumer';
-  moonshot.required_when = 'never';
-  assert.deepEqual(ocultaConsumidor(revertida.entries), ['kimi-moonshot']);
+  // Control negativo SINTETICO (el real era moonshot, retirado en #6563): un
+  // provider api_key hipotetico cuya env var el manifiesto declara
+  // never/no_consumer, o directamente no declara, tiene que romper el candado.
+  // Sin esto, con el universo vacio el candado pasaria por vacuidad.
+  const universoSintetico = exigenKeyDe({
+    ...models.providers,
+    'fake-api-key-provider': { auth_mode: 'api_key', credentials_env: ['FAKE_PROVIDER_API_KEY'] },
+  });
+  assert.deepEqual(universoSintetico, [['fake-api-key-provider', 'FAKE_PROVIDER_API_KEY']]);
+  assert.deepEqual(ocultaConsumidor(manifest.entries, universoSintetico), ['fake-api-key-provider'],
+    'sin entrada en el manifiesto el consumidor queda oculto');
+  const conEntradaOculta = structuredClone(manifest).entries.concat([{
+    name: 'providers.fake.api_key', env_var: 'FAKE_PROVIDER_API_KEY',
+    consumer_status: 'no_consumer', required_when: 'never',
+  }]);
+  assert.deepEqual(ocultaConsumidor(conEntradaOculta, universoSintetico), ['fake-api-key-provider']);
+  const conEntradaSana = structuredClone(manifest).entries.concat([{
+    name: 'providers.fake.api_key', env_var: 'FAKE_PROVIDER_API_KEY',
+    consumer_status: 'resolved', required_when: 'service_active',
+  }]);
+  assert.deepEqual(ocultaConsumidor(conEntradaSana, universoSintetico), []);
 });
 
 test('ninguna entrada con lector real en el repo puede declararse no_consumer', () => {
