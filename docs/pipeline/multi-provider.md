@@ -958,33 +958,35 @@ curl http://localhost:8080/api/metrics/quota | jq '.'
 
 ## 6. Referencia rápida
 
-### 6.1 Tabla resumen: skills → provider → modelo → cadena (al 2026-09-16, post #6563)
+### 6.1 Tabla resumen: skills → provider → modelo → cadena (al 2026-09-18, post #6860)
 
-| Skill | Provider | Modelo efectivo | Cadena de fallback | Tipo |
-|-------|----------|-----------------|--------------------|------|
-| backend-dev | anthropic | claude-opus-4-7 | anthropic → openai-codex | LLM |
-| pipeline-dev | anthropic | claude-opus-4-7 | anthropic → openai-codex | LLM |
-| android-dev | anthropic | claude-opus-4-7 | anthropic → openai-codex → gemini-google | LLM |
-| web-dev | anthropic | claude-opus-4-7 | anthropic → openai-codex → gemini-google | LLM |
+| Skill | Provider | Modelo efectivo | Cadena de fallback (modelo por eslabón) | Tipo |
+|-------|----------|-----------------|------------------------------------------|------|
+| backend-dev | anthropic | claude-opus-4-7 | anthropic → openai-codex (gpt-5.5) | LLM |
+| pipeline-dev | anthropic | claude-opus-4-7 | anthropic → openai-codex (gpt-5.5) | LLM |
+| android-dev | anthropic | claude-opus-4-7 | anthropic → openai-codex (gpt-5.5) | LLM |
+| web-dev | anthropic | claude-opus-4-7 | anthropic → openai-codex (gpt-5.5) | LLM |
 | build | deterministic | — | — | Node puro |
 | tester | deterministic | — | — | Node puro |
-| security | anthropic | claude-opus-4-7 | anthropic → openai-codex | LLM |
-| qa | anthropic | claude-sonnet-4-6 | anthropic → openai-codex → gemini-google | LLM |
-| review | anthropic | claude-sonnet-4-6 | anthropic → openai-codex | LLM |
-| po | anthropic | claude-sonnet-4-6 | anthropic → openai-codex → gemini-google | LLM |
-| ux | anthropic | claude-sonnet-4-6 | anthropic → openai-codex → gemini-google | LLM |
-| doc | anthropic | claude-sonnet-4-6 | anthropic → openai-codex | LLM |
-| planner | anthropic | claude-sonnet-4-6 | anthropic → openai-codex | LLM |
-| guru | anthropic | claude-sonnet-4-6 | anthropic → openai-codex | LLM |
-| architect | anthropic | claude-sonnet-4-6 | anthropic → openai-codex → gemini-google | LLM |
-| ops | anthropic | claude-sonnet-4-6 | anthropic → openai-codex | LLM |
-| perf | anthropic | claude-sonnet-4-6 | anthropic → openai-codex → gemini-google | LLM |
-| auth | anthropic | claude-sonnet-4-6 | anthropic → openai-codex | LLM |
-| refinar | anthropic | claude-sonnet-4-6 | anthropic → openai-codex | LLM |
+| security | anthropic | claude-opus-4-7 | anthropic → openai-codex (gpt-5.5) | LLM |
+| qa | anthropic | claude-sonnet-4-6 | anthropic → openai-codex (gpt-5.4) | LLM |
+| review | anthropic | claude-sonnet-4-6 | anthropic → openai-codex (gpt-5.5) | LLM |
+| po | anthropic | claude-sonnet-4-6 | anthropic → gemini-google (gemini-3.1-pro-low) → openai-codex (gpt-5.4) | LLM |
+| ux | anthropic | claude-sonnet-4-6 | anthropic → gemini-google (gemini-3.1-pro-low) → openai-codex (gpt-5.4) | LLM |
+| doc | anthropic | claude-sonnet-4-6 | anthropic → openai-codex (gpt-5.5) | LLM |
+| planner | anthropic | claude-sonnet-4-6 | anthropic → openai-codex (gpt-5.5) | LLM |
+| guru | anthropic | claude-sonnet-4-6 | anthropic → openai-codex (gpt-5.5) | LLM |
+| architect | anthropic | claude-sonnet-4-6 | anthropic → openai-codex (gpt-5.5) → gemini-google (gemini-3.1-pro-high) | LLM |
+| ops | anthropic | claude-sonnet-4-6 | anthropic → openai-codex (gpt-5.5) | LLM |
+| perf | anthropic | claude-sonnet-4-6 | anthropic → openai-codex (gpt-5.5) → gemini-google (gemini-3.8-flash-high) | LLM |
+| auth | anthropic | claude-sonnet-4-6 | anthropic → openai-codex (gpt-5.5) | LLM |
+| refinar | anthropic | claude-sonnet-4-6 | anthropic → openai-codex (gpt-5.4) | LLM |
 | linter | deterministic | — | — | Node puro |
 | delivery | deterministic | — | — | Node puro |
-| telegram-commander | anthropic | claude-sonnet-4-6 | anthropic → openai-codex → gemini-google | LLM |
-| telegram-sherlock | anthropic | claude-haiku-4-5 | anthropic → openai-codex → gemini-google | LLM |
+| telegram-commander | anthropic | claude-sonnet-4-6 | anthropic → openai-codex (gpt-5.4) → gemini-google (claude-sonnet-4-6) | LLM |
+| telegram-sherlock | anthropic | claude-haiku-4-5 | anthropic → openai-codex (gpt-5.4-mini) → gemini-google (gemini-3.8-flash-medium) | LLM |
+
+> **Exclusiones vigentes (REQ-SEC-1, §4.4.1):** `android-dev`, `web-dev` y `qa` no tienen eslabón `gemini-google`. `po` y `ux` llevan Google como **primer** respaldo, antes de Codex (Decisión 2 del sign-off de #6860).
 
 > **Verificar el estado canónico:** `cat .pipeline/agent-models.json` o **Tab "2 · Por agente"** del dashboard.
 
