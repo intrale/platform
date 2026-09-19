@@ -97,7 +97,6 @@ const SECRET_LABELS = Object.freeze({
   'telegram.leo_operator_chat_id': 'chat privado del operador',
   'providers.openai.api_key': 'clave de API de OpenAI',
   'providers.anthropic.api_key': 'clave de API de Anthropic',
-  'providers.google.api_key': 'clave de API de Google Gemini',
   'google_drive.drive_folder_id': 'carpeta de Google Drive',
   'google_drive.oauth_client_id': 'identificador de cliente OAuth de Google Drive',
   'google_drive.oauth_client_secret': 'secreto de cliente OAuth de Google Drive',
@@ -220,7 +219,7 @@ function safeText(text) {
 
 /**
  * El "grupo" de un secreto = su namespace, es decir el nombre lógico sin el
- * último segmento. `providers.google.api_key` → `providers.google`.
+ * último segmento. `providers.openai.api_key` → `providers.openai`.
  *
  * Es más fino que `service` a propósito: `providers` agrupa varios proveedores
  * independientes, y que OpenAI esté configurado no implica que Google lo

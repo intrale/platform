@@ -391,3 +391,30 @@ test('CA-11: pipelineExtras no puede sortear el techo inyectando material de sco
     assert.equal(env.GH_TOKEN, undefined,
         'el techo de linteo es vacio: el scope github no puede entregarse');
 });
+
+// ─── #6861 · SEC-3 — el provider `antigravity` no recibe NINGUNA key de Google ─
+
+test('#6861 SEC-3: provider antigravity con GEMINI_API_KEY/GOOGLE_API_KEY en el env del operador → el hijo no las recibe', () => {
+    // Antigravity autentica por OAuth del CLI `agy` (sin API key). Aunque el
+    // operador tenga exportadas keys residuales de AI Studio, el env del child
+    // no debe contenerlas: no hay consumidor y seria material sin scope.
+    const processEnv = {
+        ...fakeOperatorEnv(),
+        GEMINI_API_KEY: 'FAKE-AIza-gemini-key',
+        GOOGLE_API_KEY: 'FAKE-AIza-google-key',
+        ANTIGRAVITY_MODEL: 'gemini-3.8-flash-medium',
+    };
+    const env = buildChildEnv({
+        skill: 'po', fase: 'dev', projectId: KERNEL_PROJECT_ID,
+        processEnv,
+        skillConfigOverride: {
+            skill: { provider: 'antigravity' },
+            providers: { antigravity: { launcher: 'antigravity', auth_mode: 'oauth', credentials_env: [] } },
+        },
+    });
+    assert.equal(env.GEMINI_API_KEY, undefined, 'GEMINI_API_KEY no tiene consumidor: no se propaga');
+    assert.equal(env.GOOGLE_API_KEY, undefined, 'GOOGLE_API_KEY no es credencial del provider: no se propaga');
+    for (const k of Object.keys(env)) {
+        assert.ok(!/^(GEMINI|GOOGLE)_API_KEY$/.test(k), `clave de Google filtrada al child: ${k}`);
+    }
+});

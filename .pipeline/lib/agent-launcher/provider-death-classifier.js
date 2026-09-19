@@ -10,7 +10,7 @@
 // cooldown de hasta 60min al `(skill,issue)`.
 //
 // Durante la ventana de inactividad de Anthropic, el primary queda gateado y el
-// resolver cae a un fallback (ej. `gemini-google`). Si ese fallback "resuelve
+// resolver cae a un fallback (ej. `antigravity`). Si ese fallback "resuelve
 // como viable" pero muere al spawn en 4-5s (`code=1`), la causa NO es el issue:
 // es INDISPONIBILIDAD del provider. Penalizar al issue lo congela ~1h por algo
 // que fue culpa del entorno de providers.

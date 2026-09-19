@@ -125,7 +125,7 @@ test('CA-2 (RS-3): status con secreto embebido queda redactado', () => {
 test('CA-2 (RS-3): status multilínea se aplana (anti log-injection CWE-117)', () => {
     const file = tmpFile();
     recordProviderCost({
-        provider: 'gemini-google',
+        provider: 'antigravity',
         skill: 'tester',
         issue: 2,
         tokens_in: 5,
@@ -139,13 +139,13 @@ test('CA-2 (RS-3): status multilínea se aplana (anti log-injection CWE-117)', (
     assert.strictEqual(lines.length, 1);
     const rec = JSON.parse(lines[0]);
     assert.deepStrictEqual(Object.keys(rec).sort(), EXPECTED_KEYS.slice().sort());
-    assert.strictEqual(rec.provider, 'gemini-google');
+    assert.strictEqual(rec.provider, 'antigravity');
 });
 
 test('append-only: dos llamadas producen 2 líneas, la primera intacta', () => {
     const file = tmpFile();
     recordProviderCost({ provider: 'anthropic', skill: 'a', issue: 1, tokens_in: 1, tokens_out: 1, latency_ms: 1, status: 'ok' }, { file });
-    recordProviderCost({ provider: 'gemini-google', skill: 'b', issue: 2, tokens_in: 2, tokens_out: 2, latency_ms: 2, status: 'ok' }, { file });
+    recordProviderCost({ provider: 'antigravity', skill: 'b', issue: 2, tokens_in: 2, tokens_out: 2, latency_ms: 2, status: 'ok' }, { file });
 
     const lines = readLines(file);
     assert.strictEqual(lines.length, 2);
@@ -153,14 +153,14 @@ test('append-only: dos llamadas producen 2 líneas, la primera intacta', () => {
     const second = JSON.parse(lines[1]);
     assert.strictEqual(first.provider, 'anthropic');
     assert.strictEqual(first.skill, 'a');
-    assert.strictEqual(second.provider, 'gemini-google');
+    assert.strictEqual(second.provider, 'antigravity');
     assert.strictEqual(second.skill, 'b');
 });
 
 test('coerción numérica: valores no-numéricos caen a 0/null, no persisten texto', () => {
     const file = tmpFile();
     recordProviderCost({
-        provider: 'gemini-google',
+        provider: 'antigravity',
         skill: 'guru',
         issue: 'no-numerico',
         tokens_in: 'AIzaSyLEAK',   // string malicioso en campo numérico
@@ -196,7 +196,7 @@ test('readProviderCostBreakdown: agrega por provider y cuenta sesiones/errores',
     const file = tmpFile();
     recordProviderCost({ provider: 'anthropic', skill: 'a', issue: 1, tokens_in: 100, tokens_out: 50, latency_ms: 1, status: 'ok' }, { file });
     recordProviderCost({ provider: 'anthropic', skill: 'b', issue: 2, tokens_in: 200, tokens_out: 10, latency_ms: 1, status: 'error' }, { file });
-    recordProviderCost({ provider: 'gemini-google', skill: 'c', issue: 3, tokens_in: 5, tokens_out: 5, latency_ms: 1, status: 'ok' }, { file });
+    recordProviderCost({ provider: 'antigravity', skill: 'c', issue: 3, tokens_in: 5, tokens_out: 5, latency_ms: 1, status: 'ok' }, { file });
 
     const out = readProviderCostBreakdown({ file });
     assert.strictEqual(out.hasData, true);
@@ -205,8 +205,8 @@ test('readProviderCostBreakdown: agrega por provider y cuenta sesiones/errores',
     assert.strictEqual(out.byProvider.anthropic.tokens_out, 60);
     assert.strictEqual(out.byProvider.anthropic.sessions, 2);
     assert.strictEqual(out.byProvider.anthropic.errors, 1);
-    assert.strictEqual(out.byProvider['gemini-google'].sessions, 1);
-    assert.strictEqual(out.byProvider['gemini-google'].errors, 0);
+    assert.strictEqual(out.byProvider['antigravity'].sessions, 1);
+    assert.strictEqual(out.byProvider['antigravity'].errors, 0);
 });
 
 test('readProviderCostBreakdown: empty-state cuando el archivo no existe', () => {

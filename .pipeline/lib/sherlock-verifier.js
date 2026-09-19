@@ -24,7 +24,7 @@
 // CAMBIOS #3484 (2026-05-23) — Decisión Opción B (spawn CLI para Anthropic)
 // --------------------------------------------------------------------------
 // Hasta esta versión Sherlock SOLO usaba providers HTTP-compatible (cerebras /
-// gemini-google / nvidia-nim; cerebras y nvidia-nim retirados en #6563) y
+// el shim de AI Studio / nvidia-nim; los tres retirados en #6563 y #6861) y
 // EXCLUÍA el provider del Commander para
 // preservar adversariality. Combinado con un clamp de timeout en 10s, eso
 // causaba que Sherlock cayera en fallback en cascada y muriera en F-6
@@ -159,11 +159,11 @@ const MAX_INCONSISTENCIES = 5;
 // de `lib/multi-provider/completion-client.js`.
 // #6563 — cerebras y nvidia-nim se retiraron del plantel; se quitan de acá
 // (no se dejan comentados) para que una reintroducción no pase silenciosa.
-// Queda sólo el shim HTTP de gemini-google (AI Studio), que hoy no sirve ids
-// de Antigravity: la cascada tolera su fallo y sigue a los spawns.
-const HTTP_COMPLETION_PROVIDERS = Object.freeze(new Set([
-    'gemini-google',
-]));
+// #6861 — el shim HTTP de AI Studio (del ex "Gemini (Google)") también se retiró:
+// no servía ningún id del catálogo de Antigravity (404 en toda la cascada).
+// `antigravity` es un provider de spawn puro: Sherlock lo alcanza por
+// `spawnAntigravityComplete` (ver SPAWN_COMPLETION_PROVIDERS).
+const HTTP_COMPLETION_PROVIDERS = Object.freeze(new Set([]));
 
 // Providers que Sherlock invoca vía spawn CLI (Opción B de #3484).
 //   - anthropic:    reusa `agent-launcher/providers/anthropic.js`, manda el
@@ -175,9 +175,17 @@ const HTTP_COMPLETION_PROVIDERS = Object.freeze(new Set([
 //                   `codex exec --json` para extraer el `agent_message`
 //                   (transporte agregado 2026-06-02 — antes era stub #3076 H3,
 //                   hoy el adapter es real, PR #3792).
+//   - antigravity:  (#6861) reusa `agent-launcher/providers/antigravity.js`:
+//                   prompt por STDIN como NDJSON (`--input-format stream-json`),
+//                   `ANTIGRAVITY_MODEL` en el env y parseo del evento
+//                   `{"event":"result"}` del stream (`_parseAntigravityJson`).
+//                   Reemplaza al shim HTTP de AI Studio que devolvía 404 para
+//                   todo el catálogo: ahora Sherlock alcanza al provider por el
+//                   mismo binario `agy` que corre los agentes.
 const SPAWN_COMPLETION_PROVIDERS = Object.freeze(new Set([
     'anthropic',
     'openai-codex',
+    'antigravity',
 ]));
 
 // Timeout default que Sherlock pasa al completion-client / spawn helper.
@@ -636,8 +644,8 @@ function resolveSherlockProvider({
     // #3484: `excludedProvider` se ignora a propósito (back-compat). El
     // único motivo para excluir un provider acá es que NO tengamos handler
     // (HTTP o spawn) implementado en Sherlock para él. Hoy los 3 providers de
-    // la chain telegram-sherlock tienen handler (gemini HTTP + anthropic/codex
-    // spawn; cerebras y nvidia-nim retirados en #6563); la rama de exclusión
+    // la chain telegram-sherlock van por spawn (anthropic/codex/antigravity;
+    // #6861 retiró el shim HTTP de AI Studio, #6563 cerebras y nvidia-nim); la rama de exclusión
     // queda como defensa para un provider futuro sin handler.
     // #3558: `initialExcluded` permite arrancar el resolver con un set
     // pre-poblado, usado por la cascada para saltar providers ya probados
@@ -688,7 +696,7 @@ function resolveSherlockProvider({
             // Provider sin handler en Sherlock (HTTP ni spawn) — excluir y
             // seguir con el próximo de la chain. Defensa para providers
             // futuros; hoy los 3 de telegram-sherlock (anthropic, openai-codex,
-            // gemini-google) tienen handler (#6563 retiró cerebras y nvidia-nim).
+            // antigravity) van por spawn (#6861 retiró el shim HTTP).
             if (typeof log === 'function') {
                 log('sherlock', `provider ${res.provider} no tiene handler en Sherlock — fallback al siguiente`);
             }
@@ -1195,6 +1203,172 @@ function spawnCodexComplete({
 }
 
 // -----------------------------------------------------------------------------
+// spawnAntigravityComplete (#6861) — invoca `agy` vía el handler del provider
+// y devuelve el shape canónico de completion-client (`{ok, content, ...}`).
+//
+// Diferencias con `spawnCodexComplete`:
+//   - El prompt viaja por STDIN como NDJSON (`buildSpawn` devuelve
+//     `stdinPayload`; #4529/#6857). El handler exige `cwd` absoluto (#6859) y
+//     lo traduce a `--add-dir`: Sherlock pasa el mismo `cwd` que los demás
+//     spawns (root del repo) — el fiscal no escribe, pero el CLI necesita un
+//     workspace declarado para no caer al scratch.
+//   - El modelo se inyecta vía `env.ANTIGRAVITY_MODEL` (única variable que lee
+//     el handler, `PROVIDER_MODEL_ENV['antigravity']`).
+//   - El stdout es NDJSON; el objeto útil es `result` del evento
+//     `{"event":"result"}` (`handler._parseAntigravityJson`): `status`,
+//     `response`, `error`, `usage.{input_tokens,output_tokens}` (#7290).
+//
+// Timeout / contención / cap de stdout: idénticos a codex.
+// -----------------------------------------------------------------------------
+function spawnAntigravityComplete({
+    prompt,
+    model,
+    timeoutMs,
+    spawnImpl,
+    antigravityHandler,
+    cwd,
+    env,
+    sandbox,
+    envPolicy,
+}) {
+    return new Promise((resolve) => {
+        const startedAt = Date.now();
+        const _spawn = spawnImpl || require('node:child_process').spawn;
+        const handler = antigravityHandler || require('./agent-launcher/providers/antigravity');
+        const _cwd = cwd || process.cwd();
+
+        let spawnSpec;
+        try {
+            const policies = normalizeSpawnPolicies({ sandbox, envPolicy });
+            const _env = buildChildEnvLib.stripReservedChildSecrets(
+                resolveSpawnBaseEnv({
+                    envPolicy: policies.envPolicy,
+                    env,
+                    extras: Object.assign(
+                        {},
+                        model ? { ANTIGRAVITY_MODEL: model } : {},
+                        { CLAUDE_PROJECT_DIR: _cwd }
+                    ),
+                }),
+                process.env,
+            );
+            spawnSpec = handler.buildSpawn({
+                args: ['-p', String(prompt == null ? '' : prompt)],
+                cwd: _cwd,
+                env: _env,
+                interactive_supported: false,
+            });
+        } catch (e) {
+            return resolve({
+                ok: false,
+                error: { type: 'spawn_unavailable', detail: e && e.message ? e.message : String(e) },
+                provider: 'antigravity',
+                durationMs: Date.now() - startedAt,
+            });
+        }
+
+        let child;
+        try {
+            child = _spawn(spawnSpec.cmd, spawnSpec.args, spawnSpec.spawnOpts);
+        } catch (e) {
+            return resolve({
+                ok: false,
+                error: { type: 'spawn_failed', detail: e && e.message ? e.message : String(e) },
+                provider: 'antigravity',
+                durationMs: Date.now() - startedAt,
+            });
+        }
+
+        // El prompt (system foldeado + mensaje) va por STDIN como NDJSON.
+        if (spawnSpec.stdinPayload != null && child.stdin && typeof child.stdin.write === 'function') {
+            try {
+                child.stdin.write(spawnSpec.stdinPayload);
+                child.stdin.end();
+            } catch { /* best-effort: el close/timeout resuelve igual */ }
+        }
+
+        let stdoutBuf = Buffer.alloc(0);
+        let stderrBuf = Buffer.alloc(0);
+        let truncated = false;
+        let resolved = false;
+
+        const finish = (result) => {
+            if (resolved) return;
+            resolved = true;
+            try { if (timer) clearTimeout(timer); } catch {}
+            resolve(Object.assign({ provider: 'antigravity', durationMs: Date.now() - startedAt }, result));
+        };
+
+        const timer = Number(timeoutMs) > 0
+            ? setTimeout(() => {
+                try { child.kill('SIGTERM'); } catch {}
+                finish({
+                    ok: false,
+                    error: { type: 'timeout', detail: `spawn agy superó timeoutMs=${timeoutMs}` },
+                });
+            }, Number(timeoutMs))
+            : null;
+
+        if (child.stdout) {
+            child.stdout.on('data', (chunk) => {
+                if (truncated) return;
+                if (stdoutBuf.length + chunk.length > SPAWN_MAX_STDOUT_BYTES) {
+                    truncated = true;
+                    try { child.kill('SIGTERM'); } catch {}
+                    return finish({
+                        ok: false,
+                        error: { type: 'invalid_response', reason: 'body_too_large', detail: `stdout > ${SPAWN_MAX_STDOUT_BYTES} bytes` },
+                    });
+                }
+                stdoutBuf = Buffer.concat([stdoutBuf, chunk]);
+            });
+        }
+        if (child.stderr) {
+            child.stderr.on('data', (chunk) => {
+                if (stderrBuf.length < 2048) {
+                    stderrBuf = Buffer.concat([stderrBuf, chunk.slice(0, 2048 - stderrBuf.length)]);
+                }
+            });
+        }
+
+        child.on('error', (e) => {
+            finish({
+                ok: false,
+                error: { type: 'spawn_error', detail: e && e.message ? e.message : String(e) },
+            });
+        });
+
+        child.on('exit', (code) => {
+            if (resolved) return;
+            const stderr = stderrBuf.toString('utf8').trim();
+            const raw = stdoutBuf.toString('utf8');
+            const obj = typeof handler._parseAntigravityJson === 'function' ? handler._parseAntigravityJson(raw) : null;
+            const status = obj && typeof obj.status === 'string' ? obj.status.toUpperCase() : null;
+            const response = obj && typeof obj.response === 'string' ? obj.response : null;
+            const usage = obj && obj.usage && typeof obj.usage === 'object' ? obj.usage : {};
+            if (code === 0 && status !== 'ERROR' && response && response.trim()) {
+                return finish({
+                    ok: true,
+                    content: response,
+                    inputTokens: Number(usage.input_tokens || 0) || 0,
+                    outputTokens: Number(usage.output_tokens || 0) || 0,
+                });
+            }
+            const errText = obj && typeof obj.error === 'string' ? obj.error.slice(0, 300) : '';
+            return finish({
+                ok: false,
+                error: {
+                    type: 'spawn_exit',
+                    detail: obj === null
+                        ? `exit=${code}; sin evento result en el stream de agy; stderr=${stderr.slice(0, 300)}`
+                        : `exit=${code}; status=${status || 'n/d'}; error=${errText}; stderr=${stderr.slice(0, 300)}`,
+                },
+            });
+        });
+    });
+}
+
+// -----------------------------------------------------------------------------
 // emitAuditEvent — wrapper sobre commanderMP.auditCommanderRequest para los
 // eventos específicos de Sherlock. Todos los payloads sensibles van como
 // HASH (CA-SEC-8). best-effort: nunca tira al caller.
@@ -1445,8 +1619,10 @@ async function _verifyImpl(opts = {}) {
         completionClient,
         spawnAnthropic,
         spawnCodex,
+        spawnAntigravity,
         anthropicHandler,
         codexHandler,
+        antigravityHandler,
         spawnImpl,
         cwd,
         env,
@@ -1468,6 +1644,7 @@ async function _verifyImpl(opts = {}) {
     const _completion = completionClient || require('./multi-provider/completion-client');
     const _spawnAnthropic = typeof spawnAnthropic === 'function' ? spawnAnthropic : spawnAnthropicComplete;
     const _spawnCodex = typeof spawnCodex === 'function' ? spawnCodex : spawnCodexComplete;
+    const _spawnAntigravity = typeof spawnAntigravity === 'function' ? spawnAntigravity : spawnAntigravityComplete;
     const _residency = residencyModule || null; // commanderMP.enforceDataResidency lo carga solo
 
     const cfg = loadSherlockConfig({ configLoader });
@@ -1825,6 +2002,19 @@ async function _verifyImpl(opts = {}) {
                 timeoutMs: cfg.timeoutMs,
                 spawnImpl,
                 codexHandler,
+                cwd,
+                env,
+            });
+            if (r && typeof r === 'object') r.model = resolved.model;
+            return r;
+        }
+        if (resolved.transport === 'spawn' && resolved.provider === 'antigravity') {
+            const r = await _spawnAntigravity({
+                prompt,
+                model: resolved.model,
+                timeoutMs: cfg.timeoutMs,
+                spawnImpl,
+                antigravityHandler,
                 cwd,
                 env,
             });
@@ -2405,6 +2595,7 @@ module.exports = {
     _resolveSherlockProvider: resolveSherlockProvider,
     _spawnAnthropicComplete: spawnAnthropicComplete,
     _spawnCodexComplete: spawnCodexComplete,
+    _spawnAntigravityComplete: spawnAntigravityComplete,
     // #6563 — políticas de contención de los spawn helpers (cerradas).
     SPAWN_SANDBOX_POLICIES,
     SPAWN_ENV_POLICIES,

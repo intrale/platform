@@ -32,7 +32,7 @@ function tmpFile(content, ext = '.json') {
 // ruteo debe declarar las tres condiciones (fail-closed: ausente = no cumple).
 // Los helpers de abajo replican lo que declara el JSON canónico: los que
 // cumplen las tres van con capabilities agentic-tool-use (coherencia), y los
-// que no cumplen entran sólo por excepción vigente (gemini-google hasta #6564).
+// que no cumplen entran sólo por excepción vigente (antigravity hasta #6564).
 function admissionAdmitted() {
   return { cli_edits_files: true, reports_usage: true, terms_no_training: true };
 }
@@ -185,11 +185,12 @@ test('CA-2 · validateOrExit invoca exitFn con el código correcto + escribe a s
 // ─── CA-3 · ALLOWED_LAUNCHERS source-of-truth + composición programática ────
 
 test('CA-3 · ALLOWED_LAUNCHERS expone los launchers permitidos (post #6563 = 4)', () => {
-  // #3220 — sumamos `gemini-google` (rename ex-`gemini`).
+  // #3220 — sumamos el launcher de Google; #6861 — se llama `antigravity`
+  // (el binario que corre), por reemplazo: el id anterior no es alias.
   // #3353 — eliminamos `groq` (mayo 2026) por política inestable de restricciones.
   // #6563 — eliminamos los free (`cerebras`, `nvidia-nim`, `ollama`).
   assert.deepEqual([...validateMod.ALLOWED_LAUNCHERS].sort(),
-    ['claude', 'codex', 'gemini-google', 'node']);
+    ['antigravity', 'claude', 'codex', 'node']);
 });
 
 test('CA-3 · ALLOWED_LAUNCHERS es congelado (Object.freeze) — inmutabilidad', () => {
@@ -512,7 +513,7 @@ test('CA-3 · si schema literal disagrees con ALLOWED_LAUNCHERS, runtime gana (c
   effectiveEnum.push('mutation-test');
   // Si fueran la misma referencia, esto contaminaría literalEnum.
   // En cualquier caso, ALLOWED_LAUNCHERS sigue intacto (Object.freeze).
-  // #3220 — 5 → 7 launchers (rename gemini→gemini-google + groq + cerebras).
+  // #3220 — 5 → 7 launchers (rename gemini→antigravity + groq + cerebras).
   // #3243 — 7 → 8 launchers (nvidia-nim, 4to free provider ola N+5).
   // #3353 — 8 → 7 launchers (eliminación de groq, mayo 2026).
   // #6563 — 7 → 4 launchers (baja de cerebras, nvidia-nim y ollama).
@@ -729,7 +730,7 @@ test('CA-3 · HARDCODED_SECRET_PATTERNS está congelado (inmutabilidad)', () => 
 
 // Helper #3154: baseValid() tiene anthropic con launcher=claude (OAuth bypass).
 // Para testear el camino "exige env var faltante" necesitamos un provider con
-// launcher distinto (codex/gemini-google/node) referenciado por algún skill.
+// launcher distinto (codex/antigravity/node) referenciado por algún skill.
 function baseValidWithCodex() {
   const cfg = baseValid();
   cfg.providers['openai-codex'] = {
@@ -1024,34 +1025,35 @@ test('findHardcodedSecrets · ignora $schema en raíz (URL legítima)', () => {
 });
 
 // =============================================================================
-// #3220 — Tests multi-provider sign-off 2026-05-15 (gemini-google)
+// #3220 — Tests multi-provider sign-off 2026-05-15 (antigravity)
 // #3353 — Groq removido (mayo 2026): tests `providerGroq` y sus assertions
 // se eliminaron junto con el provider.
 // #6563 — Cerebras removido: tests `providerCerebras` eliminados; los que
-// probaban lógica genérica se reescribieron sobre gemini-google.
+// probaban lógica genérica se reescribieron sobre antigravity.
 // =============================================================================
 
-function providerGeminiGoogle() {
+function providerAntigravity() {
   return {
-    launcher: 'gemini-google',
+    launcher: 'antigravity',
     model: 'gemini-3.8-flash-medium',
     spawn_args_template: ['--model', '{model}', '--system', '{system_file}', '{user_prompt}'],
-    output_parser: 'gemini-stream',
+    output_parser: 'antigravity-stream-json',
     quota_error_types: ['quota_exceeded', 'resource_exhausted'],
     supports_tool_use: true,
     prompt_caching: { supported: false },
-    credentials_env: ['GEMINI_API_KEY'],
+    auth_mode: 'oauth',
+    credentials_env: [],
     permissions_mode: 'bypassPermissions',
     capabilities: ['agentic-tool-use'],
     admission: admissionAdmitted(),
   };
 }
 
-test('#3220 + #3353 + #6563 · ALLOWED_LAUNCHERS incluye gemini-google (sin groq ni free retirados)', () => {
+test('#3220 + #3353 + #6563 · ALLOWED_LAUNCHERS incluye antigravity (sin groq ni free retirados)', () => {
   const launchers = [...validateMod.ALLOWED_LAUNCHERS];
-  assert.ok(launchers.includes('gemini-google'), 'falta gemini-google');
+  assert.ok(launchers.includes('antigravity'), 'falta antigravity');
   // Rename: 'gemini' bare ya no está en la allowlist.
-  assert.ok(!launchers.includes('gemini'), 'gemini bare debería estar renombrado a gemini-google');
+  assert.ok(!launchers.includes('gemini'), 'gemini bare debería estar renombrado a antigravity');
   // #3353 — groq fue removido tras la descontinuación del provider.
   assert.ok(!launchers.includes('groq'), 'groq debería estar removido tras #3353');
   // #6563 — los free retirados no pueden reintroducirse.
@@ -1060,9 +1062,11 @@ test('#3220 + #3353 + #6563 · ALLOWED_LAUNCHERS incluye gemini-google (sin groq
   }
 });
 
-test('#3220 + #3353 + #6563 · ALLOWED_CREDENTIAL_ENV_VARS conserva GEMINI_API_KEY (sin keys de retirados)', () => {
+test('#3220 + #3353 + #6563 + #6861 · ALLOWED_CREDENTIAL_ENV_VARS sin GEMINI_API_KEY ni keys de retirados', () => {
   const vars = [...validateMod.ALLOWED_CREDENTIAL_ENV_VARS];
-  assert.ok(vars.includes('GEMINI_API_KEY'), 'GEMINI_API_KEY debe permanecer');
+  // #6861 — antigravity autentica por OAuth del CLI; la key de AI Studio se
+  // retiró con el shim HTTP (#5331, #7299) y no puede reintroducirse.
+  assert.ok(!vars.includes('GEMINI_API_KEY'), 'GEMINI_API_KEY debería estar removida tras #6861');
   // #3353 — GROQ_API_KEY removida tras la descontinuación del provider.
   assert.ok(!vars.includes('GROQ_API_KEY'), 'GROQ_API_KEY debería estar removida tras #3353');
   // #6563 — keys de los free retirados (y el token del drop-in de Kimi).
@@ -1081,11 +1085,11 @@ test('#3220 + #3353 + #3501 · ALLOWED_MODELS_BY_LAUNCHER declara modelos por pr
   // #3799 — Sherlock baja su fallback Codex de gpt-5.4 → gpt-5.4-mini (sign-off Leo
   // 2026-06-02), por lo que gpt-5.4-mini se suma a la allowlist del launcher codex.
   assert.deepEqual([...models.codex].sort(), ['gpt-5.4', 'gpt-5.4-mini', 'gpt-5.5']);
-  // #6858 — la allowlist de gemini-google es el catálogo COMPLETO de Antigravity
+  // #6858 — la allowlist de antigravity es el catálogo COMPLETO de Antigravity
   // (`agy models`, snapshot 2026-09-16) por reemplazo: ningún id del Gemini CLI
   // gratuito retirado (gemini-2.0/2.5/3-flash-preview) puede volver. El espejo
   // exacto contra el CLI real lo verifica lib/__tests__/agy-catalog.test.js.
-  assert.deepEqual([...models['gemini-google']].sort(), [
+  assert.deepEqual([...models['antigravity']].sort(), [
     'claude-opus-4-6-thinking', 'claude-sonnet-4-6',
     'gemini-3.1-pro-high', 'gemini-3.1-pro-low',
     'gemini-3.6-flash-high', 'gemini-3.6-flash-low', 'gemini-3.6-flash-medium',
@@ -1094,7 +1098,7 @@ test('#3220 + #3353 + #3501 · ALLOWED_MODELS_BY_LAUNCHER declara modelos por pr
     'gpt-oss-120b-medium',
   ]);
   for (const retirado of ['gemini-2.0-flash', 'gemini-2.5-flash', 'gemini-3-flash-preview']) {
-    assert.ok(!models['gemini-google'].includes(retirado), `${retirado} no puede reintroducirse`);
+    assert.ok(!models['antigravity'].includes(retirado), `${retirado} no puede reintroducirse`);
   }
   // #3353 — `groq` no debe estar en la allowlist de modelos.
   assert.equal(models.groq, undefined, 'groq debería estar removido tras #3353');
@@ -1104,9 +1108,9 @@ test('#3220 + #3353 + #3501 · ALLOWED_MODELS_BY_LAUNCHER declara modelos por pr
   }
 });
 
-test('#3220 · provider gemini-google con campos completos → validación pasa', () => {
+test('#3220 · provider antigravity con campos completos → validación pasa', () => {
   const cfg = baseValid();
-  cfg.providers['gemini-google'] = providerGeminiGoogle();
+  cfg.providers['antigravity'] = providerAntigravity();
   const file = tmpFile(cfg);
   try {
     const r = validateMod.validate(file);
@@ -1142,11 +1146,11 @@ test('#3353 · provider groq declarado → rechazado por launcher fuera de allow
 // el launcher groq ya no existe en ALLOWED_LAUNCHERS, cualquier config con
 // groq es rechazada antes de evaluar el modelo.
 
-test('#3220 · gemini-google con credentials_env=PATH → rechazado por allowlist (SEC-1)', () => {
+test('#3220 · antigravity con credentials_env=PATH → rechazado por allowlist (SEC-1)', () => {
   const cfg = baseValid();
-  const p = providerGeminiGoogle();
-  p.credentials_env = ['GEMINI_API_KEY', 'PATH'];
-  cfg.providers['gemini-google'] = p;
+  const p = providerAntigravity();
+  p.credentials_env = ['PATH'];
+  cfg.providers['antigravity'] = p;
   const file = tmpFile(cfg);
   try {
     const r = validateMod.validate(file);
@@ -1156,11 +1160,11 @@ test('#3220 · gemini-google con credentials_env=PATH → rechazado por allowlis
   } finally { fs.unlinkSync(file); }
 });
 
-test('#3220 · gemini-google con quota_error_type fuera de meta-allowlist → rechazado (SEC-2)', () => {
+test('#3220 · antigravity con quota_error_type fuera de meta-allowlist → rechazado (SEC-2)', () => {
   const cfg = baseValid();
-  const p = providerGeminiGoogle();
+  const p = providerAntigravity();
   p.quota_error_types = ['quota_exceeded', 'totally_invented_error_type'];
-  cfg.providers['gemini-google'] = p;
+  cfg.providers['antigravity'] = p;
   const file = tmpFile(cfg);
   try {
     const r = validateMod.validate(file);
@@ -1174,29 +1178,29 @@ test('#3220 · gemini-google con quota_error_type fuera de meta-allowlist → re
 // se removió de ALLOWED_CREDENTIAL_ENV_VARS junto con el provider; la
 // validación ahora rechaza groq antes de chequear env vars.
 
-test('#3220 · skill apuntando a gemini-google con GEMINI_API_KEY presente → válido', () => {
+test('#3220/#6861 · skill apuntando a antigravity SIN ninguna key en el env → válido (OAuth del CLI)', () => {
   const cfg = baseValid();
-  cfg.providers['gemini-google'] = providerGeminiGoogle();
-  cfg.skills.qa = { provider: 'gemini-google' };
+  cfg.providers['antigravity'] = providerAntigravity();
+  cfg.skills.qa = { provider: 'antigravity' };
   delete cfg.skills.qa.model_override;
   const file = tmpFile(cfg);
   try {
-    const r = validateMod.validate(file, { processEnv: { GEMINI_API_KEY: 'AIzafake-not-real-1234567890abcdef' } });
+    const r = validateMod.validate(file, { processEnv: {} });
     assert.equal(r.ok, true, JSON.stringify(r.errors));
   } finally { fs.unlinkSync(file); }
 });
 
 test('#3220 · skill model_override fuera de allowlist del launcher del provider → rechazado', () => {
   const cfg = baseValid();
-  cfg.providers['gemini-google'] = providerGeminiGoogle();
-  cfg.skills['gemini-skill'] = { provider: 'gemini-google', model_override: 'gpt-5-codex' };
+  cfg.providers['antigravity'] = providerAntigravity();
+  cfg.skills['gemini-skill'] = { provider: 'antigravity', model_override: 'gpt-5-codex' };
   const file = tmpFile(cfg);
   try {
     const r = validateMod.validate(file);
     assert.equal(r.ok, false);
     const e = r.errors.find((er) => er.path === '#/skills/gemini-skill/model_override');
     assert.ok(e, 'debe rechazar model_override que no pertenece al launcher del provider');
-    assert.match(e.message, /ALLOWED_MODELS_BY_LAUNCHER\["gemini-google"\]/);
+    assert.match(e.message, /ALLOWED_MODELS_BY_LAUNCHER\["antigravity"\]/);
   } finally { fs.unlinkSync(file); }
 });
 
@@ -1228,7 +1232,7 @@ test('#3220 · agent-models.json canónico declara los 3 providers LLM + determi
   const raw = fs.readFileSync(validateMod.CANONICAL_JSON_PATH, 'utf8');
   const cfg = JSON.parse(raw);
   const keys = Object.keys(cfg.providers || {});
-  for (const expected of ['anthropic', 'openai-codex', 'gemini-google', 'deterministic']) {
+  for (const expected of ['anthropic', 'openai-codex', 'antigravity', 'deterministic']) {
     assert.ok(keys.includes(expected), `provider canónico falta: ${expected} (declarados: ${keys.join(', ')})`);
   }
   // #3353 — `groq` ya no debe estar declarado en el canónico.
@@ -1272,18 +1276,19 @@ function providerOpenAICodex() {
 
 // providerGroqEntry se removió en #3353 y providerCerebrasEntry en #6563
 // (providers descontinuados). Los tests que las usaban se construyen sobre
-// providerGeminiEntry.
+// providerAntigravityEntry.
 
-function providerGeminiEntry() {
+function providerAntigravityEntry() {
   return {
-    launcher: 'gemini-google',
+    launcher: 'antigravity',
     model: 'gemini-3.8-flash-medium',
     spawn_args_template: ['--model', '{model}', '--system', '{system_file}', '{user_prompt}'],
-    output_parser: 'gemini-stream',
+    output_parser: 'antigravity-stream-json',
     quota_error_types: ['quota_exceeded', 'resource_exhausted'],
     supports_tool_use: true,
     prompt_caching: { supported: false },
-    credentials_env: ['GEMINI_API_KEY'],
+    auth_mode: 'oauth',
+    credentials_env: [],
     permissions_mode: 'bypassPermissions',
     capabilities: ['agentic-tool-use'],
     admission: admissionAdmitted(),
@@ -1322,13 +1327,13 @@ test('#3221 · schema fallbacks items apunta a $defs/fallbackEntry', () => {
 test('#3221 happy path · skill con fallbacks objects {provider, model_override} válidos', () => {
   const cfg = baseValid();
   cfg.providers['openai-codex'] = providerOpenAICodex();
-  cfg.providers['gemini-google'] = providerGeminiEntry();
+  cfg.providers['antigravity'] = providerAntigravityEntry();
   cfg.skills['backend-dev'] = {
     provider: 'anthropic',
     model_override: 'claude-opus-4-7',
     fallbacks: [
       { provider: 'openai-codex', model_override: 'gpt-5.5' },
-      { provider: 'gemini-google', model_override: 'gemini-3.8-flash-medium' },
+      { provider: 'antigravity', model_override: 'gemini-3.8-flash-medium' },
     ],
   };
   const file = tmpFile(cfg);
@@ -1357,12 +1362,12 @@ test('#3221 mixto · skill puede mezclar strings y objects en fallbacks', () => 
   // Ergonómico para migración progresiva: parte legacy + parte modelos pin-eados.
   const cfg = baseValid();
   cfg.providers['openai-codex'] = providerOpenAICodex();
-  cfg.providers['gemini-google'] = providerGeminiEntry();
+  cfg.providers['antigravity'] = providerAntigravityEntry();
   cfg.skills['planner'] = {
     provider: 'anthropic',
     fallbacks: [
       'openai-codex',
-      { provider: 'gemini-google', model_override: 'gemini-3.8-flash-medium' },
+      { provider: 'antigravity', model_override: 'gemini-3.8-flash-medium' },
     ],
   };
   const file = tmpFile(cfg);
@@ -1461,8 +1466,8 @@ test('#3221 · fallback object sin provider (objeto vacío) → error', () => {
 // ─── resolveFallbackEntry — normalización 1:1 ───────────────────────────────
 
 test('#3221 · resolveFallbackEntry(string) devuelve {provider, model_override:null}', () => {
-  const r = validateMod.resolveFallbackEntry('gemini-google');
-  assert.deepEqual(r, { provider: 'gemini-google', model_override: null });
+  const r = validateMod.resolveFallbackEntry('antigravity');
+  assert.deepEqual(r, { provider: 'antigravity', model_override: null });
 });
 
 test('#3221 · resolveFallbackEntry(object con model_override) devuelve {provider, model_override}', () => {
@@ -1471,8 +1476,8 @@ test('#3221 · resolveFallbackEntry(object con model_override) devuelve {provide
 });
 
 test('#3221 · resolveFallbackEntry(object sin model_override) devuelve {provider, model_override:null}', () => {
-  const r = validateMod.resolveFallbackEntry({ provider: 'gemini-google' });
-  assert.deepEqual(r, { provider: 'gemini-google', model_override: null });
+  const r = validateMod.resolveFallbackEntry({ provider: 'antigravity' });
+  assert.deepEqual(r, { provider: 'antigravity', model_override: null });
 });
 
 test('#3221 · resolveFallbackEntry rechaza shapes inválidos (null, number, array, object vacío) → null', () => {
@@ -1490,20 +1495,20 @@ test('#3221 · resolveFallbackEntry rechaza shapes inválidos (null, number, arr
 test('#3221 · resolveSkillChain devuelve primary primero, después fallbacks en orden', () => {
   const cfg = baseValid();
   cfg.providers['openai-codex'] = providerOpenAICodex();
-  cfg.providers['gemini-google'] = providerGeminiEntry();
+  cfg.providers['antigravity'] = providerAntigravityEntry();
   cfg.skills['backend-dev'] = {
     provider: 'anthropic',
     model_override: 'claude-opus-4-7',
     fallbacks: [
       { provider: 'openai-codex', model_override: 'gpt-5.5' },
-      { provider: 'gemini-google', model_override: 'gemini-3.8-flash-medium' },
+      { provider: 'antigravity', model_override: 'gemini-3.8-flash-medium' },
     ],
   };
   const chain = validateMod.resolveSkillChain(cfg, 'backend-dev');
   assert.equal(chain.length, 3);
   assert.deepEqual(chain[0], { provider: 'anthropic', model: 'claude-opus-4-7', source: 'primary' });
   assert.deepEqual(chain[1], { provider: 'openai-codex', model: 'gpt-5.5', source: 'fallback' });
-  assert.deepEqual(chain[2], { provider: 'gemini-google', model: 'gemini-3.8-flash-medium', source: 'fallback' });
+  assert.deepEqual(chain[2], { provider: 'antigravity', model: 'gemini-3.8-flash-medium', source: 'fallback' });
 });
 
 test('#3221 · resolveSkillChain con fallback string usa provider.model default', () => {
@@ -1583,10 +1588,10 @@ test('#3221 canónico · Gemini EXCLUIDO en los 12 skills sensibles (#6860, TOS 
   for (const skill of tosExcluded) {
     const skillDef = cfg.skills[skill];
     assert.ok(skillDef, `skill ${skill} ausente del canónico`);
-    assert.notEqual(skillDef.provider, 'gemini-google', skill + ' excluido también como primario');
+    assert.notEqual(skillDef.provider, 'antigravity', skill + ' excluido también como primario');
     const fallbacks = skillDef.fallbacks || [];
     const providerNames = fallbacks.map((fb) => typeof fb === 'string' ? fb : fb.provider);
-    assert.ok(!providerNames.includes('gemini-google'),
+    assert.ok(!providerNames.includes('antigravity'),
       `Gemini NO debe estar en fallbacks de ${skill} (TOS sensible) — declarados: ${providerNames.join(', ')}`);
   }
 });
@@ -1621,9 +1626,9 @@ test('#3221 canónico · po/ux declaran Pro-low como primer respaldo (#6860)', (
     const skillDef = cfg.skills[skill];
     const providerNames = (skillDef.fallbacks || [])
       .map((fb) => typeof fb === 'string' ? fb : fb.provider);
-    assert.deepEqual(skillDef.fallbacks[0], { provider: 'gemini-google', model_override: 'gemini-3.1-pro-low' });
-    assert.ok(providerNames.includes('gemini-google'),
-      `${skill} debe declarar gemini-google en fallbacks (matriz firmada #6860) — declarados: ${providerNames.join(', ')}`);
+    assert.deepEqual(skillDef.fallbacks[0], { provider: 'antigravity', model_override: 'gemini-3.1-pro-low' });
+    assert.ok(providerNames.includes('antigravity'),
+      `${skill} debe declarar antigravity en fallbacks (matriz firmada #6860) — declarados: ${providerNames.join(', ')}`);
   }
 });
 

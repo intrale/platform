@@ -333,19 +333,19 @@
         },
         {
             "file": "lib/__tests__/credentials-vault-5353.test.js",
-            "line": 769,
+            "line": 768,
             "variable": "(clave no resoluble)",
             "sentido": "(n/a)"
         },
         {
             "file": "lib/__tests__/credentials-vault-5353.test.js",
-            "line": 772,
+            "line": 771,
             "variable": "(clave no resoluble)",
             "sentido": "(n/a)"
         },
         {
             "file": "lib/__tests__/credentials-vault-5353.test.js",
-            "line": 772,
+            "line": 771,
             "variable": "(clave no resoluble)",
             "sentido": "(n/a)"
         },
@@ -753,13 +753,13 @@
         },
         {
             "file": "tests/pulpo-agent-spawn-env-containment.test.js",
-            "line": 789,
+            "line": 790,
             "variable": "(clave no resoluble)",
             "sentido": "(n/a)"
         },
         {
             "file": "tests/pulpo-agent-spawn-env-containment.test.js",
-            "line": 796,
+            "line": 797,
             "variable": "(clave no resoluble)",
             "sentido": "(n/a)"
         },

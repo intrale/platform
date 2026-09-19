@@ -38,7 +38,7 @@ function mkTmpPipeline() {
     // agent-models.json real (sin groq, sin deterministic filtrado en la vista).
     fs.writeFileSync(path.join(pipeline, 'agent-models.json'), JSON.stringify({
         providers: {
-            anthropic: {}, 'openai-codex': {}, 'gemini-google': {},
+            anthropic: {}, 'openai-codex': {}, 'antigravity': {},
             cerebras: {}, 'nvidia-nim': {}, deterministic: {},
         },
     }));
@@ -109,7 +109,7 @@ test('CA-3: la lista de providers del bloque NO incluye groq', () => {
         buildQuotaStateBlock({ PIPELINE: pipeline, ROOT: root }));
     assert.ok(!Object.keys(block.providers).includes('groq'), 'groq (descontinuado #3353) no debe aparecer');
     // Los 5 proveedores reales presentes.
-    for (const p of ['anthropic', 'openai-codex', 'gemini-google', 'cerebras', 'nvidia-nim']) {
+    for (const p of ['anthropic', 'openai-codex', 'antigravity', 'cerebras', 'nvidia-nim']) {
         assert.ok(p in block.providers, `${p} presente`);
     }
 });

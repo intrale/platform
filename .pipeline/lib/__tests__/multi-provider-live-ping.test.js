@@ -12,25 +12,56 @@ const os = require('node:os');
 
 const livePing = require('../multi-provider/live-ping');
 
-// #6563 — Tras la baja de cerebras/nvidia-nim no queda en el plantel ningún
-// provider que se pinguee por API key: anthropic, codex y gemini-google
-// (Antigravity) son OAuth y `ping()` hace short-circuit por el probe del CLI.
-// El camino HTTP (throttle facturable, clasificación de status, endpoints
-// literales anti-SSRF) se conserva como infraestructura, así que para
-// ejercitarlo estos tests re-declaran temporalmente a `gemini-google` (y a
-// `anthropic` cuando hace falta un segundo provider) como `api_key` en la
-// lista gestionada que consulta `ping()`. `getRawKey` sigue usando la spec
-// real (paths canónico/legacy de cada provider). Se restaura al terminar.
+// #6861 — Provider HTTP FICTICIO para el camino por API key.
+//
+// Tras #6563 (baja de cerebras/nvidia-nim) y #6861 (retiro del shim HTTP de
+// Google AI Studio) el plantel entero es CLI-OAuth: anthropic, codex y
+// antigravity se prueban por el probe del CLI y `ping()` hace short-circuit
+// antes de cualquier HTTP. El camino HTTP (clasificación de status, throttle
+// facturable, endpoints literales anti-SSRF, cruce de catálogo) se conserva
+// como infraestructura, así que para cubrirlo inyectamos un provider de
+// prueba `fake-http` por el hook `_setPingEndpointsForTesting` (spec local con
+// URL https literal en un TLD reservado, RFC 2606) y hacemos que `getRawKey`
+// le lea la key del mismo archivo de secrets del test (forma canónica
+// `providers['fake-http'].api_key`): el provider no tiene spec en
+// MANAGED_KEYS, así que la lectura real daría `null` siempre. Ningún camino
+// de runtime ve ni el spec ni la key; todo se restaura al salir del helper.
 const secretsRw = require('../multi-provider/secrets-rw');
-const REAL_MANAGED_KEYS = secretsRw.MANAGED_KEYS;
-function asApiKeyProviders(providers) {
-    return Object.freeze(REAL_MANAGED_KEYS.map((k) => (providers.includes(k.provider)
-        ? Object.freeze({ ...k, auth_mode: 'api_key', catalog_probe: undefined, cli_binary: undefined })
-        : k)));
+const FAKE_PROVIDER = 'fake-http';
+const FAKE_KEY = 'fk-test-1234567890abcdef0000';
+const FAKE_KEYS = { providers: { [FAKE_PROVIDER]: { api_key: FAKE_KEY } } };
+const REAL_GET_RAW_KEY = secretsRw.getRawKey;
+
+function fakeSpec(overrides = {}) {
+    return {
+        url: 'https://ping.fake-http.invalid/v1/models',
+        method: 'GET',
+        body: () => null,
+        headers: (key) => ({ authorization: `Bearer ${key}` }),
+        // Sin overrides por provider: la clasificación es la genérica del
+        // clasificador universal (#3486).
+        interpret: (status, bodyExcerpt) => livePing._classifyForLivePing(FAKE_PROVIDER, status, bodyExcerpt),
+        ...overrides,
+    };
 }
-async function withHttpPingProviders(providers, fn) {
-    secretsRw.MANAGED_KEYS = asApiKeyProviders(providers);
-    try { return await fn(); } finally { secretsRw.MANAGED_KEYS = REAL_MANAGED_KEYS; }
+
+function readFakeKey({ provider, secretsPath }) {
+    try {
+        const data = JSON.parse(fs.readFileSync(secretsPath, 'utf8'));
+        const entry = data && data.providers && data.providers[provider];
+        return (entry && typeof entry.api_key === 'string' && entry.api_key) || null;
+    } catch { return null; }
+}
+
+async function withFakeHttpProvider(fn, { spec } = {}) {
+    livePing._setPingEndpointsForTesting({ [FAKE_PROVIDER]: fakeSpec(spec) });
+    secretsRw.getRawKey = (args) => ((args && args.provider === FAKE_PROVIDER)
+        ? readFakeKey(args)
+        : REAL_GET_RAW_KEY(args));
+    try { return await fn(); } finally {
+        secretsRw.getRawKey = REAL_GET_RAW_KEY;
+        livePing._resetPingEndpointsForTesting();
+    }
 }
 
 // #3965 CA-4 — `ping()` ahora mantiene un cooldown/concurrencia server-side por
@@ -72,7 +103,7 @@ function fakeHttp({ status = 200, body = '' } = {}) {
 test('isAllowedProvider acepta solo los providers conocidos', () => {
     assert.equal(livePing.isAllowedProvider('anthropic'), true);
     assert.equal(livePing.isAllowedProvider('openai'), true);
-    assert.equal(livePing.isAllowedProvider('gemini-google'), true);
+    assert.equal(livePing.isAllowedProvider('antigravity'), true);
     assert.equal(livePing.isAllowedProvider('cerebras'), false, 'retirado en #6563');
     assert.equal(livePing.isAllowedProvider('attacker.com'), false);
     assert.equal(livePing.isAllowedProvider('file://etc/passwd'), false);
@@ -89,13 +120,15 @@ test('ping devuelve no_key_configured cuando falta la key (provider api_key)', a
     const dir = tmpDir();
     const f = path.join(dir, 'config.json');
     writeKeys(f, {});
-    // #4402 — `openai` pasó a auth_mode:'oauth' (short-circuit CLI). #6563 — ya
-    // no queda provider api_key en el plantel: se ejercita el gate con
-    // `gemini-google` re-declarado como api_key (ver helper arriba).
-    const r = await withHttpPingProviders(['gemini-google'], () =>
-        livePing.ping({ provider: 'gemini-google', secretsPath: f }));
+    // #4402 — `openai` pasó a auth_mode:'oauth' (short-circuit CLI). #6563 /
+    // #6861 — ya no queda provider api_key en el plantel: se ejercita el gate
+    // con el provider ficticio inyectado (ver helper arriba). Sin key en el
+    // archivo el veredicto es `no_key_configured`, nunca `invalid_credentials`.
+    const r = await withFakeHttpProvider(() =>
+        livePing.ping({ provider: FAKE_PROVIDER, secretsPath: f }));
     assert.equal(r.ok, false);
     assert.equal(r.reason, 'no_key_configured');
+    assert.equal(r.provider, FAKE_PROVIDER);
 });
 
 // #4402 — Los providers OAuth (anthropic MAX / codex) ya NO se pinean por API
@@ -192,51 +225,52 @@ test('RS-5.1/5.2 — el resultado OAuth NO contiene material de token/credencial
 test('isAllowedProvider acepta sólo el free provider vivo (#3260 + #3353 + #6563)', () => {
     // #3353 — groq removido; #6563 — cerebras y nvidia-nim retirados.
     assert.equal(livePing.isAllowedProvider('groq'), false, 'groq debería estar removido tras #3353');
-    assert.equal(livePing.isAllowedProvider('gemini-google'), true);
+    assert.equal(livePing.isAllowedProvider('antigravity'), true);
     assert.equal(livePing.isAllowedProvider('cerebras'), false, 'cerebras retirado en #6563');
     assert.equal(livePing.isAllowedProvider('nvidia-nim'), false, 'nvidia-nim retirado en #6563');
 });
 
 // Tests "ping Groq con ..." se eliminaron en #3353 — Groq descontinuado.
 
-test('ping Gemini-Google usa el probe CLI-OAuth y no una API key HTTP', async () => {
+test('ping Antigravity usa el probe CLI-OAuth y no una API key HTTP (#6861: sin shim de AI Studio)', async () => {
     const dir = tmpDir();
     const f = path.join(dir, 'config.json');
-    writeKeys(f, { gemini_google_api_key: 'AIzaSyTest_1234567890abcdef000' });
+    // Aunque el archivo traiga una key de Google (resto de la config vieja),
+    // antigravity no la lee: no tiene endpoint HTTP ni key gestionada.
+    writeKeys(f, { providers: { google: { api_key: 'AIzaSyTest_1234567890abcdef000' } } });
     let httpCalls = 0;
     const r = await livePing.ping({
-        provider: 'gemini-google',
+        provider: 'antigravity',
         secretsPath: f,
         cliProbe: () => false,
         httpImpl: () => { httpCalls++; },
     });
     assert.equal(r.ok, false);
     assert.equal(r.reason, 'cli_unavailable');
+    assert.equal(r.provider, 'antigravity');
     assert.equal(httpCalls, 0);
 });
 
 // ─── Camino HTTP por API key (clasificación de status) ───────────────────────
-// #6563 — se ejercita con `gemini-google` re-declarado como api_key (helper).
-
-const GEMINI_KEY = { gemini_google_api_key: 'AIzaSyTest_1234567890abcdef000' };
+// #6861 — se ejercita con el provider ficticio `fake-http` (helper arriba).
 
 test('ping HTTP con status 200 devuelve authenticated', async () => {
     const dir = tmpDir();
     const f = path.join(dir, 'config.json');
-    writeKeys(f, GEMINI_KEY);
-    const r = await withHttpPingProviders(['gemini-google'], () =>
-        livePing.ping({ provider: 'gemini-google', secretsPath: f, httpImpl: fakeHttp({ status: 200 }) }));
+    writeKeys(f, FAKE_KEYS);
+    const r = await withFakeHttpProvider(() =>
+        livePing.ping({ provider: FAKE_PROVIDER, secretsPath: f, httpImpl: fakeHttp({ status: 200 }) }));
     assert.equal(r.ok, true);
     assert.equal(r.reason, 'authenticated');
-    assert.equal(r.provider, 'gemini-google');
+    assert.equal(r.provider, FAKE_PROVIDER);
 });
 
 test('ping HTTP con 401 → invalid_credentials', async () => {
     const dir = tmpDir();
     const f = path.join(dir, 'config.json');
-    writeKeys(f, GEMINI_KEY);
-    const r = await withHttpPingProviders(['gemini-google'], () =>
-        livePing.ping({ provider: 'gemini-google', secretsPath: f, httpImpl: fakeHttp({ status: 401 }) }));
+    writeKeys(f, FAKE_KEYS);
+    const r = await withFakeHttpProvider(() =>
+        livePing.ping({ provider: FAKE_PROVIDER, secretsPath: f, httpImpl: fakeHttp({ status: 401 }) }));
     assert.equal(r.ok, false);
     assert.equal(r.reason, 'invalid_credentials');
 });
@@ -244,18 +278,18 @@ test('ping HTTP con 401 → invalid_credentials', async () => {
 test('ping HTTP con 403 → forbidden', async () => {
     const dir = tmpDir();
     const f = path.join(dir, 'config.json');
-    writeKeys(f, GEMINI_KEY);
-    const r = await withHttpPingProviders(['gemini-google'], () =>
-        livePing.ping({ provider: 'gemini-google', secretsPath: f, httpImpl: fakeHttp({ status: 403 }) }));
+    writeKeys(f, FAKE_KEYS);
+    const r = await withFakeHttpProvider(() =>
+        livePing.ping({ provider: FAKE_PROVIDER, secretsPath: f, httpImpl: fakeHttp({ status: 403 }) }));
     assert.equal(r.reason, 'forbidden');
 });
 
 test('ping HTTP con 429 + insufficient_quota → quota_exhausted', async () => {
     const dir = tmpDir();
     const f = path.join(dir, 'config.json');
-    writeKeys(f, GEMINI_KEY);
-    const r = await withHttpPingProviders(['gemini-google'], () => livePing.ping({
-        provider: 'gemini-google',
+    writeKeys(f, FAKE_KEYS);
+    const r = await withFakeHttpProvider(() => livePing.ping({
+        provider: FAKE_PROVIDER,
         secretsPath: f,
         httpImpl: fakeHttp({ status: 429, body: '{"error":{"code":"insufficient_quota"}}' }),
     }));
@@ -265,27 +299,64 @@ test('ping HTTP con 429 + insufficient_quota → quota_exhausted', async () => {
 test('ping HTTP con 429 plain → rate_limited', async () => {
     const dir = tmpDir();
     const f = path.join(dir, 'config.json');
-    writeKeys(f, GEMINI_KEY);
-    const r = await withHttpPingProviders(['gemini-google'], () => livePing.ping({
-        provider: 'gemini-google',
+    writeKeys(f, FAKE_KEYS);
+    const r = await withFakeHttpProvider(() => livePing.ping({
+        provider: FAKE_PROVIDER,
         secretsPath: f,
         httpImpl: fakeHttp({ status: 429, body: '{"error":{"code":"rate_limit_exceeded"}}' }),
     }));
     assert.equal(r.reason, 'rate_limited');
 });
 
-test('#6563 — PROVIDER_PING_ENDPOINTS no conserva endpoints de providers retirados', () => {
-    assert.equal('cerebras' in livePing.PROVIDER_PING_ENDPOINTS, false);
-    assert.equal('nvidia-nim' in livePing.PROVIDER_PING_ENDPOINTS, false);
-    assert.deepEqual(Object.keys(livePing.PROVIDER_PING_ENDPOINTS).sort(), ['anthropic', 'gemini-google', 'openai']);
+test('el spec HTTP inyectado manda la key en header y la URL literal, sin query con la key', async () => {
+    const dir = tmpDir();
+    const f = path.join(dir, 'config.json');
+    writeKeys(f, FAKE_KEYS);
+    const seen = [];
+    const http = {
+        request(opts, cb) {
+            seen.push(opts);
+            return fakeHttp({ status: 200 }).request(opts, cb);
+        },
+    };
+    await withFakeHttpProvider(() => livePing.ping({ provider: FAKE_PROVIDER, secretsPath: f, httpImpl: http }));
+    assert.equal(seen.length, 1);
+    assert.equal(seen[0].hostname, 'ping.fake-http.invalid');
+    assert.equal(seen[0].path, '/v1/models');
+    assert.equal(seen[0].method, 'GET');
+    assert.equal(seen[0].headers.authorization, `Bearer ${FAKE_KEY}`);
+    assert.equal(seen[0].path.includes(FAKE_KEY), false, 'la key nunca viaja en la URL');
 });
 
-test('Gemini usa GET de listado de modelos (SR-3: nunca /v1/chat/completions)', () => {
-    const spec = livePing.PROVIDER_PING_ENDPOINTS['gemini-google'];
-    assert.equal(spec.method, 'GET', 'el ping debe ser GET');
-    assert.ok(!spec.url.includes('chat/completions'), 'el ping debe usar el listado (no completions)');
-    assert.equal(spec.body(), null, 'el ping no debe enviar body');
+test('#6563 / #6861 — PROVIDER_PING_ENDPOINTS no conserva endpoints de providers retirados ni el shim de AI Studio', () => {
+    assert.equal('cerebras' in livePing.PROVIDER_PING_ENDPOINTS, false);
+    assert.equal('nvidia-nim' in livePing.PROVIDER_PING_ENDPOINTS, false);
+    // #6861 — antigravity es CLI-OAuth (`agy models`): NO tiene endpoint HTTP,
+    // y el id viejo tampoco sobrevive.
+    assert.equal('antigravity' in livePing.PROVIDER_PING_ENDPOINTS, false);
+    assert.equal('gemini-google' in livePing.PROVIDER_PING_ENDPOINTS, false);
+    assert.deepEqual(Object.keys(livePing.PROVIDER_PING_ENDPOINTS).sort(), ['anthropic', 'openai']);
 });
+
+test('#6861 — el hook de test de endpoints sólo acepta URLs https literales y se resetea', () => {
+    for (const mala of ['http://evil', 'file:///etc/passwd', 'no-es-url', '']) {
+        assert.throws(() => livePing._setPingEndpointsForTesting({ x: { url: mala } }), /https/);
+    }
+    // Un throw no deja la tabla a medias: sigue la de producción.
+    assert.equal(livePing.isAllowedProvider('x'), false);
+    livePing._setPingEndpointsForTesting({ [FAKE_PROVIDER]: fakeSpec() });
+    try {
+        assert.equal(livePing.isAllowedProvider(FAKE_PROVIDER), true);
+        // Los OAuth siguen permitidos por MANAGED_KEYS, no por la tabla inyectada.
+        assert.equal(livePing.isAllowedProvider('antigravity'), true);
+    } finally {
+        livePing._resetPingEndpointsForTesting();
+    }
+    assert.equal(livePing.isAllowedProvider(FAKE_PROVIDER), false, 'tras el reset el provider ficticio desaparece');
+});
+
+// #6861 — caso retirado con el shim HTTP de AI Studio: "Gemini usa GET de
+// listado de modelos (SR-3)". Antigravity ya no se pinguea por HTTP.
 
 test('PROVIDER_PING_ENDPOINTS solo expone URLs HTTPS literales hardcoded (anti-SSRF)', () => {
     for (const [provider, spec] of Object.entries(livePing.PROVIDER_PING_ENDPOINTS)) {
@@ -297,13 +368,9 @@ test('PROVIDER_PING_ENDPOINTS solo expone URLs HTTPS literales hardcoded (anti-S
     }
 });
 
-test('Gemini-Google usa header x-goog-api-key, NUNCA query string (SR-2)', () => {
-    const spec = livePing.PROVIDER_PING_ENDPOINTS['gemini-google'];
-    assert.ok(!spec.url.includes('?key='), 'Gemini URL no debe llevar key en query');
-    const headers = spec.headers('AIzaTEST');
-    assert.ok(headers['x-goog-api-key'], 'Gemini debe usar header x-goog-api-key');
-    assert.ok(!('key' in headers), 'no debe haber clave "key" suelta en headers');
-});
+// #6861 — caso retirado con el shim HTTP de AI Studio: "Gemini-Google usa
+// header x-goog-api-key, NUNCA query string (SR-2)". La invariante genérica
+// (key en header, nunca en la URL) se cubre con el spec inyectado más arriba.
 
 // -----------------------------------------------------------------------------
 // #5888 — No-regresión del ping SIN `expectModels`.
@@ -316,21 +383,21 @@ test('Gemini-Google usa header x-goog-api-key, NUNCA query string (SR-2)', () =>
 test('#5888 R-J: ping sin expectModels devuelve exactamente el shape de HEAD', async () => {
     const dir = tmpDir();
     const f = path.join(dir, 'config.json');
-    writeKeys(f, GEMINI_KEY);
-    const r = await withHttpPingProviders(['gemini-google'], () => livePing.ping({
-        provider: 'gemini-google',
+    writeKeys(f, FAKE_KEYS);
+    // El spec SABE extraer catálogo: sin `expectModels` igual no lo baja.
+    const spec = { catalogExtract: (json) => (json.data || []).map((m) => m.id) };
+    const r = await withFakeHttpProvider(() => livePing.ping({
+        provider: FAKE_PROVIDER,
         secretsPath: f,
-        httpImpl: fakeHttp({ status: 200, body: '{"models":[{"name":"models/gemini-3.8-flash-medium"}]}' }),
-    }));
+        httpImpl: fakeHttp({ status: 200, body: '{"data":[{"id":"modelo-vivo"}]}' }),
+    }), { spec });
     assert.deepEqual(Object.keys(r).sort(), ['latency_ms', 'ok', 'provider', 'reason', 'statusCode']);
     assert.equal('catalog_check' in r, false);
     assert.equal(r.ok, true);
     assert.equal(r.reason, 'authenticated');
 });
 
-test('#5888: la URL de Gemini incorpora ?pageSize=1000 sin dejar de ser literal (cond. 8)', () => {
-    const spec = livePing.PROVIDER_PING_ENDPOINTS['gemini-google'];
-    assert.equal(spec.url, 'https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000');
-    // Sigue sin nada derivado de config ni de env.
-    assert.ok(!/process\.env/.test(String(spec.url)));
-});
+// #6861 — caso retirado con el shim HTTP de AI Studio: "la URL de Gemini
+// incorpora ?pageSize=1000 sin dejar de ser literal (cond. 8)". La cond. 8
+// (URLs literales https, sin interpolación) sigue cubierta para la tabla de
+// producción por 'PROVIDER_PING_ENDPOINTS solo expone URLs HTTPS literales'.

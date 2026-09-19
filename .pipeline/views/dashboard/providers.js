@@ -20,7 +20,7 @@
 //      modelos en línea y kill-switch — todo unificado en una sola línea legible.
 //   3. Banner de misión que DIAGNOSTICA la cadena leyendo el estado real de
 //      salud (sanos N/total, quién absorbe el fallback y a qué nivel, riesgo). Nada
-//      hardcodeado: si Gemini está en `red` el banner lo nombra.
+//      hardcodeado: si Antigravity está en `red` el banner lo nombra.
 //   4. Franja «Por agente» compacta al pie: la cadena DEFAULT + sólo los agentes
 //      que la pisan (los deterministas build/tester/linter/delivery no listan).
 //
@@ -88,10 +88,10 @@ function loadDesignTokens() { try { return fs.readFileSync(TOKENS_CSS_PATH, 'utf
 // ───────────────────────── Constantes de dominio ─────────────────────────
 
 // Orden canónico (memoria feedback_multi-provider-default-order: Claude > Codex
-// > Gemini). Plantel vigente tras la baja de los proveedores gratuitos en
+// > Antigravity). Plantel vigente tras la baja de los proveedores gratuitos en
 // #6563: sólo lo que está en `agent-models.json`/`secrets-rw` (si se agrega
 // un provider, aparece al sumarlo acá y al JSON; nunca se inventa una fila).
-const PROVIDER_ORDER = Object.freeze(['anthropic', 'openai', 'gemini-google']);
+const PROVIDER_ORDER = Object.freeze(['anthropic', 'openai', 'antigravity']);
 
 // Metadata estable por provider (identidad visual y mapeo de claves; NO estado
 // de salud). `disabledKey` mapea el nombre del provider de health/listKeys al
@@ -102,7 +102,10 @@ const PROVIDER_ORDER = Object.freeze(['anthropic', 'openai', 'gemini-google']);
 const PROVIDER_META = Object.freeze({
     anthropic:       { name: 'Claude',     accent: '--provider-anthropic',  disabledKey: 'anthropic',    catalogKey: 'anthropic' },
     openai:          { name: 'Codex',      accent: '--provider-openai',     disabledKey: 'openai-codex', catalogKey: 'openai-codex' },
-    'gemini-google': { name: 'Gemini',     accent: '--provider-gemini',     disabledKey: 'gemini-google', catalogKey: 'gemini-google' },
+    // #6861 — nombre del producto que corre (Antigravity CLI), token de color
+    // propio. Sin `tier`/`tierIcon`: en /providers sólo se muestra el plan
+    // MEDIDO (renderPlanBadge), nunca un tier afirmado (contrato UX U5/U7).
+    antigravity:     { name: 'Antigravity', accent: '--provider-antigravity', disabledKey: 'antigravity', catalogKey: 'antigravity' },
 });
 
 // #6563 — Leyenda de tier derivada de `billing` (`agent-models.json`). Sin
@@ -503,7 +506,7 @@ function buildProvidersModel() {
             // #5888 CA-16/R-C — `healthReason` queda INTACTO, reservado al eje de
             // salud del provider. Los reason codes del eje de modelo NO se
             // escriben acá: si lo hicieran, el operador leería
-            // "Gemini · SANO · modelo fuera de catálogo" en un mismo renglón
+            // "Antigravity · SANO · modelo fuera de catálogo" en un mismo renglón
             // cuyo `title` dice "Causa reportada por el health-cron", e
             // interpretaría el modelo muerto como la causa de la salud del
             // provider — contradiciendo CA-5 en la superficie visible aunque el
@@ -524,7 +527,7 @@ function buildProvidersModel() {
                 ? { available: oauthSession.available, minutesLeft: oauthSession.minutesLeft }
                 : null,
             lastChecked: h.last_checked_at || null,
-            // #6857 — evidencia del round-trip al CLI (sólo gemini-google hoy):
+            // #6857 — evidencia del round-trip al CLI (sólo antigravity hoy):
             // { model_count, checked_at, cached, detail }. `null` si el provider
             // no hace round-trip; la fila no inventa una frescura que no midió.
             cliProbe: (h.cli_probe && typeof h.cli_probe === 'object') ? h.cli_probe : null,
@@ -616,7 +619,9 @@ function renderPlanBadge(p, now = Date.now()) {
         const pct = Math.round(check.groups[0].buckets[0].remaining_fraction * 100);
         const lines = check.groups.map((g, i) => {
             const weekly = g.buckets[0], short = g.buckets[1];
-            return `${i === 0 ? 'Gemini Models' : 'Claude y GPT'} · semanal ${Math.round(weekly.remaining_fraction * 100)} %`
+            // #6861 — se cita el id técnico del bucket de `agy /usage`, no
+            // «Gemini» como nombre de proveedor (regla UX §4).
+            return `${i === 0 ? 'bucket gemini-weekly' : 'bucket 3p-weekly (Claude y GPT)'} · semanal ${Math.round(weekly.remaining_fraction * 100)} %`
                 + (short ? ` · 5 h ${Math.round(short.remaining_fraction * 100)} %` : '')
                 + (weekly.reset_time ? ` · reinicia ${weekly.reset_time.slice(8, 10)}/${weekly.reset_time.slice(5, 7)} ${weekly.reset_time.slice(11, 16)} UTC` : '');
         });
@@ -633,8 +638,8 @@ function renderPlanBadge(p, now = Date.now()) {
 }
 
 function renderTierBadge(p, now) {
-    // #6564 — Gemini muestra el eje de plan medido, no una leyenda estática.
-    if (p.key === 'gemini-google') return renderPlanBadge(p, now);
+    // #6564 — Antigravity muestra el eje de plan medido, no una leyenda estática.
+    if (p.key === 'antigravity') return renderPlanBadge(p, now);
     // #6563 — sin `billing` declarado no hay leyenda que mostrar.
     if (!p.tierKind || !p.tier) return '';
     const cls = 'prov-tier prov-tier-' + escapeHtmlAttr(p.tierKind);
@@ -1334,11 +1339,11 @@ const PANEL_CSS = `
 .prov-dot { width: 12px; height: 12px; border-radius: 50%; flex: none; background: var(--row-accent, var(--in-fg-dim)); box-shadow: 0 0 0 3px color-mix(in srgb, var(--row-accent, #888) 22%, transparent); }
 .prov-id-txt { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 /* #6564: espacio del eje plan según mockup UX rev. 2, sin superponer credencial. */
-.prov-row[data-provider="gemini-google"] .prov-id-txt { flex-direction: row; flex-wrap: wrap; align-items: center; gap: 10px; }
-.prov-row[data-provider="gemini-google"] .prov-id-txt .prov-health-reason { flex-basis: 100%; }
-.prov-row[data-provider="gemini-google"] .prov-id-txt .status-badge { font-size: 9.5px; }
+.prov-row[data-provider="antigravity"] .prov-id-txt { flex-direction: row; flex-wrap: wrap; align-items: center; gap: 10px; }
+.prov-row[data-provider="antigravity"] .prov-id-txt .prov-health-reason { flex-basis: 100%; }
+.prov-row[data-provider="antigravity"] .prov-id-txt .status-badge { font-size: 9.5px; }
 @media (min-width: 1101px) {
-  .prov-row[data-provider="gemini-google"] { grid-template-columns: 360px 1fr 1.4fr 1.5fr auto; }
+  .prov-row[data-provider="antigravity"] { grid-template-columns: 360px 1fr 1.4fr 1.5fr auto; }
 }
 .prov-name { font-size: 15px; font-weight: 800; }
 .prov-tier { display: inline-flex; align-items: center; gap: 5px; font-size: 9.5px; font-weight: 800; letter-spacing: .5px;

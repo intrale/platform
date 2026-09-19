@@ -26,7 +26,7 @@ function readOnlyDropfile(root) {
 }
 
 const PAYLOAD = {
-    event: 'plan_tier_unknown', provider: 'gemini-google', provider_state: 'green',
+    event: 'plan_tier_unknown', provider: 'antigravity', provider_state: 'green',
     consecutive_count: 2, observed_at: '2026-09-17T12:00:00.000Z',
 };
 

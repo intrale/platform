@@ -27,7 +27,7 @@ Es un copy-paste del bloque de Anthropic. **Fix:** `permissions_mode` de `openai
 
 ### 2. Free providers ausentes de la matriz canónica
 `CAPABILITY_MATRIX` (en `permission-validator.js`) solo define `anthropic`, `openai-codex` y `deterministic`.
-`gemini-google`, `cerebras` y `nvidia-nim` **no existen** en la matriz → cualquier skill que caiga a ellos
+`antigravity`, `cerebras` y `nvidia-nim` **no existen** en la matriz → cualquier skill que caiga a ellos
 da `mode_unknown` aunque el nombre de mode sea correcto. Requiere agregar las celdas con sets conservadores
 + doc (`permission-mapping.md`) + test de paridad + CODEOWNERS (gobernanza del archivo).
 
@@ -66,7 +66,7 @@ El portero es **fail-CLOSED bajo CODEOWNERS + tests de paridad**: no se parchea 
 |---|---------|------|------|
 | A | Typo mode Codex en `agent-models.json` + cobertura de cadena en `validateAllSkillsAtBoot` + parity test | config + validator | Simple |
 | B | CA-19: verificar empíricamente Codex `full-auto` y extender su celda (`tool_use_gated`, `long_running_watcher`) | matriz + doc + parity | Medio |
-| C | Agregar `gemini-google`/`cerebras`/`nvidia-nim` a la matriz con sets conservadores | matriz + doc + parity | Medio |
+| C | Agregar `antigravity`/`cerebras`/`nvidia-nim` a la matriz con sets conservadores | matriz + doc + parity | Medio |
 | D | Reconciliar orden de cadenas vs `required_permissions`: podar enlaces muertos (p.ej. free provider sin `tool_use_gated` en cadena de dev) | config | Simple |
 
 ## Corrección de política: confiar en la cadena del operador (2026-06-04)

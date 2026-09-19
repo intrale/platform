@@ -54,11 +54,11 @@ test('ignora eventos que no son de sesión y líneas corruptas', () => {
     const file = writeTmp([
         '{ no es json',
         JSON.stringify({ event: 'tool:call', issue: 400, skill: 'x', provider: 'anthropic' }),
-        JSON.stringify({ event: 'session:end', issue: 400, skill: 'review', phase: 'aprobacion', provider: 'gemini-google' }),
+        JSON.stringify({ event: 'session:end', issue: 400, skill: 'review', phase: 'aprobacion', provider: 'antigravity' }),
     ]);
     const idx = pi.buildProviderIndex(file);
     assert.equal(idx.size, 1);
-    assert.equal(idx.resolve(400, 'review', 'aprobacion'), 'gemini-google');
+    assert.equal(idx.resolve(400, 'review', 'aprobacion'), 'antigravity');
 });
 
 test('«último gana» en colisiones de la misma ejecución', () => {

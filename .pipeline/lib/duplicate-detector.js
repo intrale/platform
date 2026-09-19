@@ -31,8 +31,9 @@
 //         instrucción; nunca se ejecuta texto del modelo.
 //       * LLM06 Sensitive Info Disclosure (egress/residencia) — `redact.js`
 //         (emails/URLs/secrets) antes de truncar; el contenido sale SOLO a los
-//         providers de `PROVIDER_COMPLETION_ENDPOINTS` (hoy sólo gemini-google:
-//         cerebras y nvidia-nim se retiraron en #6563), key vía
+//         providers de `PROVIDER_COMPLETION_ENDPOINTS` (vacío desde #6861:
+//         cerebras y nvidia-nim se retiraron en #6563 y el shim de AI Studio
+//         en #6861), key vía
 //         `secretsRw.getRawKey` (nunca hardcode).
 //       * LLM08 Excessive Agency — `fusionar` siempre a gate humano; salida
 //         fuera de schema/allowlist o error del provider → `level:'ninguna'`.

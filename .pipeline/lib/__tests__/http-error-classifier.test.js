@@ -43,7 +43,7 @@ function assertShape(result) {
 // ─── 1. Happy path ─────────────────────────────────────────────────────────
 
 test('200 OK → success/ok, isQuotaError false', () => {
-    const r = classifyHttpError(200, '{"ok":true}', 'gemini-google');
+    const r = classifyHttpError(200, '{"ok":true}', 'antigravity');
     assertShape(r);
     assert.equal(r.category, 'success');
     assert.equal(r.reason, 'ok');
@@ -158,7 +158,7 @@ test('401 Unauthorized → auth/invalid_credentials, isQuotaError false', () => 
 });
 
 test('403 Forbidden → auth/forbidden, isQuotaError false', () => {
-    const r = classifyHttpError(403, '{"error":"forbidden"}', 'gemini-google');
+    const r = classifyHttpError(403, '{"error":"forbidden"}', 'antigravity');
     assert.equal(r.category, 'auth');
     assert.equal(r.reason, 'forbidden');
     assert.equal(r.isQuotaError, false);
@@ -189,19 +189,23 @@ test('500 Internal Server Error → transient/server_error', () => {
 });
 
 test('502 Bad Gateway → transient/server_error', () => {
-    const r = classifyHttpError(502, null, 'gemini-google');
+    const r = classifyHttpError(502, null, 'antigravity');
     assert.equal(r.category, 'transient');
 });
 
-test('400 con API_KEY_INVALID (Gemini) → auth/invalid_credentials', () => {
-    const r = classifyHttpError(400, '{"error":{"message":"API key not valid"}}', 'gemini-google');
-    assert.equal(r.category, 'auth');
-    assert.equal(r.reason, 'invalid_credentials');
-});
+// #6861 — caso retirado con el shim HTTP de AI Studio: el 400 con
+// "API key not valid" era un contrato exclusivo de Google AI Studio
+// (`GEMINI_API_KEY_INVALID_PATTERN`); ningún provider vigente responde 400
+// como auth, así que la rama y su patrón se borraron del clasificador.
 
 test('400 sin marcador especial → unknown (no clasificamos como transient)', () => {
-    const r = classifyHttpError(400, '{"error":"invalid_request"}', 'gemini-google');
+    const r = classifyHttpError(400, '{"error":"invalid_request"}', 'antigravity');
     assert.equal(r.category, 'unknown');
+    // #6861 — el ex marcador de AI Studio ya no tiene tratamiento especial: un
+    // 400 es request inválido, nunca auth, sea cual sea el body.
+    const exGemini = classifyHttpError(400, '{"error":{"message":"API key not valid"}}', 'antigravity');
+    assert.equal(exGemini.category, 'unknown');
+    assert.equal(exGemini.reason, 'unclassified');
 });
 
 test('body de 100KB NO rompe ni explota — anti-DoS', () => {
@@ -268,7 +272,7 @@ test('detail está capeado a DETAIL_MAX_BYTES (512 bytes)', () => {
 
 test('provider NO puede alterar clasificación HTTP base', () => {
     // Mismo HTTP status con providers distintos → misma clasificación.
-    const providers = ['anthropic', 'openai-codex', 'gemini-google',
+    const providers = ['anthropic', 'openai-codex', 'antigravity',
         'cerebras', 'nvidia-nim', 'providerInventado'];
     const results = providers.map(p => classifyHttpError(401, null, p));
     // Todos deben dar el mismo category/reason/isQuotaError.

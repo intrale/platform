@@ -81,7 +81,7 @@ const FALLBACK_PERSONA = { icon: '⚙', name: '', tagline: '', color: '#8b949e' 
 const PROVIDER_LABELS = {
     anthropic: 'Claude',
     'openai-codex': 'Codex',
-    'gemini-google': 'Gemini',
+    'antigravity': 'Antigravity',
     deterministic: 'Determinístico',
 };
 

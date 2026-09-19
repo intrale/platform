@@ -32,6 +32,16 @@ function fakePing(scripted) {
     };
 }
 
+// #6861 — adapter de cuota NEUTRO. Sin `quotaAssessImpl` inyectado, `runOnce`
+// cae a `provider-health.assessProviderQuota`, que mide la cuota REAL de la
+// máquina: con Codex ≥90% el cuarto insumo (#4283) pisa `cli_unavailable` con
+// `quota_exhausted_real` y el test deja de ser hermético (falló así en el
+// tester del 2026-09-18). Todo `runOnce` de este archivo lo inyecta para que
+// el estado dependa sólo del probe de CLI scripted, nunca del host.
+function neutralQuota() {
+    return { adapterStatus: 'not_implemented', status: 'unknown', pct: null, gated: false, reason_code: null };
+}
+
 test('classifyState: ok + sin hits → green', () => {
     assert.equal(healthCron.classifyState({ ok: true }, { rate_limit_hit_24h: 0 }), 'green');
 });
@@ -60,10 +70,10 @@ test('listManagedAndPingable incluye el plantel vigente y excluye los retirados 
     assert.ok(!providers.includes('cerebras'), 'cerebras retirado en #6563');
     assert.ok(!providers.includes('nvidia-nim'), 'nvidia-nim retirado en #6563');
     assert.ok(!providers.includes('kimi-moonshot'), 'kimi-moonshot retirado en #6563');
-    // Plantel: anthropic, openai (codex) y gemini-google (Antigravity).
+    // Plantel: anthropic, openai (codex) y antigravity (Antigravity).
     assert.ok(providers.includes('anthropic'), 'anthropic presente');
     assert.ok(providers.includes('openai'), 'openai (codex) presente');
-    assert.ok(providers.includes('gemini-google'), 'gemini-google presente');
+    assert.ok(providers.includes('antigravity'), 'antigravity presente');
 });
 
 test('tryAcquireLock: primero gana, segundo falla', () => {
@@ -214,6 +224,7 @@ test('runOnce: los providers OAuth se validan por CLI, nunca por secretos ni pin
         // #3802 — probe CLI fijo + sender/dedup aislados: el test no debe
         // depender del PATH real ni escribir en archivos reales del pipeline.
         cliProbe: (binary) => binary === 'claude',
+        quotaAssessImpl: neutralQuota,
         telegramSender: () => true,
         dedupFile: path.join(dir, 'dedup.json'),
         skipAudit: true,
@@ -226,7 +237,7 @@ test('runOnce: los providers OAuth se validan por CLI, nunca por secretos ni pin
     const openai = result.snapshot.providers.find(p => p.provider === 'openai');
     assert.equal(openai.state, 'red');
     assert.equal(openai.reason_code, 'cli_unavailable');
-    const gemini = result.snapshot.providers.find(p => p.provider === 'gemini-google');
+    const gemini = result.snapshot.providers.find(p => p.provider === 'antigravity');
     assert.equal(gemini.state, 'red');
     assert.equal(gemini.reason_code, 'cli_unavailable');
     for (const p of result.snapshot.providers) {
@@ -309,6 +320,7 @@ test('runOnce: provider OAuth con CLI ausente → red (cli_unavailable)', async 
         pingImpl: fakePing({}),
         cliProbe: () => false, // CLI no disponible
         // Aislar efectos de archivo: el rojo de los OAuth dispara el sender.
+        quotaAssessImpl: neutralQuota,
         telegramSender: () => true,
         dedupFile: path.join(dir, 'dedup.json'),
         skipAudit: true,
@@ -322,7 +334,7 @@ test('runOnce: CA-6 simulación — 2 providers en rojo simultáneo → una aler
     // #6563 — el caso original ponía en rojo a 2 de los 3 free providers
     // (cerebras + gemini). Con un único free en el plantel, la misma
     // propiedad (cada rojo simultáneo genera su alerta; el verde no) se prueba
-    // con gemini-google (free, Antigravity) + openai (codex) en rojo y
+    // con antigravity (free, Antigravity) + openai (codex) en rojo y
     // anthropic en verde, todos por probe de CLI.
     const dir = tmpDir();
     const stateDir = path.join(dir, 'state');
@@ -332,22 +344,23 @@ test('runOnce: CA-6 simulación — 2 providers en rojo simultáneo → una aler
         stateDir,
         auditDir,
         secretsPath,
-        // #6857 — gemini-google es OAuth y su health hace round-trip REAL al
+        // #6857 — antigravity es OAuth y su health hace round-trip REAL al
         // CLI (`agy models`). El probe fijo por binario evita spawnear el real.
         cliProbe: (binary) => binary === 'claude',
+        quotaAssessImpl: neutralQuota,
         telegramSender: () => true,
         dedupFile: path.join(dir, 'dedup.json'),
         skipAudit: true,
     });
     const plantel = result.snapshot.providers.filter(p =>
-        ['gemini-google', 'openai', 'anthropic'].includes(p.provider));
+        ['antigravity', 'openai', 'anthropic'].includes(p.provider));
     const reds = plantel.filter(p => p.state === 'red');
     const greens = plantel.filter(p => p.state === 'green');
     assert.equal(reds.length, 2, 'dos providers en rojo');
     assert.equal(greens.length, 1, 'uno verde');
     const redAlerts = result.alerts.filter(a => a.kind === 'red');
     const redProviders = redAlerts.map(a => a.provider);
-    assert.ok(redProviders.includes('gemini-google'), 'alerta red para gemini-google');
+    assert.ok(redProviders.includes('antigravity'), 'alerta red para antigravity');
     assert.ok(redProviders.includes('openai'), 'alerta red para openai');
     assert.ok(!redProviders.includes('anthropic'), 'el provider verde no alerta');
 });
@@ -355,7 +368,7 @@ test('runOnce: CA-6 simulación — 2 providers en rojo simultáneo → una aler
 test('runOnce: con un único free provider en el plantel el rojo de todos NO dispara multi-down (umbral 3 inalcanzable)', async () => {
     // #6563 — antes: los 3 free (gemini, cerebras, nvidia-nim) en rojo disparaban
     // multi_down (umbral ≥3). Con cerebras y nvidia-nim retirados FREE_PROVIDERS
-    // queda en { gemini-google }: el umbral es inalcanzable por construcción y
+    // queda en { antigravity }: el umbral es inalcanzable por construcción y
     // el rojo de gemini lo cubre la alerta por provider. La lógica del umbral
     // con 3 free inyectados sigue cubierta en multi-provider-health-alerts.test.js
     // (`freeProviders`); acá se fija el comportamiento del cron con el plantel.
@@ -368,17 +381,18 @@ test('runOnce: con un único free provider en el plantel el rojo de todos NO dis
         auditDir,
         secretsPath,
         cliProbe: () => false, // #6857 — ver comentario del test anterior.
+        quotaAssessImpl: neutralQuota,
         telegramSender: () => true,
         dedupFile: path.join(dir, 'dedup.json'),
         skipAudit: true,
     });
     const reds = result.snapshot.providers.filter(p => p.state === 'red').map(p => p.provider);
-    assert.ok(reds.includes('gemini-google') && reds.includes('openai') && reds.includes('anthropic'),
+    assert.ok(reds.includes('antigravity') && reds.includes('openai') && reds.includes('anthropic'),
         'todo el plantel en rojo');
     const multi = result.alerts.find(a => a.kind === 'multi_down');
-    assert.equal(multi, undefined, 'con un solo free provider (gemini-google) no hay multi_down');
-    assert.ok(result.alerts.some(a => a.kind === 'red' && a.provider === 'gemini-google'),
-        'el rojo de gemini-google lo cubre la alerta por provider');
+    assert.equal(multi, undefined, 'con un solo free provider (antigravity) no hay multi_down');
+    assert.ok(result.alerts.some(a => a.kind === 'red' && a.provider === 'antigravity'),
+        'el rojo de antigravity lo cubre la alerta por provider');
 });
 
 test('runOnce: el snapshot NO contiene fingerprint, masked ni body excerpt', async () => {
@@ -397,6 +411,7 @@ test('runOnce: el snapshot NO contiene fingerprint, masked ni body excerpt', asy
         // #3802 — probe CLI fijo + sender/dedup aislados (sino el rojo de
         // gemini dispararía el sender por defecto contra archivos reales).
         cliProbe: () => false,
+        quotaAssessImpl: neutralQuota,
         telegramSender: () => true,
         dedupFile: path.join(dir, 'dedup.json'),
         skipAudit: true,
@@ -424,6 +439,7 @@ test('runOnce: persiste snapshot a state/multi-provider-health.json', async () =
         cliProbe: (binary) => binary === 'claude',
         // Aislar efectos: sender en memoria + dedup en tmp (sino escribe en
         // servicios/telegram/pendiente/ y ~/.claude/secrets/…dedup.json reales).
+        quotaAssessImpl: neutralQuota,
         telegramSender: () => true,
         dedupFile: path.join(dir, 'dedup.json'),
         skipAudit: true,
@@ -466,12 +482,12 @@ test('jitterMs: rng inyectable para reproducibilidad', () => {
 
 test('formatAlertText: payload válido genera texto markdown', () => {
     const t = healthCron.formatAlertText({
-        provider: 'gemini-google',
+        provider: 'antigravity',
         state: 'red',
         reason_code: 'invalid_credentials',
         observed_at: '2026-05-17T00:00:00Z',
     });
-    assert.ok(t.includes('gemini-google'));
+    assert.ok(t.includes('antigravity'));
     assert.ok(t.includes('RED'));
     assert.ok(t.includes('invalid_credentials'));
 });
@@ -493,7 +509,7 @@ test('formatAlertText: #4402 CA-4 — incluye el conteo consecutivo (xN) y nombr
 
 test('formatAlertText: sin consecutive_count no agrega xN', () => {
     const t = healthCron.formatAlertText({
-        provider: 'gemini-google',
+        provider: 'antigravity',
         state: 'red',
         reason_code: 'timeout',
         observed_at: '2026-07-02T00:00:00Z',
@@ -505,9 +521,9 @@ test('formatAlertText: multi_down lista los providers', () => {
     const t = healthCron.formatAlertText({
         event: 'multi_down',
         red_count: 3,
-        providers_red: ['gemini-google', 'openai', 'anthropic'],
+        providers_red: ['antigravity', 'openai', 'anthropic'],
         observed_at: '2026-05-17T00:00:00Z',
     });
     assert.ok(t.includes('Multi-Down'));
-    assert.ok(t.includes('gemini-google'));
+    assert.ok(t.includes('antigravity'));
 });

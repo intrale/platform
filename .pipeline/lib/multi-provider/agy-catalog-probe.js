@@ -2,8 +2,8 @@
 // agy-catalog-probe.js — Health con round-trip REAL al proveedor Google
 // (Antigravity CLI, `agy`) — #6857 (split de #6856), cierra #6225.
 //
-// HASTA #6857 el health de `gemini-google` se resolvía leyendo un flag de
-// entorno local (`AGY_LICENSE_READY === '1'`): sin round-trip al proveedor. Un
+// HASTA #6857 el health de `antigravity` se resolvía leyendo un flag de
+// entorno local (el flag `readiness_env`, retirado en #6857): sin round-trip al proveedor. Un
 // flag puede estar puesto con la licencia vencida, o vacío con la licencia
 // activa — que era exactamente el estado en producción ("pagaba una licencia y
 // esa licencia no se reflejaba"). Ambos casos mienten.
@@ -26,8 +26,8 @@
 // gateo durable en el dispatch.
 //
 // RESOLUCIÓN DEL BINARIO (CA-2): se usa EXACTAMENTE el `cmd` que devuelve
-// `detectLauncher()` del handler (`AGY_BIN` → `%LOCALAPPDATA%\agy\bin\agy.exe`
-// → PATH). Así el probe y el launcher miran el mismo binario, y un `AGY_BIN`
+// `detectLauncher()` del handler (`ANTIGRAVITY_BIN` → `%LOCALAPPDATA%\agy\bin\agy.exe`
+// → PATH). Así el probe y el launcher miran el mismo binario, y un `ANTIGRAVITY_BIN`
 // apuntando a un archivo inexistente cae en `cli_unavailable` sin lógica extra.
 // `%LOCALAPPDATA%\agy\bin` NO está en el PATH de máquina, sólo en el de
 // usuario: por eso el `path-fallback` a `agy` pelado no sirve desde los
@@ -123,8 +123,8 @@ function resolveAgyBinary({ env = process.env, fsImpl = fs, platform = process.p
         // Lazy: el handler no depende de este módulo, no hay ciclo. Se usa la
         // variante SIN cache (`_detectLauncherFresh`): el export `detectLauncher`
         // memoiza el resultado del primer llamado y no acepta env inyectado, y
-        // el probe tiene que ver un cambio de `AGY_BIN` en el próximo tick.
-        const handler = require('../agent-launcher/providers/gemini-google');
+        // el probe tiene que ver un cambio de `ANTIGRAVITY_BIN` en el próximo tick.
+        const handler = require('../agent-launcher/providers/antigravity');
         launcher = handler._detectLauncherFresh(env, fsImpl, platform);
     } catch {
         launcher = null;
@@ -137,7 +137,7 @@ function resolveAgyBinary({ env = process.env, fsImpl = fs, platform = process.p
         // `agy` pelado: sólo es invocable si está en el PATH del proceso.
         available = isBinaryOnPath(launcher.cmd, { env, fsImpl });
     } else {
-        // Ruta absoluta (AGY_BIN o ubicación oficial): tiene que existir.
+        // Ruta absoluta (ANTIGRAVITY_BIN o ubicación oficial): tiene que existir.
         try { available = !!fsImpl.existsSync(launcher.cmd); } catch { available = false; }
     }
     return { cmd: launcher.cmd, kind: launcher.kind, available };
@@ -373,7 +373,7 @@ async function probeAgyCatalog(opts = {}) {
     const useCache = opts.noCache !== true;
     const cachePath = useCache ? cachePathFor(opts) : null;
 
-    // 1. Binario — se resuelve SIEMPRE, sin cache: un `AGY_BIN` roto o un
+    // 1. Binario — se resuelve SIEMPRE, sin cache: un `ANTIGRAVITY_BIN` roto o un
     //    binario desinstalado tiene que verse en el próximo tick (CA-2).
     const bin = resolveAgyBinary({ env, fsImpl, platform: opts.platform });
     if (!bin.available) {
@@ -395,7 +395,7 @@ async function probeAgyCatalog(opts = {}) {
     }
 
     // 2. Cache vigente → sin round-trip. Sólo si el binario cacheado es el
-    //    mismo que resolvimos ahora (cambiar AGY_BIN fuerza re-probe).
+    //    mismo que resolvimos ahora (cambiar ANTIGRAVITY_BIN fuerza re-probe).
     if (useCache && opts.force !== true) {
         const cached = readCache(cachePath, fsImpl);
         const effectiveTtl = cached && cached.reason === REASON.OK ? ttlMs : negativeTtlMs;
@@ -413,7 +413,7 @@ async function probeAgyCatalog(opts = {}) {
     else if (cmpSemver(cliVersion, min) < 0) contractDetail = DETAIL.VERSION_BELOW_MIN;
     else if (cmpSemver(cliVersion, max) > 0) contractDetail = DETAIL.VERSION_ABOVE_TESTED;
     if (contractDetail) {
-        const entry = { version: CACHE_VERSION, provider: 'gemini-google', cmd: bin.cmd,
+        const entry = { version: CACHE_VERSION, provider: 'antigravity', cmd: bin.cmd,
             launcher_kind: bin.kind, cli_version: cliVersion, contract_key: contractKey,
             reason: REASON.CONTRACT, detail: contractDetail, models: [], checked_at_ms: nowMs };
         if (useCache) writeCache(cachePath, entry, fsImpl);
@@ -444,7 +444,7 @@ async function probeAgyCatalog(opts = {}) {
 
     const entry = {
         version: CACHE_VERSION,
-        provider: 'gemini-google',
+        provider: 'antigravity',
         cli_version: cliVersion,
         contract_key: contractKey,
         cmd: bin.cmd,

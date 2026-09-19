@@ -23,7 +23,7 @@ segundo tick y badges definidos por UX rev. 2.
 - Invariante de causas: 57 pruebas aprobadas, cero fallos.
 - Probe real aislado: `cli_catalog_ok`, 14 modelos y `plan_quota_ok` con los dos
   grupos semanales. Resultado saneado en `live-rebote.json`.
-- `node .pipeline/tools/verify-gemini-plan-6564.js`: tres estados HTTP/SSR
+- `node .pipeline/tools/verify-antigravity-plan-6564.js`: tres estados HTTP/SSR
   comprobados en Chromium; badge sin superposición con credencial. Alerta
   capturada: cero envíos en tick 1, uno en tick 2 y ninguno adicional en tick 3.
   El sender es sintético: no verifica entrega real en Telegram.

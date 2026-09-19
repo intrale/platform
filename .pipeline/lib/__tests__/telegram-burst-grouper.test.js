@@ -154,7 +154,7 @@ test('CA-3: 4 archivos con mismo skill/issue/pid/type → 1 grupo', () => {
     const f2 = writeQueueFile(dir, 'cross-provider-1001-9999.json', {
         type: 'provider-exhaustion',
         text: 'intento 2',
-        meta: { ...meta, fallback_provider: 'gemini-google', error_class: 'quota_exhausted' },
+        meta: { ...meta, fallback_provider: 'antigravity', error_class: 'quota_exhausted' },
     }, base + 2);
     const f3 = writeQueueFile(dir, 'cross-provider-1002-9999.json', {
         type: 'provider-exhaustion',
@@ -188,7 +188,7 @@ test('CA-3 / S-5: enumeración preserva provider+status+error_class de cada inte
         writeQueueFile(dir, 'cross-provider-1001-9999.json', {
             type: 'provider-exhaustion',
             text: 't2',
-            meta: { ...meta, fallback_provider: 'gemini-google', error_class: 'quota_exhausted' },
+            meta: { ...meta, fallback_provider: 'antigravity', error_class: 'quota_exhausted' },
         }, base + 2),
         writeQueueFile(dir, 'cross-provider-1002-9999.json', {
             type: 'provider-exhaustion',
@@ -209,7 +209,7 @@ test('CA-3 / S-5: enumeración preserva provider+status+error_class de cada inte
     assert.match(txt, /skill=verificacion\\-sherlock/);
     // Cada provider debe aparecer enumerado, con offset relativo `[+Nms]`.
     assert.match(txt, /cerebras/);
-    assert.match(txt, /gemini\\-google/);
+    assert.match(txt, /antigravity/);
     assert.match(txt, /nvidia\\-nim/);
     assert.match(txt, /groq/);
     // Cada error_class preservado.
@@ -236,7 +236,7 @@ test('S-3: archivos con mismo skill+issue pero distinto pid → grupos separados
         }, base + 0),
         writeQueueFile(dir, 'cross-provider-1001-2222.json', {
             type: 'provider-exhaustion', text: 't2',
-            meta: { ...meta, pid: 2222, fallback_provider: 'gemini-google' },
+            meta: { ...meta, pid: 2222, fallback_provider: 'antigravity' },
         }, base + 5),
     ];
     const groups = bg.groupByBurst({ fileEntries: files, windowMs: 60_000 });
@@ -258,7 +258,7 @@ test('CA-2: archivos del mismo skill/pid pero >window separación → grupos dis
         }, base + 0),
         writeQueueFile(dir, 'cross-provider-2000-9999.json', {
             type: 'provider-exhaustion', text: 't2',
-            meta: { ...meta, fallback_provider: 'gemini-google' },
+            meta: { ...meta, fallback_provider: 'antigravity' },
         }, base + 120_000), // 2 minutos después
     ];
     const groups = bg.groupByBurst({ fileEntries: files, windowMs: 60_000 });
@@ -423,7 +423,7 @@ test('CA-5 / S-4: groupByBurst es puro, NO escribe nada al filesystem', () => {
         }, base + 0),
         writeQueueFile(dir, 'cross-provider-1001-9999.json', {
             type: 'provider-exhaustion', text: 't2',
-            meta: { ...meta, fallback_provider: 'gemini-google' },
+            meta: { ...meta, fallback_provider: 'antigravity' },
         }, base + 5),
     ];
     const before = fs.readdirSync(dir).sort();

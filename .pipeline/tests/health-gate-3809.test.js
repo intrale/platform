@@ -86,7 +86,7 @@ function fakeNotify() {
     return fn;
 }
 
-function fakeProviderHandlerResolver(valid = ['anthropic', 'openai-codex', 'gemini-google', 'cerebras', 'nvidia-nim', 'deterministic']) {
+function fakeProviderHandlerResolver(valid = ['anthropic', 'openai-codex', 'antigravity', 'cerebras', 'nvidia-nim', 'deterministic']) {
     return (name) => {
         if (!valid.includes(name)) throw new Error(`[fake] provider "${name}" inválido`);
         return { name: `${name}-fake` };
@@ -135,7 +135,7 @@ function modelsWithChain(primary, fallbacks) {
         providers: {
             anthropic: { model: 'claude-opus-4-7' },
             'openai-codex': { model: 'gpt-5-codex' },
-            'gemini-google': { model: 'gemini-3.8-flash-medium' },
+            'antigravity': { model: 'gemini-3.8-flash-medium' },
             cerebras: { model: 'gpt-oss-120b' },
             'nvidia-nim': { model: 'deepseek-ai/deepseek-v4-flash-0731' },
         },
@@ -207,8 +207,8 @@ test('A9 · rojo FRESCO pero TRANSITORIO (timeout) → NO gateado (fail-open, ca
     // Gemini quedó rojo por un timeout puntual y se recuperó minutos después,
     // pero el rojo cacheado lo sacaba de la cascada hasta 20min. Un timeout es
     // incertidumbre, no una falla durable → fail-open.
-    const snap = healthSnapshot([healthEntry('gemini-google', 'red', 60 * 1000, { reason_code: 'timeout' })]);
-    const r = evaluateHealthGate('gemini-google', snap, NOW);
+    const snap = healthSnapshot([healthEntry('antigravity', 'red', 60 * 1000, { reason_code: 'timeout' })]);
+    const r = evaluateHealthGate('antigravity', snap, NOW);
     assert.equal(r.gated, false, 'timeout es transitorio → no gatea');
     assert.equal(r.reason, 'red_transient');
     assert.equal(r.state, 'red');
@@ -321,12 +321,12 @@ test('B3 · el primario NUNCA se health-gatea (aunque esté rojo-fresco)', () =>
 
 test('B5 · fallback rojo-fresco TRANSITORIO (timeout) se USA igual (caso Gemini en la cascada)', () => {
     const models = modelsWithChain('anthropic', [
-        { provider: 'gemini-google', model_override: 'gemini-3.8-flash-medium' },
+        { provider: 'antigravity', model_override: 'gemini-3.8-flash-medium' },
         { provider: 'cerebras', model_override: 'gpt-oss-120b' },
     ]);
     const audit = fakeAuditLog();
     const snap = healthSnapshot([
-        healthEntry('gemini-google', 'red', 60 * 1000, { reason_code: 'timeout' }), // rojo fresco PERO transitorio
+        healthEntry('antigravity', 'red', 60 * 1000, { reason_code: 'timeout' }), // rojo fresco PERO transitorio
         healthEntry('cerebras', 'green', 60 * 1000),
     ]);
     const r = resolveSpawnWithFallback({
@@ -342,7 +342,7 @@ test('B5 · fallback rojo-fresco TRANSITORIO (timeout) se USA igual (caso Gemini
         healthReader: () => snap,
         now: NOW,
     });
-    assert.equal(r.provider, 'gemini-google', 'rojo por timeout NO saca a Gemini de la cascada (fail-open)');
+    assert.equal(r.provider, 'antigravity', 'rojo por timeout NO saca a Gemini de la cascada (fail-open)');
     assert.equal(r.source, 'fallback');
     assert.ok(!audit.entries.find(e => e.event === 'fallback_health_gated'),
         'no se emitió health-gate para un rojo transitorio');
@@ -414,17 +414,33 @@ test('C1 · audit fallback_health_gated NO contiene API keys ni tokens', () => {
 // D. REQ-SEC-4 — validación de modelos at-request es FAIL-CLOSED
 // =============================================================================
 test('D1 · modelo fuera de allowlist+config → invalid_model (fail-closed, no fail-open)', async () => {
-    // gemini-google (#6563: único provider HTTP del plantel) solo permite los
-    // ids de su allowlist hardcoded; un modelo arbitrario no declarado en
-    // config debe ser RECHAZADO antes del HTTP.
-    const r = await completionClient.complete({
-        provider: 'gemini-google',
-        model: 'modelo-que-no-existe-999',
-        prompt: 'hola',
-        pipelineDir: '/nonexistent-pipeline-dir', // sin config → no agrega nada a la allowlist
+    // #6861 — el plantel HTTP de producción está vacío (el shim de AI Studio de
+    // antigravity se retiró; el provider es spawn puro por `agy`). Para probar
+    // el gate de modelos inyectamos un provider de prueba con allowlist
+    // acotada (mismo patrón que lib/__tests__/completion-client.test.js): un
+    // modelo arbitrario no declarado ni en la allowlist ni en config debe ser
+    // RECHAZADO antes del HTTP.
+    completionClient._setProviderTablesForTesting({
+        endpoints: { 'test-http': { url: 'https://api.test-http.invalid/v1/chat/completions', method: 'POST', authHeader: 'authorization', authFormat: 'bearer' } },
+        models: { 'test-http': ['modelo-permitido-1'] },
     });
-    assert.equal(r.ok, false);
-    assert.equal(r.error.type, 'invalid_model', 'rechaza fail-closed, no intenta el request');
+    try {
+        const r = await completionClient.complete({
+            provider: 'test-http',
+            model: 'modelo-que-no-existe-999',
+            prompt: 'hola',
+            pipelineDir: '/nonexistent-pipeline-dir', // sin config → no agrega nada a la allowlist
+        });
+        assert.equal(r.ok, false);
+        assert.equal(r.error.type, 'invalid_model', 'rechaza fail-closed, no intenta el request');
+    } finally {
+        completionClient._resetProviderTablesForTesting();
+    }
+    // Y en producción antigravity ni siquiera es un provider HTTP: cae antes,
+    // como `unknown_provider` (fail-closed por partida doble).
+    const prod = await completionClient.complete({ provider: 'antigravity', model: 'gemini-3.8-flash-medium', prompt: 'hola' });
+    assert.equal(prod.ok, false);
+    assert.equal(prod.error.type, 'unknown_provider');
 });
 
 test('D2 · provider fuera de la allowlist de endpoints → unknown_provider (fail-closed)', async () => {

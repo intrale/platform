@@ -59,7 +59,7 @@ const LINEAS = FUENTE.split(/\r?\n/);
 const CANARIO = 'canario-sintetico-5462-NO-ES-UN-TOKEN-REAL';
 const ROOT_FAKE = 'C:\\fake\\root';
 
-// #6563 — el plantel real es 100% OAuth (anthropic, openai-codex, gemini-google):
+// #6563 — el plantel real es 100% OAuth (anthropic, openai-codex, antigravity):
 // tras retirar cerebras / nvidia-nim / kimi-moonshot no queda en
 // `agent-models.json` ningún provider api_key que consuma credencial del env del
 // hijo. Para seguir ejercitando la rama del snapshot por intento (#5799) se
@@ -592,7 +592,7 @@ for (const aislamiento of [false, true]) {
 // --- H-1: ejecutor de fallback no-Anthropic ------------------------------------
 
 for (const aislamiento of [false, true]) {
-    for (const provider of ['gemini-google', 'openai-codex']) {
+    for (const provider of ['antigravity', 'openai-codex']) {
         test(`H-1 el env del fallback ${provider} no contiene el material de firma (aislamiento=${aislamiento})`, async () => {
             const env = await evaluarBuildEnvFor({ aislamiento, provider });
             assert.deepStrictEqual(
@@ -657,8 +657,8 @@ test('el filtro preserva CHAT_ID, PIPELINE_ISSUE y CLAUDE_PROJECT_DIR en los 3 s
         'H-3 summarize': evaluarSummarizeEnv(),
         'H-2 commander legacy': await evaluarCleanEnv({ aislamiento: false, provider: 'anthropic' }),
         'H-2 commander aislado': await evaluarCleanEnv({ aislamiento: true, provider: 'anthropic' }),
-        'H-1 fallback legacy': await evaluarBuildEnvFor({ aislamiento: false, provider: 'gemini-google' }),
-        'H-1 fallback aislado': await evaluarBuildEnvFor({ aislamiento: true, provider: 'gemini-google' }),
+        'H-1 fallback legacy': await evaluarBuildEnvFor({ aislamiento: false, provider: 'antigravity' }),
+        'H-1 fallback aislado': await evaluarBuildEnvFor({ aislamiento: true, provider: 'antigravity' }),
     };
     for (const [sitio, env] of Object.entries(envs)) {
         assert.strictEqual(env.TELEGRAM_CHAT_ID, '-1009999999', `${sitio}: perdió TELEGRAM_CHAT_ID`);
@@ -711,6 +711,7 @@ const MODULOS_LIB = [
         sitios: [
             { clase: 'filtrado', motivo: 'H-4 — spawn del fiscal en anthropic (transport=spawn)' },
             { clase: 'filtrado', motivo: 'H-5 — spawn del fiscal en openai-codex (CLI de terceros)' },
+            { clase: 'filtrado', motivo: '#6861 — spawn del fiscal en antigravity (CLI de terceros agy; reemplaza al shim HTTP retirado)' },
         ],
     },
     {
@@ -819,6 +820,19 @@ test('H-5 el spawn de Sherlock en openai-codex no le pasa el material de firma a
     assert.strictEqual(env.CODEX_MODEL, 'gpt-5.4-mini', 'CODEX_MODEL debe preservarse tras el filtro.');
     assert.strictEqual(env.CLAUDE_PROJECT_DIR, ROOT_FAKE, 'CLAUDE_PROJECT_DIR debe preservarse tras el filtro.');
     assert.strictEqual(env.TELEGRAM_CHAT_ID, '-1009999999', 'TELEGRAM_CHAT_ID debe preservarse.');
+});
+
+test('#6861 el spawn de Sherlock en antigravity no le pasa el material de firma al CLI de terceros (agy)', () => {
+    const env = capturarEnvDeSpawn(sherlockVerifier._spawnAntigravityComplete, { prompt: 'x', model: 'gemini-3.8-flash-medium' });
+    assert.ok(env, 'No se capturó el env del spawn: el handler no llegó a spawnear.');
+    assert.deepStrictEqual(
+        detectarFugas(env), [],
+        'El fiscal Sherlock (antigravity) recibe material reservado en su env.',
+    );
+    assert.strictEqual(env.ANTIGRAVITY_MODEL, 'gemini-3.8-flash-medium', 'ANTIGRAVITY_MODEL debe preservarse tras el filtro.');
+    assert.strictEqual(env.CLAUDE_PROJECT_DIR, ROOT_FAKE, 'CLAUDE_PROJECT_DIR debe preservarse tras el filtro.');
+    assert.strictEqual(env.GEMINI_API_KEY, undefined, 'SEC-3: ninguna key de Google llega al child.');
+    assert.strictEqual(env.GOOGLE_API_KEY, undefined, 'SEC-3: ninguna key de Google llega al child.');
 });
 
 test('el detector de canario atrapa el alias renombrado (auto-test del método)', () => {

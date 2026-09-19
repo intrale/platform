@@ -43,7 +43,7 @@ test('CA-12 · la línea de sesión sale sólo en anthropic, con clase propia', 
     assert.doesNotMatch(conDatos.clase, /prov-vigencia/, 'no reusa la clase del cruce de catálogo');
 
     // El resto de los proveedores no tiene sesión OAuth que mostrar.
-    for (const otro of ['openai', 'gemini-google']) {
+    for (const otro of ['openai', 'antigravity']) {
         assert.equal(lineaSesion(filaDe(otro)), null, `${otro} no debe mostrar línea de sesión`);
     }
 });

@@ -2490,37 +2490,37 @@
         },
         {
             "file": "lib/__tests__/secrets-health.test.js",
-            "line": 756,
+            "line": 758,
             "kind": "deuda",
             "reason": "escritura de PIPELINE_DIR_OVERRIDE fuera del helper"
         },
         {
             "file": "lib/__tests__/secrets-health.test.js",
-            "line": 764,
+            "line": 766,
             "kind": "deuda",
             "reason": "escritura de PIPELINE_DIR_OVERRIDE fuera del helper"
         },
         {
             "file": "lib/__tests__/secrets-health.test.js",
-            "line": 765,
+            "line": 767,
             "kind": "deuda",
             "reason": "escritura de PIPELINE_DIR_OVERRIDE fuera del helper"
         },
         {
             "file": "lib/__tests__/secrets-health.test.js",
-            "line": 774,
+            "line": 776,
             "kind": "deuda",
             "reason": "escritura de PIPELINE_DIR_OVERRIDE fuera del helper"
         },
         {
             "file": "lib/__tests__/secrets-health.test.js",
-            "line": 798,
+            "line": 800,
             "kind": "deuda",
             "reason": "escritura de PIPELINE_DIR_OVERRIDE fuera del helper"
         },
         {
             "file": "lib/__tests__/secrets-health.test.js",
-            "line": 799,
+            "line": 801,
             "kind": "deuda",
             "reason": "escritura de PIPELINE_DIR_OVERRIDE fuera del helper"
         },

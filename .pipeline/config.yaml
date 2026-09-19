@@ -697,7 +697,7 @@ quota_detector:
   ttl_by_provider:
     anthropic: 7          # ciclo semanal Plan Max
     openai-codex: 1       # cap rolling del plan (usage_limit_reached ~horas); techo 1d
-    gemini-google: 1      # free tier — recuperación rápida
+    antigravity: 1        # licencia Antigravity (cuota semanal del plan) — recuperación rápida
   # Si `false`, el detector funciona pero no escribe `.pipeline/logs/quota-detector-*.log`.
   # Útil para apagar audit en caso de problema de espacio en disco — no debería
   # ser necesario nunca con la rotación normal.
@@ -723,7 +723,7 @@ quota_detector:
 #     del incidente).
 #   - openai-codex: sin ventana de sesión (session siempre "sin dato"); weekly
 #     según presupuesto mensual cuando hay dato fresco.
-#   - gemini-google y free-tier: buckets "missing" → no se alertan (sin ruido).
+#   - antigravity (licencia, cuota medida vía `agy /usage`): buckets "missing" → no se alertan (sin ruido).
 #
 # Validación fail-safe (REQ-SEC-2): cada par debe cumplir `0 < warn < crit <= 100`
 # numérico; ante valor inválido se cae a `defaults` y se loggea, sin romper el
@@ -738,8 +738,8 @@ multi_provider:
   # Cron de health por provider (#4402 CA-3).
   health:
     # Cadencia del cron de health. Default 5 min.
-    # Clamp [1,240] min con piso duro ≥60s (RS-5.5) anti-DoS free tier
-    # (Gemini RPM 15). Jitter ±60s se conserva en código.
+    # Clamp [1,240] min con piso duro ≥60s (RS-5.5) anti-DoS del round-trip
+    # `agy models` de antigravity. Jitter ±60s se conserva en código.
     # Un typo/valor inválido cae al default 5 min sin romper el arranque.
     interval_minutes: 5
   # ---------------------------------------------------------------------------
@@ -796,7 +796,7 @@ multi_provider:
     openai-codex:
       warn: 80
       crit: 95
-    gemini-google:
+    antigravity:
       warn: 80
       crit: 95
     # Switch preventivo: degrada primary→fallback de forma controlada al cruzar
@@ -1304,7 +1304,7 @@ pipeline:
   #
   # Hasta este issue el modelo declarado en `agent-models.json` se resolvía y se
   # logueaba, pero NUNCA llegaba al hijo: Anthropic nunca recibía `--model`, y
-  # CODEX_MODEL / GEMINI_MODEL nunca se seteaban para agentes. Todos los
+  # CODEX_MODEL / ANTIGRAVITY_MODEL nunca se seteaban para agentes. Todos los
   # proveedores corrían con el default de su CLI.
   #
   # APAGADO POR DEFAULT. Con `enabled: false` (o sin esta sección) el objeto que
@@ -1386,7 +1386,7 @@ inflight_fallback:
 # Sherlock corre como capa interna del Commander de Telegram: antes de mandar
 # cada respuesta, refuta el análisis con evidencia del estado actual del
 # sistema. Usa la chain `telegram-sherlock` de `agent-models.json` con el orden
-# de calidad aprobado (Anthropic Haiku 4.5 → Codex → Gemini; los proveedores
+# de calidad aprobado (Anthropic Haiku 4.5 → Codex → Antigravity; los proveedores
 # gratuitos de cola se retiraron en #6563). Si detecta inconsistencias,
 # reelabora la respuesta (1 vez, cap hardcoded). Si timeout/error/sin-provider,
 # agrega disclaimer F-6 y manda la original.

@@ -45,12 +45,11 @@
 //   429 + body matches Q   → { billing, quota_exhausted, isQuotaError: true }
 //   429 (sin match)        → { rate_limit, rate_limited, isQuotaError: true }
 //   5xx                    → { transient, server_error, isQuotaError: false }
-//   400 + body matches K   → { auth, invalid_credentials, isQuotaError: false }
-//                            (caso Gemini: 400 con "API key not valid")
 //   otros / null / NaN     → { unknown, unclassified, isQuotaError: false }
 //
 //   Q = regex ReDoS-safe que matchea marcadores de cuota agotada.
-//   K = regex que matchea API key inválida en 400 (caso Gemini AI Studio).
+//   (#6861: el caso especial "400 + API key not valid" de Google AI Studio se
+//   retiró junto con el shim HTTP; un 400 cae a `unknown`.)
 //
 // CONTRATO DEL OUTPUT
 // -------------------
@@ -117,16 +116,16 @@ const CLASSIFIER_VERSION = '1.0';
 //   - "quota" y derivados (insufficient_quota, monthly_limit, day_limit)
 //   - Anthropic: usage_limit_error, weekly_quota
 //   - OpenAI/Codex: insufficient_quota, billing_hard_limit
-//   - Gemini: resource_exhausted, quota_exceeded
+//   - Antigravity (agy): resource_exhausted, quota_exceeded
 //   - monthly_limit / day_limit: heredados de los free retirados en #6563;
 //     se conservan como defensa cross-provider.
 // PROHIBIDO ampliar este regex con cuantificadores no-acotados o `.*` libre.
 const QUOTA_BODY_PATTERN = /\b(?:quota|insufficient_quota|monthly_limit|day_limit|tokens_per_day|usage_limit|usage_limit_error|weekly_quota|weekly_quota_exhausted|billing_hard_limit_reached|resource_exhausted|quota_exceeded)\b/i;
 
-// Caso Gemini: 400 con body que indica API key inválida (no es validación de
-// schema del request — es auth). Mantenemos el match acotado al texto literal
-// que Google AI Studio devuelve en `error.message`.
-const GEMINI_API_KEY_INVALID_PATTERN = /\b(?:API\s+key\s+not\s+valid|API_KEY_INVALID)\b/i;
+// (#6861) El patrón de "API key not valid" (400 de Google AI Studio
+// con "API key not valid") se retiró junto con el shim HTTP: ningún provider
+// vigente responde 400 como auth. Un 400 vuelve a clasificarse como request
+// inválido, no como credencial.
 
 // -----------------------------------------------------------------------------
 // truncateBody — SR-1 (anti-ReDoS / anti-DoS).
@@ -284,13 +283,6 @@ function classifyHttpError(statusCode, responseBody, provider) {
         return buildResult('rate_limit', 'rate_limited', true, status, detail);
     }
 
-    // 400 con marcador Gemini API_KEY_INVALID → auth, no schema/validación.
-    // Esto preserva la semántica especial de Google AI Studio (devuelve 400
-    // cuando la key tiene formato inválido).
-    if (status === 400 && body && GEMINI_API_KEY_INVALID_PATTERN.test(body)) {
-        return buildResult('auth', 'invalid_credentials', false, status, detail);
-    }
-
     // 5xx: transitorio. El pipeline reintenta sin marcar al provider como
     // exhausted (SR-4: no enmascarar 5xx como cuota).
     if (status >= 500 && status <= 599) {
@@ -316,7 +308,6 @@ module.exports = {
     // Patrones exportados como read-only para inspección/tests (no
     // freezeamos porque RegExp es inmutable en uso normal).
     QUOTA_BODY_PATTERN,
-    GEMINI_API_KEY_INVALID_PATTERN,
     // Helpers internos expuestos para tests con prefijo _.
     _truncateBody: truncateBody,
     _buildDetail: buildDetail,

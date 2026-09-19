@@ -12,7 +12,7 @@
 #   ./manage-providers.sh list
 #   ./manage-providers.sh clear-all
 #
-# Providers válidos: anthropic, openai-codex, gemini-google
+# Providers válidos: anthropic, openai-codex, antigravity
 #
 # TTL: acepta sufijos s|m|h|d (ej. 20m, 2h, 90s). Default 20m. `--ttl never`
 #      = apagado permanente (hasta `enable` o `clear-all`).
@@ -20,7 +20,7 @@
 # Ejemplos:
 #   ./manage-providers.sh disable anthropic              # apaga 20min
 #   ./manage-providers.sh disable anthropic --ttl 2h     # apaga 2 horas
-#   ./manage-providers.sh disable gemini-google --ttl never  # apaga permanente
+#   ./manage-providers.sh disable antigravity --ttl never  # apaga permanente
 #   ./manage-providers.sh enable anthropic               # re-habilita
 #   ./manage-providers.sh list                           # estado + TTL restante
 #   ./manage-providers.sh clear-all                      # re-habilita todo

@@ -40,7 +40,7 @@ function agentModels() {
         providers: {
             anthropic: { launcher: 'claude', model: 'claude-opus-4-7' },
             'openai-codex': { launcher: 'codex', model: 'gpt-5.5' },
-            'gemini-google': { launcher: 'gemini', model: 'gemini-3.8-flash-medium' },
+            'antigravity': { launcher: 'gemini', model: 'gemini-3.8-flash-medium' },
             cerebras: { launcher: 'cerebras', model: 'gpt-oss-120b' },
         },
         skills: {
@@ -50,7 +50,7 @@ function agentModels() {
                 model_override: 'claude-sonnet-4-6',
                 fallbacks: [
                     { provider: 'openai-codex', model_override: 'gpt-5.4' },
-                    { provider: 'gemini-google', model_override: 'gemini-3.8-flash-medium' },
+                    { provider: 'antigravity', model_override: 'gemini-3.8-flash-medium' },
                 ],
             },
             // Caso alias legacy: usa `model` en vez de `model_override`.
@@ -133,7 +133,7 @@ test('model_override tiene precedencia sobre el alias model', () => {
 test('el fallback aporta su propio model_override, no el del primario', () => {
     const m = agentModels();
     assert.equal(resolveModelForSkillProvider(m, 'qa', 'openai-codex'), 'gpt-5.4');
-    assert.equal(resolveModelForSkillProvider(m, 'qa', 'gemini-google'), 'gemini-3.8-flash-medium');
+    assert.equal(resolveModelForSkillProvider(m, 'qa', 'antigravity'), 'gemini-3.8-flash-medium');
     // El override del primario NO debe filtrarse al fallback (bug advertido en #3221).
     assert.notEqual(resolveModelForSkillProvider(m, 'qa', 'openai-codex'), 'claude-sonnet-4-6');
 });
@@ -148,7 +148,7 @@ test('models_by_provider mapea toda la cadena declarada del skill', () => {
     assert.deepEqual(resolveModelsByProvider(m, 'qa'), {
         'anthropic': 'claude-sonnet-4-6',
         'openai-codex': 'gpt-5.4',
-        'gemini-google': 'gemini-3.8-flash-medium',
+        'antigravity': 'gemini-3.8-flash-medium',
     });
 });
 

@@ -38,7 +38,7 @@ function mkTmpPipelineDir() {
         providers: {
             anthropic: { launcher: 'claude', model: 'claude-opus-4-7', credentials_env: ['ANTHROPIC_API_KEY'] },
             'openai-codex': { launcher: 'codex', model: 'gpt-5-codex', credentials_env: ['OPENAI_API_KEY'] },
-            'gemini-google': { launcher: 'gemini', model: 'gemini-3.1-pro-low', credentials_env: ['GEMINI_API_KEY'] },
+            'antigravity': { launcher: 'gemini', model: 'gemini-3.1-pro-low', credentials_env: ['GEMINI_API_KEY'] },
             cerebras: { launcher: 'cerebras', model: 'gpt-oss-120b', credentials_env: ['CEREBRAS_API_KEY'] },
             'nvidia-nim': { launcher: 'nvidia', model: 'deepseek-v4', credentials_env: ['NVIDIA_API_KEY'] },
         },
@@ -47,7 +47,7 @@ function mkTmpPipelineDir() {
                 provider: 'anthropic',
                 fallbacks: [
                     { provider: 'openai-codex' },
-                    { provider: 'gemini-google' },
+                    { provider: 'antigravity' },
                     { provider: 'cerebras' },
                     { provider: 'nvidia-nim' },
                 ],
@@ -96,7 +96,7 @@ test('#4353 CA-1/CA-2 — primario+codex+gemini+cerebras gated, NVIDIA sano → 
             skill: 'telegram-commander',
             issue: 4353,
             pipelineDir: dir,
-            quotaModule: quotaGating(['anthropic', 'openai-codex', 'gemini-google', 'cerebras']),
+            quotaModule: quotaGating(['anthropic', 'openai-codex', 'antigravity', 'cerebras']),
             primaryResolver,
             providerHandlerResolver,
             notify: silentNotify,
@@ -107,7 +107,7 @@ test('#4353 CA-1/CA-2 — primario+codex+gemini+cerebras gated, NVIDIA sano → 
         assert.equal(r.provider, 'nvidia-nim', 'debe recorrer toda la cadena hasta el eslabón sano');
         // La cadena evaluada debe incluir TODOS los eslabones intentados, no
         // frenarse en el segundo (openai-codex).
-        assert.deepEqual(r.chainTried, ['anthropic', 'openai-codex', 'gemini-google', 'cerebras', 'nvidia-nim']);
+        assert.deepEqual(r.chainTried, ['anthropic', 'openai-codex', 'antigravity', 'cerebras', 'nvidia-nim']);
     } finally { cleanup(dir); }
 });
 
@@ -144,7 +144,7 @@ test('#4353 CA-1 — toda la cadena gated → gated:true con chainTried completo
             skill: 'telegram-commander',
             issue: 4353,
             pipelineDir: dir,
-            quotaModule: quotaGating(['anthropic', 'openai-codex', 'gemini-google', 'cerebras', 'nvidia-nim']),
+            quotaModule: quotaGating(['anthropic', 'openai-codex', 'antigravity', 'cerebras', 'nvidia-nim']),
             primaryResolver,
             providerHandlerResolver,
             notify: silentNotify,
@@ -152,7 +152,7 @@ test('#4353 CA-1 — toda la cadena gated → gated:true con chainTried completo
         });
         assert.equal(r.gated, true, 'con TODA la cadena gated, sí es indisponibilidad total');
         // La traza debe reflejar que se evaluó la cadena entera antes de rendirse.
-        assert.deepEqual(r.chainTried, ['anthropic', 'openai-codex', 'gemini-google', 'cerebras', 'nvidia-nim']);
+        assert.deepEqual(r.chainTried, ['anthropic', 'openai-codex', 'antigravity', 'cerebras', 'nvidia-nim']);
     } finally { cleanup(dir); }
 });
 
@@ -175,6 +175,6 @@ test('#4353 CA-3 — flag scoped a Codex NO gatea al resto → se elige Gemini',
             processEnv: fullCredsEnv,
         });
         assert.equal(r.gated, false);
-        assert.equal(r.provider, 'gemini-google', 'el gate de codex no debe arrastrar al resto de la cadena');
+        assert.equal(r.provider, 'antigravity', 'el gate de codex no debe arrastrar al resto de la cadena');
     } finally { cleanup(dir); }
 });

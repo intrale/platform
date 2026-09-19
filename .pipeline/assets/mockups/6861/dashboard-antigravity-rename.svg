@@ -1,0 +1,288 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="1240" height="1120" viewBox="0 0 1240 1120" font-family="Segoe UI Variable, Segoe UI, -apple-system, BlinkMacSystemFont, Roboto, Helvetica, Arial, sans-serif">
+  <!--
+    Mockup UX · #6861 — El provider `gemini-google` pasa a llamarse `antigravity` en el dashboard.
+    Alcance visual (Bloque E de la receta del arquitecto): /providers, /costos, chips y banners de cuota en home,
+    Multi-Provider Health. Este mockup fija CÓMO se ve el nombre nuevo en cada superficie; el dev sólo renombra.
+    Tokens: .pipeline/assets/design-tokens.css (surface-*, text-*, success, danger, info, provider-antigravity — ex provider-gemini,
+    MISMOS valores: el operador ya asocia este azul al proveedor; el rename dice "es lo mismo con su nombre real").
+    Iconografía: ic-provider-antigravity (nuevo, reemplaza a ic-provider-gemini), ic-key, ic-ok, ic-bad, ic-info del sprite propio.
+    Reglas: (R1) "Gemini" no aparece como NOMBRE de provider en ninguna vista; los ids de modelo `gemini-3.x-*` SÍ (son el catálogo
+    real de `agy models`, D5). (R2) En /providers el tier no se afirma (R2 de #6564 se mantiene): sólo el badge MEDIDO de plan.
+    (R3) "LICENCIA" aparece sólo en /costos, con clase propia `cz-ptier-lic` (azul del provider), no el rojo de PAGO ni el verde de FREE.
+  -->
+  <defs>
+    <symbol id="ic-provider-antigravity" viewBox="0 0 24 24">
+      <line x1="4.5" y1="20.25" x2="19.5" y2="20.25" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/>
+      <path d="M8.25 16.5 L12 12.75 L15.75 16.5" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/>
+      <circle cx="12" cy="7" r="3.25" fill="none" stroke="currentColor" stroke-width="1.75"/>
+      <circle cx="12" cy="7" r="1.2" fill="currentColor"/>
+    </symbol>
+    <symbol id="ic-provider-gemini-old" viewBox="0 0 24 24">
+      <path d="M9 4 L14 9 L9 14 L4 9 Z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
+      <path d="M15 10 L20 15 L15 20 L10 15 Z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
+      <circle cx="9" cy="9" r="1.2" fill="currentColor"/><circle cx="15" cy="15" r="1.2" fill="currentColor"/>
+    </symbol>
+    <symbol id="ic-provider-nvidia-nim" viewBox="0 0 24 24">
+      <circle cx="12" cy="12" r="3.5" fill="none" stroke="currentColor" stroke-width="1.75"/><circle cx="12" cy="12" r="1.4" fill="currentColor"/>
+      <circle cx="12" cy="4" r="1.5" fill="currentColor"/><circle cx="5" cy="17" r="1.5" fill="currentColor"/><circle cx="19" cy="17" r="1.5" fill="currentColor"/>
+      <line x1="12" y1="5.5" x2="12" y2="8.5" stroke="currentColor" stroke-width="1.3"/><line x1="6.3" y1="16" x2="9.3" y2="14" stroke="currentColor" stroke-width="1.3"/><line x1="17.7" y1="16" x2="14.7" y2="14" stroke="currentColor" stroke-width="1.3"/>
+    </symbol>
+    <symbol id="ic-provider-groq" viewBox="0 0 24 24">
+      <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.6"/>
+      <path d="M13.5 5 L7.5 13 L11 13 L10 19 L16 11 L12.5 11 Z" fill="currentColor" stroke="none"/>
+    </symbol>
+    <symbol id="ic-key" viewBox="0 0 24 24"><circle cx="8" cy="13" r="4.5" fill="none" stroke="currentColor" stroke-width="1.75"/><path d="M12.5 13 L21 13 M18 13 V16 M21 13 V16" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/><circle cx="8" cy="13" r="1.4" fill="currentColor"/></symbol>
+    <symbol id="ic-ok" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.75"/><path d="M7.75 12.25 L10.75 15.25 L16.25 8.75" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="ic-bad" viewBox="0 0 24 24"><path d="M8.4 3.5 H15.6 L20.5 8.4 V15.6 L15.6 20.5 H8.4 L3.5 15.6 V8.4 Z" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linejoin="round"/><path d="M12 7.5 V13" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/><circle cx="12" cy="16.5" r="1.1" fill="currentColor"/></symbol>
+    <symbol id="ic-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.75"/><circle cx="12" cy="7.75" r="1.15" fill="currentColor"/><path d="M12 11 V16.5" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></symbol>
+  </defs>
+
+  <rect width="1240" height="1120" fill="#0D1117"/>
+
+  <text x="40" y="44" font-size="20" font-weight="700" fill="#E6EDF3">Dashboard · el provider pasa de «Gemini» a «Antigravity» (#6861 — rename, mismo proveedor)</text>
+  <text x="40" y="66" font-size="12.5" fill="#8B949E">Lo que corre es Antigravity CLI (`agy`), licencia paga + OAuth de cuenta Google. El dashboard deja de decir «Gemini» como provider en /providers, /costos, chips y banners.</text>
+  <text x="40" y="82" font-size="12.5" fill="#8B949E">El color se conserva: es el mismo proveedor con su nombre real.</text>
+
+  <!-- ============ BLOQUE A · ICONO + TOKENS ============ -->
+  <g transform="translate(40,92)">
+    <rect width="1160" height="196" rx="10" fill="#161B22" stroke="#30363D"/>
+    <text x="20" y="24" font-size="10" font-weight="700" fill="#6E7681" letter-spacing="0.6">A · ICONOGRAFÍA Y TOKENS — ic-provider-antigravity (nuevo) reemplaza a ic-provider-gemini · familia --provider-antigravity-* (ex --provider-gemini-*)</text>
+
+    <!-- retirado -->
+    <g transform="translate(20,44)">
+      <text x="0" y="12" font-size="10.5" font-weight="700" fill="#F85149" letter-spacing="0.4">RETIRADO</text>
+      <svg x="0" y="22" width="48" height="48" color="#6E7681"><use href="#ic-provider-gemini-old"/></svg>
+      <line x1="2" y1="72" x2="46" y2="24" stroke="#F85149" stroke-width="2" stroke-linecap="round" opacity="0.85"/>
+      <text x="0" y="92" font-size="10.5" fill="#8B949E" font-family="Consolas, Menlo, monospace">ic-provider-gemini</text>
+      <text x="0" y="108" font-size="10" fill="#6E7681">«gemelos»: nombraba lo que no era</text>
+    </g>
+
+    <!-- nuevo en 3 tamaños -->
+    <g transform="translate(290,44)">
+      <text x="0" y="12" font-size="10.5" font-weight="700" fill="#3FB950" letter-spacing="0.4">NUEVO · legible a 16 / 24 / 48 px</text>
+      <svg x="0" y="38" width="16" height="16" color="#8AB4F8"><use href="#ic-provider-antigravity"/></svg>
+      <svg x="30" y="34" width="24" height="24" color="#8AB4F8"><use href="#ic-provider-antigravity"/></svg>
+      <svg x="70" y="22" width="48" height="48" color="#8AB4F8"><use href="#ic-provider-antigravity"/></svg>
+      <text x="0" y="92" font-size="10.5" fill="#8B949E" font-family="Consolas, Menlo, monospace">ic-provider-antigravity</text>
+      <text x="0" y="108" font-size="10" fill="#6E7681">objeto que levita: suelo + empuje + esfera</text>
+    </g>
+
+    <!-- diferenciación con vecinos -->
+    <g transform="translate(560,44)">
+      <text x="0" y="12" font-size="10.5" font-weight="700" fill="#B1BAC4" letter-spacing="0.4">SE DISTINGUE DE SUS VECINOS EN LA FILA</text>
+      <svg x="0" y="26" width="24" height="24" color="#8AB4F8"><use href="#ic-provider-antigravity"/></svg>
+      <svg x="40" y="26" width="24" height="24" color="#76B900"><use href="#ic-provider-nvidia-nim"/></svg>
+      <svg x="80" y="26" width="24" height="24" color="#FF6B47"><use href="#ic-provider-groq"/></svg>
+      <text x="0" y="70" font-size="10" fill="#6E7681">antigravity · nvidia-nim (nodo + satélites) · groq (rayo)</text>
+      <text x="0" y="86" font-size="10" fill="#6E7681">Ningún otro símbolo del sprite usa la línea de suelo.</text>
+    </g>
+
+    <!-- swatches -->
+    <g transform="translate(860,44)">
+      <text x="0" y="12" font-size="10.5" font-weight="700" fill="#B1BAC4" letter-spacing="0.4">TOKENS (mismo valor, nombre nuevo)</text>
+      <rect x="0" y="24" width="26" height="26" rx="6" fill="#8AB4F8"/><text x="34" y="42" font-size="10.5" fill="#E6EDF3" font-family="Consolas, Menlo, monospace">--provider-antigravity  #8AB4F8</text>
+      <rect x="0" y="56" width="26" height="26" rx="6" fill="#4285F4"/><text x="34" y="74" font-size="10.5" fill="#E6EDF3" font-family="Consolas, Menlo, monospace">-dim  #4285F4</text>
+      <rect x="0" y="88" width="26" height="26" rx="6" fill="rgba(138,180,248,0.14)" stroke="#8AB4F8"/><text x="34" y="106" font-size="10.5" fill="#CBD9F9" font-family="Consolas, Menlo, monospace">-bg + -fg  #CBD9F9 (12.8:1)</text>
+      <text x="0" y="132" font-size="10" fill="#6E7681">9.2:1 sobre surface-0 · AA Large + AAA Normal</text>
+    </g>
+  </g>
+
+  <!-- ============ BLOQUE B · /providers ============ -->
+  <g transform="translate(40,304)">
+    <text x="0" y="0" font-size="10" font-weight="700" fill="#6E7681" letter-spacing="0.6">B · /providers — fila del provider (eje plan MEDIDO de #6564 intacto; sólo cambia nombre, ícono y data-provider)</text>
+    <g font-size="10" font-weight="700" fill="#6E7681" letter-spacing="0.6">
+      <text x="20" y="24">PROVEEDOR · PLAN (medido)</text>
+      <text x="400" y="24">CREDENCIAL</text>
+      <text x="560" y="24">SALUD EN VIVO · CAUSA</text>
+      <text x="930" y="24">CATÁLOGO</text>
+      <text x="1110" y="24">ACTIVO</text>
+    </g>
+    <line x1="0" y1="32" x2="1160" y2="32" stroke="#21262D"/>
+
+    <g transform="translate(0,42)">
+      <rect width="1160" height="112" rx="10" fill="#161B22" stroke="#30363D"/>
+      <rect x="0" y="0" width="4" height="112" rx="2" fill="#8AB4F8"/>
+      <text x="20" y="20" font-size="9.5" fill="#6E7681" font-family="Consolas, Menlo, monospace">.prov-row[data-provider="antigravity"] · accent var(--provider-antigravity)</text>
+      <g transform="translate(20,36)">
+        <circle cx="8" cy="12" r="6" fill="#8AB4F8"/>
+        <svg x="22" y="0" width="24" height="24" color="#8AB4F8"><use href="#ic-provider-antigravity"/></svg>
+        <text x="54" y="18" font-size="15" font-weight="800" fill="#E6EDF3">Antigravity</text>
+        <g transform="translate(150,2)">
+          <rect width="214" height="22" rx="11" fill="rgba(63,185,80,0.14)" stroke="#3FB950"/>
+          <svg x="8" y="4" width="14" height="14" color="#3FB950"><use href="#ic-ok"/></svg>
+          <text x="28" y="15.5" font-size="9.5" font-weight="800" fill="#3FB950" letter-spacing="0.5">PLAN CON CUOTA · 99% SEMANAL</text>
+        </g>
+        <text x="0" y="46" font-size="11" fill="#8B949E">cuota del plan verificada · hace 3 min · Antigravity CLI (agy)</text>
+      </g>
+      <!-- credencial -->
+      <g transform="translate(400,44)">
+        <svg x="0" y="0" width="16" height="16" color="#B1BAC4"><use href="#ic-key"/></svg>
+        <text x="22" y="12.5" font-size="11.5" fill="#E6EDF3">Sesión CLI</text>
+        <text x="0" y="32" font-size="10" fill="#8B949E">sin API key · `agy models` → ok</text>
+      </g>
+      <!-- salud -->
+      <g transform="translate(560,44)">
+        <rect width="92" height="20" rx="10" fill="rgba(248,81,73,0.14)" stroke="#F85149"/>
+        <svg x="7" y="3" width="14" height="14" color="#F85149"><use href="#ic-bad"/></svg>
+        <text x="26" y="14" font-size="9.5" font-weight="800" fill="#F85149" letter-spacing="0.5">CAÍDO</text>
+        <text x="100" y="14" font-size="10.5" fill="#B1BAC4">cli_contract_mismatch · agy 1.2.6 &gt; pin 1.2.5</text>
+        <text x="0" y="38" font-size="10" fill="#6E7681">Puede seguir rojo por #7343 — no es defecto de este issue (CA-7).</text>
+      </g>
+      <!-- catálogo -->
+      <g transform="translate(930,44)">
+        <text x="0" y="12" font-size="11.5" fill="#E6EDF3">14 modelos</text>
+        <text x="0" y="30" font-size="10" fill="#8B949E" font-family="Consolas, Menlo, monospace">gemini-3.8-flash-…</text>
+        <text x="0" y="46" font-size="9.5" fill="#6E7681">ids de modelo reales: se quedan (D5)</text>
+      </g>
+      <!-- toggle -->
+      <g transform="translate(1110,48)">
+        <rect width="36" height="20" rx="10" fill="#3FB950"/><circle cx="26" cy="10" r="8" fill="#0D1117"/>
+      </g>
+    </g>
+
+    <!-- antes -->
+    <g transform="translate(0,164)">
+      <text x="20" y="12" font-size="10" fill="#6E7681">Antes:</text>
+      <g transform="translate(62,0)" opacity="0.7">
+        <svg x="0" y="0" width="16" height="16" color="#6E7681"><use href="#ic-provider-gemini-old"/></svg>
+        <text x="22" y="12" font-size="11" font-weight="700" fill="#8B949E" text-decoration="line-through">Gemini</text>
+        <text x="72" y="12" font-size="9.5" fill="#6E7681" font-family="Consolas, Menlo, monospace" text-decoration="line-through">data-provider="gemini-google"</text>
+        <text x="270" y="12" font-size="9.5" fill="#6E7681" font-family="Consolas, Menlo, monospace" text-decoration="line-through">var(--provider-gemini)</text>
+      </g>
+    </g>
+  </g>
+
+  <!-- ============ BLOQUE C · /costos ============ -->
+  <g transform="translate(40,506)">
+    <text x="0" y="0" font-size="10" font-weight="700" fill="#6E7681" letter-spacing="0.6">C · /costos — card de cuota, chip de tier y leyenda del gráfico apilado</text>
+
+    <!-- card -->
+    <g transform="translate(0,14)">
+      <rect width="372" height="150" rx="12" fill="#161B22" stroke="#30363D"/>
+      <text x="16" y="20" font-size="9.5" fill="#6E7681" font-family="Consolas, Menlo, monospace">.cz-pq.cz-pq-ag · PROVIDER_META['antigravity']</text>
+      <g transform="translate(16,34)">
+        <circle cx="6" cy="8" r="5" fill="#60A5FA"/>
+        <text x="18" y="12.5" font-size="13" font-weight="800" fill="#E6EDF3">Antigravity</text>
+        <g transform="translate(276,-2)">
+          <rect width="64" height="18" rx="7" fill="rgba(138,180,248,0.13)" stroke="rgba(138,180,248,0.32)"/>
+          <text x="32" y="12.5" font-size="8.5" font-weight="800" fill="#CBD9F9" letter-spacing="0.5" text-anchor="middle">LICENCIA</text>
+        </g>
+      </g>
+      <g transform="translate(16,66)">
+        <text x="0" y="0" font-size="10" font-weight="700" fill="#8B949E">📨 Requests/día</text><text x="340" y="0" font-size="10" font-weight="700" fill="#E6EDF3" text-anchor="end">12 req</text>
+        <rect x="0" y="6" width="340" height="5" rx="2.5" fill="#21262D"/><rect x="0" y="6" width="80" height="5" rx="2.5" fill="#60A5FA"/>
+        <text x="0" y="30" font-size="10" font-weight="700" fill="#8B949E">🔆 Semanal (plan)</text><text x="340" y="30" font-size="10" font-weight="700" fill="#E6EDF3" text-anchor="end">99%</text>
+        <rect x="0" y="36" width="340" height="5" rx="2.5" fill="#21262D"/><rect x="0" y="36" width="336" height="5" rx="2.5" fill="#8AB4F8"/>
+      </g>
+      <text x="16" y="136" font-size="9.5" fill="#6E7681">Licencia · cuota semanal medida en /providers · requests <tspan fill="#D29922">estimados</tspan> (activity-log)</text>
+    </g>
+
+    <!-- chips de tier: sistema completo -->
+    <g transform="translate(400,14)">
+      <rect width="380" height="150" rx="12" fill="#161B22" stroke="#30363D"/>
+      <text x="16" y="20" font-size="9.5" fill="#6E7681" font-family="Consolas, Menlo, monospace">.cz-ptier — familia completa tras el rename</text>
+      <g transform="translate(16,36)">
+        <rect width="70" height="18" rx="7" fill="rgba(167,139,250,.13)" stroke="rgba(167,139,250,.32)"/><text x="35" y="12.5" font-size="8.5" font-weight="800" fill="#c9bcff" text-anchor="middle" letter-spacing="0.5">PLAN MAX</text>
+        <rect x="80" width="48" height="18" rx="7" fill="rgba(248,113,113,.13)" stroke="rgba(248,113,113,.3)"/><text x="104" y="12.5" font-size="8.5" font-weight="800" fill="#fecaca" text-anchor="middle" letter-spacing="0.5">PAGO</text>
+        <rect x="138" width="64" height="18" rx="7" fill="rgba(138,180,248,.13)" stroke="rgba(138,180,248,.32)"/><text x="170" y="12.5" font-size="8.5" font-weight="800" fill="#CBD9F9" text-anchor="middle" letter-spacing="0.5">LICENCIA</text>
+        <rect x="212" width="44" height="18" rx="7" fill="rgba(52,211,153,.12)" stroke="rgba(52,211,153,.3)"/><text x="234" y="12.5" font-size="8.5" font-weight="800" fill="#7ee2bd" text-anchor="middle" letter-spacing="0.5">FREE</text>
+        <rect x="266" width="40" height="18" rx="7" fill="rgba(251,191,36,.12)" stroke="rgba(251,191,36,.3)"/><text x="286" y="12.5" font-size="8.5" font-weight="800" fill="#fde68a" text-anchor="middle" letter-spacing="0.5">DET</text>
+      </g>
+      <text x="16" y="80" font-size="10.5" fill="#B1BAC4">LICENCIA = clase nueva <tspan font-family="Consolas, Menlo, monospace" fill="#E6EDF3">cz-ptier-lic</tspan>, azul del provider.</text>
+      <text x="16" y="96" font-size="10" fill="#8B949E">No es PAGO (rojo = consume créditos por token) ni FREE (verde).</text>
+      <text x="16" y="112" font-size="10" fill="#8B949E">Es cuota fija de suscripción, como PLAN MAX, de otro proveedor.</text>
+      <text x="16" y="136" font-size="10" fill="#6E7681">Orden de filas por tier: pagos → licencia → free → deterministas.</text>
+    </g>
+
+    <!-- leyenda apilada -->
+    <g transform="translate(808,14)">
+      <rect width="352" height="150" rx="12" fill="#161B22" stroke="#30363D"/>
+      <text x="16" y="20" font-size="9.5" fill="#6E7681" font-family="Consolas, Menlo, monospace">leyenda del apilado · .cz-seg-ag (ex .cz-seg-gm)</text>
+      <g transform="translate(16,36)">
+        <rect width="320" height="14" rx="4" fill="#21262D"/>
+        <rect x="0" width="150" height="14" rx="4" fill="#34D9E0"/>
+        <rect x="150" width="70" height="14" fill="#A78BFA"/>
+        <rect x="220" width="60" height="14" fill="#60A5FA"/>
+        <rect x="280" width="40" height="14" rx="4" fill="#34D399"/>
+      </g>
+      <g transform="translate(16,64)" font-size="10.5" fill="#B1BAC4">
+        <circle cx="5" cy="8" r="4.5" fill="#34D9E0"/><text x="16" y="12">Claude</text>
+        <circle cx="75" cy="8" r="4.5" fill="#A78BFA"/><text x="86" y="12">Codex</text>
+        <circle cx="140" cy="8" r="4.5" fill="#60A5FA"/><text x="151" y="12" fill="#E6EDF3" font-weight="700">Antigravity</text>
+        <circle cx="240" cy="8" r="4.5" fill="#34D399"/><text x="251" y="12">Cerebras</text>
+      </g>
+      <text x="16" y="104" font-size="10" fill="#8B949E">Gradiente del segmento: el mismo de `.cz-seg-gm`</text>
+      <text x="16" y="120" font-size="10" fill="#8B949E">(#60A5FA → #3b73c4). Sólo cambia la clave: 'ag'.</text>
+      <text x="16" y="136" font-size="10" fill="#6E7681">Histórico `gemini-google` cae en el mismo bucket (D10).</text>
+    </g>
+
+    <!-- copy -->
+    <g transform="translate(0,178)">
+      <rect width="1160" height="58" rx="10" fill="#161B22" stroke="#30363D"/>
+      <text x="16" y="20" font-size="9.5" fill="#6E7681" font-family="Consolas, Menlo, monospace">.cz-quotanote — copy nuevo (reemplaza «Groq, Gemini y Cerebras corren en free tier…»)</text>
+      <text x="16" y="42" font-size="11" fill="#B1BAC4">Todos los proveedores tienen su techo. <tspan font-weight="700" fill="#E6EDF3">Claude</tspan> (Plan Max), <tspan font-weight="700" fill="#E6EDF3">Codex</tspan> (pago) y <tspan font-weight="700" fill="#E6EDF3">Antigravity</tspan> (licencia) tienen cuota de plan; <tspan font-weight="700" fill="#E6EDF3">Groq y Cerebras</tspan> corren en free tier con límites diarios. Donde el proveedor no expone API de cuota, el valor es <tspan font-weight="700" fill="#E6EDF3">estimado</tspan>.</text>
+    </g>
+  </g>
+
+  <!-- ============ BLOQUE D · home: chips y banner ============ -->
+  <g transform="translate(40,772)">
+    <text x="0" y="0" font-size="10" font-weight="700" fill="#6E7681" letter-spacing="0.6">D · home — chip de cuota, banner de cuota agotada, tarjeta de agente activo, Multi-Provider Health</text>
+
+    <!-- chip -->
+    <g transform="translate(0,14)">
+      <rect width="280" height="112" rx="12" fill="#161B22" stroke="#30363D"/>
+      <text x="16" y="20" font-size="9.5" fill="#6E7681" font-family="Consolas, Menlo, monospace">.quota-provider-chip[data-provider="antigravity"]</text>
+      <g transform="translate(16,36)">
+        <rect width="132" height="24" rx="12" fill="rgba(138,180,248,0.14)" stroke="#8AB4F8"/>
+        <svg x="8" y="5" width="14" height="14" color="#CBD9F9"><use href="#ic-provider-antigravity"/></svg>
+        <text x="28" y="16.5" font-size="11" font-weight="700" fill="#CBD9F9">Antigravity · 99%</text>
+      </g>
+      <text x="16" y="84" font-size="10" fill="#8B949E">fg #CBD9F9 sobre bg 14 % · borde --provider-antigravity</text>
+      <text x="16" y="100" font-size="10" fill="#6E7681">Tooltip: «Licencia: % semanal medido con `agy /usage`».</text>
+    </g>
+
+    <!-- banner -->
+    <g transform="translate(300,14)">
+      <rect width="480" height="112" rx="12" fill="#161B22" stroke="#30363D"/>
+      <text x="16" y="20" font-size="9.5" fill="#6E7681" font-family="Consolas, Menlo, monospace">.quota-exhausted-banner[data-provider="antigravity"]</text>
+      <g transform="translate(16,32)">
+        <rect width="448" height="64" rx="8" fill="#1C2128" stroke="#30363D"/>
+        <rect x="0" y="0" width="4" height="64" rx="2" fill="#8AB4F8"/>
+        <svg x="16" y="12" width="20" height="20" color="#8AB4F8"><use href="#ic-provider-antigravity"/></svg>
+        <text x="46" y="24" font-size="12" font-weight="700" fill="#E6EDF3">Antigravity sin cuota hasta las 23:14</text>
+        <text x="46" y="44" font-size="10.5" fill="#8B949E">La cadena sigue con el próximo proveedor. Ventana semanal del plan agotada.</text>
+      </g>
+    </g>
+
+    <!-- active card + MPH -->
+    <g transform="translate(800,14)">
+      <rect width="360" height="112" rx="12" fill="#161B22" stroke="#30363D"/>
+      <text x="16" y="20" font-size="9.5" fill="#6E7681" font-family="Consolas, Menlo, monospace">.active-card-prov[data-prov="antigravity"] · MPH fila</text>
+      <g transform="translate(16,32)">
+        <rect width="150" height="26" rx="6" fill="#1C2128" stroke="#30363D"/>
+        <rect x="0" y="0" width="3" height="26" rx="1.5" fill="#60A5FA"/>
+        <text x="12" y="17" font-size="10.5" fill="#E6EDF3" font-family="Consolas, Menlo, monospace">antigravity:gemini-3.8-flash</text>
+      </g>
+      <g transform="translate(16,68)">
+        <svg x="0" y="0" width="18" height="18" color="#8AB4F8"><use href="#ic-provider-antigravity"/></svg>
+        <text x="26" y="13.5" font-size="11.5" font-weight="700" fill="#E6EDF3">Antigravity</text>
+        <rect x="110" y="1" width="58" height="16" rx="8" fill="rgba(63,185,80,0.14)" stroke="#3FB950"/><text x="139" y="12.5" font-size="8.5" font-weight="800" fill="#3FB950" text-anchor="middle" letter-spacing="0.5">SANO</text>
+        <text x="180" y="13.5" font-size="10" fill="#8B949E">accent --provider-antigravity</text>
+      </g>
+    </g>
+  </g>
+
+  <!-- ============ REGLAS ============ -->
+  <g transform="translate(40,920)">
+    <rect width="1160" height="170" rx="10" fill="#161B22" stroke="#30363D"/>
+    <text x="20" y="24" font-size="10" font-weight="700" fill="#6E7681" letter-spacing="0.6">REGLAS VERIFICABLES EN APROBACIÓN (screenshot headless de /providers y /costos, CA-7)</text>
+    <g font-size="11" fill="#B1BAC4">
+      <text x="20" y="50"><tspan font-weight="700" fill="#E6EDF3">R1</tspan> · «Gemini» no aparece como <tspan font-weight="700">nombre de provider</tspan> en ninguna superficie (label, chip, tooltip, leyenda, copy). Los ids de modelo <tspan font-family="Consolas, Menlo, monospace" fill="#E6EDF3">gemini-3.x-*</tspan> del catálogo SÍ pueden verse: son el catálogo real de `agy models` (D5), no el provider.</text>
+      <text x="20" y="72"><tspan font-weight="700" fill="#E6EDF3">R2</tspan> · En /providers el tier NO se afirma: ni «PAGO» ni «GRATUITO» ni «LICENCIA» junto al nombre. Sólo el badge <tspan font-weight="700">medido</tspan> de plan de #6564 (PLAN CON CUOTA · N% / PLAN · SIN VERIFICAR / PLAN · NO VERIFICABLE).</text>
+      <text x="20" y="94"><tspan font-weight="700" fill="#E6EDF3">R3</tspan> · «LICENCIA» vive sólo en /costos (card de cuota + tabla por skill como «Licencia»), con clase propia <tspan font-family="Consolas, Menlo, monospace" fill="#E6EDF3">cz-ptier-lic</tspan> en azul del provider. Nunca el rojo de PAGO ni el verde de FREE.</text>
+      <text x="20" y="116"><tspan font-weight="700" fill="#E6EDF3">R4</tspan> · Color y gradientes se conservan (#8AB4F8 tokens · #60A5FA costos). Cambiar el color diría «es otro proveedor»; el mensaje del issue es «es el mismo con su nombre real».</text>
+      <text x="20" y="138"><tspan font-weight="700" fill="#E6EDF3">R5</tspan> · El ícono <tspan font-family="Consolas, Menlo, monospace" fill="#E6EDF3">ic-provider-antigravity</tspan> se usa en MPH, chips y banner; <tspan font-family="Consolas, Menlo, monospace">ic-provider-gemini</tspan> ya no existe en el sprite (referenciarlo renderiza vacío → señal de rename incompleto).</text>
+      <text x="20" y="160"><tspan font-weight="700" fill="#E6EDF3">R6</tspan> · Sin emojis del SO para el provider: el tierIcon 🟩 de la fila vieja no vuelve; la identidad es color + símbolo del sprite (regla R6 de #3086).</text>
+    </g>
+  </g>
+</svg>

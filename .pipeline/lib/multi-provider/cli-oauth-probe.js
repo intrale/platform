@@ -20,12 +20,12 @@
 // el token OAuth. Sólo verifica la presencia del binario y devuelve un status
 // derivado (`cli_oauth_ok` / `cli_unavailable` / `cli_binary_undeclared`).
 //
-// #6857 — Providers con `catalog_probe` en el spec (hoy sólo `gemini-google`
+// #6857 — Providers con `catalog_probe` en el spec (hoy sólo `antigravity`
 // → `'agy'`) tienen ADEMÁS un round-trip real al CLI (`agy models`) que
 // distingue "instalado sin licencia" de "instalado y con licencia". Ese camino
 // es async y vive en `probeCliProviderLive`; `probeCliProvider` (sync) sigue
 // existiendo para la presencia del binario y la back-compat de tests. El flag
-// `AGY_LICENSE_READY` (`readiness_env`) se ELIMINÓ: un flag de entorno local no
+// de readiness por entorno (`readiness_env`) se ELIMINÓ en #6857: un flag de entorno local no
 // puede saber si la licencia está activa (#6225).
 // =============================================================================
 'use strict';
@@ -103,7 +103,7 @@ const CATALOG_PROBES = Object.freeze({
  * `probeCliProvider` más `cli_probe` con la evidencia del round-trip.
  *
  * Cuatro estados: versión fuera de contrato → cli_contract_mismatch (rojo durable).
- * Estados restantes para `gemini-google`:
+ * Estados restantes para `antigravity`:
  *   - binario ausente                → `{ ok:false, reason:'cli_unavailable' }`
  *   - instalado, catálogo vacío/err  → `{ ok:false, reason:'cli_license_unavailable' }`
  *   - instalado, catálogo poblado    → `{ ok:true,  reason:'cli_catalog_ok' }`

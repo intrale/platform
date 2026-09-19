@@ -29,11 +29,11 @@ const PROVIDER_HANDLERS = {
     'openai-codex': require('./providers/openai-codex'),
     // #3220 — providers sign-off 2026-05-15. Handlers stub: tiran error
     // accionable si se les pide spawn antes de #3198 (runtime real).
-    'gemini-google': require('./providers/gemini-google'),
+    'antigravity': require('./providers/antigravity'),
     'deterministic': require('./providers/deterministic'),
     // Los proveedores gratuitos (cerebras, nvidia-nim, kimi-moonshot; groq ya
     // había salido en #3353) fueron retirados en #6563: sus handlers se
-    // borraron del mapa y del filesystem. Gemini se conserva hasta #6564.
+    // borraron del mapa y del filesystem. `antigravity` (#6861, ex "Gemini (Google)") es el tercer eslabón vigente.
 };
 
 const VALID_PROVIDERS = Object.freeze(Object.keys(PROVIDER_HANDLERS));
@@ -325,7 +325,7 @@ function resolvePermissionMode(models, providerName) {
         // `bypassPermissions` consistente con cómo el pulpo trata a Claude;
         // si #3198 detecta que un wrapper de provider concreto necesita
         // otro modo, lo declara via providers.<x>.permissions_mode.
-        'gemini-google': 'bypassPermissions',
+        'antigravity': 'bypassPermissions',
         deterministic: 'native',
     };
     if (!models || !models.providers || !models.providers[providerName]) {

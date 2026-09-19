@@ -52,7 +52,7 @@
         "launcher": {
           "type": "string",
           "description": "Alias del launcher. DEBE estar dentro de ALLOWED_LAUNCHERS (lib/agent-models-validate.js). El enum se inyecta programáticamente al cargar el schema; el literal abajo es informativo (post #3220 + #3243 + #3353; plantel reducido a tres proveedores LLM en #6563).",
-          "enum": ["claude", "codex", "gemini-google", "node"]
+          "enum": ["claude", "codex", "antigravity", "node"]
         },
         "model": {
           "type": "string",
@@ -68,7 +68,7 @@
         "output_parser": {
           "type": "string",
           "description": "Parser que normaliza el output del CLI al shape común. 'none' para providers determinísticos sin LLM. Enum inyectado programáticamente desde ALLOWED_OUTPUT_PARSERS.",
-          "enum": ["anthropic-stream-json", "openai-sse", "gemini-stream", "none"]
+          "enum": ["anthropic-stream-json", "openai-sse", "antigravity-stream-json", "none"]
         },
         "quota_error_types": {
           "type": "array",
@@ -146,7 +146,7 @@
         },
         "billing": {
           "type": "string",
-          "description": "#4870 — Clasificación de facturación del provider: 'paid' (Anthropic, OpenAI-Codex) o 'free' (Gemini; Cerebras y NVIDIA NIM retirados en #6563). Fuente única de verdad de '¿hay pago disponible?' para el modo reducido (isReducedMode en lib/commander/multi-provider.js). Opcional (retrocompat): la AUSENCIA de `billing` se trata FAIL-SAFE como 'free' en todo lookup del código — un provider sin marcar NUNCA se confunde con pago. Los providers determinísticos/canned (sin LLM tarifado) quedan sin `billing`. Enum cerrado para que no se pueda inyectar un tier arbitrario.",
+          "description": "#4870 — Clasificación de facturación del provider: 'paid' (Anthropic, OpenAI-Codex) o 'free' (antigravity conserva 'free' hasta el flip de #7338; Cerebras y NVIDIA NIM retirados en #6563). Fuente única de verdad de '¿hay pago disponible?' para el modo reducido (isReducedMode en lib/commander/multi-provider.js). Opcional (retrocompat): la AUSENCIA de `billing` se trata FAIL-SAFE como 'free' en todo lookup del código — un provider sin marcar NUNCA se confunde con pago. Los providers determinísticos/canned (sin LLM tarifado) quedan sin `billing`. Enum cerrado para que no se pueda inyectar un tier arbitrario.",
           "enum": ["paid", "free"]
         },
         "admission": {
@@ -208,7 +208,7 @@
         },
         "interactive_supported": {
           "type": "boolean",
-          "description": "Issue #3605: opt-in para habilitar chat operador↔agente vía stdin pipe. Si true, agent-launcher abre stdio[0]='pipe' (en vez de 'ignore' default), pulpo registra el child en lib/agent-ipc y el endpoint /api/agent-chat acepta mensajes para este skill. Default false preserva el invariante I3 del agent-launcher (regresión cero CA-4). Solo válido para providers que soportan input incremental por stdin (anthropic CLI sí; gemini-google HTTP no). El endpoint responde 412 Precondition Failed si el cliente intenta usar este flag con un provider que no lo soporta. NO documentar en agent-models.json sin coordinar con docs/pipeline/multi-provider.md."
+          "description": "Issue #3605: opt-in para habilitar chat operador↔agente vía stdin pipe. Si true, agent-launcher abre stdio[0]='pipe' (en vez de 'ignore' default), pulpo registra el child en lib/agent-ipc y el endpoint /api/agent-chat acepta mensajes para este skill. Default false preserva el invariante I3 del agent-launcher (regresión cero CA-4). Solo válido para providers que soportan input incremental por stdin (anthropic CLI sí; antigravity y codex no: su prompt viaja por stdin de una sola vez). El endpoint responde 412 Precondition Failed si el cliente intenta usar este flag con un provider que no lo soporta. NO documentar en agent-models.json sin coordinar con docs/pipeline/multi-provider.md."
         },
         "required_capabilities": {
           "type": "array",
@@ -230,7 +230,7 @@
               "type": "number",
               "minimum": 0,
               "maximum": 1,
-              "description": "Sesgo hacia el orden de calidad canónico (Claude > Codex > Gemini; Cerebras retirado en #6563). A mayor valor, más concentra el primario. Acotado [0,1]."
+              "description": "Sesgo hacia el orden de calidad canónico (Claude > Codex > Antigravity; Cerebras retirado en #6563). A mayor valor, más concentra el primario. Acotado [0,1]."
             },
             "min_primary_quota_pct": {
               "type": "integer",

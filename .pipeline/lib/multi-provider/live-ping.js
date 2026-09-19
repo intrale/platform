@@ -131,54 +131,43 @@ const PROVIDER_PING_ENDPOINTS = Object.freeze({
         // #5888 CA-13 — sin `catalogExtract` (ver bloque de exclusiones en el
         // spec de `anthropic`, arriba).
     },
-    // ─── Free providers — red de salvataje del pipeline (#3260 SR-2 / SR-7).
-    //
-    // Reglas para sumar uno:
-    //   - URL **literal hardcoded** (anti-SSRF). Prohibido leer de
-    //     `agent-models.json`, env vars o body de request.
-    //   - Endpoint de **listado de modelos** (no completion) — los pings del
-    //     cron de CA-1 corren cada 5 min (#4402 cambió el default de 15 a 5;
-    //     `health-cron.DEFAULT_INTERVAL_MINUTES = 5`, configurable por
-    //     `config.yaml`) y la validación semanal de keys (CA-2).
-    //     Un completion consume cuota, `/models` no.
-    //   - #5888 — si el endpoint es de listado, el spec suma `catalogExtract`:
-    //     recibe el JSON YA PARSEADO y devuelve `string[]` con los ids vivos.
-    //     Se usa SOLO dentro de este módulo (`crossCheckCatalog`) — el catálogo
-    //     del tercero nunca sale de acá (CA-11).
-    //   - Header de auth en `Authorization` / `x-api-key` / `x-goog-api-key`,
-    //     **nunca en query string** (defense-in-depth contra leaks en logs;
-    //     `key` ya está en `SENSITIVE_QUERY_KEYS` para protegerlo igualmente).
-    //   - El `interpret()` delega al clasificador HTTP universal (#3486). NO
-    //     duplicar regex de cuota acá — agregar marcadores al clasificador.
-    //
-    // Groq fue descontinuado (#3353, mayo 2026): la organización dueña de las
-    // keys fue bloqueada por Groq sin aviso ("organization_restricted") y la
-    // política de soporte era "desbloqueo único" — inaceptable para producción.
-    // nvidia-nim y cerebras (los otros dos free OpenAI-compat que se pingeaban
-    // acá) se retiraron en #6563. Si alguno se reintegra, copiar el bloque
-    // desde git history (último commit con groq: 7dba2169; con nvidia-nim y
-    // cerebras: el padre del merge de #6563).
-    'gemini-google': {
-        // Google AI Studio v1beta. La key viaja en el header `x-goog-api-key`,
-        // no en query (SR-2). Lo llamamos 'gemini-google' (no 'gemini' a
-        // secas) porque Vertex AI tiene OAuth distinto y se sumaría aparte.
-        // #5888 G-2/R-H — `?pageSize=1000` va en la URL **literal** de este
-        // módulo (el default de la API es 50 y truncaría el catálogo). Sigue
-        // siendo hardcodeada: nada derivado de config ni de env (cond. 8).
-        // `doRequest` manda `url.pathname + url.search`, así que la query viaja.
-        url: 'https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000',
-        method: 'GET',
-        body: () => null,
-        headers: (key) => ({ 'x-goog-api-key': key }),
-        interpret: (status, bodyExcerpt) =>
-            classifyForLivePing('gemini-google', status, bodyExcerpt),
-        // #5888 CA-2/G-1 — Gemini devuelve `models[].name` con prefijo
-        // `models/`. Sin normalizarlo, TODO modelo vivo se reportaría ausente.
-        catalogExtract: (json) => (Array.isArray(json && json.models) ? json.models : [])
-            .map((m) => ((m && typeof m.name === 'string') ? m.name.replace(/^models\//, '') : null))
-            .filter(Boolean),
-    },
+    // #6861 — `antigravity` NO tiene endpoint HTTP: el shim de Google AI Studio
+    // (endpoint HTTP con API key en header) que vivía
+    // acá se RETIRÓ, no se desactivó. El provider autentica por OAuth del CLI y
+    // su salud sale del round-trip `agy models` (`probeCliProviderLive`, #6857):
+    // `ping()` lo rutea por `MANAGED_KEYS[].auth_mode === 'oauth'` antes de
+    // llegar a esta tabla (ver `isAllowedProvider`). Groq (#3353), cerebras y
+    // nvidia-nim (#6563) también se retiraron; si alguno se reintegra, copiar el
+    // bloque desde git history (último commit con groq: 7dba2169; con nvidia-nim
+    // y cerebras: el padre del merge de #6563; con el shim de AI Studio: el
+    // padre del merge de #6861).
 });
+
+// ---------------------------------------------------------------------------
+// #6861 — Tabla efectiva + hook de test.
+//
+// Sin ningún provider por API key en el plantel (los tres son CLI-OAuth), el
+// camino HTTP de `ping()` (throttle facturable, clasificación de status,
+// cruce de catálogo #5888) no tiene consumidor vivo pero se conserva como
+// infraestructura. Para seguir cubriéndolo, los tests inyectan un spec de
+// prueba por este hook: sólo acepta URLs `https:` literales (misma barrera
+// que producción) y se resetea explícitamente. Ningún camino de runtime lo
+// invoca: `isAllowedProvider` / `ping()` leen `_endpoints`, que por default
+// apunta a la constante congelada de arriba.
+// ---------------------------------------------------------------------------
+let _endpoints = PROVIDER_PING_ENDPOINTS;
+function _setPingEndpointsForTesting(map) {
+    const eps = map && typeof map === 'object' ? map : {};
+    for (const [prov, spec] of Object.entries(eps)) {
+        let u;
+        try { u = new URL(spec && spec.url); } catch { u = null; }
+        if (!u || u.protocol !== 'https:') {
+            throw new Error(`_setPingEndpointsForTesting: endpoint de ${prov} debe ser https literal`);
+        }
+    }
+    _endpoints = Object.freeze({ ...eps });
+}
+function _resetPingEndpointsForTesting() { _endpoints = PROVIDER_PING_ENDPOINTS; }
 
 const TIMEOUT_MS = 8_000;
 const MAX_BODY_EXCERPT = 512;
@@ -218,8 +207,14 @@ function _resetPingThrottle() {
     for (const k of Object.keys(_inFlight)) delete _inFlight[k];
 }
 
+// Provider "conocido" para el ping = (a) tiene endpoint HTTP hardcoded en
+// `PROVIDER_PING_ENDPOINTS`, o (b) es un provider CLI-OAuth gestionado en
+// `MANAGED_KEYS` (#6861: `antigravity` sólo existe por (b) — se prueba con el
+// binario local, nunca por HTTP, así que no necesita ni debe tener URL acá).
+// Sigue siendo una allowlist cerrada: las dos fuentes son constantes de código.
 function isAllowedProvider(provider) {
-    return Object.prototype.hasOwnProperty.call(PROVIDER_PING_ENDPOINTS, provider);
+    if (Object.prototype.hasOwnProperty.call(_endpoints, provider)) return true;
+    return secretsRw.MANAGED_KEYS.some((k) => k.provider === provider && k.auth_mode === 'oauth');
 }
 
 // -----------------------------------------------------------------------------
@@ -289,7 +284,7 @@ async function ping({ provider, secretsPath, fsImpl, httpImpl, nowMs, minInterva
     // fuente única (`probeCliProvider`) que health-cron, garantizando el mismo
     // `reason_code` (`cli_oauth_ok` / `cli_unavailable`) en ping manual y tick.
     //
-    // #6857 — para `gemini-google` (`catalog_probe: 'agy'`) esto hace un
+    // #6857 — para `antigravity` (`catalog_probe: 'agy'`) esto hace un
     // round-trip REAL (`agy models`). El ping manual del dashboard fuerza el
     // re-probe (`force: true`) — el operador que aprieta "Probar ahora" quiere
     // el estado de AHORA, no el cacheado; el tick del cron sí respeta el TTL.
@@ -300,6 +295,11 @@ async function ping({ provider, secretsPath, fsImpl, httpImpl, nowMs, minInterva
             return { ...live, provider };
         }
         return { ...probeCliProvider(managedSpec, { fsImpl, cliProbe }), provider };
+    }
+    // Defensa en profundidad: llegado acá el provider tiene que tener endpoint
+    // HTTP literal. Un provider OAuth ya retornó arriba.
+    if (!Object.prototype.hasOwnProperty.call(_endpoints, provider)) {
+        return { ok: false, reason: 'unknown_provider', provider };
     }
     const key = secretsRw.getRawKey({ provider, secretsPath, fsImpl });
     if (!key) {
@@ -327,7 +327,7 @@ async function ping({ provider, secretsPath, fsImpl, httpImpl, nowMs, minInterva
     // request y bloquea pings concurrentes mientras éste está en vuelo.
     _lastPingAt[provider] = now;
     _inFlight[provider] = true;
-    const spec = PROVIDER_PING_ENDPOINTS[provider];
+    const spec = _endpoints[provider];
     // #5888 — el catálogo SÓLO se baja cuando el llamador pide el cruce y el
     // spec sabe extraerlo. Sin `expectModels` el comportamiento es idéntico a
     // HEAD (el ping manual del dashboard y `api.js` no bajan catálogo — R-J).
@@ -448,6 +448,9 @@ module.exports = {
     ping,
     isAllowedProvider,
     PROVIDER_PING_ENDPOINTS,
+    // #6861 — sólo tests (ver comentario del hook).
+    _setPingEndpointsForTesting,
+    _resetPingEndpointsForTesting,
     TIMEOUT_MS,
     // #3965 CA-4 — throttle server-side del ping.
     PING_MIN_INTERVAL_MS,

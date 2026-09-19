@@ -17,7 +17,7 @@ function prependPath(env, dir) {
 }
 
 function agyWorks(env, spawnImpl = spawnSync) {
-    const command = env.AGY_BIN || 'agy';
+    const command = env.ANTIGRAVITY_BIN || 'agy';
     try {
         const probe = spawnImpl(command, ['--version'], {
             env, shell: false, windowsHide: true, encoding: 'utf8',
@@ -36,11 +36,11 @@ function ensureAgyInEnv(env, options = {}) {
     const platform = options.platform || process.platform;
 
     if (agyWorks(env, spawnImpl)) {
-        return { available: true, bin: env.AGY_BIN || 'agy' };
+        return { available: true, bin: env.ANTIGRAVITY_BIN || 'agy' };
     }
 
     const candidates = [];
-    if (env.AGY_BIN) candidates.push(env.AGY_BIN);
+    if (env.ANTIGRAVITY_BIN) candidates.push(env.ANTIGRAVITY_BIN);
     if (platform === 'win32' && env.LOCALAPPDATA) {
         candidates.push(path.join(env.LOCALAPPDATA, 'agy', 'bin', 'agy.exe'));
     }
@@ -51,7 +51,7 @@ function ensureAgyInEnv(env, options = {}) {
         } catch {
             continue;
         }
-        env.AGY_BIN = candidate;
+        env.ANTIGRAVITY_BIN = candidate;
         prependPath(env, path.dirname(candidate));
         if (agyWorks(env, spawnImpl)) {
             return { available: true, bin: candidate };

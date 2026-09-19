@@ -26,12 +26,12 @@ function snapshotWith(entry) {
 
 test('CA-3: candidato de fallback rojo-fresco con quota_exhausted_real → gated', () => {
     const snap = snapshotWith({
-        provider: 'gemini-google',
+        provider: 'antigravity',
         state: 'red',
         reason_code: 'quota_exhausted_real',
         last_checked_at: new Date(NOW - 60 * 1000).toISOString(), // 1 min — fresco
     });
-    const res = evaluateHealthGate('gemini-google', snap, NOW);
+    const res = evaluateHealthGate('antigravity', snap, NOW);
     assert.equal(res.gated, true, 'cuota real agotada es causa durable → se descarta del fallback');
     assert.equal(res.reason, 'quota_exhausted_real');
 });
@@ -50,12 +50,12 @@ test('CA-3: rojo por quota_exhausted_real pero STALE → fail-open (no gatea)', 
 
 test('CA-3: provider sano (green) con cuota OK no se gatea', () => {
     const snap = snapshotWith({
-        provider: 'gemini-google',
+        provider: 'antigravity',
         state: 'green',
         reason_code: 'authenticated',
         last_checked_at: new Date(NOW - 60 * 1000).toISOString(),
     });
-    const res = evaluateHealthGate('gemini-google', snap, NOW);
+    const res = evaluateHealthGate('antigravity', snap, NOW);
     assert.equal(res.gated, false);
 });
 

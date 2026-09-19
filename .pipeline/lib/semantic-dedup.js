@@ -35,7 +35,7 @@
 //       (emails/URLs/secrets) ANTES de truncar (truncar primero podría partir
 //       un secret y filtrar el prefijo). Residencia de datos: el contenido
 //       sale SOLO a (i) los providers de `PROVIDER_COMPLETION_ENDPOINTS`
-//       (frozen: gemini-google desde #6563), con la key leída vía
+//       (frozen; vacío desde #6861: el shim de AI Studio se retiró), con la key leída vía
 //       `secrets-rw.getRawKey` (nunca hardcode), o (ii) los CLIs OAuth del
 //       plantel (`openai-codex` / `anthropic`) vía spawn local con el env
 //       filtrado por `stripReservedChildSecrets`; el caller manda solo el
@@ -89,14 +89,15 @@ const ALLOWED_ACTIONS = Object.freeze(['crear', 'redefinir', 'fusionar']);
 
 // Default provider/model del judge.
 //
-// Historia: el default fue `gemini-google` (#6858 lo rebotó: el endpoint
-// `gemini-google` de completion-client es el shim HTTP de AI Studio, NO el CLI
-// `agy`, y no sirve ningún id del catálogo de Antigravity → 404 + circuit
-// breaker + juez perdido en silencio) y después `cerebras` con `gpt-oss-120b`.
+// Historia: el default fue el provider Google (#6858 lo rebotó: su endpoint
+// en completion-client era el shim HTTP de AI Studio, NO el CLI `agy` de
+// Antigravity, y no servía ningún id del catálogo → 404 + circuit breaker +
+// juez perdido en silencio; el shim se retiró en #6861) y después `cerebras`
+// con `gpt-oss-120b`.
 //
 // #6563 — Cerebras se dio de baja junto con el resto de los gratuitos y desde
 // esta versión NINGÚN provider del plantel (anthropic / openai-codex /
-// gemini-google) responde por el cliente HTTP con un (provider, model)
+// antigravity) responde por el cliente HTTP con un (provider, model)
 // servible. El default pasa a `openai-codex` por spawn del CLI (`codex exec
 // --json`, OAuth ChatGPT), reusando `sherlock-verifier._spawnCodexComplete`,
 // que ya normaliza la salida al shape canónico `{ok, content, ...}` del

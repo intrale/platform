@@ -72,9 +72,9 @@ const KNOWN_GATE_MODES = Object.freeze(new Set(['enforce', 'dry-run']));
 // Plantel de runtime vigente (los proveedores gratuitos cerebras / nvidia-nim se
 // retiraron en #6563). Debe coincidir con el enum de `providers.order.items` en
 // `contracts/project.schema.json`.
-const LIVE_PROVIDER_IDS = Object.freeze(['anthropic', 'openai-codex', 'gemini-google']);
+const LIVE_PROVIDER_IDS = Object.freeze(['anthropic', 'openai-codex', 'antigravity']);
 const LIVE_PROVIDER_SET = Object.freeze(new Set(LIVE_PROVIDER_IDS));
-const DEFAULT_PROVIDER_ORDER = Object.freeze(['anthropic', 'openai-codex', 'gemini-google']);
+const DEFAULT_PROVIDER_ORDER = Object.freeze(['anthropic', 'openai-codex', 'antigravity']);
 const KNOWN_PR_POLICIES = Object.freeze(new Set(['required', 'direct-to-main']));
 
 // Campos de texto NO confiables sobre los que corre el detector de prompt-injection.

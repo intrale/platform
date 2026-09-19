@@ -26,7 +26,7 @@ test('precedencia: error gana a ajustada/fallback/ok', () => {
   const r = classifyCommanderResult({
     hadError: true,
     sherlockVerdict: { verdict: 'rechazado', sameProvider: true },
-    dispatchResolution: { provider: 'anthropic', crossProvider: true, fallbackUsed: 'gemini-google' },
+    dispatchResolution: { provider: 'anthropic', crossProvider: true, fallbackUsed: 'antigravity' },
   });
   assert.equal(r.resultado, 'error');
 });
@@ -35,7 +35,7 @@ test('precedencia: ajustada gana a fallback/ok (verdict rechazado + crossProvide
   const r = classifyCommanderResult({
     hadError: false,
     sherlockVerdict: { verdict: 'rechazado' },
-    dispatchResolution: { provider: 'anthropic', crossProvider: true, fallbackUsed: 'gemini-google' },
+    dispatchResolution: { provider: 'anthropic', crossProvider: true, fallbackUsed: 'antigravity' },
   });
   assert.equal(r.resultado, 'ajustada');
 });
@@ -81,13 +81,13 @@ test('ajustada ← verdict rechazado', () => {
 
 // --- T-4 fallback -------------------------------------------------------------
 test('fallback ← fallbackUsed != null (aunque crossProvider sea false)', () => {
-  const r = classifyCommanderResult({ dispatchResolution: { provider: 'gemini-google', crossProvider: false, fallbackUsed: 'gemini-google' } });
+  const r = classifyCommanderResult({ dispatchResolution: { provider: 'antigravity', crossProvider: false, fallbackUsed: 'antigravity' } });
   assert.equal(r.resultado, 'fallback');
   assert.equal(r.fallbackUsed, true);
 });
 
 test('fallback ← crossProvider true (fallbackUsed null)', () => {
-  const r = classifyCommanderResult({ dispatchResolution: { provider: 'gemini-google', crossProvider: true, fallbackUsed: null } });
+  const r = classifyCommanderResult({ dispatchResolution: { provider: 'antigravity', crossProvider: true, fallbackUsed: null } });
   assert.equal(r.resultado, 'fallback');
   assert.equal(r.crossProviderDispatch, true);
 });
@@ -115,9 +115,9 @@ test('provider válido (anthropic) se preserva', () => {
   assert.equal(r.provider, 'anthropic');
 });
 
-test('provider de la allowlist de agent-models.json se preserva (gemini-google)', () => {
-  const r = classifyCommanderResult({ dispatchResolution: { provider: 'gemini-google', fallbackUsed: 'gemini-google' } });
-  assert.equal(r.provider, 'gemini-google');
+test('provider de la allowlist de agent-models.json se preserva (antigravity)', () => {
+  const r = classifyCommanderResult({ dispatchResolution: { provider: 'antigravity', fallbackUsed: 'antigravity' } });
+  assert.equal(r.provider, 'antigravity');
 });
 
 test('provider inválido → desconocido (anti log-forging)', () => {
@@ -226,7 +226,7 @@ test('#6459: huerfano GANA a ajustada y a fallback', () => {
   assert.equal(classifyCommanderResult({
     deliveryUnconfirmed: true,
     sherlockVerdict: { verdict: 'rechazado' },
-    dispatchResolution: { provider: 'anthropic', crossProvider: true, fallbackUsed: 'gemini-google' },
+    dispatchResolution: { provider: 'anthropic', crossProvider: true, fallbackUsed: 'antigravity' },
   }).resultado, 'huerfano');
 });
 

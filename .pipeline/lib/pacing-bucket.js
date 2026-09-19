@@ -103,7 +103,7 @@ const MAX_TTL_RED_MIN = 24 * 60;
 const VALID_PROVIDERS = Object.freeze([
     'anthropic',
     'openai-codex',
-    'gemini-google',
+    'antigravity',
 ]);
 
 // Patrones de secreto — defensa sobre el mensaje generado.

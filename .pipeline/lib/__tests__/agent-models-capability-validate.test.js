@@ -34,7 +34,7 @@ function tmpFile(content, ext = '.json') {
 }
 
 // Config mínima válida con providers capaz (anthropic) e incapaz (`incapaz`,
-// un fixture sobre el launcher gemini-google con `capabilities: []` — hasta
+// un fixture sobre el launcher antigravity con `capabilities: []` — hasta
 // #6563 ese rol lo cumplía cerebras, provider retirado) + deterministic (declara
 // agentic-tool-use por Riesgo D). Los skills se pisan por test según el escenario.
 function baseConfig(overrides = {}) {
@@ -56,10 +56,10 @@ function baseConfig(overrides = {}) {
         auth_mode: 'oauth',
       },
       incapaz: {
-        launcher: 'gemini-google',
+        launcher: 'antigravity',
         model: 'gemini-3.8-flash-medium',
         spawn_args_template: ['--model', '{model}', '{user_prompt}'],
-        output_parser: 'gemini-stream',
+        output_parser: 'antigravity-stream-json',
         quota_error_types: ['quota_exceeded'],
         supports_tool_use: false,
         capabilities: [],
@@ -225,10 +225,10 @@ test('CA-5 / Gherkin #2 · anthropic en backend-dev (requiere agentic-tool-use) 
 test('CA-5 · fallbacks capaces (codex/gemini declaran la capability) ⇒ sin errores', () => {
   const cfg = baseConfig();
   cfg.providers.gemini = {
-    launcher: 'gemini-google',
+    launcher: 'antigravity',
     model: 'gemini-3.8-flash-medium',
     spawn_args_template: ['--model', '{model}', '{user_prompt}'],
-    output_parser: 'gemini-stream',
+    output_parser: 'antigravity-stream-json',
     quota_error_types: ['quota_exceeded'],
     supports_tool_use: true,
     capabilities: ['agentic-tool-use'],

@@ -28,7 +28,7 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 
 const codex = require('../lib/agent-launcher/providers/openai-codex.js');
-const gemini = require('../lib/agent-launcher/providers/gemini-google.js');
+const gemini = require('../lib/agent-launcher/providers/antigravity.js');
 
 // Límite práctico de la línea de comando de Windows (CreateProcess ~32767). El
 // argv construido debe quedar MUY por debajo aunque el payload sea gigante.
@@ -117,7 +117,7 @@ test('#4529 gemini: system >32K va por stdin (NDJSON), argv chico, spawn real si
         const spawnDef = gemini.buildSpawn({
             args: ['-p', 'Contame el estado', '--system-prompt-file', sysFile],
             cwd: process.cwd(),
-            env: { GEMINI_MODEL: 'gemini-3.8-flash-medium' },
+            env: { ANTIGRAVITY_MODEL: 'gemini-3.8-flash-medium' },
         });
         assert.ok(argvBytes(spawnDef.args) < 4096, `argv demasiado grande: ${argvBytes(spawnDef.args)}`);
         assert.ok(spawnDef.args.every((a) => !String(a).includes('Sos el Commander')));

@@ -117,7 +117,7 @@ test('CA-4: config inválida → defaults conservadores + no lanza (REQ-SEC-2)',
             quota_alert: {
                 anthropic: { warn: 120, crit: 50 },
                 'openai-codex': { warn: 'x', crit: 95 },
-                'gemini-google': { warn: 80, crit: 150 },
+                'antigravity': { warn: 80, crit: 150 },
                 preventive_switch: { enabled: 'yes' }, // no es `true` literal → off
             },
         },

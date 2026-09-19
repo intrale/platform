@@ -10,7 +10,7 @@
 // Estructura esperada del JSON:
 //   {
 //     "telegram":   { "bot_token": "...", "chat_id": "..." },
-//     "providers":  { "google": {"api_key": "..."}, "openai": {...}, ... }
+//     "providers":  { "anthropic": {"api_key": "..."}, "openai": {...} }
 //   }
 //
 // Providers retirados (groq en #3353; cerebras/nvidia/moonshot en #6563): si el
@@ -146,9 +146,10 @@ const ENV_DESCRIPTORS = Object.freeze({
   'providers.anthropic.api_key': {
     env: 'ANTHROPIC_API_KEY', backend: 'ssm', shared: true, auth_anchor: false,
   },
-  'providers.google.api_key': {
-    env: 'GEMINI_API_KEY', backend: 'ssm', shared: true, auth_anchor: false,
-  },
+  // providers.google.api_key (la key de Google AI Studio) se removió en
+  // #6861: el provider `antigravity` autentica por OAuth del CLI y el shim HTTP
+  // que la consumía se retiró (#5331 / #7299). La key residual del store/SSM la
+  // revoca el operador en #7286.
   // providers.groq.api_key se removió en #3353; providers.cerebras.api_key,
   // providers.nvidia.api_key y providers.moonshot.api_key (ANTHROPIC_AUTH_TOKEN,
   // drop-in de Kimi #4880) se removieron en #6563 — providers retirados.

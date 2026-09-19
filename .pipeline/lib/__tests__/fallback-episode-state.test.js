@@ -41,7 +41,7 @@ const MODELS = {
     providers: {
         anthropic: { billing: 'paid', supports_tool_use: true },
         'openai-codex': { billing: 'paid', supports_tool_use: true },
-        'gemini-google': { billing: 'free', supports_tool_use: true },
+        'antigravity': { billing: 'free', supports_tool_use: true },
         cerebras: { billing: 'free', supports_tool_use: false },
         deterministic: { supports_tool_use: false },
     },
@@ -746,7 +746,7 @@ test('CA-8 — el copy del episodio jamás contiene la jerga que reemplazó', ()
     const dir = mkStateDir();
     try {
         seedHealth(dir);
-        for (const provider of ['openai-codex', 'gemini-google', 'cerebras']) {
+        for (const provider of ['openai-codex', 'antigravity', 'cerebras']) {
             const r = dispatch(dir, { provider, chain: ['anthropic', provider], now: T0 });
             if (!r.episode) continue;
             const texto = cmp.formatEpisodeNotice(r.episode, { now: T0 + HORA });

@@ -81,7 +81,7 @@ const PROVIDER_DISPLAY = Object.freeze({
     'anthropic': 'Anthropic',
     'openai-codex': 'Codex',
     'openai': 'Codex',
-    'gemini-google': 'Gemini',
+    'antigravity': 'Antigravity',
     'deterministic': 'Determinístico',
 });
 

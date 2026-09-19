@@ -21,8 +21,7 @@ Desde #3311 todas las credenciales del proyecto viven en un **único archivo**:
   "telegram":  { "bot_token": "...", "chat_id": "..." },
   "providers": {
     "openai":   { "api_key": "..." },
-    "anthropic":{ "api_key": "..." },
-    "google":   { "api_key": "..." }
+    "anthropic":{ "api_key": "..." }
   },
 
   // #5217 — namespaces que NO pasan por ENV_MAPPING (ver más abajo)
@@ -303,26 +302,33 @@ no la arregla ningún reinicio — corregí el store primero.
 - [ ] El pulpo arranca sin `[FATAL]` (CA-2).
 - [ ] Commit pusheado con `last_rotated` actualizado.
 
-## Gemini (Google AI Studio — free tier)
+## Gemini (Google AI Studio) — RETIRADA en #6861
 
-> **NO REPONER salvo que vuelva un consumidor.** El provider `gemini-google`
-> autentica por OAuth con `agy` (ver `providers/gemini-google.js`: «Auth: OAuth
-> via `agy`; nunca API key») y `agent-models.json` no le declara
-> `credentials_env`. Ningún módulo lee `GEMINI_API_KEY`, por eso el manifiesto la
-> declara `required_when: never` + `consumer_status: no_consumer`. Cargarla no
-> habilita nada y el health-check no debe pedirla. Los pasos de abajo aplican
-> sólo si en el futuro se recablea el provider a API key.
+> **No hay nada que rotar ni que reponer.** El provider `antigravity` autentica
+> por OAuth de cuenta Google vía el CLI `agy` (ver `providers/antigravity.js`:
+> «Auth: OAuth via `agy`; nunca API key») y `agent-models.json` no le declara
+> `credentials_env`. En #6861 la entrada `providers.google.api_key` se **borró**
+> de `secrets-manifest.json` y de `ENV_MAPPING` (`lib/credentials.js`), junto con
+> el shim HTTP de AI Studio que era su único lector histórico: hoy **ningún
+> módulo** lee `GEMINI_API_KEY` ni `GOOGLE_API_KEY`, y `buildChildEnv` no las
+> propaga a ningún agente hijo (test SEC-3 en
+> `tests/build-child-env-least-privilege.test.js`). Si cargás una key de AI
+> Studio en `credentials.json`, nadie la va a leer.
 
-1. Abrí <https://aistudio.google.com/apikey> con la cuenta GCP del proyecto.
-2. "Create API key" — asociar a un proyecto de Google Cloud existente o nuevo.
-3. Editá `~/.claude/secrets/credentials.json`:
-   ```json
-   { "providers": { "google": { "api_key": "<nueva-key>" } } }
-   ```
-4. Verificar que la **Generative Language API** esté habilitada en el proyecto
-   de GCP (sino tira 403 al primer request).
-5. Revocá la vieja key desde la consola.
-6. Cerrá la rotación: ver [Cierre de toda rotación](#cierre-de-toda-rotación-5802).
+- **Verificar la salud del provider:** `agy models` (round-trip del CLI; estados
+  `cli_catalog_ok` / `cli_license_unavailable` / `cli_unavailable` /
+  `cli_contract_mismatch`) y `MSYS_NO_PATHCONV=1 agy -p "/usage" --output-format json`
+  para la cuota de la licencia. Detalle en `docs/pipeline/multi-provider.md` §8.10.
+- **Renovar la sesión OAuth:** se hace desde el propio `agy` interactivo con la
+  cuenta Google licenciada; no pasa por `credentials.json` ni por el dashboard.
+- **Key residual de AI Studio** (la que existía antes del retiro): su revocación
+  en <https://aistudio.google.com/apikey> se rastrea en
+  [#7286](https://github.com/intrale/platform/issues/7286). Revocarla no afecta
+  al pipeline.
+
+Si en el futuro se admite un provider por API key (`docs/pipeline/multi-provider.md`
+§16), su alta se documenta en una sección nueva; esta queda como registro de por
+qué la key de Google ya no forma parte del inventario.
 
 ## Proveedores retirados — Groq, Cerebras, NVIDIA NIM, Moonshot Kimi (#3353 / #6563)
 

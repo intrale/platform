@@ -36,7 +36,7 @@
 // El shape desnudo es infraestructura genérica de `_detectOpenAI` (parser
 // `openai-sse`), así que la suite queda anclada al provider vigente que
 // conserva ese mismo camino: `openai-codex`, que declara `insufficient_quota`.
-// (`gemini-google` usa `gemini-stream` y no pasa por `_detectOpenAI`.)
+// (`antigravity` usa `antigravity-stream-json` y no pasa por `_detectOpenAI`.)
 // =============================================================================
 'use strict';
 
@@ -118,9 +118,9 @@ test('#5978 el JSON y la meta-allowlist de quota-exhausted quedan en sync', () =
 
 test('#5978 fail-closed: un provider que NO declara el tipo no matchea', () => {
     const evt = JSON.parse(BARE_402_LINE);
-    // gemini-google declara sólo quota_exceeded/resource_exhausted (y además no
+    // antigravity declara sólo quota_exceeded/resource_exhausted (y además no
     // pasa por _detectOpenAI).
-    assert.equal(quota.detectQuotaError(evt, models.providers['gemini-google']).matched, false);
+    assert.equal(quota.detectQuotaError(evt, models.providers['antigravity']).matched, false);
     // Mismo parser openai-sse pero sin `insufficient_quota` declarado: la
     // allowlist manda, no el shape.
     const sinTipo = { ...OPENAI_COMPAT, quota_error_types: ['billing_hard_limit_reached'] };

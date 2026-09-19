@@ -74,9 +74,11 @@ test('CA-2: los scopes resultantes se afirman VALOR POR VALOR', () => {
   const res = d.loadDescriptor(DESCRIPTOR_REAL);
   const resultantes = res.descriptor.credentials[0].scopes;
 
+  // #6861 — `providers:google` (key de AI Studio) se retiró junto con el shim
+  // HTTP: quedan sólo los dos vendors de almacenamiento vivos.
   assert.deepEqual(resultantes, [
     'aws', 'github',
-    'providers:anthropic', 'providers:google', 'providers:openai',
+    'providers:anthropic', 'providers:openai',
   ]);
 
   // Aserciones NEGATIVAS explícitas (D-1 · SEC-7): el descarte no se traduce.
@@ -85,11 +87,15 @@ test('CA-2: los scopes resultantes se afirman VALOR POR VALOR', () => {
 
   // `providers` se expande desde PROVIDER_VENDORS (almacenamiento), nunca desde
   // LIVE_PROVIDER_IDS (runtime): son vocabularios distintos (`openai` vs
-  // `openai-codex`, `google` vs `gemini-google`). (Hasta #6563 la prueba era
-  // `moonshot`, vendor sin id de runtime; se retiró junto con Kimi.)
+  // `openai-codex`; `antigravity` es id de runtime SIN vendor de almacenamiento
+  // porque autentica por OAuth del CLI). (Hasta #6563 la prueba era `moonshot`,
+  // vendor sin id de runtime, retirado junto con Kimi; hasta #6861 era `google`,
+  // retirado junto con `providers.google.api_key`.)
   assert.equal(resultantes.includes('providers:openai'), true);
   assert.equal(d.LIVE_PROVIDER_IDS.includes('openai'), false);
-  assert.equal(resultantes.includes('providers:google'), true);
+  assert.equal(d.LIVE_PROVIDER_IDS.includes('antigravity'), true);
+  assert.equal(resultantes.includes('providers:antigravity'), false);
+  assert.equal(resultantes.includes('providers:google'), false, 'google se retiró en #6861');
   assert.equal(d.LIVE_PROVIDER_IDS.includes('google'), false);
 });
 

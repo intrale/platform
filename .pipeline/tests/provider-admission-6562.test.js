@@ -324,7 +324,7 @@ test('CA-2 · cada proveedor del JSON canónico declara las tres condiciones o l
   }
 });
 
-test('CA-4 · los proveedores activos quedan evaluados: sólo anthropic y openai-codex son admisibles; gemini-google sigue por excepción con vencimiento e issue #6564', () => {
+test('CA-4 · los proveedores activos quedan evaluados: sólo anthropic y openai-codex son admisibles; antigravity sigue por excepción con vencimiento e issue #6564', () => {
   const cfg = JSON.parse(fs.readFileSync(CANONICAL_JSON, 'utf8'));
   const routed = validator.collectRoutedProviders(cfg);
   const verdicts = {};
@@ -335,12 +335,12 @@ test('CA-4 · los proveedores activos quedan evaluados: sólo anthropic y openai
   assert.equal(verdicts['openai-codex'], 'admisible');
   assert.equal(verdicts.deterministic, 'exento (sin LLM)');
   // #6563 — cerebras / nvidia-nim / kimi-moonshot dados de baja: ya no están
-  // declarados ni ruteados. La excepción de gemini-google se reasignó a #6564.
+  // declarados ni ruteados. La excepción de antigravity se reasignó a #6564.
   for (const retired of ['cerebras', 'nvidia-nim', 'kimi-moonshot']) {
     assert.equal(cfg.providers[retired], undefined, `${retired} no debería seguir declarado tras #6563`);
     assert.ok(!routed.has(retired), `${retired} no debería seguir ruteado tras #6563`);
   }
-  for (const key of ['gemini-google']) {
+  for (const key of ['antigravity']) {
     assert.ok(routed.has(key), `${key} debería seguir ruteado hasta #6564`);
     assert.equal(verdicts[key], 'no admisible — excepción vigente', `${key}: ${verdicts[key]}`);
     assert.equal(cfg.providers[key].admission.exception.issue, 6564);

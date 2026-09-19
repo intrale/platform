@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const path = require('node:path');
 const { ensureAgyInEnv } = require('../ensure-agy-in-path');
 
-test('provisiona AGY_BIN y PATH en el mismo proceso cuando agy está instalado', () => {
+test('provisiona ANTIGRAVITY_BIN y PATH en el mismo proceso cuando agy está instalado', () => {
     const localAppData = path.join('C:', 'Users', 'pipeline', 'AppData', 'Local');
     const expectedBin = path.join(localAppData, 'agy', 'bin', 'agy.exe');
     const calls = [];
@@ -21,7 +21,7 @@ test('provisiona AGY_BIN y PATH en el mismo proceso cuando agy está instalado',
     });
 
     assert.deepEqual(result, { available: true, bin: expectedBin });
-    assert.equal(env.AGY_BIN, expectedBin);
+    assert.equal(env.ANTIGRAVITY_BIN, expectedBin);
     assert.equal(env.PATH.split(path.delimiter)[0], path.dirname(expectedBin));
     assert.equal(calls.at(-1).command, expectedBin);
     assert.equal(calls.at(-1).env, env);
@@ -29,7 +29,7 @@ test('provisiona AGY_BIN y PATH en el mismo proceso cuando agy está instalado',
 
 test('no duplica el directorio de agy en llamadas repetidas', () => {
     const bin = path.resolve('C:\\agy\\bin\\agy.exe');
-    const env = { AGY_BIN: bin, PATH: path.dirname(bin) };
+    const env = { ANTIGRAVITY_BIN: bin, PATH: path.dirname(bin) };
     const options = {
         fsImpl: { existsSync: () => true },
         spawnImpl: () => ({ status: 0 }),
@@ -43,7 +43,7 @@ test('no duplica el directorio de agy en llamadas repetidas', () => {
 
 test('conserva la clave Path original de Windows al refrescar el entorno', () => {
     const bin = path.join('C:', 'Users', 'pipeline', 'agy', 'bin', 'agy.exe');
-    const env = { AGY_BIN: bin, Path: 'C:\\Windows\\System32' };
+    const env = { ANTIGRAVITY_BIN: bin, Path: 'C:\\Windows\\System32' };
     let attempts = 0;
 
     const result = ensureAgyInEnv(env, {

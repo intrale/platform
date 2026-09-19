@@ -38,7 +38,7 @@ const RESET_FUTURO_ISO = '2026-09-11T14:54:20.552Z';
 // único escritor posible en el camino es el reconcile de #7181.
 const SIN_DATO = { adapterStatus: 'unknown', pct: null, status: 'unknown' };
 const adaptersSinDato = {
-    ALLOWED_PROVIDERS: ['anthropic', 'openai-codex', 'gemini-google', 'cerebras'],
+    ALLOWED_PROVIDERS: ['anthropic', 'openai-codex', 'antigravity', 'cerebras'],
     quotaUsage: () => SIN_DATO,
 };
 

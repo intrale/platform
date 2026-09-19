@@ -159,7 +159,7 @@ test('writeRequestMeta persiste un sidecar con shape ACOTADO', () => {
   const reqId = mod.buildRequestId(-100, 1718000000010);
   const p = mod.writeRequestMeta(dir, reqId, {
     resultado: 'ajustada',
-    provider: 'gemini-google',
+    provider: 'antigravity',
     sameProviderVerification: true,
     crossProviderDispatch: false,
   });
@@ -167,7 +167,7 @@ test('writeRequestMeta persiste un sidecar con shape ACOTADO', () => {
   const parsed = JSON.parse(fs.readFileSync(p, 'utf8'));
   assert.deepEqual(parsed, {
     resultado: 'ajustada',
-    provider: 'gemini-google',
+    provider: 'antigravity',
     sameProviderVerification: true,
     crossProviderDispatch: false,
   });

@@ -88,8 +88,8 @@ const SECRET_PATTERNS = [
 test('clasificación de proveedores: pagos vs free (sin solapamiento)', () => {
   assert.equal(isPaidProvider('anthropic'), true);
   assert.equal(isPaidProvider('openai-codex'), true);
-  assert.equal(isPaidProvider('gemini-google'), false);
-  assert.equal(isFreeProvider('gemini-google'), true);
+  assert.equal(isPaidProvider('antigravity'), false);
+  assert.equal(isFreeProvider('antigravity'), true);
   assert.equal(isFreeProvider('anthropic'), false);
   // #6563 — cerebras retirado del plantel: ya no es free ni pago.
   assert.equal(isFreeProvider('cerebras'), false);
@@ -121,7 +121,7 @@ test('CA-1 · débitos concurrentes de pagos: total exacto en el contador centra
 
 test('routing: debitPaidQuota rechaza proveedores free (usan medición local)', async () => {
   const { store } = makeStore();
-  await assert.rejects(() => debitPaidQuota(store, { provider: 'gemini-google', deltaTokens: 10 }), /sólo aplica a proveedores pagos/);
+  await assert.rejects(() => debitPaidQuota(store, { provider: 'antigravity', deltaTokens: 10 }), /sólo aplica a proveedores pagos/);
 });
 
 test('routing: free tier usa recordSample local, NUNCA el contador central', async () => {
@@ -129,14 +129,14 @@ test('routing: free tier usa recordSample local, NUNCA el contador central', asy
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pq-central-'));
   try {
     const ok = recordSample({
-      provider: 'gemini-google', bucketKind: 'short',
+      provider: 'antigravity', bucketKind: 'short',
       remaining: 900, limit: 1000, now: 1000, pipelineDir: tmpDir,
     });
     assert.equal(ok, true);
     // Se escribió local.
     assert.equal(fs.existsSync(path.join(tmpDir, 'state', 'provider-quota.json')), true);
     // El store central NO tiene contador para el free tier.
-    assert.equal(await rawItem(driver, _quotaKeyFor('gemini-google')), null);
+    assert.equal(await rawItem(driver, _quotaKeyFor('antigravity')), null);
     // Y el store sigue vacío mientras sólo hubo medición local.
     void store;
   } finally {

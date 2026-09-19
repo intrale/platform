@@ -35,15 +35,15 @@ const { ADAPTER_STATUS, emptyResult } = require('./_shape');
 // Si en el futuro se suma un provider nuevo, se agrega acá Y se crea su
 // adapter en este directorio. Cualquier `provider` fuera de esta lista
 // hace fail-fast con `adapterStatus: 'error'`.
-// #3220 — Rename `gemini` → `gemini-google` (sign-off 2026-05-15). Adapter
-// stub trasladado a `gemini-google.js`.
+// #3220 — Rename `gemini` → `antigravity` (sign-off 2026-05-15). Adapter
+// stub trasladado a `antigravity.js`.
 //
 // Providers retirados: groq (#3353) y cerebras / nvidia-nim / ollama (#6563).
 // Sus adapters standalone y las entradas del switch se removieron.
 const ALLOWED_PROVIDERS = Object.freeze([
     'anthropic',
     'openai-codex',
-    'gemini-google',
+    'antigravity',
     'deterministic',
 ]);
 
@@ -58,7 +58,7 @@ function getAdapter(provider) {
     switch (provider) {
         case 'anthropic':       return require('./anthropic');
         case 'openai-codex':    return require('./openai-codex');
-        case 'gemini-google':   return require('./gemini-google');
+        case 'antigravity':   return require('./antigravity');
         case 'deterministic':   return require('./deterministic');
         default:                return null; // unreachable — la allowlist ya filtró.
     }

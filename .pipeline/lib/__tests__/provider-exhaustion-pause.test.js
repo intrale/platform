@@ -39,7 +39,7 @@ function fixtureConfig() {
             'openai-codex': {
                 quota_error_types: ['insufficient_quota', 'billing_hard_limit_reached'],
             },
-            'gemini-google': {
+            'antigravity': {
                 quota_error_types: ['quota_exceeded', 'resource_exhausted'],
             },
             cerebras: {
@@ -307,7 +307,7 @@ test('CA-7 + CA-14 — snapshot de formatExhaustionMessage para los 5 providers 
     const cfg = fixtureConfig();
     const baseChain = ['anthropic', 'openai-codex'];
 
-    for (const primary of ['anthropic', 'openai-codex', 'gemini-google', 'cerebras', 'nvidia-nim']) {
+    for (const primary of ['anthropic', 'openai-codex', 'antigravity', 'cerebras', 'nvidia-nim']) {
         const text = formatExhaustionMessage({
             skill: 'guru',
             issue: 9999,
@@ -499,11 +499,11 @@ test('#5467 CA-1 — causa CUOTA: lista el porcentaje y pide acción', () => {
 
 test('#5467 CA-1 — causa AUTH: motivo legible en castellano y acción imperativa', () => {
     const stateDir = stateDirWith([
-        healthRow('gemini-google', 'Gemini (Antigravity CLI)', 'cli_license_unavailable'),
+        healthRow('antigravity', 'Gemini (Antigravity CLI)', 'cli_license_unavailable'),
     ]);
     const text = render5467(
         { stateDir, scheduleModule: scheduleFor([]) },
-        { chain_tried: ['gemini-google'] },
+        { chain_tried: ['antigravity'] },
     );
 
     assert.ok(text.includes('🟧 *Pipeline pausado — sin proveedor disponible*'));
@@ -532,13 +532,13 @@ test('#5467 CA-13 — causa TRANSITORIA: se recupera solo, SIN hora y SIN pedir 
 
 test('#5467 — causa MIXTA: gana auth y la acción nombra a los dos proveedores', () => {
     const stateDir = stateDirWith([
-        healthRow('gemini-google', 'Gemini (Antigravity CLI)', 'cli_license_unavailable'),
+        healthRow('antigravity', 'Gemini (Antigravity CLI)', 'cli_license_unavailable'),
         healthRow('openai', 'OpenAI / Codex', 'quota_exhausted_real', 94),
         healthRow('nvidia-nim', 'NVIDIA NIM', 'timeout'),
     ]);
     const text = render5467(
         { stateDir, scheduleModule: scheduleFor(['anthropic']) },
-        { chain_tried: ['anthropic', 'openai-codex', 'gemini-google', 'nvidia-nim'] },
+        { chain_tried: ['anthropic', 'openai-codex', 'antigravity', 'nvidia-nim'] },
     );
 
     assert.ok(text.includes('🟧 *Pipeline pausado — sin proveedor disponible*'));
@@ -560,12 +560,12 @@ test('#5467 — causa MIXTA: gana auth y la acción nombra a los dos proveedores
 
 test('#5467 CA-2 — sin ningún quota_exhausted_real el titular no habla de cuota agotada', () => {
     const stateDir = stateDirWith([
-        healthRow('gemini-google', 'Gemini (Antigravity CLI)', 'cli_license_unavailable'),
+        healthRow('antigravity', 'Gemini (Antigravity CLI)', 'cli_license_unavailable'),
         healthRow('cerebras', 'Cerebras', 'quota_exhausted'), // flag reactivo, SIN medición
     ]);
     const text = render5467(
         { stateDir, scheduleModule: scheduleFor([]) },
-        { chain_tried: ['gemini-google', 'cerebras'] },
+        { chain_tried: ['antigravity', 'cerebras'] },
     );
 
     const titular = text.split('\n')[0];
@@ -634,11 +634,11 @@ test('#5467 CA-6 — con dato vencido se rotula la antigüedad y NO se promete r
 
 test('#5467 CA-5 — con cadena larga el mensaje se trunca pero la acción sobrevive', () => {
     const stateDir = stateDirWith([
-        healthRow('gemini-google', 'Gemini (Antigravity CLI)', 'cli_license_unavailable'),
+        healthRow('antigravity', 'Gemini (Antigravity CLI)', 'cli_license_unavailable'),
     ]);
     // Cadena desmedida: la línea `Cadena intentada` es la única sin tope y
     // empuja el mensaje más allá del límite de Telegram.
-    const chain = ['gemini-google'];
+    const chain = ['antigravity'];
     for (let i = 0; i < 400; i++) chain.push(`prov-${String(i).padStart(3, '0')}`);
 
     const text = render5467(
@@ -674,13 +674,13 @@ test('#5467 — el desglose se acota y avisa cuántos proveedores quedaron afuer
 
 test('#5467 CA-8 — ningún mensaje expone auth_mode ni key_status', () => {
     const stateDir = stateDirWith([
-        healthRow('gemini-google', 'Gemini (Antigravity CLI)', 'cli_license_unavailable'),
+        healthRow('antigravity', 'Gemini (Antigravity CLI)', 'cli_license_unavailable'),
         healthRow('cerebras', 'Cerebras', 'no_key_configured'),
         healthRow('openai', 'OpenAI / Codex', 'quota_exhausted_real', 94),
     ]);
     const text = render5467(
         { stateDir, scheduleModule: scheduleFor(['anthropic']) },
-        { chain_tried: ['anthropic', 'openai-codex', 'gemini-google', 'cerebras'] },
+        { chain_tried: ['anthropic', 'openai-codex', 'antigravity', 'cerebras'] },
     );
 
     for (const prohibido of ['auth_mode', 'key_status', 'oauth', 'api_key', 'not_applicable']) {
@@ -970,7 +970,7 @@ test('#5467 SEC · el escape del veredicto no altera los literales propios (INVA
         'unknown_provider', 'quota_exhausted_real', 'quota_exhausted',
         'rate_limited', 'timeout', 'network_error', 'unknown',
     ];
-    const ids = ['anthropic', 'openai-codex', 'gemini-google'];
+    const ids = ['anthropic', 'openai-codex', 'antigravity'];
     const labels = ['Anthropic', 'OpenAI / Codex', 'Gemini (Antigravity CLI)'];
 
     for (const code of codes) {

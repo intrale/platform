@@ -3,11 +3,11 @@
 //
 // "Propagar el modelo resuelto al proceso hijo en todos los proveedores."
 // (Eran cinco al escribirse; tras #6563 quedan tres LLM: anthropic,
-// openai-codex y gemini-google.)
+// openai-codex y antigravity.)
 //
 // Cubre los 7 criterios de aceptación del issue:
 //   CA-1 — flag ON en Anthropic ⇒ `--model <id>` como ELEMENTO SEPARADO del array.
-//   CA-2 — flag ON ⇒ CODEX_MODEL / GEMINI_MODEL llegan al env del hijo con el
+//   CA-2 — flag ON ⇒ CODEX_MODEL / ANTIGRAVITY_MODEL llegan al env del hijo con el
 //          modelo del proveedor ACTIVO de la cadena.
 //   CA-3 — id fuera de la whitelist ⇒ se OMITE, deja traza y NO aborta el spawn.
 //   CA-4 — flag apagado (default) ⇒ el objeto que recibe `child_process.spawn`
@@ -78,7 +78,7 @@ function agentModels({ skill = 'guru', provider = 'anthropic', model = 'claude-s
         providers: {
             anthropic: { launcher: 'claude', model: 'claude-opus-4-7', permissions_mode: 'bypassPermissions' },
             'openai-codex': { launcher: 'codex', model: 'gpt-5.5', permissions_mode: 'bypassPermissions' },
-            'gemini-google': { launcher: 'gemini-google', model: 'gemini-3.8-flash-medium', permissions_mode: 'bypassPermissions' },
+            'antigravity': { launcher: 'antigravity', model: 'gemini-3.8-flash-medium', permissions_mode: 'bypassPermissions' },
             deterministic: { launcher: 'node', model: 'deterministic' },
         },
         skills: { [skill]: { provider, model } },
@@ -93,7 +93,7 @@ function cfg(modelPropagation) {
 const TEST_LAUNCHERS = {
     anthropic: { kind: 'test', cmd: '/test/claude', prefixArgs: ['--pre'], shell: false },
     'openai-codex': { kind: 'test', cmd: '/test/codex', prefixArgs: [], shell: false },
-    'gemini-google': { kind: 'test', cmd: '/test/agy', prefixArgs: [], shell: false },
+    'antigravity': { kind: 'test', cmd: '/test/agy', prefixArgs: [], shell: false },
 };
 
 function withTestLaunchers(fn) {
@@ -160,7 +160,7 @@ test('resolveMode: precedencia by_skill > by_provider > default_mode', () => {
     assert.deepEqual(mp.resolveMode({ config: c, provider: 'anthropic', skill: 'po' }),
         { mode: 'dry-run', source: 'provider' });
     // Otro proveedor sin entrada propia: cae al default.
-    assert.deepEqual(mp.resolveMode({ config: c, provider: 'gemini-google', skill: 'po' }),
+    assert.deepEqual(mp.resolveMode({ config: c, provider: 'antigravity', skill: 'po' }),
         { mode: 'off', source: 'default' });
 });
 
@@ -210,7 +210,7 @@ test('sanitizeModelId: ningún canal acepta ids namespaced con `/` (la excepció
 test('resolveTarget: canal argv para el launcher claude, env para el resto, none para deterministic', () => {
     assert.deepEqual(mp.resolveTarget('anthropic'), { kind: 'arg', envVar: null });
     assert.deepEqual(mp.resolveTarget('openai-codex'), { kind: 'env', envVar: 'CODEX_MODEL' });
-    assert.deepEqual(mp.resolveTarget('gemini-google'), { kind: 'env', envVar: 'GEMINI_MODEL' });
+    assert.deepEqual(mp.resolveTarget('antigravity'), { kind: 'env', envVar: 'ANTIGRAVITY_MODEL' });
     assert.deepEqual(mp.resolveTarget('deterministic'), { kind: 'none', envVar: null });
     // #6563 — los retirados ya no declaran canal: son desconocidos para el catálogo.
     for (const retirado of ['cerebras', 'nvidia-nim', 'kimi-moonshot']) {
@@ -311,7 +311,7 @@ test('CA-1: el flag encendido no altera el env del hijo en el canal argv', () =>
 
 const CASOS_ENV = [
     { provider: 'openai-codex', envVar: 'CODEX_MODEL', model: 'gpt-5.4' },
-    { provider: 'gemini-google', envVar: 'GEMINI_MODEL', model: 'gemini-3.7-flash-medium' },
+    { provider: 'antigravity', envVar: 'ANTIGRAVITY_MODEL', model: 'gemini-3.7-flash-medium' },
 ];
 
 for (const caso of CASOS_ENV) {
@@ -338,13 +338,13 @@ for (const caso of CASOS_ENV) {
 test('CA-2: el env se COPIA, no se muta — el objeto del caller queda intacto', () => {
     const env = { FOO: 'bar' };
     const { spawnCall } = launch({
-        provider: 'gemini-google',
+        provider: 'antigravity',
         model: 'gemini-3.8-flash-low',
         env,
         config: cfg({ enabled: true, default_mode: 'on' }),
     });
-    assert.equal(spawnCall.opts.env.GEMINI_MODEL, 'gemini-3.8-flash-low');
-    assert.equal(env.GEMINI_MODEL, undefined, 'el env del caller no debe mutarse');
+    assert.equal(spawnCall.opts.env.ANTIGRAVITY_MODEL, 'gemini-3.8-flash-low');
+    assert.equal(env.ANTIGRAVITY_MODEL, undefined, 'el env del caller no debe mutarse');
 });
 
 test('CA-2 (2º Gherkin): en caída a un proveedor de respaldo viaja el modelo del RESPALDO, no el del primario', () => {
@@ -456,40 +456,65 @@ test('CA-3: buildSpawn de Anthropic revalida por su cuenta (defensa en profundid
 // =============================================================================
 
 // =============================================================================
-// #6858 (review) — con SÓLO `AGY_MODEL` en el env (sin GEMINI_MODEL propagado)
-// el handler de gemini-google devuelve `modelTrace.applied=false` con
-// `reason: 'agy_model_env_ignored'`. Eso NO es un descarte de `--model` (nunca
-// hubo uno): el launcher tiene que loguear únicamente el ℹ️ "IGNORÓ AGY_MODEL"
-// y NO el ⚠️ "descartó el flag --model", que afirmaba un descarte inexistente.
+// #6858 / #6861 — `ANTIGRAVITY_MODEL` es la ÚNICA fuente del modelo del handler
+// de antigravity. `AGY_MODEL` y `GEMINI_MODEL` ya NO se leen ni se "ignoran con
+// traza" (#6861 retiró IGNORED_MODEL_ENV_VARS y el campo `ignoredEnv` del
+// modelTrace): tenerlas en el env equivale a un env vacío — sin `--model`, sin
+// `modelTrace`, sin ℹ️ de ignorado y sin el ⚠️ de descarte del flag.
 // =============================================================================
-test('#6858: sólo AGY_MODEL en el env → ℹ️ IGNORÓ sin el ⚠️ de descarte del flag --model', () => {
-    const { spawnCall, spawnCalls, logs } = launch({
-        provider: 'gemini-google',
+test('#6858/#6861: sólo AGY_MODEL/GEMINI_MODEL en el env equivale a env vacío — sin --model, sin traza, sin log', () => {
+    const conSombra = launch({
+        provider: 'antigravity',
         model: 'gemini-3.8-flash-medium',
-        config: undefined, // propagación apagada: no llega GEMINI_MODEL al hijo
-        env: { AGY_MODEL: 'gemini-1.0-legacy' },
+        config: undefined, // propagación apagada: no llega ANTIGRAVITY_MODEL al hijo
+        env: { AGY_MODEL: 'gemini-1.0-legacy', GEMINI_MODEL: 'gemini-1.0-legacy' },
     });
-    assert.equal(spawnCalls.length, 1, 'el spawn ocurre igual');
-    assert.ok(!spawnCall.args.includes('--model'), 'sin GEMINI_MODEL no viaja --model');
-    assert.ok(!spawnCall.args.includes('gemini-1.0-legacy'), 'AGY_MODEL nunca llega a argv');
+    const sinSombra = launch({
+        provider: 'antigravity',
+        model: 'gemini-3.8-flash-medium',
+        config: undefined,
+        env: {},
+    });
+    assert.equal(conSombra.spawnCalls.length, 1, 'el spawn ocurre igual');
+    // Mismo argv que con el env vacío: las variables legacy no son fuente.
+    assert.deepEqual(conSombra.spawnCall.args, sinSombra.spawnCall.args);
+    assert.ok(!conSombra.spawnCall.args.includes('--model'), 'sin ANTIGRAVITY_MODEL no viaja --model');
+    assert.ok(!conSombra.spawnCall.args.includes('gemini-1.0-legacy'), 'AGY_MODEL/GEMINI_MODEL nunca llegan a argv');
+    assert.equal(conSombra.spawnCall.opts.env.ANTIGRAVITY_MODEL, undefined,
+        'las variables legacy no se traducen a ANTIGRAVITY_MODEL');
 
-    const log = logs.joined();
-    assert.ok(/IGNORÓ AGY_MODEL/.test(log), 'debe constar que AGY_MODEL se ignoró');
+    // Sin rastro en el log: ni ℹ️ de ignorado ni ⚠️ de descarte (nunca hubo --model).
+    const log = conSombra.logs.joined();
+    assert.ok(!/IGNORÓ/.test(log), 'ya no existe la rama "IGNORÓ AGY_MODEL" (#6861)');
+    assert.ok(!/AGY_MODEL|GEMINI_MODEL/.test(log), 'las variables legacy no dejan rastro en el log');
     assert.ok(!/descartó el flag --model/.test(log),
         'no hubo --model propagado: el ⚠️ de descarte es engañoso y no debe salir');
 });
 
-test('#6858: con GEMINI_MODEL propagado y AGY_MODEL presente, el --model viaja y no sale ningún ⚠️', () => {
-    const { spawnCall, logs } = launch({
-        provider: 'gemini-google',
+test('#6858/#6861: con ANTIGRAVITY_MODEL propagado y AGY_MODEL/GEMINI_MODEL presentes, el --model viaja y no sale ningún aviso', () => {
+    const conSombra = launch({
+        provider: 'antigravity',
         model: 'gemini-3.8-flash-medium',
         config: cfg({ enabled: true, default_mode: 'on' }),
-        env: { AGY_MODEL: 'gemini-1.0-legacy' },
+        env: { AGY_MODEL: 'gemini-1.0-legacy', GEMINI_MODEL: 'gemini-1.0-legacy' },
     });
-    assert.deepEqual(spawnCall.args.slice(-2), ['--model', 'gemini-3.8-flash-medium']);
-    const log = logs.joined();
+    const sinSombra = launch({
+        provider: 'antigravity',
+        model: 'gemini-3.8-flash-medium',
+        config: cfg({ enabled: true, default_mode: 'on' }),
+        env: {},
+    });
+    // El modelo propagado viaja como `--model` al final del argv, idéntico al
+    // caso sin las variables legacy en el env.
+    assert.deepEqual(conSombra.spawnCall.args.slice(-2), ['--model', 'gemini-3.8-flash-medium']);
+    assert.deepEqual(conSombra.spawnCall.args, sinSombra.spawnCall.args);
+    assert.equal(conSombra.spawnCall.opts.env.ANTIGRAVITY_MODEL, 'gemini-3.8-flash-medium');
+    assert.ok(!conSombra.spawnCall.args.includes('gemini-1.0-legacy'), 'AGY_MODEL/GEMINI_MODEL nunca llegan a argv');
+
+    const log = conSombra.logs.joined();
     assert.ok(!/descartó el flag --model/.test(log));
-    assert.ok(/IGNORÓ AGY_MODEL/.test(log), 'la sombra de AGY_MODEL se sigue reportando');
+    assert.ok(!/IGNORÓ/.test(log), 'ya no existe la rama "IGNORÓ AGY_MODEL" (#6861)');
+    assert.ok(!/AGY_MODEL|GEMINI_MODEL/.test(log), 'las variables legacy no dejan rastro en el log');
 });
 
 test('CA-5: en dry-run el comando es idéntico al de flag apagado y queda la traza', () => {
@@ -514,14 +539,14 @@ test('CA-5: en dry-run el comando es idéntico al de flag apagado y queda la tra
 
 test('CA-5: en dry-run sobre un provider de env se nombra la variable que se habría seteado', () => {
     const { spawnCall, logs } = launch({
-        provider: 'gemini-google',
+        provider: 'antigravity',
         model: 'gemini-3.8-flash-low',
         config: cfg({ enabled: true, default_mode: 'dry-run' }),
     });
-    assert.equal(spawnCall.opts.env.GEMINI_MODEL, undefined, 'dry-run no setea la env');
+    assert.equal(spawnCall.opts.env.ANTIGRAVITY_MODEL, undefined, 'dry-run no setea la env');
     const log = logs.joined();
     assert.ok(log.includes('[dry-run]'));
-    assert.ok(log.includes('GEMINI_MODEL'), 'debe nombrar la variable del canal');
+    assert.ok(log.includes('ANTIGRAVITY_MODEL'), 'debe nombrar la variable del canal');
     assert.ok(log.includes('gemini-3.8-flash-low'));
 });
 
@@ -636,7 +661,7 @@ const PROVIDERS_LLM = Object.keys(PROVIDER_HANDLERS)
 test('CA-7: la tabla de handlers enumerada no está vacía (el guardrail mira algo real)', () => {
     assert.ok(PROVIDERS_LLM.length >= 3, `se esperaban al menos 3 providers LLM, hay ${PROVIDERS_LLM.length}`);
     // Los tres vigentes tras #6563 tienen que estar sí o sí.
-    for (const p of ['anthropic', 'openai-codex', 'gemini-google']) {
+    for (const p of ['anthropic', 'openai-codex', 'antigravity']) {
         assert.ok(PROVIDERS_LLM.includes(p), `falta el provider ${p} en la tabla de handlers`);
     }
 });
@@ -660,7 +685,7 @@ for (const provider of PROVIDERS_LLM) {
         const modelo = {
             anthropic: 'claude-haiku-4-5',
             'openai-codex': 'gpt-5.4-mini',
-            'gemini-google': 'gemini-3.8-flash-medium',
+            'antigravity': 'gemini-3.8-flash-medium',
         }[provider];
         assert.ok(modelo, `falta el modelo de prueba para el provider '${provider}' — agregalo acá`);
 

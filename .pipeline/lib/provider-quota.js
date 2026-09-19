@@ -37,9 +37,9 @@ const path = require('path');
 const PROVIDER_WINDOWS = Object.freeze({
     'anthropic':     { short: { win: '5h',  kind: 'short' }, long: { win: 'Sem', kind: 'long' }, mode: 'gauge' },
     'openai-codex':  { short: { win: 'Roll', kind: 'short' }, long: { win: 'Sem', kind: 'long' }, mode: 'event' },
-    'gemini-google': { short: { win: 'Min', kind: 'short' }, long: { win: 'Día', kind: 'long' }, mode: 'gauge' },
+    'antigravity': { short: { win: 'Min', kind: 'short' }, long: { win: 'Día', kind: 'long' }, mode: 'gauge' },
     // cerebras / nvidia-nim / kimi-moonshot retirados en #6563 (usaban la misma
-    // forma que gemini-google: ventana Min/Día en modo 'gauge').
+    // forma que antigravity: ventana Min/Día en modo 'gauge').
 });
 
 const DEFAULT_WINDOW = Object.freeze({
@@ -59,9 +59,9 @@ const DEFAULT_WINDOW = Object.freeze({
 // OAuth/MAX también iría en el bucket FREE (usa recordSample y NO el débito
 // atómico ni `snapshot_threshold_90`, propios de Anthropic MAX — CA-9).
 // #6563 — los free retirados (cerebras, nvidia-nim, kimi-moonshot) salieron de
-// la lista; gemini-google sigue siendo `free` hasta #6564.
+// la lista; antigravity sigue siendo `free` hasta #6564.
 const PAID_PROVIDERS = Object.freeze(['anthropic', 'openai-codex']);
-const FREE_PROVIDERS = Object.freeze(['gemini-google']);
+const FREE_PROVIDERS = Object.freeze(['antigravity']);
 
 function isPaidProvider(provider) {
     return PAID_PROVIDERS.includes(provider);

@@ -69,10 +69,10 @@ node .pipeline/tools/multi-provider-smoke-test.js
 node .pipeline/tools/multi-provider-smoke-test.js --skill=guru
 
 # Filtrar a un único provider
-node .pipeline/tools/multi-provider-smoke-test.js --provider=gemini-google
+node .pipeline/tools/multi-provider-smoke-test.js --provider=antigravity
 
 # Filtrar a una combinación específica
-node .pipeline/tools/multi-provider-smoke-test.js --skill=qa --provider=gemini-google
+node .pipeline/tools/multi-provider-smoke-test.js --skill=qa --provider=antigravity
 
 # Dry-run (sin invocar providers — útil para validar shape sin gastar quota)
 node .pipeline/tools/multi-provider-smoke-test.js --dry-run
@@ -151,7 +151,7 @@ Latencia se reporta sólo en buckets discretos (CA-A7 / REQ-SEC-9):
    {
      "event": "forced_provider_override",
      "skill": "multi-provider-smoke-test",
-     "forced_provider": "gemini-google",
+     "forced_provider": "antigravity",
      "primary_provider_bypassed": "anthropic",
      "source": "smoke-test"
    }
@@ -193,7 +193,7 @@ Cualquier exceso → exit 3 + audit `event: 'cap_exceeded'`.
     "run_id": "run-1717068896789-a1b2c3d4",
     "event": "spawn_dry_run | cell_skipped | cell_na | cap_exceeded | data_residency_blocked | ...",
     "skill": "guru",
-    "provider": "gemini-google",
+    "provider": "antigravity",
     "model": "gemini-2.0-flash",
     "exit_code": 0,
     "latency_bucket": "<=2s",

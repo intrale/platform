@@ -9,7 +9,7 @@ const config = require('../agent-models.json');
 test('la baja conserva exactamente tres proveedores LLM y cobertura Codex por skill', () => {
     const matrix = buildMatrixFromAgentModels(config);
     assert.deepEqual([...new Set(matrix.map(cell => cell.provider))].sort(),
-        ['anthropic', 'gemini-google', 'openai-codex']);
+        ['anthropic', 'antigravity', 'openai-codex']);
     for (const skill of new Set(matrix.map(cell => cell.skill))) {
         assert.ok(matrix.some(cell => cell.skill === skill &&
             cell.provider === 'openai-codex' && cell.eligible), skill);
@@ -17,7 +17,7 @@ test('la baja conserva exactamente tres proveedores LLM y cobertura Codex por sk
 });
 
 test('Gemini conserva billing free y sigue admitido después del vencimiento anterior', () => {
-    const gemini = config.providers['gemini-google'];
+    const gemini = config.providers['antigravity'];
     assert.equal(gemini.billing, 'free');
     assert.equal(gemini.admission.exception.issue, 6564);
     for (const date of ['2026-09-16', '2026-11-01']) {

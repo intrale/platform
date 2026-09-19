@@ -53,9 +53,9 @@ function loadCssFile(p) {
     try { return fs.readFileSync(p, 'utf8'); } catch { return ''; }
 }
 
-// Orden de presentación fijo (UX: Anthropic → Codex → Gemini). Los providers
+// Orden de presentación fijo (UX: Anthropic → Codex → Antigravity). Los providers
 // fuera del set se ubican al final, ordenados alfabéticamente.
-const PROVIDER_ORDER = ['anthropic', 'openai', 'openai-codex', 'gemini-google', 'deterministic'];
+const PROVIDER_ORDER = ['anthropic', 'openai', 'openai-codex', 'antigravity', 'deterministic'];
 
 const PANEL_CSS = `
 .mph-frame { max-width: 1600px; margin: 0 auto; padding: 0; }
@@ -287,6 +287,8 @@ function providerToken(p){
   if(p==='openai') return '--provider-openai';
   if(p==='openai-codex'||p==='codex') return '--provider-openai-codex';
   if(p==='deterministic') return '--provider-deterministic';
+  // #6861 — hasta el rename el provider caía en --provider-unknown (gap latente).
+  if(p==='antigravity') return '--provider-antigravity';
   return '--provider-unknown';
 }
 function providerIconId(p){
@@ -295,7 +297,7 @@ function providerIconId(p){
   if(p==='openai') return 'ic-provider-openai';
   if(p==='openai-codex'||p==='codex') return 'ic-provider-openai-codex';
   if(p==='deterministic') return 'ic-provider-deterministic';
-  if(p==='gemini-google') return 'ic-provider-gemini';
+  if(p==='antigravity') return 'ic-provider-antigravity';
   return 'ic-provider-unknown';
 }
 function providerIconSvg(p){

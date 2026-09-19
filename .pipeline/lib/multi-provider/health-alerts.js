@@ -170,7 +170,7 @@ function sanitizeModelId(modelId) {
  *   - Para estados `green` / `yellow` solo aplica la ventana dedup de 10 min.
  *
  * @param {object} params
- * @param {string} params.provider — `gemini-google`, etc.
+ * @param {string} params.provider — `antigravity`, etc.
  * @param {string} params.state — `green` | `yellow` | `red`.
  * @param {string} params.reasonCode — código genérico (sanitizado al persistir).
  * @param {number} [params.now=Date.now()]
@@ -317,7 +317,7 @@ function record({ provider, state, sent, now = Date.now(), dedupFile = HOME_DEDU
  * alerta vuelve a tener sentido sola si se suman free providers. `freeProviders`
  * es inyectable para testear la lógica del umbral sin depender del plantel.
  */
-const FREE_PROVIDERS = Object.freeze(new Set(['gemini-google']));
+const FREE_PROVIDERS = Object.freeze(new Set(['antigravity']));
 const MULTI_DOWN_MIN_RED = 3;
 
 function decideMultiDown({ snapshot, now = Date.now(), dedupFile = HOME_DEDUP_FILE, fsImpl = fs, freeProviders = FREE_PROVIDERS } = {}) {
@@ -383,7 +383,7 @@ const UNREPRESENTABLE_MODEL_KEY = '__unrepresentable__';
  * Decide si un modelo fuera de catálogo merece emisión a Telegram.
  *
  * @param {object} params
- * @param {string} params.provider — provider gestionado (`gemini-google`, …).
+ * @param {string} params.provider — provider gestionado (`antigravity`, …).
  * @param {string} params.modelId — id configurado. Si no pasa el sanitize, la
  *   alerta se emite IGUAL con `model_id: null` (nunca el crudo, nunca se omite).
  * @param {string} [params.providerState] — estado de salud del provider. Viaja
@@ -442,7 +442,7 @@ function recordModelEvent({ provider, modelId, sent, now = Date.now(), dedupFile
 
 // #6564: la racha viene del snapshot durable; el dedupe conserva sólo envíos.
 function decidePlanEvent({ provider, providerState, planCheck, now = Date.now(), dedupFile = HOME_DEDUP_FILE, fsImpl = fs } = {}) {
-    if (provider !== 'gemini-google' || !ALLOWED_STATES.has(providerState)
+    if (provider !== 'antigravity' || !ALLOWED_STATES.has(providerState)
         || !planCheck || planCheck.reason_code !== 'plan_tier_unknown'
         || !Number.isInteger(planCheck.consecutive_count) || planCheck.consecutive_count < 2) return { shouldEmit: false };
     const store = tryReadJson(dedupFile, fsImpl) || {};
@@ -454,7 +454,7 @@ function decidePlanEvent({ provider, providerState, planCheck, now = Date.now(),
 }
 
 function recordPlanEvent({ provider, sent, now = Date.now(), dedupFile = HOME_DEDUP_FILE, fsImpl = fs } = {}) {
-    if (provider !== 'gemini-google' || !sent) return;
+    if (provider !== 'antigravity' || !sent) return;
     const store = tryReadJson(dedupFile, fsImpl) || { alerts: {} };
     if (!store.alerts || typeof store.alerts !== 'object') store.alerts = {};
     store.alerts[`${provider}|plan`] = { last_sent_at: now };

@@ -57,7 +57,7 @@ function readAuditLines(tmpDir, dateOverride) {
 // incluye anthropic y openai-codex para que pase la validación de allowlist.
 function fakeAdapters(quotaResult) {
     return {
-        ALLOWED_PROVIDERS: ['anthropic', 'openai-codex', 'gemini-google', 'cerebras'],
+        ALLOWED_PROVIDERS: ['anthropic', 'openai-codex', 'antigravity', 'cerebras'],
         quotaUsage: () => quotaResult,
     };
 }

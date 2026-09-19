@@ -218,7 +218,7 @@ test('GET /api/multi-provider/providers-schedule lista todos los providers váli
     // Debe incluir un item por provider de la allowlist.
     const names = json.providers.map(p => p.name);
     assert.ok(names.includes('anthropic'));
-    assert.ok(names.includes('gemini-google'));
+    assert.ok(names.includes('antigravity'));
     // Nunca debe exponer claves.
     assert.equal(JSON.stringify(json).includes('sk-'), false);
 });

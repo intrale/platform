@@ -35,7 +35,8 @@ const fakeCredentialStore = {
   providers: {
     openai: { api_key: 'fake-openai' },
     anthropic: { api_key: 'fake-anthropic' },
-    google: { api_key: 'fake-google' },
+    // #6861 — providers.google.api_key (key de AI Studio) salio del store y del
+    // manifiesto: `antigravity` autentica por OAuth del CLI.
   },
   google_drive: {
     _note: 'metadata',
@@ -386,13 +387,13 @@ test('todo consumer_status=resolved nombra consumidores que existen en el repo',
 
 test('toda clave providers.* resolved esta declarada en credentials_env de agent-models', () => {
   // El candado con dientes: `resolved` no es una opinion, es verificable contra
-  // el artefacto que cablea los providers. gemini-google autentica por OAuth via
+  // el artefacto que cablea los providers. antigravity autentica por OAuth via
   // `agy` y NO declara credentials_env, por eso su api_key no puede ser resolved.
   const models = JSON.parse(fs.readFileSync(path.join(ROOT, '.pipeline', 'agent-models.json'), 'utf8'));
   const declaradas = new Set(Object.values(models.providers || {})
     .flatMap((provider) => provider.credentials_env || []));
   // #6563 — ancla explicita: tras retirar cerebras / nvidia-nim / kimi-moonshot
-  // solo anthropic y openai-codex declaran credentials_env (gemini-google es
+  // solo anthropic y openai-codex declaran credentials_env (antigravity es
   // OAuth puro y no declara ninguna).
   assert.deepEqual([...declaradas].sort(), ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY'],
     `credentials_env vacio o no parseado: ${declaradas.size}`);
@@ -410,17 +411,23 @@ test('toda clave providers.* resolved esta declarada en credentials_env de agent
     assert.ok(declaradas.has(entry.env_var),
       `${entry.name}: ${entry.env_var} no figura en ningun credentials_env`);
   }
-  // Control negativo: revertir google a resolved tiene que romper este candado.
+  // Control negativo: una clave providers.* declarada resolved sin figurar en
+  // ningun credentials_env tiene que romper este candado. Hasta #6861 el caso
+  // real era `providers.google.api_key` (retirada del manifiesto junto con el
+  // shim HTTP de AI Studio); ahora se inyecta una entrada sintetica FAKE-*.
   const revertida = structuredClone(manifest);
-  const google = revertida.entries.find((entry) => entry.name === 'providers.google.api_key');
-  assert.equal(google.consumer_status, 'no_consumer');
-  assert.equal(google.required_when, 'never');
-  google.consumer_status = 'resolved';
+  assert.equal(revertida.entries.some((entry) => entry.name === 'providers.google.api_key'), false,
+    'providers.google.api_key se retiro del manifiesto en #6861');
+  revertida.entries.push({
+    name: 'providers.fake.api_key', service: 'providers', source: 'store',
+    env_var: 'FAKE_PROVIDER_API_KEY', required_when: 'never', hydration: 'eager',
+    consumer_status: 'resolved', consumers: ['.pipeline/pulpo.js'],
+  });
   const rotas = revertida.entries
     .filter((entry) => entry.service === 'providers' && entry.consumer_status === 'resolved')
     .filter((entry) => !declaradas.has(entry.env_var))
     .map((entry) => entry.name);
-  assert.deepEqual(rotas, ['providers.google.api_key']);
+  assert.deepEqual(rotas, ['providers.fake.api_key']);
 });
 
 test('ningun provider fail-fast puede declararse no_consumer/never en el manifiesto', () => {

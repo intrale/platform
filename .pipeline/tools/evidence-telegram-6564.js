@@ -86,7 +86,7 @@ async function main() {
     const now = Date.now();
     const dedupFile = path.join(tmp, 'dedup.json');
     const row = {
-        provider: 'gemini-google', state: 'green', reason_code: 'cli_catalog_ok',
+        provider: 'antigravity', state: 'green', reason_code: 'cli_catalog_ok',
         last_checked_at: new Date(now).toISOString(), auth_mode: 'oauth', cli_probe: { model_count: 14 },
         plan_check: { reason_code: 'plan_tier_unknown', checked_at: new Date(now).toISOString(), consecutive_count: 1 },
     };

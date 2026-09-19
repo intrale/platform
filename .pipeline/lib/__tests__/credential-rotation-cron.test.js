@@ -668,11 +668,13 @@ test('ROTATION_POLICY_DAYS · 90 días por convención', () => {
 // verde ese agujero; contra `ENV_DESCRIPTORS` la coherencia es la real (13).
 // #6563 — ancla: 13 → 10 variables al retirar CEREBRAS_API_KEY,
 // NVIDIA_NIM_API_KEY y ANTHROPIC_AUTH_TOKEN (Kimi) de ENV_DESCRIPTORS.
-test('inventario real · conserva exactamente las 10 variables de ENV_DESCRIPTORS', () => {
+// #6861 — ancla: 10 → 9 al retirar GEMINI_API_KEY (la key de AI Studio):
+// `antigravity` autentica por OAuth del CLI, sin api_key en el inventario.
+test('inventario real · conserva exactamente las 9 variables de ENV_DESCRIPTORS', () => {
   const inventory = fs.readFileSync(path.join(__dirname, '..', '..', '..', 'docs', 'secrets-inventory.md'), 'utf8');
   const rows = cron.parseInventoryMarkdown(inventory);
   const expected = Object.values(require('../credentials').ENV_DESCRIPTORS).map((d) => d.env).sort();
-  assert.equal(expected.length, 10);
+  assert.equal(expected.length, 9);
   assert.deepEqual(rows.map((row) => row.env_var).sort(), expected);
 });
 

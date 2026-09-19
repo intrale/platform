@@ -70,7 +70,7 @@ test('assessProviderQuota: fail-open ante adapterStatus unknown/error (NO gatea)
 });
 
 test('assessProviderQuota: adapter OK pero status no-critical (warning) NO gatea', () => {
-    const r = providerHealth.assessProviderQuota('gemini-google', {
+    const r = providerHealth.assessProviderQuota('antigravity', {
         quotaUsageImpl: () => ({ adapterStatus: 'ok', status: 'warning', pct: 80 }),
     });
     assert.equal(r.gated, false);

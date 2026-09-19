@@ -23,7 +23,7 @@ async function main() {
     const groups = probe.GROUPS.map(g => ({ name: g.name, buckets: g.ids.map((id, i) => ({
         id, window: i ? '5h' : 'weekly', remaining_fraction: i ? 1 : 0.9935, reset_time: '2026-09-23T16:14:00.000Z',
     })) }));
-    const base = { provider: 'gemini-google', state: 'green', reason_code: 'cli_catalog_ok',
+    const base = { provider: 'antigravity', state: 'green', reason_code: 'cli_catalog_ok',
         last_checked_at: new Date(now).toISOString(), auth_mode: 'oauth', cli_probe: { model_count: 14 } };
     let row;
     const scenarios = [
@@ -55,7 +55,7 @@ async function main() {
         for (const [id, value, expected] of scenarios) {
             row = value;
             await page.reload();
-            const el = await page.$('[data-provider="gemini-google"]');
+            const el = await page.$('[data-provider="antigravity"]');
             assert.ok((await el.evaluate(e => e.textContent)).includes(expected));
             await el.scrollIntoView();
             await el.screenshot({ path: path.join(out, `${id}.png`) });

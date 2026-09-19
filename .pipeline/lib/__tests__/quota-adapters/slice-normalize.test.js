@@ -73,8 +73,8 @@ test('CA-3: Codex con pct semanal real → weekly poblado, session null', () => 
 
 test('CA-4: Gemini not_implemented → ambos buckets "sin dato"', () => {
     const slices = freshSlices();
-    const result = { provider: 'gemini-google', adapterStatus: 'not_implemented', pct: null, session: { pct: null } };
-    const n = slices.normalizeProviderQuota('gemini-google', result);
+    const result = { provider: 'antigravity', adapterStatus: 'not_implemented', pct: null, session: { pct: null } };
+    const n = slices.normalizeProviderQuota('antigravity', result);
     assert.equal(n.session.pct, null);
     assert.equal(n.weekly.pct, null);
     assert.equal(n.weekly.confidence, 'missing');
@@ -131,7 +131,7 @@ test('CA-5: quotaSlice mantiene el % agregado top-level tras el desglose', () =>
         model: 'claude-sonnet-4',
     }) + '\n');
     fs.writeFileSync(path.join(pipeline, 'agent-models.json'), JSON.stringify({
-        providers: { anthropic: {}, 'openai-codex': {}, 'gemini-google': {} },
+        providers: { anthropic: {}, 'openai-codex': {}, 'antigravity': {} },
     }));
     const slices = freshSlices();
     const out = slices.quotaSlice({}, { ROOT: root, PIPELINE: pipeline });

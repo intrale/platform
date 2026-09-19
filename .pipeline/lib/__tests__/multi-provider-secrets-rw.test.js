@@ -108,6 +108,8 @@ test('listKeys lee del formato CANONICAL nested', () => {
         providers: {
             openai:   { api_key: 'sk-actual-key-1234567890abcdef' },
             anthropic: { api_key: 'PLACEHOLDER' },
+            // #6861 — clave residual de AI Studio: antigravity ya no la lee
+            // (sin canonicalPath), así que NO cuenta como present.
             google:   { api_key: 'AIza_real_key_1234567890abc' },
             // #6563 — clave huérfana de un provider retirado: se ignora.
             cerebras: { api_key: 'csk_real_key_1234567890abcdef' },
@@ -124,11 +126,14 @@ test('listKeys lee del formato CANONICAL nested', () => {
     assert.equal(byProvider.anthropic.status, 'placeholder');
     assert.equal(byProvider.anthropic.editable, false);
 
-    // El free provider vivo DEBE aparecer como present con la estructura
-    // nested — éste es exactamente el caso que rompía el dashboard antes de
-    // #3313. #3353 eliminó groq y #6563 cerebras/nvidia-nim, así que ya no
+    // El provider OAuth vivo sigue listado (la UI lo muestra) pero SIN key
+    // gestionada: desde #6861 no tiene canonicalPath, así que la clave
+    // residual `providers.google.api_key` del JSON no lo vuelve present.
+    // #3353 eliminó groq y #6563 cerebras/nvidia-nim, así que ya no
     // aparecen en este listado aunque el JSON conserve sus claves.
-    assert.equal(byProvider['gemini-google'].status, 'present');
+    assert.equal(byProvider['antigravity'].status, 'absent');
+    assert.equal(byProvider['antigravity'].canonicalPath, null);
+    assert.equal(byProvider['antigravity'].masked, null);
     assert.equal(byProvider.groq, undefined, 'groq debería estar removido tras #3353');
     assert.equal(byProvider.cerebras, undefined, 'cerebras debería estar removido tras #6563');
     assert.equal(byProvider['nvidia-nim'], undefined, 'nvidia-nim debería estar removido tras #6563');
@@ -146,8 +151,8 @@ test('listKeys lee del formato LEGACY flat (fallback)', () => {
 
     assert.equal(byProvider.openai.status, 'present');
     assert.equal(byProvider.anthropic.status, 'placeholder');
-    // El legacy no incluye gemini-google → absent.
-    assert.equal(byProvider['gemini-google'].status, 'absent');
+    // El legacy no incluye antigravity → absent.
+    assert.equal(byProvider['antigravity'].status, 'absent');
 });
 
 test('rotateKey rechaza provider no gestionado', () => {
@@ -295,8 +300,9 @@ test('getRawKey lee la key real del CANONICAL nested', () => {
         },
     }));
     assert.equal(secrets.getRawKey({ provider: 'openai', secretsPath: file }), 'sk-real-1234567890abcdef0000');
-    // 'gemini-google' (UI) mapea a 'providers.google.api_key' en canonical.
-    assert.equal(secrets.getRawKey({ provider: 'gemini-google', secretsPath: file }), 'AIza-real-1234567890abcdef');
+    // #6861 — 'antigravity' es OAuth puro: no mapea a ninguna clave del
+    // canonical, ni siquiera si `providers.google.api_key` sigue en el archivo.
+    assert.equal(secrets.getRawKey({ provider: 'antigravity', secretsPath: file }), null);
     assert.equal(secrets.getRawKey({ provider: 'anthropic', secretsPath: file }), null, 'PLACEHOLDER → null');
 });
 
@@ -311,8 +317,8 @@ test('getRawKey lee del LEGACY flat cuando el canonical no existe', () => {
 
 // ─── Plantel de providers (#3260 + #3313 + #3353 + #6563) ───────────────────
 
-// #6563 — ancla del plantel gestionado: anthropic + openai + gemini-google.
-const PLANTEL_MANAGED = ['anthropic', 'openai', 'gemini-google'];
+// #6563 — ancla del plantel gestionado: anthropic + openai + antigravity.
+const PLANTEL_MANAGED = ['anthropic', 'openai', 'antigravity'];
 
 test('MANAGED_KEYS refleja el plantel vigente y excluye los providers retirados', () => {
     const providers = secrets.MANAGED_KEYS.map(k => k.provider);
@@ -324,18 +330,21 @@ test('MANAGED_KEYS refleja el plantel vigente y excluye los providers retirados'
     assert.ok(!providers.includes('nvidia-nim'), 'nvidia-nim debería estar removido tras #6563');
 
     const byP = Object.fromEntries(secrets.MANAGED_KEYS.map(k => [k.provider, k]));
-    assert.equal(byP['gemini-google'].canonicalPath, 'providers.google.api_key');
+    // #6861 — antigravity no administra key alguna: sin canonicalPath ni legacyField.
+    assert.equal(byP['antigravity'].canonicalPath, undefined);
+    assert.equal(byP['antigravity'].legacyField, undefined);
+    assert.equal(byP['antigravity'].label, 'Antigravity CLI');
     assert.equal(byP.openai.canonicalPath, 'providers.openai.api_key');
     assert.equal(byP.anthropic.canonicalPath, 'providers.anthropic.api_key');
 });
 
 // #6563 — el caso "free providers son editable=true" se retiró con cerebras y
-// nvidia-nim: el único free vivo (gemini-google) es OAuth y no rota API keys.
-test('gemini-google (único free vivo) es OAuth: editable=false con free_tier_notes', () => {
-    const gemini = secrets.MANAGED_KEYS.find(k => k.provider === 'gemini-google');
-    assert.equal(gemini.editable, false, 'Gemini OAuth no rota API keys vía UI');
-    assert.equal(gemini.auth_mode, 'oauth');
-    assert.ok(gemini.free_tier_notes);
+// nvidia-nim: el único free vivo (antigravity) es OAuth y no rota API keys.
+test('antigravity (único free vivo) es OAuth: editable=false con free_tier_notes', () => {
+    const antigravity = secrets.MANAGED_KEYS.find(k => k.provider === 'antigravity');
+    assert.equal(antigravity.editable, false, 'Antigravity OAuth no rota API keys vía UI');
+    assert.equal(antigravity.auth_mode, 'oauth');
+    assert.ok(antigravity.free_tier_notes);
 });
 
 test('rotateKey de provider editable sobre CANONICAL crea backup + write atómico 0600 (SR-1)', () => {
@@ -367,12 +376,15 @@ test('listKeys de free provider incluye free_tier_notes en metadata', () => {
     const dir = tmpDir();
     const file = path.join(dir, 'credentials.json');
     fs.writeFileSync(file, JSON.stringify({
-        providers: { google: { api_key: 'AIza_aaaaaaaaaaaaaaaaaaaaaa' } },
+        providers: { openai: { api_key: 'sk-aaaaaaaaaaaaaaaaaaaaaaaa' } },
     }));
     const out = secrets.listKeys({ secretsPath: file });
-    const gemini = out.find(k => k.provider === 'gemini-google');
-    assert.equal(gemini.status, 'present');
-    assert.ok(gemini.free_tier_notes, 'free_tier_notes debe estar en la metadata listKeys');
+    const antigravity = out.find(k => k.provider === 'antigravity');
+    // #6861 — OAuth puro: siempre `absent` en el store, pero la metadata
+    // (free_tier_notes, label) sigue llegando a la UI.
+    assert.equal(antigravity.status, 'absent');
+    assert.equal(antigravity.label, 'Antigravity CLI');
+    assert.ok(antigravity.free_tier_notes, 'free_tier_notes debe estar en la metadata listKeys');
 });
 
 // =============================================================================
@@ -545,7 +557,9 @@ test('rotateKey sigue verde delegando en writeCanonicalPaths', () => {
 test('MANAGED_KEYS NO se extiende con Drive (no es un provider administrable por UI)', () => {
     // MANAGED_KEYS alimenta listKeys() y la UI de credenciales del dashboard.
     // Drive entraría ahí con semántica `editable` que no le corresponde.
-    const paths = secrets.MANAGED_KEYS.map(k => k.canonicalPath);
+    // #6861 — antigravity no tiene canonicalPath (OAuth puro); se filtra.
+    const paths = secrets.MANAGED_KEYS.map(k => k.canonicalPath).filter(Boolean);
+    assert.deepEqual(paths, ['providers.anthropic.api_key', 'providers.openai.api_key']);
     assert.ok(!paths.some(p => p.startsWith('google_drive.')));
     assert.ok(!paths.some(p => p.startsWith('r2.')));
 });

@@ -31,7 +31,7 @@
 
 ## 1. Agregar un proveedor nuevo
 
-> **Estado actual (2026-09-16, post [#6563](https://github.com/intrale/platform/issues/6563)):** el plantel es de **tres proveedores LLM** — `anthropic`, `openai-codex` y `gemini-google` (launcher `agy` de Antigravity, encendido en #6857) — más `deterministic` para los skills sin LLM. Los proveedores gratuitos `cerebras`, `nvidia-nim` y `kimi-moonshot` (y los remanentes `ollama`/`groq` del código) fueron dados de baja en #6563 por el criterio de admisión de [§16](#16-criterio-de-admisión-de-proveedores-6562). Esta sección describe el procedimiento end-to-end para dar de alta un proveedor sin leer código fuente; para **volver a habilitar uno retirado**, ver [§17](#17-plan-de-rollback--re-alta-de-un-proveedor-dado-de-baja-6563).
+> **Estado actual (2026-09-16, post [#6563](https://github.com/intrale/platform/issues/6563)):** el plantel es de **tres proveedores LLM** — `anthropic`, `openai-codex` y `antigravity` (launcher `agy` de Antigravity, encendido en #6857) — más `deterministic` para los skills sin LLM. Los proveedores gratuitos `cerebras`, `nvidia-nim` y `kimi-moonshot` (y los remanentes `ollama`/`groq` del código) fueron dados de baja en #6563 por el criterio de admisión de [§16](#16-criterio-de-admisión-de-proveedores-6562). Esta sección describe el procedimiento end-to-end para dar de alta un proveedor sin leer código fuente; para **volver a habilitar uno retirado**, ver [§17](#17-plan-de-rollback--re-alta-de-un-proveedor-dado-de-baja-6563).
 
 ### 1.1 Checklist de 6 puntos de toque
 
@@ -90,10 +90,10 @@ Estructura literal aceptada por el schema Ajv 2020-12 ([`.pipeline/agent-models.
 
 **Claves:**
 
-- `launcher` — alias del binario CLI. Debe estar en `ALLOWED_LAUNCHERS` (`claude`, `codex`, `gemini-google`, `node`). El schema deriva su enum por inyección programática, no por copia literal: editar la constante en JS basta.
+- `launcher` — alias del binario CLI. Debe estar en `ALLOWED_LAUNCHERS` (`claude`, `codex`, `antigravity`, `node`). El schema deriva su enum por inyección programática, no por copia literal: editar la constante en JS basta.
 - `model` — modelo por default si el skill no sobreescribe.
 - `spawn_args_template` — argv que recibe el child. Las llaves `{user_prompt}`, `{system_file}`, `{script_path}`, `{issue}`, `{trabajando_path}`, `{model}` son los **únicos placeholders válidos** (`ALLOWED_PLACEHOLDERS`). Sustitución 1:1 a elemento del argv — **nunca concatenación shell**.
-- `output_parser` — normalizador del output. Valores: `anthropic-stream-json`, `openai-sse`, `gemini-stream`, `none` (deterministic).
+- `output_parser` — normalizador del output. Valores: `anthropic-stream-json`, `openai-sse`, `antigravity-stream-json`, `none` (deterministic).
 - `quota_error_types` — strings que el detector de cuota (`lib/quota-exhausted.js`) marca como "cuota agotada" para este provider. Cada item cross-validado contra la **meta-allowlist** en `KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER` ([#3077](https://github.com/intrale/platform/issues/3077) SEC-2, defensa anti supply-chain).
 
   > **Shapes que entiende el handler `openai-sse`** ([#5978](https://github.com/intrale/platform/issues/5978)). El discriminador se lee de campos de **control**, nunca de texto libre ni del canal de contenido del modelo, y sólo matchea si el provider **declaró** ese tipo:
@@ -109,7 +109,7 @@ Estructura literal aceptada por el schema Ajv 2020-12 ([`.pipeline/agent-models.
 - `supports_tool_use` — `true` / `false` / `"limited"`. Define paridad funcional cross-provider.
 - `prompt_caching` — capacidades de cache (`supported`, `auto`, `ttl_seconds_default`, `ttl_seconds_extended`). Necesario para normalizar costos cross-provider.
 - `credentials_env` — env vars que **deben existir al boot del pulpo** si algún skill referencia este provider. Cada item validado contra `ALLOWED_CREDENTIAL_ENV_VARS` ([#3080](https://github.com/intrale/platform/issues/3080) SEC-3, anti-exfiltración de `PATH`/`AWS_SECRET_ACCESS_KEY` por declaración). **Cuando `auth_mode` es `"oauth"` este campo es opcional e informativo** — no se exige la key al boot ni se inyecta al child (ver abajo).
-- `auth_mode` — `"oauth"` | `"api_key"` (default `"api_key"` si está ausente). Declara **cómo** autentica el provider ([#3361](https://github.com/intrale/platform/issues/3361), generalizado por [#4306](https://github.com/intrale/platform/issues/4306)). Los providers OAuth/CLI login (`anthropic` → Claude Max, `openai-codex` → ChatGPT Plus vía `codex login`, `gemini-google` → cuenta Google) autentican vía login interactivo del CLI; su token vive en stores locales (`~/.claude/.credentials.json`, `~/.codex`, cuenta Google) y **nunca pasa por una env var**. Por eso, con `auth_mode: "oauth"`: (a) el pre-check de credenciales (`credentials-precheck.js`) y el boot validator (`agent-models-validate.js`) **bypassean** la exigencia de `credentials_env`; (b) `build-child-env.js` **no exige ni inyecta** la key al env del child (env-isolation). Un provider HTTP por API key pelada (como lo eran `cerebras` y `nvidia-nim` hasta su baja en [#6563](https://github.com/intrale/platform/issues/6563); hoy no queda ninguno en el plantel) **NO** lleva `auth_mode` (queda `api_key` por default) y sigue exigiendo su key. **Coherencia fail-closed:** `agent-models-validate.js` rechaza al cargar (`error`, no warning) un provider `oauth` cuyo `launcher` no sea de login CLI (`claude` / `codex` / `gemini-google`) — un provider HTTP/local marcado `oauth` correría sin credencial.
+- `auth_mode` — `"oauth"` | `"api_key"` (default `"api_key"` si está ausente). Declara **cómo** autentica el provider ([#3361](https://github.com/intrale/platform/issues/3361), generalizado por [#4306](https://github.com/intrale/platform/issues/4306)). Los providers OAuth/CLI login (`anthropic` → Claude Max, `openai-codex` → ChatGPT Plus vía `codex login`, `antigravity` → cuenta Google) autentican vía login interactivo del CLI; su token vive en stores locales (`~/.claude/.credentials.json`, `~/.codex`, cuenta Google) y **nunca pasa por una env var**. Por eso, con `auth_mode: "oauth"`: (a) el pre-check de credenciales (`credentials-precheck.js`) y el boot validator (`agent-models-validate.js`) **bypassean** la exigencia de `credentials_env`; (b) `build-child-env.js` **no exige ni inyecta** la key al env del child (env-isolation). Un provider HTTP por API key pelada (como lo eran `cerebras` y `nvidia-nim` hasta su baja en [#6563](https://github.com/intrale/platform/issues/6563); hoy no queda ninguno en el plantel) **NO** lleva `auth_mode` (queda `api_key` por default) y sigue exigiendo su key. **Coherencia fail-closed:** `agent-models-validate.js` rechaza al cargar (`error`, no warning) un provider `oauth` cuyo `launcher` no sea de login CLI (`claude` / `codex` / `antigravity`) — un provider HTTP/local marcado `oauth` correría sin credencial.
 - `permissions_mode` — modo de permisos del CLI. Mapeado a la matriz capability×(provider, mode) de [`docs/pipeline-multi-provider/permission-mapping.md`](../pipeline-multi-provider/permission-mapping.md).
 - `admission` — declaración de las **tres condiciones de admisión** ([#6562](https://github.com/intrale/platform/issues/6562), [§16](#16-criterio-de-admisión-de-proveedores-6562)): `cli_edits_files`, `reports_usage`, `terms_no_training`. Fail-closed: campo ausente = no cumple. `non_llm: true` exime a los ejecutores sin LLM; `exception { reason, until, issue }` mantiene temporalmente en el ruteo a uno que no cumple. Un proveedor referenciado por el ruteo que no declare las tres en `true` rompe el boot y el guardado desde el dashboard con un mensaje `[provider-admission]` que nombra la condición incumplida.
 
@@ -314,11 +314,11 @@ Cualquier cambio dispara:
 | openai-codex | `gpt-5-codex` | 256.000 | chat, tools, cache | 2.50 | 10.00 | backend-dev, pipeline-dev |
 | openai-codex | `gpt-5` | 256.000 | chat, tools, vision, cache | 5.00 | 20.00 | guru, qa |
 | deterministic | `deterministic` | 0 | (sin LLM) | 0 | 0 | build, tester, linter, delivery |
-| gemini-google | `gemini-3.8-flash-high` | — | chat, tools, vision, reasoning | — (licencia Antigravity) | — | perf |
-| gemini-google | `gemini-3.8-flash-medium` | — | chat, tools, vision | — | — | telegram-sherlock |
-| gemini-google | `gemini-3.8-flash-low` | — | chat, tools, vision | — | — | sin asignar |
-| gemini-google | `gemini-3.7-flash-medium` | — | chat, tools, vision | — | — | alternativo del provider (#3501) |
-| gemini-google | *(+10 ids más: `gemini-3.7-flash-{high,low}`, `gemini-3.6-flash-*`, `gemini-3.1-pro-*`, `claude-sonnet-4-6`, `claude-opus-4-6-thinking`, `gpt-oss-120b-medium`)* | — | — | — | — | ver §8.10 |
+| antigravity | `gemini-3.8-flash-high` | — | chat, tools, vision, reasoning | — (licencia Antigravity) | — | perf |
+| antigravity | `gemini-3.8-flash-medium` | — | chat, tools, vision | — | — | telegram-sherlock |
+| antigravity | `gemini-3.8-flash-low` | — | chat, tools, vision | — | — | sin asignar |
+| antigravity | `gemini-3.7-flash-medium` | — | chat, tools, vision | — | — | alternativo del provider (#3501) |
+| antigravity | *(+10 ids más: `gemini-3.7-flash-{high,low}`, `gemini-3.6-flash-*`, `gemini-3.1-pro-*`, `claude-sonnet-4-6`, `claude-opus-4-6-thinking`, `gpt-oss-120b-medium`)* | — | — | — | — | ver §8.10 |
 
 > **Importante:** esta tabla se mantiene **a mano** y puede desactualizarse si el catálogo cambia sin que el doc se actualice. Para el estado canónico siempre consultá el archivo de código o la **Tab "3 · Catálogo"** del dashboard. El issue [#3197](https://github.com/intrale/platform/issues/3197) propone auto-generar esta tabla — sigue abierto.
 
@@ -380,7 +380,7 @@ Si necesitás una restricción más fina ("este skill solo puede usar Haiku o So
 
 Antes de [#3486](https://github.com/intrale/platform/issues/3486) la decisión "¿este código HTTP del provider debería disparar fallback?" estaba duplicada en tres archivos:
 
-- `lib/multi-provider/completion-client.js` — matriz statusCode→reason para el camino HTTP OpenAI-compat (hoy sólo `gemini-google`; Cerebras y NVIDIA NIM retirados en #6563).
+- `lib/multi-provider/completion-client.js` — matriz statusCode→reason para el camino HTTP OpenAI-compat (hoy la lista de providers HTTP está **vacía**: Cerebras y NVIDIA NIM se retiraron en #6563 y el shim HTTP de AI Studio en #6861; `antigravity` va por spawn CLI, ver [§12](#12-sherlock-verifier--timeout-y-providers-3484)).
 - `lib/multi-provider/live-ping.js` — un `interpret(status, bodyExcerpt)` por provider, con regex literales duplicados.
 - `lib/commander/provider-error-parser.js` — path `transport: 'api'` con su propia matriz para 401/403/429/5xx.
 
@@ -413,7 +413,6 @@ classifyHttpError(statusCode, responseBody, provider) → {
 | 402 | billing | quota_exhausted | **true** |
 | 429 + body matches `QUOTA_BODY_PATTERN` | billing | quota_exhausted | **true** |
 | 429 (sin match de quota) | rate_limit | rate_limited | **true** |
-| 400 + body matches `GEMINI_API_KEY_INVALID_PATTERN` | auth | invalid_credentials | false |
 | 5xx | transient | server_error | false |
 | null / NaN / "abc" / fuera de [100, 599] | unknown | unclassified | false |
 | Otros 4xx (404, 422, …) | unknown | unclassified | false |
@@ -452,7 +451,7 @@ classifyHttpError(statusCode, responseBody, provider) → {
 Declarar un modelo en `agent-models.json` no alcanzaba para que el agente lo usara.
 Hasta #6272 el pipeline **resolvía** el modelo (`effective.model` en
 `lib/agent-launcher.js`) y lo **logueaba**, pero nunca lo pasaba al hijo: Anthropic
-jamás recibía `--model`, y `CODEX_MODEL` / `GEMINI_MODEL` (y las variables de los
+jamás recibía `--model`, y `CODEX_MODEL` / `ANTIGRAVITY_MODEL` (y las variables de los
 proveedores gratuitos entonces vigentes) nunca se seteaban para agentes (sólo las
 completaban `lib/sherlock-verifier.js` y `lib/commander/glitch-retry.js`). Resultado:
 todos los proveedores corrían con el **default de su CLI**, no con lo declarado.
@@ -466,7 +465,7 @@ La política vive en [`.pipeline/lib/model-propagation.js`](../../.pipeline/lib/
 |---|---|---|---|
 | `anthropic` | `claude` | argv | `['--model', id]` — dos elementos separados del array |
 | `openai-codex` | `codex` | env | `CODEX_MODEL` → el handler la traduce a `-m <id>` |
-| `gemini-google` | `gemini-google` | env | `GEMINI_MODEL` → `--model <id>`. **Única fuente**: `AGY_MODEL` se ignora y queda en `modelTrace.ignoredEnv` (#6334, cerrado en #6858) |
+| `antigravity` | `antigravity` | env | `ANTIGRAVITY_MODEL` → `--model <id>`. **Única fuente** que lee el handler (#6334 → #6858 → #6861) |
 | `deterministic` | `node` | — | no aplica (Node puro, sin LLM) |
 
 Los nombres de las variables viven en `PROVIDER_MODEL_ENV`
@@ -480,27 +479,29 @@ agente pasa por esa rama y la propagación habría quedado como código muerto.
 El launcher recibe el env ya construido por cualquiera de los dos caminos del
 pulpo y le agrega la variable ahí.
 
-#### Precedencia de la variable de modelo en `gemini-google` (#6334 → #6858)
+#### Precedencia de la variable de modelo en `antigravity` (#6334 → #6858 → #6861)
 
-Hasta #6858 el handler leía `env.AGY_MODEL || env.GEMINI_MODEL`. Como el pulpo
-**nunca** propaga `AGY_MODEL` (no está en `PROVIDER_MODEL_ENV` ni en ningún scope
-de `build-child-env.js`), un `AGY_MODEL` exportado en el entorno del operador —o
-heredado por un path sin aislar— **pisaba** al modelo propagado, y la traza del
-launcher afirmaba "propagué X" mientras el CLI corría con Y.
+`ANTIGRAVITY_MODEL` es la **única** variable de entorno que el handler lee para
+decidir el `--model` del CLI. La propaga exclusivamente `PROVIDER_MODEL_ENV`
+([`lib/build-child-env.js`](../../.pipeline/lib/build-child-env.js)); ninguna otra
+variable del entorno del operador llega al handler. El nombre se eligió nuevo en
+#6861 a propósito: la variable con prefijo del binario que se leía hasta #6858
+había quedado envenenada (un export viejo en el entorno del operador pisaba el
+modelo del pulpo en silencio, #6334), y reusarla habría reactivado ese export.
 
-Regla vigente (`providers/gemini-google.js::resolveModelFromEnv`):
+Regla vigente (`providers/antigravity.js::resolveModelFromEnv`):
 
-| Env del hijo | `--model` que corre | `modelTrace` | Log del launcher |
-|---|---|---|---|
-| `GEMINI_MODEL=X` | `X` | `{ applied:true, model:X, source:'GEMINI_MODEL', ignoredEnv:[] }` | — |
-| `GEMINI_MODEL=X` + `AGY_MODEL=Y` | `X` | `{ applied:true, model:X, source:'GEMINI_MODEL', ignoredEnv:['AGY_MODEL'] }` | `ℹ️ … IGNORÓ AGY_MODEL presente en el env; modelo efectivo "X" (fuente: GEMINI_MODEL)` |
-| sólo `AGY_MODEL=Y` | *(sin flag: default del CLI)* | `{ applied:false, reason:'agy_model_env_ignored', ignoredEnv:['AGY_MODEL'] }` | `⚠️ … descartó el flag --model (razón: agy_model_env_ignored)` + `ℹ️ … IGNORÓ AGY_MODEL` |
-| ninguna | *(sin flag)* | *(sin clave — regresión cero)* | — |
+| Env del hijo | `--model` que corre | `modelTrace` |
+|---|---|---|
+| `ANTIGRAVITY_MODEL=X` | `X` | `{ applied:true, model:X, source:'ANTIGRAVITY_MODEL' }` |
+| ninguna (o vacía) | *(sin flag: default del CLI)* | `{ applied:false, source:'cli-default' }` |
 
 La traza nunca puede afirmar un modelo distinto del que corrió: el string del
-`modelTrace` es literalmente el que va en argv. Guardrail en
-`tests/gemini-antigravity-4869.test.js` (el código del handler no puede volver a
-leer `AGY_MODEL` como fuente ni pasar `--effort`).
+`modelTrace` es literalmente el que va en argv. El sufijo del id
+(`-high/-medium/-low`) es el único canal de esfuerzo; el handler nunca pasa
+`--effort`. Guardrails: `tests/antigravity-model-env-4869.test.js` (el handler lee
+sólo `ANTIGRAVITY_MODEL`) y `tests/model-propagation.test.js` (paridad
+`PROVIDER_MODEL_ENV['antigravity']` ↔ `MODEL_ENV_VAR` del handler).
 
 **Caída a un proveedor de respaldo:** se propaga el modelo del proveedor
 **efectivo**, nunca el del primario. El launcher usa `effective.provider` /
@@ -687,7 +688,7 @@ Convenciones:
 > eslabón**, sin reordenar lo que queda: el orden canónico del sign-off se conserva.
 > La tabla de abajo es el estado **vigente** de `agent-models.json` (modelos incluidos;
 > `sonnet-4-6`/`gpt-5.5`/`gemini-3.8-*` son los ids reales verificados en #6858 y
-> 2026-06-04). Sumar `gemini-google` a los skills que hoy quedan con dos eslabones es
+> 2026-06-04). Sumar `antigravity` a los skills que hoy quedan con dos eslabones es
 > decisión del orden canónico (sign-off del operador) y del auditor #6809, no de #6563.
 
 | Skill | Primary | Fallback 1 | Fallback 2 | Notas |
@@ -699,18 +700,18 @@ Convenciones:
 | `security` | anthropic / opus-4-7 | openai-codex / gpt-5.5 | — | Gemini **EXCLUIDO** (gate pre-merge sensible) |
 | `qa` | anthropic / sonnet-4-6 | openai-codex / gpt-5.4 | — | Gemini **EXCLUIDO**: el child carga credenciales AWS (#6860) |
 | `review` | anthropic / sonnet-4-6 | openai-codex / gpt-5.5 | — | Gemini **EXCLUIDO** (lee diffs con secrets/JWT) |
-| `po` | anthropic / sonnet-4-6 | gemini-google / gemini-3.1-pro-low | openai-codex / gpt-5.4 | Redacta y valida; Google antes de Codex (Decisión 2, sign-off #6860). Vision pendiente de #7314 |
-| `ux` | anthropic / sonnet-4-6 | gemini-google / gemini-3.1-pro-low | openai-codex / gpt-5.4 | Redacta y valida; Google antes de Codex (Decisión 2, sign-off #6860). Vision pendiente de #7314 |
+| `po` | anthropic / sonnet-4-6 | antigravity / gemini-3.1-pro-low | openai-codex / gpt-5.4 | Redacta y valida; Google antes de Codex (Decisión 2, sign-off #6860). Vision pendiente de #7314 |
+| `ux` | anthropic / sonnet-4-6 | antigravity / gemini-3.1-pro-low | openai-codex / gpt-5.4 | Redacta y valida; Google antes de Codex (Decisión 2, sign-off #6860). Vision pendiente de #7314 |
 | `doc` | anthropic / sonnet-4-6 | openai-codex / gpt-5.5 | — | Gemini **EXCLUIDO** (estrategia de producto) |
 | `planner` | anthropic / sonnet-4-6 | openai-codex / gpt-5.5 | — | Gemini **EXCLUIDO** (roadmap/estrategia) |
 | `guru` | anthropic / sonnet-4-6 | openai-codex / gpt-5.5 | — | Gemini **EXCLUIDO** (fragmentos código) |
-| `architect` | anthropic / sonnet-4-6 | openai-codex / gpt-5.5 | gemini-google / gemini-3.1-pro-high | Diseña sobre código público, sin secrets — Pro-high (#6860) |
+| `architect` | anthropic / sonnet-4-6 | openai-codex / gpt-5.5 | antigravity / gemini-3.1-pro-high | Diseña sobre código público, sin secrets — Pro-high (#6860) |
 | `ops` | anthropic / sonnet-4-6 | openai-codex / gpt-5.5 | — | Gemini **EXCLUIDO sí o sí** (procesa API keys / AWS creds / Cognito) |
-| `perf` | anthropic / sonnet-4-6 | openai-codex / gpt-5.5 | gemini-google / gemini-3.8-flash-high | Analiza builds sin credenciales — Flash-high (#6860) |
+| `perf` | anthropic / sonnet-4-6 | openai-codex / gpt-5.5 | antigravity / gemini-3.8-flash-high | Analiza builds sin credenciales — Flash-high (#6860) |
 | `auth` | anthropic / sonnet-4-6 | openai-codex / gpt-5.5 | — | Gemini **EXCLUIDO** (config interna del entorno) |
 | `refinar` | anthropic / sonnet-4-6 | openai-codex / gpt-5.4 | — | Gemini **EXCLUIDO** (backlog/estrategia) |
-| `telegram-commander` | anthropic / sonnet-4-6 | openai-codex / gpt-5.4 | gemini-google / claude-sonnet-4-6 | Chat del operador — Sonnet vía Google (Decisión 1, sign-off #6860); modo reducido mientras billing sea free (#7338) |
-| `telegram-sherlock` | anthropic / haiku-4-5 | openai-codex / gpt-5.4-mini | gemini-google / gemini-3.8-flash-medium | Verificador — sube de Flash-low; familia distinta del Commander (#3501, #6860) |
+| `telegram-commander` | anthropic / sonnet-4-6 | openai-codex / gpt-5.4 | antigravity / claude-sonnet-4-6 | Chat del operador — Sonnet vía Google (Decisión 1, sign-off #6860); modo reducido mientras billing sea free (#7338) |
+| `telegram-sherlock` | anthropic / haiku-4-5 | openai-codex / gpt-5.4-mini | antigravity / gemini-3.8-flash-medium | Verificador — sube de Flash-low; familia distinta del Commander (#3501, #6860) |
 
 > **Sobre "sonnet-4-7" vs "sonnet-4-6":** el JSON canónico usa `claude-sonnet-4-6` desde el 2026-06-04 (sign-off Leo; `claude-sonnet-4-7` no existe en el catálogo de Anthropic y el CLI lo rechazaba). Cualquier cambio de modelo en `ALLOWED_MODELS_BY_LAUNCHER.claude` requiere review humano.
 
@@ -726,7 +727,7 @@ Cierre verificable para levantar la exclusión: **(a)** Workspace/Enterprise/GCP
 
 [Sign-off de Leo](https://github.com/intrale/platform/issues/6860#issuecomment-5723188265), registrado antes de aplicar la matriz: **“Decisión 1: sí”**; **“Decisión 2: sí, Google antes que Codex (Opción A recomendada)”**. La primera acepta que Commander/Sherlock ruteen por Antigravity consumer con retención y revisión humana. La segunda coloca Google como primer respaldo de PO/UX, excepción al orden global Claude → Codex → Google.
 
-| Skill | Modelo en gemini-google | Posición | Bucket (dato de cuota, no criterio de asignación) | Justificación |
+| Skill | Modelo en antigravity | Posición | Bucket (dato de cuota, no criterio de asignación) | Justificación |
 |---|---|---|---|---|
 | android-dev | **EXCLUIDO** | Sin eslabón Google | — | Escribe código que llega a main; conserva sólo Codex (NVIDIA dado de baja en #6563). |
 | web-dev | **EXCLUIDO** | Sin eslabón Google | — | Escribe código que llega a main; conserva sólo Codex (NVIDIA dado de baja en #6563). |
@@ -742,7 +743,7 @@ Cierre verificable para levantar la exclusión: **(a)** Workspace/Enterprise/GCP
 
 Los defaults `gemini-3.8-flash-medium` y alternativo `gemini-3.7-flash-medium` no cambian. El sufijo del ID es el único canal de esfuerzo: no se añade `--effort`. No cambian `billing`, `admission` ni la excepción de admisión (reasignada a #6564 por #6563, vence el 2026-12-31). Commander **sigue en modo reducido** mientras `billing: free`; #6564 cerró sin cambiarlo y #7338 registra el seguimiento del flip. Esta matriz no promete una activación inmediata del chat.
 
-**Evidencia de tool_use (CA-5), 2026-09-18 UTC, agy 1.2.5.** Por modelo se ejecutó `node .pipeline/tests/smoke/gemini-add-dir.smoke.js --model <id>`, con instrumentación efímera del resultado para registrar `usage`. El smoke usa `provider.buildSpawn` y `--add-dir`, crea un repo temporal y verifica contenido exacto `6859-OK`, presencia en git status y scratch sin archivos nuevos. Los temporales se eliminan después del PASS.
+**Evidencia de tool_use (CA-5), 2026-09-18 UTC, agy 1.2.5.** Por modelo se ejecutó `node .pipeline/tests/smoke/antigravity-add-dir.smoke.js --model <id>`, con instrumentación efímera del resultado para registrar `usage`. El smoke usa `provider.buildSpawn` y `--add-dir`, crea un repo temporal y verifica contenido exacto `6859-OK`, presencia en git status y scratch sin archivos nuevos. Los temporales se eliminan después del PASS.
 
 | Modelo | Status / exit | Duración ms | input / output / thinking / cache_read | Archivo creado y comprobado |
 |---|---|---:|---|---|
@@ -971,22 +972,22 @@ curl http://localhost:8080/api/metrics/quota | jq '.'
 | security | anthropic | claude-opus-4-7 | anthropic → openai-codex (gpt-5.5) | LLM |
 | qa | anthropic | claude-sonnet-4-6 | anthropic → openai-codex (gpt-5.4) | LLM |
 | review | anthropic | claude-sonnet-4-6 | anthropic → openai-codex (gpt-5.5) | LLM |
-| po | anthropic | claude-sonnet-4-6 | anthropic → gemini-google (gemini-3.1-pro-low) → openai-codex (gpt-5.4) | LLM |
-| ux | anthropic | claude-sonnet-4-6 | anthropic → gemini-google (gemini-3.1-pro-low) → openai-codex (gpt-5.4) | LLM |
+| po | anthropic | claude-sonnet-4-6 | anthropic → antigravity (gemini-3.1-pro-low) → openai-codex (gpt-5.4) | LLM |
+| ux | anthropic | claude-sonnet-4-6 | anthropic → antigravity (gemini-3.1-pro-low) → openai-codex (gpt-5.4) | LLM |
 | doc | anthropic | claude-sonnet-4-6 | anthropic → openai-codex (gpt-5.5) | LLM |
 | planner | anthropic | claude-sonnet-4-6 | anthropic → openai-codex (gpt-5.5) | LLM |
 | guru | anthropic | claude-sonnet-4-6 | anthropic → openai-codex (gpt-5.5) | LLM |
-| architect | anthropic | claude-sonnet-4-6 | anthropic → openai-codex (gpt-5.5) → gemini-google (gemini-3.1-pro-high) | LLM |
+| architect | anthropic | claude-sonnet-4-6 | anthropic → openai-codex (gpt-5.5) → antigravity (gemini-3.1-pro-high) | LLM |
 | ops | anthropic | claude-sonnet-4-6 | anthropic → openai-codex (gpt-5.5) | LLM |
-| perf | anthropic | claude-sonnet-4-6 | anthropic → openai-codex (gpt-5.5) → gemini-google (gemini-3.8-flash-high) | LLM |
+| perf | anthropic | claude-sonnet-4-6 | anthropic → openai-codex (gpt-5.5) → antigravity (gemini-3.8-flash-high) | LLM |
 | auth | anthropic | claude-sonnet-4-6 | anthropic → openai-codex (gpt-5.5) | LLM |
 | refinar | anthropic | claude-sonnet-4-6 | anthropic → openai-codex (gpt-5.4) | LLM |
 | linter | deterministic | — | — | Node puro |
 | delivery | deterministic | — | — | Node puro |
-| telegram-commander | anthropic | claude-sonnet-4-6 | anthropic → openai-codex (gpt-5.4) → gemini-google (claude-sonnet-4-6) | LLM |
-| telegram-sherlock | anthropic | claude-haiku-4-5 | anthropic → openai-codex (gpt-5.4-mini) → gemini-google (gemini-3.8-flash-medium) | LLM |
+| telegram-commander | anthropic | claude-sonnet-4-6 | anthropic → openai-codex (gpt-5.4) → antigravity (claude-sonnet-4-6) | LLM |
+| telegram-sherlock | anthropic | claude-haiku-4-5 | anthropic → openai-codex (gpt-5.4-mini) → antigravity (gemini-3.8-flash-medium) | LLM |
 
-> **Exclusiones vigentes (REQ-SEC-1, §4.4.1):** `android-dev`, `web-dev` y `qa` no tienen eslabón `gemini-google`. `po` y `ux` llevan Google como **primer** respaldo, antes de Codex (Decisión 2 del sign-off de #6860).
+> **Exclusiones vigentes (REQ-SEC-1, §4.4.1):** `android-dev`, `web-dev` y `qa` no tienen eslabón `antigravity`. `po` y `ux` llevan Google como **primer** respaldo, antes de Codex (Decisión 2 del sign-off de #6860).
 
 > **Verificar el estado canónico:** `cat .pipeline/agent-models.json` o **Tab "2 · Por agente"** del dashboard.
 
@@ -1180,7 +1181,7 @@ Implementado por: [#3198](https://github.com/intrale/platform/issues/3198) (cons
 ## 8. Hardening de free providers (#3260 + #3353)
 
 > **Estado post-#6563 (2026-09-16):** de los tres providers free que endureció esta sección
-> sólo queda **`gemini-google`** (hoy vía Antigravity con licencia paga; su `billing` sigue
+> sólo queda **`antigravity`** (hoy vía Antigravity con licencia paga; su `billing` sigue
 > declarado `free` hasta que #6564 verifique el plan). `cerebras` y `nvidia-nim` fueron dados
 > de baja por el criterio de admisión (§16). Todo lo que sigue (health cron, rotación de keys,
 > alertas) aplica a Gemini; las menciones a Cerebras/NVIDIA quedan como registro de diseño.
@@ -1201,17 +1202,20 @@ Groq fue descontinuado (mayo 2026) por no cumplir criterio de estabilidad operat
 
 ### 8.1 Free tier real por provider
 
-> **Fuente:** documentación oficial verificada al 2026-05-17. Si un provider cambia los límites, actualizar acá y bumpear la nota en `secrets-rw.js#MANAGED_KEYS[].free_tier_notes`.
+> **Estado (#6861):** el plantel ya no tiene ningún provider free tier ni por
+> API key: `anthropic`, `openai-codex` y `antigravity` son los tres CLI con
+> OAuth (`auth_mode: 'oauth'`). Si en el futuro se admite un provider por API
+> key (§16), su fila va acá y la nota en `secrets-rw.js#MANAGED_KEYS[].free_tier_notes`.
 
-| Provider | RPM | RPD | Tokens/día | Endpoint usado en healthcheck | Notas |
-|----------|----:|----:|-----------:|--------------------------------|-------|
-| `gemini-google` | 15 | 1500 | 1M tokens | `GET https://generativelanguage.googleapis.com/v1beta/models` | Auth con header `x-goog-api-key` (la key NUNCA en query string — `key` ya está en `SENSITIVE_QUERY_KEYS`). 400 con `API_KEY_INVALID` ⇒ `invalid_credentials`. |
+| Provider | Tier | Cómo se verifica la salud | Notas |
+|----------|------|---------------------------|-------|
+| `antigravity` | Licencia (no es free tier; `cost_per_1m: null`, factura por licencia) | **Sin endpoint HTTP ni API key.** `probeCliProviderLive` (#6857) hace el round-trip `agy models` y clasifica en `cli_catalog_ok` / `cli_license_unavailable` / `cli_unavailable` / `cli_contract_mismatch`; cuota con `MSYS_NO_PATHCONV=1 agy -p "/usage" --output-format json`. Detalle en §8.10. | Hasta #6861 esta fila describía el healthcheck del shim de AI Studio (`GET generativelanguage…/v1beta/models` con `x-goog-api-key`). Ese endpoint **se retiró** de `live-ping.js`, junto con el patrón `API_KEY_INVALID` del clasificador; ningún módulo del pipeline manda hoy ese header. |
 
 > `cerebras` y `nvidia-nim` se retiraron en #6563; sus filas (límites, endpoints de
 > health) viven en el historial de git de este archivo y se restauran con el
 > procedimiento de §17.
 
-Cron de healthchecks: cada 15min por provider = **96 requests/día por provider**, holgadamente dentro de cualquier free tier conocido. La validación semanal de keys (CA-2) reusa el mismo endpoint `/models` (no consume cuota). Groq fue descontinuado en #3353 y ya no se incluye en el cron.
+Cron de healthchecks: cada 15min por provider. Para los tres providers OAuth el cron no hace ningún request HTTP facturable: `ping()` los rutea por `MANAGED_KEYS[].auth_mode === 'oauth'` a la verificación por CLI antes de llegar a la tabla HTTP de `live-ping.js` (que quedó vacía). El presupuesto de **96 requests/día por provider** y la validación semanal de keys por `/models` (CA-2) sólo aplican a providers por API key, que hoy no hay. Groq fue descontinuado en #3353 y ya no se incluye en el cron.
 
 ### 8.2 Rotar una API key sin downtime (CA-5)
 
@@ -1219,7 +1223,7 @@ Cron de healthchecks: cada 15min por provider = **96 requests/día por provider*
 
 Procedimiento:
 
-1. **Generar la nueva key en el portal del provider** (Google AI Studio). NO revocar la vieja todavía.
+1. **Generar la nueva key en el portal del provider** por API key (hoy no hay ninguno en el plantel: los tres providers son CLI con OAuth, ver §8.10; este procedimiento aplica al que se admita por §16). NO revocar la vieja todavía.
 2. **Rotar vía UI del dashboard:**
    - Abrir `http://localhost:8080/dashboard.html#multi-provider`.
    - Tab **1 · Proveedores** → click "Rotar key" en el provider afectado.
@@ -1295,7 +1299,7 @@ node -e "console.log(JSON.stringify(require('./.pipeline/lib/multi-provider/secr
 ### 8.7 Anti-patrones a evitar
 
 - ❌ **Editar `telegram-config.json` con `vi`** durante rotación → race con writes del pulpo, sin backup, sin audit. Siempre usar la UI o `secrets.rotateKey()`.
-- ❌ **Pasar Gemini key como `?key=AIza…`** en URLs → aunque está en `SENSITIVE_QUERY_KEYS` para defense-in-depth, el header `x-goog-api-key` es el camino correcto (lo que el pipeline hace internamente).
+- ❌ **Pasar una API key en la query string** (`?key=…`, `?api_key=…`) de una URL → queda en logs, historial y excerpts de error. `key`/`api_key` están en `SENSITIVE_QUERY_KEYS` para defense-in-depth, pero el camino correcto para cualquier provider por API key futuro es siempre un header. Hoy no aplica a nadie del plantel: `antigravity` autentica por OAuth del CLI `agy` y el pipeline no manda ninguna API key de Google a ningún endpoint (el shim de AI Studio con `x-goog-api-key` se retiró en #6861; la key residual se revoca en #7286).
 - ❌ **Revocar la key vieja antes de validar la nueva con live-ping** → te quedás sin failover hasta restart.
 - ❌ **Pingear endpoints de completion en el healthcheck** → consumen cuota. El cron usa solo `/v1/models` (o equivalente).
 - ❌ **Bypassar el lock del cron** corriendo `runOnce` desde múltiples procesos → puede disparar abuse-detection del provider. El lock está ahí por una razón.
@@ -1308,17 +1312,17 @@ node -e "console.log(JSON.stringify(require('./.pipeline/lib/multi-provider/secr
 
 #### 8.8.1 Procedimiento recomendado
 
-1. Generá / obtené la API key en el portal del provider (Google AI Studio, etc.).
+1. Generá / obtené la API key en el portal del provider (aplica sólo a providers por API key; `antigravity` no tiene ninguna — autentica por OAuth de `agy`).
 2. **Guardá la key en un archivo local** bajo `~/.claude/secrets/` (fuera del repo):
    ```bash
-   # Ejemplo: agregar GEMINI key
+   # Ejemplo genérico (reemplazar <provider> por el nombre del provider por API key)
    mkdir -p ~/.claude/secrets
-   printf '%s' '<la-key>' > ~/.claude/secrets/gemini.txt
-   chmod 600 ~/.claude/secrets/gemini.txt
+   printf '%s' '<la-key>' > ~/.claude/secrets/<provider>.txt
+   chmod 600 ~/.claude/secrets/<provider>.txt
    ```
 3. **Por Telegram, mandá únicamente el path absoluto**, ej:
    ```
-   actualizar gemini key, está en ~/.claude/secrets/gemini.txt
+   actualizar la key de <provider>, está en ~/.claude/secrets/<provider>.txt
    ```
 4. El commander (cuando se cablee `8.8.2`) leerá el archivo desde disco, validará el path contra la whitelist, hará la rotación vía `secrets.rotateKey()` y devolverá confirmación. La key nunca toca el canal.
 
@@ -1376,7 +1380,7 @@ Estos archivos ya están en `.gitignore`. Si te encontrás des-ignorándolos a p
 
 Si por error pegaste una key directamente en el chat:
 
-1. **Revocá la key inmediatamente en el portal del provider** (Google AI Studio → Settings → API Keys → Delete). El sanitizer/redactor cubre el flanco a futuro, pero la key vieja sigue siendo válida hasta que la revoques upstream.
+1. **Revocá la key inmediatamente en el portal del provider** (consola de API keys del vendor correspondiente). El sanitizer/redactor cubre el flanco a futuro, pero la key vieja sigue siendo válida hasta que la revoques upstream.
 2. **Generá una nueva** y seguila el procedimiento §8.8.1.
 3. **Verificá los archivos que vivieron mientras la key estaba expuesta**:
    ```bash
@@ -1394,7 +1398,34 @@ catálogo `deepseek-ai/deepseek-v4-flash-0731` / `moonshotai/kimi-k2-instruct`, 
 topology check) se conserva en el historial de git de este archivo. Para volver a
 habilitarlo, seguir §17.
 
-### 8.10 Antigravity (`gemini-google`) — catálogo de modelos y verificación automática (#6858)
+### 8.10 Antigravity CLI (`antigravity`) — qué es, dónde vive, cómo se autentica, cómo verificar la licencia, catálogo (#6858, #6861)
+
+Para un lector que no conoce la historia, esto es todo lo que hace falta saber:
+
+1. **Qué CLI corre.** El provider `antigravity` (launcher `antigravity`,
+   `output_parser: antigravity-stream-json`) lanza **Antigravity CLI**, binario
+   `agy`, con `--output-format stream-json`. Hasta #6861 el provider se llamaba
+   "Gemini (Google)", nombre que confundía con el Gemini CLI gratuito
+   (`@google/gemini-cli`), que **no forma parte del pipeline**: no hay fallback a
+   ese CLI ni a ningún endpoint HTTP (el shim a Google AI Studio se retiró en
+   #6861; la key residual de AI Studio se revoca en #7286).
+2. **Dónde vive el binario.** `%LOCALAPPDATA%\agy\bin\agy.exe`; se puede
+   apuntar a otro con la env var `ANTIGRAVITY_BIN`
+   (`detectLauncher`: `ANTIGRAVITY_BIN` → `%LOCALAPPDATA%\agy\bin\agy.exe` → PATH).
+   Las otras dos variables del provider son `ANTIGRAVITY_MODEL` (§3.7) y
+   `ANTIGRAVITY_PRINT_TIMEOUT` (timeout del turno `-p`). Son las únicas tres:
+   las constantes `AGY_*` del código nombran el contrato del binario, no env vars.
+3. **Cómo se autentica.** OAuth de la cuenta Google, iniciado con `agy`
+   interactivo (`auth_mode: oauth`). **Sin API key**: el pipeline no inyecta
+   ninguna credencial al proceso hijo y `credentials_env` está vacío.
+4. **Cómo verificar que la licencia está activa.** Round-trip real
+   `agy models` (no interactivo, no consume cuota de generación): el health-cron
+   lo corre y publica `cli_catalog_ok` (verde), `cli_license_unavailable` (rojo:
+   instalado pero sin sesión/licencia), `cli_unavailable` (rojo: binario
+   ausente) o `cli_contract_mismatch` (rojo: versión del CLI fuera del pin). A
+   mano, desde Git Bash: `MSYS_NO_PATHCONV=1 agy -p "/usage" --output-format json`
+   muestra la cuota de la sesión (ver más abajo por qué la variable).
+
 
 **Cuota y tier (#6564).** El tier contratado no es observable automáticamente
 con `agy` 1.2.4: `/usage` expone cuota, pero no el nombre del plan, y no existe
@@ -1438,18 +1469,20 @@ que muestra el dashboard y la traza es exactamente el que corrió. Verificado en
 vivo: `thinking_tokens` para el mismo prompt = 100 (`-high`) / 30 (`-medium`) /
 21 (`-low`).
 
-**Las tres barreras son espejo exacto del catálogo** (por reemplazo, no por
-agregado — el id viejo se quita para que ninguna reintroducción pase silenciosa):
+**Las dos barreras son espejo exacto del catálogo** (por reemplazo, no por
+agregado — el id viejo se quita para que ninguna reintroducción pase silenciosa).
+Hasta #6861 había una tercera, `PROVIDER_MODELS_ALLOWLIST['antigravity']` en
+`lib/multi-provider/completion-client.js`, que se retiró junto con el shim HTTP
+de AI Studio: Antigravity es spawn puro y esa tabla quedó vacía (`{}`).
 
 | Barrera | Archivo |
 |---|---|
-| `ALLOWED_MODELS_BY_LAUNCHER['gemini-google']` | `lib/agent-models-validate.js` (boot del pulpo + CA-6 de la propagación) |
-| `PROVIDER_MODELS_ALLOWLIST['gemini-google']` | `lib/multi-provider/completion-client.js` |
-| `CATALOG['gemini-google']` (`CATALOG_VERSION 2026-09-16.1`) | `lib/multi-provider/model-catalog.js` (Tab "3 · Catálogo" del dashboard; `cost_per_1m: null` → se renderiza `—`, Antigravity factura por licencia) |
+| `ALLOWED_MODELS_BY_LAUNCHER['antigravity']` | `lib/agent-models-validate.js` (boot del pulpo + CA-6 de la propagación) |
+| `CATALOG['antigravity']` (`CATALOG_VERSION 2026-09-16.1`) | `lib/multi-provider/model-catalog.js` (Tab "3 · Catálogo" del dashboard; `cost_per_1m: null` → se renderiza `—`, Antigravity factura por licencia) |
 
 **Verificación automática contra el CLI** — `lib/multi-provider/agy-catalog.js`
-cruza `agent-models.json` (las 4 fuentes de #5888 restringidas a gemini-google)
-+ las tres barreras contra `agy models` **real**:
+cruza `agent-models.json` (las 4 fuentes de #5888 restringidas a antigravity)
++ las dos barreras contra `agy models` **real**:
 
 ```bash
 node .pipeline/lib/multi-provider/agy-catalog.js --check     # exit 1 si hay ids muertos; 2 si agy no está
@@ -1463,25 +1496,32 @@ no falla (un modelo nuevo del vendor nunca dispara rollback). El smoke test
 reporta sin abortar a propósito: si el vendor retira un modelo, un fallo duro
 ahí entraría en bucle de rollback sin arreglar nada.
 
-> **Nunca** cruzar contra `GET generativelanguage.googleapis.com/v1beta/models`
-> (`live-ping.js`): ese es el catálogo de **AI Studio**, donde
-> `gemini-3-flash-preview` sí existe. Cruzar contra él es exactamente lo que
-> dejó pasar el defecto original (ver #7289 para migrar el cron de #5888).
+> **Nunca** cruzar contra el catálogo de **AI Studio**
+> (`GET generativelanguage.googleapis.com/v1beta/models`): ahí
+> `gemini-3-flash-preview` sí existe, y cruzar contra él es exactamente lo que
+> dejó pasar el defecto original. Hasta #6861 `live-ping.js` tenía ese endpoint
+> como healthcheck del provider; se retiró junto con el shim (ver abajo). La
+> única fuente válida es `agy models` (ver #7289 para migrar el cron de #5888).
 
-> **El shim HTTP `gemini-google` de `completion-client.js` es AI Studio, no
-> `agy`.** `PROVIDER_COMPLETION_ENDPOINTS['gemini-google']` apunta a
-> `generativelanguage.googleapis.com/v1beta/openai/chat/completions`, y su
-> allowlist (la 2ª barrera) es el catálogo de Antigravity: AI Studio no sirve
-> ninguno de esos ids (`gemini-3.8-flash-medium` → HTTP 404). Por esa ruta hoy
-> **ningún** `complete({provider:'gemini-google'})` responde `ok=true`. Ningún
-> default HTTP del pipeline debe apuntar ahí: desde #6563 (baja de los
-> gratuitos) el juez semántico de duplicados (`lib/semantic-dedup.js`, usado
-> por el Commander al crear issues) ya no tiene ningún provider HTTP servible y
-> corre por **spawn del CLI OAuth** (`openai-codex` por default, `anthropic`
-> como alternativa) con la contención descrita abajo; un test fija que su
-> default es servible por ese transporte. El único caller que recorre la
-> entrada HTTP de Gemini es la cascada del Sherlock, que tolera el fallo y
-> sigue al próximo provider.
+> **Retirado en #6861 — el shim HTTP de AI Studio ya no existe.** Hasta #6861
+> `completion-client.js` tenía una entrada `PROVIDER_COMPLETION_ENDPOINTS` del
+> ex "Gemini (Google)" que apuntaba a
+> `generativelanguage.googleapis.com/v1beta/openai/chat/completions` con API
+> key en header; AI Studio no servía ningún id del catálogo de Antigravity
+> (`gemini-3.8-flash-medium` → HTTP 404), así que por esa ruta **ningún**
+> `complete({provider:'antigravity'})` respondía `ok=true`. En el HEAD actual
+> las tres tablas quedaron vacías por reemplazo: `PROVIDER_COMPLETION_ENDPOINTS
+> = {}` y `PROVIDER_MODELS_ALLOWLIST = {}` (`completion-client.js`), y
+> `HTTP_COMPLETION_PROVIDERS = new Set([])` (`sherlock-verifier.js`). Antigravity
+> es **spawn puro**: el Sherlock lo alcanza por `spawnAntigravityComplete`
+> (`SPAWN_COMPLETION_PROVIDERS = {anthropic, openai-codex, antigravity}`), que
+> reusa `agent-launcher/providers/antigravity.js` — el mismo binario `agy` y la
+> misma OAuth que corren los agentes, sin API key (ver §12.1). El juez semántico
+> de duplicados (`lib/semantic-dedup.js`, usado por el Commander al crear
+> issues) ya corría desde #6563 por **spawn del CLI OAuth** (`openai-codex` por
+> default, `anthropic` como alternativa) con la contención descrita abajo; un
+> test fija que su default es servible por ese transporte. Ningún caller del
+> pipeline recorre hoy un endpoint HTTP de Google.
 
 **Contención del juez semántico por spawn (#6563, hallazgo security del rebote 1).**
 Un CLI de agente no es un cliente HTTP: por default corre con bypass de
@@ -1550,7 +1590,7 @@ payload que usa el pipeline): `gemini-3.8-flash-high` (30,6 s), `-medium`
 `status: SUCCESS`, rc=0, `modelTrace.applied=true`** con el id exacto en
 `--model`. Fixture del NDJSON real: `lib/__tests__/fixtures/agy-stream-json-1.2.4.ndjson`.
 
-`_parseGeminiJson` desenvuelve el objeto `result` del último evento
+`_parseAntigravityJson` desenvuelve el objeto `result` del último evento
 `{"event":"result"}` y `parseTokensFromLog` lee su `usage` (`output_tokens` ya
 incluye `thinking_tokens`); cae al legacy `stats.models` de 1.1.x si no está.
 
@@ -1714,7 +1754,7 @@ parseProviderError(rawOutput, ctx) → {
 }
 
 ctx = {
-  provider: 'anthropic' | 'openai-codex' | 'gemini-google',
+  provider: 'anthropic' | 'openai-codex' | 'antigravity',
   transport: 'api' | 'cli',
   timedOut?: boolean,
   exitCode?: number | null,
@@ -2166,16 +2206,16 @@ Eventos en el audit log del día permiten calcular (futuro endpoint dashboard `/
 
 Sherlock acepta dos transportes para invocar providers:
 
-- **HTTP completion-client** (`lib/multi-provider/completion-client.js`) — para providers OpenAI-compat: hoy sólo `gemini-google` (`cerebras` y `nvidia-nim` retirados en #6563).
-- **Spawn CLI** (`lib/agent-launcher/providers/anthropic.js::buildSpawn`) — para Anthropic. **Opción B** del issue #3484, elegida por: (a) reusa la infra existente y bien testeada, (b) evita refactor multi-schema del cliente HTTP para soportar la Anthropic Messages API (que no es OpenAI-compat), (c) recommendation explícita de PO y guru en la fase `criterios`.
+- **HTTP completion-client** (`lib/multi-provider/completion-client.js`) — para providers OpenAI-compat por API key. **Hoy la lista está vacía**: `HTTP_COMPLETION_PROVIDERS = new Set([])` (`sherlock-verifier.js`). `cerebras` y `nvidia-nim` se retiraron en #6563; el shim de AI Studio del ex "Gemini (Google)" se retiró en #6861 porque no servía ningún id del catálogo de Antigravity (404 en toda la cascada). El cliente se conserva (con tablas vacías y hook `_setProviderTablesForTesting` para mantener su cobertura) por si §16 admite un provider por API key.
+- **Spawn CLI** — `SPAWN_COMPLETION_PROVIDERS = {anthropic, openai-codex, antigravity}`. Cada uno reusa el handler del `agent-launcher`: `providers/anthropic.js::buildSpawn` (prompt por stdin, `--output-format text`), `providers/openai-codex.js` (`spawnCodexComplete`, prompt como argumento, stdout JSONL de `codex exec --json`; transporte real desde PR #3792) y `providers/antigravity.js` (`spawnAntigravityComplete`, #6861: prompt por stdin como NDJSON con `--input-format stream-json`, `ANTIGRAVITY_MODEL` en el env, se lee el evento `{"event":"result"}` del stream). **Opción B** del issue #3484, elegida por: (a) reusa la infra existente y bien testeada, (b) evita refactor multi-schema del cliente HTTP para soportar APIs que no son OpenAI-compat, (c) recommendation explícita de PO y guru en la fase `criterios`.
 
-Codex (`openai-codex`) sigue siendo stub ([#3076](https://github.com/intrale/platform/issues/3076) H3 pendiente) — Sherlock lo salta con gracia cuando aparece en la chain.
+`antigravity` llega al Sherlock por el mismo binario `agy` y la misma OAuth que corren los agentes — sin API key ni endpoint HTTP. Verificable: `_resolveSherlockProvider({ initialExcluded: ['anthropic', 'openai-codex'] })` → `{ provider: 'antigravity', transport: 'spawn' }`.
 
 ### 12.2 Cambios concretos respecto al estado pre-#3484
 
 | Comportamiento | Pre-#3484 | Post-#3484 |
 |---|---|---|
-| Filtro de providers | Solo HTTP-compatible (entonces `cerebras`, `gemini-google`, `nvidia-nim`) | Cualquier provider con handler implementado (HTTP o spawn) |
+| Filtro de providers | Solo HTTP-compatible (entonces `cerebras`, `antigravity`, `nvidia-nim`) | Cualquier provider con handler implementado (HTTP o spawn) |
 | Exclusión cross-provider | Forzaba provider != Commander | Removida — permite same-provider (riesgo aceptado) |
 | Timeout local | Default 10s, clamp absoluto 30s | Removido — delegado a `completion-client` (90s default, 180s cap) |
 | Phrasing F-5/F-6 | Genérico, jerga técnica | Empático, primera persona, invita feedback (CA-UX-3, CA-UX-4) |
@@ -2238,7 +2278,7 @@ grep '"event":"sherlock_verification"' .pipeline/logs/commander-dispatch-*.jsonl
 ```
 
 Si en producción `transport: "spawn"` no aparece nunca, posibles causas:
-1. Anthropic está gateado por cuota → Sherlock cae a gemini-google (correcto, ver chain).
+1. Anthropic está gateado por cuota → Sherlock cae a antigravity (correcto, ver chain).
 2. El launcher `claude` no se detecta en runtime → revisar `agent-launcher/providers/anthropic.js::detectLauncher`.
 3. La chain `telegram-sherlock` en `agent-models.json` cambió → confirmar PR #3483 mergeado.
 
@@ -2262,7 +2302,7 @@ Mejora incremental sobre §12.4. Cuando Sherlock termina usando el mismo provide
 | Caso | Antes (#3484) | Post-#3501 |
 |---|---|---|
 | `commander=anthropic/opus`, sherlock chain ofrece `anthropic/haiku` (config #3221) | `same_provider:true`, `same_model:false` — sherlock usa haiku, NO dispara swap | Igual — el `model_override` ya diferencia, swap es no-op |
-| `commander=gemini-google/gemini-2.0-flash`, chain ofrece `gemini-google/gemini-2.0-flash` (mismo modelo) | `same_provider:true`, `same_model:true` — adversariality reducida aceptada | El resolver lee `alternative_models[]` del provider y elige `gemini-1.5-flash`; emite `sherlock_model_swap`. Resultado final: `sameModel:false` |
+| `commander=antigravity/gemini-2.0-flash`, chain ofrece `antigravity/gemini-2.0-flash` (mismo modelo) | `same_provider:true`, `same_model:true` — adversariality reducida aceptada | El resolver lee `alternative_models[]` del provider y elige `gemini-1.5-flash`; emite `sherlock_model_swap`. Resultado final: `sameModel:false` |
 | `commander=openai-codex/gpt-5.4`, chain ofrece `openai-codex/gpt-5.4`, provider SIN `alternative_models` declarado | `same_provider:true`, `same_model:true` — aceptado | Igual — default-safe, política inactiva (opt-in puro) |
 
 #### Cómo configurarlo
@@ -2272,7 +2312,7 @@ En `agent-models.json` se declara `alternative_models: string[]` opcional dentro
 ```json
 {
   "providers": {
-    "gemini-google": {
+    "antigravity": {
       "model": "gemini-3.8-flash-medium",
       "alternative_models": ["gemini-3.7-flash-medium"]
     }
@@ -2301,7 +2341,7 @@ Cuando dispara la policy, emite una entry adicional al JSONL del día:
 ```json
 {
   "event": "sherlock_model_swap",
-  "provider_effective": "gemini-google",
+  "provider_effective": "antigravity",
   "swap_model_origen": "gemini-2.0-flash",
   "swap_model_destino": "gemini-1.5-flash",
   "swap_reason": "same_model_avoidance",
@@ -2328,7 +2368,7 @@ jq -r 'select(.event=="sherlock_model_swap") | .provider_effective' \
 `lib/sherlock-verifier.js::formatVerifiedFooter()` produce una línea informativa para el caller (pulpo.js) cuando Sherlock verifica:
 
 - Sin swap: `Verificado por: anthropic/claude-haiku-4-5`
-- Con swap: `Verificado por: gemini-google/gemini-1.5-flash (swap desde gemini-2.0-flash)`
+- Con swap: `Verificado por: antigravity/gemini-1.5-flash (swap desde gemini-2.0-flash)`
 
 Reglas UX (CA-UX-SWAP-1): UNA línea, sin emojis, sin tono celebratorio. La diferencia es informativa, no celebratoria — respeta `feedback_telegram-messages-natural.md` y `project_v3-efficiency-priority.md`.
 
@@ -2342,7 +2382,7 @@ Reglas UX (CA-UX-SWAP-1): UNA línea, sin emojis, sin tono celebratorio. La dife
 #### Tests
 
 - `#3501 CA-14`: anthropic opus↔haiku via config #3221 NO dispara swap (modelos ya distintos).
-- `#3501 CA-15`: swap intra-provider en gemini-google emite `sherlock_model_swap` con campos diferenciados.
+- `#3501 CA-15`: swap intra-provider en antigravity emite `sherlock_model_swap` con campos diferenciados.
 - `#3501 CA-16 (CA-SEC-SWAP-6)`: `alternative_models` con modelo fuera de allowlist → `validate()` exit code 2.
 - `#3501 CA-17`: invariante cap reelaboración=1 intacto, swap NO consume budget.
 - `#3501 CA-18`: provider sin `alternative_models` → comportamiento post-#3484 preservado (default-safe, opt-in puro).
@@ -2389,7 +2429,7 @@ multi_provider:
     openai-codex:
       warn: 80
       crit: 95
-    gemini-google:
+    antigravity:
       warn: 80
       crit: 95
     preventive_switch:
@@ -2444,7 +2484,7 @@ Reglas:
 |---|---|---|---|
 | `anthropic` | sí (si hay snapshot fresco) | **sí** | **sí** — el caso del incidente 27-28/06. |
 | `openai-codex` | no (sin ventana de sesión 5h) | si hay dato fresco (presupuesto mensual) | si cruza `crit` con dato fresco. |
-| `gemini-google` / free-tier | buckets `missing` → no se alertan | idem | no aplica salvo dato fresco. |
+| `antigravity` / free-tier | buckets `missing` → no se alertan | idem | no aplica salvo dato fresco. |
 
 Los buckets `missing` **no generan ruido**: el gate de `fresh` los descarta.
 
@@ -2492,7 +2532,7 @@ la ejecución (no inventada).
 > keys literales. Las credenciales se hidratan con el cargador único
 > [`.pipeline/lib/credentials.js`](../../.pipeline/lib/credentials.js) (fuente
 > `~/.claude/secrets/credentials.json`) y se referencian por placeholder
-> (`$ANTHROPIC_API_KEY`, `$OPENAI_API_KEY`, `$GEMINI_API_KEY`, …).
+> (`$ANTHROPIC_API_KEY`, `$OPENAI_API_KEY`, …; `antigravity` no usa API key, autentica por OAuth del CLI `agy`).
 > **Regla del proyecto:** las API keys se cargan por terminal de Windows, **nunca
 > por Telegram**, y viven solo en `credentials.json`. Toda evidencia (logs,
 > screenshots) va **redactada** — sin JWT, `Authorization`, ni keys visibles.
@@ -2514,7 +2554,7 @@ node .pipeline/tools/multi-provider-smoke-test.js --help
 node .pipeline/tools/multi-provider-smoke-test.js
 
 # Acotar a una celda concreta (útil para diagnosticar un provider)
-node .pipeline/tools/multi-provider-smoke-test.js --skill=qa --provider=gemini-google
+node .pipeline/tools/multi-provider-smoke-test.js --skill=qa --provider=antigravity
 
 # Ensayo sin invocar providers (coverage con PASS stub) — no gasta cuota
 node .pipeline/tools/multi-provider-smoke-test.js --dry-run --no-telegram --no-create-issues
@@ -2534,13 +2574,13 @@ para 'multi-provider-smoke-test'. Activar '.pausa' (halt total) O extender
 ```
 
 **Salida esperada dentro de ventana** (ejemplo real, `--dry-run` acotado a
-`qa × gemini-google`; con credenciales presentes vía `credentials.js`):
+`qa × antigravity`; con credenciales presentes vía `credentials.js`):
 
 ```text
 [smoke-test] Pipeline detenido (.pausa) — ventana segura.
 [smoke-test] Matriz construida: 57 combinaciones (skills LLM × providers LLM).
 [smoke-test] Tras filtros CLI: 1 combinaciones.
-[smoke-test] Credenciales gemini-google: OK (credenciales presentes)
+[smoke-test] Credenciales antigravity: OK (credenciales presentes)
 [smoke-test] Skipped (--dry-run)
 [smoke-test] coverage.json escrito (1 entries, summary={"pass":1,"warn":0,"fail":0,...})
 { "ok": true, "run_id": "run-...", "summary": { "pass": 1, ... },
@@ -2575,7 +2615,7 @@ y stripear CR/LF anti log-injection):
 
 | Campo | Tipo | Significado |
 |---|---|---|
-| `provider` | string | provider resuelto (`anthropic`, `openai-codex`, `gemini-google`, …) |
+| `provider` | string | provider resuelto (`anthropic`, `openai-codex`, `antigravity`, …) |
 | `skill` | string | skill del agente (`backend-dev`, `guru`, …) |
 | `issue` | number\|null | número de issue procesado |
 | `tokens_in` | number | tokens de entrada (total canónico del adapter) |
@@ -2681,7 +2721,7 @@ un cambio de pin invalida la cache v2. Errores, timeout o versión fuera del ran
 producen rojo durable con TTL negativo; el probe nunca actualiza el binario.
 
 
-Para `gemini-google` la presencia del binario no alcanza: un `agy` instalado puede
+Para `antigravity` la presencia del binario no alcanza: un `agy` instalado puede
 estar deslogueado o sin licencia. Hasta #6857 eso se resolvía leyendo un flag de
 entorno local (`AGY_LICENSE_READY=1`) — sin round-trip al proveedor — y el flag
 estaba vacío en producción con la licencia paga activa: el provider figuraba rojo
@@ -2690,7 +2730,7 @@ real a `agy models` (`.pipeline/lib/multi-provider/agy-catalog-probe.js`):
 
 | Estado real | `state` | `reason_code` | Badge en `/providers` | Gatea el dispatch |
 |---|---|---|---|---|
-| Binario ausente (`AGY_BIN` inválido, no instalado) | `red` | `cli_unavailable` | **SIN INSTALAR** | sí (durable) |
+| Binario ausente (`ANTIGRAVITY_BIN` inválido, no instalado) | `red` | `cli_unavailable` | **SIN INSTALAR** | sí (durable) |
 | Instalado, versión fuera del pin (< min, > max_tested o ilegible) | `red` | `cli_contract_mismatch` | **VERSIÓN NO PROBADA** | sí (durable) |
 | Instalado, sin sesión/licencia (rc≠0, timeout, catálogo vacío) | `red` | `cli_license_unavailable` | **SIN LICENCIA** | sí (durable) |
 | Instalado y con licencia (catálogo poblado) | `green` | `cli_catalog_ok` | **SANO** · "catálogo verificado · N modelos · hace X" | no |
@@ -2698,7 +2738,7 @@ real a `agy models` (`.pipeline/lib/multi-provider/agy-catalog-probe.js`):
 Cómo funciona:
 
 - **Binario**: se resuelve con la misma función que el launcher
-  (`detectLauncher`: `AGY_BIN` → `%LOCALAPPDATA%\agy\bin\agy.exe` → PATH). Ese dir
+  (`detectLauncher`: `ANTIGRAVITY_BIN` → `%LOCALAPPDATA%\agy\bin\agy.exe` → PATH). Ese dir
   está sólo en el PATH de **usuario**, por eso el fallback a `agy` pelado no sirve
   desde los servicios y la ubicación oficial va antes.
 - **Round-trip**: `agy models` (no interactivo, no consume cuota de generación,
@@ -2748,7 +2788,7 @@ con `--add-dir <dir>` aparece en `<dir>`. El modo de falla es el peor posible �
 silencioso y con reporte de éxito: un agente despachado sin el flag "implementa"
 contra un scratch fantasma y el issue rebota sin diff y sin causa visible.
 
-Por eso `buildSpawn` del handler (`lib/agent-launcher/providers/gemini-google.js`):
+Por eso `buildSpawn` del handler (`lib/agent-launcher/providers/antigravity.js`):
 
 - Traduce el `cwd` recibido a `--add-dir <cwd>` en el argv, además de mantenerlo
   en `spawnOpts.cwd` (paridad con los demás handlers). Es el mismo `cwd` que
@@ -2775,12 +2815,12 @@ worktree acumularía un proyecto persistente por issue sin aislamiento medible;
 
 **Diagnóstico**: ante un rebote "implementé" sin diff de un agente que haya
 caído a este provider, mirar el scratch antes que el log —
-`node -e "console.log(require('./.pipeline/lib/agent-launcher/providers/gemini-google').agyScratchDir())"`
+`node -e "console.log(require('./.pipeline/lib/agent-launcher/providers/antigravity').agyScratchDir())"`
 — y el argv del spawn (tiene que contener `--add-dir`). Verificación:
 
 ```bash
-node --test .pipeline/tests/gemini-add-dir-6859.test.js        # offline: fake de agy que honra --add-dir, asserta sobre disco
-node .pipeline/tests/smoke/gemini-add-dir.smoke.js               # real: repo git temporal + archivo + git status + scratch sin cambios
+node --test .pipeline/tests/antigravity-add-dir-6859.test.js        # offline: fake de agy que honra --add-dir, asserta sobre disco
+node .pipeline/tests/smoke/antigravity-add-dir.smoke.js               # real: repo git temporal + archivo + git status + scratch sin cambios
 ```
 
 ### 14.4 Failover reproducible
@@ -2826,9 +2866,9 @@ se pierde trabajo):
 🚫 guru:#4405 — Cadena completa exhausted:
   → anthropic (DESCARTADO: quota_exhausted (sin cuota) — weekly 100%)
   → openai-codex (DESCARTADO: health_gate (health rojo reciente) — 429 hace 3min)
-  → gemini-google (DESCARTADO: provider_inactive_by_schedule (fuera de horario) — 22:00-08:00)
+  → antigravity (DESCARTADO: provider_inactive_by_schedule (fuera de horario) — 22:00-08:00)
   RESULTADO: all-gated, devuelvo a pendiente/ para retry
-  Chain evaluada: anthropic → openai-codex → gemini-google (3 eslabones evaluados)
+  Chain evaluada: anthropic → openai-codex → antigravity (3 eslabones evaluados)
 ```
 
 > Ambos bloques se generaron con el `formatProviderResolutionLog` real. Para
@@ -2917,7 +2957,7 @@ alimentar el criterio; un archivo con la cadena rota se descarta y se reporta.
 
 > **Prohibido usar `.claude/activity-log.jsonl`.** Esa fuente sólo registra `provider` en
 > `session:start` / `session:end`: mide sesiones de agente ya arrancado, no intentos de
-> proveedor. Daría **cero** para `gemini-google`, `cerebras` y `nvidia-nim` — los tres que
+> proveedor. Daría **cero** para `antigravity`, `cerebras` y `nvidia-nim` — los tres que
 > más despachan — y el criterio los daría de baja justo por aportar. Hay un test de
 > policy que falla si el módulo llega a importarla.
 
@@ -2959,7 +2999,7 @@ tasa de aporte = aportes / evaluables
   a mano lo empuja a `candidato_baja` — la violación de REQ-SEC-3 que rebotó `security` en
   #6145: `cerebras` medía 22,7 % con el kill-switch adentro y **100 %** sin él.
 - *Observabilidad local* — el rojo lo produce un flag de entorno propio, sin round-trip al
-  proveedor. Es el caso `gemini-google`: con sus gateos dentro del denominador su tasa daba
+  proveedor. Es el caso `antigravity`: con sus gateos dentro del denominador su tasa daba
   7,6 %; con el denominador limpio da **100 %**. Un umbral ingenuo lo habría sacado de la
   cadena por un bug de instrumentación nuestro.
 
@@ -3075,7 +3115,7 @@ hace"*:
 | `sin datos 24h` | no evaluable | no | Falta muestra. **Nunca** se degrada a "no aporta" |
 | ausente del panel | sin declarar | no | Despacha pero no está en config (#6153) |
 
-**Ejemplo canónico — `gemini-google` (histórico, corregido en #6857).** Figuraba `red`
+**Ejemplo canónico — `antigravity` (histórico, corregido en #6857).** Figuraba `red`
 en el panel y `mantener` en el reporte, **simultáneamente, y eso era correcto**: el rojo
 lo producía `cli-oauth-probe.js` cuando `AGY_LICENSE_READY !== '1'`, un flag de entorno
 **sin round-trip al proveedor**. Mientras tanto el dispatcher lo eligió 277 veces en la
@@ -3225,14 +3265,14 @@ node .pipeline/validate-agent-models.js              # CLI humanizado (#3089)
 Los proveedores configurados, evaluados contra las tres condiciones. Las columnas repiten
 literalmente lo declarado en `agent-models.json`. Fuente de la medición: tabla del issue
 #6562 (estado al 25/08/2026), `capabilities` / `supports_tool_use` del JSON, los
-quota-adapters de `.pipeline/lib/quota-adapters/` (`gemini-google` devuelve
+quota-adapters de `.pipeline/lib/quota-adapters/` (`antigravity` devuelve
 `not_implemented`) y la [tabla de TOS](../pipeline-multi-provider/data-residency.md).
 
 | Proveedor | Edita archivos | Reporta consumo | Términos sin entrenamiento | Veredicto | Cómo sigue |
 |---|---|---|---|---|---|
 | `anthropic` | sí | sí, real | sí | **admisible** | — |
 | `openai-codex` | sí | sí, real | sí | **admisible** | — |
-| `gemini-google` | sí (CLI `agy` de Antigravity) | no (adapter `not_implemented`; parser de `usage.*` es #7288) | no (licencia paga de Antigravity sin verificación documentada todavía) | no admisible — excepción vigente | #6564 verifica el plan pago y documenta términos; excepción hasta 2026-12-31 |
+| `antigravity` | sí (CLI `agy` de Antigravity) | no (adapter `not_implemented`; parser de `usage.*` es #7288) | no (licencia paga de Antigravity sin verificación documentada todavía) | no admisible — excepción vigente | #6564 verifica el plan pago y documenta términos; excepción hasta 2026-12-31 |
 | `deterministic` | n/a | n/a | n/a | exento (sin LLM) | `non_llm: true` |
 
 **Retirados en #6563 (2026-09-16):** `nvidia-nim` (no reportaba consumo, términos sin
@@ -3240,7 +3280,7 @@ verificar), `cerebras` (API pelada sin tool_use, no reportaba consumo) y `kimi-m
 (sin tool_use por el endpoint compatible, sin quota-adapter). Ya no existen en
 `agent-models.json` ni en el código; la re-alta se hace por §17.
 
-**Decisión registrada:** `gemini-google` es el único proveedor del plantel que sigue en las
+**Decisión registrada:** `antigravity` es el único proveedor del plantel que sigue en las
 cadenas **únicamente** por `admission.exception`, ahora atada a #6564 (plan pago de Gemini).
 Si #6564 no cierra antes del 2026-12-31, el boot del Pulpo rechaza la configuración con el
 mensaje de §16.3 — es fail-closed a propósito: la excepción se extiende editando la fecha en

@@ -56,7 +56,6 @@ test('loadIntoEnv hidrata todas las vars desde credentials.json canonical', () =
         telegram: { bot_token: '12345:botoken-test', chat_id: '99999' },
         providers: {
           openai:    { api_key: 'sk-proj-openai-test' },
-          google:    { api_key: 'AIza-gemini-test' },
           anthropic: { api_key: 'sk-ant-anthropic-test' }, // secret-scan:ignore
         },
       });
@@ -68,7 +67,8 @@ test('loadIntoEnv hidrata todas las vars desde credentials.json canonical', () =
       assert.equal(env.TELEGRAM_BOT_TOKEN, '12345:botoken-test');
       assert.equal(env.TELEGRAM_CHAT_ID, '99999');
       assert.equal(env.OPENAI_API_KEY, 'sk-proj-openai-test');
-      assert.equal(env.GEMINI_API_KEY, 'AIza-gemini-test');
+      // #6861 — providers.google.api_key retirada (sin consumidor): GEMINI_API_KEY ya no se hidrata.
+      assert.equal(env.GEMINI_API_KEY, undefined);
       assert.equal(env.ANTHROPIC_API_KEY, 'sk-ant-anthropic-test'); // secret-scan:ignore
       // #3353 — GROQ_API_KEY removida tras descontinuación; ya no se hidrata.
       assert.equal(env.GROQ_API_KEY, undefined);
@@ -88,14 +88,15 @@ test('NO sobrescribe env vars que ya estan seteadas (precedencia env > JSON)', (
   withCleanEnv(() => {
     withTmpFiles(({ canonical, legacy }) => {
       writeJson(canonical, {
-        providers: { google: { api_key: 'AIza-from-json' } },
+        // #6861 — providers.google.api_key retirada (sin consumidor); la precedencia se prueba sobre openai.
+        providers: { openai: { api_key: 'FAKE-sk-from-json' } },
       });
-      const env = { GEMINI_API_KEY: 'AIza-already-set-from-env' };
+      const env = { OPENAI_API_KEY: 'FAKE-sk-already-set-from-env' };
       const result = loadIntoEnv({ canonicalPath: canonical, legacyPath: legacy, env, logger: () => {} });
 
-      assert.equal(env.GEMINI_API_KEY, 'AIza-already-set-from-env');
-      assert.ok(result.skipped_existing.includes('GEMINI_API_KEY'));
-      assert.ok(!result.hydrated.includes('GEMINI_API_KEY'));
+      assert.equal(env.OPENAI_API_KEY, 'FAKE-sk-already-set-from-env');
+      assert.ok(result.skipped_existing.includes('OPENAI_API_KEY'));
+      assert.ok(!result.hydrated.includes('OPENAI_API_KEY'));
     });
   });
 });
@@ -107,15 +108,16 @@ test('skipea placeholders conocidos (REVOKED, PLACEHOLDER, MOVED, ...)', () => {
     withTmpFiles(({ canonical, legacy }) => {
       writeJson(canonical, {
         telegram: { bot_token: 'MOVED_TO_HOME', chat_id: '' },
+        // #6861 — providers.google.api_key retirada (sin consumidor); el valor real vive en anthropic.
         providers: {
-          openai:   { api_key: 'CHANGE_ME' },
-          google:   { api_key: 'AIza-real-value' },
+          openai:    { api_key: 'CHANGE_ME' },
+          anthropic: { api_key: 'FAKE-sk-ant-real-value' }, // secret-scan:ignore
         },
       });
       const env = {};
       const result = loadIntoEnv({ canonicalPath: canonical, legacyPath: legacy, env, logger: () => {} });
 
-      assert.equal(env.GEMINI_API_KEY, 'AIza-real-value');
+      assert.equal(env.ANTHROPIC_API_KEY, 'FAKE-sk-ant-real-value'); // secret-scan:ignore
       assert.equal(env.TELEGRAM_BOT_TOKEN, undefined);
       assert.equal(env.TELEGRAM_CHAT_ID, undefined);
       assert.equal(env.OPENAI_API_KEY, undefined);
@@ -172,19 +174,19 @@ test('cuando canonical no existe, hace fallback al legacy con flat keys', () => 
   });
 });
 
-test('legacy NO carga providers posteriores (google se acaba si solo hay legacy)', () => {
+test('legacy NO carga providers posteriores (anthropic se acaba si solo hay legacy)', () => {
   withCleanEnv(() => {
     withTmpFiles(({ canonical, legacy }) => {
       writeJson(legacy, {
         bot_token: '12345:t',
         chat_id: '1',
-        // legacy NO conoce el field "google_api_key"
+        // legacy NO conoce el field "anthropic_api_key"
       });
       const env = {};
       const result = loadIntoEnv({ canonicalPath: canonical, legacyPath: legacy, env, logger: () => {} });
 
       assert.equal(result.source, 'legacy');
-      assert.equal(env.GEMINI_API_KEY, undefined);
+      assert.equal(env.ANTHROPIC_API_KEY, undefined);
     });
   });
 });
@@ -257,7 +259,8 @@ test('ENV_MAPPING cubre los providers IA vivos + telegram + multimedia', () => {
   assert.ok(values.has('TELEGRAM_CHAT_ID'));
   assert.ok(values.has('OPENAI_API_KEY'));
   assert.ok(values.has('ANTHROPIC_API_KEY'));
-  assert.ok(values.has('GEMINI_API_KEY'));
+  // #6861 — providers.google.api_key retirada (sin consumidor): antigravity autentica por OAuth del CLI.
+  assert.ok(!values.has('GEMINI_API_KEY'), 'GEMINI_API_KEY debería estar removida tras #6861');
   // #3353 — GROQ_API_KEY removida tras la descontinuación del provider.
   assert.ok(!values.has('GROQ_API_KEY'), 'GROQ_API_KEY debería estar removida tras #3353');
   // #6563 — cerebras / nvidia-nim / kimi-moonshot dados de baja del plantel.

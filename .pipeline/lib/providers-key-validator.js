@@ -21,13 +21,13 @@
 const MASK_BULLETS = '•••••';
 
 // Regex por NOMBRE de provider (segmento `providers.<name>.api_key` de ENV_MAPPING).
-// `openai` y `google` son intencionalmente genéricas: las keys de esos providers
-// no tienen un prefijo tan estable como Anthropic.
-// (cerebras / nvidia / moonshot se retiraron en #6563.)
+// `openai` es intencionalmente genérica: sus keys no tienen un prefijo tan
+// estable como Anthropic.
+// (cerebras / nvidia / moonshot se retiraron en #6563; `google` — la key de
+// Google AI Studio — se retiró en #6861 junto con el shim HTTP.)
 const PROVIDER_REGEX = Object.freeze({
     anthropic: /^sk-ant-[A-Za-z0-9_-]{40,}$/,
     openai:    /^sk-[A-Za-z0-9_-]{40,}$/,
-    google:    /^[A-Za-z0-9_-]{30,}$/,          // GEMINI_API_KEY (Google AI Studio, formato variable).
 });
 
 /**

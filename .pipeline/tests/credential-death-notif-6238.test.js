@@ -62,7 +62,8 @@ test('CA-UX-2 usa el label humano del proveedor, nunca la clave interna', () => 
     const casos = [
         ['anthropic', 'Anthropic'],
         ['openai-codex', 'OpenAI Codex'],
-        ['gemini-google', 'Gemini'],
+        // #6861 — el label humano del provider renombrado es `Antigravity`.
+        ['antigravity', 'Antigravity'],
     ];
     for (const [key, label] of casos) {
         for (const isRepeat of [false, true]) {

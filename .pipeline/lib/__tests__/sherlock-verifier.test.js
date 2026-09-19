@@ -117,12 +117,11 @@ function defaultConfigLoader(over = {}) {
 }
 
 // #6563 — cerebras y nvidia-nim se retiraron del plantel. La chain de 3
-// providers con handler que usa la cascada pasa a ser el plantel real: el único
-// HTTP que queda (gemini-google) + los dos spawn-CLI (anthropic, openai-codex).
-// Los tests de cascada que antes recorrían 3 providers HTTP recorren ahora
-// HTTP + spawn + spawn; para eso inyectan las 3 vías con `fakeAllTransports`.
+// providers con handler que usa la cascada pasa a ser el plantel real: los
+// tres van por spawn-CLI (antigravity desde #6861, anthropic, openai-codex).
+// Los tests de cascada inyectan las 3 vías con `fakeAllTransports`.
 const CHAIN_PLANTEL = [
-    { provider: 'gemini-google', model: 'gemini-3.8-flash-medium' }, // HTTP
+    { provider: 'antigravity', model: 'gemini-3.8-flash-medium' }, // spawn (#6861)
     { provider: 'anthropic', model: 'claude-haiku-4-5' },           // spawn
     { provider: 'openai-codex', model: 'gpt-5.4-mini' },            // spawn
 ];
@@ -132,7 +131,7 @@ const CHAIN_PLANTEL = [
 const CHAIN_ANTH_FIRST = [
     { provider: 'anthropic', model: 'claude-haiku-4-5' },
     { provider: 'openai-codex', model: 'gpt-5' },        // stub — Sherlock lo salta
-    { provider: 'gemini-google', model: 'gemini-3.8-flash-medium' },
+    { provider: 'antigravity', model: 'gemini-3.8-flash-medium' },
 ];
 
 // Fake spawn helper para Anthropic (#3484 Opción B). Devuelve el shape
@@ -156,13 +155,37 @@ function fakeSpawnCodex(responseOrFn) {
     };
 }
 
-// #6563 — misma respuesta (o misma función) para las 3 vías del plantel:
-// HTTP (gemini-google) + spawn anthropic + spawn openai-codex. Reemplaza al
+// #6861 — antigravity dejó de ser HTTP (el shim de AI Studio se retiró) y
+// Sherlock lo alcanza por spawn de `agy` (`spawnAntigravityComplete`). Mismo
+// shape de fake que codex/anthropic.
+function fakeSpawnAntigravity(responseOrFn) {
+    return async (opts) => {
+        const r = typeof responseOrFn === 'function' ? responseOrFn(opts) : responseOrFn;
+        if (r && typeof r.then === 'function') return await r;
+        return r;
+    };
+}
+
+// #6861 — adapta un completionClient fake (objeto con `.complete`) a la vía
+// spawn de antigravity, para que los tests escritos contra el shim HTTP sigan
+// ejercitando EXACTAMENTE el mismo camino de cascada/auditoría con el provider
+// ahora por spawn. El spawn helper no recibe `provider` en opts: se agrega
+// para que los fakes que inspeccionan `opts.provider` sigan viendo el id.
+function viaAntigravity(client) {
+    return {
+        completionClient: client,
+        spawnAntigravity: (opts) => client.complete(Object.assign({ provider: 'antigravity' }, opts)),
+    };
+}
+
+// #6563/#6861 — misma respuesta (o misma función) para las 3 vías del plantel:
+// spawn antigravity + spawn anthropic + spawn openai-codex. Reemplaza al
 // `completionClient: fakeCompletionClient(x)` de los tests de cascada que
 // antes recorrían 3 providers HTTP. Se usa con spread: `...fakeAllTransports(x)`.
 function fakeAllTransports(responseOrFn) {
     return {
         completionClient: fakeCompletionClient(responseOrFn),
+        spawnAntigravity: fakeSpawnAntigravity(responseOrFn),
         spawnAnthropic: fakeSpawnAnthropic(responseOrFn),
         spawnCodex: fakeSpawnCodex(responseOrFn),
     };
@@ -195,7 +218,7 @@ test('T-1: detecta inconsistencia entre claim del Commander y system_state', asy
         excludedProvider: 'anthropic',
         pipelineDir: dir,
         configLoader: defaultConfigLoader(),
-        completionClient: fakeCompletionClient(completionResponse),
+        ...viaAntigravity(fakeCompletionClient(completionResponse)),
         quotaModule: fakeQuotaAllPass(),
         dispatchModule: fakeDispatcher({ providerChain: CHAIN_PLANTEL }),
         residencyModule: fakeResidencyOk(),
@@ -203,7 +226,7 @@ test('T-1: detecta inconsistencia entre claim del Commander y system_state', asy
     assert.equal(result.verdict, 'rechazado');
     assert.equal(result.inconsistencies.length, 1);
     assert.equal(result.inconsistencies[0].claim, 'el issue 1234 está abierto');
-    assert.equal(result.sherlockProvider, 'gemini-google');
+    assert.equal(result.sherlockProvider, 'antigravity');
     assert.equal(result.suggestedDisclaimer, null);
 });
 
@@ -216,7 +239,7 @@ test('T-2: cuando TODA la chain falla con timeout devuelve aborted + disclaimer 
     const completionTimeout = {
         ok: false,
         error: { type: 'timeout', detail: 'request sin respuesta del provider' },
-        provider: 'gemini-google',
+        provider: 'antigravity',
         model: 'gemini-3.8-flash-medium',
         durationMs: 1,
     };
@@ -269,7 +292,7 @@ test('T-3: verdict ok no agrega disclaimer ni cambia respuesta', async () => {
         excludedProvider: 'anthropic',
         pipelineDir: dir,
         configLoader: defaultConfigLoader(),
-        completionClient: fakeCompletionClient(okResp),
+        ...viaAntigravity(fakeCompletionClient(okResp)),
         quotaModule: fakeQuotaAllPass(),
         dispatchModule: fakeDispatcher({ providerChain: CHAIN_PLANTEL }),
         residencyModule: fakeResidencyOk(),
@@ -310,7 +333,7 @@ test('T-4: dos llamadas con rechazado devuelven rechazado dos veces (caller apli
         excludedProvider: 'anthropic',
         pipelineDir: dir,
         configLoader: defaultConfigLoader(),
-        completionClient: fakeCompletionClient(respFn),
+        ...viaAntigravity(fakeCompletionClient(respFn)),
         quotaModule: fakeQuotaAllPass(),
         dispatchModule: fakeDispatcher({ providerChain: CHAIN_PLANTEL }),
         residencyModule: fakeResidencyOk(),
@@ -339,8 +362,8 @@ test('T-5: 5 turnos paralelos con commanderProvider variado — sameProvider cor
     };
     const chain = CHAIN_PLANTEL;
     // Mezcla de providers del plantel — el commander coincide a veces con el
-    // primero del chain (gemini-google), generando same_provider=true cuando aplica.
-    const commanderProviders = ['anthropic', 'gemini-google', 'openai-codex', 'gemini-google', 'anthropic'];
+    // primero del chain (antigravity), generando same_provider=true cuando aplica.
+    const commanderProviders = ['anthropic', 'antigravity', 'openai-codex', 'antigravity', 'anthropic'];
 
     const promises = commanderProviders.map((cp, i) =>
         sherlock.verify({
@@ -359,8 +382,8 @@ test('T-5: 5 turnos paralelos con commanderProvider variado — sameProvider cor
     const results = await Promise.all(promises);
     for (let i = 0; i < results.length; i++) {
         const r = results[i];
-        // Sherlock siempre devuelve un provider de la chain (gemini-google primero).
-        assert.ok(['gemini-google', 'anthropic', 'openai-codex'].indexOf(r.sherlockProvider) >= 0,
+        // Sherlock siempre devuelve un provider de la chain (antigravity primero).
+        assert.ok(['antigravity', 'anthropic', 'openai-codex'].indexOf(r.sherlockProvider) >= 0,
             `Turno ${i}: sherlockProvider=${r.sherlockProvider} debería ser de la chain`);
         // sameProvider es true sólo si commanderProvider === sherlockProvider.
         const expectedSame = (commanderProviders[i] === r.sherlockProvider);
@@ -391,7 +414,7 @@ test('CA-SEC-1: analysis con prompt-injection es sanitizado antes del provider',
         excludedProvider: 'anthropic',
         pipelineDir: dir,
         configLoader: defaultConfigLoader(),
-        completionClient: captureCompletion,
+        ...viaAntigravity(captureCompletion),
         quotaModule: fakeQuotaAllPass(),
         dispatchModule: fakeDispatcher({ providerChain: CHAIN_PLANTEL }),
         residencyModule: fakeResidencyOk(),
@@ -439,7 +462,7 @@ test('CA-SEC-3: data-residency block aborta antes de llamar al provider', async 
     // #6563 — la chain excluye a anthropic: por diseño (SR-1) el filtro de
     // data-residency NUNCA bloquea a anthropic (passthrough), así que con él en
     // la chain el test dejaría de probar el bloqueo. Quedan los dos providers
-    // sujetos al filtro: gemini-google (HTTP) y openai-codex (spawn).
+    // sujetos al filtro: antigravity (HTTP) y openai-codex (spawn).
     const result = await sherlock.verify({
         analysis: 'cualquier cosa',
         originalRequest: '?',
@@ -447,7 +470,7 @@ test('CA-SEC-3: data-residency block aborta antes de llamar al provider', async 
         excludedProvider: 'anthropic',
         pipelineDir: dir,
         configLoader: defaultConfigLoader(),
-        completionClient: trackerCompletion,
+        ...viaAntigravity(trackerCompletion),
         spawnAnthropic: trackerSpawn,
         spawnCodex: trackerSpawn,
         quotaModule: fakeQuotaAllPass(),
@@ -550,7 +573,7 @@ test('CA-SEC-6: schema_violation en TODA la chain emite evento y devuelve aborte
 test('#3809 MP-12: schema_violation transitoria → retry 1× del MISMO provider y luego éxito', async () => {
     const dir = mkTmpPipelineDir();
     let calls = 0;
-    // 1er intento (gemini-google): schema inválido. 2do intento (mismo gemini
+    // 1er intento (antigravity): schema inválido. 2do intento (mismo gemini
     // tras retry MP-12): JSON válido → verdict ok. No debe degradar al 2do provider.
     const flaky = (_opts) => {
         calls++;
@@ -618,7 +641,7 @@ test('CA-SEC-7: sherlock_enabled=false hace bypass total', async () => {
         excludedProvider: 'anthropic',
         pipelineDir: dir,
         configLoader: defaultConfigLoader({ sherlock_enabled: false }),
-        completionClient: trackerCompletion,
+        ...viaAntigravity(trackerCompletion),
         quotaModule: fakeQuotaAllPass(),
         dispatchModule: fakeDispatcher({ providerChain: CHAIN_PLANTEL }),
         residencyModule: fakeResidencyOk(),
@@ -663,7 +686,7 @@ test('CA-SEC-8: claim/contradiction nunca aparecen literales en el audit log', a
         excludedProvider: 'anthropic',
         pipelineDir: dir,
         configLoader: defaultConfigLoader(),
-        completionClient: fakeCompletionClient(resp),
+        ...viaAntigravity(fakeCompletionClient(resp)),
         quotaModule: fakeQuotaAllPass(),
         dispatchModule: fakeDispatcher({ providerChain: CHAIN_PLANTEL }),
         residencyModule: fakeResidencyOk(),
@@ -838,6 +861,100 @@ test('#4104: _spawnCodexComplete con timeoutMs>0 mata el child con SIGTERM y dev
     assert.equal(child._sigtermSent, 'SIGTERM', 'el child codex colgado debe recibir SIGTERM por eslabón');
 });
 
+test('#6861: _spawnAntigravityComplete con timeoutMs>0 mata el child con SIGTERM y devuelve error.type=timeout', async () => {
+    const child = makeNeverFinishingChild();
+    const result = await sherlock._spawnAntigravityComplete({
+        prompt: 'x',
+        model: 'gemini-3.8-flash-medium',
+        timeoutMs: 1000,
+        spawnImpl: () => child,
+        antigravityHandler: fakeSpawnHandler,
+    });
+    assert.equal(result.ok, false);
+    assert.equal(result.error.type, 'timeout');
+    assert.equal(result.provider, 'antigravity');
+    assert.equal(child._sigtermSent, 'SIGTERM', 'el child agy colgado debe recibir SIGTERM por eslabón');
+});
+
+// #6861 — el helper usa el handler REAL del provider (buildSpawn + parseo del
+// stream-json de agy) con un child fake que emite la fixture NDJSON medida en
+// vivo (agy 1.2.4, #7298). Verifica: prompt por STDIN, --model desde
+// ANTIGRAVITY_MODEL, contenido = `result.response`, tokens = `result.usage`.
+function makeAgyChild(stdoutText, exitCode) {
+    const child = {
+        _stdin: '', _stdout: [], _exit: [], _err: [],
+        stdin: { write(s) { child._stdin += String(s); }, end() {} },
+        stdout: { on(ev, cb) { if (ev === 'data') child._stdout.push(cb); } },
+        stderr: { on: () => {} },
+        on(ev, cb) { if (ev === 'exit') child._exit.push(cb); if (ev === 'error') child._err.push(cb); },
+        kill() {},
+    };
+    child._emit = () => {
+        for (const h of child._stdout) h(Buffer.from(stdoutText, 'utf8'));
+        for (const h of child._exit) h(exitCode);
+    };
+    return child;
+}
+
+test('#6861: _spawnAntigravityComplete parsea el evento result del stream-json real de agy (handler real)', async () => {
+    const realHandler = require('../agent-launcher/providers/antigravity');
+    const ndjson = fs.readFileSync(path.join(__dirname, 'fixtures', 'agy-stream-json-1.2.4.ndjson'), 'utf8');
+    const child = makeAgyChild(ndjson, 0);
+    let spawnCall = null;
+    const spawnImpl = (cmd, args, opts) => { spawnCall = { cmd, args, opts }; setImmediate(child._emit); return child; };
+    const result = await sherlock._spawnAntigravityComplete({
+        prompt: 'verificá esto',
+        model: 'gemini-3.8-flash-medium',
+        timeoutMs: 0,
+        spawnImpl,
+        antigravityHandler: realHandler,
+        cwd: __dirname,
+    });
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.equal(result.provider, 'antigravity');
+    assert.equal(result.content, 'OK\n');
+    assert.equal(result.inputTokens, 13038);
+    assert.equal(result.outputTokens, 13);
+    assert.ok(spawnCall, 'spawneó');
+    assert.ok(spawnCall.args.includes('--model') && spawnCall.args.includes('gemini-3.8-flash-medium'), '--model desde ANTIGRAVITY_MODEL');
+    assert.equal(spawnCall.opts.env.ANTIGRAVITY_MODEL, 'gemini-3.8-flash-medium');
+    assert.equal(spawnCall.opts.env.GEMINI_MODEL, undefined, 'la variable vieja no viaja');
+    assert.equal(spawnCall.opts.env.AGY_MODEL, undefined, 'la variable vieja no viaja');
+    assert.ok(spawnCall.args.includes('--add-dir'), 'workspace explícito (#6859)');
+    assert.ok(!spawnCall.args.includes('verificá esto'), 'el prompt NO va por argv');
+    const stdinEvt = JSON.parse(child._stdin.trim());
+    assert.equal(stdinEvt.event, 'user');
+    assert.ok(stdinEvt.message.content.includes('verificá esto'), 'el prompt va por STDIN como NDJSON');
+});
+
+test('#6861: _spawnAntigravityComplete con status ERROR o exit≠0 devuelve spawn_exit (nunca ok)', async () => {
+    const realHandler = require('../agent-launcher/providers/antigravity');
+    const errStream = JSON.stringify({ event: 'result', result: { status: 'ERROR', error: 'quota exceeded', response: '' } }) + '\n';
+    const c1 = makeAgyChild(errStream, 0);
+    const r1 = await sherlock._spawnAntigravityComplete({
+        prompt: 'x', timeoutMs: 0, spawnImpl: () => { setImmediate(c1._emit); return c1; }, antigravityHandler: realHandler, cwd: __dirname,
+    });
+    assert.equal(r1.ok, false);
+    assert.equal(r1.error.type, 'spawn_exit');
+    assert.match(r1.error.detail, /status=ERROR/);
+    const c2 = makeAgyChild('', 1);
+    const r2 = await sherlock._spawnAntigravityComplete({
+        prompt: 'x', timeoutMs: 0, spawnImpl: () => { setImmediate(c2._emit); return c2; }, antigravityHandler: realHandler, cwd: __dirname,
+    });
+    assert.equal(r2.ok, false);
+    assert.equal(r2.error.type, 'spawn_exit');
+    assert.match(r2.error.detail, /sin evento result/);
+});
+
+test('#6861: _spawnAntigravityComplete sin cwd absoluto devuelve spawn_unavailable (fail-fast #6859, nunca scratch)', async () => {
+    const realHandler = require('../agent-launcher/providers/antigravity');
+    const r = await sherlock._spawnAntigravityComplete({
+        prompt: 'x', timeoutMs: 0, spawnImpl: () => { throw new Error('no debería spawnear'); }, antigravityHandler: realHandler, cwd: 'relativo',
+    });
+    assert.equal(r.ok, false);
+    assert.equal(r.error.type, 'spawn_unavailable');
+});
+
 test('#4104: timeoutMs===0 NO arma timer — el child NO recibe SIGTERM (back-compat DEFAULT_TIMEOUT_MS)', async () => {
     // Con timeoutMs ausente/0 el spawn helper corre sin timer. Simulamos un child
     // que resuelve OK rápido; el punto es que kill('SIGTERM') NUNCA se invoque por reloj.
@@ -892,7 +1009,7 @@ test('#4104 CA-1: budget se propaga al spawn helper y timeout salta al siguiente
         commanderProvider: 'openai-codex', // excluido por cross-provider → arranca por anthropic
         pipelineDir: dir,
         configLoader: defaultConfigLoader({ sherlock_provider_budget_ms: 35000 }),
-        completionClient: fakeCompletionClient(okResp),
+        ...viaAntigravity(fakeCompletionClient(okResp)),
         spawnAnthropic: spawnTimeout,
         quotaModule: fakeQuotaAllPass(),
         dispatchModule: fakeDispatcher({ providerChain: CHAIN_ANTH_FIRST }),
@@ -913,7 +1030,7 @@ test('#4104 SEC-C: si TODOS los eslabones agotan el budget la verificación qued
         commanderProvider: 'openai-codex',
         pipelineDir: dir,
         configLoader: defaultConfigLoader({ sherlock_provider_budget_ms: 30000 }),
-        completionClient: fakeCompletionClient(httpTimeout),
+        ...viaAntigravity(fakeCompletionClient(httpTimeout)),
         spawnAnthropic: spawnTimeout,
         spawnCodex: spawnTimeout,
         quotaModule: fakeQuotaAllPass(),
@@ -934,7 +1051,7 @@ test('#4104 SEC-C: si TODOS los eslabones agotan el budget la verificación qued
 test('resolveSherlockProvider devuelve openai-codex con transport=spawn (real desde 2026-06-02)', () => {
     const chain = [
         { provider: 'openai-codex', model: 'gpt-5' },
-        { provider: 'gemini-google', model: 'gemini-3.8-flash-medium' },
+        { provider: 'antigravity', model: 'gemini-3.8-flash-medium' },
     ];
     const r = sherlock._resolveSherlockProvider({
         excludedProvider: 'anthropic', // #3484: ignorado
@@ -951,7 +1068,7 @@ test('resolveSherlockProvider devuelve openai-codex con transport=spawn (real de
 test('resolveSherlockProvider devuelve anthropic con transport=spawn (#3484)', () => {
     const chain = [
         { provider: 'anthropic', model: 'claude-haiku-4-5' },
-        { provider: 'gemini-google', model: 'gemini-3.8-flash-medium' },
+        { provider: 'antigravity', model: 'gemini-3.8-flash-medium' },
     ];
     const r = sherlock._resolveSherlockProvider({
         excludedProvider: null,
@@ -984,21 +1101,21 @@ test('resolveSherlockProvider devuelve null si la chain no tiene provider con ha
 });
 
 test('#3484 CA-SHERLOCK-3: Sherlock no excluye al commanderProvider (mismo provider permitido)', () => {
-    // Aunque el caller pase excludedProvider='gemini-google', el resolver ahora
-    // devuelve gemini-google igualmente porque la exclusión cross-provider se quitó.
+    // Aunque el caller pase excludedProvider='antigravity', el resolver ahora
+    // devuelve antigravity igualmente porque la exclusión cross-provider se quitó.
     const chain = [
-        { provider: 'gemini-google', model: 'gemini-3.8-flash-medium' },
+        { provider: 'antigravity', model: 'gemini-3.8-flash-medium' },
         { provider: 'anthropic', model: 'claude-haiku-4-5' },
     ];
     const r = sherlock._resolveSherlockProvider({
-        excludedProvider: 'gemini-google',
+        excludedProvider: 'antigravity',
         pipelineDir: '/tmp',
         log: () => {},
         quotaModule: fakeQuotaAllPass(),
         dispatchModule: fakeDispatcher({ providerChain: chain }),
     });
     assert.ok(r);
-    assert.equal(r.provider, 'gemini-google');
+    assert.equal(r.provider, 'antigravity');
 });
 
 // =============================================================================
@@ -1076,7 +1193,7 @@ test('#3484 CA-SHERLOCK-2 (rev #3921): Sherlock usa Anthropic vía spawn cuando 
         commanderModel: 'gpt-5.4',
         pipelineDir: dir,
         configLoader: defaultConfigLoader(),
-        completionClient: trackingHttp,
+        ...viaAntigravity(trackingHttp),
         spawnAnthropic: fakeSpawn,
         quotaModule: fakeQuotaAllPass(),
         dispatchModule: fakeDispatcher({ providerChain: CHAIN_ANTH_FIRST }),
@@ -1090,7 +1207,7 @@ test('#3484 CA-SHERLOCK-2 (rev #3921): Sherlock usa Anthropic vía spawn cuando 
     assert.equal(httpCalled, false, 'completion-client NO debe ser llamado para anthropic');
 });
 
-test('#3484 CA-SHERLOCK-4: si anthropic está gateado, Sherlock cae a gemini (next HTTP)', async () => {
+test('#3484 CA-SHERLOCK-4: si anthropic está gateado, Sherlock cae a antigravity (siguiente con handler, spawn desde #6861)', async () => {
     const dir = mkTmpPipelineDir();
     const okResp = {
         ok: true,
@@ -1102,7 +1219,7 @@ test('#3484 CA-SHERLOCK-4: si anthropic está gateado, Sherlock cae a gemini (ne
         commanderProvider: 'anthropic',
         pipelineDir: dir,
         configLoader: defaultConfigLoader(),
-        completionClient: fakeCompletionClient(okResp),
+        ...viaAntigravity(fakeCompletionClient(okResp)),
         spawnAnthropic: fakeSpawnAnthropic({ ok: false, error: { type: 'spawn_failed' }, durationMs: 0 }),
         // Anthropic gateado por cuota → resolver debe saltar al siguiente.
         // Codex es stub → también se salta. Gemini gana.
@@ -1111,8 +1228,8 @@ test('#3484 CA-SHERLOCK-4: si anthropic está gateado, Sherlock cae a gemini (ne
         residencyModule: fakeResidencyOk(),
     });
     assert.equal(result.verdict, 'ok');
-    assert.equal(result.sherlockProvider, 'gemini-google');
-    assert.equal(result.transport, 'http');
+    assert.equal(result.sherlockProvider, 'antigravity');
+    assert.equal(result.transport, 'spawn', '#6861: antigravity va por spawn de agy, no por HTTP');
 });
 
 test('#3484 CA-SHERLOCK-5: si toda la chain falla, Sherlock devuelve aborted + F-6', async () => {
@@ -1122,7 +1239,7 @@ test('#3484 CA-SHERLOCK-5: si toda la chain falla, Sherlock devuelve aborted + F
         commanderProvider: 'anthropic',
         pipelineDir: dir,
         configLoader: defaultConfigLoader(),
-        completionClient: fakeCompletionClient({ ok: false, error: { type: 'http_error' }, durationMs: 100 }),
+        ...viaAntigravity(fakeCompletionClient({ ok: false, error: { type: 'http_error' }, durationMs: 100 })),
         spawnAnthropic: fakeSpawnAnthropic({ ok: false, error: { type: 'spawn_failed' }, durationMs: 0 }),
         // Codex es real desde 2026-06-02: la cascada SÍ lo invoca (spawn). Con el
         // fake fallando, agota la chain y aborta. El errorCode ahora refleja el
@@ -1144,24 +1261,24 @@ test('#3484 CA-AUDIT-1 (rev #3921): audit devuelve sameProvider=true en el fallb
         content: JSON.stringify({ verdict: 'ok', reason: 'ok', inconsistencies: [] }),
         inputTokens: 0, outputTokens: 0, durationMs: 100,
     };
-    // #3921 — la chain SOLO tiene al commander (gemini-google). Cross-provider por
+    // #3921 — la chain SOLO tiene al commander (antigravity). Cross-provider por
     // defecto lo excluye → no hay alternativa → se re-admite como último recurso
     // → sameProvider=true. Es el único camino que produce same-provider ahora.
     const result = await sherlock.verify({
         analysis: 'a', originalRequest: '?', systemState: 's',
-        commanderProvider: 'gemini-google',
+        commanderProvider: 'antigravity',
         commanderModel: 'gemini-3.8-flash-medium',
         pipelineDir: dir,
         configLoader: defaultConfigLoader(),
-        completionClient: fakeCompletionClient(okResp),
+        ...viaAntigravity(fakeCompletionClient(okResp)),
         quotaModule: fakeQuotaAllPass(),
-        dispatchModule: fakeDispatcher({ providerChain: [{ provider: 'gemini-google', model: 'gemini-3.8-flash-medium' }] }),
+        dispatchModule: fakeDispatcher({ providerChain: [{ provider: 'antigravity', model: 'gemini-3.8-flash-medium' }] }),
         residencyModule: fakeResidencyOk(),
     });
-    assert.equal(result.sherlockProvider, 'gemini-google');
+    assert.equal(result.sherlockProvider, 'antigravity');
     assert.equal(result.sameProvider, true);
     assert.equal(result.sameModel, true);
-    assert.equal(result.commanderProvider, 'gemini-google');
+    assert.equal(result.commanderProvider, 'antigravity');
     assert.equal(result.commanderModel, 'gemini-3.8-flash-medium');
 });
 
@@ -1181,7 +1298,7 @@ test('#3484 CA-AUDIT-1 (rev #3921): sameProvider=true pero sameModel=false con d
         commanderModel: 'claude-opus-4-7',
         pipelineDir: dir,
         configLoader: defaultConfigLoader(),
-        completionClient: fakeCompletionClient(okResp),
+        ...viaAntigravity(fakeCompletionClient(okResp)),
         spawnAnthropic: fakeSpawnAnthropic({
             ok: true,
             content: JSON.stringify({ verdict: 'ok', reason: 'ok', inconsistencies: [] }),
@@ -1207,7 +1324,7 @@ test('#3484 back-compat: aceptamos excludedProvider como alias de commanderProvi
     const result = await sherlock.verify({
         analysis: 'a', originalRequest: '?', systemState: 's',
         // Caller viejo pasando excludedProvider — debe trackear como commanderProvider.
-        excludedProvider: 'gemini-google',
+        excludedProvider: 'antigravity',
         pipelineDir: dir,
         configLoader: defaultConfigLoader(),
         ...fakeAllTransports(okResp),
@@ -1215,13 +1332,13 @@ test('#3484 back-compat: aceptamos excludedProvider como alias de commanderProvi
         dispatchModule: fakeDispatcher({ providerChain: CHAIN_PLANTEL }),
         residencyModule: fakeResidencyOk(),
     });
-    assert.equal(result.commanderProvider, 'gemini-google');
+    assert.equal(result.commanderProvider, 'antigravity');
     // #3921 — el alias `excludedProvider` sigue trackeando como `commanderProvider`
-    // (gemini-google), pero con cross-provider por defecto el commander queda EXCLUIDO
+    // (antigravity), pero con cross-provider por defecto el commander queda EXCLUIDO
     // de la cascada: con CHAIN_PLANTEL (gemini + anthropic + codex) Sherlock enruta a
-    // otro provider → sameProvider=false. La prueba del aliasing es que gemini-google
+    // otro provider → sameProvider=false. La prueba del aliasing es que antigravity
     // fue tratado como commander (y por eso excluido), no que comparta provider.
-    assert.equal(result.sameProvider, false, '#3921: el commander aliaseado (gemini-google) se excluye por defecto → cross-provider');
+    assert.equal(result.sameProvider, false, '#3921: el commander aliaseado (antigravity) se excluye por defecto → cross-provider');
 });
 
 test('#3484: spawn helper de Anthropic respeta timeout y devuelve error tipado', async () => {
@@ -1349,16 +1466,16 @@ test('#3484 CA-AUDIT-1: JSONL persiste los 5 campos enriched (verdict ok, samePr
         analysis: 'analisis cualquiera',
         originalRequest: '?',
         systemState: 'estado',
-        commanderProvider: 'gemini-google',
+        commanderProvider: 'antigravity',
         commanderModel: 'gemini-3.8-flash-medium',
         pipelineDir: dir,
         configLoader: defaultConfigLoader(),
-        completionClient: fakeCompletionClient(okResp),
+        ...viaAntigravity(fakeCompletionClient(okResp)),
         quotaModule: fakeQuotaAllPass(),
-        // #3921 — chain con SOLO el commander (gemini-google). Cross-provider por
+        // #3921 — chain con SOLO el commander (antigravity). Cross-provider por
         // defecto lo excluye → no hay alternativa → se re-admite como último recurso
         // → sameProvider=true. Es el único camino que persiste same_provider=true ahora.
-        dispatchModule: fakeDispatcher({ providerChain: [{ provider: 'gemini-google', model: 'gemini-3.8-flash-medium' }] }),
+        dispatchModule: fakeDispatcher({ providerChain: [{ provider: 'antigravity', model: 'gemini-3.8-flash-medium' }] }),
         residencyModule: fakeResidencyOk(),
     });
     const entries = readAuditEntries(dir);
@@ -1370,7 +1487,7 @@ test('#3484 CA-AUDIT-1: JSONL persiste los 5 campos enriched (verdict ok, samePr
     assert.equal(verification.same_model, true, 'same_model=true persistido');
     assert.equal(verification.commander_model, 'gemini-3.8-flash-medium', 'commander_model persistido');
     assert.equal(verification.sherlock_model, 'gemini-3.8-flash-medium', 'sherlock_model persistido');
-    assert.equal(verification.transport, 'http', 'transport persistido');
+    assert.equal(verification.transport, 'spawn', 'transport persistido (#6861: antigravity por spawn)');
 });
 
 test('#3484 CA-AUDIT-1: JSONL persiste sameProvider=false cuando commander y sherlock difieren', async () => {
@@ -1386,7 +1503,7 @@ test('#3484 CA-AUDIT-1: JSONL persiste sameProvider=false cuando commander y she
         commanderModel: 'claude-opus-4-7',
         pipelineDir: dir,
         configLoader: defaultConfigLoader(),
-        completionClient: fakeCompletionClient(okResp),
+        ...viaAntigravity(fakeCompletionClient(okResp)),
         quotaModule: fakeQuotaAllPass(),
         dispatchModule: fakeDispatcher({ providerChain: CHAIN_PLANTEL }),
         residencyModule: fakeResidencyOk(),
@@ -1394,11 +1511,11 @@ test('#3484 CA-AUDIT-1: JSONL persiste sameProvider=false cuando commander y she
     const entries = readAuditEntries(dir);
     const verification = entries.find(e => e.event === 'sherlock_verification');
     assert.ok(verification, 'evento sherlock_verification debe estar persistido');
-    assert.equal(verification.same_provider, false, 'commander=anthropic vs sherlock=gemini-google → same_provider=false');
+    assert.equal(verification.same_provider, false, 'commander=anthropic vs sherlock=antigravity → same_provider=false');
     assert.equal(verification.same_model, false, 'modelos distintos → same_model=false');
     assert.equal(verification.commander_model, 'claude-opus-4-7');
     assert.equal(verification.sherlock_model, 'gemini-3.8-flash-medium');
-    assert.equal(verification.transport, 'http');
+    assert.equal(verification.transport, 'spawn');
 });
 
 test('#3484 CA-AUDIT-1: JSONL persiste transport=spawn cuando Sherlock usa Anthropic CLI', async () => {
@@ -1415,7 +1532,7 @@ test('#3484 CA-AUDIT-1: JSONL persiste transport=spawn cuando Sherlock usa Anthr
         pipelineDir: dir,
         configLoader: defaultConfigLoader(),
         // El completionClient no debería ser llamado — anthropic usa spawn.
-        completionClient: fakeCompletionClient({ ok: false, error: { type: 'should_not_be_called' } }),
+        ...viaAntigravity(fakeCompletionClient({ ok: false, error: { type: 'should_not_be_called' } })),
         spawnAnthropic: fakeSpawnAnthropic(spawnResp),
         quotaModule: fakeQuotaAllPass(),
         // #3921 — chain con SOLO el commander (anthropic). Cross-provider lo excluye →
@@ -1443,16 +1560,16 @@ test('#3484 CA-AUDIT-1: JSONL persiste 5 campos enriched también en sherlock_ve
     };
     await sherlock.verify({
         analysis: 'a', originalRequest: '?', systemState: 's',
-        commanderProvider: 'gemini-google',
+        commanderProvider: 'antigravity',
         commanderModel: 'gemini-3.8-flash-medium',
         pipelineDir: dir,
         configLoader: defaultConfigLoader(),
-        completionClient: fakeCompletionClient(badResp),
+        ...viaAntigravity(fakeCompletionClient(badResp)),
         quotaModule: fakeQuotaAllPass(),
-        // #3921 — chain con SOLO el commander (gemini-google): cross-provider lo
+        // #3921 — chain con SOLO el commander (antigravity): cross-provider lo
         // excluye, sin alternativa → re-admisión último recurso → mismo provider con
         // schema_violation y same_provider=true persistido.
-        dispatchModule: fakeDispatcher({ providerChain: [{ provider: 'gemini-google', model: 'gemini-3.8-flash-medium' }] }),
+        dispatchModule: fakeDispatcher({ providerChain: [{ provider: 'antigravity', model: 'gemini-3.8-flash-medium' }] }),
         residencyModule: fakeResidencyOk(),
     });
     const entries = readAuditEntries(dir);
@@ -1466,7 +1583,7 @@ test('#3484 CA-AUDIT-1: JSONL persiste 5 campos enriched también en sherlock_ve
     assert.equal(verification.same_model, true);
     assert.equal(verification.commander_model, 'gemini-3.8-flash-medium');
     assert.equal(verification.sherlock_model, 'gemini-3.8-flash-medium');
-    assert.equal(verification.transport, 'http');
+    assert.equal(verification.transport, 'spawn');
     assert.equal(verification.error_code, 'schema_violation');
     // El evento dedicado de schema_violation también está persistido.
     const schemaEvent = entries.find(e => e.event === 'sherlock_schema_violation');
@@ -1477,17 +1594,17 @@ test('#3484 CA-AUDIT-1: JSONL persiste campos enriched también en sherlock_abor
     const dir = mkTmpPipelineDir();
     await sherlock.verify({
         analysis: 'a', originalRequest: '?', systemState: 's',
-        commanderProvider: 'gemini-google',
+        commanderProvider: 'antigravity',
         commanderModel: 'gemini-3.8-flash-medium',
         pipelineDir: dir,
         configLoader: defaultConfigLoader(),
-        completionClient: fakeCompletionClient({ ok: true, content: '{}', inputTokens: 0, outputTokens: 0, durationMs: 0 }),
+        ...viaAntigravity(fakeCompletionClient({ ok: true, content: '{}', inputTokens: 0, outputTokens: 0, durationMs: 0 })),
         quotaModule: fakeQuotaAllPass(),
-        // #3921 — chain con SOLO el commander (gemini-google): cross-provider lo
+        // #3921 — chain con SOLO el commander (antigravity): cross-provider lo
         // excluye, sin alternativa → re-admisión último recurso → el provider
         // re-admitido se valida por residency (SEC-1) y se bloquea, con
         // same_provider=true en el evento sherlock_aborted_residency.
-        dispatchModule: fakeDispatcher({ providerChain: [{ provider: 'gemini-google', model: 'gemini-3.8-flash-medium' }] }),
+        dispatchModule: fakeDispatcher({ providerChain: [{ provider: 'antigravity', model: 'gemini-3.8-flash-medium' }] }),
         residencyModule: fakeResidencyBlock(),
     });
     const entries = readAuditEntries(dir);
@@ -1497,7 +1614,7 @@ test('#3484 CA-AUDIT-1: JSONL persiste campos enriched también en sherlock_abor
     assert.equal(aborted.same_model, true);
     assert.equal(aborted.commander_model, 'gemini-3.8-flash-medium');
     assert.equal(aborted.sherlock_model, 'gemini-3.8-flash-medium');
-    assert.equal(aborted.transport, 'http');
+    assert.equal(aborted.transport, 'spawn');
 });
 
 // =============================================================================
@@ -1570,7 +1687,7 @@ test('#3668 CA-7: provider no disponible → emite sherlock_skipped_provider_una
         commanderProvider: 'anthropic',
         pipelineDir: dir,
         configLoader: defaultConfigLoader(),
-        completionClient: fakeCompletionClient({ ok: true, content: '{}', durationMs: 0 }),
+        ...viaAntigravity(fakeCompletionClient({ ok: true, content: '{}', durationMs: 0 })),
         quotaModule: fakeQuotaAllPass(),
         dispatchModule: fakeDispatcherGated,
         residencyModule: fakeResidencyOk(),
@@ -1652,11 +1769,11 @@ function writeAgentModelsFixture(pipelineDir, providersOverride) {
                 credentials_env: ['ANTHROPIC_API_KEY'],
                 permissions_mode: 'bypassPermissions',
             },
-            'gemini-google': {
-                launcher: 'gemini-google',
+            'antigravity': {
+                launcher: 'antigravity',
                 model: 'gemini-3.8-flash-medium',
                 spawn_args_template: ['--model', '{model}'],
-                output_parser: 'gemini-stream',
+                output_parser: 'antigravity-stream-json',
                 quota_error_types: ['quota_exceeded'],
                 supports_tool_use: true,
                 prompt_caching: { supported: false },
@@ -1693,7 +1810,7 @@ test('#3501 CA-14: anthropic opus↔haiku via config #3221 NO dispara swap (mode
         commanderModel: 'claude-opus-4-7',
         pipelineDir: dir,
         configLoader: defaultConfigLoader(),
-        completionClient: fakeCompletionClient({ ok: false, error: { type: 'should_not_be_called' } }),
+        ...viaAntigravity(fakeCompletionClient({ ok: false, error: { type: 'should_not_be_called' } })),
         spawnAnthropic: fakeSpawnAnthropic(okResp),
         quotaModule: fakeQuotaAllPass(),
         // Chain devuelve anthropic con modelo haiku (diferente al opus del commander).
@@ -1729,16 +1846,16 @@ test('#3766 CA-1: mismo provider+modelo entre Commander y Sherlock → veredicto
     };
     const result = await sherlock.verify({
         analysis: 'a', originalRequest: '?', systemState: 's',
-        commanderProvider: 'gemini-google',
+        commanderProvider: 'antigravity',
         commanderModel: 'gemini-3.8-flash-medium',
         pipelineDir: dir,
         configLoader: defaultConfigLoader(),
-        completionClient: fakeCompletionClient(okResp),
+        ...viaAntigravity(fakeCompletionClient(okResp)),
         quotaModule: fakeQuotaAllPass(),
-        // Chain devuelve gemini-google con el mismo modelo que el commander.
+        // Chain devuelve antigravity con el mismo modelo que el commander.
         // Post-#3766: NO se reescribe el modelo, el resolver lo respeta.
         dispatchModule: fakeDispatcher({ providerChain: [
-            { provider: 'gemini-google', model: 'gemini-3.8-flash-medium' },
+            { provider: 'antigravity', model: 'gemini-3.8-flash-medium' },
         ]}),
         residencyModule: fakeResidencyOk(),
     });
@@ -1752,7 +1869,7 @@ test('#3766 CA-1: mismo provider+modelo entre Commander y Sherlock → veredicto
     assert.equal(result.suggestedDisclaimer, sherlock.DISCLAIMER_TYPES.SAME_PROVIDER, '#3921: same-provider de último recurso → disclaimer SAME_PROVIDER (no F-6)');
     assert.notEqual(result.suggestedDisclaimer, sherlock.DISCLAIMER_TYPES.TIMEOUT_OR_NO_PROVIDER, 'sigue sin ser F-6 por adversariality reducida');
     // Provider+model conservados (no hubo swap).
-    assert.equal(result.sherlockProvider, 'gemini-google');
+    assert.equal(result.sherlockProvider, 'antigravity');
     assert.equal(result.sherlockModel, 'gemini-3.8-flash-medium', 'el resolver respeta el modelo de la chain, no lo reescribe');
     // Audit JSONL forensics: sameProvider/sameModel se siguen calculando.
     assert.equal(result.sameProvider, true, 'forensics: sameProvider sigue persistiéndose en JSONL');
@@ -1776,24 +1893,24 @@ test('#3501 CA-16 (CA-SEC-SWAP-6): alternative_models con modelo fuera de ALLOWE
     const validator = require('../agent-models-validate');
     const cfg = {
         $schema: './agent-models.schema.json',
-        default_provider: 'gemini-google',
+        default_provider: 'antigravity',
         providers: {
-            'gemini-google': {
-                launcher: 'gemini-google',
+            'antigravity': {
+                launcher: 'antigravity',
                 model: 'gemini-3.8-flash-medium',
                 spawn_args_template: ['--model', '{model}'],
-                output_parser: 'gemini-stream',
+                output_parser: 'antigravity-stream-json',
                 quota_error_types: ['quota_exceeded'],
                 supports_tool_use: true,
                 prompt_caching: { supported: false },
                 credentials_env: ['GEMINI_API_KEY'],
                 permissions_mode: 'bypassPermissions',
-                // Modelo fuera de ALLOWED_MODELS_BY_LAUNCHER['gemini-google'].
+                // Modelo fuera de ALLOWED_MODELS_BY_LAUNCHER['antigravity'].
                 alternative_models: ['modelo-no-permitido-inventado'],
             },
         },
         skills: {
-            'backend-dev': { provider: 'gemini-google' },
+            'backend-dev': { provider: 'antigravity' },
         },
     };
     const tmpPath = path.join(os.tmpdir(), `sherlock-3501-swap6-${Date.now()}-${process.pid}.json`);
@@ -1839,14 +1956,14 @@ test('#3766 CA-17: invariante reelaboración=1 intacto, HARDCODED_MAX_MODEL_SWAP
     };
     const result = await sherlock.verify({
         analysis: 'a', originalRequest: '?', systemState: 's',
-        commanderProvider: 'gemini-google',
+        commanderProvider: 'antigravity',
         commanderModel: 'gemini-3.8-flash-medium',
         pipelineDir: dir,
         configLoader: defaultConfigLoader({ sherlock_max_reelaboraciones: 99 }), // intento de bypass — clampado a 1.
-        completionClient: fakeCompletionClient(okResp),
+        ...viaAntigravity(fakeCompletionClient(okResp)),
         quotaModule: fakeQuotaAllPass(),
         dispatchModule: fakeDispatcher({ providerChain: [
-            { provider: 'gemini-google', model: 'gemini-3.8-flash-medium' },
+            { provider: 'antigravity', model: 'gemini-3.8-flash-medium' },
         ]}),
         residencyModule: fakeResidencyOk(),
     });
@@ -1873,13 +1990,13 @@ test('#3766 CA-17: invariante reelaboración=1 intacto, HARDCODED_MAX_MODEL_SWAP
 // =============================================================================
 test('#3501 CA-18 (rev #3921): sin alternative_models NO hay swap intra-provider; el cross-provider por defecto enruta al siguiente provider', async () => {
     const dir = mkTmpPipelineDir();
-    // Fixture override: gemini-google SIN alternative_models.
+    // Fixture override: antigravity SIN alternative_models.
     writeAgentModelsFixture(dir, {
-        'gemini-google': {
-            launcher: 'gemini-google',
+        'antigravity': {
+            launcher: 'antigravity',
             model: 'gemini-3.8-flash-medium',
             spawn_args_template: ['--model', '{model}'],
-            output_parser: 'gemini-stream',
+            output_parser: 'antigravity-stream-json',
             quota_error_types: ['quota_exceeded'],
             supports_tool_use: true,
             prompt_caching: { supported: false },
@@ -1893,26 +2010,26 @@ test('#3501 CA-18 (rev #3921): sin alternative_models NO hay swap intra-provider
         content: JSON.stringify({ verdict: 'ok', reason: 'ok', inconsistencies: [] }),
         inputTokens: 10, outputTokens: 5, durationMs: 30,
     };
-    // Chain: gemini-google (= commander) + anthropic. #3921 — cross-provider por
-    // defecto excluye al commander (gemini-google) → la cascada enruta a anthropic
+    // Chain: antigravity (= commander) + anthropic. #3921 — cross-provider por
+    // defecto excluye al commander (antigravity) → la cascada enruta a anthropic
     // (spawn). Sin alternative_models NO hay swap intra-provider; el provider
     // distinto lo produce la exclusión cross-provider, no un swap de modelo.
     const result = await sherlock.verify({
         analysis: 'a', originalRequest: '?', systemState: 's',
-        commanderProvider: 'gemini-google',
+        commanderProvider: 'antigravity',
         commanderModel: 'gemini-3.8-flash-medium',
         pipelineDir: dir,
         configLoader: defaultConfigLoader(),
         ...fakeAllTransports(okResp),
         quotaModule: fakeQuotaAllPass(),
         dispatchModule: fakeDispatcher({ providerChain: [
-            { provider: 'gemini-google', model: 'gemini-3.8-flash-medium' },
+            { provider: 'antigravity', model: 'gemini-3.8-flash-medium' },
             { provider: 'anthropic', model: 'claude-haiku-4-5' },
         ]}),
         residencyModule: fakeResidencyOk(),
     });
     // Sin alternative_models → NO swap intra-provider. #3921 → cross-provider enruta
-    // a anthropic (el commander gemini-google queda excluido por defecto).
+    // a anthropic (el commander antigravity queda excluido por defecto).
     assert.equal(result.modelSwap.swapped, false, 'sin alternative_models → NO swap intra-provider');
     assert.equal(result.sherlockProvider, 'anthropic', '#3921: cross-provider por defecto enruta al siguiente provider, no al commander');
     assert.equal(result.sherlockModel, 'claude-haiku-4-5');
@@ -1939,11 +2056,11 @@ test('#3501 CA-18 (rev #3921): sin alternative_models NO hay swap intra-provider
 test('#3501 CA-11: formatVerifiedFooter incluye "(swap desde X)" cuando hubo swap, no agrega emojis ni tono celebratorio', () => {
     // Caso swap.
     const withSwap = sherlock.formatVerifiedFooter({
-        sherlockProvider: 'gemini-google',
+        sherlockProvider: 'antigravity',
         sherlockModel: 'gemini-3.7-flash-medium',
         modelSwap: { swapped: true, originalModel: 'gemini-3.8-flash-medium', reason: 'same_model_avoidance' },
     });
-    assert.equal(withSwap, 'Verificado por: gemini-google/gemini-3.7-flash-medium (swap desde gemini-3.8-flash-medium)');
+    assert.equal(withSwap, 'Verificado por: antigravity/gemini-3.7-flash-medium (swap desde gemini-3.8-flash-medium)');
     // Sin emojis.
     assert.ok(!/[\u{1F300}-\u{1FAFF}]/u.test(withSwap), 'no debe contener emojis (UX-G1: tono natural, no celebratorio)');
 
@@ -1988,7 +2105,7 @@ test('#3766 CA-2: timeout real del provider → verdict=aborted con errorCode=ti
         commanderModel: 'claude-opus-4-7',
         pipelineDir: dir,
         configLoader: defaultConfigLoader(),
-        completionClient: fakeCompletionClient({ ok: false, error: { type: 'should_not_be_called' } }),
+        ...viaAntigravity(fakeCompletionClient({ ok: false, error: { type: 'should_not_be_called' } })),
         spawnAnthropic: fakeSpawnAnthropic(completionTimeout),
         quotaModule: fakeQuotaAllPass(),
         dispatchModule: fakeDispatcher({ providerChain: [
@@ -2024,18 +2141,18 @@ test('#3766 CA-7: cascada multi-provider funciona — si primario gated, cae al 
         // no lo computa ni lo pasa.
         pipelineDir: dir,
         configLoader: defaultConfigLoader(),
-        completionClient: fakeCompletionClient(okResp),
+        ...viaAntigravity(fakeCompletionClient(okResp)),
         quotaModule: fakeQuotaGate(['anthropic']), // anthropic gated → cascada salta
         dispatchModule: fakeDispatcher({ providerChain: [
             { provider: 'anthropic', model: 'claude-haiku-4-5' },
-            { provider: 'gemini-google', model: 'gemini-3.8-flash-medium' },
+            { provider: 'antigravity', model: 'gemini-3.8-flash-medium' },
         ]}),
         residencyModule: fakeResidencyOk(),
     });
     assert.equal(result.verdict, 'ok');
-    assert.equal(result.sherlockProvider, 'gemini-google', 'cascada saltó anthropic y resolvió gemini-google');
+    assert.equal(result.sherlockProvider, 'antigravity', 'cascada saltó anthropic y resolvió antigravity');
     assert.equal(result.sherlockModel, 'gemini-3.8-flash-medium');
-    // sameProvider=false porque commander=anthropic pero sherlock=gemini-google.
+    // sameProvider=false porque commander=anthropic pero sherlock=antigravity.
     assert.equal(result.sameProvider, false);
 });
 
@@ -2069,14 +2186,14 @@ test('#3766 CA-SEC-1 regresión: sanitizeUserPrompt corre con commanderProvider=
         originalRequest: '?',
         systemState: 's',
         // Mismo provider+modelo que la chain (escenario pre-#3766 swap).
-        commanderProvider: 'gemini-google',
+        commanderProvider: 'antigravity',
         commanderModel: 'gemini-3.8-flash-medium',
         pipelineDir: dir,
         configLoader: defaultConfigLoader(),
-        completionClient: captureClient,
+        ...viaAntigravity(captureClient),
         quotaModule: fakeQuotaAllPass(),
         dispatchModule: fakeDispatcher({ providerChain: [
-            { provider: 'gemini-google', model: 'gemini-3.8-flash-medium' },
+            { provider: 'antigravity', model: 'gemini-3.8-flash-medium' },
         ]}),
         residencyModule: fakeResidencyOk(),
     });
@@ -2153,7 +2270,7 @@ test('#3868 Escenario 1: Sherlock valida respuesta correcta (evidencia confirma)
         commanderProvider: 'anthropic',
         pipelineDir: dir,
         configLoader: defaultConfigLoader(),
-        completionClient: captureClient,
+        ...viaAntigravity(captureClient),
         quotaModule: fakeQuotaAllPass(),
         dispatchModule: fakeDispatcher({ providerChain: CHAIN_PLANTEL }),
         residencyModule: fakeResidencyOk(),
@@ -2193,7 +2310,7 @@ test('#3868 Escenario 2: Sherlock refuta respuesta incorrecta (label inexistente
         commanderProvider: 'anthropic',
         pipelineDir: dir,
         configLoader: defaultConfigLoader(),
-        completionClient: fakeCompletionClient(rechazadoResp),
+        ...viaAntigravity(fakeCompletionClient(rechazadoResp)),
         quotaModule: fakeQuotaAllPass(),
         dispatchModule: fakeDispatcher({ providerChain: CHAIN_PLANTEL }),
         residencyModule: fakeResidencyOk(),
@@ -2235,7 +2352,7 @@ test('#3868 Escenario 3: respuesta mixta con varios issues → Sherlock los inve
         commanderProvider: 'anthropic',
         pipelineDir: dir,
         configLoader: defaultConfigLoader(),
-        completionClient: captureClient,
+        ...viaAntigravity(captureClient),
         quotaModule: fakeQuotaAllPass(),
         dispatchModule: fakeDispatcher({ providerChain: CHAIN_PLANTEL }),
         residencyModule: fakeResidencyOk(),
@@ -2262,7 +2379,7 @@ test('#3868 back-compat: issueNumber escalar se trata como issueNumbers=[n]', as
         commanderProvider: 'anthropic',
         pipelineDir: dir,
         configLoader: defaultConfigLoader(),
-        completionClient: fakeCompletionClient({ ok: true, content: JSON.stringify({ verdict: 'ok', reason: 'ok', inconsistencies: [] }), durationMs: 1 }),
+        ...viaAntigravity(fakeCompletionClient({ ok: true, content: JSON.stringify({ verdict: 'ok', reason: 'ok', inconsistencies: [] }), durationMs: 1 })),
         quotaModule: fakeQuotaAllPass(),
         dispatchModule: fakeDispatcher({ providerChain: CHAIN_PLANTEL }),
         residencyModule: fakeResidencyOk(),
@@ -2280,7 +2397,7 @@ test('#3868 back-compat: respuesta sin #NNNN → issueNumbers=[] → collector n
         commanderProvider: 'anthropic',
         pipelineDir: dir,
         configLoader: defaultConfigLoader(),
-        completionClient: fakeCompletionClient({ ok: true, content: JSON.stringify({ verdict: 'ok', reason: 'ok', inconsistencies: [] }), durationMs: 1 }),
+        ...viaAntigravity(fakeCompletionClient({ ok: true, content: JSON.stringify({ verdict: 'ok', reason: 'ok', inconsistencies: [] }), durationMs: 1 })),
         quotaModule: fakeQuotaAllPass(),
         dispatchModule: fakeDispatcher({ providerChain: CHAIN_PLANTEL }),
         residencyModule: fakeResidencyOk(),
@@ -2305,7 +2422,7 @@ test('#3868 SEC-C/dedup: issueNumbers con duplicados e inválidos → collector 
         commanderProvider: 'anthropic',
         pipelineDir: dir,
         configLoader: defaultConfigLoader(),
-        completionClient: fakeCompletionClient({ ok: true, content: JSON.stringify({ verdict: 'ok', reason: 'ok', inconsistencies: [] }), durationMs: 1 }),
+        ...viaAntigravity(fakeCompletionClient({ ok: true, content: JSON.stringify({ verdict: 'ok', reason: 'ok', inconsistencies: [] }), durationMs: 1 })),
         quotaModule: fakeQuotaAllPass(),
         dispatchModule: fakeDispatcher({ providerChain: CHAIN_PLANTEL }),
         residencyModule: fakeResidencyOk(),
@@ -2443,7 +2560,7 @@ test('#3895 CA-3: claim COINCIDE con el canónico → status consistent, NO va a
         commanderProvider: 'anthropic',
         pipelineDir: dir,
         configLoader: defaultConfigLoader(),
-        completionClient: fakeOkClient(cap),
+        ...viaAntigravity(fakeOkClient(cap)),
         quotaModule: fakeQuotaAllPass(),
         dispatchModule: fakeDispatcher({ providerChain: CHAIN_PLANTEL }),
         residencyModule: fakeResidencyOk(),
@@ -2484,7 +2601,7 @@ test('#3895 CA-3: claim DISCREPA del canónico → status inconsistent (árbitro
         commanderProvider: 'anthropic',
         pipelineDir: dir,
         configLoader: defaultConfigLoader(),
-        completionClient: fakeOkClient(),
+        ...viaAntigravity(fakeOkClient()),
         quotaModule: fakeQuotaAllPass(),
         dispatchModule: fakeDispatcher({ providerChain: CHAIN_PLANTEL }),
         residencyModule: fakeResidencyOk(),
@@ -2512,7 +2629,7 @@ test('#3895 CA-2/SEC-5: canónico no ejecutable → not_verifiable, NUNCA contra
         commanderProvider: 'anthropic',
         pipelineDir: dir,
         configLoader: defaultConfigLoader(),
-        completionClient: fakeOkClient(),
+        ...viaAntigravity(fakeOkClient()),
         quotaModule: fakeQuotaAllPass(),
         dispatchModule: fakeDispatcher({ providerChain: CHAIN_PLANTEL }),
         residencyModule: fakeResidencyOk(),
@@ -2540,7 +2657,7 @@ test('#3895: sin issueNumbers → canonicalFacts vacío y prompt sin sección <c
         commanderProvider: 'anthropic',
         pipelineDir: dir,
         configLoader: defaultConfigLoader(),
-        completionClient: fakeOkClient(cap),
+        ...viaAntigravity(fakeOkClient(cap)),
         quotaModule: fakeQuotaAllPass(),
         dispatchModule: fakeDispatcher({ providerChain: CHAIN_PLANTEL }),
         residencyModule: fakeResidencyOk(),
@@ -2573,8 +2690,8 @@ function fakeCompletionByProvider(byProvider, calledOut) {
     };
 }
 
-// #6563 — variante provider-aware para las 3 vías del plantel (HTTP gemini +
-// spawn anthropic + spawn openai-codex): misma tabla `byProvider` y mismo
+// #6563/#6861 — variante provider-aware para las 3 vías del plantel (spawn
+// antigravity + spawn anthropic + spawn openai-codex): misma tabla `byProvider` y mismo
 // registro `calledOut`, pero los spawn helpers no reciben `opts.provider`, así
 // que el provider se fija por vía. Se usa con spread: `...fakeTransportsByProvider(...)`.
 function fakeTransportsByProvider(byProvider, calledOut) {
@@ -2586,6 +2703,7 @@ function fakeTransportsByProvider(byProvider, calledOut) {
     };
     return {
         completionClient: fakeCompletionByProvider(byProvider, calledOut),
+        spawnAntigravity: viaSpawn('antigravity'),
         spawnAnthropic: viaSpawn('anthropic'),
         spawnCodex: viaSpawn('openai-codex'),
     };
@@ -2619,16 +2737,16 @@ test('#3921 CA-1: cross-provider por defecto — con >=1 alternativo sano el int
         commanderModel: 'claude-opus-4-7',
         pipelineDir: dir,
         configLoader: defaultConfigLoader(),
-        ...fakeTransportsByProvider({ 'gemini-google': OK_VERDICT, anthropic: OK_VERDICT }, called),
+        ...fakeTransportsByProvider({ 'antigravity': OK_VERDICT, anthropic: OK_VERDICT }, called),
         quotaModule: fakeQuotaAllPass(),
         dispatchModule: fakeDispatcher({ providerChain: [
             { provider: 'anthropic', model: 'claude-opus-4-7' },
-            { provider: 'gemini-google', model: 'gemini-3.8-flash-medium' },
+            { provider: 'antigravity', model: 'gemini-3.8-flash-medium' },
         ]}),
         residencyModule: fakeResidencyOk(),
     });
     assert.equal(result.verdict, 'ok');
-    assert.equal(result.sherlockProvider, 'gemini-google', 'cross-provider: el commander queda excluido por defecto');
+    assert.equal(result.sherlockProvider, 'antigravity', 'cross-provider: el commander queda excluido por defecto');
     assert.equal(result.sameProvider, false, 'intento ganador NO same-provider');
     assert.equal(result.suggestedDisclaimer, sherlock.DISCLAIMER_TYPES.NONE, 'cross-provider NO emite disclaimer same-provider');
     assert.ok(!called.includes('anthropic'), 'el commander NO debio invocarse (excluido por defecto)');
@@ -2643,11 +2761,11 @@ test('#3921 CA-1/SEC-6: chain alternativa agotada -> fallback same-provider de u
         commanderModel: 'claude-opus-4-7',
         pipelineDir: dir,
         configLoader: defaultConfigLoader(),
-        ...fakeTransportsByProvider({ 'gemini-google': FAIL_TIMEOUT, anthropic: OK_VERDICT }, called),
+        ...fakeTransportsByProvider({ 'antigravity': FAIL_TIMEOUT, anthropic: OK_VERDICT }, called),
         quotaModule: fakeQuotaAllPass(),
         dispatchModule: fakeDispatcher({ providerChain: [
             { provider: 'anthropic', model: 'claude-opus-4-7' },
-            { provider: 'gemini-google', model: 'gemini-3.8-flash-medium' },
+            { provider: 'antigravity', model: 'gemini-3.8-flash-medium' },
         ]}),
         residencyModule: fakeResidencyOk(),
     });
@@ -2655,7 +2773,7 @@ test('#3921 CA-1/SEC-6: chain alternativa agotada -> fallback same-provider de u
     assert.equal(result.sherlockProvider, 'anthropic', 'ultimo recurso: re-admite al commander');
     assert.equal(result.sameProvider, true, 'fallback same-provider');
     assert.equal(result.suggestedDisclaimer, sherlock.DISCLAIMER_TYPES.SAME_PROVIDER, 'success-path same-provider -> disclaimer SAME_PROVIDER (CA-2)');
-    assert.ok(called.includes('gemini-google'), 'el alternativo fue intentado antes del fallback');
+    assert.ok(called.includes('antigravity'), 'el alternativo fue intentado antes del fallback');
     assert.ok(called.includes('anthropic'), 'el commander se invoco como ultimo recurso');
 });
 
@@ -2668,11 +2786,11 @@ test('#3921 SEC-6: que falle el PRIMER alternativo NO alcanza para caer a same-p
         commanderModel: 'claude-opus-4-7',
         pipelineDir: dir,
         configLoader: defaultConfigLoader(),
-        ...fakeTransportsByProvider({ 'gemini-google': FAIL_TIMEOUT, 'openai-codex': OK_VERDICT, anthropic: OK_VERDICT }, called),
+        ...fakeTransportsByProvider({ 'antigravity': FAIL_TIMEOUT, 'openai-codex': OK_VERDICT, anthropic: OK_VERDICT }, called),
         quotaModule: fakeQuotaAllPass(),
         dispatchModule: fakeDispatcher({ providerChain: [
             { provider: 'anthropic', model: 'claude-opus-4-7' },
-            { provider: 'gemini-google', model: 'gemini-3.8-flash-medium' },
+            { provider: 'antigravity', model: 'gemini-3.8-flash-medium' },
             { provider: 'openai-codex', model: 'gpt-5.4-mini' },
         ]}),
         residencyModule: fakeResidencyOk(),
@@ -2705,18 +2823,18 @@ test('#3921 CA-4/SEC-1: alternativo residency-blocked recien priorizado se desca
         commanderModel: 'claude-opus-4-7',
         pipelineDir: dir,
         configLoader: defaultConfigLoader(),
-        ...fakeTransportsByProvider({ 'gemini-google': OK_VERDICT, 'openai-codex': OK_VERDICT }, called),
+        ...fakeTransportsByProvider({ 'antigravity': OK_VERDICT, 'openai-codex': OK_VERDICT }, called),
         quotaModule: fakeQuotaAllPass(),
         dispatchModule: fakeDispatcher({ providerChain: [
             { provider: 'anthropic', model: 'claude-opus-4-7' },
-            { provider: 'gemini-google', model: 'gemini-3.8-flash-medium' },
+            { provider: 'antigravity', model: 'gemini-3.8-flash-medium' },
             { provider: 'openai-codex', model: 'gpt-5.4-mini' },
         ]}),
-        residencyModule: fakeResidencyBlockFor(['gemini-google']),
+        residencyModule: fakeResidencyBlockFor(['antigravity']),
     });
     assert.equal(result.verdict, 'ok');
     assert.equal(result.sherlockProvider, 'openai-codex', 'cascada continua tras el residency-blocked');
-    assert.ok(!called.includes('gemini-google'), 'el provider residency-blocked NO se invoco (SEC-1, check intra-loop antes de completeWith)');
+    assert.ok(!called.includes('antigravity'), 'el provider residency-blocked NO se invoco (SEC-1, check intra-loop antes de completeWith)');
 });
 
 test('#3921 CA-5/SEC-5: cascada + fallback same-provider terminan dentro del cap (re-admision unica, sin loop infinito)', async () => {
@@ -2729,12 +2847,12 @@ test('#3921 CA-5/SEC-5: cascada + fallback same-provider terminan dentro del cap
         pipelineDir: dir,
         configLoader: defaultConfigLoader(),
         ...fakeTransportsByProvider({
-            anthropic: FAIL_TIMEOUT, 'gemini-google': FAIL_TIMEOUT, 'openai-codex': FAIL_TIMEOUT,
+            anthropic: FAIL_TIMEOUT, 'antigravity': FAIL_TIMEOUT, 'openai-codex': FAIL_TIMEOUT,
         }, called),
         quotaModule: fakeQuotaAllPass(),
         dispatchModule: fakeDispatcher({ providerChain: [
             { provider: 'anthropic', model: 'claude-opus-4-7' },
-            { provider: 'gemini-google', model: 'gemini-3.8-flash-medium' },
+            { provider: 'antigravity', model: 'gemini-3.8-flash-medium' },
             { provider: 'openai-codex', model: 'gpt-5.4-mini' },
         ]}),
         residencyModule: fakeResidencyOk(),
@@ -2792,7 +2910,7 @@ test('#3922 CA-2: detecta contradicción del análisis contra un acuerdo previo 
         excludedProvider: 'anthropic',
         pipelineDir: dir,
         configLoader: defaultConfigLoader(),
-        completionClient: fiscalConContexto,
+        ...viaAntigravity(fiscalConContexto),
         quotaModule: fakeQuotaAllPass(),
         dispatchModule: fakeDispatcher({ providerChain: CHAIN_PLANTEL }),
         residencyModule: fakeResidencyOk(),
@@ -2858,7 +2976,7 @@ test('#3922 CA-SEC-E2: conversationContext con prompt-injection se sanitiza', as
         excludedProvider: 'anthropic',
         pipelineDir: dir,
         configLoader: defaultConfigLoader(),
-        completionClient: captura,
+        ...viaAntigravity(captura),
         quotaModule: fakeQuotaAllPass(),
         dispatchModule: fakeDispatcher({ providerChain: CHAIN_PLANTEL }),
         residencyModule: fakeResidencyOk(),

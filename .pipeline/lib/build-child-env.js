@@ -310,7 +310,7 @@ function buildMinimalCliEnv({ processEnv = process.env, extras = {} } = {}) {
 //
 // Los nombres coinciden con lo que cada handler YA lee hoy:
 //   - openai-codex   → providers/openai-codex.js  (`env.CODEX_MODEL`)
-//   - gemini-google  → providers/gemini-google.js (SÓLO `env.GEMINI_MODEL`; `AGY_MODEL` se ignora — #6858)
+//   - antigravity    → providers/antigravity.js (SÓLO `env.ANTIGRAVITY_MODEL` — #6858/#6861)
 //
 // Nota histórica: el mapa `PROVIDER_STATIC_ENV` (#4880, `ANTHROPIC_BASE_URL`
 // para el drop-in de Kimi) se eliminó junto con el provider en #6563. Ningún
@@ -321,7 +321,7 @@ function buildMinimalCliEnv({ processEnv = process.env, extras = {} } = {}) {
 // el guardrail anti-regresión (CA-7) verifica justamente esa correspondencia.
 const PROVIDER_MODEL_ENV = Object.freeze({
     'openai-codex': 'CODEX_MODEL',
-    'gemini-google': 'GEMINI_MODEL',
+    'antigravity': 'ANTIGRAVITY_MODEL',
 });
 
 // -----------------------------------------------------------------------------

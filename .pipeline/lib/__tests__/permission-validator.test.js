@@ -65,7 +65,7 @@ test('openai-codex/full-auto concede el set autónomo completo incluyendo tool_u
 });
 
 test('free provider (gemini) en bypassPermissions tiene celda con set autónomo (#3820 defecto #2)', () => {
-    for (const p of ['gemini-google']) {
+    for (const p of ['antigravity']) {
         const granted = permissionValidator.grantedCapabilities(p, 'bypassPermissions');
         assert.ok(granted instanceof Set, `${p} debe tener celda bypassPermissions`);
         assert.ok(granted.has('file_read'), `${p} concede file_read`);

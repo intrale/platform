@@ -2,7 +2,7 @@
 // agent-models-validate-4306.test.js — #4306
 //
 // Verifica:
-//   - coherencia auth_mode: oauth ⇒ launcher CLI (claude/codex/gemini-google)
+//   - coherencia auth_mode: oauth ⇒ launcher CLI (claude/codex/antigravity)
 //     como ERROR de carga (fail-closed, CA-3 / REQ-SEC-1).
 //   - validateCredentialsEnvPresence bypassea providers oauth (no exige key).
 //   - credentials_env opcional cuando auth_mode === 'oauth'.
@@ -36,9 +36,9 @@ test('#4306: oauth + launcher CLI conocido (codex) → sin error de coherencia',
     assert.equal(authErrors.length, 0, JSON.stringify(authErrors));
 });
 
-test('#4306: oauth + launcher gemini-google → sin error de coherencia', () => {
+test('#4306: oauth + launcher antigravity → sin error de coherencia', () => {
     const cfg = baseConfig({
-        'gemini-google': { launcher: 'gemini-google', auth_mode: 'oauth' },
+        'antigravity': { launcher: 'antigravity', auth_mode: 'oauth' },
     });
     const errors = validateCrossReferences(cfg);
     const authErrors = errors.filter((e) => e.path.includes('/auth_mode'));
@@ -60,7 +60,7 @@ test('#4306: oauth + launcher local (node) → ERROR de carga (fail-closed)', ()
 
 test('#4306: provider sin auth_mode (api_key default) NO dispara la regla de coherencia', () => {
     const cfg = baseConfig({
-        'gemini-google': { launcher: 'gemini-google', credentials_env: ['GEMINI_API_KEY'] },
+        'antigravity': { launcher: 'antigravity', credentials_env: ['GEMINI_API_KEY'] },
     });
     const errors = validateCrossReferences(cfg);
     const authErrors = errors.filter((e) => e.path.includes('/auth_mode'));
@@ -91,8 +91,8 @@ test('#4306: validateCredentialsEnvPresence bypassea codex oauth sin OPENAI_API_
 
 test('#4306 (regresión): validateCredentialsEnvPresence SIGUE exigiendo key a un provider api_key', () => {
     const cfg = baseConfig(
-        { 'gemini-google': { launcher: 'gemini-google', credentials_env: ['GEMINI_API_KEY'] } },
-        { qa: { provider: 'gemini-google' } },
+        { 'antigravity': { launcher: 'antigravity', credentials_env: ['GEMINI_API_KEY'] } },
+        { qa: { provider: 'antigravity' } },
     );
     const errors = validateCredentialsEnvPresence(cfg, { /* sin GEMINI_API_KEY */ });
     assert.equal(errors.length, 1, JSON.stringify(errors));

@@ -64,7 +64,7 @@ test('#4851: onboarding conserva 5 pasos y expone los campos del descriptor comp
     }
     assert.ok(res.body.includes('data-provider-id="anthropic"'));
     assert.ok(res.body.includes('data-provider-id="openai-codex"'));
-    assert.ok(res.body.includes('data-provider-id="gemini-google"'));
+    assert.ok(res.body.includes('data-provider-id="antigravity"'));
     // #6563 — los proveedores gratuitos retirados no son opción del wizard.
     assert.ok(!res.body.includes('data-provider-id="cerebras"'), 'cerebras retirado en #6563');
     assert.ok(!res.body.includes('data-provider-id="nvidia-nim"'), 'nvidia-nim retirado en #6563');

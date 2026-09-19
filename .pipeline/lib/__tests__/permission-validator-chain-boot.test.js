@@ -42,7 +42,7 @@ test('#4274 CA-4 · boot chain-aware pasa cuando cada eslabón de la cadena est�
     const resolveSkillChain = () => ([
         { provider: 'anthropic', mode: 'bypassPermissions' },
         { provider: 'openai-codex', mode: 'full-auto' },   // modo correcto de codex
-        { provider: 'gemini-google', mode: 'bypassPermissions' },
+        { provider: 'antigravity', mode: 'bypassPermissions' },
     ]);
     const failures = pv.validateAllSkillsAtBoot({ skillsRegistry: registry, resolveSkillChain });
     assert.deepEqual(failures, []);

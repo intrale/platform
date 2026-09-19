@@ -49,7 +49,7 @@ const MODEL_ID_PATTERNS = Object.freeze([
  * públicas NO matchean estos patrones.
  */
 const PROVIDER_ID_PATTERNS = Object.freeze([
-    { re: /openai-codex|gemini-google|nvidia-nim|kimi-moonshot|\bcerebras\b|\bmoonshot\b|\bgroq\b/i, label: 'id interno de proveedor' },
+    { re: /openai-codex|antigravity|nvidia-nim|kimi-moonshot|\bcerebras\b|\bmoonshot\b|\bgroq\b/i, label: 'id interno de proveedor' },
 ]);
 
 /** `errorCode` crudo y payload del proveedor: nunca se interpolan (CA-9). */

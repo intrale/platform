@@ -167,7 +167,9 @@ function makeSlice(overrides) {
     return Object.assign({
         dailyByProvider: [
             { day: '2026-06-09', provider: 'anthropic', cost_usd: 3.5, sessions: 2 },
-            { day: '2026-06-09', provider: 'gemini', cost_usd: 0.4, sessions: 1 },
+            // #6861 — clave HISTÓRICA (pre-rename) a propósito: el render la
+            // normaliza al bucket `antigravity` (D10).
+            { day: '2026-06-09', provider: 'gemini-google', cost_usd: 0.4, sessions: 1 },
             { day: '2026-06-10', provider: 'anthropic', cost_usd: 2.1, sessions: 1 },
         ],
         budget: { monthly_usd: 120, source: 'persisted', actor: 'operador-local' },
@@ -184,13 +186,13 @@ function makeSlice(overrides) {
         sessionsBySkill: {
             guru: [
                 { provider: 'anthropic', cost_usd: 1.2, duration_ms: 5000, ts: '2026-06-09T10:00:00Z' },
-                { provider: 'gemini', cost_usd: 0.4, duration_ms: 2000, ts: '2026-06-09T11:00:00Z' },
+                { provider: 'antigravity', cost_usd: 0.4, duration_ms: 2000, ts: '2026-06-09T11:00:00Z' },
             ],
         },
         byProvider: {
             anthropic: { sessions: 3, cost_usd: 5.6, duration_ms: 7000 },
             'openai-codex': { sessions: 2, cost_usd: 1.4, duration_ms: 500 },
-            gemini: { sessions: 4, cost_usd: 0, duration_ms: 300 },
+            'gemini-google': { sessions: 4, cost_usd: 0, duration_ms: 300 },
         },
         claudeQuota: { sessionPct: 1.2, sessionStatus: 'ok', weeklyPct: 38.2, weeklyStatus: 'ok', daysToReset: 3.1, calibrated: true },
     }, overrides || {});
@@ -198,25 +200,55 @@ function makeSlice(overrides) {
 
 test('renderCostosChart: barras apiladas por proveedor + línea de presupuesto (CA-3)', () => {
     const chart = costos.renderCostosChart(makeSlice());
-    // Segmentos por proveedor presentes (Claude=cl, Gemini=gm).
+    // Segmentos por proveedor presentes (Claude=cl, Antigravity=ag).
     assert.match(chart, /cz-seg cz-seg-cl/);
-    assert.match(chart, /cz-seg cz-seg-gm/);
+    assert.match(chart, /cz-seg cz-seg-ag/);
+    // #6861 — el segmento viejo no vuelve ni como alias.
+    assert.doesNotMatch(chart, /cz-seg-gm/);
     assert.match(chart, /cz-budget-line/);
     // Barras: 14 días → 14 contenedores .cz-bar.
     const bars = (chart.match(/class="cz-bar"/g) || []).length;
     assert.equal(bars, 14, `esperaba 14 barras, encontré ${bars}`);
 });
 
-test('renderCostosChart: leyenda incluye los 3 proveedores + deterministas, FREE en $0 visibles (CA-6)', () => {
+test('renderCostosChart: leyenda incluye los 3 proveedores + deterministas, $0 visibles (CA-6)', () => {
     const chart = costos.renderCostosChart(makeSlice());
-    for (const p of ['Claude', 'Codex', 'Gemini', 'Deterministas']) {
+    for (const p of ['Claude', 'Codex', 'Antigravity', 'Deterministas']) {
         assert.match(chart, new RegExp(p), `falta el proveedor ${p} en la leyenda`);
     }
     // #6563 — los proveedores gratuitos retirados no aparecen como filas fantasma.
     assert.doesNotMatch(chart, /Groq|Cerebras|NVIDIA/);
-    // FREE tier visible aunque su gasto sea $0 (nunca se truncan — CA-6).
-    assert.match(chart, /cz-freetag/);
+    // #6861 — «Gemini» nunca como nombre de proveedor (sólo dentro de ids de modelo).
+    assert.doesNotMatch(chart.replace(/gemini-[0-9][\w.-]*/g, ''), /Gemini/i);
+    // Licencia visible aunque su gasto sea $0 (nunca se truncan — CA-6). Ya no
+    // es free tier: sin chip FREE (contrato UX U4).
+    assert.doesNotMatch(chart, /cz-freetag/);
     assert.match(chart, /\$0\.00/);
+});
+
+// #6861 (D10 / CA-7) — normalización de histórico por tabla explícita.
+test('#6861: normProvider mapea el histórico gemini-google/gemini al bucket antigravity y antigravity a sí mismo', () => {
+    assert.equal(costos.normProvider('gemini-google'), 'antigravity');
+    assert.equal(costos.normProvider('gemini'), 'antigravity');
+    assert.equal(costos.normProvider('antigravity'), 'antigravity');
+    assert.equal(costos.normProvider('ANTIGRAVITY'), 'antigravity');
+    assert.equal(costos.normProvider('google'), 'unknown', 'sin substring: sólo la tabla explícita');
+    assert.deepEqual(costos.HISTORIC_PROVIDER_KEYS, {
+        'gemini-google': 'antigravity',
+        'gemini': 'antigravity',
+        'antigravity': 'antigravity',
+    });
+    assert.equal(costos.PROVIDER_META['gemini'], undefined, 'el id viejo no es clave del catálogo');
+    assert.equal(costos.PROVIDER_META['gemini-google'], undefined, 'el id viejo no es clave del catálogo');
+});
+
+test('#6861: PROVIDER_META.antigravity es LICENCIA (ni FREE ni PAGO) y el tier lic ordena entre pay y free', () => {
+    assert.deepEqual(costos.PROVIDER_META['antigravity'], {
+        label: 'Antigravity', color: '#60A5FA', tier: 'LICENCIA', tierCls: 'lic', free: false,
+    });
+    assert.equal(costos.PROVIDER_TIER['antigravity'], 'lic');
+    assert.deepEqual(costos.TIER_CHIP.lic, { cls: 'cz-ptier-lic', label: 'Licencia' });
+    assert.deepEqual(costos.TIER_ORDER, { pay: 0, lic: 1, free: 2, det: 3, unknown: 4 });
 });
 
 test('renderMissionBanner: desvío vs presupuesto + gastado hoy/mes + el que más pesa (CA-4)', () => {
@@ -244,8 +276,11 @@ test('renderProviderQuota: una tarjeta por cada uno de los 3 proveedores con su 
     // Cada proveedor con su modelo de límite (tier).
     assert.match(q, /Claude[\s\S]*PLAN MAX/);
     assert.match(q, /Codex[\s\S]*PAGO/);
-    // El free tier marcado FREE.
-    assert.match(q, /Gemini[\s\S]*FREE/);
+    // #6861 — Antigravity marcado LICENCIA (contrato UX U4/U6), sin «Gemini».
+    assert.match(q, /Antigravity[\s\S]*LICENCIA/);
+    assert.match(q, /cz-ptier-lic/);
+    assert.match(q, /Semanal \(plan\)[\s\S]*sin medir/);
+    assert.doesNotMatch(q, /Gemini|FREE/);
     assert.doesNotMatch(q, /Groq|Cerebras|NVIDIA/);
     // Claude muestra su % estimado de la cuota (sesión/semanal).
     assert.match(q, /38\.2%/);

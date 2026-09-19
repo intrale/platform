@@ -22,13 +22,13 @@ function tmpFile(name = 'dedup.json') {
 test('decide emite primera alerta cuando no hay registro previo', () => {
     const f = tmpFile();
     const r = alerts.decide({
-        provider: 'gemini-google',
+        provider: 'antigravity',
         state: 'red',
         reasonCode: 'invalid_credentials',
         dedupFile: f,
     });
     assert.equal(r.shouldEmit, true);
-    assert.equal(r.payload.provider, 'gemini-google');
+    assert.equal(r.payload.provider, 'antigravity');
     assert.equal(r.payload.state, 'red');
     assert.equal(r.payload.reason_code, 'invalid_credentials');
     assert.ok(r.payload.observed_at, 'observed_at debe estar presente');
@@ -37,9 +37,9 @@ test('decide emite primera alerta cuando no hay registro previo', () => {
 test('record + decide aplica dedupe dentro de 10 min', () => {
     const f = tmpFile();
     const now = Date.now();
-    alerts.record({ provider: 'gemini-google', state: 'green', sent: true, dedupFile: f, now });
+    alerts.record({ provider: 'antigravity', state: 'green', sent: true, dedupFile: f, now });
     const r = alerts.decide({
-        provider: 'gemini-google',
+        provider: 'antigravity',
         state: 'green',
         reasonCode: 'authenticated',
         dedupFile: f,
@@ -52,9 +52,9 @@ test('record + decide aplica dedupe dentro de 10 min', () => {
 test('record + decide pasa el dedupe a los 11 min', () => {
     const f = tmpFile();
     const now = Date.now();
-    alerts.record({ provider: 'gemini-google', state: 'green', sent: true, dedupFile: f, now });
+    alerts.record({ provider: 'antigravity', state: 'green', sent: true, dedupFile: f, now });
     const r = alerts.decide({
-        provider: 'gemini-google',
+        provider: 'antigravity',
         state: 'green',
         reasonCode: 'authenticated',
         dedupFile: f,
@@ -67,14 +67,14 @@ test('back-off exponencial: estado red persistente espera 30/60/120 min', () => 
     const f = tmpFile();
     let now = Date.now();
     // 1er envío (consecutive_count=1)
-    alerts.record({ provider: 'gemini-google', state: 'red', sent: true, dedupFile: f, now });
+    alerts.record({ provider: 'antigravity', state: 'red', sent: true, dedupFile: f, now });
 
     // 5 min después: suprimido (back-off mínimo es 30min)
-    let r = alerts.decide({ provider: 'gemini-google', state: 'red', reasonCode: 'invalid_credentials', dedupFile: f, now: now + 5 * 60 * 1000 });
+    let r = alerts.decide({ provider: 'antigravity', state: 'red', reasonCode: 'invalid_credentials', dedupFile: f, now: now + 5 * 60 * 1000 });
     assert.equal(r.shouldEmit, false);
 
     // 31 min después: pasó el nivel 1 (30min) → emitir
-    r = alerts.decide({ provider: 'gemini-google', state: 'red', reasonCode: 'invalid_credentials', dedupFile: f, now: now + 31 * 60 * 1000 });
+    r = alerts.decide({ provider: 'antigravity', state: 'red', reasonCode: 'invalid_credentials', dedupFile: f, now: now + 31 * 60 * 1000 });
     assert.equal(r.shouldEmit, true);
 });
 
@@ -93,7 +93,7 @@ test('decide sanitiza provider con caracteres extraños', () => {
 test('decide sanitiza state inválido', () => {
     const f = tmpFile();
     const r = alerts.decide({
-        provider: 'gemini-google',
+        provider: 'antigravity',
         state: 'critical', // no en ALLOWED_STATES
         reasonCode: 'unknown',
         dedupFile: f,
@@ -105,7 +105,7 @@ test('decide sanitiza state inválido', () => {
 test('decide mapea reason code provider-specific a unknown', () => {
     const f = tmpFile();
     const r = alerts.decide({
-        provider: 'gemini-google',
+        provider: 'antigravity',
         state: 'red',
         reasonCode: 'gemini_v1beta_safety_block', // intentional leak attempt
         dedupFile: f,
@@ -117,7 +117,7 @@ test('decide mapea reason code provider-specific a unknown', () => {
 test('payload NO incluye API key, fingerprint, body ni headers', () => {
     const f = tmpFile();
     const r = alerts.decide({
-        provider: 'gemini-google',
+        provider: 'antigravity',
         state: 'red',
         reasonCode: 'invalid_credentials',
         dedupFile: f,
@@ -130,10 +130,10 @@ test('payload NO incluye API key, fingerprint, body ni headers', () => {
 
 // #6563 — el plantel free vigente es sólo Gemini; la lógica del umbral se
 // prueba con un set inyectado de tres free hipotéticos.
-const TRES_FREE = new Set(['gemini-google', 'free-a', 'free-b']);
+const TRES_FREE = new Set(['antigravity', 'free-a', 'free-b']);
 
-test('#6563 — FREE_PROVIDERS queda recortado a Gemini (no eliminado)', () => {
-    assert.deepEqual([...alerts.FREE_PROVIDERS], ['gemini-google']);
+test('#6563 — FREE_PROVIDERS queda recortado a Antigravity (no eliminado)', () => {
+    assert.deepEqual([...alerts.FREE_PROVIDERS], ['antigravity']);
     assert.equal(alerts.MULTI_DOWN_MIN_RED, 3);
 });
 
@@ -141,7 +141,7 @@ test('#6563 — con un único free vigente, Gemini en rojo NO dispara multi-down
     const f = tmpFile();
     const snapshot = {
         providers: [
-            { provider: 'gemini-google', state: 'red' },
+            { provider: 'antigravity', state: 'red' },
             { provider: 'anthropic', state: 'red' },
             { provider: 'openai', state: 'red' },
         ],
@@ -157,7 +157,7 @@ test('decideMultiDown emite cuando 3+ free providers en rojo', () => {
     const snapshot = {
         providers: [
             { provider: 'free-a', state: 'red' },
-            { provider: 'gemini-google', state: 'red' },
+            { provider: 'antigravity', state: 'red' },
             { provider: 'free-b', state: 'red' },
             { provider: 'anthropic', state: 'green' },
         ],
@@ -165,7 +165,7 @@ test('decideMultiDown emite cuando 3+ free providers en rojo', () => {
     const r = alerts.decideMultiDown({ snapshot, dedupFile: f, freeProviders: TRES_FREE });
     assert.equal(r.shouldEmit, true);
     assert.equal(r.red_count, 3);
-    assert.deepEqual(r.payload.providers_red, ['free-a', 'free-b', 'gemini-google']);
+    assert.deepEqual(r.payload.providers_red, ['antigravity', 'free-a', 'free-b']);
 });
 
 test('decideMultiDown NO emite cuando solo 2 free providers en rojo', () => {
@@ -174,7 +174,7 @@ test('decideMultiDown NO emite cuando solo 2 free providers en rojo', () => {
         providers: [
             { provider: 'free-a', state: 'red' },
             { provider: 'free-b', state: 'red' },
-            { provider: 'gemini-google', state: 'green' },
+            { provider: 'antigravity', state: 'green' },
         ],
     };
     const r = alerts.decideMultiDown({ snapshot, dedupFile: f, freeProviders: TRES_FREE });
@@ -200,7 +200,7 @@ test('recordMultiDown + decideMultiDown aplica dedupe 10 min', () => {
     const snapshot = {
         providers: [
             { provider: 'free-a', state: 'red' },
-            { provider: 'gemini-google', state: 'red' },
+            { provider: 'antigravity', state: 'red' },
             { provider: 'free-b', state: 'red' },
         ],
     };

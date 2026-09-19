@@ -73,11 +73,12 @@ const SENSITIVE_JSON_KEYS = Object.freeze([
 ]);
 
 // Claves sensibles en query string (CA-17).
-// `key` agregado en #3260: la API de Gemini Google acepta la API key como
-// `?key=<key>` (https://generativelanguage.googleapis.com/...?key=AIza...).
-// Si esa URL termina en un log o body excerpt del live-ping, sin esta entrada
-// la key quedaría leakeada en claro. La redaction es defense-in-depth — el
-// implementador siempre debería pasar la key como header `x-goog-api-key`,
+// `key` agregado en #3260 y CONSERVADO en #6861 (defensa en profundidad):
+// varias APIs de Google (Drive, Maps, AI Studio) aceptan la API key como
+// `?key=<key>` en la URL. Si una URL así termina en un log o body excerpt,
+// sin esta entrada la key quedaría leakeada en claro. No es residuo del
+// provider retirado: protege cualquier key de Google. El implementador
+// siempre debería pasar la key como header,
 // pero por compat con SDKs ajenos protegemos el query también.
 const SENSITIVE_QUERY_KEYS = Object.freeze([
     'token',

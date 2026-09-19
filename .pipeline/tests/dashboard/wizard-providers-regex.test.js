@@ -13,17 +13,17 @@ const assert = require('node:assert/strict');
 const { validateProviderKey, maskKey, last4Of, PROVIDER_REGEX } = require('../../lib/providers-key-validator');
 
 // Keys válidas (formato, no reales) por provider.
+// #6861 — `google` (key de AI Studio) salió de PROVIDER_REGEX: antigravity es
+// OAuth del CLI y no valida api_key.
 const VALID = {
     anthropic: 'sk-ant-' + 'A'.repeat(48),
     openai:    'sk-' + 'B'.repeat(48),
-    google:    'C'.repeat(39),
 };
 
 // ≥2 inválidos por provider (prefijo errado / muy corta).
 const INVALID = {
     anthropic: ['sk-' + 'A'.repeat(48), 'sk-ant-short', ''],
     openai:    ['nope-' + 'B'.repeat(48), 'sk-', 123],
-    google:    ['short', 'has space here aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', null],
 };
 
 test('cada provider de PROVIDER_REGEX tiene válido + inválidos definidos', () => {
@@ -59,6 +59,13 @@ test('keys inválidas se rechazan sin ecoar el input', () => {
 
 test('provider desconocido → unknown_provider (no toca regex)', () => {
     const r = validateProviderKey('openai_api_key', VALID.openai);
+    assert.equal(r.ok, false);
+    assert.equal(r.reason, 'unknown_provider');
+});
+
+test('google ya no es provider validable (#6861): unknown_provider aunque el formato fuera el viejo', () => {
+    assert.equal(Object.prototype.hasOwnProperty.call(PROVIDER_REGEX, 'google'), false);
+    const r = validateProviderKey('google', 'C'.repeat(39));
     assert.equal(r.ok, false);
     assert.equal(r.reason, 'unknown_provider');
 });

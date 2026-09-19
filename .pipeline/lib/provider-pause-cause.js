@@ -101,7 +101,7 @@ const PROVIDER_ID_RE = /^[a-z][a-z0-9-]{0,32}$/;
  * anulando justamente el orden por urgencia que SEC-5 pide preservar.
  *
  * 40 es holgado: los labels reales (`MANAGED_KEYS`, `secrets-rw.js`) son del
- * estilo `Anthropic` / `Gemini (Antigravity CLI)`.
+ * estilo `Anthropic` / `Antigravity CLI`.
  */
 const MAX_LABEL_CHARS = 40;
 
@@ -240,7 +240,7 @@ const ACTION_SHORT = Object.freeze({
 /**
  * Frase completa por `reason_code`, para cuando hay UN SOLO proveedor accionable.
  *
- * Tono (UX): imperativo CON OBJETO. `Reautenticá Gemini (Antigravity CLI)` sí;
+ * Tono (UX): imperativo CON OBJETO. `Reautenticá Antigravity CLI` sí;
  * `revisá la licencia` no — no dice de qué proveedor. Segunda persona directa,
  * sin humor: esto es una alerta operativa que se lee a las 3 AM.
  */

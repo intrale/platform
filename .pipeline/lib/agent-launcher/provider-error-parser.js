@@ -43,7 +43,7 @@
 //   }
 //
 //   ctx = {
-//     provider: 'anthropic' | 'openai-codex' | 'gemini-google',
+//     provider: 'anthropic' | 'openai-codex' | 'antigravity',
 //     transport: 'api' | 'cli',
 //     timedOut?: boolean,        // wrapper de spawn detectó timeout
 //     exitCode?: number | null,  // exit code del child process (null si timedOut)
@@ -174,7 +174,7 @@ const KNOWN_PROVIDERS = Object.freeze(new Set([
     'anthropic',
     'anthropic-claude',     // alias usado en agent-models.json fallbacks
     'openai-codex',
-    'gemini-google',
+    'antigravity',
     // cerebras / nvidia-nim / kimi-moonshot retirados en #6563.
 ]));
 
@@ -483,9 +483,9 @@ function detectFromCliStderr(input, provider, quotaModule, opts = {}) {
     }
 
     // #7290: mismo detector estructural que el handler y el camino legacy.
-    if (provider === 'gemini-google' && allowlist.length > 0 && typeof quotaModule._detectGemini === 'function') {
+    if (provider === 'antigravity' && allowlist.length > 0 && typeof quotaModule._detectAntigravity === 'function') {
         for (const line of lines) {
-            const r = quotaModule._detectGemini(parseJsonOrSSE(line), allowlist);
+            const r = quotaModule._detectAntigravity(parseJsonOrSSE(line), allowlist);
             if (r.matched) return { errorClass: 'quota_exhausted', evidence: line, errorType: r.errorType, resetsAt: null };
         }
     }

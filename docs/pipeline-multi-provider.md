@@ -2,6 +2,8 @@
 
 > **Registro histórico — plantel retirado en [#6563](https://github.com/intrale/platform/issues/6563) (2026-09-16).** Los proveedores gratuitos `cerebras`, `nvidia-nim` y `kimi-moonshot` (y los remanentes `ollama`/`groq`) fueron dados de baja del ruteo por el criterio de admisión de [#6562](https://github.com/intrale/platform/issues/6562). Este documento se conserva tal cual como evidencia de las decisiones de su momento; el estado vigente y el plan de rollback están en [`docs/pipeline/multi-provider.md`](pipeline/multi-provider.md) §16–§17.
 
+> **Nombres (#6861, 2026-09-18).** Este diseño histórico nombra al provider de Google con su id anterior (`gemini` / "Gemini (Google)"). El nombre vigente es `antigravity` (Antigravity CLI, binario `agy`); ver [`docs/pipeline/multi-provider.md`](pipeline/multi-provider.md) §8.10. Este documento se conserva sin renombrar.
+
 > Issue [#2956](https://github.com/intrale/platform/issues/2956) — Investigación + diseño v1.
 > Issue [#3065](https://github.com/intrale/platform/issues/3065) — **Refinamiento v2** (este documento).
 > Estado: propuesta. **Este documento NO implementa código** — la implementación sale como issues hijos enumerados en §5.
