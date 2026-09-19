@@ -67,10 +67,39 @@ function fixture(t, issue = 6258) {
 const sha = content => `sha256:${crypto.createHash('sha256').update(content).digest('hex')}`;
 
 /**
+ * Worktree de verdad: `deriveHead` corre `git rev-parse HEAD` sobre el spawnCwd.
+ *
+ * #7082 — es el UNICO recinto valido para `spawnCwd`/`cwd` en este archivo. Antes
+ * los tests CA-2 defaulteaban a `REPO` (el checkout real): el bloque de produccion
+ * resuelve los artefactos con `workspaces: [spawnCwd]` ANTES que `ROOT` (R-5), asi
+ * que cualquier residuo `qa/evidence/<issue>/<mismo nombre>` en el checkout le
+ * ganaba al fixture y el hash "real" era el del residuo (rojo determinista con
+ * `qa/evidence/6258/` untracked). Se declara antes de `correrOnExitReal` para no
+ * depender del hoisting.
+ */
+function worktreeGit(t, prefijo = 'qa-seal-wt-') {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefijo));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const git = (...args) => spawnSync('git', ['-C', dir, ...args], { encoding: 'utf8', windowsHide: true });
+  git('init', '-q');
+  git('config', 'user.email', 'pipeline@intrale.test');
+  git('config', 'user.name', 'pipeline');
+  git('commit', '-q', '--allow-empty', '-m', 'base');
+  const head = spawnSync('git', ['-C', dir, 'rev-parse', 'HEAD'], { encoding: 'utf8', windowsHide: true });
+  assert.match((head.stdout || '').trim(), /^[a-f0-9]{40}$/, 'no se pudo preparar el worktree git de la fixture');
+  return { dir, head: head.stdout.trim() };
+}
+
+/**
  * Corre el BLOQUE REAL del on-exit del Pulpo sobre `data` y devuelve el sello
  * que quedaría persistido en el dropfile.
  */
-function correrOnExitReal({ root, issue, data, spawnCwd = REPO }) {
+function correrOnExitReal({ root, issue, data, spawnCwd }) {
+  // #7082: sin default. Pasar el checkout real como worktree hace que el bloque
+  // resuelva artefactos contra residuos del host en vez del fixture.
+  if (!spawnCwd || path.resolve(spawnCwd) === REPO) {
+    throw new TypeError('correrOnExitReal exige un `spawnCwd` aislado (worktreeGit(t).dir), nunca el checkout real');
+  }
   const telegramas = [];
   const contexto = {
     skill: 'qa',
@@ -103,6 +132,7 @@ function correrOnExitReal({ root, issue, data, spawnCwd = REPO }) {
 
 test('#6495 CA-2 · el bloque real del on-exit deja la MISMA traza de descarte que el sellado aislado', t => {
   const f = fixture(t);
+  const wt = worktreeGit(t);
   const ruta = f.write('qa-6258-structural.md', 'bytes canónicos');
   const real = sha('bytes canónicos');
   const declarado = 'a'.repeat(64);
@@ -112,13 +142,13 @@ test('#6495 CA-2 · el bloque real del on-exit deja la MISMA traza de descarte q
   const esperado = [{ campo: 'evidencia_sha256', declarado: `sha256:${declarado}`, real }];
 
   // Camino de producción: strip del Pulpo + sellado, un solo dropfile.
-  const produccion = correrOnExitReal({ root: f.root, issue: f.issue, data: dropfile() });
+  const produccion = correrOnExitReal({ root: f.root, issue: f.issue, data: dropfile(), spawnCwd: wt.dir });
   assert.deepEqual(produccion.sello.descartes, esperado,
     'el sello persistido por el camino de producción perdió la traza del hash declarado (CA-2)');
 
   // Camino aislado: el que ya testeaba la suite del módulo.
   const dataAislada = dropfile();
-  const aislado = sealQaVerdict({ root: f.root, issue: f.issue, data: dataAislada, cwd: REPO });
+  const aislado = sealQaVerdict({ root: f.root, issue: f.issue, data: dataAislada, cwd: wt.dir });
   assert.deepEqual(aislado.descartes, esperado);
 
   // La invariante que se rompió: los dos llamadores tienen que coincidir.
@@ -130,6 +160,7 @@ test('#6495 CA-2 · el bloque real del on-exit deja la MISMA traza de descarte q
 
 test('#6495 CA-2 · el descarte del glob de frames sobrevive al strip previo del Pulpo', t => {
   const f = fixture(t);
+  const wt = worktreeGit(t);
   f.write('qa-6258-frame-01.png', 'frame uno');
   const data = {
     resultado: 'aprobado',
@@ -138,7 +169,7 @@ test('#6495 CA-2 · el descarte del glob de frames sobrevive al strip previo del
     evidencia_frames: `qa/evidence/${f.issue}/qa-6258-frame-*.png`,
     evidencia_frames_sha256: 'b'.repeat(64),
   };
-  const { sello } = correrOnExitReal({ root: f.root, issue: f.issue, data });
+  const { sello } = correrOnExitReal({ root: f.root, issue: f.issue, data, spawnCwd: wt.dir });
   const descarte = sello.descartes.find(item => item.campo === 'evidencia_frames_sha256');
   assert.ok(descarte, `la rama del glob perdió la traza: ${JSON.stringify(sello.descartes)}`);
   assert.equal(descarte.declarado, `sha256:${'b'.repeat(64)}`);
@@ -149,6 +180,7 @@ test('#6495 CA-2 · el descarte del glob de frames sobrevive al strip previo del
 
 test('#6495 CA-2 · el evidencia_sha256 sin artefacto único traza real:null por el camino real', t => {
   const f = fixture(t);
+  const wt = worktreeGit(t);
   f.write('qa-6258-frame-01.png', 'frame uno');
   f.write('qa-6258-frame-02.png', 'frame dos');
   const data = {
@@ -157,7 +189,7 @@ test('#6495 CA-2 · el evidencia_sha256 sin artefacto único traza real:null por
     evidencia: `qa/evidence/${f.issue}/qa-6258-frame-*.png`,
     evidencia_sha256: 'c'.repeat(64),
   };
-  const { sello } = correrOnExitReal({ root: f.root, issue: f.issue, data });
+  const { sello } = correrOnExitReal({ root: f.root, issue: f.issue, data, spawnCwd: wt.dir });
   assert.deepEqual(sello.descartes, [{
     campo: 'evidencia_sha256', declarado: `sha256:${'c'.repeat(64)}`, real: null,
   }]);
@@ -168,13 +200,14 @@ test('#6495 CA-2 · el evidencia_sha256 sin artefacto único traza real:null por
 
 test('#6495 CA-2 · la traza del camino de producción no filtra contenido ni rutas absolutas', t => {
   const f = fixture(t);
+  const wt = worktreeGit(t);
   const data = {
     resultado: 'aprobado',
     modo: 'android',
     evidencia: f.write('qa-6258-structural.md', 'contenido ultra secreto'),
     evidencia_sha256: 'd'.repeat(64),
   };
-  const { sello } = correrOnExitReal({ root: f.root, issue: f.issue, data });
+  const { sello } = correrOnExitReal({ root: f.root, issue: f.issue, data, spawnCwd: wt.dir });
   const serializado = JSON.stringify(sello);
   assert.doesNotMatch(serializado, /contenido ultra secreto/);
   assert.doesNotMatch(serializado, /[A-Za-z]:\\|\/tmp\//);
@@ -184,6 +217,7 @@ test('#6495 CA-2 · la traza del camino de producción no filtra contenido ni ru
 
 test('#6495 · el sello forjado por el agente no vuelve a data por el camino de producción', t => {
   const f = fixture(t);
+  const wt = worktreeGit(t);
   const forjado = { version: 1, derivado_por: 'agente', head: 'f'.repeat(40), artefactos: [], descartes: [] };
   const data = {
     resultado: 'aprobado',
@@ -192,7 +226,7 @@ test('#6495 · el sello forjado por el agente no vuelve a data por el camino de 
     evidencia_sha256: 'a'.repeat(64),
     sello: forjado,
   };
-  const { sello } = correrOnExitReal({ root: f.root, issue: f.issue, data });
+  const { sello } = correrOnExitReal({ root: f.root, issue: f.issue, data, spawnCwd: wt.dir });
   assert.notEqual(sello.head, 'f'.repeat(40), 'el head forjado no puede sobrevivir');
   assert.equal(sello.derivado_por, 'qa-evidence-seal');
   assert.equal(sello.artefactos.length, 1);
@@ -227,8 +261,9 @@ test('#6495 · lo que sigue en data al sellar le gana al snapshot previo, y un s
 
 test('#6495 · sealQaVerdict sin snapshot previo se comporta igual que antes', t => {
   const f = fixture(t);
+  const wt = worktreeGit(t);
   const data = { resultado: 'aprobado', evidencia: f.write('ok.md', 'x'), evidencia_sha256: 'e'.repeat(64) };
-  const result = sealQaVerdict({ root: f.root, issue: f.issue, data, cwd: REPO });
+  const result = sealQaVerdict({ root: f.root, issue: f.issue, data, cwd: wt.dir });
   assert.equal(result.sealed, true);
   assert.deepEqual(result.descartes, [{ campo: 'evidencia_sha256', declarado: `sha256:${'e'.repeat(64)}`, real: sha('x') }]);
 });
@@ -248,20 +283,6 @@ test('#6495 · sealQaVerdict sin snapshot previo se comporta igual que antes', t
 // donde estaban los artefactos. Estos SI separan las dos raices y ademas corren
 // el bloque REAL del Pulpo, que es donde vivia el defecto.
 // =============================================================================
-
-/** Worktree de verdad: `deriveHead` corre `git rev-parse HEAD` sobre el spawnCwd. */
-function worktreeGit(t, prefijo = 'qa-seal-wt-') {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefijo));
-  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
-  const git = (...args) => spawnSync('git', ['-C', dir, ...args], { encoding: 'utf8', windowsHide: true });
-  git('init', '-q');
-  git('config', 'user.email', 'pipeline@intrale.test');
-  git('config', 'user.name', 'pipeline');
-  git('commit', '-q', '--allow-empty', '-m', 'base');
-  const head = spawnSync('git', ['-C', dir, 'rev-parse', 'HEAD'], { encoding: 'utf8', windowsHide: true });
-  assert.match((head.stdout || '').trim(), /^[a-f0-9]{40}$/, 'no se pudo preparar el worktree git de la fixture');
-  return { dir, head: head.stdout.trim() };
-}
 
 function escribirEvidencia(base, issue, name, content) {
   const dir = path.join(base, 'qa', 'evidence', String(issue));

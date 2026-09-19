@@ -125,6 +125,14 @@ node --test .pipeline/tests/validate-agent-models.test.js
 Cubre las CA consolidadas del issue #3089 (FUNC + SEC + UX + EXIT + TECH +
 drift `VALID_PROVIDERS` ↔ `agent-models.json`).
 
+> **Suite completa del pipeline (#7082):** el comando canónico es `npm run test:pipeline`,
+> que corre `scripts/test-pipeline.js`. El runner excluye los scratchpads (`tmp*`, `_tmp`,
+> `node_modules`) en cualquier nivel, no sigue symlinks/junctions, lista en stderr con `?? <ruta>`
+> los `*.test.js` que va a ejecutar y no están versionados, y con `--tracked-only`
+> (`npm run test:pipeline:tracked`) los excluye. `--list` imprime una ruta por línea sin correr
+> nada. Para un subconjunto usar la forma con glob (`node --test ".pipeline/tests/*.test.js"`):
+> `node --test <directorio>` falla con `MODULE_NOT_FOUND` en Node 24/Windows.
+
 ---
 
 ### `validate-java-home.js` (#2405)

@@ -344,7 +344,7 @@ Cualquier cambio dispara:
 
    > **Nota:** al 2026-05-14 esta allowlist está mencionada en comentarios pero **no implementada como constante**. La validación efectiva de `model` y `model_override` la hace el schema vía el campo libre `minLength: 1`. Si el issue [#3197](https://github.com/intrale/platform/issues/3197) o un PR de seguridad sucesivo materializa la constante, este paso se vuelve obligatorio.
 
-4. **Tests:** correr `node --test .pipeline/lib/__tests__/` (no hay tests específicos del catálogo todavía; agregar uno smoke que valide forma `{id, label, capabilities, cost_per_1m, context_window}`).
+4. **Tests:** correr `node --test ".pipeline/lib/__tests__/*.test.js"` — la forma con directorio falla con `MODULE_NOT_FOUND` en Node 24/Windows; la suite completa se corre con `npm run test:pipeline` (no hay tests específicos del catálogo todavía; agregar uno smoke que valide forma `{id, label, capabilities, cost_per_1m, context_window}`).
 
 5. **PR + review** (CODEOWNERS `.pipeline/lib/` = `@leitolarreta`).
 
