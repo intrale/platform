@@ -65,7 +65,7 @@ Una entrada planeada que describe algo ya en curso es un bug de datos, no una no
 
 Hoy conviven: interna `6` = Ola 9.1 · interna `7` = Ola Puente · interna `8` = alta de producto nuevo ·
 interna `9` = Ola 9.2 · interna `10` = Ola 9.4 · interna `13` = Ola Proveedores · interna `15` = Ola Tablero fiel
-(que se ejecuta 13.ª). Decir "la ola 8" sin aclarar cuál es una fuente garantizada de malentendido.
+(que se ejecuta 14.ª) · interna `25` = Ola Confiabilidad del Pulpo (que se ejecuta 15.ª). Decir "la ola 8" sin aclarar cuál es una fuente garantizada de malentendido.
 La **posición** en el tablero es una tercera cosa: es el orden de ejecución y se ajusta al reordenar.
 **Siempre nombrar por identificador estratégico.**
 
@@ -129,6 +129,14 @@ después hay que corregir.
 > circuito (migrar productores #6808, aceptación #6810, encaje #6811), que habían quedado sin ola. Excepción
 > explícita a la regla de olas planificadas congeladas: sin ellas la ola entregaba sugerencias que no se podían
 > aceptar ni ejecutar. Sigue siendo una ola chica (8 issues, concurrencia 2).
+>
+> **Ajuste 2026-09-18 (noche, 20:55 ART):** se agrega al **final** del horizonte la **Ola Confiabilidad del
+> Pulpo · Rebotes justos y muertes bien clasificadas** (épico #7368, interna 25, 15.ª posición). Sale de la
+> revisión de los 406 issues reales sin ola del 18/09: es la familia con más bugs repetidos del backlog (el mismo
+> "muerte por cuota/API = rebote de código" levantado ocho veces) y la causa directa del incidente del 08/09
+> (284M tokens en una noche y un solo PR). Leo aprobó el orden (a continuación de Tablero fiel) y la creación.
+> Queda abierta, como pregunta aparte, si conviene adelantarla por delante de la app operadora: cada ola
+> intermedia paga el costo de estos rebotes.
 
 | Posición | Bloque | Por qué acá | Estado |
 |----------|--------|-------------|--------|
@@ -147,7 +155,8 @@ después hay que corregir.
 | **11.ª** | **Ola App operadora · Operar el pipeline** (épico #7350) | Pausa total/parcial y allowlist, roadmap de olas (abrir, cerrar, reordenar con confirmación, sumar/quitar issues), issues por fase con rebotes y acciones. | Planificada (interna 21) — épico en definición |
 | **12.ª** | **Ola App operadora · Equipo, proveedores y productos** (épico #7351) | Equipo y matriz modelo×agente, proveedores (cuota del libro contable, gateos, cadena de respaldo, salud multi-provider, propuestas del auditor) y productos. | Planificada (interna 22) — épico en definición |
 | **13.ª** | **Ola App operadora · Métricas e historia** (épico #7352) | KPIs, costos y tokens por sesión/agente/ola, historial de eventos, DORA y velocidad, recomendaciones con gate humano y logs de agentes. Con esta ola la app cubre **toda** la funcionalidad del dashboard actual. | Planificada (interna 23) — épico en definición |
-| **14.ª** | **Ola Tablero fiel · El dashboard muestra el estado real de la ola** (épico #7356) | Que lo que el operador ve coincida con el estado real de la ola, sin mezclas ni fotos viejas. Va última porque el dashboard local deja de ser la superficie principal cuando la app operadora esté completa. | Planificada (interna 15) — 16 issues + épico |
+| **14.ª** | **Ola Tablero fiel · El dashboard muestra el estado real de la ola** (épico #7356) | Que lo que el operador ve coincida con el estado real de la ola, sin mezclas ni fotos viejas. Va al final del bloque de app porque el dashboard local deja de ser la superficie principal cuando la app operadora esté completa. | Planificada (interna 15) — 16 issues + épico |
+| **15.ª** | **Ola Confiabilidad del Pulpo · Rebotes justos y muertes bien clasificadas** (épico #7368) | Que el pipeline distinga "el agente murió por cuota / API caída / entorno roto" de "el agente entregó código malo", y que cada rebote sea justo y único: muertes externas que no consumen el circuit breaker (#5082, #7095, #7025), contador de rebotes persistente que sólo cuenta el mismo hallazgo sin corregir (#7150, #7366), un solo rebote consolidado con todos los hallazgos de qa+tester+security+review (#7367), el watchdog no pisa veredictos (#6545, #7152), PR en conflicto vuelve al dev (#4637), la entrega no se rinde esperando la CI (#6648) y arranque sano tras un respawn (#6567, #6845). Cada ola posterior corre más barata si esto se arregla. | Planificada (interna 25) — 26 issues + épico · **creada el 18/09** |
 
 **Paralelizable en cualquier momento** (no toca el camino crítico): runbook de continuidad y modo
 degradado (E4) · reconciliación automática del registro (**#5055**). Los seis épicos nuevos
