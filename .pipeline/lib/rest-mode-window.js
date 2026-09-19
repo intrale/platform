@@ -58,7 +58,17 @@
 const fs = require('fs');
 const path = require('path');
 
-const DEFAULT_PIPELINE_DIR = path.resolve(__dirname, '..');
+// #7112 - el dir del estado se resuelve POR LLAMADA vía el envoltorio de
+// escritura (SEC-13): ninguna const de módulo captura `__dirname/..` al
+// `require`. Los lectores ("nunca tira") usan `safe: true` y reciben `null`
+// como path cuando no hay ambiente declarado (⇒ estado vacío); los escritores
+// lanzan `EscrituraBloqueadaError`.
+function resolvePipelineDir(pipelineDir, o) {
+    if (pipelineDir) return pipelineDir;
+    const wt = require('./write-target');
+    const opts = { canal: 'estado', destino: 'rest-mode.json' };
+    return o && o.safe ? wt.safeWriteDir(process.env, opts) : wt.writeDir(process.env, opts);
+}
 
 // Mismo set que pulpo.js — duplicado a propósito para no introducir un
 // require circular (pulpo → este módulo → pulpo). Si se cambia uno, cambiar
@@ -103,12 +113,13 @@ const AUDIT_FILENAME = 'rest-mode-audit.jsonl';
 // Validación HH:MM 24h (00:00 → 23:59).
 const HHMM_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
 
-function statePath(pipelineDir) {
-    return path.join(pipelineDir || DEFAULT_PIPELINE_DIR, 'rest-mode.json');
+function statePath(pipelineDir, o) {
+    const dir = resolvePipelineDir(pipelineDir, o);
+    return dir ? path.join(dir, 'rest-mode.json') : null;
 }
 
 function auditPath(pipelineDir) {
-    return path.join(pipelineDir || DEFAULT_PIPELINE_DIR, AUDIT_FILENAME);
+    return path.join(resolvePipelineDir(pipelineDir), AUDIT_FILENAME);
 }
 
 function readStateRaw(file) {
@@ -232,7 +243,7 @@ function legacyToSchedule(legacy) {
  */
 function getWindow(opts) {
     const _opts = opts || {};
-    const file = _opts.statePath || statePath(_opts.pipelineDir);
+    const file = _opts.statePath || statePath(_opts.pipelineDir, { safe: true });
     const raw = readStateRaw(file);
 
     const active = raw.active === true;
@@ -338,7 +349,7 @@ function getSchedule(opts) {
  */
 function getFullState(opts) {
     const _opts = opts || {};
-    const file = _opts.statePath || statePath(_opts.pipelineDir);
+    const file = _opts.statePath || statePath(_opts.pipelineDir, { safe: true });
     const raw = readStateRaw(file);
     return {
         window: getWindow({ pipelineDir: _opts.pipelineDir, statePath: file }),

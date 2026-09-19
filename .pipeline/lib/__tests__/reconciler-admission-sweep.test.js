@@ -33,8 +33,15 @@ fs.mkdirSync(path.join(TMP_DIR, '.pipeline', 'desarrollo', 'validacion', 'bloque
 fs.mkdirSync(path.join(TMP_DIR, '.pipeline', 'definicion', 'analisis', 'bloqueado-humano'), { recursive: true });
 
 process.env.CLAUDE_PROJECT_DIR = TMP_DIR;
-process.env.PIPELINE_REPO_ROOT = TMP_DIR;
+// #7112 (SEC-9) — `PIPELINE_REPO_ROOT/.pipeline` cuenta como PRODUCTIVO para el
+// resolvedor: si apuntara al sandbox, toda escritura del reconciler quedaría
+// bloqueada (dir=null). El contexto de proyecto lo aporta `CLAUDE_PROJECT_DIR`
+// (traceability lo prioriza); el dir de escritura lo declara
+// `PIPELINE_DIR_OVERRIDE` (precedencia D-1 sobre `PIPELINE_STATE_DIR`, que el
+// runner de la suite podría dejar seteado a OTRO tmpdir).
+delete process.env.PIPELINE_REPO_ROOT;
 process.env.PIPELINE_STATE_DIR = path.join(TMP_DIR, '.pipeline');
+process.env.PIPELINE_DIR_OVERRIDE = path.join(TMP_DIR, '.pipeline');
 process.env.PIPELINE_MAIN_ROOT = TMP_DIR;
 process.env.ADMISSION_SWEEP_ENABLED = '1';
 delete process.env.ADMISSION_GATE_DRY_RUN;

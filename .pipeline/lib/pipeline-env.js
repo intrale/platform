@@ -255,8 +255,13 @@ function armarPruebas(dir, origen, motivo, e = {}) {
         // se conserva a continuación para que el operador vea las dos cosas.
         return armar(MODOS.PRUEBAS, null, origen, `dir de pruebas apunta al productivo (${origen}); ${motivo}`);
     }
-    if (origen === ENV_CONTEXTO_HEREDADO) {
+    if (origen === ENV_CONTEXTO_HEREDADO && e[ENV_AMBIENTE] !== MODOS.PRUEBAS) {
         // SEC-9: el contexto heredado del Pulpo no es la declaración de un test.
+        // Excepción: con `PIPELINE_AMBIENTE=pruebas` EXPLÍCITO el proceso sí
+        // declaró (es el par que emite `provision-test-env --print-env`, #7111):
+        // ahí PIPELINE_REPO_ROOT es el root del ambiente de pruebas, no herencia.
+        // Un agente hereda `productivo` (CA-7.2), nunca `pruebas`, así que V2
+        // sigue cerrado; y SEC-3 (arriba) ya anuló el caso en que apunte al productivo.
         return armar(MODOS.PRUEBAS, null, origen,
             `${ENV_CONTEXTO_HEREDADO} es contexto heredado, no un dir de pruebas (SEC-9); ${motivo}`);
     }

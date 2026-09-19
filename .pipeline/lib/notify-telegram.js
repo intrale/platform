@@ -52,8 +52,8 @@ const path = require('path');
 const { redactSecretValue, redactSensitive, redactObject } = require('./redact');
 // #6226 - escritura fail-closed con reintento para los dropfiles de la cola.
 const dropfileWriter = require('./dropfile-writer');
-
-const PIPELINE_DIR_DEFAULT = path.join(__dirname, '..');
+// #7112 - el dir de escritura de la cola lo resuelve el envoltorio por llamada.
+const writeTarget = require('./write-target');
 
 // #5400 / SEC-1 — Escape del Markdown legacy de Telegram.
 //
@@ -83,8 +83,7 @@ if (typeof escapeMarkdownLegacy !== 'function') {
 }
 
 function pipelineDir() {
-    if (process.env.PIPELINE_DIR_OVERRIDE) return process.env.PIPELINE_DIR_OVERRIDE;
-    return PIPELINE_DIR_DEFAULT;
+    return writeTarget.writeDir(process.env, { canal: 'colas', destino: 'servicios/telegram/pendiente' });
 }
 
 function telegramQueueDir() {

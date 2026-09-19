@@ -37,11 +37,22 @@ const { splitLongMessage } = require('./lib/split-long-message');
 // separados por ~7ms. Ver `.pipeline/lib/telegram-burst-grouper.js`.
 const burstGrouper = require('./lib/telegram-burst-grouper');
 
-const PIPELINE = process.env.PIPELINE_STATE_DIR || path.resolve(__dirname);
-const QUEUE_DIR = path.join(PIPELINE, 'servicios', 'telegram');
-const PENDIENTE = path.join(QUEUE_DIR, 'pendiente');
-const TRABAJANDO = path.join(QUEUE_DIR, 'trabajando');
-const LISTO = path.join(QUEUE_DIR, 'listo');
+// #7112 — El directorio base del pipeline se resuelve POR LLAMADA vía
+// `lib/write-target` sobre `lib/pipeline-env` (SEC-13): ninguna const de módulo
+// captura el destino al `require`. Sin ambiente declarado (`PIPELINE_AMBIENTE`
+// del lanzador) y sin dir de pruebas, `writeDir` avisa por stderr y LANZA:
+// nunca se escribe en el productivo por defecto (CA-3 / SEC-10).
+// `PIPELINE_DIR_OVERRIDE` / `PIPELINE_STATE_DIR` siguen redirigiendo el árbol
+// entero en tests. Se conservan los identificadores en mayúsculas
+// (`PIPELINE()`, `QUEUE_DIR()`…) para que el reemplazo const→función sea
+// mecánico: cada uso pasó de `X` a `X()`.
+const writeTarget = require('./lib/write-target');
+const COLA_TELEGRAM = Object.freeze({ canal: 'colas', destino: 'servicios/telegram' });
+function PIPELINE() { return writeTarget.writeDir(process.env, COLA_TELEGRAM); }
+function QUEUE_DIR() { return writeTarget.writePath(process.env, COLA_TELEGRAM, 'servicios', 'telegram'); }
+function PENDIENTE() { return path.join(QUEUE_DIR(), 'pendiente'); }
+function TRABAJANDO() { return path.join(QUEUE_DIR(), 'trabajando'); }
+function LISTO() { return path.join(QUEUE_DIR(), 'listo'); }
 
 const MAIN_ROOT = process.env.PIPELINE_MAIN_ROOT || path.resolve(__dirname, '..');
 const TELEGRAM_CONFIG = path.join(MAIN_ROOT, '.claude', 'hooks', 'telegram-config.json');
@@ -69,7 +80,7 @@ let _lastConfigFailureDetail = null;
 
 function loadPipelineConfig() {
   try {
-    return configResolver.resolve({ pipelineDir: PIPELINE });
+    return configResolver.resolve({ pipelineDir: PIPELINE() });
   } catch (e) {
     const estado = configSchema.describeConfigFailure(e, { archivo: e && e.archivo });
     // Anti-spam: el drainer poletea cada 5s; una línea por fallo DISTINTO.
@@ -96,9 +107,9 @@ const { redactSensitive, redactSecretValue } = require('./lib/redact');
 // `correlationId`; el Commander lo lee y reconcilia el historial. Módulo puro.
 const telegramReceipt = require('./lib/telegram-receipt');
 
-const FALLIDO = path.join(QUEUE_DIR, 'fallido');
+function FALLIDO() { return path.join(QUEUE_DIR(), 'fallido'); }
 // #4082 — Carpeta del bus de recibos (servicios/telegram/recibos/).
-const RECIBOS = telegramReceipt.receiptsDir(PIPELINE);
+function RECIBOS() { return telegramReceipt.receiptsDir(PIPELINE()); }
 // Máximo de intentos de envío antes de mover un dropfile a fallido/. El contador
 // se persiste en el propio archivo (`_telegramAttempts`) porque cada fallo lo
 // devuelve a pendiente/ y se reprocesa en un ciclo de poll posterior. Margen para
@@ -201,7 +212,7 @@ function writeSentReceiptIfAny(data, messageIds) {
     fields.partTotal = telegramReceipt.coercePartInt(data._partTotal);
   }
   try {
-    telegramReceipt.writeReceipt(RECIBOS, fields);
+    telegramReceipt.writeReceipt(RECIBOS(), fields);
   } catch (e) {
     log(`No se pudo escribir recibo enviado (${data._correlationId}): ${e.message}`);
   }
@@ -211,7 +222,7 @@ function writeSentReceiptIfAny(data, messageIds) {
   // más de un evento `sent` para el mismo (correlationId, partIndex) ES un audio
   // que el operador recibió repetido. Best-effort: auditar no rompe la entrega.
   if (fields.partIndex != null) {
-    voiceDeliveryAudit.appendVoiceDeliveryEvent(PIPELINE, {
+    voiceDeliveryAudit.appendVoiceDeliveryEvent(PIPELINE(), {
       event: voiceDeliveryAudit.EVENT_SENT,
       correlationId: fields.correlationId,
       partIndex: fields.partIndex,
@@ -239,7 +250,7 @@ function loadSecretsOrExit() {
     log(`Secrets cargados desde: ${sec.source}`);
   } catch (e) {
     console.error('FATAL: ' + e.message);
-    health.markError(PIPELINE, { code: e.code || 'NO_SECRETS', description: e.message, source: 'startup' });
+    health.markError(PIPELINE(), { code: e.code || 'NO_SECRETS', description: e.message, source: 'startup' });
     process.exit(1);
   }
 }
@@ -497,13 +508,18 @@ function outboundIssue(data) {
 // se deriva del directorio EFECTIVO donde `notify-telegram` depositaría el
 // dropfile: sólo se suprime si ese directorio queda FUERA de la cola real.
 //
-// La cola real se calcula desde `__dirname` (inmutable, no configurable), no
-// desde `PIPELINE_STATE_DIR`: si la referencia fuera una env var, la supresión
-// volvería a ser activable desde el entorno.
+// #7112 — La cola real ya no se calcula desde `__dirname` crudo (inmune al
+// override: escribía en el productivo desde cualquier test) sino POR LLAMADA
+// vía `write-target` sobre el mismo canal `colas` de este servicio: el ambiente
+// lo declara el lanzador (`PIPELINE_AMBIENTE=productivo`) y sin declaración la
+// resolución LANZA (nunca apunta al productivo por defecto). El `try/catch` de
+// abajo convierte ese bloqueo en `error_resolviendo_cola` → NO se suprime.
 //
 // Fail-closed hacia la VISIBILIDAD: ante cualquier ambigüedad (path no
 // resoluble, excepción) → NO se suprime, se alerta.
-const REAL_ALERT_QUEUE = path.join(path.resolve(__dirname), 'servicios', 'telegram');
+function REAL_ALERT_QUEUE() {
+  return writeTarget.writePath(process.env, COLA_TELEGRAM, 'servicios', 'telegram');
+}
 
 function resolveAlertSuppression() {
   let effective;
@@ -516,7 +532,7 @@ function resolveAlertSuppression() {
     return { suppress: false, reason: 'cola_no_resoluble' };
   }
   try {
-    const real = path.resolve(REAL_ALERT_QUEUE);
+    const real = path.resolve(REAL_ALERT_QUEUE());
     const eff = path.resolve(effective);
     const rel = path.relative(real, eff);
     const inside = rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
@@ -737,15 +753,15 @@ function handleSendFailure(file, trabajandoPath, err) {
             failFields.partIndex = telegramReceipt.coercePartInt(cur._partIndex);
             failFields.partTotal = telegramReceipt.coercePartInt(cur._partTotal);
           }
-          telegramReceipt.writeReceipt(RECIBOS, failFields);
+          telegramReceipt.writeReceipt(RECIBOS(), failFields);
         } catch (e) {
           log(`No se pudo escribir recibo fallido (${cur._correlationId}): ${e.message}`);
         }
       }
     }
-    ensureDir(FALLIDO);
+    ensureDir(FALLIDO());
     try {
-      fs.renameSync(trabajandoPath, path.join(FALLIDO, file.name));
+      fs.renameSync(trabajandoPath, path.join(FALLIDO(), file.name));
     } catch {
       // No se pudo mover a fallido/ — devolver a pendiente para no perder el archivo.
       try { fs.renameSync(trabajandoPath, file.path); } catch {}
@@ -782,7 +798,7 @@ function handleSendFailure(file, trabajandoPath, err) {
 // de Telegram de hace horas/días no tiene sentido (incidente 2026-04-24: zombie de 3 días).
 const ORPHAN_MAX_AGE_MS = 15 * 60 * 1000;
 function recoverOrphans() {
-  const orphans = listWorkFiles(TRABAJANDO);
+  const orphans = listWorkFiles(TRABAJANDO());
   if (orphans.length === 0) return;
   const now = Date.now();
   let recovered = 0, discarded = 0;
@@ -790,11 +806,11 @@ function recoverOrphans() {
     try {
       const mtime = fs.statSync(file.path).mtimeMs;
       if (now - mtime < ORPHAN_MAX_AGE_MS) {
-        fs.renameSync(file.path, path.join(PENDIENTE, file.name));
+        fs.renameSync(file.path, path.join(PENDIENTE(), file.name));
         recovered++;
       } else {
         const destName = file.name.replace(/\.json$/, '-zombie-descartado.json');
-        fs.renameSync(file.path, path.join(LISTO, destName));
+        fs.renameSync(file.path, path.join(LISTO(), destName));
         discarded++;
       }
     } catch {}
@@ -832,7 +848,7 @@ function honorsPermanentFlag(cur) {
 
 function sweepFallidoOnce() {
   const oc = loadOutboundConfig();
-  const failed = listWorkFiles(FALLIDO);
+  const failed = listWorkFiles(FALLIDO());
   if (failed.length === 0) return { requeued: 0, discarded: 0, permanent: 0 };
   const now = Date.now();
   let requeued = 0, discarded = 0, permanent = 0, idx = 0;
@@ -853,7 +869,7 @@ function sweepFallidoOnce() {
     if (isCmd && (now - failedAtMs) > oc.stale_ttl_ms) {
       // SEC-4: saliente del Commander demasiado viejo → descartar, no reenviar.
       const destName = file.name.replace(/\.json$/, '-stale-descartado.json');
-      try { fs.renameSync(file.path, path.join(LISTO, destName)); discarded++; } catch {}
+      try { fs.renameSync(file.path, path.join(LISTO(), destName)); discarded++; } catch {}
       continue;
     }
     // #5924 — DESCARTE TERMINAL: un saliente que la API rechazó de forma no
@@ -873,7 +889,7 @@ function sweepFallidoOnce() {
     if (honorsPermanentFlag(cur)) {
       const destName = file.name.replace(/\.json$/, '-permanente-descartado.json');
       try {
-        fs.renameSync(file.path, path.join(LISTO, destName));
+        fs.renameSync(file.path, path.join(LISTO(), destName));
         permanent++;
       } catch { /* no se pudo mover — dejar en fallido/ */ }
       continue;
@@ -895,7 +911,7 @@ function sweepFallidoOnce() {
     delete cur._failedAt;
     try {
       fs.writeFileSync(file.path, JSON.stringify(cur, null, 2));
-      fs.renameSync(file.path, path.join(PENDIENTE, file.name));
+      fs.renameSync(file.path, path.join(PENDIENTE(), file.name));
       requeued++;
       idx++;
     } catch { /* no se pudo mover — dejar en fallido/ */ }
@@ -972,7 +988,7 @@ async function processBurstGroup(group, consolidatedText) {
   //    para que otro proceso no los tome mientras procesamos el consolidado.
   const trabajandoPaths = [];
   for (const f of group.files) {
-    const trabajandoPath = path.join(TRABAJANDO, f.file);
+    const trabajandoPath = path.join(TRABAJANDO(), f.file);
     try {
       fs.renameSync(f.filePath, trabajandoPath);
       trabajandoPaths.push({ name: f.file, path: trabajandoPath });
@@ -1017,7 +1033,7 @@ async function processBurstGroup(group, consolidatedText) {
     // #4082 — Entrega confirmada: recibo `enviado` por cada correlationId del grupo.
     for (const cid of correlationIds) {
       try {
-        telegramReceipt.writeReceipt(RECIBOS, {
+        telegramReceipt.writeReceipt(RECIBOS(), {
           correlationId: cid,
           status: telegramReceipt.STATUS_ENVIADO,
           messageIds,
@@ -1031,7 +1047,7 @@ async function processBurstGroup(group, consolidatedText) {
     // Devolver el primer archivo a pendiente/ para reintento; los demás
     // quedan en trabajando/ y los recogerá `recoverOrphans` si pasan >15min.
     if (trabajandoPaths[0]) {
-      try { fs.renameSync(trabajandoPaths[0].path, path.join(PENDIENTE, trabajandoPaths[0].name)); } catch {}
+      try { fs.renameSync(trabajandoPaths[0].path, path.join(PENDIENTE(), trabajandoPaths[0].name)); } catch {}
     }
     return;
   }
@@ -1041,7 +1057,7 @@ async function processBurstGroup(group, consolidatedText) {
     const entry = trabajandoPaths[i];
     const tag = i === 0 ? '-bursted-leader' : '-bursted-consolidated';
     const listoName = entry.name.replace(/\.json$/, `${tag}.json`);
-    const listoPath = path.join(LISTO, listoName);
+    const listoPath = path.join(LISTO(), listoName);
     try { fs.renameSync(entry.path, listoPath); } catch {}
   }
   log(`Consolidado: ${trabajandoPaths.length} mensajes en burst (key=${group.key.split('|').slice(1).join('|')})`);
@@ -1060,7 +1076,7 @@ const ATTACHMENT_TYPES = ['document', 'photo', 'video', 'animation', 'voice'];
 // "reconstruido" jamás debe resolver a `~/.claude/secrets/*` o `application.conf`
 // y terminar subido a Telegram (OWASP A01/A08).
 function mediaBaseDir() {
-  return path.join(PIPELINE, 'logs', 'media');
+  return writeTarget.writePath(process.env, { canal: 'logs', destino: 'logs/media' }, 'logs', 'media');
 }
 
 // #4796 — ¿`target` (canónico) cae bajo `base` (canónico)? Usa path.relative:
@@ -1126,7 +1142,7 @@ function shouldFailClosed(data, multipartType) {
 }
 
 async function processQueue() {
-  const allFiles = listWorkFiles(PENDIENTE);
+  const allFiles = listWorkFiles(PENDIENTE());
   if (allFiles.length === 0) return;
 
   // #4082 — Backoff: excluir dropfiles cuyo `_nextRetryAt` sea futuro ANTES de
@@ -1172,7 +1188,7 @@ async function processQueue() {
   }
 
   for (const file of singletonFiles) {
-    const trabajandoPath = path.join(TRABAJANDO, file.name);
+    const trabajandoPath = path.join(TRABAJANDO(), file.name);
     try {
       fs.renameSync(file.path, trabajandoPath);
     } catch { continue; } // otro proceso lo tomó
@@ -1251,7 +1267,7 @@ async function processQueue() {
         const privateDestination = resolvePrivateDestination(data.chat_id);
         if (!privateDestination.ok) {
           log(`Aviso privado omitido: ${privateDestination.reason}`);
-          fs.renameSync(trabajandoPath, path.join(LISTO, file.name));
+          fs.renameSync(trabajandoPath, path.join(LISTO(), file.name));
           continue;
         }
         // #4082 — SEC-2 fail-closed: validar ok:true + message_id por chunk y
@@ -1306,7 +1322,7 @@ async function processQueue() {
         );
       }
 
-      const listoPath = path.join(LISTO, file.name);
+      const listoPath = path.join(LISTO(), file.name);
       fs.renameSync(trabajandoPath, listoPath);
       log(`Enviado: ${file.name}`);
     } catch (e) {
@@ -1399,18 +1415,22 @@ module.exports = {
 if (require.main === module) {
   loadSecretsOrExit();
 
-  // Crash handlers — loguear antes de morir para diagnóstico
-  const LOG_DIR = path.join(PIPELINE, 'logs');
+  // Crash handlers — loguear antes de morir para diagnóstico.
+  // #7112 — escritor `safe*`: sin dir (pruebas sin override) saltea el archivo
+  // y conserva el console.error; jamás lanza acá.
+  const CRASH_LOG = { canal: 'logs', destino: 'logs/svc-telegram.log' };
   process.on('uncaughtException', (err) => {
     // #2334: sanitizar antes de persistir el stack a disco (CA6/CA7).
     const msg = sanitize(`[${new Date().toISOString()}] [svc-telegram] CRASH uncaughtException: ${err.stack || err.message}\n`);
-    try { fs.appendFileSync(path.join(LOG_DIR, 'svc-telegram.log'), msg); } catch {}
+    const crashLogDir = writeTarget.safeWriteDir(process.env, CRASH_LOG);
+    if (crashLogDir) { try { fs.appendFileSync(path.join(crashLogDir, 'logs', 'svc-telegram.log'), msg); } catch {} }
     console.error(msg);
     process.exit(1);
   });
   process.on('unhandledRejection', (reason) => {
     const msg = sanitize(`[${new Date().toISOString()}] [svc-telegram] CRASH unhandledRejection: ${reason?.stack || reason}\n`);
-    try { fs.appendFileSync(path.join(LOG_DIR, 'svc-telegram.log'), msg); } catch {}
+    const crashLogDir = writeTarget.safeWriteDir(process.env, CRASH_LOG);
+    if (crashLogDir) { try { fs.appendFileSync(path.join(crashLogDir, 'logs', 'svc-telegram.log'), msg); } catch {} }
     console.error(msg);
     process.exit(1);
   });

@@ -155,8 +155,8 @@ const ERROR_CODES = Object.freeze({
 
 function resolvePipelineDir(options) {
     if (options && options.pipelineDir) return options.pipelineDir;
-    // __dirname = .pipeline/lib → padre = .pipeline
-    return path.resolve(__dirname, '..');
+    // #7112 - resolución por llamada vía el envoltorio (SEC-13).
+    return require('./write-target').writeDir(process.env, { canal: 'logs', destino: 'audit/architect-signoff.jsonl' });
 }
 
 function auditPath(pipelineDir, file) {

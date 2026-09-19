@@ -214,7 +214,9 @@ function buildProposalMessage({ runbook, timeoutMs } = {}) {
  * @param {number}   [opts.proposalTimeoutMs]
  */
 function createVaultCutProposal(opts = {}) {
-    const pipelineDir = opts.pipelineDir || path.resolve(__dirname, '..');
+    // #7112 - resolución por llamada vía el envoltorio (SEC-13).
+    const pipelineDir = opts.pipelineDir
+        || require('./write-target').writeDir(process.env, { canal: 'estado', destino: 'vault-cut-proposal' });
     const _fs = opts.fsImpl || fs;
     const now = typeof opts.now === 'function' ? opts.now : () => Date.now();
     const logger = typeof opts.logger === 'function' ? opts.logger : () => {};

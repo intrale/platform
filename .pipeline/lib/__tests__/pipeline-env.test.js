@@ -253,6 +253,26 @@ test('#7112 CA-5/SEC-9 · con PIPELINE_DIR_OVERRIDE o PIPELINE_STATE_DIR explíc
     }
 });
 
+test('#7112 SEC-9 · con PIPELINE_AMBIENTE=pruebas EXPLÍCITO, PIPELINE_REPO_ROOT sí es el root de pruebas (contrato --print-env de #7111); inferido o heredado como productivo, no', () => {
+    const root = tmpDir('sec9-explicito');
+    // Declaración explícita de pruebas + root: es lo que emite `provision-test-env --print-env`.
+    const explicito = resolve({ PIPELINE_AMBIENTE: 'pruebas', PIPELINE_REPO_ROOT: root });
+    assert.strictEqual(explicito.modo, MODOS.PRUEBAS);
+    assert.strictEqual(explicito.dir, path.join(path.resolve(root), '.pipeline'));
+    assert.strictEqual(explicito.origen, 'PIPELINE_REPO_ROOT');
+    assert.strictEqual(explicito.canales.telegram.enabled, false);
+    // Sin declaración: sigue siendo contexto heredado (SEC-9).
+    assert.strictEqual(resolve({ PIPELINE_REPO_ROOT: root }).dir, null);
+    // Con señal de test aunque declare pruebas: la señal gana y REPO_ROOT no aporta dir.
+    assert.strictEqual(resolve({ NODE_TEST_CONTEXT: '1', PIPELINE_AMBIENTE: 'pruebas', PIPELINE_REPO_ROOT: root }).dir,
+        path.join(path.resolve(root), '.pipeline'), 'la declaración explícita de pruebas sigue valiendo bajo señal');
+    // Herencia de un agente (productivo degradado a pruebas): REPO_ROOT no aporta dir.
+    const prod = path.dirname(DEFAULT_PRODUCTIVE_DIR);
+    assert.strictEqual(resolve({ PIPELINE_AMBIENTE: 'productivo', PIPELINE_REPO_ROOT: prod, NODE_TEST_CONTEXT: '1' }).dir, null);
+    // Y SEC-3 sigue anulando un root explícito de pruebas que apunte al productivo.
+    assert.strictEqual(resolve({ PIPELINE_AMBIENTE: 'pruebas', PIPELINE_REPO_ROOT: prod }).dir, null);
+});
+
 test('#7112 CA-5/SEC-9 · dentroDelProductivo bloquea la UNIÓN: un override dentro de PIPELINE_REPO_ROOT/.pipeline se anula aunque el módulo viva en otro __dirname', () => {
     const { mod, pipelineDir } = cargarDesdeOtroDirname('sec9-union');
     const prod = path.dirname(DEFAULT_PRODUCTIVE_DIR);

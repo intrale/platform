@@ -83,8 +83,8 @@ const REASONS = Object.freeze({
 //   - `PIPELINE_DIR_OVERRIDE` se sigue honrando (regla de raíz única del resolver).
 // -----------------------------------------------------------------------------
 function pipelineDir() {
-    if (process.env.PIPELINE_DIR_OVERRIDE) return process.env.PIPELINE_DIR_OVERRIDE;
-    return path.resolve(__dirname, '..');
+    // #7112 - resolución por llamada vía el envoltorio (SEC-13).
+    return require('./write-target').writeDir(process.env, { canal: 'colas', destino: 'servicios/telegram/pendiente' });
 }
 
 function extractAbsenceConfig(doc) {

@@ -24,17 +24,27 @@ require('./lib/java-home-normalizer').normalizeJavaHome({
   log: (msg) => console.error(msg),
 });
 
-const PIPELINE = process.env.PIPELINE_STATE_DIR || path.resolve(__dirname);
+// #7112 — El directorio base del pipeline se resuelve POR LLAMADA vía
+// `lib/write-target` sobre `lib/pipeline-env` (SEC-13): ninguna const de módulo
+// captura el destino al `require`. Sin ambiente declarado (`PIPELINE_AMBIENTE`
+// del lanzador) y sin dir de pruebas, `writeDir` avisa por stderr y LANZA:
+// nunca se escribe en el productivo por defecto (CA-3 / SEC-10). Se conservan
+// los identificadores en mayúsculas para que el reemplazo const→función sea
+// mecánico: cada uso pasó de `X` a `X()`.
+const writeTarget = require('./lib/write-target');
+const COLA_EMULADOR = Object.freeze({ canal: 'colas', destino: 'servicios/emulador' });
+function PIPELINE() { return writeTarget.writeDir(process.env, COLA_EMULADOR); }
 const ROOT = process.env.PIPELINE_MAIN_ROOT || path.resolve(__dirname, '..');
-const LOG_DIR = path.join(PIPELINE, 'logs');
+function LOG_DIR() { return writeTarget.writePath(process.env, { canal: 'logs', destino: 'logs/' }, 'logs'); }
 
-const QUEUE_DIR = path.join(PIPELINE, 'servicios', 'emulador');
-const PENDIENTE = path.join(QUEUE_DIR, 'pendiente');
-const TRABAJANDO = path.join(QUEUE_DIR, 'trabajando');
-const LISTO = path.join(QUEUE_DIR, 'listo');
+function QUEUE_DIR() { return writeTarget.writePath(process.env, COLA_EMULADOR, 'servicios', 'emulador'); }
+function PENDIENTE() { return path.join(QUEUE_DIR(), 'pendiente'); }
+function TRABAJANDO() { return path.join(QUEUE_DIR(), 'trabajando'); }
+function LISTO() { return path.join(QUEUE_DIR(), 'listo'); }
 
-const QA_ENV_SCRIPT = path.join(PIPELINE, 'qa-environment.js');
-const STATE_FILE = path.join(PIPELINE, 'qa-env-state.json');
+// Script a EJECUTAR (lectura): vive junto a este archivo, no en el dir de estado.
+const QA_ENV_SCRIPT = path.join(__dirname, 'qa-environment.js');
+function STATE_FILE() { return writeTarget.writePath(process.env, { canal: 'estado', destino: 'qa-env-state.json' }, 'qa-env-state.json'); }
 const ADB = 'C:\\Users\\Administrator\\AppData\\Local\\Android\\Sdk\\platform-tools\\adb.exe';
 
 const POLL_INTERVAL = 10000; // 10 segundos
@@ -65,7 +75,7 @@ function log(msg) {
 }
 
 function sendTelegram(text) {
-  const svcDir = path.join(PIPELINE, 'servicios', 'telegram', 'pendiente');
+  const svcDir = writeTarget.writePath(process.env, { canal: 'colas', destino: 'servicios/telegram/pendiente' }, 'servicios', 'telegram', 'pendiente');
   try {
     fs.mkdirSync(svcDir, { recursive: true });
     // #6226 — nombre único + escritura `wx`: dos dropfiles del mismo
@@ -95,7 +105,7 @@ function detectEmulatorState() {
 
   // Check 2: qa-env-state.json + proceso vivo
   try {
-    const state = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
+    const state = JSON.parse(fs.readFileSync(STATE_FILE(), 'utf8'));
     const pid = sanitizePid(state.emulator || state.emulador);
     if (pid && isProcessAlive(pid)) return 'running'; // proceso vivo pero ADB no responde = starting
   } catch {}
@@ -195,7 +205,7 @@ function coalesce(pendingFiles) {
     } catch (e) {
       log(`Error leyendo ${file.name}: ${e.message}`);
       // Mover archivos corruptos a listo/ para no bloquear la cola
-      try { fs.renameSync(file.path, path.join(LISTO, file.name)); } catch {}
+      try { fs.renameSync(file.path, path.join(LISTO(), file.name)); } catch {}
     }
   }
 
@@ -208,7 +218,7 @@ function coalesce(pendingFiles) {
   // Mover todos a listo/ (descartados + ganador)
   for (const msg of messages) {
     try {
-      fs.renameSync(msg.file.path, path.join(LISTO, msg.file.name));
+      fs.renameSync(msg.file.path, path.join(LISTO(), msg.file.name));
     } catch {} // otro proceso podría haberlo movido
   }
 
@@ -222,14 +232,14 @@ function coalesce(pendingFiles) {
 // --- Procesamiento principal ---
 
 async function processQueue() {
-  const files = listWorkFiles(PENDIENTE);
+  const files = listWorkFiles(PENDIENTE());
   if (files.length === 0) return;
 
   // Mover todos a trabajando/ atómicamente
   const movedFiles = [];
   for (const file of files) {
     try {
-      const dest = path.join(TRABAJANDO, file.name);
+      const dest = path.join(TRABAJANDO(), file.name);
       fs.renameSync(file.path, dest);
       movedFiles.push({ name: file.name, path: dest });
     } catch {} // otro proceso lo tomó
@@ -275,16 +285,16 @@ async function main() {
   log(`Servicio Emulador iniciado — estado actual: ${emulatorState}`);
 
   // Asegurar directorios existen
-  for (const dir of [PENDIENTE, TRABAJANDO, LISTO]) {
+  for (const dir of [PENDIENTE(), TRABAJANDO(), LISTO()]) {
     fs.mkdirSync(dir, { recursive: true });
   }
 
   // Limpiar trabajando/ huérfano al arrancar (crash recovery)
-  const orphaned = listWorkFiles(TRABAJANDO);
+  const orphaned = listWorkFiles(TRABAJANDO());
   if (orphaned.length > 0) {
     log(`Recuperando ${orphaned.length} mensajes huérfanos de trabajando/ → pendiente/`);
     for (const file of orphaned) {
-      try { fs.renameSync(file.path, path.join(PENDIENTE, file.name)); } catch {}
+      try { fs.renameSync(file.path, path.join(PENDIENTE(), file.name)); } catch {}
     }
   }
 
@@ -301,16 +311,21 @@ async function main() {
 }
 
 // --- Crash handlers ---
+// #7112 — escritor `safe*`: sin dir (pruebas sin override) saltea el archivo
+// y conserva el console.error; jamás lanza acá.
+const CRASH_LOG = { canal: 'logs', destino: 'logs/svc-emulador.log' };
 
 process.on('uncaughtException', (err) => {
   const msg = `[${new Date().toISOString()}] [svc-emulador] CRASH uncaughtException: ${err.stack || err.message}\n`;
-  try { fs.appendFileSync(path.join(LOG_DIR, 'svc-emulador.log'), msg); } catch {}
+  const crashLogDir = writeTarget.safeWriteDir(process.env, CRASH_LOG);
+  if (crashLogDir) { try { fs.appendFileSync(path.join(crashLogDir, 'logs', 'svc-emulador.log'), msg); } catch {} }
   console.error(msg);
   process.exit(1);
 });
 process.on('unhandledRejection', (reason) => {
   const msg = `[${new Date().toISOString()}] [svc-emulador] CRASH unhandledRejection: ${reason?.stack || reason}\n`;
-  try { fs.appendFileSync(path.join(LOG_DIR, 'svc-emulador.log'), msg); } catch {}
+  const crashLogDir = writeTarget.safeWriteDir(process.env, CRASH_LOG);
+  if (crashLogDir) { try { fs.appendFileSync(path.join(crashLogDir, 'logs', 'svc-emulador.log'), msg); } catch {} }
   console.error(msg);
   process.exit(1);
 });

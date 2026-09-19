@@ -95,8 +95,8 @@ const TRUNCATION_NOTICE = '\n\n[TRUNCATED:section_too_large]';
 
 function resolvePipelineDir(opts) {
     if (opts && opts.pipelineDir) return opts.pipelineDir;
-    // __dirname = .pipeline/lib → padre = .pipeline
-    return path.resolve(__dirname, '..');
+    // #7112 - resolución por llamada vía el envoltorio (SEC-13).
+    return require('./write-target').writeDir(process.env, { canal: 'estado', destino: 'handoff/' });
 }
 
 function handoffDir(opts) {

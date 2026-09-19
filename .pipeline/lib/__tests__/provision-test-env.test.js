@@ -921,8 +921,10 @@ test('el CLI expone exit codes 0/1/2 y --print-env emite sólo dos líneas', () 
     assert.strictEqual(cli.main(['--root', root, '--print-env'], o, DEPS_SIN_GIT), 0);
     assert.deepStrictEqual(o.out.split('\n'), [`PIPELINE_REPO_ROOT=${root}`, 'PIPELINE_AMBIENTE=pruebas', '']);
     assert.match(o.err, /ya existía/);
-    // El PIPELINE_REPO_ROOT emitido es el que el resolvedor entiende como pruebas.
-    const amb = pipelineEnv.resolve({ PIPELINE_REPO_ROOT: root });
+    // El par emitido (root + declaración explícita de pruebas) es el que el resolvedor
+    // entiende como pruebas con dir. #7112 / SEC-9: el root SOLO, sin declaración, es
+    // contexto heredado y no aporta dir; por eso se resuelve con las dos líneas.
+    const amb = pipelineEnv.resolve({ PIPELINE_REPO_ROOT: root, PIPELINE_AMBIENTE: 'pruebas' });
     assert.strictEqual(amb.modo, 'pruebas');
     assert.strictEqual(amb.dir, path.join(root, '.pipeline'));
     assert.strictEqual(configResolver.productPathFor(amb.dir), path.join(root, PRODUCT_FILENAME));

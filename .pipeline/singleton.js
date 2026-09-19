@@ -11,8 +11,16 @@ const fs = require('fs');
 const path = require('path');
 const { findPidByScript, SCRIPT_MAP, invalidateCache } = require('./pid-discovery');
 
-const PIPELINE = process.env.PIPELINE_STATE_DIR || path.resolve(__dirname);
-const READY_DIR = path.join(PIPELINE, 'ready');
+// #7112 — El directorio base del pipeline se resuelve POR LLAMADA vía
+// `lib/write-target` sobre `lib/pipeline-env` (SEC-13): ninguna const de módulo
+// captura el destino al `require`. Sin ambiente declarado (`PIPELINE_AMBIENTE`
+// del lanzador) y sin dir de pruebas, `writeDir` avisa por stderr y LANZA:
+// nunca se escribe en el productivo por defecto (CA-3 / SEC-10). Se conservan
+// los identificadores en mayúsculas para que el reemplazo const→función sea
+// mecánico: cada uso pasó de `X` a `X()`.
+const writeTarget = require('./lib/write-target');
+function PIPELINE() { return writeTarget.writeDir(process.env, { canal: 'estado', destino: '<servicio>.pid' }); }
+function READY_DIR() { return writeTarget.writePath(process.env, { canal: 'estado', destino: 'ready/' }, 'ready'); }
 
 /**
  * Garantiza singleton. Si ya hay una instancia viva del mismo script (según
@@ -39,8 +47,8 @@ module.exports = function singleton(name) {
     // nunca reescribe su marker. Lo hacemos acá en su lugar, usando el PID
     // que el SO nos reporta como vivo. No-op si falla (best-effort).
     try {
-      if (!fs.existsSync(READY_DIR)) fs.mkdirSync(READY_DIR, { recursive: true });
-      const markerPath = path.join(READY_DIR, `${name}.ready`);
+      if (!fs.existsSync(READY_DIR())) fs.mkdirSync(READY_DIR(), { recursive: true });
+      const markerPath = path.join(READY_DIR(), `${name}.ready`);
       const now = new Date().toISOString();
       fs.writeFileSync(markerPath, JSON.stringify({
         name,
@@ -55,7 +63,7 @@ module.exports = function singleton(name) {
   }
 
   // Hint informativo para diagnóstico humano — no es fuente de verdad.
-  const pidFile = path.join(PIPELINE, `${name}.pid`);
+  const pidFile = path.join(PIPELINE(), `${name}.pid`);
   try { fs.writeFileSync(pidFile, String(process.pid)); } catch {}
 
   process.on('exit', () => {

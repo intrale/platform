@@ -79,7 +79,7 @@ test('#5924: el tipo real de un dropfile de voz es "audio", no "adjunto"', () =>
 test('writeSentReceiptIfAny: recibo de chunk incluye partIndex/partTotal', () => {
   const cid = rec.generateCorrelationId('voice');
   svc.writeSentReceiptIfAny({ _correlationId: cid, _partIndex: 1, _partTotal: 3 }, [55]);
-  const receiptPath = path.join(svc.RECIBOS, `${cid}-p1.json`);
+  const receiptPath = path.join(svc.RECIBOS(), `${cid}-p1.json`);
   assert.ok(fs.existsSync(receiptPath), 'escribe recibo por-parte <cid>-p1.json');
   const parsed = rec.parseReceipt(fs.readFileSync(receiptPath, 'utf8'));
   assert.equal(parsed.status, 'enviado');
@@ -92,14 +92,14 @@ test('writeSentReceiptIfAny: dims inválidas → NO escribe recibo (fail-closed)
   const cid = rec.generateCorrelationId('voice');
   // partIndex >= partTotal es inválido → no debe escribirse ningún recibo.
   svc.writeSentReceiptIfAny({ _correlationId: cid, _partIndex: 3, _partTotal: 2 }, [9]);
-  assert.equal(fs.existsSync(path.join(svc.RECIBOS, `${cid}-p3.json`)), false);
-  assert.equal(fs.existsSync(path.join(svc.RECIBOS, `${cid}.json`)), false);
+  assert.equal(fs.existsSync(path.join(svc.RECIBOS(), `${cid}-p3.json`)), false);
+  assert.equal(fs.existsSync(path.join(svc.RECIBOS(), `${cid}.json`)), false);
 });
 
 test('writeSentReceiptIfAny: sin dims conserva el recibo de texto legacy', () => {
   const cid = rec.generateCorrelationId('cmd');
   svc.writeSentReceiptIfAny({ _correlationId: cid }, [1, 2]);
-  const receiptPath = path.join(svc.RECIBOS, `${cid}.json`);
+  const receiptPath = path.join(svc.RECIBOS(), `${cid}.json`);
   assert.ok(fs.existsSync(receiptPath), 'nombre legacy <cid>.json');
   const parsed = rec.parseReceipt(fs.readFileSync(receiptPath, 'utf8'));
   assert.equal(parsed.partIndex, undefined);

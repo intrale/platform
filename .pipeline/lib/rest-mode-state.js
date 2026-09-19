@@ -42,7 +42,17 @@
 const fs = require('fs');
 const path = require('path');
 
-const DEFAULT_PIPELINE_DIR = path.resolve(__dirname, '..');
+// #7112 - el dir del estado se resuelve POR LLAMADA vía el envoltorio de
+// escritura (SEC-13): ninguna const de módulo captura `__dirname/..` al
+// `require`. Los lectores ("nunca tira") usan `safe: true` y reciben `null`
+// como path cuando no hay ambiente declarado (⇒ estado vacío); los escritores
+// lanzan `EscrituraBloqueadaError`.
+function resolvePipelineDir(pipelineDir, o) {
+    if (pipelineDir) return pipelineDir;
+    const wt = require('./write-target');
+    const opts = { canal: 'estado', destino: 'rest-mode.json' };
+    return o && o.safe ? wt.safeWriteDir(process.env, opts) : wt.writeDir(process.env, opts);
+}
 
 // Cap absoluto de snooze. Cualquier request con un valor mayor que esto
 // es rechazado por el endpoint del dashboard (CA-Sec-A04b). El UI tampoco
@@ -54,8 +64,9 @@ const MAX_SNOOZE_MS = MAX_SNOOZE_HOURS * 60 * 60 * 1000;
 // CA-2.7 manda exactamente 2.
 const CONSECUTIVE_BASELINE_CHECKS_TO_CLEAR = 2;
 
-function statePath(pipelineDir) {
-    return path.join(pipelineDir || DEFAULT_PIPELINE_DIR, 'rest-mode.json');
+function statePath(pipelineDir, o) {
+    const dir = resolvePipelineDir(pipelineDir, o);
+    return dir ? path.join(dir, 'rest-mode.json') : null;
 }
 
 function readStateRaw(file) {
@@ -99,7 +110,7 @@ function emptyAlertState() {
  */
 function getAlertState(opts) {
     const _opts = opts || {};
-    const file = _opts.statePath || statePath(_opts.pipelineDir);
+    const file = _opts.statePath || statePath(_opts.pipelineDir, { safe: true });
     const raw = readStateRaw(file);
     const alert = raw.alert && typeof raw.alert === 'object' ? raw.alert : emptyAlertState();
     // Defaults para campos faltantes (compat con archivos parcialmente
@@ -113,7 +124,7 @@ function getAlertState(opts) {
  */
 function getFullState(opts) {
     const _opts = opts || {};
-    const file = _opts.statePath || statePath(_opts.pipelineDir);
+    const file = _opts.statePath || statePath(_opts.pipelineDir, { safe: true });
     const raw = readStateRaw(file);
     return Object.assign({}, raw, {
         alert: Object.assign(emptyAlertState(), raw.alert || {}),

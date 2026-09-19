@@ -32,17 +32,19 @@ const waveSnapshot = require('../lib/wave-snapshot');
 
 // ─────────────────────── Congelar contrato del source (RC2) ───────────────────────
 
-test('dashboard.js pasa { pipelineRoot: PIPELINE } a resolveActiveWave y getCachedWaveState (#4320 RC2)', () => {
+// #7112 — `PIPELINE` pasó de const de módulo a función por llamada (`PIPELINE()`):
+// el contrato sigue siendo que AMBOS libs reciben el dir del pipeline, no `{}`.
+test('dashboard.js pasa { pipelineRoot: PIPELINE() } a resolveActiveWave y getCachedWaveState (#4320 RC2)', () => {
     const slice = DASHBOARD_SRC.split('_scheduleOlaETARefresh')[1] || '';
     assert.match(
         slice,
-        /resolveActiveWave\(\s*\{\s*pipelineRoot:\s*PIPELINE\s*\}\s*\)/,
-        'resolveActiveWave debe recibir { pipelineRoot: PIPELINE }',
+        /resolveActiveWave\(\s*\{\s*pipelineRoot:\s*PIPELINE\(\)\s*\}\s*\)/,
+        'resolveActiveWave debe recibir { pipelineRoot: PIPELINE() }',
     );
     assert.match(
         slice,
-        /getCachedWaveState\(\s*\{\s*pipelineRoot:\s*PIPELINE\s*\}\s*\)/,
-        'getCachedWaveState debe recibir { pipelineRoot: PIPELINE }',
+        /getCachedWaveState\(\s*\{\s*pipelineRoot:\s*PIPELINE\(\)\s*\}\s*\)/,
+        'getCachedWaveState debe recibir { pipelineRoot: PIPELINE() }',
     );
     // Regresión: no debe quedar ninguna llamada con objeto vacío `{}`.
     assert.doesNotMatch(

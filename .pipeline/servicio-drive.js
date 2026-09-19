@@ -30,13 +30,25 @@ const { redactSensitive, redactSecretValue } = require('./lib/redact');
 // artefacto reproducirían la desincronización que el épico #6475 busca cerrar.
 const { sha256File } = require('./lib/e2e-evidence-port');
 
-const PIPELINE = process.env.PIPELINE_STATE_DIR || path.resolve(__dirname);
-const PROJECT_ROOT = path.resolve(PIPELINE, '..');
-const QUEUE_DIR = path.join(PIPELINE, 'servicios', 'drive');
-const PENDIENTE = path.join(QUEUE_DIR, 'pendiente');
-const TRABAJANDO = path.join(QUEUE_DIR, 'trabajando');
-const LISTO = path.join(QUEUE_DIR, 'listo');
-const FALLIDO = path.join(QUEUE_DIR, 'fallido');
+// #7112 — El directorio base del pipeline se resuelve POR LLAMADA vía
+// `lib/write-target` sobre `lib/pipeline-env` (SEC-13): ninguna const de módulo
+// captura el destino al `require`. Sin ambiente declarado (`PIPELINE_AMBIENTE`
+// del lanzador) y sin dir de pruebas, `writeDir` avisa por stderr y LANZA:
+// nunca se escribe en el productivo por defecto (CA-3 / SEC-10). Se conservan
+// los identificadores en mayúsculas para que el reemplazo const→función sea
+// mecánico: cada uso pasó de `X` a `X()`.
+const writeTarget = require('./lib/write-target');
+const COLA_DRIVE = Object.freeze({ canal: 'colas', destino: 'servicios/drive' });
+function PIPELINE() { return writeTarget.writeDir(process.env, COLA_DRIVE); }
+// Raíz del repo: root de LECTURA (evidencia, scripts, índices de entregables) y
+// de escritura FUERA de `.pipeline` (`qa/evidence`); no es punto de escritura
+// del pipeline, por eso no pasa por `write-target` (#7112, alcance `.pipeline`).
+const PROJECT_ROOT = path.resolve(process.env.PIPELINE_STATE_DIR || __dirname, '..');
+function QUEUE_DIR() { return writeTarget.writePath(process.env, COLA_DRIVE, 'servicios', 'drive'); }
+function PENDIENTE() { return path.join(QUEUE_DIR(), 'pendiente'); }
+function TRABAJANDO() { return path.join(QUEUE_DIR(), 'trabajando'); }
+function LISTO() { return path.join(QUEUE_DIR(), 'listo'); }
+function FALLIDO() { return path.join(QUEUE_DIR(), 'fallido'); }
 const QA_VIDEO_SHARE = path.join(PROJECT_ROOT, 'qa', 'scripts', 'qa-video-share.js');
 
 // Máximo reintentos antes de mover a fallido
@@ -113,7 +125,7 @@ function listWorkFiles(dir) {
 // (reintentar un upload de Drive de hace horas puede duplicar videos ya subidos).
 const ORPHAN_MAX_AGE_MS = 15 * 60 * 1000;
 function recoverOrphans() {
-  const orphans = listWorkFiles(TRABAJANDO);
+  const orphans = listWorkFiles(TRABAJANDO());
   if (orphans.length === 0) return;
   const now = Date.now();
   let recovered = 0, discarded = 0;
@@ -121,11 +133,11 @@ function recoverOrphans() {
     try {
       const mtime = fs.statSync(file.path).mtimeMs;
       if (now - mtime < ORPHAN_MAX_AGE_MS) {
-        fs.renameSync(file.path, path.join(PENDIENTE, file.name));
+        fs.renameSync(file.path, path.join(PENDIENTE(), file.name));
         recovered++;
       } else {
         const destName = file.name.replace(/\.json$/, '-zombie-descartado.json');
-        fs.renameSync(file.path, path.join(LISTO, destName));
+        fs.renameSync(file.path, path.join(LISTO(), destName));
         discarded++;
       }
     } catch {}
@@ -902,7 +914,7 @@ function runVideoShare(videoPath, issue, title, payload) {
 
 // Procesar un job individual
 async function processJob(file) {
-  const trabajandoPath = path.join(TRABAJANDO, file.name);
+  const trabajandoPath = path.join(TRABAJANDO(), file.name);
   try { fs.renameSync(file.path, trabajandoPath); } catch { return; }
 
   try {
@@ -917,7 +929,7 @@ async function processJob(file) {
 
     if (!videoFile) {
       log(`Job ${file.name}: sin campo 'file', moviendo a listo`);
-      fs.renameSync(trabajandoPath, path.join(LISTO, file.name));
+      fs.renameSync(trabajandoPath, path.join(LISTO(), file.name));
       return;
     }
 
@@ -985,13 +997,13 @@ async function processJob(file) {
         && confined.reason !== REJECT_SENSIBLE_NO_PUBLICABLE) {
         log(`R-6 log-only: job ${file.name} habría ido a FALLIDO (${confined.reason}: ${videoFile})`
           + ' — se deja pasar SIN sellar');
-        ensureDir(LISTO);
-        fs.renameSync(trabajandoPath, path.join(LISTO, file.name));
+        ensureDir(LISTO());
+        fs.renameSync(trabajandoPath, path.join(LISTO(), file.name));
         return;
       }
       // Mover a fallido para no reintentar indefinidamente.
-      ensureDir(FALLIDO);
-      fs.renameSync(trabajandoPath, path.join(FALLIDO, file.name));
+      ensureDir(FALLIDO());
+      fs.renameSync(trabajandoPath, path.join(FALLIDO(), file.name));
       // CA-3 (#3927): fallo SIEMPRE notifica. CA-UX-1/2/3 (#6497): con el tipo
       // real de artefacto, el motivo distinguible y agrupado por ciclo.
       reportRejectedJob({
@@ -1018,8 +1030,8 @@ async function processJob(file) {
         // haciéndose pasar por evidencia trazable. Va a FALLIDO con motivo
         // propio (nunca al catch genérico, que lo devolvería a `pendiente/` y
         // armaría un loop de reintento infinito).
-        ensureDir(FALLIDO);
-        fs.renameSync(trabajandoPath, path.join(FALLIDO, file.name));
+        ensureDir(FALLIDO());
+        fs.renameSync(trabajandoPath, path.join(FALLIDO(), file.name));
         reportRejectedJob({
           job: file.name,
           issue,
@@ -1030,9 +1042,9 @@ async function processJob(file) {
         return;
       }
       log(`Job ${file.name}: QA estructural sellado (${data.bytes} bytes); cola Drive eximida`);
-      ensureDir(LISTO);
+      ensureDir(LISTO());
       fs.writeFileSync(trabajandoPath, JSON.stringify(data, null, 2));
-      fs.renameSync(trabajandoPath, path.join(LISTO, file.name));
+      fs.renameSync(trabajandoPath, path.join(LISTO(), file.name));
       return;
     }
 
@@ -1045,8 +1057,8 @@ async function processJob(file) {
     try {
       sealJob(data, confined);
     } catch (e) {
-      ensureDir(FALLIDO);
-      fs.renameSync(trabajandoPath, path.join(FALLIDO, file.name));
+      ensureDir(FALLIDO());
+      fs.renameSync(trabajandoPath, path.join(FALLIDO(), file.name));
       reportRejectedJob({
         job: file.name,
         issue,
@@ -1082,8 +1094,8 @@ async function processJob(file) {
         log(`Filename sanitizado: basename original contenía patrón de secreto, subiendo como ${safeBasename}`);
       } catch (e) {
         log(`Error copiando a nombre saneado (${e.message}); se omite upload para evitar leak`);
-        ensureDir(FALLIDO);
-        fs.renameSync(trabajandoPath, path.join(FALLIDO, file.name));
+        ensureDir(FALLIDO());
+        fs.renameSync(trabajandoPath, path.join(FALLIDO(), file.name));
         // CA-3: fallo SIEMPRE notifica (mensaje redactado RS-3).
         reportRejectedJob({
           job: file.name,
@@ -1115,7 +1127,7 @@ async function processJob(file) {
       try {
         await runVideoShare(uploadPath, issue, title, data);
         log(`Upload exitoso: ${file.name} (intento ${attempt})`);
-        fs.renameSync(trabajandoPath, path.join(LISTO, file.name));
+        fs.renameSync(trabajandoPath, path.join(LISTO(), file.name));
         return;
       } catch (e) {
         lastErr = e;
@@ -1128,7 +1140,7 @@ async function processJob(file) {
 
     // Todos los intentos fallaron
     log(`Upload fallido después de ${MAX_RETRIES} intentos: ${file.name}`);
-    ensureDir(FALLIDO);
+    ensureDir(FALLIDO());
     // Agregar info de error al job
     try {
       const jobData = JSON.parse(fs.readFileSync(trabajandoPath, 'utf8'));
@@ -1136,7 +1148,7 @@ async function processJob(file) {
       jobData._failedAt = new Date().toISOString();
       fs.writeFileSync(trabajandoPath, JSON.stringify(jobData, null, 2));
     } catch {}
-    fs.renameSync(trabajandoPath, path.join(FALLIDO, file.name));
+    fs.renameSync(trabajandoPath, path.join(FALLIDO(), file.name));
     // CA-3 / RS-3: fallo terminal SIEMPRE notifica a Telegram, con el mensaje
     // del último error redactado (nunca `err.stack`/`_error` crudo).
     reportRejectedJob({
@@ -1176,7 +1188,7 @@ function rescueWorktreeDescriptors() {
     const { rescueStrandedDescriptors } = require('./lib/qa-evidence-enqueue');
     const r = rescueStrandedDescriptors({
       repoRoot: PROJECT_ROOT,
-      queueDir: PENDIENTE,
+      queueDir: PENDIENTE(),
       log,
     });
     if (r.errors.length > 0) {
@@ -1203,7 +1215,7 @@ async function processQueue() {
     // worktree, para que entre en ESTA misma pasada y no en la siguiente.
     rescueWorktreeDescriptors();
 
-    const files = listWorkFiles(PENDIENTE);
+    const files = listWorkFiles(PENDIENTE());
     if (files.length === 0) return;
 
     log(`${files.length} job(s) en cola`);
@@ -1281,22 +1293,26 @@ module.exports = {
 // Arranque del servicio: SOLO cuando se ejecuta directamente (`node servicio-drive.js`),
 // nunca al ser requerido como módulo desde un test.
 if (require.main === module) {
-  fs.writeFileSync(path.join(PIPELINE, 'svc-drive.pid'), String(process.pid));
+  fs.writeFileSync(writeTarget.writePath(process.env, { canal: 'estado', destino: 'svc-drive.pid' }, 'svc-drive.pid'), String(process.pid));
   process.on('SIGINT', () => process.exit(0));
   process.on('SIGTERM', () => process.exit(0));
 
   // Crash handlers — loguear antes de morir para diagnóstico
-  const LOG_DIR = path.join(PIPELINE, 'logs');
+  // #7112 — handlers de crash: escritor `safe*`. Sin dir (pruebas sin override)
+  // saltea el archivo y conserva el console.error; jamás lanza acá.
+  const CRASH_LOG = { canal: 'logs', destino: 'logs/svc-drive.log' };
   process.on('uncaughtException', (err) => {
     // #2334: sanitizar antes de persistir stack a disco.
     const msg = sanitize(`[${new Date().toISOString()}] [svc-drive] CRASH uncaughtException: ${err.stack || err.message}\n`);
-    try { fs.appendFileSync(path.join(LOG_DIR, 'svc-drive.log'), msg); } catch {}
+    const crashLogDir = writeTarget.safeWriteDir(process.env, CRASH_LOG);
+    if (crashLogDir) { try { fs.appendFileSync(path.join(crashLogDir, 'logs', 'svc-drive.log'), msg); } catch {} }
     console.error(msg);
     process.exit(1);
   });
   process.on('unhandledRejection', (reason) => {
     const msg = sanitize(`[${new Date().toISOString()}] [svc-drive] CRASH unhandledRejection: ${reason?.stack || reason}\n`);
-    try { fs.appendFileSync(path.join(LOG_DIR, 'svc-drive.log'), msg); } catch {}
+    const crashLogDir = writeTarget.safeWriteDir(process.env, CRASH_LOG);
+    if (crashLogDir) { try { fs.appendFileSync(path.join(crashLogDir, 'logs', 'svc-drive.log'), msg); } catch {} }
     console.error(msg);
     process.exit(1);
   });

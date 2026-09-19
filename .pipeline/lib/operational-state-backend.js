@@ -427,7 +427,8 @@ function resolveSink() {
             // El halt queda en FS y no reemplaza una pausa de otro origen.
             halt: ({ cause, correlationId }) => {
                 try {
-                    fs.writeFileSync(path.join(pipelineDir(), '.paused'), JSON.stringify({
+                    // #7112 - el marcador se escribe por el envoltorio (canal pausa).
+                    fs.writeFileSync(require('./write-target').writePath(process.env, { canal: 'pausa', destino: '.paused' }, '.paused'), JSON.stringify({
                         source: 'kernel-cutover-degraded-halt',
                         ts: new Date().toISOString(), cause, correlationId,
                     }), { flag: 'wx', mode: 0o600 });

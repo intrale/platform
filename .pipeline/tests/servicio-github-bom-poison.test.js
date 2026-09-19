@@ -53,6 +53,10 @@ function correrCrudo(nombre, contenido, { pasadas = 1 } = {}) {
     const salidaPath = path.join(dir, 'observado.json');
     const script = `
       process.env.PIPELINE_STATE_DIR = ${JSON.stringify(dir)};
+      // #7112 — el hijo hereda PIPELINE_DIR_OVERRIDE del runner (precedencia D-1
+      // sobre PIPELINE_STATE_DIR): se fija al MISMO tmpdir para que la cola
+      // resuelta por llamada sea la que este test inspecciona.
+      process.env.PIPELINE_DIR_OVERRIDE = ${JSON.stringify(dir)};
       const fs = require('fs');
       const svc = require(${JSON.stringify(path.join(PIPELINE, 'servicio-github.js'))});
       const observado = { editIssue: [], createLabel: [], comment: [] };

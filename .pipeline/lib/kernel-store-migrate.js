@@ -208,7 +208,8 @@ function redactSecrets(text) {
 
 // Raíz del `.pipeline/` cuando este módulo se carga desde `.pipeline/lib/`.
 function defaultPipelineDir() {
-  return path.resolve(__dirname, '..');
+  // #7112 - resolución por llamada vía el envoltorio (SEC-13).
+  return require('./write-target').writeDir(process.env, { canal: 'estado', destino: 'backup/' });
 }
 
 /**

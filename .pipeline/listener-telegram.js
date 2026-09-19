@@ -13,10 +13,18 @@ const path = require('path');
 // #6226 - escritura fail-closed de dropfiles.
 const dropfileWriter = require('./lib/dropfile-writer');
 
-const PIPELINE = process.env.PIPELINE_STATE_DIR || path.resolve(__dirname);
-const COMMANDER_QUEUE = path.join(PIPELINE, 'servicios', 'commander', 'pendiente');
-const HISTORY_FILE = path.join(PIPELINE, 'commander-history.jsonl');
-const OFFSET_FILE = path.join(PIPELINE, 'listener-offset.json');
+// #7112 — El directorio base del pipeline se resuelve POR LLAMADA vía
+// `lib/write-target` sobre `lib/pipeline-env` (SEC-13): ninguna const de módulo
+// captura el destino al `require`. Sin ambiente declarado (`PIPELINE_AMBIENTE`
+// del lanzador) y sin dir de pruebas, `writeDir` avisa por stderr y LANZA:
+// nunca se escribe en el productivo por defecto (CA-3 / SEC-10). Se conservan
+// los identificadores en mayúsculas para que el reemplazo const→función sea
+// mecánico: cada uso pasó de `X` a `X()`.
+const writeTarget = require('./lib/write-target');
+function PIPELINE() { return writeTarget.writeDir(process.env, { canal: 'estado', destino: '.pipeline (raíz, listener)' }); }
+function COMMANDER_QUEUE() { return writeTarget.writePath(process.env, { canal: 'colas', destino: 'servicios/commander/pendiente' }, 'servicios', 'commander', 'pendiente'); }
+function HISTORY_FILE() { return writeTarget.writePath(process.env, { canal: 'estado', destino: 'commander-history.jsonl' }, 'commander-history.jsonl'); }
+function OFFSET_FILE() { return writeTarget.writePath(process.env, { canal: 'estado', destino: 'listener-offset.json' }, 'listener-offset.json'); }
 
 // Issue #3310 CA-1: sanitizar TODO texto entrante antes de:
 //   - escribir el drop a la cola del commander
@@ -52,7 +60,7 @@ function loadSecretsOrExit() {
     log(`Secrets cargados desde: ${SECRETS_SOURCE}`);
   } catch (e) {
     console.error('FATAL: ' + e.message);
-    health.markError(PIPELINE, { code: e.code || 'NO_SECRETS', description: e.message, source: 'startup' });
+    health.markError(PIPELINE(), { code: e.code || 'NO_SECRETS', description: e.message, source: 'startup' });
     process.exit(1);
   }
 }
@@ -61,19 +69,19 @@ function loadSecretsOrExit() {
 
 function loadOffset() {
   try {
-    return JSON.parse(fs.readFileSync(OFFSET_FILE, 'utf8')).offset || 0;
+    return JSON.parse(fs.readFileSync(OFFSET_FILE(), 'utf8')).offset || 0;
   } catch { return 0; }
 }
 
 function saveOffset(offset) {
-  fs.writeFileSync(OFFSET_FILE, JSON.stringify({ offset }));
+  fs.writeFileSync(OFFSET_FILE(), JSON.stringify({ offset }));
 }
 
 // --- History ---
 
 function appendHistory(entry) {
   const line = JSON.stringify({ ...entry, timestamp: new Date().toISOString() });
-  fs.appendFileSync(HISTORY_FILE, line + '\n');
+  fs.appendFileSync(HISTORY_FILE(), line + '\n');
 }
 
 // --- Telegram API ---
@@ -291,8 +299,8 @@ async function maybeHandleReportCommand(msg) {
 
 // --- Download Telegram files ---
 
-const MEDIA_DIR = path.join(PIPELINE, 'logs', 'media');
-try { fs.mkdirSync(MEDIA_DIR, { recursive: true }); } catch {}
+function MEDIA_DIR() { return writeTarget.writePath(process.env, { canal: 'logs', destino: 'logs/media' }, 'logs', 'media'); }
+try { fs.mkdirSync(MEDIA_DIR(), { recursive: true }); } catch {}
 
 async function downloadTelegramFile(fileId, ext) {
   try {
@@ -302,7 +310,7 @@ async function downloadTelegramFile(fileId, ext) {
 
     const remotePath = fileInfo.result.file_path;
     const localName = `${Date.now()}-${fileId.slice(-8)}.${ext}`;
-    const localPath = path.join(MEDIA_DIR, localName);
+    const localPath = path.join(MEDIA_DIR(), localName);
 
     // Download file
     return new Promise((resolve, reject) => {
@@ -346,7 +354,7 @@ function getOperationalExecutor() {
   const credentials = require('./lib/credentials');
   const { getVaultShadowMetrics, ESTADO } = require('./lib/vault-shadow-metrics');
   const configResolver = require('./lib/config-resolver');
-  const configPath = path.join(PIPELINE, 'config.yaml');
+  const configPath = path.join(PIPELINE(), 'config.yaml');
   const defaults = {
     configPath,
     resolveOptions: ({ operatorId, issuedAt }) => ({
@@ -424,9 +432,9 @@ function getProductCommander() {
     const { loadProductRegistry } = require('./lib/commander/product-registry-loader');
     const { createProductCommander } = require('./lib/commander/product-command');
     const { createProductAudit } = require('./lib/commander/audit-log');
-    const registry = loadProductRegistry({ pipelineDir: PIPELINE, defaultOperator: CHAT_ID });
+    const registry = loadProductRegistry({ pipelineDir: PIPELINE(), defaultOperator: CHAT_ID });
     const audit = createProductAudit({
-      file: path.join(PIPELINE, 'audit', 'commander-product-actions.jsonl'),
+      file: path.join(PIPELINE(), 'audit', 'commander-product-actions.jsonl'),
     });
     _productCommander = createProductCommander({ registry, audit });
     return _productCommander;
@@ -485,7 +493,7 @@ function _escHtmlCommander(s) {
 // `enqueueMessage`) para que pulpo lo procese con contexto completo.
 function enqueueCommanderCommand(text) {
   try {
-    fs.mkdirSync(COMMANDER_QUEUE, { recursive: true });
+    fs.mkdirSync(COMMANDER_QUEUE(), { recursive: true });
   } catch { /* best-effort */ }
   const id = `${Date.now()}-cbcmd`;
   const content = {
@@ -499,7 +507,7 @@ function enqueueCommanderCommand(text) {
   // resolvian al mismo path y el segundo comando del operador se perdia en
   // silencio (el listener logueaba "encolado" para los dos).
   dropfileWriter.writeUniqueFileSync({
-    dir: COMMANDER_QUEUE,
+    dir: COMMANDER_QUEUE(),
     filename: `${id}.json`,
     data: JSON.stringify(content, null, 2),
     onCollision: (name, attempt) => log(
@@ -1208,7 +1216,7 @@ async function enqueueMessage(update) {
   };
 
   // Escribir en cola del Commander (texto ya sanitizado).
-  const filePath = path.join(COMMANDER_QUEUE, `${id}.json`);
+  const filePath = path.join(COMMANDER_QUEUE(), `${id}.json`);
   fs.writeFileSync(filePath, JSON.stringify(content, null, 2));
 
   // Registrar en historial (texto ya sanitizado).
@@ -1232,10 +1240,10 @@ async function pollLoop() {
     if (!me.ok) {
       const desc = me.description || 'unknown';
       log(`Telegram getMe RECHAZADO (${me.error_code || '-'}): ${desc}`);
-      health.markError(PIPELINE, { code: me.error_code, description: desc, source: 'getMe' });
+      health.markError(PIPELINE(), { code: me.error_code, description: desc, source: 'getMe' });
     } else {
       log(`Bot OK: @${me.result?.username} id=${me.result?.id}`);
-      health.markOk(PIPELINE, { bot: me.result?.username, source: SECRETS_SOURCE });
+      health.markOk(PIPELINE(), { bot: me.result?.username, source: SECRETS_SOURCE });
     }
   } catch (e) { log(`Error en getMe inicial: ${e.message}`); }
 
@@ -1261,7 +1269,7 @@ async function pollLoop() {
         if (backoffMs > 0) log(`Telegram OK de nuevo, reseteo backoff`);
         backoffMs = 0;
         lastErrCode = null;
-        health.markOk(PIPELINE, { bot: 'reachable', source: SECRETS_SOURCE });
+        health.markOk(PIPELINE(), { bot: 'reachable', source: SECRETS_SOURCE });
         if (result.result?.length > 0) {
           for (const update of result.result) {
             try {
@@ -1283,13 +1291,13 @@ async function pollLoop() {
           log(`Telegram API RECHAZA getUpdates (${code || '-'}): ${desc}`);
           lastErrCode = code;
         }
-        health.markError(PIPELINE, { code, description: desc, source: 'getUpdates' });
+        health.markError(PIPELINE(), { code, description: desc, source: 'getUpdates' });
         backoffMs = Math.min(Math.max(backoffMs * 2, 5000), 5 * 60 * 1000);
         await new Promise(r => setTimeout(r, backoffMs));
       }
     } catch (e) {
       log(`Error en polling: ${e.message}`);
-      health.markError(PIPELINE, { code: 'NETWORK', description: e.message, source: 'getUpdates' });
+      health.markError(PIPELINE(), { code: 'NETWORK', description: e.message, source: 'getUpdates' });
       backoffMs = Math.min(Math.max(backoffMs * 2, 5000), 5 * 60 * 1000);
       await new Promise(r => setTimeout(r, backoffMs));
     }

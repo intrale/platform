@@ -423,31 +423,31 @@
         },
         {
             "file": "lib/__tests__/reconciler-admission-sweep.test.js",
-            "line": 185,
+            "line": 192,
             "variable": "ADMISSION_SWEEP_ENABLED",
             "sentido": "apagar"
         },
         {
             "file": "lib/__tests__/reconciler-admission-sweep.test.js",
-            "line": 241,
+            "line": 248,
             "variable": "ADMISSION_SWEEP_ENABLED",
             "sentido": "apagar"
         },
         {
             "file": "lib/__tests__/reconciler-admission-sweep.test.js",
-            "line": 277,
+            "line": 284,
             "variable": "ADMISSION_SWEEP_ENABLED",
             "sentido": "apagar"
         },
         {
             "file": "lib/__tests__/reconciler-admission-sweep.test.js",
-            "line": 294,
+            "line": 301,
             "variable": "ADMISSION_SWEEP_ENABLED",
             "sentido": "apagar"
         },
         {
             "file": "lib/__tests__/reconciler-admission-sweep.test.js",
-            "line": 303,
+            "line": 310,
             "variable": "ADMISSION_SWEEP_ENABLED",
             "sentido": "apagar"
         },
@@ -753,13 +753,13 @@
         },
         {
             "file": "tests/pulpo-agent-spawn-env-containment.test.js",
-            "line": 790,
+            "line": 797,
             "variable": "(clave no resoluble)",
             "sentido": "(n/a)"
         },
         {
             "file": "tests/pulpo-agent-spawn-env-containment.test.js",
-            "line": 797,
+            "line": 804,
             "variable": "(clave no resoluble)",
             "sentido": "(n/a)"
         },

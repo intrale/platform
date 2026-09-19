@@ -24036,10 +24036,9 @@ async function brazoPrMergeability(config) {
       deferred: _mergeabilityDeferred,
       // Resuelto EN CADA TICK, no capturado al cargar el módulo: los tests que
       // requieren `pulpo.js` setean `PIPELINE_DIR_OVERRIDE` DESPUÉS del require
-      // (mismo motivo que `telegramPendienteDir`, #5924).
-      pipelineRoot: process.env.PIPELINE_DIR_OVERRIDE
-        ? path.resolve(process.env.PIPELINE_DIR_OVERRIDE)
-        : PIPELINE(),
+      // (mismo motivo que `telegramPendienteDir`, #5924). #7112: `PIPELINE()` ya
+      // honra el override por llamada (precedencia D-1 del resolvedor).
+      pipelineRoot: PIPELINE(),
       config,
       yaml,
       now: () => Date.now(),

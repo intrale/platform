@@ -687,7 +687,9 @@ function runAccessAuditTick(opts = {}) {
   }
 
   const now = opts.now instanceof Date ? opts.now : new Date();
-  const pipelineDir = opts.pipelineDir || path.resolve(__dirname, '..');
+  // #7112 - resolución por llamada vía el envoltorio (SEC-13).
+  const pipelineDir = opts.pipelineDir
+    || require('./write-target').writeDir(process.env, { canal: 'estado', destino: 'vault-access-audit-state.json' });
   const statePath = opts.statePath || path.join(pipelineDir, 'vault-access-audit-state.json');
   const auditPath = opts.auditPath || path.join(pipelineDir, 'logs', 'vault-access-audit.jsonl');
   const lookbackMin = Math.max(1, Number(config.lookback_min || 30));

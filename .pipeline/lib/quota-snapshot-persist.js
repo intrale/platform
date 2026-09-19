@@ -25,9 +25,13 @@ const fs = require('fs');
 const path = require('path');
 const jsonlRotation = require('./jsonl-rotation');
 
-const PIPELINE_DIR = path.resolve(__dirname, '..');
-const DEFAULT_HISTORY_PATH = path.join(PIPELINE_DIR, '.quota-history.jsonl');
-const DEFAULT_PNG_DIR = path.join(PIPELINE_DIR, 'quota-snapshots');
+// #7112 - resolución POR LLAMADA (SEC-13): ninguna const captura el dir al
+// `require`; sin ambiente declarado la escritura se bloquea.
+function pipelineDir(destino) {
+  return require('./write-target').writeDir(process.env, { canal: 'estado', destino });
+}
+function DEFAULT_HISTORY_PATH() { return path.join(pipelineDir('.quota-history.jsonl'), '.quota-history.jsonl'); }
+function DEFAULT_PNG_DIR() { return path.join(pipelineDir('quota-snapshots/'), 'quota-snapshots'); }
 
 const DEFAULT_PNG_RETENTION_DAYS = parseEnvInt('QUOTA_PNG_RETENTION_DAYS', 30, 1, 3650);
 const DEFAULT_JSONL_ROTATE_MB = parseEnvInt('QUOTA_JSONL_ROTATE_MB', 5, 1, 1024);
@@ -51,7 +55,7 @@ function appendSnapshot(snapshot, opts = {}) {
   if (!snapshot || typeof snapshot !== 'object') {
     throw new Error('appendSnapshot: snapshot vacio');
   }
-  const targetPath = opts.historyPath || DEFAULT_HISTORY_PATH;
+  const targetPath = opts.historyPath || DEFAULT_HISTORY_PATH();
   const dir = path.dirname(targetPath);
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
@@ -69,7 +73,7 @@ function appendSnapshot(snapshot, opts = {}) {
  */
 function rotateIfNeeded(opts = {}) {
   return jsonlRotation.rotateIfNeeded({
-    path: opts.historyPath || DEFAULT_HISTORY_PATH,
+    path: opts.historyPath || DEFAULT_HISTORY_PATH(),
     limitMb: Number.isFinite(opts.limitMb) ? opts.limitMb : DEFAULT_JSONL_ROTATE_MB,
     redact: opts.redact, // undefined → helper aplica redacción por defecto (OWASP A09).
     now: opts.now,
@@ -80,7 +84,7 @@ function rotateIfNeeded(opts = {}) {
  * Borra PNG con mtime > retentionDays. Retorna count de archivos eliminados.
  */
 function cleanupOldPngs(opts = {}) {
-  const dir = opts.pngDir || DEFAULT_PNG_DIR;
+  const dir = opts.pngDir || DEFAULT_PNG_DIR();
   const retentionDays = Number.isFinite(opts.retentionDays)
     ? opts.retentionDays
     : DEFAULT_PNG_RETENTION_DAYS;

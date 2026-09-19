@@ -148,7 +148,8 @@ function tierRank(tier) {
 function resolveStateDir(opts = {}) {
     if (opts.stateDir) return path.resolve(String(opts.stateDir));
     if (opts.pipelineDir) return path.resolve(String(opts.pipelineDir), 'state');
-    return path.resolve(__dirname, '..', 'state');
+    // #7112 - resolución por llamada vía el envoltorio (SEC-13).
+    return require('./write-target').writePath(process.env, { canal: 'estado', destino: 'state/' + EPISODE_FILENAME }, 'state');
 }
 
 /** Path absoluto del archivo de episodio. Exportado para el assert de D10. */

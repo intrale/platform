@@ -90,9 +90,9 @@ function strictGateEnabled() {
 }
 
 function pipelineDir() {
-    // Permitir override en tests vía env var
-    if (process.env.PIPELINE_DIR_OVERRIDE) return process.env.PIPELINE_DIR_OVERRIDE;
-    return path.join(__dirname, '..');
+    // #7112 - resolución por llamada vía el envoltorio (SEC-13); el override de
+    // tests lo lee el resolvedor, no este módulo.
+    return require('./write-target').writeDir(process.env, { canal: 'pausa', destino: '.paused' });
 }
 
 // #5110 (D3) — la allowlist de ejecución se namespacea por proyecto. Se le

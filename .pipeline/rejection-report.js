@@ -37,15 +37,29 @@ const visualShapeGate = require('./hooks/visual-report-shape-gate');
 // #5708 / D11 — `regression` se DERIVA contra la pasada previa, nunca se confía
 // en lo que declara el contrato (lo escribe un LLM).
 const visualCoverageStore = require('./lib/visual-coverage-store');
+// #7112 — envoltorio único de los puntos de escritura (resolución por llamada).
+const writeTarget = require('./lib/write-target');
 
 const ROOT = path.resolve(__dirname, '..');
-const PIPELINE = __dirname;
-const LOG_DIR = path.join(PIPELINE, 'logs');
-const METRICS_FILE = path.join(PIPELINE, 'metrics-history.jsonl');
-const PROFILES_FILE = path.join(PIPELINE, 'skill-profiles.json');
+// #7112 — El directorio base del pipeline se resuelve POR LLAMADA vía
+// `lib/write-target` sobre `lib/pipeline-env` (SEC-13): ninguna const de módulo
+// captura `__dirname` al `require`. Sin ambiente declarado y sin dir de pruebas,
+// `writeDir` avisa por stderr y LANZA (CA-3 / SEC-10). `ROOT` (raíz del repo:
+// cwd de git, `qa/evidence`, `docs/qa`) NO es punto de escritura en `.pipeline`
+// y se conserva. Identificadores en mayúsculas conservados: cada uso `X` → `X()`.
+function PIPELINE() {
+  return writeTarget.writeDir(process.env, { canal: 'estado', destino: '.pipeline (raíz)' });
+}
+function LOG_DIR() {
+  return writeTarget.writePath(process.env, { canal: 'logs', destino: 'logs/' }, 'logs');
+}
+function METRICS_FILE() { return path.join(PIPELINE(), 'metrics-history.jsonl'); }
+function PROFILES_FILE() { return path.join(PIPELINE(), 'skill-profiles.json'); }
 const REPORT_SCRIPT = path.join(ROOT, 'scripts', 'report-to-pdf-telegram.js');
 const GH_CLI = process.env.GH_CLI_PATH || 'C:/Workspaces/gh-cli/bin/gh.exe';
-const GH_QUEUE_DIR = path.join(PIPELINE, 'servicios', 'github', 'pendiente');
+function GH_QUEUE_DIR() {
+  return writeTarget.writePath(process.env, { canal: 'colas', destino: 'servicios/github/pendiente/' }, 'servicios', 'github', 'pendiente');
+}
 
 // --- Parse args ---
 const args = process.argv.slice(2);
@@ -100,7 +114,7 @@ function readJson(filePath) {
 
 function getRecentMetrics(minutes) {
   try {
-    const lines = fs.readFileSync(METRICS_FILE, 'utf8').split('\n').filter(Boolean);
+    const lines = fs.readFileSync(METRICS_FILE(), 'utf8').split('\n').filter(Boolean);
     const cutoff = Date.now() - minutes * 60000;
     const recent = [];
     for (const line of lines) {
@@ -411,7 +425,7 @@ function isQualitativeFailure(motivoStr) {
 // disponible + screenrecord funcionando. Un rejection que diga "emulador
 // caído" con preflight OK es un falso positivo.
 function checkPreflightOk(issueNum) {
-  const logPath = path.join(LOG_DIR, 'pulpo.log');
+  const logPath = path.join(LOG_DIR(), 'pulpo.log');
   if (!fs.existsSync(logPath)) return { ok: false, reason: 'pulpo.log no disponible' };
   try {
     const stat = fs.statSync(logPath);
@@ -455,7 +469,7 @@ function collectEvidence(issueNum, skillName, logFileName) {
   const qaDirs = [
     path.join(ROOT, 'qa', 'evidence', String(issueNum)),
     path.join(ROOT, 'qa', 'recordings'),
-    path.join(LOG_DIR),
+    path.join(LOG_DIR()),
   ];
   for (const dir of qaDirs) {
     if (!fs.existsSync(dir)) continue;
@@ -483,7 +497,7 @@ function collectEvidence(issueNum, skillName, logFileName) {
       evidence.videoHash = crypto.createHash('md5').update(sample).digest('hex').slice(0, 12);
     } catch {}
   }
-  const logPath = path.join(LOG_DIR, logFileName);
+  const logPath = path.join(LOG_DIR(), logFileName);
   if (fs.existsSync(logPath)) {
     evidence.logPath = logPath;
     try { evidence.logBytes = fs.statSync(logPath).size; } catch {}
@@ -531,7 +545,7 @@ function getRejectHistory(issueNum) {
   for (const pip of pipelines) {
     for (const f of allFases) {
       for (const sub of ['listo', 'procesado']) {
-        const dir = path.join(PIPELINE, pip, f, sub);
+        const dir = path.join(PIPELINE(), pip, f, sub);
         try {
           const files = fs.readdirSync(dir).filter(fn => fn.startsWith(issueNum + '.'));
           for (const fn of files) {
@@ -571,7 +585,7 @@ function getRejectHistory(issueNum) {
 // --- Estado de los otros gates para este issue ---
 function getGateStatus(issueNum) {
   const gates = [];
-  const verifyDir = path.join(PIPELINE, 'desarrollo', 'verificacion', 'listo');
+  const verifyDir = path.join(PIPELINE(), 'desarrollo', 'verificacion', 'listo');
   try {
     // #3638 CA-F-9: filtrar artifacts auxiliares para evitar falsos gates.
     const { isMarkerArtifact } = require('./lib/marker-artifact');
@@ -1564,7 +1578,7 @@ function collectReportData() {
   const now = new Date();
   const timestamp = now.toLocaleString('es-AR', { timeZone: 'America/Argentina/Buenos_Aires' });
 
-  const logPath = path.join(LOG_DIR, logFile);
+  const logPath = path.join(LOG_DIR(), logFile);
   const logTail = readLastLines(logPath, 80);
 
   const totalMem = os.totalmem();
@@ -1585,7 +1599,7 @@ function collectReportData() {
     }
   }
 
-  const profiles = readJson(PROFILES_FILE) || {};
+  const profiles = readJson(PROFILES_FILE()) || {};
   const skillProfile = profiles[skill];
 
   // Buscar el YAML del agente que rechazó en todas las fases y estados.
@@ -1595,7 +1609,7 @@ function collectReportData() {
   const allBuckets = ['listo', 'procesado', 'trabajando', 'rechazado'];
   outer: for (const f of allFases) {
     for (const b of allBuckets) {
-      const p = path.join(PIPELINE, pipeline, f, b, `${issue}.${skill}`);
+      const p = path.join(PIPELINE(), pipeline, f, b, `${issue}.${skill}`);
       if (fs.existsSync(p)) {
         try {
           const yaml = require('js-yaml');
@@ -1606,7 +1620,7 @@ function collectReportData() {
     }
   }
 
-  const cooldowns = readJson(path.join(PIPELINE, 'cooldowns.json')) || {};
+  const cooldowns = readJson(path.join(PIPELINE(), 'cooldowns.json')) || {};
   const cooldownKey = `${skill}:${issue}`;
   const cooldownInfo = cooldowns[cooldownKey];
 
@@ -2314,7 +2328,7 @@ async function sendReport(data) {
   // esto sólo envuelve el HTML que va a PDF/Telegram.
   const html = sanitizeReportText(htmlRaw);
 
-  const htmlPath = path.join(LOG_DIR, `rejection-${data.issue}-${data.skill}.html`);
+  const htmlPath = path.join(LOG_DIR(), `rejection-${data.issue}-${data.skill}.html`);
   fs.writeFileSync(htmlPath, html);
 
   execSync(`node "${REPORT_SCRIPT}" "${htmlPath}" "Rechazo #${data.issue} ${data.skill} (${data.fase})"`, {
@@ -2322,7 +2336,7 @@ async function sendReport(data) {
   });
 
   const pdfName = `rejection-${data.issue}-${data.skill}.pdf`;
-  const pdfDest = path.join(LOG_DIR, pdfName);
+  const pdfDest = path.join(LOG_DIR(), pdfName);
   const possiblePdfPaths = [
     htmlPath.replace(/\.html$/, '.pdf'),
     path.join(ROOT, 'docs', 'qa', pdfName),
@@ -2402,7 +2416,7 @@ async function sendReport(data) {
 // =============================================================================
 function enqueueGitHub(data) {
   const filename = `${data.group || 'ungrouped'}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}.json`;
-  const filepath = path.join(GH_QUEUE_DIR, filename);
+  const filepath = path.join(GH_QUEUE_DIR(), filename);
   fs.writeFileSync(filepath, JSON.stringify(data, null, 2));
   console.log(`[rejection-report] Encolado: ${data.action} → ${filename}`);
   return filename;
@@ -2536,7 +2550,7 @@ async function phaseCollect() {
   console.log(`[rejection-report] Causa nueva — encolando 1 create-issue (PDF se genera al completar).`);
 
   const worktreePath = path.join(ROOT, '..', `platform.agent-${issue}-${skill}`);
-  const contextDir = fs.existsSync(worktreePath) ? worktreePath : LOG_DIR;
+  const contextDir = fs.existsSync(worktreePath) ? worktreePath : LOG_DIR();
   const contextPath = path.join(contextDir, `.rejection-context-${issue}-${skill}.json`);
   data.existingDeps = [];
   fs.writeFileSync(contextPath, JSON.stringify(data, null, 2));

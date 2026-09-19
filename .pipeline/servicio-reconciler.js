@@ -55,10 +55,18 @@ const { notifyTelegram } = require('./lib/notify-telegram');
 const dropfileWriter = require('./lib/dropfile-writer');
 
 const ROOT = process.env.PIPELINE_MAIN_ROOT || path.resolve(__dirname, '..');
-const PIPELINE = process.env.PIPELINE_STATE_DIR || path.resolve(__dirname);
+// #7112 — El directorio base del pipeline se resuelve POR LLAMADA vía
+// `lib/write-target` sobre `lib/pipeline-env` (SEC-13): ninguna const de módulo
+// captura el destino al `require`. Sin ambiente declarado (`PIPELINE_AMBIENTE`
+// del lanzador) y sin dir de pruebas, `writeDir` avisa por stderr y LANZA:
+// nunca se escribe en el productivo por defecto (CA-3 / SEC-10). Se conservan
+// los identificadores en mayúsculas para que el reemplazo const→función sea
+// mecánico: cada uso pasó de `X` a `X()`.
+const writeTarget = require('./lib/write-target');
+function PIPELINE() { return writeTarget.writeDir(process.env, { canal: 'estado', destino: '.pipeline (raíz, markers/archivado)' }); }
 const GH_BIN = process.env.GH_BIN || 'C:\\Workspaces\\gh-cli\\bin\\gh.exe';
-const LOG_DIR = path.join(PIPELINE, 'logs');
-const GH_QUEUE = path.join(PIPELINE, 'servicios', 'github', 'pendiente');
+function LOG_DIR() { return writeTarget.writePath(process.env, { canal: 'logs', destino: 'logs/' }, 'logs'); }
+function GH_QUEUE() { return writeTarget.writePath(process.env, { canal: 'colas', destino: 'servicios/github/pendiente' }, 'servicios', 'github', 'pendiente'); }
 
 const RECONCILE_INTERVAL_MS = parseInt(process.env.RECONCILER_INTERVAL_MS || '300000', 10); // 5 min default
 const RECONCILER_LABEL = 'needs-human';
@@ -74,7 +82,7 @@ const RECONCILER_LABEL = 'needs-human';
 // gate estaba muerto; (2) el bloque `admission_gate:` del archivo era decorativo.
 // Ahora el override por env lo aplica y lo TRAZEA el resolver (`ENV_OVERRIDES`),
 // que es el único que lee esas variables. Ver `lib/config-resolver.js`.
-const ADMISSION_TELEGRAM_QUEUE = path.join(PIPELINE, 'servicios', 'telegram', 'pendiente');
+function ADMISSION_TELEGRAM_QUEUE() { return writeTarget.writePath(process.env, { canal: 'colas', destino: 'servicios/telegram/pendiente' }, 'servicios', 'telegram', 'pendiente'); }
 
 // Defaults del consumidor, alineados con `config.yaml`. Se usan sólo si la
 // sección `admission_gate:` no está o si el archivo no se pudo leer.
@@ -98,7 +106,7 @@ function admissionGateSettings() {
     let seccion;
     let origen;
     try {
-        const cfg = configResolver.resolve({ pipelineDir: PIPELINE, reload: true });
+        const cfg = configResolver.resolve({ pipelineDir: PIPELINE(), reload: true });
         const ag = cfg && cfg.admission_gate;
         seccion = (ag && typeof ag === 'object' && !Array.isArray(ag))
             ? { ...ADMISSION_DEFAULTS, ...ag }
@@ -185,7 +193,7 @@ function normalizeIssueNumber(value) {
 }
 
 function loadIssueStateCache(opts = {}) {
-    return readJsonFileSafe(opts.titleCacheFile || path.join(PIPELINE, '.issue-title-cache.json')) || {};
+    return readJsonFileSafe(opts.titleCacheFile || path.join(PIPELINE(), '.issue-title-cache.json')) || {};
 }
 
 function loadSplitChildrenMap(opts = {}) {
@@ -321,7 +329,7 @@ function resolveEpicStateSources(issue, ctx = {}) {
 // Si `meta` es null, el JSON queda con shape clásico {action,issue,label} y
 // el worker ejecuta SIN guardia (degradado seguro para órdenes pre-deploy).
 function enqueueLabelApply(issueNum, label, meta = null) {
-    fs.mkdirSync(GH_QUEUE, { recursive: true });
+    fs.mkdirSync(GH_QUEUE(), { recursive: true });
     const filename = `${issueNum}-${label}-reconciler-${Date.now()}.json`;
     const payload = { action: 'label', issue: issueNum, label };
     if (meta && typeof meta === 'object') {
@@ -333,7 +341,7 @@ function enqueueLabelApply(issueNum, label, meta = null) {
     // mismo milisegundo resolvian al mismo path y la segunda pisaba a la
     // primera. Se conserva el nombre; solo ante colision se desambigua.
     dropfileWriter.writeUniqueFileSync({
-        dir: GH_QUEUE,
+        dir: GH_QUEUE(),
         filename,
         data: JSON.stringify(payload),
         onCollision: (name, attempt) => console.warn(
@@ -347,11 +355,11 @@ function enqueueLabelApply(issueNum, label, meta = null) {
 // `servicio-github.js` (línea ~451) y es idempotente: si el label ya fue
 // removido, `gh issue edit --remove-label` no falla.
 function enqueueLabelRemove(issueNum, label) {
-    fs.mkdirSync(GH_QUEUE, { recursive: true });
+    fs.mkdirSync(GH_QUEUE(), { recursive: true });
     const filename = `${issueNum}-rm-${label}-reconciler-${Date.now()}.json`;
     // #6226 - escritura fail-closed (ver `enqueueLabelApply`).
     dropfileWriter.writeUniqueFileSync({
-        dir: GH_QUEUE,
+        dir: GH_QUEUE(),
         filename,
         onCollision: (name, attempt) => console.warn(
                 `[servicio-reconciler] colision de nombre de orden github (${name}, intento ${attempt + 1}) - se reintenta, no se sobreescribe`
@@ -470,7 +478,7 @@ function loadGlobalPhaseOrder() {
     let orders = FALLBACK_PHASE_ORDER;
     let confirmado = false;
     try {
-        const cfg = configResolver.resolve({ pipelineDir: PIPELINE });
+        const cfg = configResolver.resolve({ pipelineDir: PIPELINE() });
         confirmado = true;
         // D-4: `pipelines:` ausente NO es corrupción — se conserva el default del
         // consumidor. Lo eliminado es el `|| {}` + catch mudo sobre el FALLO DE
@@ -507,7 +515,7 @@ function findFurthestPhysicalPhaseIndex(issueNum, globalOrder) {
     for (let i = 0; i < globalOrder.length; i++) {
         const { pipeline, phase } = globalOrder[i];
         for (const state of PROGRESS_STATES) {
-            const dir = path.join(PIPELINE, pipeline, phase, state);
+            const dir = path.join(PIPELINE(), pipeline, phase, state);
             let entries;
             try { entries = fs.readdirSync(dir); } catch { continue; }
             const hasMarker = entries.some(
@@ -573,7 +581,7 @@ function reconcileLabelToFilesystem(ghIssues, blockedByIssue, opts = {}) {
             staleCleared++;
             continue;
         }
-        const targetDir = path.join(PIPELINE, pipeline, phase, humanBlock.BLOCK_SUBDIR);
+        const targetDir = path.join(PIPELINE(), pipeline, phase, humanBlock.BLOCK_SUBDIR);
         const targetFile = path.join(targetDir, `${issue.number}.${skill}`);
         if (fs.existsSync(targetFile)) continue;
         try {
@@ -627,7 +635,7 @@ function reconcileMarkerToLabel(blockedMarkers, ghIssueSet, getStateFn = getIssu
         // si llegaran, no aplican backoff: perder el label con evidencia es
         // destrabe humano, no re-aplicación.
         const markerPath = path.join(
-            PIPELINE, m.pipeline, m.phase, humanBlock.BLOCK_SUBDIR, `${m.issue}.${m.skill}`,
+            PIPELINE(), m.pipeline, m.phase, humanBlock.BLOCK_SUBDIR, `${m.issue}.${m.skill}`,
         );
         // rev-1: `readMarkerMeta` cae al sidecar del reconciler si el
         // `.reason.json` está corrupto, así el backoff también aplica ahí.
@@ -672,7 +680,7 @@ function reconcileMarkerToLabel(blockedMarkers, ghIssueSet, getStateFn = getIssu
 // `stale-marker-missing` y descartará la orden.
 function buildMarkerMeta(m) {
     const markerPath = path.join(
-        PIPELINE, m.pipeline, m.phase, humanBlock.BLOCK_SUBDIR, `${m.issue}.${m.skill}`,
+        PIPELINE(), m.pipeline, m.phase, humanBlock.BLOCK_SUBDIR, `${m.issue}.${m.skill}`,
     );
     const meta = {
         marker_path: markerPath,
@@ -699,11 +707,11 @@ function reconcileClosedMarkers(blockedMarkers, ghIssueSet, getStateFn = getIssu
         if (state !== 'CLOSED') continue;
 
         // Mover marker (y reason.json) a archivado/ de la misma fase
-        const archiveDir = path.join(PIPELINE, m.pipeline, m.phase, 'archivado');
+        const archiveDir = path.join(PIPELINE(), m.pipeline, m.phase, 'archivado');
         try {
             fs.mkdirSync(archiveDir, { recursive: true });
             const baseName = `${m.issue}.${m.skill}`;
-            const srcMarker = path.join(PIPELINE, m.pipeline, m.phase, humanBlock.BLOCK_SUBDIR, baseName);
+            const srcMarker = path.join(PIPELINE(), m.pipeline, m.phase, humanBlock.BLOCK_SUBDIR, baseName);
             const dstMarker = path.join(archiveDir, baseName);
             if (fs.existsSync(srcMarker)) {
                 fs.renameSync(srcMarker, dstMarker);
@@ -752,8 +760,8 @@ function reconcileClosedPhaseMarkers(phaseMarkers, getStateFn = getIssueState, o
 
         const baseName = `${m.issue}.${m.skill}`;
         const srcMarker = m.marker_path
-            || path.join(PIPELINE, m.pipeline, m.phase, m.state, baseName);
-        const archiveDir = path.join(PIPELINE, m.pipeline, m.phase, 'archivado');
+            || path.join(PIPELINE(), m.pipeline, m.phase, m.state, baseName);
+        const archiveDir = path.join(PIPELINE(), m.pipeline, m.phase, 'archivado');
         try {
             if (!fs.existsSync(srcMarker)) continue; // movido entre listado y ahora
             fs.mkdirSync(archiveDir, { recursive: true });
@@ -967,7 +975,7 @@ function reconcileHumanUnblockDetected(blockedMarkers, ghIssueSet, opts = {}) {
 
     for (const m of blockedMarkers) {
         const markerPath = path.join(
-            PIPELINE, m.pipeline, m.phase, humanBlock.BLOCK_SUBDIR, `${m.issue}.${m.skill}`,
+            PIPELINE(), m.pipeline, m.phase, humanBlock.BLOCK_SUBDIR, `${m.issue}.${m.skill}`,
         );
         // #7232 — se lee UNA vez, antes de mirar GitHub: sirve tanto para
         // persistir la evidencia (label presente) como para decidir el destrabe.
@@ -1059,7 +1067,7 @@ function reconcileHumanUnblockDetected(blockedMarkers, ghIssueSet, opts = {}) {
 
         // Mover marker a `pendiente/` de la misma fase. Mantenemos el reason.json
         // como evidencia (renombrado para que no contamine el flow normal).
-        const targetDir = path.join(PIPELINE, m.pipeline, m.phase, 'pendiente');
+        const targetDir = path.join(PIPELINE(), m.pipeline, m.phase, 'pendiente');
         const targetMarker = path.join(targetDir, `${m.issue}.${m.skill}`);
         try {
             fs.mkdirSync(targetDir, { recursive: true });
@@ -1142,7 +1150,7 @@ const RESOLVED_TTL_MS = parseInt(
 function findGuardianResolution(marker, markerMtime) {
     const base = `${marker.issue}.${marker.skill}`;
     for (const state of ['listo', 'procesado']) {
-        const candidate = path.join(PIPELINE, marker.pipeline, marker.phase, state, base);
+        const candidate = path.join(PIPELINE(), marker.pipeline, marker.phase, state, base);
         let stat;
         try { stat = fs.statSync(candidate); } catch { continue; }
         if (stat.mtimeMs > markerMtime) {
@@ -1171,7 +1179,7 @@ function reconcileResolvedMarkers(blockedMarkers, opts = {}) {
 
     for (const m of blockedMarkers) {
         const markerPath = path.join(
-            PIPELINE, m.pipeline, m.phase, humanBlock.BLOCK_SUBDIR, `${m.issue}.${m.skill}`,
+            PIPELINE(), m.pipeline, m.phase, humanBlock.BLOCK_SUBDIR, `${m.issue}.${m.skill}`,
         );
         let markerMtime;
         try { markerMtime = fs.statSync(markerPath).mtimeMs; }
@@ -1196,7 +1204,7 @@ function reconcileResolvedMarkers(blockedMarkers, opts = {}) {
 
         // Archivar marker en <pipeline>/<phase>/archivado/ con sufijo
         // `<reason>-<ts>` para que sea evidente por qué se cerró.
-        const archiveDir = path.join(PIPELINE, m.pipeline, m.phase, 'archivado');
+        const archiveDir = path.join(PIPELINE(), m.pipeline, m.phase, 'archivado');
         const base = `${m.issue}.${m.skill}`;
         const archivedName = `${base}.${resolved.reason}-${safeTsSuffix(now)}`;
         const dst = path.join(archiveDir, archivedName);
@@ -1271,7 +1279,7 @@ function reconcileResolvedMarkers(blockedMarkers, opts = {}) {
 
 function appendStaleOrderLog(entry) {
     try {
-        fs.mkdirSync(LOG_DIR, { recursive: true });
+        fs.mkdirSync(LOG_DIR(), { recursive: true });
         const line = JSON.stringify({
             ts: new Date().toISOString(),
             reason: entry.reason || 'unknown',
@@ -1281,7 +1289,7 @@ function appendStaleOrderLog(entry) {
             current_mtime: entry.current_mtime ?? null,
             detail: entry.detail || null,
         }) + '\n';
-        fs.appendFileSync(path.join(LOG_DIR, 'stale-orders.log'), line);
+        fs.appendFileSync(path.join(LOG_DIR(), 'stale-orders.log'), line);
     } catch {
         // Telemetría es best-effort: si falla, el reconciler no debe morir.
     }
@@ -1379,7 +1387,7 @@ function applyAdmissionLabel(issueNumber) {
     // que el apply no bloquee el reconciler ni dependa de la latencia de
     // la API.
     try {
-        fs.mkdirSync(GH_QUEUE, { recursive: true });
+        fs.mkdirSync(GH_QUEUE(), { recursive: true });
         const filename = `${issueNumber}-${admissionGate.DEFAULT_ADMISSION_LABEL}-admission-${Date.now()}.json`;
         const payload = {
             action: 'label',
@@ -1388,7 +1396,7 @@ function applyAdmissionLabel(issueNumber) {
         };
         // #6226 - escritura fail-closed (ver `enqueueLabelApply`).
         dropfileWriter.writeUniqueFileSync({
-            dir: GH_QUEUE,
+            dir: GH_QUEUE(),
             filename,
             data: JSON.stringify(payload),
             onCollision: (name, attempt) => console.warn(
@@ -1409,12 +1417,12 @@ function enqueueTelegramAlert(text) {
     // admission-gate ya redacta el título por nuestro lado — defensa en
     // profundidad.
     try {
-        fs.mkdirSync(ADMISSION_TELEGRAM_QUEUE, { recursive: true });
+        fs.mkdirSync(ADMISSION_TELEGRAM_QUEUE(), { recursive: true });
         const payload = { text, parse_mode: 'Markdown' };
         // #6226 — nombre único + escritura `wx`: dos dropfiles del mismo
         // milisegundo ya no se pisan entre sí ni pisan los de otro proceso.
         dropfileWriter.writeDropfileSync({
-            dir: ADMISSION_TELEGRAM_QUEUE,
+            dir: ADMISSION_TELEGRAM_QUEUE(),
             suffix: 'admission-sweep.json',
             data: JSON.stringify(payload),
             onCollision: (name) => log(`Colisión de nombre de dropfile (${name}) — se reintenta`),
@@ -1526,11 +1534,11 @@ function enqueueScreenshotsGateAlert(issues) {
 
     const text = lines.join('\n');
     try {
-        fs.mkdirSync(ADMISSION_TELEGRAM_QUEUE, { recursive: true });
+        fs.mkdirSync(ADMISSION_TELEGRAM_QUEUE(), { recursive: true });
         // #6226 — nombre único + escritura `wx`: dos dropfiles del mismo
         // milisegundo ya no se pisan entre sí ni pisan los de otro proceso.
         dropfileWriter.writeDropfileSync({
-            dir: ADMISSION_TELEGRAM_QUEUE,
+            dir: ADMISSION_TELEGRAM_QUEUE(),
             suffix: 'screenshots-gate.json',
             data: JSON.stringify({ text, parse_mode: 'Markdown' }),
             onCollision: (name) => log(`Colisión de nombre de dropfile (${name}) — se reintenta`),
@@ -1628,7 +1636,7 @@ function reconcileWaveCompletion(opts = {}) {
     const snapshotApi = opts.waveSnapshot || waveSnapshot;
     const closedSetFn = opts.computeClosedSet || computeClosedSet;
     const notifyFn = opts.notifyTelegram || notifyTelegram;
-    const pipelineRoot = opts.pipelineRoot || PIPELINE;
+    const pipelineRoot = opts.pipelineRoot || PIPELINE();
 
     const activeWave = wavesApi.getActiveWave();
     if (!activeWave || !Number.isInteger(activeWave.number)) {
@@ -1821,8 +1829,8 @@ function reconcileOnce() {
 }
 
 function main() {
-    fs.mkdirSync(LOG_DIR, { recursive: true });
-    fs.mkdirSync(GH_QUEUE, { recursive: true });
+    fs.mkdirSync(LOG_DIR(), { recursive: true });
+    fs.mkdirSync(GH_QUEUE(), { recursive: true });
 
     log(`Iniciado — intervalo ${Math.round(RECONCILE_INTERVAL_MS / 1000)}s`);
     try { require('./lib/ready-marker').signalReady('svc-reconciler'); } catch {}
@@ -1836,19 +1844,24 @@ function main() {
     }, 30000);
 }
 
-fs.writeFileSync(path.join(PIPELINE, 'svc-reconciler.pid'), String(process.pid));
+fs.writeFileSync(writeTarget.writePath(process.env, { canal: 'estado', destino: 'svc-reconciler.pid' }, 'svc-reconciler.pid'), String(process.pid));
 process.on('SIGINT', () => process.exit(0));
 process.on('SIGTERM', () => process.exit(0));
 
+// #7112 — handlers de crash: escritor `safe*`. Sin dir (pruebas sin override)
+// saltea el archivo y conserva el console.error; jamás lanza acá.
+const CRASH_LOG = { canal: 'logs', destino: 'logs/svc-reconciler.log' };
 process.on('uncaughtException', (err) => {
     const msg = sanitize(`[${new Date().toISOString()}] [svc-reconciler] CRASH uncaughtException: ${err.stack || err.message}\n`);
-    try { fs.appendFileSync(path.join(LOG_DIR, 'svc-reconciler.log'), msg); } catch {}
+    const crashLogDir = writeTarget.safeWriteDir(process.env, CRASH_LOG);
+    if (crashLogDir) { try { fs.appendFileSync(path.join(crashLogDir, 'logs', 'svc-reconciler.log'), msg); } catch {} }
     console.error(msg);
     process.exit(1);
 });
 process.on('unhandledRejection', (reason) => {
     const msg = sanitize(`[${new Date().toISOString()}] [svc-reconciler] CRASH unhandledRejection: ${reason?.stack || reason}\n`);
-    try { fs.appendFileSync(path.join(LOG_DIR, 'svc-reconciler.log'), msg); } catch {}
+    const crashLogDir = writeTarget.safeWriteDir(process.env, CRASH_LOG);
+    if (crashLogDir) { try { fs.appendFileSync(path.join(crashLogDir, 'logs', 'svc-reconciler.log'), msg); } catch {} }
     console.error(msg);
     process.exit(1);
 });
