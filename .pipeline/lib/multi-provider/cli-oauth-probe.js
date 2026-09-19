@@ -103,6 +103,10 @@ const CATALOG_PROBES = Object.freeze({
  * `probeCliProvider` más `cli_probe` con la evidencia del round-trip.
  *
  * Cuatro estados: versión fuera de contrato → cli_contract_mismatch (rojo durable).
+ * #7371 política (b): versión > max_tested con el MISMO major NO es rojo — sigue
+ * al round-trip y, si el catálogo responde, queda verde con
+ * `cli_probe.detail: 'version_above_tested'` y el pin en
+ * `cli_probe.max_tested_version` (para que panel y alerta digan "pin X").
  * Estados restantes para `antigravity`:
  *   - binario ausente                → `{ ok:false, reason:'cli_unavailable' }`
  *   - instalado, catálogo vacío/err  → `{ ok:false, reason:'cli_license_unavailable' }`
@@ -178,6 +182,8 @@ async function probeCliProviderLive(spec, opts = {}) {
         cli_probe: {
             kind: probeName,
             cli_version: /^\d+\.\d+\.\d+$/.test(r.cli_version || '') ? r.cli_version : null,
+            // #7371 — pin vigente, mismo regex estricto que `cli_version` (REQ-SEC-F).
+            max_tested_version: /^\d+\.\d+\.\d+$/.test(r.max_tested_version || '') ? r.max_tested_version : null,
             detail: r.detail || null,
             model_count: Number.isFinite(r.model_count) ? r.model_count : 0,
             models: Array.isArray(r.models) ? r.models.slice(0, 64) : [],

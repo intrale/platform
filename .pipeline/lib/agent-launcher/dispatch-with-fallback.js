@@ -1303,12 +1303,18 @@ function resolveSpawnWithFallback(opts = {}) {
     // #3823 — acumulador de trazabilidad observable. Se llena en paralelo a los
     // auditAppend ya existentes (sin tocar la lógica de decisión) y se adjunta a
     // cada return path. Helper local para empujar de forma consistente.
+    // #7371 CA-12 / REQ-SEC-G — `extra.health_reason` (opcional) viaja como
+    // campo ESTRUCTURADO para que el Commander traduzca la causa por eslabón con
+    // una tabla cerrada (`provider-pause-cause.ACTION_SHORT`) en vez de parsear
+    // `details`. Sólo se copia ese campo y sólo si es string: nada más del
+    // `extra` llega al skip.
     const skipReasons = [];
-    const pushSkip = (provider, reason, details) => {
+    const pushSkip = (provider, reason, details, extra) => {
         skipReasons.push({
             provider: provider || null,
             reason,
             details: details == null ? null : String(details),
+            ...(extra && typeof extra.health_reason === 'string' ? { health_reason: extra.health_reason } : {}),
         });
     };
 
@@ -2028,7 +2034,9 @@ function resolveSpawnWithFallback(opts = {}) {
             });
             log('lanzamiento', `🩺 ${skill}:#${issue || '?'} fallback="${fbName}" salteado: health=red fresco (${fbHealth.reason}).`);
             nonScheduleAvailabilityGate = true;
-            pushSkip(fbName, SKIP_REASON_CODES.HEALTH_GATE, `health=red fresco (${fbHealth.reason})`);
+            // #7371 — `fbHealth.reason` es un reason_code de la allowlist
+            // cerrada (`DURABLE_RED_REASONS`), nunca texto libre.
+            pushSkip(fbName, SKIP_REASON_CODES.HEALTH_GATE, `health=red fresco (${fbHealth.reason})`, { health_reason: fbHealth.reason });
             continue;
         }
 

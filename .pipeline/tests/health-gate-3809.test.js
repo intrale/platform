@@ -232,6 +232,32 @@ test('A10 · rojo FRESCO y DURABLE (no_key_configured/forbidden) → gateado', (
     }
 });
 
+// #7371 CA-5 — política (b): "versión por encima del máximo probado" (mismo
+// major) es VERDE con nota en el snapshot → no gatea. El salto de major sigue
+// siendo rojo durable `cli_contract_mismatch` → gatea. `DURABLE_RED_REASONS` y
+// la lógica de `evaluateHealthGate` NO cambian: sólo cambia el color con el
+// que llega el snapshot.
+test('A11 · #7371 verde + cli_probe.detail version_above_tested → NO gateado', () => {
+    const snap = healthSnapshot([healthEntry('antigravity', 'green', 60 * 1000, {
+        reason_code: 'cli_catalog_ok',
+        cli_probe: { detail: 'version_above_tested', cli_version: '1.2.7', max_tested_version: '1.2.5' },
+    })]);
+    const r = evaluateHealthGate('antigravity', snap, NOW);
+    assert.equal(r.gated, false, 'verde con nota no gatea');
+    assert.equal(r.state, 'green');
+    assert.equal(r.reason, null);
+});
+
+test('A12 · #7371 rojo fresco cli_contract_mismatch + version_major_above_tested → gateado (durable)', () => {
+    const snap = healthSnapshot([healthEntry('antigravity', 'red', 60 * 1000, {
+        reason_code: 'cli_contract_mismatch',
+        cli_probe: { detail: 'version_major_above_tested', cli_version: '2.0.0', max_tested_version: '1.2.7' },
+    })]);
+    const r = evaluateHealthGate('antigravity', snap, NOW);
+    assert.equal(r.gated, true, 'salto de major sigue siendo rojo durable');
+    assert.equal(r.reason, 'cli_contract_mismatch');
+});
+
 // =============================================================================
 // B. Integración con resolveSpawnWithFallback
 // =============================================================================
@@ -346,6 +372,40 @@ test('B5 · fallback rojo-fresco TRANSITORIO (timeout) se USA igual (caso Gemini
     assert.equal(r.source, 'fallback');
     assert.ok(!audit.entries.find(e => e.event === 'fallback_health_gated'),
         'no se emitió health-gate para un rojo transitorio');
+});
+
+test('B6 · #7371 CA-6 · cascada con antigravity VERDE-above → se ELIGE, sin fallback_health_gated', () => {
+    const models = modelsWithChain('anthropic', [
+        { provider: 'antigravity', model_override: 'gemini-3.8-flash-medium' },
+        { provider: 'cerebras', model_override: 'gpt-oss-120b' },
+    ]);
+    const audit = fakeAuditLog();
+    const snap = healthSnapshot([
+        healthEntry('antigravity', 'green', 60 * 1000, {
+            reason_code: 'cli_catalog_ok',
+            cli_probe: { detail: 'version_above_tested', cli_version: '1.2.7', max_tested_version: '1.2.5' },
+        }),
+        healthEntry('cerebras', 'green', 60 * 1000),
+    ]);
+    const r = resolveSpawnWithFallback({
+        skill: 'test-skill',
+        issue: ISSUE,
+        pipelineDir: PIPELINE_DIR,
+        fsImpl: fakeFsWithModels(models),
+        quotaModule: fakeQuotaGatePrimary('anthropic'),
+        primaryResolver: fakeResolver,
+        providerHandlerResolver: fakeProviderHandlerResolver(),
+        auditLog: audit,
+        notify: fakeNotify(),
+        healthReader: () => snap,
+        now: NOW,
+    });
+    assert.equal(r.provider, 'antigravity', 'CLI por encima del pin (mismo major) NO saca a Antigravity de la cascada');
+    assert.equal(r.source, 'fallback');
+    assert.ok(!audit.entries.find(e => e.event === 'fallback_health_gated'),
+        'no se emitió health-gate para un verde con nota');
+    assert.ok(!(r.skipReasons || []).find(s => s.provider === 'antigravity'),
+        'antigravity no figura en skipReasons');
 });
 
 test('B4 · healthReader que tira → fail-open (no rompe la resolución)', () => {

@@ -720,8 +720,18 @@ Convenciones:
 ### 4.4.1 Matriz modelo×agente sobre Antigravity — sign-off Leo 2026-09-18 (#6860)
 
 > **La conclusión caduca si `agy --version` ≠ 1.2.5** o cambian las fuentes contractuales. La auditoría de security del 2026-09-16 se realizó con 1.2.4; guru re-verificó la instalación con 1.2.5 el 2026-09-17. Desarrollo comprobó nuevamente 1.2.5 en los spawns del 2026-09-18 UTC. El gate security conserva la firma de la re-verificación contractual.
->
-> **Pin operativo 1.2.7 (19/9/2026, #7371).** El CLI se auto-actualizó a 1.2.7 el 18/9 22:09 y el gate `cli_contract_mismatch` sacó a Antigravity de toda cascada en silencio durante la ventana de reposo de Anthropic (Commander mudo ~5 h). Por decisión del operador (Leo, 19/9): el pin `max_tested_version` sube a **1.2.7** como mitigación inmediata (round-trip `agy models` verificado OK con 1.2.7), y la política pasa a **"versión por encima del máximo probado = advertencia, no bloqueo"** (alerta + re-verificación diferida de TOS, ver #7371 y #7343). La re-verificación contractual con 1.2.7 queda **pendiente** en #7343; esta nota no la reemplaza.
+
+#### Caducidad del pin: política (b) — decisión del operador (Leo, 19/9/2026, #7371)
+
+Contexto: `agy` se auto-actualizó a 1.2.7 el 18/9 22:09 (tercera vez en tres semanas) y el gate `cli_contract_mismatch` (origen: #7322, cuando 1.2.4 rechazaba `--print`) sacó a Antigravity de toda cascada **en silencio** durante la ventana de reposo de Anthropic, con Codex en cuota real ≥90 %: Commander mudo ~5 h. La regla de caducidad de arriba (origen: auditoría de TOS de #6860) es correcta; lo que falló es que se disparaba sin aviso y sin dueño de la remediación.
+
+1. **Política (b), en una frase:** una versión del CLI **por encima de `max_tested_version`** es **advertencia, no bloqueo**: el probe hace el round-trip real igual y, si el catálogo responde, el provider queda **verde** con `cli_probe.detail: version_above_tested` y sigue en la cascada. El rojo durable `cli_contract_mismatch` queda **sólo** para `version_below_min`, `version_major_above_tested` y `version_unparseable`; un fallo del round-trip sigue siendo `cli_license_unavailable`.
+2. **Riesgo aceptado, con fecha:** entre el bump del binario y el cierre de #7343 el pipeline **opera con auditoría de TOS vencida**. Es un riesgo **aceptado por el operador el 19/9/2026** (el control pasa de preventivo a detectivo). Para que no sea invisible: el panel muestra la fila SANO con la nota "⚠ versión X fuera del rango probado (pin Y) · auditoría de TOS pendiente" y el health-cron emite una alerta Telegram propia (`version_above_tested`, ⚠️ en cabecera, con versión, pin, consecuencia y acción) con dedup por `versión|pin` y **recordatorio cada 24 h sin tope** mientras persista; la única forma de silenciarla es cerrar el ciclo (re-verificar TOS y subir el pin), que cambia la key. Un mismo `detail` con una versión nueva (1.2.8) vuelve a alertar.
+3. **La matriz de exclusiones de esta sección es invariante respecto de la versión del CLI** (REQ-SEC-A): `android-dev`, `web-dev`, `qa`, `security`, `review`, `ops` y el resto de los EXCLUIDOS siguen **sin eslabón `antigravity`** con cualquier versión. La política (b) relaja el gate de versión, **no** el perímetro de qué skills usan Google; "Antigravity está sano" nunca se reinterpreta como "se puede abrir a más skills".
+4. **Alcance: mismo major.** La advertencia cubre saltos compatibles por semver (`1.2.5 → 1.2.7`, `1.2.x → 1.3.0`). Un **salto de major** (`1.x → 2.0.0`) es cambio contractual (flags, comportamiento, potencialmente TOS) y **sigue siendo rojo durable** `cli_contract_mismatch` con `detail: version_major_above_tested`, sin round-trip (REQ-SEC-C, decisión conservadora del arquitecto; ampliarla requiere cambiar esta línea y un caso de test, nunca queda implícito).
+5. **Referencias y dueños:** #6860 (origen de la regla de caducidad), #7322 (origen de `cli_contract_mismatch`), **#7343** (tarea de re-verificación de TOS con la versión nueva y bump del pin — pasa de recomendación a **tarea de cierre del riesgo aceptado**, ya no es prerequisito para usar el provider), **#7287** (control preventivo: frenar el auto-update del binario), #7375 (hash del binario en el snapshot), épico #7376 (generalización a claude/codex).
+
+El pin vive en **una única fuente**: `AGY_CLI_CONTRACT` en `.pipeline/lib/multi-provider/agy-catalog-probe.js` (`secrets-rw.js` lo importa por identidad; absorbe #7320). Pin operativo vigente: **1.2.7** (subido el 19/9/2026 por PR #7372 como mitigación inmediata, round-trip `agy models` verificado OK). La re-verificación contractual con 1.2.7 queda **pendiente** en #7343; este bloque no la reemplaza.
 
 **TOS: la exclusión se mantiene.** Cuenta `authMethod=consumer`, no Enterprise. Los [términos de Antigravity](https://antigravity.google/terms) permiten retener interacciones para mejorar tecnologías y su revisión humana; pagar la licencia no acredita ausencia de entrenamiento. La [FAQ](https://antigravity.google/docs/faq/) remite a ajustes para el opt-out y [Plans](https://antigravity.google/docs/plans/) describe cuota/modelos. La auditoría también registró los hilos [168429](https://discuss.ai.google.dev/t/how-can-i-completely-opt-out-of-the-use-of-my-data-for-model-training/168429) y [125236](https://discuss.ai.google.dev/t/antigravity-data-training-opt-out/125236), sin confirmación de staff sobre el alcance del toggle de la IDE en el CLI. Fuente de la conclusión y evidencia local: comentario de security en #6860 (2026-09-16) y validación de guru (2026-09-17). Términos y FAQ consultados nuevamente durante desarrollo el 2026-09-18 UTC; no se declara `terms_no_training: true`.
 
@@ -2717,11 +2727,16 @@ no lleva material de auth):
 
 #### 14.3.1 Gemini / Antigravity CLI: round-trip real y cuatro estados (#6857, #7290)
 
-El probe ejecuta `agy --version` antes del catálogo y acepta el rango `1.2.0`–`1.2.7`
+El probe ejecuta `agy --version` antes del catálogo y compara contra el pin
+`AGY_CLI_CONTRACT = { min_version: '1.2.0', max_tested_version: '1.2.7' }`
 (1.2.5 probado el 17/9/2026; pin subido a 1.2.7 el 19/9/2026 por #7371, ver §4.4.1).
-`spec.cli_contract` permite ajustar el pin;
-un cambio de pin invalida la cache v2. Errores, timeout o versión fuera del rango
-producen rojo durable con TTL negativo; el probe nunca actualiza el binario.
+El pin tiene **una única fuente** (`agy-catalog-probe.js`; `secrets-rw.js` lo importa
+por identidad — #7371, absorbe #7320); `spec.cli_contract` permite ajustarlo en tests y
+un cambio de pin invalida la cache v2. Política (b) (#7371, §4.4.1): una versión **por
+encima** de `max_tested_version` con el **mismo major** sigue al round-trip y, si el
+catálogo responde, queda **verde con nota** (`detail: version_above_tested`, TTL positivo,
+alerta Telegram cada 24 h). Versión ilegible, `< min` o **salto de major** producen rojo
+durable con TTL negativo, sin round-trip; el probe nunca actualiza el binario.
 
 
 Para `antigravity` la presencia del binario no alcanza: un `agy` instalado puede
@@ -2734,9 +2749,10 @@ real a `agy models` (`.pipeline/lib/multi-provider/agy-catalog-probe.js`):
 | Estado real | `state` | `reason_code` | Badge en `/providers` | Gatea el dispatch |
 |---|---|---|---|---|
 | Binario ausente (`ANTIGRAVITY_BIN` inválido, no instalado) | `red` | `cli_unavailable` | **SIN INSTALAR** | sí (durable) |
-| Instalado, versión fuera del pin (< min, > max_tested o ilegible) | `red` | `cli_contract_mismatch` | **VERSIÓN NO PROBADA** | sí (durable) |
+| Instalado, versión `< min`, **major distinto** o ilegible (`version_below_min` / `version_major_above_tested` / `version_unparseable`) | `red` | `cli_contract_mismatch` | **VERSIÓN NO PROBADA** | sí (durable) |
 | Instalado, sin sesión/licencia (rc≠0, timeout, catálogo vacío) | `red` | `cli_license_unavailable` | **SIN LICENCIA** | sí (durable) |
 | Instalado y con licencia (catálogo poblado) | `green` | `cli_catalog_ok` | **SANO** · "catálogo verificado · N modelos · hace X" | no |
+| Ídem, versión `> max_tested` y **mismo major** (#7371, política b) | `green` | `cli_catalog_ok` · `detail: version_above_tested` | **SANO** · "⚠ versión X fuera del rango probado (pin Y) · auditoría de TOS pendiente · N modelos · hace X" | no · alerta Telegram `version_above_tested` cada 24 h |
 
 Cómo funciona:
 
@@ -2756,8 +2772,13 @@ Cómo funciona:
   termine en `authentication_rejected` (#5795) invalida la cache. "Probar ahora"
   en el dashboard fuerza el round-trip.
 - **Snapshot**: los providers con round-trip llevan además `cli_probe: { kind,
-  detail, model_count, models, checked_at, cached, launcher_kind }` (campo
-  opcional; ausente para el resto). El catálogo real alimenta también el cruce
+  detail, cli_version, max_tested_version, model_count, models, checked_at,
+  cached, launcher_kind }` (campo opcional; ausente para el resto).
+  `cli_version` y `max_tested_version` (#7371) pasan por el regex estricto
+  `^\d+\.\d+\.\d+$` en `cli-oauth-probe` y en `sanitizeCliProbe`: nada del
+  stdout de `agy --version` llega al snapshot, al panel ni a Telegram.
+  `max_tested_version` es `null` en entries de cache anteriores a #7371 (el
+  panel omite el pin, no lo inventa). El catálogo real alimenta también el cruce
   de vigencia de #5888 (`catalog_check`), que antes quedaba `unavailable` por
   el short-circuit OAuth.
 - **Frescura visible**: si el snapshot supera 2×TTL (30 min), el badge pasa a

@@ -810,8 +810,21 @@ function renderProviderRow(p, now) {
     // frescura ("catálogo verificado · 14 modelos · hace 12 min"). Si el
     // snapshot quedó viejo, la línea lo dice en vez de repetir un verde rancio.
     let reasonTxt = reasonHuman(p.healthReason);
+    // #7371 CA-11 / UX-2 — verde con nota: el CLI está por encima del máximo
+    // probado (política b, §4.4.1). El badge sigue SANO (la salud es verde; la
+    // advertencia es de otro eje, como en #5888) pero la causa no puede leerse
+    // como un verde cualquiera: dice versión, pin (si el snapshot lo trae; si
+    // no, se omite, no se inventa) y "auditoría de TOS pendiente", con énfasis
+    // `is-warn`. Versión y pin pasan por regex estricto y por `escapeHtmlText`.
+    const SEMVER_RE = /^\d+\.\d+\.\d+$/;
+    const aboveTested = !!(p.cliProbe && p.healthReason === 'cli_catalog_ok'
+        && p.cliProbe.detail === 'version_above_tested' && SEMVER_RE.test(p.cliProbe.cli_version || ''));
     if (p.cliProbe) {
         if (p.healthReason === 'cli_contract_mismatch' && p.cliProbe.detail === 'version_unparseable') reasonTxt = 'versión del CLI ilegible';
+        if (aboveTested) {
+            const pin = SEMVER_RE.test(p.cliProbe.max_tested_version || '') ? ' (pin ' + p.cliProbe.max_tested_version + ')' : '';
+            reasonTxt = '⚠ versión ' + p.cliProbe.cli_version + ' fuera del rango probado' + pin + ' · auditoría de TOS pendiente';
+        }
         const parts = [reasonTxt];
         if (p.healthReason === 'cli_contract_mismatch' && /^\d+\.\d+\.\d+$/.test(p.cliProbe.cli_version || '')) parts.push('agy ' + p.cliProbe.cli_version);
         if (p.healthReason === 'cli_catalog_ok' && Number.isFinite(p.cliProbe.model_count) && p.cliProbe.model_count > 0) {
@@ -843,7 +856,7 @@ function renderProviderRow(p, now) {
       ${renderStatusBadge({ severity: sev, label: healthLabel, title: 'Salud en vivo: ' + healthLabel + ' (' + reasonTxt + ')' })}
       ${renderQuotaChip(p)}
     </div>
-    <span class="prov-health-reason" title="${escapeHtmlAttr('Causa reportada por el health-cron')}">${escapeHtmlText(reasonTxt)}</span>
+    <span class="prov-health-reason${aboveTested && !badge.stale ? ' is-warn' : ''}" title="${escapeHtmlAttr('Causa reportada por el health-cron')}">${escapeHtmlText(reasonTxt)}</span>
     ${session ? `<span class="prov-session is-${escapeHtmlAttr(session.tono)}" title="${escapeHtmlAttr(session.title)}">${escapeHtmlText(session.texto)}</span>` : ''}
     ${renderQuotaBar(p)}
   </div>
@@ -1358,6 +1371,9 @@ const PANEL_CSS = `
 .prov-col-health { display: flex; flex-direction: column; gap: 6px; }
 .prov-health-badges { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
 .prov-health-reason { font-size: 11px; color: var(--in-fg-dim); }
+/* #7371 UX-2 — CLI por encima del máximo probado: advertencia de eje propio, mismo
+   tratamiento que .prov-vigencia.is-model-warn (--in-warn cumple AA 6.85). */
+.prov-health-reason.is-warn { color: var(--in-warn); font-weight: 700; }
 .prov-session { font-size: 10.5px; font-weight: 600; }
 .prov-session.is-dim { color: var(--in-fg-dim); }
 .prov-session.is-info { color: var(--in-info); }
