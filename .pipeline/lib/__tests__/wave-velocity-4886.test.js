@@ -33,6 +33,7 @@ const hist = require('../wave-velocity-history');
 const etaWave = require('../eta-wave');
 const waves = require('../waves');
 const { deriveMissionOlaEta, MISSION_INSUFFICIENT_DATA } = require('../mission-ola-eta');
+const { withEnv } = require('../test-helpers/with-env');
 
 const MIN = 60 * 1000;
 
@@ -46,23 +47,36 @@ function freshRoot() {
     return dir;
 }
 
-// Escribe una serie de avance de la ola bajo un PIPELINE_ROOT_OVERRIDE temporal
-// (mismo patrón que eta-wave-4734.test.js) y devuelve el root + un restore().
-function withSeries(waveKey, points) {
-    const prev = process.env.PIPELINE_ROOT_OVERRIDE;
+// Escribe una serie de avance de la ola en un root temporal y corre `fn({ dir })`
+// con el entorno aislado por el helper sancionado (#6258/#6260), restaurandolo
+// despues del settle (soporta `fn` async).
+//
+// #7082 — aisla AMBOS resolvedores: `wave-progress` lee por
+// `PIPELINE_ROOT_OVERRIDE` y `waves.json` por `PIPELINE_DIR_OVERRIDE`
+// (`waves.js:pipelineDir()`). Con uno solo, `eta-wave._waveIssueCount()` leia la
+// ola de PRODUCCION y el quantum (100/N) cambiaba el veredicto: con la ola 23
+// planificada con N=1 el salto de -79/+79 dejaba de ser discontinuo (raiz en
+// #7110). Cada llamada crea un `mkdtemp` nuevo: `waves.js` cachea por
+// pipelineRoot con TTL de 2 s, y reutilizar `dir` entre tests leeria cache.
+function withSeries(waveKey, points, fn) {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wv4886-eta-'));
-    process.env.PIPELINE_ROOT_OVERRIDE = dir;
     fs.mkdirSync(path.join(dir, '.pipeline'), { recursive: true });
     const body = points.map((p) => JSON.stringify({ waveKey, ts: p.ts, avancePct: p.avancePct })).join('\n');
     fs.writeFileSync(path.join(dir, '.pipeline', 'wave-progress.jsonl'), body);
-    return {
-        dir,
-        restore: () => {
-            if (prev === undefined) delete process.env.PIPELINE_ROOT_OVERRIDE;
-            else process.env.PIPELINE_ROOT_OVERRIDE = prev;
-            try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* best-effort */ }
-        },
-    };
+    const limpiar = () => { try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* best-effort */ } };
+    let result;
+    try {
+        result = withEnv(
+            { PIPELINE_ROOT_OVERRIDE: dir, PIPELINE_DIR_OVERRIDE: path.join(dir, '.pipeline') },
+            () => fn({ dir }),
+        );
+    } catch (e) {
+        limpiar();
+        throw e;
+    }
+    if (result && typeof result.then === 'function') return result.finally(limpiar);
+    limpiar();
+    return result;
 }
 
 // ─── 1. Filtro de plausibilidad AL ESCRIBIR ─────────────────────────────────
@@ -80,21 +94,21 @@ test('recordSample descarta el salto artificial de un reset y conserva el ritmo 
 });
 
 test('el techo de plausibilidad es configurable por env (y tolera valores inválidos)', () => {
-    const prev = process.env.WAVE_VELOCITY_MAX_PCT_PER_MIN;
-    try {
+    // #7082: cada valor bajo el helper sancionado; `undefined` = variable ausente.
+    withEnv({ WAVE_VELOCITY_MAX_PCT_PER_MIN: undefined }, () => {
         assert.equal(hist.maxPlausiblePctPerMin(), hist.MAX_PLAUSIBLE_PCT_PER_MIN);
-        process.env.WAVE_VELOCITY_MAX_PCT_PER_MIN = '5';
+    });
+    withEnv({ WAVE_VELOCITY_MAX_PCT_PER_MIN: '5' }, () => {
         assert.equal(hist.maxPlausiblePctPerMin(), 5);
         assert.equal(hist.isPlausibleVelocity(4), true);
-        // Inválidos → default, nunca romper el pipeline por una env mal seteada.
-        process.env.WAVE_VELOCITY_MAX_PCT_PER_MIN = 'no-es-numero';
+    });
+    // Inválidos → default, nunca romper el pipeline por una env mal seteada.
+    withEnv({ WAVE_VELOCITY_MAX_PCT_PER_MIN: 'no-es-numero' }, () => {
         assert.equal(hist.maxPlausiblePctPerMin(), hist.MAX_PLAUSIBLE_PCT_PER_MIN);
-        process.env.WAVE_VELOCITY_MAX_PCT_PER_MIN = '-3';
+    });
+    withEnv({ WAVE_VELOCITY_MAX_PCT_PER_MIN: '-3' }, () => {
         assert.equal(hist.maxPlausiblePctPerMin(), hist.MAX_PLAUSIBLE_PCT_PER_MIN);
-    } finally {
-        if (prev === undefined) delete process.env.WAVE_VELOCITY_MAX_PCT_PER_MIN;
-        else process.env.WAVE_VELOCITY_MAX_PCT_PER_MIN = prev;
-    }
+    });
 });
 
 // ─── 2. Higiene retroactiva del JSONL ya contaminado ────────────────────────
@@ -145,13 +159,12 @@ test('el salto de re-hidratación (18% → 97%) no se computa como velocidad ni 
     const now = 10_000_000;
     // Serie real del incidente: la ola venía quieta en 18% y un restore la
     // re-hidrató a 97% de golpe entre dos snapshots consecutivos.
-    const { dir, restore } = withSeries(11, [
+    await withSeries(11, [
         { ts: now - 30 * MIN, avancePct: 18 },
         { ts: now - 20 * MIN, avancePct: 18 },
         { ts: now - 10 * MIN, avancePct: 97 },   // ← salto artificial
         { ts: now, avancePct: 97 },
-    ]);
-    try {
+    ], async ({ dir }) => {
         const r = await etaWave.calculateWaveVelocityETA(11, 97, now, { restWindow: null });
         // Sin el filtro, el tramo del salto daba 7.9 %/min (474 %/hora).
         assert.equal(r.source, 'fallback');
@@ -160,9 +173,7 @@ test('el salto de re-hidratación (18% → 97%) no se computa como velocidad ni 
         assert.equal(r.remainingMs, undefined, 'sin velocidad confiable no se emite ETA');
         // Y el salto tampoco quedó persistido en la serie histórica cross-ola.
         assert.deepEqual(hist.readSamples({ pipelineRoot: dir }), []);
-    } finally {
-        restore();
-    }
+    });
 });
 
 // ─── 4. Gherkin 1 · ola quieta → degradación honesta, no promedio envenenado ─
@@ -170,12 +181,11 @@ test('el salto de re-hidratación (18% → 97%) no se computa como velocidad ni 
 test('ola quieta con histórico contaminado degrada honestamente en vez de mostrar el promedio', async () => {
     const now = 20_000_000;
     // Avance plano/negativo (97 → 94 → 92), tal cual el incidente.
-    const { dir, restore } = withSeries(12, [
+    await withSeries(12, [
         { ts: now - 40 * MIN, avancePct: 97 },
         { ts: now - 20 * MIN, avancePct: 94 },
         { ts: now, avancePct: 92 },
-    ]);
-    try {
+    ], async ({ dir }) => {
         // Histórico envenenado por los resets de hoy.
         fs.writeFileSync(hist._internal.storePath(dir), [
             `{"ts":${now - 100000},"waveKey":9,"velocityPctPerMin":${PICO_DE_RESTORE}}`,
@@ -185,19 +195,16 @@ test('ola quieta con histórico contaminado degrada honestamente en vez de mostr
         assert.equal(r.source, 'fallback', 'la ola quieta no puede heredar el promedio contaminado');
         assert.equal(r.reason, 'non-positive-velocity');
         assert.equal(r.remainingMs, undefined);
-    } finally {
-        restore();
-    }
+    });
 });
 
 test('ola quieta tampoco hereda un histórico LIMPIO: sin ritmo propio no hay velocidad propia', async () => {
     const now = 30_000_000;
-    const { dir, restore } = withSeries(13, [
+    await withSeries(13, [
         { ts: now - 40 * MIN, avancePct: 60 },
         { ts: now - 20 * MIN, avancePct: 60 },
         { ts: now, avancePct: 60 },
-    ]);
-    try {
+    ], async ({ dir }) => {
         fs.writeFileSync(hist._internal.storePath(dir), [
             `{"ts":${now - 100000},"waveKey":9,"velocityPctPerMin":0.8}`,
             '',
@@ -205,17 +212,14 @@ test('ola quieta tampoco hereda un histórico LIMPIO: sin ritmo propio no hay ve
         const r = await etaWave.calculateWaveVelocityETA(13, 60, now, { restWindow: null });
         assert.equal(r.source, 'fallback');
         assert.equal(r.reason, 'non-positive-velocity');
-    } finally {
-        restore();
-    }
+    });
 });
 
 // ─── 5. No regresión #4532 · la ola NUEVA sí hereda la estimación limpia ────
 
 test('#4532 intacto: la ola NUEVA sin serie propia sigue heredando el histórico limpio', async () => {
     const now = 40_000_000;
-    const { dir, restore } = withSeries(99, []); // ola 14 sin snapshots propios
-    try {
+    await withSeries(99, [], async ({ dir }) => { // ola 14 sin snapshots propios
         fs.writeFileSync(hist._internal.storePath(dir), [
             `{"ts":${now - 100000},"waveKey":9,"velocityPctPerMin":1.0}`,
             '',
@@ -225,19 +229,16 @@ test('#4532 intacto: la ola NUEVA sin serie propia sigue heredando el histórico
         assert.equal(r.reason, 'insufficient-snapshots');
         assert.equal(r.velocityPctPerMin, 1.0);
         assert.equal(Math.round(r.remainingMs), 40 * MIN); // 40 % restante a 1 %/min
-    } finally {
-        restore();
-    }
+    });
 });
 
 test('la velocidad medida real (ritmo plausible) sigue funcionando y se registra', async () => {
     const now = 50_000_000;
-    const { dir, restore } = withSeries(15, [
+    await withSeries(15, [
         { ts: now - 60 * MIN, avancePct: 40 },
         { ts: now - 30 * MIN, avancePct: 43 },
         { ts: now, avancePct: 46 },
-    ]);
-    try {
+    ], async ({ dir }) => {
         const r = await etaWave.calculateWaveVelocityETA(15, 46, now, { restWindow: null });
         assert.equal(r.source, 'velocity');
         assert.ok(Math.abs(r.velocityPctPerHour - 6) < 1e-6, `esperaba 6 %/h, obtuvo ${r.velocityPctPerHour}`);
@@ -245,9 +246,7 @@ test('la velocidad medida real (ritmo plausible) sigue funcionando y se registra
         const samples = hist.readSamples({ pipelineRoot: dir });
         assert.equal(samples.length, 1);
         assert.ok(hist.isPlausibleVelocity(samples[0].velocityPctPerMin));
-    } finally {
-        restore();
-    }
+    });
 });
 
 // ─── 7. rev-1 · CADENCIA REAL DE PRODUCCIÓN ────────────────────────────────
@@ -288,8 +287,7 @@ test('rev-1 · con la cadencia REAL (~33 s) un cierre cada ~20 min da velocity, 
         now, durationMin: 180, cierreCadaMin: 20, avanceInicial: 40, nIssues: OLA_8_ISSUES,
     });
     const ultimo = puntos[puntos.length - 1].avancePct;
-    const { restore } = withSeries(21, puntos);
-    try {
+    await withSeries(21, puntos, async () => {
         const r = await etaWave.calculateWaveVelocityETA(21, ultimo, now, { restWindow: null });
         // ANTES (rev-0): cada cierre daba 4,9 %/min > techo de 2 → 'discontinuous-jump'
         // y la card quedaba en "sin datos suficientes" el 98 % del tiempo.
@@ -301,9 +299,7 @@ test('rev-1 · con la cadencia REAL (~33 s) un cierre cada ~20 min da velocity, 
         // Y sigue respetando el techo físico (CA-2).
         assert.ok(r.velocityPctPerMin <= hist.maxPlausiblePctPerMin());
         assert.ok(Number.isFinite(r.remainingMs) && r.remainingMs > 0, 'debe emitir ETA');
-    } finally {
-        restore();
-    }
+    });
 });
 
 test('rev-1 · un cierre aislado a cadencia real NO se descarta como salto artificial', async () => {
@@ -314,16 +310,13 @@ test('rev-1 · un cierre aislado a cadencia real NO se descarta como salto artif
     for (let t = start; t <= now; t += CADENCIA_REAL_MS) {
         puntos.push({ ts: t, avancePct: t < now - 20 * MIN ? 50 : 53 });
     }
-    const { restore } = withSeries(22, puntos);
-    try {
+    await withSeries(22, puntos, async () => {
         const r = await etaWave.calculateWaveVelocityETA(22, 53, now, { restWindow: null });
         // +3 puntos en 0,55 min = 5,4 %/min: rev-0 lo tiraba como artificial.
         assert.equal(r.source, 'velocity',
             `un cierre real no puede ser artificial (${r.source}/${r.reason})`);
         assert.ok(r.velocityPctPerHour > 0);
-    } finally {
-        restore();
-    }
+    });
 });
 
 test('rev-1 · el restore sigue siendo artificial aunque la cadencia sea real', async () => {
@@ -336,17 +329,14 @@ test('rev-1 · el restore sigue siendo artificial aunque la cadencia sea real', 
         if (t >= now - 40 * MIN && t < now - 20 * MIN) v = 18;   // espejo vacío
         puntos.push({ ts: t, avancePct: v });
     }
-    const { dir, restore } = withSeries(23, puntos);
-    try {
+    await withSeries(23, puntos, async ({ dir }) => {
         const r = await etaWave.calculateWaveVelocityETA(23, 97, now, { restWindow: null });
         // Los DOS escalones (−79 y +79) se neutralizan → serie plana → sin ritmo.
         assert.equal(r.source, 'fallback');
         assert.equal(r.reason, 'discontinuous-jump');
         assert.equal(r.remainingMs, undefined, 'sin velocidad confiable no se emite ETA');
         assert.deepEqual(hist.readSamples({ pipelineRoot: dir }), []);
-    } finally {
-        restore();
-    }
+    });
 });
 
 test('rev-1 · el avance real ANTES y DESPUÉS de un restore sigue siendo medible', async () => {
@@ -362,8 +352,7 @@ test('rev-1 · el avance real ANTES y DESPUÉS de un restore sigue siendo medibl
         if (t >= now - 60 * MIN && t < now - 50 * MIN) v = 5;
         puntos.push({ ts: t, avancePct: v });
     }
-    const { restore } = withSeries(24, puntos);
-    try {
+    await withSeries(24, puntos, async () => {
         const r = await etaWave.calculateWaveVelocityETA(24, 68, now, { restWindow: null });
         // rev-0 descartaba los tramos del salto y perdía TODO el ritmo del período.
         assert.equal(r.source, 'velocity',
@@ -371,9 +360,7 @@ test('rev-1 · el avance real ANTES y DESPUÉS de un restore sigue siendo medibl
         // 6 cierres × 3 puntos en 2 h = 9 %/h.
         assert.ok(r.velocityPctPerHour > 6 && r.velocityPctPerHour < 12,
             `ritmo esperado ~9 %/h, obtuvo ${r.velocityPctPerHour}`);
-    } finally {
-        restore();
-    }
+    });
 });
 
 test('rev-1 · el umbral de discontinuidad se expresa en QUANTUMS de la ola', () => {
@@ -396,43 +383,40 @@ test('rev-1 · el umbral de discontinuidad se expresa en QUANTUMS de la ola', ()
 
 test('rev-2 · waves.json activa el quantum y el camino público descarta +18', async () => {
     const now = 95_000_000;
-    const prevPipelineDir = process.env.PIPELINE_DIR_OVERRIDE;
-    const { dir, restore } = withSeries(8, [
+    // PIPELINE_DIR_OVERRIDE ya lo setea withSeries (#7082): el waves.json del
+    // fixture se escribe adentro del recinto y se invalida el cache alrededor.
+    await withSeries(8, [
         { ts: now - 40 * MIN, avancePct: 18 },
         { ts: now - 20 * MIN, avancePct: 36 }, // re-hidratación: +18
         { ts: now, avancePct: 36 },
-    ]);
-    process.env.PIPELINE_DIR_OVERRIDE = path.join(dir, '.pipeline');
-    fs.writeFileSync(path.join(dir, '.pipeline', 'waves.json'), JSON.stringify({
-        version: 1,
-        active_wave: {
-            number: 8,
-            name: 'Fixture ola 8',
-            issues: Array.from({ length: OLA_8_ISSUES }, (_, i) => ({ number: 1000 + i })),
-        },
-        planned_waves: [],
-        archived_waves: [],
-        dependencies: [],
-    }));
-    waves.invalidateCache();
-
-    try {
-        assert.equal(etaWave._internal._waveIssueCount(8), 37);
-        const threshold = etaWave._internal._jumpThresholdPct(8);
-        assert.ok(Math.abs(threshold - (400 / 37)) < 1e-12, `umbral ${threshold}`);
-
-        const result = await etaWave.calculateWaveVelocityETA(8, 36, now, { restWindow: null });
-        assert.equal(result.source, 'fallback');
-        assert.equal(result.reason, 'discontinuous-jump');
-        assert.equal(result.velocityPctPerHour, undefined);
-        assert.equal(result.remainingMs, undefined);
-        assert.deepEqual(hist.readSamples({ pipelineRoot: dir }), []);
-    } finally {
-        if (prevPipelineDir === undefined) delete process.env.PIPELINE_DIR_OVERRIDE;
-        else process.env.PIPELINE_DIR_OVERRIDE = prevPipelineDir;
+    ], async ({ dir }) => {
+        fs.writeFileSync(path.join(dir, '.pipeline', 'waves.json'), JSON.stringify({
+            version: 1,
+            active_wave: {
+                number: 8,
+                name: 'Fixture ola 8',
+                issues: Array.from({ length: OLA_8_ISSUES }, (_, i) => ({ number: 1000 + i })),
+            },
+            planned_waves: [],
+            archived_waves: [],
+            dependencies: [],
+        }));
         waves.invalidateCache();
-        restore();
-    }
+        try {
+            assert.equal(etaWave._internal._waveIssueCount(8), 37);
+            const threshold = etaWave._internal._jumpThresholdPct(8);
+            assert.ok(Math.abs(threshold - (400 / 37)) < 1e-12, `umbral ${threshold}`);
+
+            const result = await etaWave.calculateWaveVelocityETA(8, 36, now, { restWindow: null });
+            assert.equal(result.source, 'fallback');
+            assert.equal(result.reason, 'discontinuous-jump');
+            assert.equal(result.velocityPctPerHour, undefined);
+            assert.equal(result.remainingMs, undefined);
+            assert.deepEqual(hist.readSamples({ pipelineRoot: dir }), []);
+        } finally {
+            waves.invalidateCache();
+        }
+    });
 });
 
 test('rev-1 · el filtro de discontinuidad es SIMÉTRICO (la caída del espejo también)', () => {
