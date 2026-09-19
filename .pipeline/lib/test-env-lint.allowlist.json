@@ -4332,61 +4332,61 @@
         },
         {
             "file": "skills-deterministicos/__tests__/tester.test.js",
-            "line": 1599,
+            "line": 1658,
             "kind": "deuda",
             "reason": "escritura de GRADLE_LOCK_PATH fuera del helper"
         },
         {
             "file": "skills-deterministicos/__tests__/tester.test.js",
-            "line": 1615,
+            "line": 1674,
             "kind": "deuda",
             "reason": "escritura de GRADLE_LOCK_PATH fuera del helper"
         },
         {
             "file": "skills-deterministicos/__tests__/tester.test.js",
-            "line": 1616,
+            "line": 1675,
             "kind": "deuda",
             "reason": "escritura de GRADLE_LOCK_PATH fuera del helper"
         },
         {
             "file": "skills-deterministicos/__tests__/tester.test.js",
-            "line": 1627,
+            "line": 1686,
             "kind": "deuda",
             "reason": "escritura de GRADLE_LOCK_PATH fuera del helper"
         },
         {
             "file": "skills-deterministicos/__tests__/tester.test.js",
-            "line": 1639,
+            "line": 1698,
             "kind": "deuda",
             "reason": "escritura de GRADLE_LOCK_PATH fuera del helper"
         },
         {
             "file": "skills-deterministicos/__tests__/tester.test.js",
-            "line": 1640,
+            "line": 1699,
             "kind": "deuda",
             "reason": "escritura de GRADLE_LOCK_PATH fuera del helper"
         },
         {
             "file": "skills-deterministicos/__tests__/tester.test.js",
-            "line": 1768,
+            "line": 1827,
             "kind": "deuda",
             "reason": "escritura de PIPELINE_REPO_ROOT fuera del helper"
         },
         {
             "file": "skills-deterministicos/__tests__/tester.test.js",
-            "line": 1769,
+            "line": 1828,
             "kind": "deuda",
             "reason": "escritura de CLAUDE_PROJECT_DIR fuera del helper"
         },
         {
             "file": "skills-deterministicos/__tests__/tester.test.js",
-            "line": 1784,
+            "line": 1843,
             "kind": "deuda",
             "reason": "escritura de PIPELINE_REPO_ROOT fuera del helper"
         },
         {
             "file": "skills-deterministicos/__tests__/tester.test.js",
-            "line": 1785,
+            "line": 1844,
             "kind": "deuda",
             "reason": "escritura de CLAUDE_PROJECT_DIR fuera del helper"
         },

@@ -200,11 +200,107 @@ test('CA-3 · precedencia D-1: PIPELINE_DIR_OVERRIDE > PIPELINE_STATE_DIR > PIPE
     assert.strictEqual(sinOverride.dir, path.resolve(b));
     assert.strictEqual(sinOverride.origen, 'PIPELINE_STATE_DIR');
 
+    // #7112 / SEC-9: en pruebas, PIPELINE_REPO_ROOT gana la precedencia (origen)
+    // pero NO aporta dir: es contexto heredado del Pulpo, no una declaración.
     const soloRepo = resolve({ PIPELINE_REPO_ROOT: c });
-    assert.strictEqual(soloRepo.dir, path.join(path.resolve(c), '.pipeline'), 'REPO_ROOT suma el sufijo .pipeline');
+    assert.strictEqual(soloRepo.dir, null, 'REPO_ROOT no es fuente de dir en pruebas (SEC-9)');
     assert.strictEqual(soloRepo.origen, 'PIPELINE_REPO_ROOT');
+    assert.match(soloRepo.motivo, /PIPELINE_REPO_ROOT es contexto heredado/);
+    assert.match(soloRepo.motivo, /SEC-9/);
 
     for (const out of [todos, sinOverride, soloRepo]) assert.strictEqual(out.modo, MODOS.PRUEBAS);
+});
+
+// ─── #7112 · SEC-9 / CA-5 / CA-7.3 — PIPELINE_REPO_ROOT no es declaración de un test ─
+
+/**
+ * Carga una COPIA del resolvedor desde un `<raiz>/.pipeline/lib` ajeno al repo,
+ * para que `DEFAULT_PRODUCTIVE_DIR` sea otro directorio (simula un worktree
+ * `platform.agent-*`). El módulo real no se toca.
+ */
+function cargarDesdeOtroDirname(tag) {
+    const raiz = tmpDir(tag);
+    const libDir = path.join(raiz, '.pipeline', 'lib');
+    fs.mkdirSync(libDir, { recursive: true });
+    const configResolverAbs = path.join(__dirname, '..', 'config-resolver.js').split(path.sep).join('/');
+    const src = fs.readFileSync(SRC_PATH, 'utf8')
+        .replace("require('./config-resolver')", `require('${configResolverAbs}')`);
+    const copia = path.join(libDir, 'pipeline-env.js');
+    fs.writeFileSync(copia, src);
+    return { mod: require(copia), pipelineDir: path.join(raiz, '.pipeline') };
+}
+
+test('#7112 CA-5/SEC-9 · con señal de test y PIPELINE_REPO_ROOT=<prod> heredado, cargado desde otro __dirname: dir null y canales apagados', () => {
+    const { mod } = cargarDesdeOtroDirname('sec9-wt');
+    const prod = path.dirname(DEFAULT_PRODUCTIVE_DIR);
+    const out = mod.resolve({ NODE_TEST_CONTEXT: '1', PIPELINE_REPO_ROOT: prod });
+    assert.strictEqual(out.modo, MODOS.PRUEBAS);
+    assert.strictEqual(out.dir, null, 'el .pipeline del repo principal no es dir de pruebas (V2 de security)');
+    assert.strictEqual(out.origen, 'PIPELINE_REPO_ROOT');
+    assert.strictEqual(out.canales.telegram.enabled, false);
+    assert.strictEqual(out.canales.github.escrituras, false);
+    assert.match(out.motivo, /NODE_TEST_CONTEXT/, 'conserva la causa original');
+});
+
+test('#7112 CA-5/SEC-9 · con PIPELINE_DIR_OVERRIDE o PIPELINE_STATE_DIR explícitos, el dir de pruebas sí se respeta aunque venga PIPELINE_REPO_ROOT', () => {
+    const prod = path.dirname(DEFAULT_PRODUCTIVE_DIR);
+    for (const varName of ['PIPELINE_DIR_OVERRIDE', 'PIPELINE_STATE_DIR']) {
+        const d = tmpDir('sec9-' + varName);
+        const out = resolve({ NODE_TEST_CONTEXT: '1', PIPELINE_REPO_ROOT: prod, [varName]: d });
+        assert.strictEqual(out.modo, MODOS.PRUEBAS, varName);
+        assert.strictEqual(out.dir, path.resolve(d), varName);
+        assert.strictEqual(out.origen, varName);
+    }
+});
+
+test('#7112 CA-5/SEC-9 · dentroDelProductivo bloquea la UNIÓN: un override dentro de PIPELINE_REPO_ROOT/.pipeline se anula aunque el módulo viva en otro __dirname', () => {
+    const { mod, pipelineDir } = cargarDesdeOtroDirname('sec9-union');
+    const prod = path.dirname(DEFAULT_PRODUCTIVE_DIR);
+    // Miembro heredado: el .pipeline del repo principal.
+    const viaHeredado = mod.resolve({ PIPELINE_REPO_ROOT: prod, PIPELINE_DIR_OVERRIDE: path.join(DEFAULT_PRODUCTIVE_DIR, 'state') });
+    assert.strictEqual(viaHeredado.dir, null, 'subpath del productivo heredado anulado');
+    assert.match(viaHeredado.motivo, /apunta al productivo \(PIPELINE_DIR_OVERRIDE\)/);
+    // Miembro propio: el .pipeline del worktree simulado.
+    const viaPropio = mod.resolve({ PIPELINE_DIR_OVERRIDE: path.join(pipelineDir, 'logs') });
+    assert.strictEqual(viaPropio.dir, null, 'subpath del productivo propio anulado');
+    // Sin PIPELINE_REPO_ROOT el miembro heredado no existe: el mismo path se respeta (aditivo, no inventa).
+    const sinHeredado = mod.resolve({ PIPELINE_DIR_OVERRIDE: path.join(DEFAULT_PRODUCTIVE_DIR, 'state') });
+    assert.strictEqual(sinHeredado.dir, path.join(DEFAULT_PRODUCTIVE_DIR, 'state'));
+    // esProductivo expone la misma unión para los guards del Pulpo.
+    assert.strictEqual(mod.esProductivo(path.join(DEFAULT_PRODUCTIVE_DIR, 'x'), { PIPELINE_REPO_ROOT: prod }), true);
+    assert.strictEqual(mod.esProductivo(path.join(DEFAULT_PRODUCTIVE_DIR, 'x'), {}), false);
+    assert.strictEqual(mod.esProductivo(path.join(pipelineDir, 'x'), {}), true);
+    assert.strictEqual(mod.esProductivo(null, {}), false, 'nunca lanza');
+    assert.strictEqual(pipelineEnv.esProductivo(path.join(DEFAULT_PRODUCTIVE_DIR, '.paused'), {}), true);
+});
+
+test('#7112 CA-7.3 · env real de un agente en worktree (PIPELINE_AMBIENTE=productivo + PIPELINE_REPO_ROOT=<prod>) con libs del worktree: pruebas, dir null, canales apagados', () => {
+    const { mod } = cargarDesdeOtroDirname('ca73');
+    const prod = path.dirname(DEFAULT_PRODUCTIVE_DIR);
+    const out = mod.resolve({ ...PRODUCTIVO, PIPELINE_REPO_ROOT: prod });
+    assert.strictEqual(out.modo, MODOS.PRUEBAS, 'caso H del PO');
+    assert.strictEqual(out.dir, null, 'con SEC-9 el dir heredado no sirve: el escritor falla ruidoso');
+    assert.strictEqual(out.canales.telegram.enabled, false);
+    assert.strictEqual(out.canales.github.escrituras, false);
+    assert.match(out.motivo, /declaración productiva con dir no productivo \(PIPELINE_REPO_ROOT\)/);
+});
+
+test('#7112 CA-7.3 · el mismo env con libs del PRODUCTIVO resuelve productivo con el dir fijo (caso D: agentes de definición/verificación)', () => {
+    const prod = path.dirname(DEFAULT_PRODUCTIVE_DIR);
+    const out = resolve({ ...PRODUCTIVO, PIPELINE_REPO_ROOT: prod });
+    assert.strictEqual(out.modo, MODOS.PRODUCTIVO);
+    assert.strictEqual(out.dir, DEFAULT_PRODUCTIVE_DIR);
+    assertPerfilProductivo(out.canales, 'caso D');
+});
+
+test('#7112 CA-7.4 · dentro de un agente, la señal de test le sigue ganando a la declaración (caso F/J): dir null con libs del productivo', () => {
+    const prod = path.dirname(DEFAULT_PRODUCTIVE_DIR);
+    for (const senal of [{ NODE_TEST_CONTEXT: 'child-v8' }, { NODE_ENV: 'test' }, { PULPO_NO_AUTOSTART: '1' }]) {
+        const out = resolve({ ...PRODUCTIVO, PIPELINE_REPO_ROOT: prod, ...senal });
+        assert.strictEqual(out.modo, MODOS.PRUEBAS, JSON.stringify(senal));
+        assert.strictEqual(out.dir, null, JSON.stringify(senal));
+        assert.strictEqual(out.canales.telegram.enabled, false);
+    }
 });
 
 test('CA-3 · una variable de directorio vacía o de espacios se ignora y sigue la cadena', () => {

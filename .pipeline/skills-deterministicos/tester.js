@@ -39,6 +39,12 @@ const { withGradleLock } = require('../lib/gradle-lock');
 const { writeDeliverable } = require('../lib/write-deliverable');
 // CA-B2 (#4694) — needle del worktree derivado del helper compartido.
 const { worktreeNeedle } = require('../lib/worktree-prefix');
+// #7112 · CA-4 (Enmienda 2) — el dir efímero de pruebas lo provee el MISMO
+// helper que usa `scripts/test-pipeline.js`: la suite que corre el pipeline
+// (`node --test` directo, sin pasar por el runner) también hereda un
+// `PIPELINE_DIR_OVERRIDE` bajo `os.tmpdir()`; con el default invertido, los
+// tests que no declaran dir caen ahí y no fallan ruidoso ni tocan el productivo.
+const { ensureTestRunDir } = require('../lib/test-run-dir');
 
 // ── Constantes y paths ──────────────────────────────────────────────
 const REPO_ROOT = process.env.PIPELINE_REPO_ROOT || process.env.CLAUDE_PROJECT_DIR || path.resolve(__dirname, '..', '..');
@@ -1033,6 +1039,16 @@ async function runNodeTests(repoRoot, env, opts = {}) {
         // conocidas y lo prepende. Idempotente y no muta el env recibido.
         let childEnv = { ...env };
         delete childEnv.NODE_TEST_CONTEXT;
+        // #7112 · CA-4 — dir efímero de pruebas en el env del child (sólo si no
+        // viene ya seteado por el llamador). Se borra al terminar la batería, en
+        // el `finally` de más abajo; sin handlers de señal propios (el tester ya
+        // maneja su cierre) — el `exit` del proceso también lo borra.
+        const runDir = ensureTestRunDir({
+            env: childEnv,
+            pipelineDir: path.join(repoRoot, '.pipeline'),
+            registrarSenales: false,
+            log: (l) => onLog(`[tester:node-test] ${l}`),
+        });
         // Garantizar que `git` esté accesible para los tests que hacen
         // `spawnSync('git', ...)` (rebote #2891 rev-2 + #2895 rev-1). Cuando
         // el pulpo corre como service Windows, el PATH no incluye
@@ -1173,6 +1189,9 @@ async function runNodeTests(repoRoot, env, opts = {}) {
             }
         }
 
+        // #7112 · CA-4 — un dir por corrida y se borra al terminar la batería.
+        runDir.limpiar();
+
         return {
             exit_code: timedOut ? 124 : exitCode,
             stdout, stderr,
@@ -1183,6 +1202,9 @@ async function runNodeTests(repoRoot, env, opts = {}) {
             batches_total: batches.length,
             batches_completed: batchesCompleted,
             summary: agg,
+            // #7112 — para el test del tester: dónde cayeron los escritores.
+            test_run_dir: runDir.dir,
+            test_run_dir_creado: runDir.creado,
         };
 }
 
