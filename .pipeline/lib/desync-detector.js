@@ -72,8 +72,10 @@ const operationalState = require('./operational-state');
 const DESYNC_FLAG_BASENAME = '.desync-detected.flag';
 
 function pipelineDir() {
-    if (process.env.PIPELINE_DIR_OVERRIDE) return process.env.PIPELINE_DIR_OVERRIDE;
-    return path.join(__dirname, '..');
+    // #7112 — familia F: el cuerpo pasa a UNA línea sobre el envoltorio (SEC-13).
+    // `PIPELINE_DIR_OVERRIDE` sigue mandando (precedencia D-1 del resolvedor); sin
+    // ambiente declarado ni dir de pruebas avisa por stderr y LANZA (CA-3), nunca `__dirname`.
+    return require('./write-target').writeDir(process.env, { canal: 'estado', destino: '.desync-detected.flag' });
 }
 
 function desyncFlagPath() {

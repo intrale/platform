@@ -98,10 +98,10 @@ const ROTATE_MB = 5;
  * mismo estado real, volviéndose no deterministas.
  */
 function defaultFile() {
-    const base = process.env.PIPELINE_DIR_OVERRIDE
-        ? path.resolve(process.env.PIPELINE_DIR_OVERRIDE)
-        : path.join(__dirname, '..', '..');
-    return path.join(base, 'state', 'auto-repair.jsonl');
+    // #7112 — familia F: el cuerpo pasa a UNA línea sobre el envoltorio (SEC-13).
+    // `PIPELINE_DIR_OVERRIDE` sigue mandando (precedencia D-1 del resolvedor); sin
+    // ambiente declarado ni dir de pruebas avisa por stderr y LANZA (CA-3), nunca `__dirname`.
+    return require('../write-target').writePath(process.env, { canal: 'logs', destino: 'state/auto-repair.jsonl' }, 'state', 'auto-repair.jsonl');
 }
 
 /**

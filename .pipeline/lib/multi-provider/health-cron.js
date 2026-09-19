@@ -126,13 +126,15 @@ function quotaFlagState(cronProvider, nowMs) {
 
 // Resolver paths según el contexto. En tests/CLI se pueden inyectar.
 function defaultStateDir() {
-    return process.env.PIPELINE_STATE_DIR
-        || path.resolve(__dirname, '..', '..', 'state');
+    // #7112 — familia F: el cuerpo pasa a UNA línea sobre el envoltorio (SEC-13).
+    // `PIPELINE_DIR_OVERRIDE` sigue mandando (precedencia D-1 del resolvedor); sin
+    // ambiente declarado ni dir de pruebas avisa por stderr y LANZA (CA-3), nunca `__dirname`.
+    return require('../write-target').writePath(process.env, { canal: 'estado', destino: 'state/ (health-cron)' }, 'state');
 }
 
 function defaultAuditDir() {
-    return process.env.PIPELINE_AUDIT_DIR
-        || path.resolve(__dirname, '..', '..', 'audit');
+    if (process.env.PIPELINE_AUDIT_DIR) return process.env.PIPELINE_AUDIT_DIR;
+    return require('../write-target').writePath(process.env, { canal: 'logs', destino: 'audit/ (health-cron)' }, 'audit');
 }
 
 // Constantes — el cron mismo expone para tests y para la doc operativa CA-5.
@@ -958,7 +960,9 @@ function formatAlertText(payload) {
 
 function defaultTelegramSender(payload, { pipelineDir, fsImpl = fs, correlationId } = {}) {
     try {
-        const root = pipelineDir || path.resolve(__dirname, '..', '..');
+        // #7112 — sin `pipelineDir`, la cola se resuelve por llamada vía el envoltorio
+        // (SEC-13); sin ambiente ni dir de pruebas LANZA y el `catch` de abajo lo absorbe.
+        const root = pipelineDir || require('../write-target').writeDir(process.env, { canal: 'colas', destino: 'servicios/telegram/pendiente/' });
         const svcDir = path.join(root, 'servicios', 'telegram', 'pendiente');
         if (!fsImpl.existsSync(svcDir)) fsImpl.mkdirSync(svcDir, { recursive: true });
         // El payload ya pasó por redact en health-alerts, pero re-aplicamos

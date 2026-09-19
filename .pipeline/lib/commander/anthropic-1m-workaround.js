@@ -110,7 +110,13 @@ const CONSECUTIVE_STALE_MS = 6 * 60 * 60 * 1000;
 
 // Default session path — el caller (pulpo.js) ya conoce su `SESSION_FILE`,
 // pero exponemos el default para tests y para reutilización fuera de Pulpo.
-const DEFAULT_SESSION_FILE = path.join(__dirname, '..', '..', 'commander-session.json');
+// #7112 — el destino se resuelve POR LLAMADA vía `lib/write-target` (SEC-13):
+// ninguna const de módulo captura `__dirname` al `require`. Sin ambiente
+// declarado ni dir de pruebas, `writeDir` avisa por stderr y LANZA (CA-3).
+// Identificadores conservados: cada uso `X` → `X()`.
+function DEFAULT_SESSION_FILE() {
+    return require('../write-target').writePath(process.env, { canal: 'estado', destino: 'commander-session.json' }, 'commander-session.json');
+}
 
 // -----------------------------------------------------------------------------
 // SEC-1 — isWorkaroundEnabled()
@@ -212,7 +218,7 @@ function formatHumanTimestamp(ms) {
 // (SEC-4).
 // -----------------------------------------------------------------------------
 function readState(sessionFile) {
-    const file = sessionFile || DEFAULT_SESSION_FILE;
+    const file = sessionFile || DEFAULT_SESSION_FILE();
     const empty = {
         hits_total: 0,
         last_hit_at: null,
@@ -311,7 +317,7 @@ function normalizeTimestamp(value) {
 // del session.
 // -----------------------------------------------------------------------------
 function writeState(state, sessionFile) {
-    const file = sessionFile || DEFAULT_SESSION_FILE;
+    const file = sessionFile || DEFAULT_SESSION_FILE();
     let session = {};
     try {
         const raw = fs.readFileSync(file, 'utf8');
@@ -584,7 +590,7 @@ module.exports = {
     TTL_DAYS_THRESHOLD,
     COOLDOWN_DAYS,
     MS_PER_DAY,
-    DEFAULT_SESSION_FILE,
+    get DEFAULT_SESSION_FILE() { return DEFAULT_SESSION_FILE(); },
     // #3987 — kill switch de escalación.
     ESCALATION_THRESHOLD_ENV,
     DEFAULT_ESCALATION_THRESHOLD,

@@ -32,7 +32,13 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
-const DEFAULT_STATE_DIR = path.join(__dirname, '..', 'state');
+// #7112 — el destino se resuelve POR LLAMADA vía `lib/write-target` (SEC-13):
+// ninguna const de módulo captura `__dirname` al `require`. Sin ambiente
+// declarado ni dir de pruebas, `writeDir` avisa por stderr y LANZA (CA-3).
+// Identificadores conservados: cada uso `X` → `X()`.
+function DEFAULT_STATE_DIR() {
+    return require('./write-target').writePath(process.env, { canal: 'estado', destino: 'state/worktree-notif-*.json' }, 'state');
+}
 const DEFAULT_TTL_MS = 24 * 60 * 60 * 1000; // 24h
 
 /**
@@ -43,7 +49,7 @@ const DEFAULT_TTL_MS = 24 * 60 * 60 * 1000; // 24h
  * Si alguno no matchea, lanza — porque caller previo (pulpo) ya debería
  * haber validado vía resolveExistingWorktree → validateInputs.
  */
-function buildDedupPath(issue, fase, stateDir = DEFAULT_STATE_DIR) {
+function buildDedupPath(issue, fase, stateDir = DEFAULT_STATE_DIR()) {
     if (!/^\d+$/.test(String(issue))) {
         throw new Error(`Issue inválido para dedup: "${issue}"`);
     }
@@ -127,7 +133,7 @@ function writeEntry(dedupPath, entry, fsImpl) {
  * Si el contenido no parsea, asumimos "viejo / corrupto" y re-notificamos.
  */
 function shouldNotify(issue, fase, opts = {}) {
-    const { ttlMs = DEFAULT_TTL_MS, stateDir = DEFAULT_STATE_DIR, fsImpl = fs, now = Date.now() } = opts;
+    const { ttlMs = DEFAULT_TTL_MS, stateDir = DEFAULT_STATE_DIR(), fsImpl = fs, now = Date.now() } = opts;
     let dedupPath;
     try {
         dedupPath = buildDedupPath(issue, fase, stateDir);
@@ -149,7 +155,7 @@ function shouldNotify(issue, fase, opts = {}) {
  * Preserva los skills ya registrados por `recordSkill`.
  */
 function markNotified(issue, fase, opts = {}) {
-    const { stateDir = DEFAULT_STATE_DIR, fsImpl = fs, now = Date.now() } = opts;
+    const { stateDir = DEFAULT_STATE_DIR(), fsImpl = fs, now = Date.now() } = opts;
     let dedupPath;
     try {
         dedupPath = buildDedupPath(issue, fase, stateDir);
@@ -172,7 +178,7 @@ function markNotified(issue, fase, opts = {}) {
  * @returns {boolean} true si quedó registrado (o ya estaba).
  */
 function recordSkill(issue, fase, skill, opts = {}) {
-    const { stateDir = DEFAULT_STATE_DIR, fsImpl = fs } = opts;
+    const { stateDir = DEFAULT_STATE_DIR(), fsImpl = fs } = opts;
     if (!SKILL_RE.test(String(skill || ''))) return false;
     let dedupPath;
     try {
@@ -192,7 +198,7 @@ function recordSkill(issue, fase, skill, opts = {}) {
  * archivo es del formato legacy (timestamp plano sin skills).
  */
 function readSkills(issue, fase, opts = {}) {
-    const { stateDir = DEFAULT_STATE_DIR, fsImpl = fs } = opts;
+    const { stateDir = DEFAULT_STATE_DIR(), fsImpl = fs } = opts;
     let dedupPath;
     try {
         dedupPath = buildDedupPath(issue, fase, stateDir);
@@ -207,7 +213,7 @@ function readSkills(issue, fase, opts = {}) {
  * queremos que un futuro problema en otra fase notifique sin esperar TTL.
  */
 function clearDedup(issue, fase, opts = {}) {
-    const { stateDir = DEFAULT_STATE_DIR, fsImpl = fs } = opts;
+    const { stateDir = DEFAULT_STATE_DIR(), fsImpl = fs } = opts;
     let dedupPath;
     try {
         dedupPath = buildDedupPath(issue, fase, stateDir);
@@ -230,6 +236,6 @@ module.exports = {
     recordSkill,
     readSkills,
     DEFAULT_TTL_MS,
-    DEFAULT_STATE_DIR,
+    get DEFAULT_STATE_DIR() { return DEFAULT_STATE_DIR(); },
     MAX_SKILLS,
 };

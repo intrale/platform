@@ -116,8 +116,10 @@ const REASON = Object.freeze({
 });
 
 function defaultStateDir() {
-    return process.env.PIPELINE_STATE_DIR
-        || path.resolve(__dirname, '..', '..', 'state');
+    // #7112 — familia F: el cuerpo pasa a UNA línea sobre el envoltorio (SEC-13).
+    // `PIPELINE_DIR_OVERRIDE` sigue mandando (precedencia D-1 del resolvedor); sin
+    // ambiente declarado ni dir de pruebas avisa por stderr y LANZA (CA-3), nunca `__dirname`.
+    return require('../write-target').writePath(process.env, { canal: 'estado', destino: 'state/agy-catalog-probe.json' }, 'state');
 }
 
 function cachePathFor(opts = {}) {

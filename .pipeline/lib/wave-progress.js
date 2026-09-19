@@ -69,14 +69,22 @@ let _appendCounter = 0;
 
 // ─── Paths (con override por env para tests) ───────────────────────────────
 
+// Root EXPLÍCITO (argumento o `PIPELINE_ROOT_OVERRIDE`), o `null` si no hay.
 function pipelineRoot(pipelineRootArg) {
     if (pipelineRootArg) return pipelineRootArg;
     if (process.env.PIPELINE_ROOT_OVERRIDE) return process.env.PIPELINE_ROOT_OVERRIDE;
-    // .pipeline/lib/wave-progress.js → root = ../..
-    return path.join(__dirname, '..', '..');
+    return null;
 }
 
-function pipelineDir(pipelineRootArg) { return path.join(pipelineRoot(pipelineRootArg), '.pipeline'); }
+function pipelineDir(pipelineRootArg) {
+    const root = pipelineRoot(pipelineRootArg);
+    if (root) return path.join(root, '.pipeline');
+    // #7112 — sin root explícito, el `.pipeline` lo resuelve el envoltorio POR
+    // LLAMADA (SEC-13) y se usa TAL CUAL (el dir efímero del runner no se llama
+    // `.pipeline`): sin ambiente declarado ni dir de pruebas avisa por stderr y
+    // LANZA (CA-3), nunca `__dirname`.
+    return require('./write-target').writeDir(process.env, { canal: 'estado', destino: 'wave-progress.jsonl' });
+}
 
 // Path FIJO (SEC-3 / CA-11): jamás se interpola input en el nombre.
 function storePath(pipelineRootArg) { return path.join(pipelineDir(pipelineRootArg), 'wave-progress.jsonl'); }

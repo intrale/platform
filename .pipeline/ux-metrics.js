@@ -31,8 +31,13 @@
 const fs = require('fs');
 const path = require('path');
 
-const PIPELINE_DIR = path.resolve(__dirname);
-const DEFAULT_METRICS_DIR = path.join(PIPELINE_DIR, 'metrics');
+// #7112 — sin `opts.metricsDir`, el destino se resuelve POR LLAMADA vía
+// `lib/write-target` (SEC-13): ninguna const de módulo captura `__dirname`.
+// Sin ambiente declarado ni dir de pruebas, `writeDir` avisa por stderr y LANZA.
+const writeTarget = require('./lib/write-target');
+function DEFAULT_METRICS_DIR() {
+  return writeTarget.writePath(process.env, { canal: 'logs', destino: 'metrics/' }, 'metrics');
+}
 const LAST_CLEANUP_FILE = '.last-cleanup';
 
 // Retencion y caps (REQ-SEC-5)
@@ -174,7 +179,7 @@ function listUxFiles(metricsDir, fsMod) {
 function cleanup(opts = {}) {
   const fsMod = opts.fs || fs;
   const nowMs = Number(opts.now) || Date.now();
-  const metricsDir = path.resolve(opts.metricsDir || DEFAULT_METRICS_DIR);
+  const metricsDir = path.resolve(opts.metricsDir || DEFAULT_METRICS_DIR());
   const force = !!opts.force;
 
   ensureDir(metricsDir, fsMod);
@@ -280,7 +285,7 @@ function writeFileAtomic(filePath, contents, fsMod) {
 function appendMetric(entry, opts = {}) {
   const fsMod = opts.fs || fs;
   const nowMs = Number(opts.now) || Date.now();
-  const metricsDir = path.resolve(opts.metricsDir || DEFAULT_METRICS_DIR);
+  const metricsDir = path.resolve(opts.metricsDir || DEFAULT_METRICS_DIR());
 
   ensureDir(metricsDir, fsMod);
 
@@ -342,7 +347,7 @@ module.exports = {
   dateSuffix,
   isInsideDir,
   // Constantes publicas
-  DEFAULT_METRICS_DIR,
+  get DEFAULT_METRICS_DIR() { return DEFAULT_METRICS_DIR(); },
   UX_FILE_REGEX,
   RETENTION_DAYS,
   MAX_FILES_HARD_CAP,
@@ -359,7 +364,7 @@ if (require.main === module) {
     process.exit(0);
   }
   if (cmd === 'list') {
-    const files = listUxFiles(DEFAULT_METRICS_DIR, fs);
+    const files = listUxFiles(DEFAULT_METRICS_DIR(), fs);
     console.log(JSON.stringify(files, null, 2));
     process.exit(0);
   }

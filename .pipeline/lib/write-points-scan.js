@@ -38,7 +38,9 @@ const path = require('path');
 const RE_ESCRITURA = /\b(writeFileSync|appendFileSync|mkdirSync|renameSync|rmSync|unlinkSync|copyFileSync|writeFile|appendFile|createWriteStream|writeSync|truncateSync)\s*\(|openSync\([^)]*,\s*['"](a|w)[+a-z]*['"]/;
 const RE_ENV_DIR = /process\.env\.PIPELINE_(DIR_OVERRIDE|STATE_DIR|REPO_ROOT)\b/;
 const RE_DIRNAME = /\b__dirname\b/;
-const RE_WRITE_TARGET = /\bwriteTarget\.(writeDir|writePath|safeWriteDir)\s*\(/;
+// Dos formas del envoltorio: `writeTarget.writeDir(` (require en cabecera) y
+// `require('./write-target').writeDir(` (require perezoso dentro de la función).
+const RE_WRITE_TARGET = /(?:\bwriteTarget|require\(\s*['"][^'"]*write-target['"]\s*\))\.(writeDir|writePath|safeWriteDir)\s*\(/;
 const RE_REQUIRE_DIRNAME = /require\([^)]*__dirname[^)]*\)/;
 
 /** Directorios excluidos por nombre de segmento. */
@@ -349,7 +351,11 @@ if (require.main === module) {
     // Uso: node lib/write-points-scan.js [dir]          → escaneo crudo a stdout
     //      node lib/write-points-scan.js --sync [dir]   → reescribe lib/write-points.json
     const args = process.argv.slice(2);
-    const dir = path.resolve(args.find((a) => !a.startsWith('--')) || path.join(__dirname, '..'));
+    // #7112 — sin dir posicional, el `.pipeline` a escanear/escribir sale del envoltorio
+    // (SEC-13): sin ambiente declarado ni dir de pruebas avisa por stderr y LANZA.
+    // Alternativa explícita: `node lib/write-points-scan.js --sync <dir>`.
+    const dir = path.resolve(args.find((a) => !a.startsWith('--'))
+        || require('./write-target').writeDir(process.env, { canal: 'estado', destino: 'lib/write-points.json' }));
     if (args.includes('--sync')) {
         const puntos = escribirInventario(dir);
         process.stderr.write(`[write-points-scan] ${rutaInventario(dir)}: ${resumen(puntos)}\n`);

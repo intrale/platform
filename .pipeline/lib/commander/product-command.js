@@ -191,8 +191,10 @@ function createProductCommander(opts = {}) {
     const confirmTtlMs = Number.isFinite(opts.confirmTtlMs) && opts.confirmTtlMs > 0
         ? opts.confirmTtlMs
         : DEFAULT_CONFIRM_TTL_MS;
+    // #7112 — sin `opts.storeDir` el destino sale del envoltorio (SEC-13): sin
+    // ambiente declarado ni dir de pruebas avisa por stderr y LANZA (CA-3).
     const storeDir = opts.storeDir
-        || path.join(__dirname, '..', '..', 'operator-gate', 'product-confirm');
+        || require('../write-target').writePath(process.env, { canal: 'estado', destino: 'operator-gate/product-confirm/' }, 'operator-gate', 'product-confirm');
 
     function auditRecord(rec) {
         if (!audit) return;

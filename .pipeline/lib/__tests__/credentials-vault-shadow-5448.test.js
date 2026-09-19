@@ -425,20 +425,33 @@ test('un boot de prueba sin inyeccion NO escribe en el .pipeline/audit/ del repo
   _resetVaultShadowMetrics();
 });
 
-test('el singleton por defecto apunta al .pipeline/audit/ del repo (cableado de produccion)', () => {
+// #7112 — el default ya no se ancla a `__dirname`: el `.pipeline` sale del
+// resolvedor de ambiente POR LLAMADA (`lib/write-target`). Acá el dir del
+// ambiente es el override del runner (o uno propio si el test corre suelto).
+test('el singleton por defecto apunta al audit/ del .pipeline del ambiente (cableado por llamada)', () => {
   _resetVaultShadowMetrics();
-  const jsonlReal = path.join(path.resolve(__dirname, '..', '..', 'audit'), 'vault-resolution.jsonl');
+  const previo = process.env.PIPELINE_DIR_OVERRIDE;
+  const ambiente = previo || fs.mkdtempSync(path.join(os.tmpdir(), 'vault-shadow-amb-'));
+  process.env.PIPELINE_DIR_OVERRIDE = ambiente;
+  const auditDirEsperado = path.join(path.resolve(ambiente), 'audit');
+  const jsonlReal = path.join(auditDirEsperado, 'vault-resolution.jsonl');
   // Misma huella que el test de arriba y por la misma razón (#5453 rev-3): lo
   // que se afirma es que PEDIR el singleton no escribe, no que el archivo esté
   // ausente. En un checkout donde ya corrió un boot real el JSONL existe, y eso
   // no dice nada sobre la laziness.
   const jsonlAntes = huella(jsonlReal);
-  const real = getVaultShadowMetrics();
-  assert.equal(real.paths.auditDir, path.resolve(__dirname, '..', '..', 'audit'));
-  assert.equal(real.paths.jsonl, jsonlReal);
-  // Pedirlo no crea nada: la laziness es lo que sostiene CA-25.
-  assert.equal(huella(jsonlReal), jsonlAntes);
-  _resetVaultShadowMetrics();
+  try {
+    const real = getVaultShadowMetrics();
+    assert.equal(real.paths.auditDir, auditDirEsperado);
+    assert.equal(real.paths.jsonl, jsonlReal);
+    // Pedirlo no crea nada: la laziness es lo que sostiene CA-25.
+    assert.equal(huella(jsonlReal), jsonlAntes);
+  } finally {
+    if (previo === undefined) delete process.env.PIPELINE_DIR_OVERRIDE;
+    else process.env.PIPELINE_DIR_OVERRIDE = previo;
+    if (!previo) fs.rmSync(ambiente, { recursive: true, force: true });
+    _resetVaultShadowMetrics();
+  }
 });
 
 // =============================================================================
@@ -483,7 +496,9 @@ test('el hook no agrega ninguna dependencia de red al camino de boot', () => {
   // metido acá convertiría `loadIntoEnv()` en un punto de falla remoto.
   const fuente = fs.readFileSync(path.join(__dirname, '..', 'vault-shadow-metrics.js'), 'utf8');
   const requires = [...fuente.matchAll(/require\((['"])([^'"]+)\1\)/g)].map((m) => m[2]);
-  assert.deepEqual(requires.sort(), ['fs', 'path']);
+  // #7112 — `./write-target` (→ pipeline-env → config-resolver) resuelve el
+  // directorio de audit por llamada: fs/path/yaml/ajv, sin red.
+  assert.deepEqual(requires.sort(), ['./write-target', 'fs', 'path']);
   for (const prohibido of ['http', 'https', 'net', 'child_process', 'setInterval(', 'setTimeout(']) {
     assert.equal(fuente.includes(prohibido), false, `el nucleo no puede usar ${prohibido}`);
   }

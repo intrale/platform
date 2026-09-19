@@ -236,10 +236,16 @@ function dryRun(descriptor, deps = {}) {
 // Registro del producto (paso 4, sólo modo 'full'). Escribe `status:onboarding`
 // (INACTIVO) hasta OK humano. Inyectable por `deps.registerProduct` para tests.
 // -----------------------------------------------------------------------------
-const DEFAULT_REGISTRY_PATH = path.resolve(__dirname, '..', 'descriptors', 'registry.json');
+// #7112 — el destino se resuelve POR LLAMADA vía `lib/write-target` (SEC-13):
+// ninguna const de módulo captura `__dirname` al `require`. Sin ambiente
+// declarado ni dir de pruebas, `writeDir` avisa por stderr y LANZA (CA-3).
+// Identificadores conservados: cada uso `X` → `X()`.
+function DEFAULT_REGISTRY_PATH() {
+  return require('./write-target').writePath(process.env, { canal: 'estado', destino: 'descriptors/registry.json' }, 'descriptors', 'registry.json');
+}
 
 function defaultRegisterProduct(entry, deps = {}) {
-  const registryPath = deps.registryPath || DEFAULT_REGISTRY_PATH;
+  const registryPath = deps.registryPath || DEFAULT_REGISTRY_PATH();
   let registry = {};
   try {
     registry = JSON.parse(fs.readFileSync(registryPath, 'utf8'));
@@ -679,7 +685,7 @@ module.exports = {
   sanitizeOperatorError,
   classifyStoreError,
   renderHuman,
-  DEFAULT_REGISTRY_PATH,
+  get DEFAULT_REGISTRY_PATH() { return DEFAULT_REGISTRY_PATH(); },
   DEFAULT_CONFIG_PATH,
 };
 

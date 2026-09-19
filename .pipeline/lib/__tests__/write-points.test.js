@@ -68,6 +68,33 @@ test('coherencia: lo que el JSON declara migrado/safe lo es también para el esc
     assert.deepStrictEqual(incoherentes, [], `estados incoherentes:\n  ${incoherentes.join('\n  ')}`);
 });
 
+// CA-2 bullet 4 / D-1 del PO: un `__dirname` crudo en una ruta de escritura es
+// INMUNE a cualquier override — el dir efímero del runner (CA-4) no lo cubre y
+// desde el repo principal escribe al `.pipeline` productivo. No hay goteo para
+// estos: o se migran al envoltorio (`writeDir`/`safeWriteDir`) o se curan como
+// `lectura`/`externo` con `nota` (falso positivo del heurístico).
+test('CA-2 bullet 4: ningún punto inmune (__dirname crudo) queda pendiente', () => {
+    const inmunes = scan.leerInventario(PIPELINE_DIR)
+        .filter((e) => e.inmune === true && e.estado === 'pendiente')
+        .map((e) => `${scan.clave(e)} (L${e.linea})`);
+    assert.deepStrictEqual(inmunes, [],
+        `__dirname crudo en ruta de escritura (inmune a todo override): migrar a lib/write-target o curar como lectura/externo con nota:\n  ${inmunes.join('\n  ')}`);
+});
+
+// La regla anterior se evalúa contra el JSON versionado; ésta contra el código
+// real, para que "migrar editando el JSON" tampoco alcance.
+test('CA-2 bullet 4: el escáner tampoco encuentra inmunes que el JSON no haya curado', () => {
+    const porClave = new Map(scan.leerInventario(PIPELINE_DIR).map((e) => [scan.clave(e), e]));
+    const sinCurar = scan.escanear(PIPELINE_DIR)
+        .filter((e) => e.inmune && e.estado === 'pendiente')
+        .filter((e) => {
+            const j = porClave.get(scan.clave(e));
+            return !j || !scan.ESTADOS_CURADOS.includes(j.estado) || !j.nota;
+        })
+        .map((e) => `${scan.clave(e)} (L${e.linea})`);
+    assert.deepStrictEqual(sinCurar, [], `inmunes sin migrar ni curar (lectura/externo + nota):\n  ${sinCurar.join('\n  ')}`);
+});
+
 test('CA-2: Tier 1 y Tier 2 no tienen puntos pendientes', () => {
     const pendientes = scan.leerInventario(PIPELINE_DIR)
         .filter((e) => e.tier <= 2 && e.estado === 'pendiente')

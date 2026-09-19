@@ -20,17 +20,21 @@ const cb = require('./circuit-breaker-infra');
 const { redact } = require('./redact');
 const dropfileWriter = require('./lib/dropfile-writer');
 
-const PIPELINE = path.resolve(__dirname);
-const TELEGRAM_QUEUE = path.join(PIPELINE, 'servicios', 'telegram', 'pendiente');
+// #7112 — la cola se resuelve POR LLAMADA vía `lib/write-target` (SEC-13):
+// sin ambiente declarado ni dir de pruebas avisa por stderr y LANZA (CA-3).
+const writeTarget = require('./lib/write-target');
+function TELEGRAM_QUEUE() {
+  return writeTarget.writePath(process.env, { canal: 'colas', destino: 'servicios/telegram/pendiente/' }, 'servicios', 'telegram', 'pendiente');
+}
 
 function encolarTelegram(text) {
   try {
-    fs.mkdirSync(TELEGRAM_QUEUE, { recursive: true });
+    fs.mkdirSync(TELEGRAM_QUEUE(), { recursive: true });
     const safeText = redact(text);
     // #6226 — nombre único + escritura `wx`: dos dropfiles del mismo
     // milisegundo ya no se pisan entre sí ni pisan los de otro proceso.
     dropfileWriter.writeDropfileSync({
-      dir: TELEGRAM_QUEUE,
+      dir: TELEGRAM_QUEUE(),
       suffix: 'resume.json',
       data: JSON.stringify({ text: safeText, parse_mode: 'Markdown' }),
     });

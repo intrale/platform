@@ -171,7 +171,9 @@ function mapPathsToComponents(paths) {
 function _resolvePipelineDir(opts) {
     const o = opts || {};
     if (typeof o.pipelineDir === 'string' && o.pipelineDir) return o.pipelineDir;
-    return path.resolve(__dirname, '..');
+    // #7112 — resolución POR LLAMADA vía el envoltorio (SEC-13): sin ambiente
+    // declarado ni dir de pruebas avisa por stderr y LANZA (CA-3), nunca `__dirname`.
+    return require('./write-target').writeDir(process.env, { canal: 'estado', destino: 'stale-services.json' });
 }
 
 function _resolveRepoRoot(opts) {

@@ -427,7 +427,10 @@ function main() {
 
   // 5.5 #4575 — GATE 2 defense-in-depth: revalidar firma verde ligada al HEAD
   // actual antes de tocar remoto (anti-TOCTOU CA-3). Kill switch OFF ⇒ no-op.
-  const pipelineDir = path.join(__dirname);
+  // #7112 — `operatorSignature.evaluate` persiste en `<pipelineDir>/audit/`: el
+  // dir se resuelve por llamada vía `lib/write-target` (SEC-13). Sin ambiente
+  // declarado ni dir de pruebas avisa por stderr y LANZA (CA-3), nunca `__dirname`.
+  const pipelineDir = require('./lib/write-target').writeDir(process.env, { canal: 'logs', destino: 'audit/ (firma de aceptación, GATE 2)' });
   const cfg = loadConfigFailClosed(pipelineDir);
   if (((cfg.operator_signature || {}).enabled === true) && args.issue) {
     const headRev = spawnSync('git', ['-C', cwd, 'rev-parse', 'HEAD'], { encoding: 'utf8' });

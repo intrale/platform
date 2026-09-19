@@ -100,8 +100,10 @@ function getRedact() {
 
 function pipelineDir() {
     // Permitir override en tests vía env var (mismo patrón que partial-pause).
-    if (process.env.PIPELINE_DIR_OVERRIDE) return process.env.PIPELINE_DIR_OVERRIDE;
-    return path.resolve(__dirname, '..');
+    // #7112 — familia F: el cuerpo pasa a UNA línea sobre el envoltorio (SEC-13).
+    // `PIPELINE_DIR_OVERRIDE` sigue mandando (precedencia D-1 del resolvedor); sin
+    // ambiente declarado ni dir de pruebas avisa por stderr y LANZA (CA-3), nunca `__dirname`.
+    return require('./write-target').writeDir(process.env, { canal: 'estado', destino: 'quota-exhausted.json · tmp/ · logs/ · metrics/' });
 }
 
 function flagFile() {

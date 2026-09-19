@@ -47,8 +47,10 @@ const path = require('path');
 // Mismo mecanismo de resolución que `partial-pause.js`: override por env para
 // que los tests apunten a un tmp sin tocar el pipeline real.
 function pipelineDir() {
-    if (process.env.PIPELINE_DIR_OVERRIDE) return process.env.PIPELINE_DIR_OVERRIDE;
-    return path.join(__dirname, '..');
+    // #7112 — familia F: el cuerpo pasa a UNA línea sobre el envoltorio (SEC-13).
+    // `PIPELINE_DIR_OVERRIDE` sigue mandando (precedencia D-1 del resolvedor); sin
+    // ambiente declarado ni dir de pruebas avisa por stderr y LANZA (CA-3), nunca `__dirname`.
+    return require('./write-target').writeDir(process.env, { canal: 'pausa', destino: 'partial-pause-deps-mute.json' });
 }
 
 const MUTE_FILENAME = 'partial-pause-deps-mute.json';

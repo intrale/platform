@@ -457,8 +457,10 @@ function evaluateCreateIssueLabels({ labels, order = {} } = {}) {
 const AUDIT_MAX_BYTES = 5 * 1024 * 1024; // 5 MB por archivo antes de rotar
 
 function defaultAuditDir() {
-    const pipelineDir = process.env.PIPELINE_STATE_DIR || path.resolve(__dirname, '..');
-    return path.join(pipelineDir, 'audit');
+    // #7112 — familia F: el cuerpo pasa a UNA línea sobre el envoltorio (SEC-13).
+    // `PIPELINE_DIR_OVERRIDE` sigue mandando (precedencia D-1 del resolvedor); sin
+    // ambiente declarado ni dir de pruebas avisa por stderr y LANZA (CA-3), nunca `__dirname`.
+    return require('./write-target').writePath(process.env, { canal: 'logs', destino: 'audit/label-guardrail*.jsonl' }, 'audit');
 }
 
 function auditFileFor(dir, ts) {

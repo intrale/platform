@@ -25,7 +25,13 @@ const fileLock = require('./file-lock');
 // Lock dentro de `.pipeline/locks/` (no en /tmp compartido) — requisito de
 // seguridad: el path no debe ser un destino world-writable predecible que
 // permita a un proceso ajeno bloquear el pipeline.
-const DEFAULT_LOCK_PATH = path.join(__dirname, '..', 'locks', 'gradle-global.lock');
+// #7112 — el destino se resuelve POR LLAMADA vía `lib/write-target` (SEC-13):
+// ninguna const de módulo captura `__dirname` al `require`. Sin ambiente
+// declarado ni dir de pruebas, `writeDir` avisa por stderr y LANZA (CA-3).
+// Identificadores conservados: cada uso `X` → `X()`.
+function DEFAULT_LOCK_PATH() {
+    return require('./write-target').writePath(process.env, { canal: 'estado', destino: 'locks/gradle-global.lock' }, 'locks', 'gradle-global.lock');
+}
 
 // Espera larga: los builds que no consiguen el lock ENCOLAN, no fallan. El
 // trade-off (mayor wall-clock a cambio de no saturar) ya está aceptado en el
@@ -39,7 +45,7 @@ const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000;
  * @returns {string}
  */
 function resolveLockPath() {
-    return process.env.GRADLE_LOCK_PATH || DEFAULT_LOCK_PATH;
+    return process.env.GRADLE_LOCK_PATH || DEFAULT_LOCK_PATH();
 }
 
 /**
@@ -73,6 +79,6 @@ async function withGradleLock(fn, opts = {}) {
 module.exports = {
     withGradleLock,
     resolveLockPath,
-    DEFAULT_LOCK_PATH,
+    get DEFAULT_LOCK_PATH() { return DEFAULT_LOCK_PATH(); },
     DEFAULT_TIMEOUT_MS,
 };

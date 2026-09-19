@@ -25,8 +25,14 @@ const fs = require('fs');
 const path = require('path');
 const { execSync, spawnSync } = require('child_process');
 
-const PIPELINE = path.resolve(__dirname);
-const LOG_DIR = path.join(PIPELINE, 'logs');
+// #7112 — el destino del audit se resuelve POR LLAMADA vía `lib/write-target`
+// (SEC-13). El audit es best-effort: `safeWriteDir` nunca lanza; sin ambiente
+// declarado ni dir de pruebas avisa por stderr y se saltea el archivo.
+const writeTarget = require('./lib/write-target');
+function logDir() {
+  const dir = writeTarget.safeWriteDir(process.env, { canal: 'logs', destino: 'logs/audit-<issue>.log' });
+  return dir ? path.join(dir, 'logs') : null;
+}
 
 /**
  * ISO-8601 UTC compacto sin puntuación — seguro como sufijo de tag git.
@@ -128,8 +134,10 @@ function tagExists(name, cwd) {
  */
 function writeAudit(issue, line) {
   try {
-    fs.mkdirSync(LOG_DIR, { recursive: true });
-    const file = path.join(LOG_DIR, `audit-${issue}.log`);
+    const dir = logDir();
+    if (!dir) return; // bloqueado por ambiente: ya avisó por stderr
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, `audit-${issue}.log`);
     // Usamos appendFileSync (flag 'a' implícito) para evitar truncar.
     fs.appendFileSync(file, line + '\n', { encoding: 'utf8' });
   } catch (e) {

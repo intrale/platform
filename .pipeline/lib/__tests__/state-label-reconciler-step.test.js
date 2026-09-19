@@ -16,7 +16,12 @@ fs.mkdirSync(path.join(PIPELINE, 'desarrollo', 'validacion', 'bloqueado-humano')
 fs.mkdirSync(path.join(PIPELINE, 'definicion', 'analisis', 'bloqueado-humano'), { recursive: true });
 
 process.env.CLAUDE_PROJECT_DIR = TMP_DIR;
-process.env.PIPELINE_REPO_ROOT = TMP_DIR;
+// #7112 SEC-9 / CA-5 — `PIPELINE_REPO_ROOT/.pipeline` forma parte de la unión
+// "productivo" que `dentroDelProductivo` protege. Si el estado del fixture
+// viviera exactamente en `<PIPELINE_REPO_ROOT>/.pipeline`, SEC-3 anularía el
+// override (dir: null) y el `require` del servicio lanzaría
+// EscrituraBloqueadaError. El "repo" del fixture es un dir hermano, vacío.
+process.env.PIPELINE_REPO_ROOT = path.join(TMP_DIR, 'repo');
 process.env.PIPELINE_STATE_DIR = PIPELINE;
 // #7112 — el runner deja PIPELINE_DIR_OVERRIDE global (precedencia D-1 sobre PIPELINE_STATE_DIR): se declara el mismo dir.
 process.env.PIPELINE_DIR_OVERRIDE = PIPELINE;

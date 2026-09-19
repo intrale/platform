@@ -58,7 +58,10 @@ test('#6118 CA-9 el módulo no tiene ningún camino hacia las primitivas de muta
     }
     // Y no importa NADA que pueda mutar el estado del pipeline.
     const requires = [...codigo.matchAll(/require\(['"]([^'"]+)['"]\)/g)].map(m => m[1]);
-    assert.deepEqual(requires.sort(), ['./config-resolver', 'fs', 'path'],
+    // #7112 — `./write-target` resuelve el DIRECTORIO por llamada (envoltorio
+    // puro sobre `pipeline-env`): no muta estado del pipeline ni conoce
+    // `partial-pause`. Entra en la lista blanca; nada más.
+    assert.deepEqual(requires.sort(), ['./config-resolver', './write-target', 'fs', 'path'],
         'la superficie de dependencias del store tiene que quedarse chica y aburrida');
 });
 
