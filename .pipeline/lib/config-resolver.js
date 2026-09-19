@@ -1260,6 +1260,11 @@ module.exports = {
     formatOverrideAlert,
     isConfigViolation,
     ENV_OVERRIDES,
+    // #7110 · precedencia D-1 del directorio (`PIPELINE_DIR_OVERRIDE` >
+    // `PIPELINE_STATE_DIR` > `PIPELINE_REPO_ROOT`+`.pipeline`). Se exporta para
+    // que `pipeline-env.js` itere la MISMA lista congelada sobre el `env` que
+    // recibe por parámetro, en vez de copiarla. `resolveConfigPath` no cambia.
+    ENV_ROOT_VARS,
     ConfigParseViolation,
     ConfigSchemaViolation,
     _resetTraceState,
