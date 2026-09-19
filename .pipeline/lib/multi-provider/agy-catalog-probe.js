@@ -13,12 +13,20 @@
 // considera SANO al provider sólo si el CLI devuelve un catálogo NO vacío.
 //
 // CUATRO ESTADOS (#7290): versión fuera del rango probado → cli_contract_mismatch.
+// #7371 — política (b): versión POR ENCIMA del máximo probado y MISMO major =
+// advertencia (sigue al round-trip; si el catálogo responde, verde con
+// `detail: version_above_tested`). Sólo `< min`, major distinto o versión
+// ilegible cortan antes del catálogo con rojo durable. Ver §4.4.1.
 //
-//   | Estado real                          | reason_code               | ok    |
-//   |--------------------------------------|---------------------------|-------|
-//   | binario ausente                      | cli_unavailable           | false |
-//   | instalado, sin licencia / sin sesión | cli_license_unavailable   | false |
-//   | instalado y con licencia (catálogo)  | cli_catalog_ok            | true  |
+//   | Estado real                                  | reason_code             | ok    | detail                      |
+//   |----------------------------------------------|-------------------------|-------|-----------------------------|
+//   | binario ausente                              | cli_unavailable         | false | binary_missing              |
+//   | versión < min / major distinto / ilegible    | cli_contract_mismatch   | false | version_below_min /         |
+//   |                                              |                         |       | version_major_above_tested /|
+//   |                                              |                         |       | version_unparseable         |
+//   | instalado, sin licencia / sin sesión         | cli_license_unavailable | false | timeout / exit_nonzero / …  |
+//   | instalado y con licencia (catálogo)          | cli_catalog_ok          | true  | catalog_ok                  |
+//   | ídem, versión > max_tested (mismo major)     | cli_catalog_ok          | true  | version_above_tested        |
 //
 // "Sin licencia" agrupa: rc≠0, timeout (agy deslogueado BLOQUEA en OAuth hasta
 // timeout — #4869), catálogo vacío o salida no parseable. Todos comparten la
@@ -87,6 +95,10 @@ const MODEL_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._\-/:]{0,79}$/;
 const DETAIL = Object.freeze({
     VERSION_BELOW_MIN: 'version_below_min',
     VERSION_ABOVE_TESTED: 'version_above_tested',
+    // #7371 REQ-SEC-C — salto de major (1.x → 2.x): cambio contractual por
+    // semver, sigue siendo rojo durable. 26 chars, entra en el slice(0, 32)
+    // de `sanitizeCliProbe`.
+    VERSION_MAJOR_ABOVE_TESTED: 'version_major_above_tested',
     VERSION_UNPARSEABLE: 'version_unparseable',
     BINARY_MISSING: 'binary_missing',
     EXIT_NONZERO: 'exit_nonzero',
@@ -268,9 +280,18 @@ function runAgyVersion({ cmd, env, spawnImpl, timeoutMs }) {
 
 
 // Contrato probado: la versión se guarda saneada, nunca el stdout libre.
-// #7371 — pin subido a 1.2.7 el 19/9/2026 (mitigación inmediata: el auto-update
-// del CLI dejó a Antigravity fuera de la cascada en silencio). La política de
-// "versión por encima del máximo probado = advertencia" se implementa en #7371.
+//
+// ÚNICA FUENTE del pin (#7371, absorbe #7320): `secrets-rw.js` lo importa por
+// identidad para `PROVIDER_SPECS.antigravity.cli_contract`; no duplicar el
+// literal en ningún otro lado (hay un test de identidad `===`).
+//
+// #7371 — política (b), decisión del operador (Leo, 19/9/2026): una versión
+// POR ENCIMA de `max_tested_version` con el MISMO major es ADVERTENCIA, no
+// bloqueo: el probe hace el round-trip igual y, si el catálogo responde, el
+// provider queda verde con `detail: version_above_tested` (alerta Telegram
+// cada 24 h + re-verificación diferida de TOS en #7343). Un salto de major
+// (`version_major_above_tested`), `< min` o una versión ilegible siguen
+// siendo rojo durable `cli_contract_mismatch`. Ver docs/pipeline/multi-provider.md §4.4.1.
 const AGY_CLI_CONTRACT = Object.freeze({ min_version: '1.2.0', max_tested_version: '1.2.7' });
 function parseAgyVersion(stdout) {
     if (typeof stdout !== 'string') return null;
@@ -332,6 +353,9 @@ function fromCache(entry, nowMs) {
     return {
         ok: entry.reason === REASON.OK,
         cli_version: parseAgyVersion(entry.cli_version),
+        // #7371 — pin vigente al momento del probe (null en entries v2 viejos:
+        // el panel omite el pin, no lo inventa).
+        max_tested_version: parseAgyVersion(entry.max_tested_version),
         reason: entry.reason,
         detail: entry.detail || null,
         models: Array.isArray(entry.models) ? entry.models.slice() : [],
@@ -360,6 +384,7 @@ function fromCache(entry, nowMs) {
 // @param {boolean}  [opts.force=false]    — ignora la cache (ping manual).
 // @param {boolean}  [opts.noCache=false]  — no lee ni escribe cache (tests).
 // @returns {Promise<{ok:boolean, reason:string, detail:string|null, models:string[],
+//           cli_version:string|null, max_tested_version:string|null,
 //           model_count:number, latency_ms:number|null, checked_at:string,
 //           age_ms:number, cached:boolean, launcher_kind:string|null}>}
 // -----------------------------------------------------------------------------
@@ -412,13 +437,20 @@ async function probeAgyCatalog(opts = {}) {
     const cliVersion = parseAgyVersion(ver.stdout);
     const min = parseAgyVersion(contract.min_version), max = parseAgyVersion(contract.max_tested_version);
     let contractDetail = null;
+    let aboveTested = false;
     if (ver.spawnError || ver.timedOut || ver.rc !== 0 || !cliVersion || !min || !max || cmpSemver(min, max) > 0) contractDetail = DETAIL.VERSION_UNPARSEABLE;
     else if (cmpSemver(cliVersion, min) < 0) contractDetail = DETAIL.VERSION_BELOW_MIN;
-    else if (cmpSemver(cliVersion, max) > 0) contractDetail = DETAIL.VERSION_ABOVE_TESTED;
+    else if (cmpSemver(cliVersion, max) > 0) {
+        // #7371 política (b): mismo major → advertencia (sigue al round-trip);
+        // major distinto → rojo durable (REQ-SEC-C, §4.4.1).
+        if (cliVersion.split('.')[0] !== max.split('.')[0]) contractDetail = DETAIL.VERSION_MAJOR_ABOVE_TESTED;
+        else aboveTested = true;
+    }
     if (contractDetail) {
         const entry = { version: CACHE_VERSION, provider: 'antigravity', cmd: bin.cmd,
-            launcher_kind: bin.kind, cli_version: cliVersion, contract_key: contractKey,
-            reason: REASON.CONTRACT, detail: contractDetail, models: [], checked_at_ms: nowMs };
+            launcher_kind: bin.kind, cli_version: cliVersion, max_tested_version: max,
+            contract_key: contractKey, reason: REASON.CONTRACT, detail: contractDetail,
+            models: [], checked_at_ms: nowMs };
         if (useCache) writeCache(cachePath, entry, fsImpl);
         return { ...fromCache(entry, nowMs), cached: false };
     }
@@ -441,7 +473,11 @@ async function probeAgyCatalog(opts = {}) {
         if (models.length === 0) {
             reason = REASON.LICENSE; detail = DETAIL.EMPTY_CATALOG;
         } else {
-            reason = REASON.OK; detail = DETAIL.CATALOG_OK;
+            // #7371 — el catálogo respondió: verde. Si la versión está por
+            // encima del máximo probado, el `detail` lo deja visible (panel +
+            // alerta) sin gobernar el estado. Si el round-trip FALLÓ, gana el
+            // detail del fallo (arriba): no hay verde que avisar.
+            reason = REASON.OK; detail = aboveTested ? DETAIL.VERSION_ABOVE_TESTED : DETAIL.CATALOG_OK;
         }
     }
 
@@ -449,6 +485,7 @@ async function probeAgyCatalog(opts = {}) {
         version: CACHE_VERSION,
         provider: 'antigravity',
         cli_version: cliVersion,
+        max_tested_version: max,
         contract_key: contractKey,
         cmd: bin.cmd,
         launcher_kind: bin.kind,

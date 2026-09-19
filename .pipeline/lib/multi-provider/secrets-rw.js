@@ -111,9 +111,12 @@ const MANAGED_KEYS = Object.freeze([
         // un flag de entorno local: ver `cli-oauth-probe.js#probeCliProviderLive`
         // y `agy-catalog-probe.js`.
         catalog_probe: 'agy',
-        // #7371 — pin 1.2.7 (19/9/2026). Mantener en sync con AGY_CLI_CONTRACT
-        // de agy-catalog-probe.js hasta que #7371 lo deje en una única fuente.
-        cli_contract: { min_version: '1.2.0', max_tested_version: '1.2.7' },
+        // #7371 (absorbe #7320) — ÚNICA fuente del pin: se importa por identidad
+        // desde agy-catalog-probe.js. Antes había un literal duplicado acá y el
+        // pin efectivo en runtime era ESTE (cli-oauth-probe pasa `spec.cli_contract`
+        // al probe), así que subir el del probe no cambiaba nada. Sin ciclo:
+        // agy-catalog-probe sólo requiere cli-oauth-probe (+ lazy el handler).
+        cli_contract: require('./agy-catalog-probe').AGY_CLI_CONTRACT,
         free_tier_notes: 'Antigravity CLI; disponibilidad sujeta a sesión OAuth y licencia/billing.',
     },
 ]);

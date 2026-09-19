@@ -355,6 +355,10 @@ test('#3823 · fallback con health rojo fresco → skipReason health_gate', () =
         const health = r.skipReasons.find(s => s.reason === SKIP_REASON_CODES.HEALTH_GATE);
         assert.ok(health, 'skipReason health_gate presente');
         assert.equal(health.provider, 'cerebras');
+        // #7371 CA-12 — causa ESTRUCTURADA = reason_code del snapshot (allowlist
+        // cerrada), para que el Commander no tenga que parsear `details`.
+        assert.equal(health.health_reason, 'invalid_credentials');
+        assert.deepEqual(Object.keys(health).sort(), ['details', 'health_reason', 'provider', 'reason']);
         recordReasons(r.skipReasons);
     } finally { cleanup(dir); }
 });

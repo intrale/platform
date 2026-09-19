@@ -260,3 +260,97 @@ test('#5456 · control negativo · SIN flag de cuota el turno sigue saliendo por
         assert.equal(resolution.crossProvider, false);
     });
 });
+
+// =============================================================================
+// #7371 · CA-12 / CA-13 — canned del Commander: la causa real por eslabón y un
+// encabezado que no la contradiga.
+//
+// Incidente 2026-09-19: Anthropic en reposo, Codex con cuota semanal real al 93%
+// y Antigravity gateado por versión del CLI → el Commander respondía "sin
+// credenciales o desactivados, no por falta de cuota", falso en las dos
+// direcciones. Ahora el encabezado se deriva del CONJUNTO de causas y la línea
+// por eslabón usa `provider-pause-cause.ACTION_SHORT[health_reason]` (tabla
+// cerrada; REQ-SEC-G). Deps de disco inyectadas: sin cuota ni schedule reales.
+// =============================================================================
+const _7371_DEPS = Object.freeze({
+    now: Date.UTC(2026, 8, 19, 10, 0, 0),
+    quotaModule: { readDefensive: () => ({ exhausted: false }), canonicalProvider: (p) => p },
+    restStatusFor: () => ({ resting: false }),
+});
+
+test('#7371 · CA-13 (a) · cadena gateada por health → sin "credenciales", causa real por eslabón', () => {
+    const canned = commanderMP.cannedAllGatedResponse({
+        reason: 'all_gated',
+        chainTried: ['anthropic', 'openai-codex', 'antigravity'],
+        skipReasons: [
+            { provider: 'anthropic', reason: 'provider_inactive_by_schedule', details: null },
+            { provider: 'openai-codex', reason: 'health_gate', details: 'health=red fresco (quota_exhausted_real)', health_reason: 'quota_exhausted_real' },
+            { provider: 'antigravity', reason: 'health_gate', details: 'health=red fresco (cli_contract_mismatch)', health_reason: 'cli_contract_mismatch' },
+        ],
+    }, _7371_DEPS);
+    assert.doesNotMatch(canned, /credenciales/);
+    assert.doesNotMatch(canned, /no por falta de cuota/);
+    assert.match(canned, /abajo va la causa de cada uno/);
+    assert.match(canned, /Codex con la cuota agotada/);
+    assert.match(canned, /Antigravity con el CLI en una versión no probada/);
+    assert.match(canned, /Claude en reposo/);
+    assert.match(canned, /\/status, \/listado, \/lanzar/);
+    // El `details` crudo del dispatcher nunca se interpola.
+    assert.doesNotMatch(canned, /health=red fresco/);
+});
+
+test('#7371 · CA-13 (b) · con permission_matrix presente sigue diciendo "sin credenciales o desactivados"', () => {
+    const canned = commanderMP.cannedAllGatedResponse({
+        reason: 'all_gated',
+        skipReasons: [
+            { provider: 'openai-codex', reason: 'permission_matrix', details: 'no_key_configured' },
+            { provider: 'antigravity', reason: 'health_gate', details: null, health_reason: 'cli_contract_mismatch' },
+        ],
+    }, _7371_DEPS);
+    assert.match(canned, /sin credenciales o desactivados/);
+    const disabled = commanderMP.cannedAllGatedResponse({
+        reason: 'all_gated',
+        skipReasons: [{ provider: 'anthropic', reason: 'provider_disabled', details: null }],
+    }, _7371_DEPS);
+    assert.match(disabled, /sin credenciales o desactivados/);
+});
+
+test('#7371 · CA-12 (c) · health_reason desconocido → "caído temporalmente" (fail-closed a copy aprobado)', () => {
+    const line = commanderMP.describeGatedChain({
+        skipReasons: [{ provider: 'antigravity', reason: 'health_gate', details: 'health=red fresco (zzz)', health_reason: 'zzz' }],
+    }, _7371_DEPS);
+    assert.equal(line, 'Antigravity caído temporalmente');
+    // Sin `health_reason` (skips viejos) → mismo copy genérico, sin romper.
+    const legacy = commanderMP.describeGatedChain({
+        skipReasons: [{ provider: 'antigravity', reason: 'health_gate', details: 'health=red fresco (cli_contract_mismatch)' }],
+    }, _7371_DEPS);
+    assert.equal(legacy, 'Antigravity caído temporalmente');
+    // `health_reason` no-string no se lee.
+    const bogus = commanderMP.describeGatedChain({
+        skipReasons: [{ provider: 'antigravity', reason: 'health_gate', health_reason: { toString: () => 'cli_contract_mismatch' } }],
+    }, _7371_DEPS);
+    assert.equal(bogus, 'Antigravity caído temporalmente');
+});
+
+test('#7371 · CA-13 · todas las causas de cuota (reason o health_reason) → encabezado histórico "sin cuota disponible"', () => {
+    const canned = commanderMP.cannedAllGatedResponse({
+        reason: 'all_gated',
+        chainTried: ['anthropic', 'openai-codex', 'antigravity'],
+        skipReasons: [
+            { provider: 'anthropic', reason: 'quota_exhausted', details: null },
+            { provider: 'openai-codex', reason: 'health_gate', details: null, health_reason: 'quota_exhausted_real' },
+            { provider: 'antigravity', reason: 'health_gate', details: null, health_reason: 'quota_flag_active' },
+        ],
+    }, _7371_DEPS);
+    assert.match(canned.split('\n')[0], /sin cuota disponible/);
+    assert.doesNotMatch(canned, /credenciales/);
+});
+
+test('#7371 · redactSkipReasons preserva health_reason (enum) y sigue redactando details', () => {
+    const out = commanderMP.redactSkipReasons([
+        { provider: 'antigravity', reason: 'health_gate', details: 'x', health_reason: 'cli_contract_mismatch' },
+        { provider: 'anthropic', reason: 'quota_exhausted', details: null },
+    ]);
+    assert.equal(out[0].health_reason, 'cli_contract_mismatch');
+    assert.equal('health_reason' in out[1], false);
+});

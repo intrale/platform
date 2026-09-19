@@ -1009,6 +1009,38 @@ const _SKIP_REASON_WAIT_COPY = Object.freeze({
     invalid_handler: 'no disponible',
 });
 
+// #7371 CA-12 / REQ-SEC-G — para `health_gate` la causa real por eslabón sale de
+// `provider-pause-cause.ACTION_SHORT[health_reason]` (tabla cerrada; el
+// `health_reason` del skip es el `reason_code` del snapshot). Un código sin
+// entrada cae al copy genérico "caído temporalmente": nunca un texto no aprobado.
+// Lazy + inyectable (`opts.actionShort`) como las demás deps de este bloque.
+function _healthGateCopyFor(healthReason, opts) {
+    if (typeof healthReason !== 'string' || !healthReason) return null;
+    try {
+        const table = (opts && opts.actionShort && typeof opts.actionShort === 'object')
+            ? opts.actionShort
+            : require('../provider-pause-cause').ACTION_SHORT;
+        if (!Object.prototype.hasOwnProperty.call(table, healthReason)) return null;
+        const copy = table[healthReason];
+        return (typeof copy === 'string' && copy) ? copy : null;
+    } catch {
+        return null;
+    }
+}
+
+// #7371 CA-13 / UX-1 — clasificación de skips para el ENCABEZADO del canned.
+// Tablas cerradas: el encabezado se deriva del CONJUNTO de causas, nunca de un
+// string libre ni de un flag booleano nuevo.
+const _CREDS_SKIP_REASONS = Object.freeze(new Set(['permission_matrix', 'provider_disabled']));
+const _QUOTA_SKIP_REASONS = Object.freeze(new Set(['quota_exhausted', 'pacing_budget_red', 'pacing_budget_yellow', 'preventive_soft_gate']));
+const _QUOTA_HEALTH_REASONS = Object.freeze(new Set(['quota_exhausted_real', 'quota_flag_active']));
+function _isCredsSkip(s) { return !!s && _CREDS_SKIP_REASONS.has(s.reason); }
+function _isQuotaSkip(s) {
+    if (!s) return false;
+    if (_QUOTA_SKIP_REASONS.has(s.reason)) return true;
+    return s.reason === 'health_gate' && _QUOTA_HEALTH_REASONS.has(s.health_reason);
+}
+
 const _WAIT_CLOCK_TZ = 'America/Argentina/Buenos_Aires';
 
 /** `HH:MM` (y `mañana HH:MM` / `DD/MM HH:MM` si no es hoy) en la TZ del operador. */
@@ -1091,10 +1123,16 @@ function describeGatedChain(resolution, opts = {}) {
     for (const p of chain) push(p);
     for (const s of skips) push(s && s.provider);
 
+    // #7371 — se guarda el skip entero (reason + health_reason), no sólo el code.
     const reasonOf = new Map();
     for (const s of skips) {
         const key = String((s && s.provider) == null ? '' : s.provider).trim().toLowerCase();
-        if (key && !reasonOf.has(key)) reasonOf.set(key, String((s && s.reason) || ''));
+        if (key && !reasonOf.has(key)) {
+            reasonOf.set(key, {
+                reason: String((s && s.reason) || ''),
+                health_reason: (s && typeof s.health_reason === 'string') ? s.health_reason : null,
+            });
+        }
     }
 
     const parts = [];
@@ -1104,10 +1142,16 @@ function describeGatedChain(resolution, opts = {}) {
         const label = _CHAIN_WAIT_LABELS[key];
         if (labelSeen.has(label)) continue; // alias (anthropic-claude) → una sola entrada
         labelSeen.add(label);
-        const code = reasonOf.get(key) || '';
-        const copy = Object.prototype.hasOwnProperty.call(_SKIP_REASON_WAIT_COPY, code)
+        const skip = reasonOf.get(key) || { reason: '', health_reason: null };
+        const code = skip.reason;
+        let copy = Object.prototype.hasOwnProperty.call(_SKIP_REASON_WAIT_COPY, code)
             ? _SKIP_REASON_WAIT_COPY[code]
             : 'no disponible';
+        if (code === 'health_gate') {
+            // #7371 CA-12 — causa real por eslabón desde la tabla cerrada;
+            // `health_reason` desconocido → "caído temporalmente" (REQ-SEC-G).
+            copy = _healthGateCopyFor(skip.health_reason, o) || copy;
+        }
         let until = '';
         if (code === 'provider_inactive_by_schedule') {
             until = _restClockFor(key, o);
@@ -1426,6 +1470,8 @@ function redactSkipReasons(skipReasons) {
             provider: s.provider ? String(s.provider) : null,
             reason: s.reason ? String(s.reason) : null,
             details: redactText(s.details),
+            // #7371 — enum cerrado (reason_code del snapshot); se preserva para el audit.
+            ...(typeof s.health_reason === 'string' ? { health_reason: s.health_reason } : {}),
         }));
 }
 
@@ -2306,24 +2352,47 @@ function cannedAllGatedResponse(resolution = null, opts = {}) {
         ? resolution.reason
         : null;
 
-    const hasQuota = skipReasons.some((s) => s && s.reason === 'quota_exhausted');
     const allBySchedule = reason === 'todos_inactivos_por_horario'
         || (resolution && resolution.allInactiveBySchedule === true);
 
-    // Causa NO-cuota: credenciales, inactividad por horario, health, etc.
-    if (!hasQuota && (skipReasons.length > 0 || allBySchedule)) {
-        if (allBySchedule) {
+    if (allBySchedule) {
+        return withChain(
+            `🕒 Todos los providers LLM del commander están fuera de su ventana de actividad ahora mismo. ` +
+            `Los comandos determinísticos (/status, /listado, /lanzar) siguen funcionando. ` +
+            `Te aviso cuando alguno entre en horario.`
+        );
+    }
+
+    // #7371 CA-13 / UX-1 — el encabezado se deriva del CONJUNTO de causas y no
+    // puede contradecir la línea por eslabón (`chainLine`), que es la que lleva
+    // la causa concreta desde tablas cerradas:
+    //   - algún `permission_matrix` / `provider_disabled` → "sin credenciales o
+    //     desactivados" (texto histórico, #4306);
+    //   - todas las causas son de cuota (o reposo) → "sin cuota disponible"
+    //     (texto histórico, #6563);
+    //   - mezcla (health_gate por versión/licencia, reposo, handler…) → encabezado
+    //     NEUTRO que no afirma causa: "abajo va la causa de cada uno". Antes decía
+    //     "sin credenciales o desactivados, no por falta de cuota" aunque la causa
+    //     fuera `health_gate` (incidente 19/9/2026: Commander mudo con un texto
+    //     que además mentía).
+    if (skipReasons.length > 0) {
+        const anyCreds = skipReasons.some(_isCredsSkip);
+        const anyQuota = skipReasons.some(_isQuotaSkip);
+        const allQuotaOrSchedule = skipReasons.every((s) => _isQuotaSkip(s) || (s && s.reason === 'provider_inactive_by_schedule'));
+        if (anyCreds) {
             return withChain(
-                `🕒 Todos los providers LLM del commander están fuera de su ventana de actividad ahora mismo. ` +
+                `🚫 Ningún provider LLM del commander está disponible (sin credenciales o desactivados), no por falta de cuota. ` +
                 `Los comandos determinísticos (/status, /listado, /lanzar) siguen funcionando. ` +
-                `Te aviso cuando alguno entre en horario.`
+                `Te aviso cuando se recupere alguno.`
             );
         }
-        return withChain(
-            `🚫 Ningún provider LLM del commander está disponible (sin credenciales o desactivados), no por falta de cuota. ` +
-            `Los comandos determinísticos (/status, /listado, /lanzar) siguen funcionando. ` +
-            `Te aviso cuando se recupere alguno.`
-        );
+        if (!(anyQuota && allQuotaOrSchedule)) {
+            return withChain(
+                `🚫 Ningún provider LLM del commander está disponible ahora mismo — abajo va la causa de cada uno. ` +
+                `Los comandos determinísticos (/status, /listado, /lanzar) siguen funcionando. ` +
+                `Te aviso cuando se recupere alguno.`
+            );
+        }
     }
 
     return withChain(

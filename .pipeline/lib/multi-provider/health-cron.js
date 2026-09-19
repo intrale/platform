@@ -706,6 +706,9 @@ function sanitizeCliProbe(cp) {
         checked_at: typeof cp.checked_at === 'string' ? cp.checked_at : null,
         cached: cp.cached === true,
         cli_version: /^\d+\.\d+\.\d+$/.test(cp.cli_version || '') ? cp.cli_version : null,
+        // #7371 — pin vigente al momento del probe; mismo regex estricto que
+        // `cli_version` (REQ-SEC-F). `null` si el probe no lo trajo.
+        max_tested_version: /^\d+\.\d+\.\d+$/.test(cp.max_tested_version || '') ? cp.max_tested_version : null,
         launcher_kind: typeof cp.launcher_kind === 'string' ? cp.launcher_kind.slice(0, 32) : null,
     };
 }
@@ -791,6 +794,40 @@ function emitAlerts({ snapshot, prevSnapshot, telegramSender, dedupFile, fsImpl 
             }
         }
 
+        // #7371 Trigger 5: CLI por encima del máximo probado (política b).
+        //
+        // Se engancha en el SNAPSHOT ya saneado (`p.cli_probe`), no en el probe
+        // ni en su cache de 4/15 min: así el TTL del probe no interfiere con el
+        // dedup de 24 h. Sólo dispara con el provider VERDE por catálogo: si el
+        // round-trip falló, el `detail` es el del fallo y el rojo genérico del
+        // Trigger 1 ya avisa (decisión 4 de la receta).
+        const cp = p.cli_probe;
+        if (p.provider === 'antigravity' && cp && cp.detail === 'version_above_tested'
+            && p.reason_code === 'cli_catalog_ok' && cp.cli_version && cp.max_tested_version) {
+            const decision = healthAlerts.decideContractEvent({
+                provider: p.provider,
+                cliVersion: cp.cli_version,
+                maxTestedVersion: cp.max_tested_version,
+                providerState: p.state,
+                now,
+                dedupFile,
+                fsImpl,
+            });
+            if (decision.shouldEmit) {
+                const okSend = telegramSender ? !!telegramSender(decision.payload) : true;
+                healthAlerts.recordContractEvent({
+                    provider: p.provider,
+                    cliVersion: cp.cli_version,
+                    maxTestedVersion: cp.max_tested_version,
+                    sent: okSend,
+                    now,
+                    dedupFile,
+                    fsImpl,
+                });
+                if (okSend) sent.push({ kind: 'version_above_tested', provider: p.provider, payload: decision.payload });
+            }
+        }
+
         // #5888 Trigger 4: modelo configurado fuera del catálogo del provider.
         //
         // SÓLO `model_not_in_catalog`. `model_check_unavailable` NO emite a
@@ -856,6 +893,25 @@ function formatAlertText(payload) {
             + ', pero Antigravity CLI no pudo verificar la cuota del plan. '
             + 'Hasta confirmarlo no se lo cuenta como plan contratado. Revisá la sesión de agy o confirmá el plan a mano.\n'
             + '(`plan_tier_unknown` x' + payload.consecutive_count + ') · Observado: ' + payload.observed_at;
+    }
+    // #7371 CA-7 / REQ-SEC-D / UX-3 — Rama propia del eje de CONTRATO, ANTES de
+    // la genérica (misma lógica que `model_not_in_catalog`: la severidad la fija
+    // el eje, ⚠️ en cabecera; el estado del provider va SUBORDINADO). Debe decir
+    // versión, pin, consecuencia ("auditoría de TOS vencida") y acción (#7343).
+    // Sólo se interpolan campos saneados por regex estricto; nunca stdout.
+    if (payload.event === 'version_above_tested') {
+        const ver = /^\d+\.\d+\.\d+$/.test(payload.cli_version || '') ? payload.cli_version : '?';
+        const pin = /^\d+\.\d+\.\d+$/.test(payload.max_tested_version || '') ? payload.max_tested_version : '?';
+        const emoji = payload.provider_state === 'red' ? '🔴'
+            : payload.provider_state === 'yellow' ? '🟡' : '🟢';
+        const est = payload.provider_state === 'red' ? 'CAÍDO'
+            : payload.provider_state === 'yellow' ? 'DEGRADADO' : 'SANO';
+        return `⚠️ *Auditoría de TOS vencida* — \`${payload.provider}\` sigue ${emoji} ${est} y en la cascada, pero agy está en \`${ver}\`, `
+             + `por encima del máximo probado \`${pin}\` (§4.4.1).\n`
+             + `Consecuencia: el pipeline opera con la auditoría de TOS vencida hasta re-verificarla.\n`
+             + `Acción: re-verificar los TOS con ${ver} (#7343) y subir \`max_tested_version\` en `
+             + `\`lib/multi-provider/agy-catalog-probe.js\`. Te lo recuerdo cada 24 h mientras persista.\n`
+             + `Observado: ${payload.observed_at}`;
     }
     if (payload.event === 'multi_down') {
         const provs = Array.isArray(payload.providers_red) ? payload.providers_red.join(', ') : '?';
@@ -1139,6 +1195,8 @@ module.exports = {
     probeCliProvider,
     probeCliProviderLive,
     buildSnapshot,
+    // #7371 — expuesto para tests: la allowlist del `cli_probe` del snapshot.
+    sanitizeCliProbe,
     emitAlerts,
     tryAcquireLock,
     releaseLock,

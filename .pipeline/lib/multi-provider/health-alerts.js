@@ -440,6 +440,100 @@ function recordModelEvent({ provider, modelId, sent, now = Date.now(), dedupFile
     catch { /* best-effort: si no podemos escribir, próxima decisión re-emite */ }
 }
 
+// -----------------------------------------------------------------------------
+// #7371 — Evento de CONTRATO DEL CLI: versión por encima del máximo probado.
+//
+// Con la política (b) (§4.4.1) el provider queda VERDE cuando `agy` se
+// auto-actualiza por encima de `max_tested_version` dentro del mismo major, así
+// que el Trigger 1 (rojo) deja de disparar y el operador volvería al silencio
+// del incidente del 19/9/2026 — con un provider sano y la auditoría de TOS
+// vencida. Este eje es el que lo hace visible.
+//
+// Función PROPIA (misma razón que `decideModelEvent`): la key de `decide()` es
+// `provider|state` y colisionaría con la alerta de salud. Acá la key es
+// `provider|contract|<cli_version>|<max_tested_version>` — no colisiona con
+// `provider|<state>`, `provider|model|…` ni `provider|plan` — y da gratis:
+//   - dedup por versión: 1.2.8 es una key nueva → alerta nueva;
+//   - subir el pin cambia la key y el `detail` del snapshot → deja de emitir solo;
+//   - recordatorio cada 24 h SIN tope mientras persista (REQ-SEC-B): la única
+//     forma de silenciarlo es cerrar el ciclo (re-verificar TOS + subir el pin).
+//
+// Entrada validada con regex estricto: nunca llega texto crudo del CLI a la key
+// ni al payload (REQ-SEC-F). Fail-open heredado de `tryReadJson` (A09): un
+// dedup store corrupto ⇒ `{ alerts: {} }` ⇒ emite.
+// -----------------------------------------------------------------------------
+const CONTRACT_ALERT_DEDUP_MS = 24 * 60 * 60 * 1000;
+const CONTRACT_PROVIDER = 'antigravity';
+const SEMVER_STRICT_RE = /^\d+\.\d+\.\d+$/;
+
+function _contractKey(provider, cliVersion, maxTestedVersion) {
+    return `${provider}|contract|${cliVersion}|${maxTestedVersion}`;
+}
+
+function _validContractInput({ provider, cliVersion, maxTestedVersion }) {
+    return provider === CONTRACT_PROVIDER
+        && typeof cliVersion === 'string' && SEMVER_STRICT_RE.test(cliVersion)
+        && typeof maxTestedVersion === 'string' && SEMVER_STRICT_RE.test(maxTestedVersion);
+}
+
+/**
+ * Decide si "versión por encima del máximo probado" merece emisión a Telegram.
+ *
+ * @param {object} params
+ * @param {string} params.provider — sólo `antigravity` (el único con pin).
+ * @param {string} params.cliVersion — `X.Y.Z` saneado del snapshot.
+ * @param {string} params.maxTestedVersion — pin `X.Y.Z` saneado del snapshot.
+ * @param {string} [params.providerState] — viaja en el payload sólo para que el
+ *   texto diga "sigue sano" sin mentir; no decide la emisión.
+ * @returns {{ shouldEmit: boolean, reasonNoEmit?: string, payload?: object, nextEligibleAt?: number }}
+ */
+function decideContractEvent({ provider, cliVersion, maxTestedVersion, providerState, now = Date.now(), dedupFile = HOME_DEDUP_FILE, fsImpl = fs } = {}) {
+    if (!_validContractInput({ provider, cliVersion, maxTestedVersion })) {
+        return { shouldEmit: false, reasonNoEmit: 'invalid_input' };
+    }
+    const s = sanitizeState(providerState);
+
+    const store = tryReadJson(dedupFile, fsImpl) || { alerts: {} };
+    if (!store.alerts || typeof store.alerts !== 'object') store.alerts = {};
+
+    const key = _contractKey(provider, cliVersion, maxTestedVersion);
+    const prev = store.alerts[key];
+    if (prev && (now - (prev.last_sent_at || 0)) < CONTRACT_ALERT_DEDUP_MS) {
+        return {
+            shouldEmit: false,
+            reasonNoEmit: 'dedup_window',
+            nextEligibleAt: prev.last_sent_at + CONTRACT_ALERT_DEDUP_MS,
+        };
+    }
+
+    // Payload metadata-only (CA-10): allowlist exacta de campos, sin
+    // `reason_code` nuevo (el evento vive en `cli_probe.detail`).
+    const payload = {
+        event: 'version_above_tested',
+        provider,
+        cli_version: cliVersion,
+        max_tested_version: maxTestedVersion,
+        provider_state: s,
+        reason_code: 'cli_catalog_ok',
+        observed_at: new Date(now).toISOString(),
+    };
+    return { shouldEmit: true, payload: redact.redactValue(payload) };
+}
+
+function recordContractEvent({ provider, cliVersion, maxTestedVersion, sent, now = Date.now(), dedupFile = HOME_DEDUP_FILE, fsImpl = fs } = {}) {
+    if (!sent || !_validContractInput({ provider, cliVersion, maxTestedVersion })) return;
+    const store = tryReadJson(dedupFile, fsImpl) || { alerts: {} };
+    if (!store.alerts || typeof store.alerts !== 'object') store.alerts = {};
+    const key = _contractKey(provider, cliVersion, maxTestedVersion);
+    const prev = store.alerts[key];
+    store.alerts[key] = {
+        last_sent_at: now,
+        consecutive_count: ((prev && prev.consecutive_count) || 0) + 1,
+    };
+    try { writeJsonAtomic(dedupFile, store, fsImpl); }
+    catch { /* best-effort: si no podemos escribir, próxima decisión re-emite */ }
+}
+
 // #6564: la racha viene del snapshot durable; el dedupe conserva sólo envíos.
 function decidePlanEvent({ provider, providerState, planCheck, now = Date.now(), dedupFile = HOME_DEDUP_FILE, fsImpl = fs } = {}) {
     if (provider !== 'antigravity' || !ALLOWED_STATES.has(providerState)
@@ -485,4 +579,8 @@ module.exports = {
     sanitizeModelId,
     decideModelEvent,
     recordModelEvent,
+    // #7371 — eje de contrato del CLI (versión por encima del máximo probado).
+    CONTRACT_ALERT_DEDUP_MS,
+    decideContractEvent,
+    recordContractEvent,
 };

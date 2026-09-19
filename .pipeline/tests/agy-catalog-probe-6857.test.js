@@ -332,7 +332,7 @@ test('health-cron: catálogo poblado → green / cli_catalog_ok con cli_probe en
     assert.equal(g.reason_code, 'cli_catalog_ok');
     assert.equal(g.auth_mode, 'oauth');
     assert.equal(g.latency_ms, 2100);
-    assert.deepEqual(Object.keys(g.cli_probe).sort(), ['cached', 'checked_at', 'cli_version', 'detail', 'kind', 'launcher_kind', 'model_count', 'models']);
+    assert.deepEqual(Object.keys(g.cli_probe).sort(), ['cached', 'checked_at', 'cli_version', 'detail', 'kind', 'launcher_kind', 'max_tested_version', 'model_count', 'models']);
     assert.equal(g.cli_probe.model_count, 2);
     assert.equal(g.cli_probe.kind, 'agy');
     // El snapshot es contrato: nada del CLI sin sanear.
@@ -548,18 +548,33 @@ test('contrato: parsea versión saneada y rechaza basura o números inseguros', 
     assert.ok(Object.isFrozen(agyProbe.AGY_CLI_CONTRACT));
 });
 
-for (const [version, detail] of [['1.1.20', 'version_below_min'], ['1.3.0', 'version_above_tested'], ['2.0.0', 'version_above_tested'], ['basura', 'version_unparseable']]) {
+// #7371 política (b): por encima del máximo probado y MISMO major ya no corta —
+// sigue al catálogo y queda verde con `detail: version_above_tested`. Un salto
+// de major (REQ-SEC-C) sigue cortando con `version_major_above_tested`.
+for (const [version, detail] of [['1.1.20', 'version_below_min'], ['2.0.0', 'version_major_above_tested'], ['basura', 'version_unparseable']]) {
     test(`contrato: ${version} corta antes del catálogo con ${detail}`, async () => {
         const { env } = installedEnv(tmpDir());
         const fake = fakeVersionSpawn({ version });
         const r = await agyProbe.probeAgyCatalog({ env, spawnImpl: fake, noCache: true });
         assert.equal(r.reason, 'cli_contract_mismatch'); assert.equal(r.detail, detail);
         assert.deepEqual(r.models, []); assert.equal(r.ok, false);
+        assert.equal(r.max_tested_version, agyProbe.AGY_CLI_CONTRACT.max_tested_version);
         assert.deepEqual(fake.calls.map(c => c.args), [['--version']]);
         assert.equal(fake.calls[0].opts.shell, false); assert.equal(fake.calls[0].opts.windowsHide, true);
         assert.deepEqual(fake.calls[0].opts.stdio, ['ignore', 'pipe', 'pipe']);
     });
 }
+
+test('contrato (#7371): 1.3.0 sigue al catálogo y queda verde con version_above_tested (mismo major)', async () => {
+    const { env } = installedEnv(tmpDir());
+    const fake = fakeVersionSpawn({ version: '1.3.0' });
+    const r = await agyProbe.probeAgyCatalog({ env, spawnImpl: fake, noCache: true });
+    assert.equal(r.ok, true); assert.equal(r.reason, 'cli_catalog_ok'); assert.equal(r.detail, 'version_above_tested');
+    assert.equal(r.cli_version, '1.3.0');
+    assert.equal(r.max_tested_version, agyProbe.AGY_CLI_CONTRACT.max_tested_version);
+    assert.ok(r.models.length > 0);
+    assert.deepEqual(fake.calls.map(c => c.args), [['--version'], ['models']]);
+});
 
 for (const failure of [{ rc: 1 }, { error: true }, { throws: true }, { hang: true }, { hang: true, killThrows: true }]) {
     test(`contrato: fallo ${JSON.stringify(failure)} da rojo aunque stdout tenga versión válida`, async () => {
@@ -591,12 +606,24 @@ test('contrato: cache v1 se descarta y cambiar pin invalida cache v2; rojo usa T
     assert.equal(r.cached, false); assert.equal(r.cli_version, '1.2.4'); assert.equal(fake.calls.length, 2);
     assert.equal(JSON.parse(fs.readFileSync(cachePath)).version, 2);
     assert.equal((await agyProbe.probeAgyCatalog(opts)).cached, true);
-    const contract = { max_tested_version: '1.2.3' };
+    // Rojo durable (< min) → TTL negativo (4 min).
+    const contract = { min_version: '1.2.5', max_tested_version: '1.2.7' };
     const red = await agyProbe.probeAgyCatalog({ ...opts, contract });
-    assert.equal(red.reason, 'cli_contract_mismatch'); assert.equal(fake.calls.length, 3);
+    assert.equal(red.reason, 'cli_contract_mismatch'); assert.equal(red.detail, 'version_below_min'); assert.equal(fake.calls.length, 3);
     assert.equal((await agyProbe.probeAgyCatalog({ ...opts, contract, nowMs: NOW + 1000 })).cached, true);
     assert.equal((await agyProbe.probeAgyCatalog({ ...opts, contract, nowMs: NOW + agyProbe.DEFAULT_NEGATIVE_TTL_MS + 1 })).cached, false);
     assert.equal(fake.calls.length, 4);
+    // #7371 — "above" (mismo major) es un VERDE con nota: usa el TTL positivo
+    // (15 min), no el negativo. Un agy que se actualice dentro de la ventana se
+    // ve al vencer (riesgo aceptado, §14.3.1).
+    const above = { min_version: '1.2.0', max_tested_version: '1.2.3' };
+    const green = await agyProbe.probeAgyCatalog({ ...opts, contract: above });
+    assert.equal(green.reason, 'cli_catalog_ok'); assert.equal(green.detail, 'version_above_tested');
+    assert.equal(green.max_tested_version, '1.2.3'); assert.equal(fake.calls.length, 6);
+    const c14 = await agyProbe.probeAgyCatalog({ ...opts, contract: above, nowMs: NOW + 14 * 60_000 });
+    assert.equal(c14.cached, true); assert.equal(c14.detail, 'version_above_tested'); assert.equal(c14.max_tested_version, '1.2.3');
+    assert.equal((await agyProbe.probeAgyCatalog({ ...opts, contract: above, nowMs: NOW + agyProbe.DEFAULT_TTL_MS + 1 })).cached, false);
+    assert.equal(fake.calls.length, 8);
     assert.equal((await agyProbe.probeAgyCatalog({ ...opts, contract: { min_version: 'basura' }, noCache: true })).detail, 'version_unparseable');
     assert.equal((await agyProbe.probeAgyCatalog({ ...opts, contract: { min_version: '2.0.0', max_tested_version: '1.2.4' }, noCache: true })).detail, 'version_unparseable');
 });
