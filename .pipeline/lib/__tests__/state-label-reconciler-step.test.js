@@ -18,6 +18,8 @@ fs.mkdirSync(path.join(PIPELINE, 'definicion', 'analisis', 'bloqueado-humano'), 
 process.env.CLAUDE_PROJECT_DIR = TMP_DIR;
 process.env.PIPELINE_REPO_ROOT = TMP_DIR;
 process.env.PIPELINE_STATE_DIR = PIPELINE;
+// #7112 — el runner deja PIPELINE_DIR_OVERRIDE global (precedencia D-1 sobre PIPELINE_STATE_DIR): se declara el mismo dir.
+process.env.PIPELINE_DIR_OVERRIDE = PIPELINE;
 process.env.PIPELINE_MAIN_ROOT = TMP_DIR;
 
 delete require.cache[require.resolve('../../servicio-reconciler')];
