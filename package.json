@@ -7,7 +7,10 @@
     "test:pipeline": "node scripts/test-pipeline.js",
     "test:pipeline:tracked": "node scripts/test-pipeline.js --tracked-only",
     "test:hooks": "node --test --test-timeout=30000 \".claude/hooks/tests/test-*.js\"",
-    "smoke:commander": "node .pipeline/tests/smoke/commander-degraded.smoke.js"
+    "smoke:commander": "node .pipeline/tests/smoke/commander-degraded.smoke.js",
+    "pruebas:env": "node .pipeline/scripts/provision-test-env.js",
+    "pruebas:env:destroy": "node .pipeline/scripts/provision-test-env.js --destroy",
+    "pruebas:env:verify": "node .pipeline/scripts/provision-test-env.js --verify"
   },
   "dependencies": {
     "@aws-sdk/client-ssm": "3.1101.0",
