@@ -66,6 +66,9 @@ const crypto = require('node:crypto');
 // requires de otros módulos del pipeline): importarlo acá no puede abrir un
 // ciclo ni fallar por IO.
 const { isSafeProjectId, KERNEL_PROJECT_ID } = require('./safe-project-id');
+// #7112 · CA-7 — la declaración de ambiente del hijo la fija el LANZADOR con el
+// modo que el propio Pulpo resolvió; nunca se hereda por el loop `PIPELINE_*`.
+const pipelineEnv = require('./pipeline-env');
 
 // -----------------------------------------------------------------------------
 // SYSTEM_ALLOWLIST — variables del sistema permitidas en TODOS los childs.
@@ -226,6 +229,35 @@ const SCOPES_BY_FASE = Object.freeze({
 // Material reservado que jamás puede cruzar al child, ni con aislamiento
 // desactivado ni reintroducido desde pipelineExtras bajo otro nombre.
 const RESERVED_CHILD_SECRET_NAMES = Object.freeze(['TELEGRAM_BOT_TOKEN']);
+
+// -----------------------------------------------------------------------------
+// #7112 · CA-7.1 / CA-7.2 / CA-7.3 — declaración de ambiente EXPLÍCITA del launcher.
+//
+// Vale para los DOS caminos del launcher (env isolation ON → `buildChildEnv`;
+// legacy → `pulpo.js` spread de `process.env`): el hijo nunca hereda
+// la declaración de ambiente (`pipelineEnv.ENV_AMBIENTE`) "porque empieza con
+// PIPELINE_" (denylist, CA-7.1), y
+// recibe el MODO QUE EL PULPO RESOLVIÓ (`pipelineEnv.resolve(processEnv).modo`),
+// nunca un literal `productivo` hardcodeado: un Pulpo corriendo en pruebas jamás
+// declara productivo a sus hijos (CA-7.2). Nunca sale sin `PIPELINE_REPO_ROOT`
+// (CA-7.3): sin el contexto del repo principal no hay declaración, y el hijo
+// cae en `pruebas` con `dir: null` → sus escritores fallan ruidoso (SEC-10).
+//
+// Por qué alcanza con la señal de test (SEC-5) para que esto sea seguro: un
+// test corrido DENTRO de un agente con `NODE_TEST_CONTEXT`/`NODE_ENV=test`/
+// `PULPO_NO_AUTOSTART=1` sigue resolviendo `pruebas` aunque herede la
+// declaración (CA-7.4), y los agentes de `dev` cargan `lib/` del worktree, donde
+// SEC-1 degrada la declaración porque el dir no es el productivo de esas libs.
+// -----------------------------------------------------------------------------
+function conDeclaracionExplicita(envHijo = {}, processEnv = process.env) {
+    const out = { ...envHijo };
+    delete out[pipelineEnv.ENV_AMBIENTE];
+    const repoRoot = out.PIPELINE_REPO_ROOT;
+    if (typeof repoRoot === 'string' && repoRoot.trim()) {
+        out[pipelineEnv.ENV_AMBIENTE] = pipelineEnv.resolve(processEnv).modo;
+    }
+    return out;
+}
 
 function stripReservedChildSecrets(candidateEnv = {}, operatorEnv = process.env) {
     const reservedValues = new Set();
@@ -548,6 +580,9 @@ function buildChildEnv(opts = {}) {
     // El comportamiento de este loop NO cambia — se documenta la razón por la
     // que el consumidor desconfía de lo que acá se propaga.
     for (const k of Object.keys(processEnv)) {
+        // #7112 · CA-7.1 — denylist: la declaración de ambiente no viaja por
+        // herencia; la fija `conDeclaracionExplicita` al final.
+        if (k === pipelineEnv.ENV_AMBIENTE) continue;
         if (k.startsWith('PIPELINE_') && processEnv[k] !== undefined) {
             out[k] = processEnv[k];
         }
@@ -642,7 +677,12 @@ function buildChildEnv(opts = {}) {
     //    filtro final impide reintroducir el nombre reservado o un alias cuyo
     //    valor coincida con el material del operador. El descarte es silencioso
     //    para no revelar nombres alternativos ni valores en logs.
-    return stripReservedChildSecrets({ ...out, ...pipelineExtras }, processEnv);
+    // 6. #7112 · CA-7.2/7.3 — declaración de ambiente explícita, con el modo
+    //    que resolvió ESTE proceso; sólo si el hijo lleva PIPELINE_REPO_ROOT.
+    return stripReservedChildSecrets(
+        conDeclaracionExplicita({ ...out, ...pipelineExtras }, processEnv),
+        processEnv,
+    );
 }
 
 // -----------------------------------------------------------------------------
@@ -722,6 +762,8 @@ module.exports = {
     RESERVED_CHILD_SECRET_NAMES,
     DEFAULT_REQUIRES_BY_SKILL,
     stripReservedChildSecrets,
+    // #7112 — declaración de ambiente explícita del launcher (los dos caminos).
+    conDeclaracionExplicita,
     // #6563 — env por allowlist para childs de clase "juez sin agencia".
     CLI_OAUTH_ALLOWLIST,
     buildMinimalCliEnv,

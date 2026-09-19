@@ -864,13 +864,13 @@
         },
         {
             "file": "lib/__tests__/desync-sync-4525.test.js",
-            "line": 54,
+            "line": 59,
             "kind": "deuda",
             "reason": "escritura de PIPELINE_DIR_OVERRIDE fuera del helper"
         },
         {
             "file": "lib/__tests__/desync-sync-4525.test.js",
-            "line": 60,
+            "line": 65,
             "kind": "deuda",
             "reason": "escritura de PIPELINE_DIR_OVERRIDE fuera del helper"
         },

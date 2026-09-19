@@ -10,6 +10,11 @@ require('./lib/force-windows-hide').apply();
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+// #7112 — resolvedor único de ambiente + envoltorio de escritura. Van ACÁ (antes
+// de cualquier escritura de boot) porque las funciones `PIPELINE()`/`LOG_DIR()`
+// están hoisteadas pero estos `const` no.
+const pipelineEnv = require('./lib/pipeline-env');
+const writeTarget = require('./lib/write-target');
 const { execSync, execFileSync, spawn, execFile } = require('child_process');
 const { promisify } = require('util');
 const execFileAsync = promisify(execFile);
@@ -623,7 +628,7 @@ require('./lib/sanitize-console').install();
 // fuera falla de código.
 require('./lib/java-home-normalizer').normalizeJavaHome({
   log: (msg) => {
-    try { fs.appendFileSync(path.join(__dirname, 'logs', 'pulpo.log'), `[${new Date().toISOString()}] ${msg}\n`); } catch {}
+    try { fs.appendFileSync(path.join(LOG_DIR(), 'pulpo.log'), `[${new Date().toISOString()}] ${msg}\n`); } catch {}
     console.error(msg);
   },
 });
@@ -639,7 +644,7 @@ require('./lib/java-home-normalizer').normalizeJavaHome({
 require('./lib/hydrate-provider-env').hydrateProviderEnv({
   legacyConfigPath: path.join(__dirname, '..', '.claude', 'hooks', 'telegram-config.json'),
   log: (msg) => {
-    try { fs.appendFileSync(path.join(__dirname, 'logs', 'pulpo.log'), `[${new Date().toISOString()}] ${msg}\n`); } catch {}
+    try { fs.appendFileSync(path.join(LOG_DIR(), 'pulpo.log'), `[${new Date().toISOString()}] ${msg}\n`); } catch {}
     console.error(msg);
   },
 });
@@ -662,13 +667,19 @@ process.on('uncaughtException', (err) => {
   const klass = classifyForCrashLog(err);
   // #2334: sanitizar antes de persistir stack del crash.
   const msg = sanitizePipelineText(`[${new Date().toISOString()}] [pulpo] CRASH uncaughtException [class=${klass}]: ${err.stack || err.message}\n`);
-  try { fs.appendFileSync(path.join(__dirname, 'logs', 'pulpo.log'), msg); } catch {}
+  // #7112 (UX A3) — handler de crash: escritor `safe*`. Sin dir (pruebas sin
+  // override) saltea el archivo y conserva el console.error; jamás lanza acá.
+  const crashLogDir = writeTarget.safeWriteDir(process.env, { canal: 'logs', destino: 'logs/pulpo.log' });
+  if (crashLogDir) { try { fs.appendFileSync(path.join(crashLogDir, 'logs', 'pulpo.log'), msg); } catch {} }
   console.error(msg);
 });
 process.on('unhandledRejection', (reason) => {
   const klass = classifyForCrashLog(reason);
   const msg = sanitizePipelineText(`[${new Date().toISOString()}] [pulpo] CRASH unhandledRejection [class=${klass}]: ${reason && reason.stack ? reason.stack : reason}\n`);
-  try { fs.appendFileSync(path.join(__dirname, 'logs', 'pulpo.log'), msg); } catch {}
+  // #7112 (UX A3) — handler de crash: escritor `safe*`. Sin dir (pruebas sin
+  // override) saltea el archivo y conserva el console.error; jamás lanza acá.
+  const crashLogDir = writeTarget.safeWriteDir(process.env, { canal: 'logs', destino: 'logs/pulpo.log' });
+  if (crashLogDir) { try { fs.appendFileSync(path.join(crashLogDir, 'logs', 'pulpo.log'), msg); } catch {} }
   console.error(msg);
 });
 
@@ -681,11 +692,24 @@ const ROOT = path.resolve(__dirname, '..');
 // sin tocar el `.paused` real ni la cola de Telegram de producción.
 // En producción la env var NUNCA está definida → PIPELINE = __dirname (idéntico
 // al comportamiento previo; cero cambio en caliente).
-const PIPELINE = process.env.PIPELINE_DIR_OVERRIDE
-  ? path.resolve(process.env.PIPELINE_DIR_OVERRIDE)
-  : path.resolve(__dirname);
-const CONFIG_PATH = path.join(PIPELINE, 'config.yaml');
-const LOG_DIR = path.join(PIPELINE, 'logs');
+// #7112 — El directorio base del pipeline se resuelve POR LLAMADA vía
+// `lib/write-target` sobre `lib/pipeline-env` (SEC-13): ninguna const de módulo
+// captura el destino al `require`. Sin ambiente declarado (`PIPELINE_AMBIENTE`
+// del lanzador) y sin dir de pruebas, `writeDir` avisa por stderr y LANZA: un
+// Pulpo mal cableado muere ruidoso en su primera escritura, nunca escribe en el
+// productivo por defecto (CA-3 / SEC-10). `PIPELINE_DIR_OVERRIDE` sigue siendo
+// la forma de redirigir el árbol entero en tests (precedencia D-1).
+//
+// Se conservan los identificadores en mayúsculas (`PIPELINE()`, `LOG_DIR()`,
+// `PAUSE_FILE()`…) para que el reemplazo const→función sea mecánico y el diff
+// legible: cada uso pasó de `X` a `X()`.
+function PIPELINE() {
+  return writeTarget.writeDir(process.env, { canal: 'estado', destino: '.pipeline (raíz)' });
+}
+function CONFIG_PATH() { return path.join(PIPELINE(), 'config.yaml'); }
+function LOG_DIR() {
+  return writeTarget.writePath(process.env, { canal: 'logs', destino: 'logs/' }, 'logs');
+}
 
 /**
  * #6746 CA-3 / SEC-C.1 — ÚNICO escritor del audit trail de no-progreso.
@@ -704,7 +728,7 @@ const LOG_DIR = path.join(PIPELINE, 'logs');
  */
 function appendInfraNoprogressRecord(rec) {
   try {
-    const file = infraNoprogress.auditFile(PIPELINE);
+    const file = infraNoprogress.auditFile(PIPELINE());
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.appendFileSync(file, infraNoprogress.buildRecord(rec), { encoding: 'utf8', mode: 0o600 });
     return true;
@@ -851,10 +875,10 @@ const PULPO_BOOT_ID = `${process.pid}-${Date.now()}`;
 // En producción `PIPELINE_DIR_OVERRIDE` NUNCA está definida → devuelve
 // exactamente `path.join(PIPELINE, …)`. Cero cambio en caliente.
 function telegramPendienteDir() {
-  const base = process.env.PIPELINE_DIR_OVERRIDE
-    ? path.resolve(process.env.PIPELINE_DIR_OVERRIDE)
-    : PIPELINE;
-  return path.join(base, 'servicios', 'telegram', 'pendiente');
+  // #7112 — canal `colas`, resuelto por llamada (la precedencia D-1 ya honra
+  // PIPELINE_DIR_OVERRIDE dentro del resolvedor).
+  return writeTarget.writePath(process.env,
+    { canal: 'colas', destino: 'servicios/telegram/pendiente' }, 'servicios', 'telegram', 'pendiente');
 }
 
 // #5172 · CA-13 / SEC-3b — la traza del resolver ("qué config estoy enforzando y
@@ -864,7 +888,7 @@ function telegramPendienteDir() {
 configResolver.setTraceSink((linea, nivel) => {
   const prefijo = nivel === 'alerta' ? '⚠️ ' : '';
   const msg = `[${new Date().toISOString()}] [pulpo] ${prefijo}${linea}\n`;
-  try { fs.appendFileSync(path.join(LOG_DIR, 'pulpo.log'), msg); } catch { /* best-effort */ }
+  try { fs.appendFileSync(path.join(LOG_DIR(), 'pulpo.log'), msg); } catch { /* best-effort */ }
 });
 
 // #4154 — Heartbeat de liveness del Pulpo.
@@ -876,7 +900,7 @@ configResolver.setTraceSink((linea, nivel) => {
 //   - `pid`: lo usa el watchdog como cross-check PID↔SO antes de matar (SEC-1).
 //   - Escritura atómica tmp+rename: el watchdog nunca lee un archivo a medio escribir.
 //   - Best-effort try/catch (CA-1.1): un fallo de FS jamás tumba el loop del Pulpo.
-const LAST_TICK_PATH = path.join(PIPELINE, 'last-tick.json');
+function LAST_TICK_PATH() { return path.join(PIPELINE(), 'last-tick.json'); }
 function writeHeartbeat(iterationMs) {
   try {
     const payload = {
@@ -884,7 +908,7 @@ function writeHeartbeat(iterationMs) {
       timestamp: new Date().toISOString(),
     };
     // #7189: el diagnostico nunca impide publicar el heartbeat base.
-    try { payload.runtimeAuth = require('./lib/pulpo-runtime-auth').snapshot(PIPELINE); } catch {}
+    try { payload.runtimeAuth = require('./lib/pulpo-runtime-auth').snapshot(PIPELINE()); } catch {}
     // #5821 CA-1 — Duración REAL de la iteración anterior del loop.
     // El watchdog necesita esta magnitud (no la edad del heartbeat) para
     // dimensionar su umbral: `hbAge` es la EDAD medida en un instante arbitrario
@@ -894,9 +918,9 @@ function writeHeartbeat(iterationMs) {
     // Campo OPCIONAL: el read-side lo parsea defensivo y su ausencia sólo deja
     // el umbral en el piso configurado.
     if (Number.isFinite(iterationMs) && iterationMs >= 0) payload.iterationMs = iterationMs;
-    const tmp = LAST_TICK_PATH + '.tmp';
+    const tmp = LAST_TICK_PATH() + '.tmp';
     fs.writeFileSync(tmp, JSON.stringify(payload));
-    fs.renameSync(tmp, LAST_TICK_PATH); // atómico en el mismo FS
+    fs.renameSync(tmp, LAST_TICK_PATH()); // atómico en el mismo FS
   } catch (_) {
     /* fail-soft: un fallo de FS jamás tumba el loop principal (CA-1.1) */
   }
@@ -935,7 +959,7 @@ function writeHeartbeat(iterationMs) {
 //
 // Throttle de 5s: barato de todos modos y evita writes redundantes si dos hitos
 // caen juntos.
-const LAST_PROGRESS_PATH = path.join(PIPELINE, 'last-progress');
+function LAST_PROGRESS_PATH() { return path.join(PIPELINE(), 'last-progress'); }
 const PROGRESS_THROTTLE_MS = 5000;
 let lastProgressWriteMs = 0;
 function touchProgress() {
@@ -945,7 +969,7 @@ function touchProgress() {
     lastProgressWriteMs = now;
     // Write de 1 byte en vez de utimes: `fs.utimesSync` falla si el archivo no
     // existe y obligaría a un existsSync por llamada. El contenido es irrelevante.
-    fs.writeFileSync(LAST_PROGRESS_PATH, '.');
+    fs.writeFileSync(LAST_PROGRESS_PATH(), '.');
   } catch (_) {
     /* fail-soft: un fallo de FS jamás tumba el loop principal */
   }
@@ -958,7 +982,7 @@ function touchProgress() {
 const lastDispatch = require('./lib/last-dispatch');
 // Write atómico compartido (una sola implementación de `tmp + rename`).
 const atomicJson = require('./lib/atomic-json');
-const STATE_DIR = path.join(PIPELINE, 'state');
+function STATE_DIR() { return path.join(PIPELINE(), 'state'); }
 
 // #5400 (rev-1, SEC-5) — Espejo EN MEMORIA de la estampa + resultado del último
 // write. `writeLastDispatch` es fail-soft y devuelve `false` si el FS falló;
@@ -971,7 +995,7 @@ let ultimaEstampaOk = true;
 function marcarDespachoEfectivo(meta) {
   const ahora = Date.now();
   ultimoDespachoMemTs = ahora;
-  ultimaEstampaOk = lastDispatch.writeLastDispatch(STATE_DIR, meta, ahora); // fail-soft por contrato
+  ultimaEstampaOk = lastDispatch.writeLastDispatch(STATE_DIR(), meta, ahora); // fail-soft por contrato
   if (!ultimaEstampaOk) {
     log('dispatch-watchdog', 'no se pudo persistir la estampa de despacho efectivo — ' +
       'el watchdog usa el espejo en memoria y reporta reloj degradado');
@@ -1052,7 +1076,7 @@ function loadAgentModelsRuntime() {
     AGENT_MODELS = JSON.parse(fsForAgentModels.readFileSync(p, 'utf8'));
   } catch (e) {
     AGENT_MODELS = null;
-    try { fsForAgentModels.appendFileSync(path.join(__dirname, 'logs', 'pulpo.log'),
+    try { fsForAgentModels.appendFileSync(path.join(LOG_DIR(), 'pulpo.log'),
       `[${new Date().toISOString()}] [pulpo] WARN agent-models.json no se pudo parsear en runtime: ${e.message}\n`); } catch {}
   }
 }
@@ -1080,7 +1104,7 @@ try {
     });
     if (bootSkillsFailures && bootSkillsFailures.length > 0) {
         for (const f of bootSkillsFailures) {
-            try { fsForAgentModels.appendFileSync(path.join(__dirname, 'logs', 'pulpo.log'),
+            try { fsForAgentModels.appendFileSync(path.join(LOG_DIR(), 'pulpo.log'),
                 `[${new Date().toISOString()}] [pulpo] WARN skill '${f.skill}' falló parseo de metadata: ${f.error}\n`); } catch {}
         }
     }
@@ -1121,11 +1145,11 @@ try {
     if (bootFailures.length > 0) {
         const strict = process.env.PIPELINE_PERMISSION_VALIDATOR_STRICT === '1';
         for (const f of bootFailures) {
-            try { fsForAgentModels.appendFileSync(path.join(__dirname, 'logs', 'pulpo.log'),
+            try { fsForAgentModels.appendFileSync(path.join(LOG_DIR(), 'pulpo.log'),
                 `[${new Date().toISOString()}] [pulpo] WARN permission gate boot — ${f.skill}: ${f.reason || 'unknown'} — ${(f.message || '').split('\n')[0]}\n`); } catch {}
         }
         if (strict) {
-            try { fsForAgentModels.appendFileSync(path.join(__dirname, 'logs', 'pulpo.log'),
+            try { fsForAgentModels.appendFileSync(path.join(LOG_DIR(), 'pulpo.log'),
                 `[${new Date().toISOString()}] [pulpo] FATAL ${bootFailures.length} skill(s) no pasaron el permission gate at-boot — strict mode activo. Abortando boot.\n`); } catch {}
             process.exit(78); // EX_CONFIG (config issue)
         }
@@ -1134,7 +1158,7 @@ try {
     // Defensivo: el check de boot no puede tirar el pulpo. Si algo explota
     // (require falla, fs error), loggemos y seguimos — at-spawn-time igual
     // valida y atajan el bug en cada lanzamiento.
-    try { fsForAgentModels.appendFileSync(path.join(__dirname, 'logs', 'pulpo.log'),
+    try { fsForAgentModels.appendFileSync(path.join(LOG_DIR(), 'pulpo.log'),
         `[${new Date().toISOString()}] [pulpo] WARN permission validator at-boot falló (no bloqueante): ${e.message}\n`); } catch {}
 }
 
@@ -1210,10 +1234,28 @@ function ghThrottle() {
  */
 function corridaDePrueba() {
   if (process.env.PIPELINE_ALLOW_PROD_SIDE_EFFECTS === '1') return null;
-  if (process.env.NODE_TEST_CONTEXT) return 'node --test';
+  // #7112 — la señal se nombra por su VARIABLE (mismo vocabulario que pipeline-env).
+  if (process.env.NODE_TEST_CONTEXT) return 'NODE_TEST_CONTEXT';
   if (process.env.PULPO_NO_AUTOSTART === '1') return 'PULPO_NO_AUTOSTART=1';
   if (process.env.NODE_ENV === 'test') return 'NODE_ENV=test';
   return null;
+}
+
+/**
+ * #7112 · CA-7.2 — env para los brazos y servicios que ESTE Pulpo lanza con
+ * `spawn(process.execPath, …)`: la declaración de ambiente va EXPLÍCITA con el
+ * modo que el propio Pulpo resolvió (nunca la heredada ni un literal), y siempre
+ * acompañada de `PIPELINE_REPO_ROOT` (CA-7.3). Un Pulpo en pruebas jamás declara
+ * productivo a sus hijos.
+ *
+ * @param {object} [extra] variables adicionales del hijo.
+ * @returns {object}
+ */
+function envDeHijo(extra = {}) {
+  return buildChildEnvLib.conDeclaracionExplicita(
+    { ...process.env, PIPELINE_REPO_ROOT: ROOT, ...extra },
+    process.env,
+  );
 }
 
 /**
@@ -1227,6 +1269,9 @@ function efectoProductivoBloqueado(destino) {
     const prod = path.resolve(__dirname);
     const d = path.resolve(String(destino || ''));
     if (d === prod || d.startsWith(prod + path.sep)) return motivo;
+    // #7112 / SEC-9 — además, la unión con PIPELINE_REPO_ROOT/.pipeline (aditivo:
+    // un pulpo cargado desde un worktree sigue protegiendo el productivo real).
+    if (pipelineEnv.esProductivo(d, process.env)) return motivo;
   } catch { /* destino no resoluble: no bloqueamos */ }
   return null;
 }
@@ -1255,7 +1300,14 @@ function ghWritesBloqueadas() {
   if (process.env.PIPELINE_ALLOW_GH_WRITES === '1') return null;
   if (process.env.PULPO_NO_AUTOSTART === '1') return 'PULPO_NO_AUTOSTART=1';
   if (process.env.PIPELINE_DIR_OVERRIDE) return 'PIPELINE_DIR_OVERRIDE seteado';
-  if (process.env.NODE_TEST_CONTEXT) return 'node --test';
+  if (process.env.NODE_TEST_CONTEXT) return 'NODE_TEST_CONTEXT';
+  // #7112 / SEC-12 — reconciliación SÓLO POR AND con el resolvedor: la escritura
+  // sale si el ambiente habilita el canal Y ninguna condición previa bloqueó.
+  // Ninguna condición de arriba se retiró (#6496 sigue entero).
+  const amb = pipelineEnv.resolve(process.env);
+  if (!amb.canales.github.escrituras) {
+    return `ambiente sin escrituras a GitHub (modo=${amb.modo}${amb.motivo ? ': ' + amb.motivo : ''})`;
+  }
   return null;
 }
 
@@ -1347,7 +1399,7 @@ async function ejecutarPrecheck(config) {
 
     // Persistir infra-health.json para el dashboard
     try {
-      precheck.writeInfraHealth(result, path.join(PIPELINE, 'infra-health.json'));
+      precheck.writeInfraHealth(result, path.join(PIPELINE(), 'infra-health.json'));
     } catch (e) {
       log('precheck', `No se pudo escribir infra-health.json: ${e.message}`);
     }
@@ -1860,7 +1912,7 @@ function haltOnConfigCorruption(reason, redactedDetail, err) {
   // #7086 — un config de prueba corrupto NO pausa el dispatch productivo ni
   // ensucia su log de diagnostico. Con el test bien aislado (PAUSE_FILE dentro
   // de su propio tmpdir) el halt sigue corriendo entero.
-  const bloqueoPrueba = efectoProductivoBloqueado(PAUSE_FILE);
+  const bloqueoPrueba = efectoProductivoBloqueado(PAUSE_FILE());
   if (bloqueoPrueba) {
     console.error(`[${new Date().toISOString()}] [pulpo] halt SUPRIMIDO (entorno de prueba: ${bloqueoPrueba}) — el marker de pausa apunta al pipeline productivo | causa: ${reason}`);
     return;
@@ -1869,11 +1921,11 @@ function haltOnConfigCorruption(reason, redactedDetail, err) {
   // Se decide ANTES de escribir, leyendo el marker: es lo que elige la variante
   // de copy (CA-UX-3).
   let pausaPreexistente = false;
-  try { pausaPreexistente = fs.existsSync(PAUSE_FILE); } catch { /* best-effort */ }
+  try { pausaPreexistente = fs.existsSync(PAUSE_FILE()); } catch { /* best-effort */ }
   // PAUSE_FILE se declara más abajo en el módulo; al ejecutarse esta función
   // (sólo en runtime, nunca en carga) ya está inicializado.
   try {
-    if (!fs.existsSync(PAUSE_FILE)) {
+    if (!fs.existsSync(PAUSE_FILE())) {
       // #4832 — Marker estructurado con ORIGEN distinguible. Permite el paso
       // inverso de auto-recovery (loadConfig branch de éxito) que sólo levanta
       // la pausa si la generó esta ruta (`source: config-corruption-halt`).
@@ -1881,7 +1933,7 @@ function haltOnConfigCorruption(reason, redactedDetail, err) {
       // lo pisamos → la manual gana y nunca se auto-levanta.
       // SEC-2: `detail` sólo lleva metadata YA redactada (reason + línea/col),
       // NUNCA el snippet crudo de config.yaml.
-      fs.writeFileSync(PAUSE_FILE, JSON.stringify({
+      fs.writeFileSync(PAUSE_FILE(), JSON.stringify({
         source: 'config-corruption-halt',
         ts: new Date().toISOString(),
         detail: redactedDetail || reason || 'config-corruption',
@@ -1898,13 +1950,13 @@ function haltOnConfigCorruption(reason, redactedDetail, err) {
   // levanta sola" cuando la pausa activa es la que acabamos de generar.
   const contexto = pausaPreexistente ? 'halt-preexistente' : 'halt-auto';
   const fallback = {
-    archivo: configSchema.formatConfigPath(CONFIG_PATH),
+    archivo: configSchema.formatConfigPath(CONFIG_PATH()),
     via: 'default',
     detalle: redactedDetail || reason || 'configuración inválida',
     accion: 'corregí el archivo',
   };
   const describir = (opts) => (err
-    ? configSchema.describeConfigFailure(err, { contexto, archivo: err.archivo || CONFIG_PATH, ...opts })
+    ? configSchema.describeConfigFailure(err, { contexto, archivo: err.archivo || CONFIG_PATH(), ...opts })
     : fallback);
   // #5173 CA-11 — MISMO generador, dos calibres. El log en disco va SIN recortar
   // (es la vía de diagnóstico); la alerta va acotada porque Telegram corta en
@@ -1917,7 +1969,7 @@ function haltOnConfigCorruption(reason, redactedDetail, err) {
   // línea y un bloque multilínea rompe el filtrado.
   const safeMsg = `[${new Date().toISOString()}] [pulpo] `
     + configSchema.formatConfigFailureLog(copia, { titulo: 'CONFIG INVÁLIDA — dispatch pausado' });
-  try { fs.appendFileSync(path.join(LOG_DIR, 'pulpo.log'), safeMsg + '\n'); } catch {}
+  try { fs.appendFileSync(path.join(LOG_DIR(), 'pulpo.log'), safeMsg + '\n'); } catch {}
   console.error(safeMsg);
   // Alerta Telegram throttleada y redactada.
   const now = Date.now();
@@ -1961,7 +2013,7 @@ const esViolacionDeConfig = configResolver.isConfigViolation;
 function loadConfig() {
   let raw;
   try {
-    raw = configResolver.resolve({ pipelineDir: PIPELINE, reload: true });
+    raw = configResolver.resolve({ pipelineDir: PIPELINE(), reload: true });
   } catch (e) {
     // El error ya viene tipado y REDACTADO por el resolver: `{archivo, causa,
     // linea, columna}`, jamás el `.message` de js-yaml (que trae el snippet
@@ -2009,7 +2061,7 @@ function loadConfig() {
   // `manual` ante cualquier ambigüedad, así que una pausa deliberada nunca
   // llega acá.
   try {
-    if (fs.existsSync(PAUSE_FILE) &&
+    if (fs.existsSync(PAUSE_FILE()) &&
         partialPause.readFullPauseOrigin().source === 'config-corruption-halt') {
       // #5174 · CA-5 — llegar acá significa que `configResolver.resolve()` NO
       // lanzó, y post-partición eso exige que los DOS archivos hayan parseado y
@@ -2022,7 +2074,7 @@ function loadConfig() {
       paused = false;
       // Log auditable (CA-4): qué disparó el halt / config sano detectado / reanudación.
       // #5172 · CA-15 — nombra el archivo concreto que se recuperó, no un genérico.
-      const archivoOk = configSchema.formatConfigPath(CONFIG_PATH);
+      const archivoOk = configSchema.formatConfigPath(CONFIG_PATH());
       log('pulpo', `[#4832] Auto-recovery: ${archivoOk} volvió a ser válida → pausa config-corruption-halt levantada → dispatch reanudado`);
       // Alerta Telegram redactada (sin volcar contenido del marker, SEC-2/A09).
       try {
@@ -2133,7 +2185,7 @@ function quarantineCorruptWorkFile(q) {
   }
   // Encolar label needs-human (el servicio-github auto-crea el label).
   try {
-    const ghQueueDir = path.join(PIPELINE, 'servicios', 'github', 'pendiente');
+    const ghQueueDir = path.join(PIPELINE(), 'servicios', 'github', 'pendiente');
     fs.mkdirSync(ghQueueDir, { recursive: true });
     encolarOrdenGithub(
       path.join(ghQueueDir, `${issue}-needs-human-corrupt-${Date.now()}.json`),
@@ -2213,7 +2265,7 @@ function recolectarHechosDespacho(cfgRoot, waves) {
     // prioridad, cooldown, deadlock, cb-infra) sin duplicar su lógica, y unifica
     // el vocabulario de los dos emisores (R-1). La ANOMALÍA se excluye dentro de
     // `causeFromArtifact`: "no sé por qué no despacho" jamás silencia (SEC-1).
-    causaDesdeArtifact: () => dispatchCauseKind.causeFromArtifact(dispatchCause.readArtifact(PIPELINE)),
+    causaDesdeArtifact: () => dispatchCauseKind.causeFromArtifact(dispatchCause.readArtifact(PIPELINE())),
   });
 }
 
@@ -2299,7 +2351,7 @@ function moveFile(src, destDir) {
 
 /** Obtener path de fase dentro de un pipeline */
 function fasePath(pipelineName, faseName) {
-  return path.join(PIPELINE, pipelineName, faseName);
+  return path.join(PIPELINE(), pipelineName, faseName);
 }
 
 // ---------------------------------------------------------------------------
@@ -2441,7 +2493,7 @@ function issueExistsInPipeline(issueNum, pipelineName) {
       // operador, ocupando slot conceptual. Cuentan como activos para no
       // re-intakearlo ni relanzarlo hasta que el callback de firma lo promueva.
       for (const estado of ['pendiente', 'trabajando', 'listo', 'bloqueado-humano', 'bloqueado-dependencias', 'esperando-firma', 'waiting-operator']) {
-        const dir = path.join(PIPELINE, pName, fase, estado);
+        const dir = path.join(PIPELINE(), pName, fase, estado);
         try {
           for (const f of fs.readdirSync(dir)) {
             if (f.startsWith(prefix) && f !== '.gitkeep') return true;
@@ -2458,14 +2510,14 @@ function issueExistsInPipeline(issueNum, pipelineName) {
 // Base: 5 min, duplica en cada fallo consecutivo. Max: 60 min.
 const COOLDOWN_BASE_MS = 5 * 60 * 1000;    // 5 minutos
 const COOLDOWN_MAX_MS = 60 * 60 * 1000;    // 60 minutos
-const COOLDOWN_FILE = path.join(PIPELINE, 'cooldowns.json');
+function COOLDOWN_FILE() { return path.join(PIPELINE(), 'cooldowns.json'); }
 
 function loadCooldowns() {
-  try { return JSON.parse(fs.readFileSync(COOLDOWN_FILE, 'utf8')); } catch { return {}; }
+  try { return JSON.parse(fs.readFileSync(COOLDOWN_FILE(), 'utf8')); } catch { return {}; }
 }
 
 function saveCooldowns(cd) {
-  fs.writeFileSync(COOLDOWN_FILE, JSON.stringify(cd, null, 2));
+  fs.writeFileSync(COOLDOWN_FILE(), JSON.stringify(cd, null, 2));
 }
 
 /** Registrar un fallo rápido para un issue+skill. Incrementa el contador y calcula el cooldown. */
@@ -2499,7 +2551,7 @@ function clearCooldown(skill, issue) {
 // --- Perfiles de consumo de recursos por skill ---
 // Promedios históricos de CPU/RAM que consume cada tipo de agente.
 // Se actualizan al terminar cada agente usando los snapshots de metrics-history.
-const SKILL_PROFILES_FILE = path.join(PIPELINE, 'skill-profiles.json');
+function SKILL_PROFILES_FILE() { return path.join(PIPELINE(), 'skill-profiles.json'); }
 
 // Versión del schema de skill-profiles. Incrementar cada vez que cambie la fórmula
 // de aprendizaje de `avgMem` / `avgCpu` — al hacerlo, los perfiles viejos se invalidan
@@ -2508,7 +2560,7 @@ const SKILL_PROFILES_SCHEMA_VERSION = 2;
 
 function loadSkillProfiles() {
   try {
-    const raw = JSON.parse(fs.readFileSync(SKILL_PROFILES_FILE, 'utf8'));
+    const raw = JSON.parse(fs.readFileSync(SKILL_PROFILES_FILE(), 'utf8'));
     // Compatibilidad: si el archivo viejo no tiene _schemaVersion (v1), devolver vacío
     // al próximo save se escribirá con la versión nueva.
     if (!raw || raw._schemaVersion !== SKILL_PROFILES_SCHEMA_VERSION) return {};
@@ -2519,7 +2571,7 @@ function loadSkillProfiles() {
 
 function saveSkillProfiles(profiles) {
   const payload = { _schemaVersion: SKILL_PROFILES_SCHEMA_VERSION, ...profiles };
-  fs.writeFileSync(SKILL_PROFILES_FILE, JSON.stringify(payload, null, 2));
+  fs.writeFileSync(SKILL_PROFILES_FILE(), JSON.stringify(payload, null, 2));
 }
 
 /**
@@ -2529,12 +2581,12 @@ function saveSkillProfiles(profiles) {
  */
 function migrateSkillProfilesIfNeeded() {
   try {
-    if (!fs.existsSync(SKILL_PROFILES_FILE)) return;
-    const raw = JSON.parse(fs.readFileSync(SKILL_PROFILES_FILE, 'utf8'));
+    if (!fs.existsSync(SKILL_PROFILES_FILE())) return;
+    const raw = JSON.parse(fs.readFileSync(SKILL_PROFILES_FILE(), 'utf8'));
     if (raw && raw._schemaVersion === SKILL_PROFILES_SCHEMA_VERSION) return; // ya migrado
 
-    const bakPath = SKILL_PROFILES_FILE + '.v1.bak';
-    fs.renameSync(SKILL_PROFILES_FILE, bakPath);
+    const bakPath = SKILL_PROFILES_FILE() + '.v1.bak';
+    fs.renameSync(SKILL_PROFILES_FILE(), bakPath);
     log('pulpo', `📦 skill-profiles.json migrado a v${SKILL_PROFILES_SCHEMA_VERSION}: backup en ${path.basename(bakPath)}. Los perfiles se reaprenden con la fórmula DELTA.`);
   } catch (e) {
     log('pulpo', `Error migrando skill-profiles: ${e.message}`);
@@ -2556,7 +2608,7 @@ const BASELINE_WINDOW_MS = 60_000; // Ventana de muestras pre-lanzamiento para e
 
 function recordSkillResourceUsage(skill, startTime, endTime) {
   try {
-    const metricsFile = path.join(PIPELINE, 'metrics-history.jsonl');
+    const metricsFile = path.join(PIPELINE(), 'metrics-history.jsonl');
     if (!fs.existsSync(metricsFile)) return;
 
     const lines = fs.readFileSync(metricsFile, 'utf8').split('\n').filter(Boolean);
@@ -2890,7 +2942,7 @@ let graciaPostBootMinutos = 0;
 // se persiste y se rehidrata revalidando cada PID contra el SO.
 const { ActiveProcessRegistry } = require('./lib/active-process-registry');
 const activeProcesses = new ActiveProcessRegistry({ // key: "skill:issue" → { pid, startTime }
-  file: path.join(PIPELINE, 'state', 'active-processes.json'),
+  file: path.join(PIPELINE(), 'state', 'active-processes.json'),
   isProcessAlive: (pid) => isProcessAlive(pid),
   onLog: (msg) => log('huerfanos', msg),
 });
@@ -2926,7 +2978,7 @@ function countRunningBySkill(skill) {
   let count = 0;
   for (const [pName, pConfig] of Object.entries(config.pipelines)) {
     for (const fase of pConfig.fases) {
-      const trabajandoDir = path.join(PIPELINE, pName, fase, 'trabajando');
+      const trabajandoDir = path.join(PIPELINE(), pName, fase, 'trabajando');
       try {
         for (const f of fs.readdirSync(trabajandoDir)) {
           if (f.startsWith('.') || isMarkerArtifactPulpo(f)) continue;
@@ -2947,7 +2999,7 @@ function countRunningDevs() {
   let count = 0;
   for (const [pName, pConfig] of Object.entries(config.pipelines)) {
     for (const fase of pConfig.fases) {
-      const trabajandoDir = path.join(PIPELINE, pName, fase, 'trabajando');
+      const trabajandoDir = path.join(PIPELINE(), pName, fase, 'trabajando');
       try {
         for (const f of fs.readdirSync(trabajandoDir)) {
           if (f.startsWith('.') || isMarkerArtifactPulpo(f)) continue;
@@ -3273,7 +3325,7 @@ function countTotalRunningAgents(config) {
   let count = 0;
   for (const [pName, pConfig] of Object.entries(config.pipelines)) {
     for (const fase of pConfig.fases) {
-      const trabajandoDir = path.join(PIPELINE, pName, fase, 'trabajando');
+      const trabajandoDir = path.join(PIPELINE(), pName, fase, 'trabajando');
       try {
         for (const f of fs.readdirSync(trabajandoDir)) {
           if (f.startsWith('.') || isMarkerArtifactPulpo(f)) continue;
@@ -3394,7 +3446,7 @@ function validateQaEvidence(issue, qaData, authoritativeQaMode = null, deps = {}
     return [];
   }
 
-  const ROOT = path.resolve(PIPELINE, '..');
+  const ROOT = path.resolve(PIPELINE(), '..');
   const evidenceDir = path.join(ROOT, 'qa', 'evidence', String(issue));
   const recordingsDir = path.join(ROOT, 'qa', 'recordings');
 
@@ -3463,7 +3515,7 @@ let buildPriorityNotifiedTelegram = false;
 let buildPriorityManual = false;    // true si fue activada manualmente desde el dashboard
 let buildPrioritySafetyNotified = false; // true si ya se envió notificación de safety timeout
 
-const PRIORITY_WINDOWS_FILE = path.join(PIPELINE, 'priority-windows.json');
+function PRIORITY_WINDOWS_FILE() { return path.join(PIPELINE(), 'priority-windows.json'); }
 
 /**
  * Restaurar el estado de priority windows desde disco al iniciar.
@@ -3472,8 +3524,8 @@ const PRIORITY_WINDOWS_FILE = path.join(PIPELINE, 'priority-windows.json');
  */
 function restorePriorityWindows() {
   try {
-    if (!fs.existsSync(PRIORITY_WINDOWS_FILE)) return;
-    const data = JSON.parse(fs.readFileSync(PRIORITY_WINDOWS_FILE, 'utf8'));
+    if (!fs.existsSync(PRIORITY_WINDOWS_FILE())) return;
+    const data = JSON.parse(fs.readFileSync(PRIORITY_WINDOWS_FILE(), 'utf8'));
     if (data.qa?.active) {
       qaPriorityActive = true;
       qaPriorityActivatedAt = data.qa.activatedAt || Date.now();
@@ -3521,7 +3573,7 @@ function persistPriorityWindows() {
     },
     updatedAt: Date.now()
   };
-  try { fs.writeFileSync(PRIORITY_WINDOWS_FILE, JSON.stringify(state, null, 2)); } catch {}
+  try { fs.writeFileSync(PRIORITY_WINDOWS_FILE(), JSON.stringify(state, null, 2)); } catch {}
 }
 
 /**
@@ -3531,7 +3583,7 @@ function persistPriorityWindows() {
  */
 function readManualPriorityOverrides() {
   try {
-    const data = JSON.parse(fs.readFileSync(PRIORITY_WINDOWS_FILE, 'utf8'));
+    const data = JSON.parse(fs.readFileSync(PRIORITY_WINDOWS_FILE(), 'utf8'));
 
     // QA manual override — al activar manual, AUTOEXCLUIR Build (las ventanas son
     // mutuamente exclusivas; QA > Build > Dev). Sin esto quedaban las dos activas
@@ -3595,7 +3647,7 @@ function readManualPriorityOverrides() {
     if (data.qa?.manualOverride !== undefined || data.build?.manualOverride !== undefined) {
       delete data.qa?.manualOverride;
       delete data.build?.manualOverride;
-      fs.writeFileSync(PRIORITY_WINDOWS_FILE, JSON.stringify(data, null, 2));
+      fs.writeFileSync(PRIORITY_WINDOWS_FILE(), JSON.stringify(data, null, 2));
     }
   } catch {}
 }
@@ -3613,7 +3665,7 @@ function countPendingVerificacion(config, overrides = {}) {
   let count = 0;
   for (const [pName, pConfig] of Object.entries(config.pipelines)) {
     if (!pConfig.fases.includes('verificacion')) continue;
-    const pendDir = path.join(PIPELINE, pName, 'verificacion', 'pendiente');
+    const pendDir = path.join(PIPELINE(), pName, 'verificacion', 'pendiente');
     const files = listWorkFiles(pendDir);
     for (const f of files) {
       const issue = issueFromFile(f.name);
@@ -3632,7 +3684,7 @@ function countRunningVerificacion(config) {
   let count = 0;
   for (const [pName, pConfig] of Object.entries(config.pipelines)) {
     if (!pConfig.fases.includes('verificacion')) continue;
-    const trabajandoDir = path.join(PIPELINE, pName, 'verificacion', 'trabajando');
+    const trabajandoDir = path.join(PIPELINE(), pName, 'verificacion', 'trabajando');
     count += listWorkFiles(trabajandoDir).length;
   }
   return count;
@@ -3645,7 +3697,7 @@ function countRunningDev(config) {
   let count = 0;
   for (const [pName, pConfig] of Object.entries(config.pipelines)) {
     if (!pConfig.fases.includes('dev')) continue;
-    const trabajandoDir = path.join(PIPELINE, pName, 'dev', 'trabajando');
+    const trabajandoDir = path.join(PIPELINE(), pName, 'dev', 'trabajando');
     count += listWorkFiles(trabajandoDir).length;
   }
   return count;
@@ -3815,7 +3867,7 @@ function countPendingBuild(config, overrides = {}) {
   let count = 0;
   for (const [pName, pConfig] of Object.entries(config.pipelines)) {
     if (!pConfig.fases.includes('build')) continue;
-    const pendDir = path.join(PIPELINE, pName, 'build', 'pendiente');
+    const pendDir = path.join(PIPELINE(), pName, 'build', 'pendiente');
     const files = listWorkFiles(pendDir);
     for (const f of files) {
       const issue = issueFromFile(f.name);
@@ -3834,7 +3886,7 @@ function countRunningBuild(config) {
   let count = 0;
   for (const [pName, pConfig] of Object.entries(config.pipelines)) {
     if (!pConfig.fases.includes('build')) continue;
-    const trabajandoDir = path.join(PIPELINE, pName, 'build', 'trabajando');
+    const trabajandoDir = path.join(PIPELINE(), pName, 'build', 'trabajando');
     count += listWorkFiles(trabajandoDir).length;
   }
   return count;
@@ -3992,6 +4044,7 @@ function rotateDiskCaches(mode) {
     if (mode === 'aggressive') args.push('--force');
     const child = spawn(process.execPath, args, {
       cwd: ROOT, detached: true, stdio: 'ignore', windowsHide: true,
+      env: envDeHijo(), // #7112 · CA-7.2
     });
     child.unref();
     log('free-resources', `[${mode}] Rotacion de caches de disco lanzada en background`);
@@ -4083,6 +4136,7 @@ function diskGuardSpawn(accion, args, budget, onDone) {
   const beforeGb = diskGuard.measureFreeGb();
   const child = spawn(process.execPath, args, {
     cwd: ROOT, stdio: 'ignore', windowsHide: true,
+    env: envDeHijo(), // #7112 · CA-7.2
   });
   // NB: el parametro se llama `exitCode` a proposito, NO `code`.
   // tests/effective-model-post-exit-wiring.test.js ancla por grep en la PRIMERA
@@ -4103,7 +4157,7 @@ function diskGuardSpawn(accion, args, budget, onDone) {
       free_gb_despues: Number.isFinite(afterGb) ? Number(afterGb.toFixed(2)) : null,
       liberado_gb: Number(freedGb.toFixed(2)),
       presupuesto: { green_gb: budget.green_gb, yellow_gb: budget.yellow_gb, orange_gb: budget.orange_gb },
-    }, { pipelineDir: PIPELINE });
+    }, { pipelineDir: PIPELINE() });
     try { onDone(freedGb, afterGb); } catch (e) { log('disco', `post-${accion}: ${e.message}`); }
   });
   child.on('error', (e) => {
@@ -4127,7 +4181,7 @@ function brazoDiskGuard(config) {
 
   try {
     const freeGb = diskGuard.measureFreeGb();
-    const prev = diskGuard.readState({ pipelineDir: PIPELINE });
+    const prev = diskGuard.readState({ pipelineDir: PIPELINE() });
     const d = diskGuard.decide({ freeGb, budget, state: prev, now: Date.now() });
 
     // Tamaño total del volumen: sólo lo usa el dashboard para el porcentaje
@@ -4141,7 +4195,7 @@ function brazoDiskGuard(config) {
 
     // Persistir SIEMPRE, aun en verde: el dashboard necesita el número y el
     // color en cada refresh, no sólo cuando hay problema.
-    diskGuard.writeState(d.nextState, { pipelineDir: PIPELINE });
+    diskGuard.writeState(d.nextState, { pipelineDir: PIPELINE() });
     lastDiskSnapshot = d;
 
     if (d.level !== prev.level) {
@@ -4187,7 +4241,7 @@ function brazoDiskGuard(config) {
       // Los fail-safes (trabajo en vuelo, guard anti-suicidio, audit JSONL)
       // siguen todos vigentes — sólo se levanta el techo de 5 por corrida.
       diskGuardSpawn('reclaim-worktrees', [
-        path.join(PIPELINE, 'ghostbusters.js'),
+        path.join(PIPELINE(), 'ghostbusters.js'),
         '--worktrees', '--run', '--no-cap', `--age-days=${ageDays}`,
       ], budget, (freedGb) => {
         diskGuardReclaimRunning = false;
@@ -4216,9 +4270,9 @@ function diskGuardMaybeAlert(config, budget, freedGb) {
   if (!diskGuard || !(Number(freedGb) >= budget.alert_freed_gb)) return;
   try {
     const freeGb = diskGuard.measureFreeGb();
-    const prev = diskGuard.readState({ pipelineDir: PIPELINE });
+    const prev = diskGuard.readState({ pipelineDir: PIPELINE() });
     const d = diskGuard.decide({ freeGb, budget, state: prev, now: Date.now(), freedGbThisRun: freedGb });
-    diskGuard.writeState(d.nextState, { pipelineDir: PIPELINE });
+    diskGuard.writeState(d.nextState, { pipelineDir: PIPELINE() });
     lastDiskSnapshot = d;
     if (d.alert.should) diskGuardAlert(d, budget, freedGb);
   } catch (e) {
@@ -4253,7 +4307,7 @@ function diskGuardBlocksPhase(fase, skill) {
   if (!diskGuard) return false;
   try {
     const state = lastDiskSnapshot ? lastDiskSnapshot.nextState : null;
-    return diskGuard.isHeavyPhaseFrozen(fase, skill, { pipelineDir: PIPELINE, state });
+    return diskGuard.isHeavyPhaseFrozen(fase, skill, { pipelineDir: PIPELINE(), state });
   } catch {
     return false;
   }
@@ -4288,7 +4342,7 @@ function shutdownIdleEmulator(config) {
     let lastStartedAt = 0;
 
     // Check 1: state file
-    const stateFile = path.join(PIPELINE, 'qa-env-state.json');
+    const stateFile = path.join(PIPELINE(), 'qa-env-state.json');
     if (fs.existsSync(stateFile)) {
       try {
         const state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
@@ -4541,7 +4595,7 @@ function brazoBarrido(config) {
   // ventana histórica devolvería reboundRate=0 (falso cero) en vez de `null`, y
   // el baseline de rebotes quedaría congelado en 0 e inmutable. Idempotente y
   // memoizada en el módulo: cuesta una lectura por proceso.
-  try { modelPropagationRollout.markReboundProducerLive(PIPELINE); } catch { /* best-effort */ }
+  try { modelPropagationRollout.markReboundProducerLive(PIPELINE()); } catch { /* best-effort */ }
   for (const [pipelineName, pipelineConfig] of Object.entries(config.pipelines)) {
     const fases = pipelineConfig.fases;
     const faseRechazo = pipelineConfig.fase_rechazo;
@@ -4771,7 +4825,7 @@ function brazoBarrido(config) {
         // el rechazo y el issue desaparecía del pipeline sin rebote ni escalada.
         // Y sólo vale en `entrega`, que es la única fase que corre el gate.
         if (deliveryFreshnessGate.isStaleVerdictRejection({
-          fase, rechazados, issue, pipelineDir: PIPELINE,
+          fase, rechazados, issue, pipelineDir: PIPELINE(),
         })) {
           const procesadoCaduco = path.join(fasePath(pipelineName, fase), 'procesado');
           try { fs.mkdirSync(procesadoCaduco, { recursive: true }); } catch {}
@@ -4801,10 +4855,10 @@ function brazoBarrido(config) {
           // algo falso justo en el caso que un humano tiene que leer.
           let reencoladoAbierto = true;
           try {
-            reencoladoAbierto = qaEvidenceSeal.hasOpenRequeue({ pipelineDir: PIPELINE, issue }) === true;
+            reencoladoAbierto = qaEvidenceSeal.hasOpenRequeue({ pipelineDir: PIPELINE(), issue }) === true;
           } catch { reencoladoAbierto = true; }
           const sealCwd = sealedVerdictWorktree(issue, config);
-          const vigente = sealCwd && qaEvidenceSeal.findVigentSealedVerdict({ pipelineDir: PIPELINE, issue, cwd: sealCwd }).vigente;
+          const vigente = sealCwd && qaEvidenceSeal.findVigentSealedVerdict({ pipelineDir: PIPELINE(), issue, cwd: sealCwd }).vigente;
           log('barrido', vigente
             ? `#${issue} entrega frenada por veredicto caduco pero con sello vigente — sin nueva escalada.`
             : reencoladoAbierto
@@ -4847,7 +4901,7 @@ function brazoBarrido(config) {
               log('barrido', `⛔ #${issue} CIRCUIT BREAKER CROSSPHASE — ${nuevoCrossCount} rebotes cross-phase (cap ${MAX_CROSSPHASE_REBOTES}). Escalando.`);
               sendTelegram(`⛔ Issue #${issue} — ${nuevoCrossCount} rebotes cross-phase solicitados por agentes. Requiere intervención manual.`);
               try {
-                const ghQueueDir = path.join(PIPELINE, 'servicios', 'github', 'pendiente');
+                const ghQueueDir = path.join(PIPELINE(), 'servicios', 'github', 'pendiente');
                 fs.mkdirSync(ghQueueDir, { recursive: true });
                 const labelFile = path.join(ghQueueDir, `${issue}-needs-human-crossphase-${Date.now()}.json`);
                 encolarOrdenGithub(labelFile, { action: 'label', issue: parseInt(issue), label: 'needs-human' });
@@ -5347,7 +5401,7 @@ function brazoBarrido(config) {
             if (precondition && precondition.type === 'human_judgment' && skillBloq === 'delivery') {
               try {
                 const pred = verifiablePredicateStore.consume({
-                  pipelineDir: PIPELINE,
+                  pipelineDir: PIPELINE(),
                   issue: parseInt(issue),
                 });
                 if (pred) {
@@ -5408,7 +5462,7 @@ function brazoBarrido(config) {
               // #2880 — Label needs-human: lo encola humanBlock.reportHumanBlock() arriba.
               // Acá solo encolamos el comentario explicativo en el issue.
               try {
-                const ghQueueDir = path.join(PIPELINE, 'servicios', 'github', 'pendiente');
+                const ghQueueDir = path.join(PIPELINE(), 'servicios', 'github', 'pendiente');
                 fs.mkdirSync(ghQueueDir, { recursive: true });
                 const body = [
                   `## Pipeline pausó este issue: requiere intervención humana`,
@@ -5551,7 +5605,7 @@ function brazoBarrido(config) {
               let dhGate = { hash: null, known: false };
               try { dhGate = convergence.computeDiffHash(issue, { root: ROOT }) || dhGate; } catch { /* fail-open */ }
               noProgreso = infraNoprogress.shouldEscalate({
-                pipelineDir: PIPELINE,
+                pipelineDir: PIPELINE(),
                 issue,
                 fase,
                 diffHash: dhGate.known ? dhGate.hash : null, // SEC-A: desconocido ⇒ no escala
@@ -5610,7 +5664,7 @@ function brazoBarrido(config) {
               ).slice(0, 1500);
               // Encolar creación de label + add-label + comentario en servicio-github.
               try {
-                const ghQueueDir = path.join(PIPELINE, 'servicios', 'github', 'pendiente');
+                const ghQueueDir = path.join(PIPELINE(), 'servicios', 'github', 'pendiente');
                 fs.mkdirSync(ghQueueDir, { recursive: true });
                 // Aplicar label `needs-human`. El servicio-github auto-crea el
                 // label si no existe (ver LABEL_COLORS, color #B60205).
@@ -5877,9 +5931,9 @@ function brazoBarrido(config) {
                 // Auditoría JSONL (RIESGO-1): registrar cada auto-promoción con la
                 // observación descartada para que el operador pueda revisar.
                 try {
-                  fs.mkdirSync(LOG_DIR, { recursive: true });
+                  fs.mkdirSync(LOG_DIR(), { recursive: true });
                   fs.appendFileSync(
-                    path.join(LOG_DIR, 'audit-convergence.jsonl'),
+                    path.join(LOG_DIR(), 'audit-convergence.jsonl'),
                     JSON.stringify({
                       ts: new Date().toISOString(),
                       event: 'auto_promote_convergence',
@@ -5976,7 +6030,7 @@ function brazoBarrido(config) {
                 sendTelegram(`⛔ Issue #${issue} — ${nuevoRoutingBounces} rebotes por routing mismatch. Ningún agente encuentra su alcance. Requiere reclasificación manual.\n\nÚltimo motivo:\n${motivosRouting.slice(0, 500)}`);
                 // Encolar en servicio-github: label blocked:routing-manual
                 try {
-                  const ghQueueDir = path.join(PIPELINE, 'servicios', 'github', 'pendiente');
+                  const ghQueueDir = path.join(PIPELINE(), 'servicios', 'github', 'pendiente');
                   fs.mkdirSync(ghQueueDir, { recursive: true });
                   const labelFile = path.join(ghQueueDir, `${issue}-blocked-routing-${Date.now()}.json`);
                   encolarOrdenGithub(labelFile, { action: 'label', issue: parseInt(issue), label: 'blocked:routing-manual' });
@@ -6358,7 +6412,7 @@ function brazoBarrido(config) {
             const evaluadores = rechazados.map(x => skillFromFile(x.file.name)).filter(Boolean);
             for (const skillRebotado of skillsDestino) {
               try {
-                modelPropagationRollout.recordRebound(PIPELINE, {
+                modelPropagationRollout.recordRebound(PIPELINE(), {
                   issue, skill: skillRebotado, ts: new Date().toISOString(),
                   rechazado_en_fase: fase, evaluadores,
                 });
@@ -6447,7 +6501,7 @@ function brazoBarrido(config) {
                 // writeDeliverable (redacta secrets, valida fase). NUNCA bloquea.
                 try {
                   const yaEntry = deliverableIndex
-                    .queryByPhase(issue, 'criterios', { pipelineRoot: PIPELINE })
+                    .queryByPhase(issue, 'criterios', { pipelineRoot: PIPELINE() })
                     .some(e => e.agente === 'po' && e.tipo !== 'exception');
                   const declaraNoAplica = !!(poResult && poResult.entregable_no_aplica === true);
                   if (!yaEntry && poResult && !declaraNoAplica) {
@@ -6470,7 +6524,7 @@ function brazoBarrido(config) {
                   agente: 'po',
                   poResult,
                   config,
-                  pipelineRoot: PIPELINE,
+                  pipelineRoot: PIPELINE(),
                 });
 
                 if (gateRes.effective_decision === 'retain') {
@@ -6488,7 +6542,7 @@ function brazoBarrido(config) {
                   } catch {}
                   const DG_MAX_INTENTOS = 3;
                   const nuevoIntento = dgIntento + 1;
-                  const ghQueueDir = path.join(PIPELINE, 'servicios', 'github', 'pendiente');
+                  const ghQueueDir = path.join(PIPELINE(), 'servicios', 'github', 'pendiente');
 
                   if (nuevoIntento > DG_MAX_INTENTOS) {
                     // Escalado a humano — no seguir en bucle (circuit breaker duro).
@@ -6629,7 +6683,7 @@ function brazoBarrido(config) {
                 // Idempotencia (CA-UX-2): no duplicar comment si ya está posteado.
                 if (!visualGate.commentMarkerPresent(issueCommentsVG)) {
                   try {
-                    const ghQueueDir = path.join(PIPELINE, 'servicios', 'github', 'pendiente');
+                    const ghQueueDir = path.join(PIPELINE(), 'servicios', 'github', 'pendiente');
                     fs.mkdirSync(ghQueueDir, { recursive: true });
                     fs.writeFileSync(
                       path.join(ghQueueDir, `${issue}-visual-gate-comment-${Date.now()}.json`),
@@ -6648,7 +6702,7 @@ function brazoBarrido(config) {
 
                 // Aplicar label needs:visual-baseline (idempotente desde GH side).
                 try {
-                  const ghQueueDir = path.join(PIPELINE, 'servicios', 'github', 'pendiente');
+                  const ghQueueDir = path.join(PIPELINE(), 'servicios', 'github', 'pendiente');
                   fs.mkdirSync(ghQueueDir, { recursive: true });
                   encolarOrdenGithub(
                     path.join(ghQueueDir, `${issue}-visual-gate-label-${Date.now()}.json`),
@@ -6690,7 +6744,7 @@ function brazoBarrido(config) {
           // Default OFF (PIPELINE_GATE0_ENABLED=0): con el flag apagado este
           // bloque es INERTE y el pipeline se comporta igual que hoy (CA-8).
           if (gateVerdict.shouldEvaluateGate0({ pipelineName, fromFase: fase, env: process.env })) {
-            const GATE0_AUDIT_FILE = path.join(PIPELINE, 'audit', 'gate-verdicts.jsonl');
+            const GATE0_AUDIT_FILE = path.join(PIPELINE(), 'audit', 'gate-verdicts.jsonl');
             const GATE0_MARKER = '<!-- gate0-requires-operator -->';
             const gate0AuditActor = `pulpo:gate0:${fase}`;
             // Helper local: registro encadenado, nunca tumba el barrido (SEC-R8).
@@ -6706,7 +6760,7 @@ function brazoBarrido(config) {
             };
             const retainGate0FailClosed = (code, detail) => {
               const waitingOperatorDir = path.join(fasePath(pipelineName, fase), 'waiting-operator');
-              const g0QueueDir = path.join(PIPELINE, 'servicios', 'github', 'pendiente');
+              const g0QueueDir = path.join(PIPELINE(), 'servicios', 'github', 'pendiente');
               const reason = `GATE 0 fail-closed: ${code}${detail ? ` (${detail})` : ''}`;
               try {
                 fs.mkdirSync(g0QueueDir, { recursive: true });
@@ -6798,7 +6852,7 @@ function brazoBarrido(config) {
                 verdict: g0.verdict,
               });
               const g0Actions = gateLabelReconciler.buildLabelActions({ issue, reconciliation: g0Rec });
-              const g0QueueDir = path.join(PIPELINE, 'servicios', 'github', 'pendiente');
+              const g0QueueDir = path.join(PIPELINE(), 'servicios', 'github', 'pendiente');
               try {
                 fs.mkdirSync(g0QueueDir, { recursive: true });
                 for (const act of g0Actions) {
@@ -7191,7 +7245,7 @@ function brazoBarrido(config) {
               continue;
             }
 
-            const ghQueueDir = path.join(PIPELINE, 'servicios', 'github', 'pendiente');
+            const ghQueueDir = path.join(PIPELINE(), 'servicios', 'github', 'pendiente');
             const labelFile = path.join(ghQueueDir, `${issue}-ready-${Date.now()}.json`);
             encolarOrdenGithub(labelFile, { action: 'label', issue: parseInt(issue), label: 'Ready' });
             log('barrido', `#${issue} → encolado label "Ready" en servicio-github`);
@@ -7382,7 +7436,7 @@ function brazoBarrido(config) {
         try {
           const notifyCfg = (config && config.deliverable_notifications) || {};
           if (notifyCfg.enabled === true && notifyCfg.kill_switch !== true) {
-            const telegramQueueDir = path.join(PIPELINE, 'servicios', 'telegram', 'pendiente');
+            const telegramQueueDir = path.join(PIPELINE(), 'servicios', 'telegram', 'pendiente');
             const titleCached = getIssueTitleCached(issue);
             for (const r of resultados) {
               if (r.resultado !== 'aprobado') continue;
@@ -7573,7 +7627,7 @@ function brazoBarrido(config) {
                     });
                     if (decision.action === 'exception' || decision.action === 'error') {
                       const rec = upsertDeliverableException({
-                        issue, fase, agente: notifySkill, motivo: decision.motivo, pipelineRoot: PIPELINE,
+                        issue, fase, agente: notifySkill, motivo: decision.motivo, pipelineRoot: PIPELINE(),
                       });
                       r.notas = decision.action === 'exception'
                         ? `Entregable no aplica: ${rec.motivo}`
@@ -7637,7 +7691,7 @@ function brazoBarrido(config) {
                       : 'entregable no aplica: cierre sin nota sustantiva';
                     upsertDeliverableIndex({
                       issue, fase, agente: notifySkill,
-                      tipo: 'exception', motivo, pipelineRoot: PIPELINE,
+                      tipo: 'exception', motivo, pipelineRoot: PIPELINE(),
                     });
                     log('barrido', `⚠️ #${issue} excepción no_aplica registrada (${notifySkill}/${fase})`);
                   } catch (e) {
@@ -8668,7 +8722,7 @@ function escalarACircuitBreaker(opts, deps) {
   const sanitize = deps.sanitize || sanitizePipelineText;
   const sendTg = deps.sendTelegramWithMarkup || sendTelegramWithMarkup;
   const logFn = deps.log || log;
-  const pipelineRoot = deps.pipelineRoot || PIPELINE;
+  const pipelineRoot = deps.pipelineRoot || PIPELINE();
   const resolveWave = deps.resolveWaveForIssue || ((n) => {
     try { return require('./lib/wave-resolver').resolveWaveForIssue(n, { pipelineRoot }); }
     catch { return null; }
@@ -9026,8 +9080,8 @@ function sealedVerdictWorktree(issue, config) {
 }
 
 function drenarRequeueVerificacion(config, { comentar = ghCommentOnIssue, resolveCwd = sealedVerdictWorktree, resolvePr = null } = {}) {
-  const pendDir = path.join(PIPELINE, ...qaEvidenceSeal.REQUEUE_QUEUE_DIR);
-  const doneDir = path.join(PIPELINE, ...qaEvidenceSeal.REQUEUE_DONE_DIR);
+  const pendDir = path.join(PIPELINE(), ...qaEvidenceSeal.REQUEUE_QUEUE_DIR);
+  const doneDir = path.join(PIPELINE(), ...qaEvidenceSeal.REQUEUE_DONE_DIR);
   let ordenes;
   try {
     ordenes = fs.readdirSync(pendDir).filter(f => f.endsWith('.json') && !f.startsWith('.'));
@@ -9084,7 +9138,7 @@ function drenarRequeueVerificacion(config, { comentar = ghCommentOnIssue, resolv
     // encolar: el drenador honraba órdenes que el productor jamás habría
     // emitido. `writeSealRetries` es un `writeFileSync` pelado, así que un
     // crash a mitad de escritura basta para llegar a ese estado.
-    const retries = qaEvidenceSeal.readSealRetries({ pipelineDir: PIPELINE, issue: issueNum });
+    const retries = qaEvidenceSeal.readSealRetries({ pipelineDir: PIPELINE(), issue: issueNum });
     if (!(retries.intentos > 0 && retries.intentos <= qaEvidenceSeal.MAX_SEAL_REQUEUES) || retries.corrupto === true) {
       log('caducidad', `⚠️ orden de re-encolado #${issue} SIN procedencia (contador=${retries.intentos}${retries.corrupto === true ? ', CORRUPTO' : ''}, tope=${qaEvidenceSeal.MAX_SEAL_REQUEUES}) — descartada sin efecto`);
       try { fs.mkdirSync(doneDir, { recursive: true }); fs.renameSync(ordenPath, path.join(doneDir, fname)); } catch {}
@@ -9093,7 +9147,7 @@ function drenarRequeueVerificacion(config, { comentar = ghCommentOnIssue, resolv
 
     try {
       const cwd = resolveCwd(issue, config);
-      if (cwd && qaEvidenceSeal.findVigentSealedVerdict({ pipelineDir: PIPELINE, issue, cwd }).vigente) {
+      if (cwd && qaEvidenceSeal.findVigentSealedVerdict({ pipelineDir: PIPELINE(), issue, cwd }).vigente) {
         let prNumber = null;
         try {
           if (resolvePr) prNumber = resolvePr(issue, cwd);
@@ -9106,7 +9160,7 @@ function drenarRequeueVerificacion(config, { comentar = ghCommentOnIssue, resolv
             }
           }
         } catch { /* El delivery propaga el gate al PR cuando vuelve a correr. */ }
-        const ratified = qaEvidenceSeal.reratifySealedVerdict({ pipelineDir: PIPELINE, issue, cwd, prNumber });
+        const ratified = qaEvidenceSeal.reratifySealedVerdict({ pipelineDir: PIPELINE(), issue, cwd, prNumber });
         if (ratified.reintentable) {
           log('caducidad', `#${issue}: auditoría no persistida; orden conservada para reintentar.`);
           continue;
@@ -9245,7 +9299,7 @@ function drenarRequeueVerificacion(config, { comentar = ghCommentOnIssue, resolv
  */
 function migrarBacklogPreSellado() {
   try {
-    const res = qaEvidenceSeal.migratePreSealBacklog({ pipelineDir: PIPELINE });
+    const res = qaEvidenceSeal.migratePreSealBacklog({ pipelineDir: PIPELINE() });
     // #6496 (rev-1) — la ventana de migración es ONE-SHOT: cerrada la primera
     // corrida, un `aprobado` sin sello posterior al corte NO se exime (CA-3) y
     // caduca. Se loguea para que ese descarte no ocurra en silencio.
@@ -9284,7 +9338,7 @@ const ARCHIVADO_MAX_PER_TICK = 200;
 function makeIsClosedFromTitleCache() {
   let cache = {};
   try {
-    const file = path.join(PIPELINE, '.issue-title-cache.json');
+    const file = path.join(PIPELINE(), '.issue-title-cache.json');
     cache = JSON.parse(fs.readFileSync(file, 'utf8')) || {};
   } catch {
     return null; // sin cache → solo se archiva por fase terminal alcanzada
@@ -9301,7 +9355,7 @@ function brazoArchivado(config) {
     const historico = require('./lib/historico');
     const max = (config.historico && config.historico.max_per_tick) || ARCHIVADO_MAX_PER_TICK;
     const isClosed = makeIsClosedFromTitleCache();
-    const r = historico.barrerHistorico({ config, pipelineDir: PIPELINE, isClosed, max });
+    const r = historico.barrerHistorico({ config, pipelineDir: PIPELINE(), isClosed, max });
     if (r.archivedIssues.length) {
       log('archivado', `mudados ${r.movedCount} artefacto(s) de ${r.archivedIssues.length} issue(s) a historico/: ${r.archivedIssues.join(', ')}`);
     }
@@ -9361,7 +9415,7 @@ function countPendientesGlobal(config) {
 // si fueran trabajo despachable (bloqueante N2 de la review rev-2). Mismo
 // contrato barato y best-effort: jamás puede tirar.
 function listarPendientesGlobal(config) {
-  return dispatchFacts.listarPendientesFS(PIPELINE, config);
+  return dispatchFacts.listarPendientesFS(PIPELINE(), config);
 }
 
 // #4709 — Cuenta agentes DESPACHADOS (archivos en `trabajando/`) en todas las
@@ -9445,7 +9499,7 @@ function publicarCausaPausa(config, causa, detalle) {
     // (`elegiblesEsperando`), que sigue siendo el conteo de elegibles.
     const pendientes = countPendientesGlobal(config);
     dispatchCause.publish({
-      pipelineDir: PIPELINE,
+      pipelineDir: PIPELINE(),
       snapshot: {
         anyLaunched: false,
         hayPendientes: pendientes > 0,
@@ -9493,7 +9547,7 @@ function brazoLanzamiento(config) {
   } finally {
     try {
       dispatchCause.publish({
-        pipelineDir: PIPELINE,
+        pipelineDir: PIPELINE(),
         snapshot: {
           anyLaunched: state.anyLaunched,
           hayPendientes: state.hayPendientes,
@@ -9600,7 +9654,7 @@ function brazoLanzamientoImpl(config, _dcMark, _dcState) {
   // dependencies`, `needs-human`, cierre del issue) leen la caché, así que
   // invalidar después no serviría de nada en este ciclo.
   try {
-    const drained = labelMutationLog.drainNewIssues({ pipelineDir: PIPELINE });
+    const drained = labelMutationLog.drainNewIssues({ pipelineDir: PIPELINE() });
     if (drained.issues.length > 0) {
       for (const n of drained.issues) invalidateIssueLabels(n);
       log('lanzamiento', `♻️ caché de labels invalidada para ${drained.issues.length} issue(s) con mutación aplicada por servicio-github: ${drained.issues.map(n => '#' + n).join(', ')} (#5863)`);
@@ -9791,7 +9845,7 @@ function brazoLanzamientoImpl(config, _dcMark, _dcState) {
       const verdict = restModeWindow.isSkillAllowedNow(skill, Date.now(), {
         cfg: restCfg,
         bypassLabels: issueLbls,
-        pipelineDir: PIPELINE,
+        pipelineDir: PIPELINE(),
       });
       if (!verdict.allowed) {
         log('lanzamiento', `#${issue} skipped by rest-mode (skill=${skill}, reason=${verdict.reason})`);
@@ -10166,7 +10220,7 @@ function brazoLanzamientoImpl(config, _dcMark, _dcState) {
     //     El chequeo va ANTES del move: así el dropfile tampoco rebota entre
     //     `pendiente/` y `trabajando/` en cada vuelta.
     try {
-      const espera = dispatchBackoff.estaEsperando(PIPELINE, skill, issue);
+      const espera = dispatchBackoff.estaEsperando(PIPELINE(), skill, issue);
       if (espera.esperando) {
         _dcMark(dispatchCause.CAUSAS.COOLDOWN, `${skill}:#${issue} esperando ${espera.restanteMin}min: la cadena de providers quedó agotada en el intento anterior`);
         continue;
@@ -10190,7 +10244,7 @@ function brazoLanzamientoImpl(config, _dcMark, _dcState) {
     // prematura del agente ya está cubierta por el on-exit del Pulpo. CA-3:
     // `withLockSync` libera el lock SIEMPRE (finally interno), con timeout
     // acotado para no frenar el tick (anti self-DoS).
-    const slotLockFile = path.join(PIPELINE, `.slots.${skill}`);
+    const slotLockFile = path.join(PIPELINE(), `.slots.${skill}`);
     let launched = false;
     let slotErrored = false;
     try {
@@ -10312,7 +10366,7 @@ function brazoLanzamientoImpl(config, _dcMark, _dcState) {
           const verdict = restModeWindow.isSkillAllowedNow(skill, Date.now(), {
             cfg: restCfg,
             bypassLabels: issueLbls,
-            pipelineDir: PIPELINE,
+            pipelineDir: PIPELINE(),
           });
           if (!verdict.allowed) {
             log('deadlock', `#${issue}: forzado bloqueado por rest-mode (skill=${skill}, reason=${verdict.reason}) — espera fin de ventana`);
@@ -10444,7 +10498,7 @@ function autoClassifyIssue(issueNum) {
   }
 }
 const QA_ARTIFACTS_DIR = path.join(ROOT, 'qa', 'artifacts');
-const PREFLIGHT_LOG_FILE = path.join(LOG_DIR, 'qa-preflight-log.jsonl');
+function PREFLIGHT_LOG_FILE() { return path.join(LOG_DIR(), 'qa-preflight-log.jsonl'); }
 
 // --- Warm-up + retry para backend Lambda (evita falsos blocked:infra por cold start) ---
 const BACKEND_BASE_URL = 'https://mgnr0htbvd.execute-api.us-east-2.amazonaws.com/dev/intrale';
@@ -10976,7 +11030,7 @@ function preflightQaChecks(issue, {
             encoding: 'utf8',
             timeout: 20000,
             windowsHide: true,
-            env: { ...process.env, QA_ISSUE: String(issue), GH_PATH: ghPath }
+            env: envDeHijo({ QA_ISSUE: String(issue), GH_PATH: ghPath }) /* #7112 · CA-7.2 */
           });
           checks.testCases = 'generated-fallback';
           log('preflight', `#${issue}: check 5 (test cases) OK — generados como fallback`);
@@ -11169,7 +11223,7 @@ function logPreflight(issue, checks, result, startMs) {
       result,
       duration_ms: Date.now() - startMs
     };
-    fs.appendFileSync(PREFLIGHT_LOG_FILE, JSON.stringify(entry) + '\n');
+    fs.appendFileSync(PREFLIGHT_LOG_FILE(), JSON.stringify(entry) + '\n');
   } catch {}
 }
 
@@ -11181,7 +11235,7 @@ function logPreflight(issue, checks, result, startMs) {
 function requestEmulator(action, requester, issue, reason) {
   const ts = Date.now();
   const msg = { action, requester, issue: issue || null, reason: reason || '', timestamp: Math.floor(ts / 1000) };
-  const svcDir = path.join(PIPELINE, 'servicios', 'emulador', 'pendiente');
+  const svcDir = path.join(PIPELINE(), 'servicios', 'emulador', 'pendiente');
   try {
     fs.mkdirSync(svcDir, { recursive: true });
     const file = path.join(svcDir, `${ts}-${Math.random().toString(36).slice(2, 6)}.json`);
@@ -11224,7 +11278,7 @@ async function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, 
   try {
     const taskContract = require('./lib/task-contract');
     const workData0 = readYamlSafe(trabajandoPath) || {};
-    const contractDet = taskContract.readTaskContractDetailed({ ROOT, PIPELINE, issue, workData: workData0 });
+    const contractDet = taskContract.readTaskContractDetailed({ ROOT, PIPELINE: PIPELINE(), issue, workData: workData0 });
     if (contractDet.error) {
       // Contrato presente pero corrupto: NO asumimos nada a ciegas — logueamos
       // y seguimos con el flujo de código cableado (fail-safe, regresión cero).
@@ -11238,7 +11292,7 @@ async function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, 
       // El runner es async (el provisioner hace I/O). No bloqueamos el loop de
       // dispatch: al resolver, escribimos el resultado y promovemos a listo/
       // (mismo patrón async que el `child.on('exit')` del spawn LLM).
-      taskContract.runContractPhase({ fase, contract, issue, ROOT, PIPELINE })
+      taskContract.runContractPhase({ fase, contract, issue, ROOT, PIPELINE: PIPELINE() })
         .then((res) => {
           const data = {
             ...(readYamlSafe(trabajandoPath) || {}),
@@ -11334,7 +11388,7 @@ async function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, 
   }
   const credentialOperationId = credentialOperation ? credentialOperation.operationId : null;
   const emitirEventoDeRetry = credentialRetryWiring.makeAuditEmitter({
-    pipelineDir: PIPELINE,
+    pipelineDir: PIPELINE(),
     logger: (m) => log('lanzamiento', m),
   });
 
@@ -11380,7 +11434,7 @@ async function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, 
     dispatchResolution = resolveSpawnWithFallback({
       skill,
       issue,
-      pipelineDir: PIPELINE,
+      pipelineDir: PIPELINE(),
       quotaModule: quotaExhausted,
       onLog: log,
     });
@@ -11411,7 +11465,7 @@ async function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, 
       // Sin esto el dropfile volvía a `trabajando/` en el tick siguiente (30s) y
       // el ciclo se repetía ~170 veces por hora sin lanzar nada.
       try {
-        const espera = dispatchBackoff.registrarCadenaAgotada(PIPELINE, skill, issue);
+        const espera = dispatchBackoff.registrarCadenaAgotada(PIPELINE(), skill, issue);
         log('lanzamiento', `⏳ ${skill}:#${issue} cadena agotada ${espera.consecutivos}× consecutiva(s) — próximo intento en ${espera.esperaMin}min.`);
       } catch (e) {
         log('lanzamiento', `no pude programar el backoff de ${skill}:#${issue}: ${e.message}`);
@@ -11459,7 +11513,7 @@ async function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, 
     // Da trazabilidad en tiempo real de qué provider arrancó y por qué.
     // Hubo ruta de despacho: la cuenta de agotamientos vuelve a cero para que el
     // próximo backoff arranque en 1 minuto y no herede el techo de la noche.
-    try { dispatchBackoff.limpiar(PIPELINE, skill, issue); } catch { /* best-effort */ }
+    try { dispatchBackoff.limpiar(PIPELINE(), skill, issue); } catch { /* best-effort */ }
 
     if (providerResolutionLog) {
       log('lanzamiento', providerResolutionLog);
@@ -11494,8 +11548,8 @@ async function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, 
     return;
   }
 
-  const basePrompt = path.join(PIPELINE, 'roles', '_base.md');
-  const rolPrompt = path.join(PIPELINE, 'roles', `${skill}.md`);
+  const basePrompt = path.join(PIPELINE(), 'roles', '_base.md');
+  const rolPrompt = path.join(PIPELINE(), 'roles', `${skill}.md`);
 
   // Verificar que los prompts existen
   if (!fs.existsSync(basePrompt) || !fs.existsSync(rolPrompt)) {
@@ -11520,7 +11574,7 @@ async function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, 
   }
 
   // Escribir system prompt (rol) a archivo y user prompt corto como argumento
-  const systemFile = path.join(LOG_DIR, `agent-${issue}-${skill}-system.txt`);
+  const systemFile = path.join(LOG_DIR(), `agent-${issue}-${skill}-system.txt`);
   // #6563 — Sin augment por provider: todos los providers vigentes son
   // agénticos (ven el repo), así que el system prompt es base + rol tal cual.
   const systemContent = `${base}\n\n${rol}`;
@@ -11602,7 +11656,7 @@ async function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, 
   if (workData.rebote) {
     const rechazadoEn = workData.rechazado_en_fase || 'desconocida';
     const motivo = workData.motivo_rechazo || 'sin motivo especificado';
-    const buildLog = path.join(LOG_DIR, `build-${issue}.log`);
+    const buildLog = path.join(LOG_DIR(), `build-${issue}.log`);
     const buildLogExists = fs.existsSync(buildLog);
 
     // #2404 — Defense-in-depth: si el YAML del pendiente llegó acá con un
@@ -12087,12 +12141,12 @@ async function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, 
   const agentLogHeader = sanitizePipelineText(
     `--- ${skill}:#${issue} fase:${fase} pipeline:${pipeline} intento:${launchAttempt} ${new Date().toISOString()} ---\n`
   );
-  const agentLogPath = path.join(LOG_DIR, agentLogHistory.aliasLogName(issue, skill));
+  const agentLogPath = path.join(LOG_DIR(), agentLogHistory.aliasLogName(issue, skill));
   fs.writeFileSync(agentLogPath, agentLogHeader);
   const agentLogWriter = createLogFileWriter(agentLogPath);
   // Archivo persistente por intento (hereda la redacción de secrets del writer
   // sanitizado — REQ-SEC-2, defensa en profundidad al persistir).
-  const attemptLogPath = path.join(LOG_DIR, agentLogHistory.attemptLogName(issue, skill, launchAttempt));
+  const attemptLogPath = path.join(LOG_DIR(), agentLogHistory.attemptLogName(issue, skill, launchAttempt));
   let attemptLogWriter = null;
   try {
     fs.writeFileSync(attemptLogPath, agentLogHeader);
@@ -12106,7 +12160,7 @@ async function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, 
   // Retención acotada: podar intentos viejos que excedan la política (best-effort).
   try {
     const cfg = (loadConfig() || {}).logs_history;
-    const removed = agentLogHistory.pruneAttempts(LOG_DIR, issue, skill, cfg);
+    const removed = agentLogHistory.pruneAttempts(LOG_DIR(), issue, skill, cfg);
     if (removed.length) {
       log('lanzamiento', `🧹 #${issue}/${skill}: retención de logs — ${removed.length} intento(s) viejo(s) podado(s)`);
     }
@@ -12285,7 +12339,7 @@ async function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, 
   // exactamente como antes (resuelve el efectivo del dispatcher).
   const construirEnvDeIntentoAgente = async ({ attempt, provider, operationId } = {}) => {
     const { skillCfg, providersCfg } = buildChildEnvLib._resolveSkillConfig(skill, {
-      pipelineDir: PIPELINE,
+      pipelineDir: PIPELINE(),
     });
     const providerEfectivo = provider
       || (dispatchResolution && dispatchResolution.provider)
@@ -12295,7 +12349,7 @@ async function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, 
       provider: providerEfectivo,
       providersCfg,
       config: cfgRootParaEnv,
-      pipelineDir: PIPELINE,
+      pipelineDir: PIPELINE(),
       logger: (m) => log('lanzamiento', m),
     });
     if (operationId) {
@@ -12360,7 +12414,7 @@ async function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, 
         fase,
         projectId: projectIdDelSpawn,
         warn: (m) => log('lanzamiento', m),
-        pipelineDir: PIPELINE,
+        pipelineDir: PIPELINE(),
         // #5799 — el env del INTENTO (snapshot del provider efectivo compuesto
         // sobre el env base) es la única fuente; `buildChildEnv` no cae a
         // `process.env` por detrás.
@@ -12382,8 +12436,10 @@ async function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, 
     // gate cerrado es `process.env` por referencia (idéntico al comportamiento
     // previo); con el snapshot activo, el material del provider viene del
     // snapshot y no del padre.
+    // #7112 · CA-7 — también en el camino legacy la declaración de ambiente
+    // es EXPLÍCITA (modo resuelto por este Pulpo), nunca la heredada.
     childEnv = buildChildEnvLib.stripReservedChildSecrets(
-      { ...attemptProcessEnv, ...pipelineExtras },
+      buildChildEnvLib.conDeclaracionExplicita({ ...attemptProcessEnv, ...pipelineExtras }, attemptProcessEnv),
       attemptProcessEnv,
     );
   }
@@ -12427,14 +12483,14 @@ async function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, 
   // comando queda byte-idéntico. El gate es best-effort por diseño: si el
   // estado del rollout es ilegible, `shouldPropagate` devuelve false.
   const modelRolloutGate = (gateSkill, gateProvider) => (
-    !!gateProvider && modelPropagationRollout.shouldPropagate(PIPELINE, gateSkill, gateProvider)
+    !!gateProvider && modelPropagationRollout.shouldPropagate(PIPELINE(), gateSkill, gateProvider)
   );
   const launchResult = launchAgent({
     skill, issue, trabajandoPath, fase, pipeline,
     args,
     cwd: spawnCwd,
     env: childEnv,
-    PIPELINE,
+    PIPELINE: PIPELINE(),
     ROOT,
     modelRolloutGate,
     onWorktreeHit: (wt) => log('lanzamiento', `⚡ ${skill}:#${issue} usa script del worktree (${wt})`),
@@ -12547,7 +12603,7 @@ async function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, 
     let adapterSha = null;
     try {
       const providerName = (launchResult && launchResult.provider) || 'anthropic';
-      const adapterPath = path.join(PIPELINE, 'lib', 'agent-launcher', 'providers', `${providerName}.js`);
+      const adapterPath = path.join(PIPELINE(), 'lib', 'agent-launcher', 'providers', `${providerName}.js`);
       adapterSha = trace.resolveProviderAdapterSha(adapterPath);
     } catch (e) {
       log('lanzamiento', `traceability resolveProviderAdapterSha falló: ${e.message}`);
@@ -12775,7 +12831,7 @@ async function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, 
         const dispatcher = require('./lib/agent-launcher/dispatch-with-fallback');
         const cfg = (loadConfig() || {}).quota_detector || {};
         const auditEnabled = cfg.audit_log_enabled !== false;
-        const logPath = path.join(LOG_DIR, `${issue}-${skill}.log`);
+        const logPath = path.join(LOG_DIR(), `${issue}-${skill}.log`);
         let raw = '';
         try { raw = fs.readFileSync(logPath, 'utf8'); } catch {}
         agentLogRaw = raw;
@@ -12831,7 +12887,7 @@ async function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, 
             operationId: credentialOperationId,
             path: caminoDelIntento,
             attempt: intentoDeCredencial,
-            pipelineDir: PIPELINE,
+            pipelineDir: PIPELINE(),
             onLog: log,
           });
           veredictoDeAutenticacion = result;
@@ -12924,14 +12980,14 @@ async function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, 
             operationId: credentialOperationId,
             path: caminoDelIntento,
             attempt: intentoDeCredencial,
-            pipelineDir: PIPELINE, onLog: log, telemetryOnly: true,
+            pipelineDir: PIPELINE(), onLog: log, telemetryOnly: true,
           });
         }
         // #6274 — evaluación automática en cada exit, después de persistir la
         // corrida tanto en el camino generalized como en el legacy.
         try {
           const rolloutCfg = (loadConfig() || {}).model_propagation_rollout || {};
-          modelPropagationRollout.evaluateEnabled(PIPELINE, rolloutCfg, { notify: notifyTelegramFn });
+          modelPropagationRollout.evaluateEnabled(PIPELINE(), rolloutCfg, { notify: notifyTelegramFn });
         } catch (rolloutErr) {
           log('lanzamiento', `rollout: evaluación automática falló para ${skill}:#${issue}: ${rolloutErr.message}`);
         }
@@ -12960,7 +13016,7 @@ async function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, 
           launchResult,
           dispatchResolution,
           configuredProvider,
-          logPath: path.join(LOG_DIR, `${issue}-${skill}.log`),
+          logPath: path.join(LOG_DIR(), `${issue}-${skill}.log`),
           model_declared: declared && declared.model,
           model_resolved: traceHandle && traceHandle.model,
         });
@@ -12969,7 +13025,7 @@ async function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, 
 
       if (traceHandle) {
         try {
-          const logPath = path.join(LOG_DIR, `${issue}-${skill}.log`);
+          const logPath = path.join(LOG_DIR(), `${issue}-${skill}.log`);
           const tk = parseTokensFromLog(logPath);
           // #2993 — telemetría de handoff sin contenido (CA-C1):
           //   handoff_in_tokens: tokens estimados del bloque inyectado al prompt.
@@ -13012,7 +13068,7 @@ async function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, 
           const providerCost = require('./lib/metrics/provider-cost');
           let provPc = 'unknown';
           try { provPc = resolveSkillProvider(skill) || 'unknown'; } catch { /* defensa */ }
-          const logPathPc = path.join(LOG_DIR, `${issue}-${skill}.log`);
+          const logPathPc = path.join(LOG_DIR(), `${issue}-${skill}.log`);
           const tkPc = parseTokensFromLog(logPathPc);
           providerCost.recordProviderCost({
             provider: provPc,
@@ -13135,7 +13191,7 @@ async function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, 
           if (providerSpawnHealth) {
             try {
               const r = providerSpawnHealth.recordProviderSpawnDeath({
-                pipelineDir: PIPELINE, provider: effProvider, skill, issue,
+                pipelineDir: PIPELINE(), provider: effProvider, skill, issue,
                 threshold: 1,
                 disableTtlMs: 60 * 60 * 1000, // 60 min (CA-4: TTL acotado, sin apagado indefinido)
                 source: 'credential-death',
@@ -13152,7 +13208,7 @@ async function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, 
             const dispatcher = require('./lib/agent-launcher/dispatch-with-fallback');
             if (typeof dispatcher.appendSpawnExitDeathKind === 'function') {
               dispatcher.appendSpawnExitDeathKind({
-                pipelineDir: PIPELINE, skill, issue, provider: effProvider,
+                pipelineDir: PIPELINE(), skill, issue, provider: effProvider,
                 deathKind: 'credential-death',
                 token: deathToken, signature: deathSignature,
                 exitCode: code, durationMs: Math.round(elapsedSec * 1000),
@@ -13390,7 +13446,7 @@ async function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, 
         if (providerSpawnHealth) {
           try {
             const r = providerSpawnHealth.recordProviderSpawnDeath({
-              pipelineDir: PIPELINE, provider: effProvider, skill, issue,
+              pipelineDir: PIPELINE(), provider: effProvider, skill, issue,
             });
             disabled = !!(r && r.disabled);
           } catch (hErr) {
@@ -13440,7 +13496,7 @@ async function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, 
         sendTelegram(`⚠️ ${skill}:#${issue} murió en ${elapsedSec.toFixed(0)}s — fallo #${failures}. Cooldown ${delayMin}min antes de reintentar.`);
         // Reporte PDF de muerte prematura (background)
         try {
-          const reportScript = path.join(PIPELINE, 'rejection-report.js');
+          const reportScript = path.join(PIPELINE(), 'rejection-report.js');
           // (#3088 / CA-1 + CA-6 + CA-9) provider/model resueltos por
           // agent-models.json al lanzar; viajan al rejection-report como
           // single source of truth (no se infiere por substring del model).
@@ -13461,7 +13517,7 @@ async function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, 
             reportArgs.push('--model', String(launchResult.model));
           }
           const reportChild = spawn(process.execPath, reportArgs,
-            { cwd: ROOT, stdio: 'ignore', detached: true, windowsHide: true });
+            { cwd: ROOT, stdio: 'ignore', detached: true, windowsHide: true, env: envDeHijo() /* #7112 */ });
           reportChild.unref();
         } catch {}
         return;
@@ -13495,7 +13551,7 @@ async function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, 
         const effProvider = (launchResult && launchResult.provider)
           || (dispatchResolution && dispatchResolution.provider) || null;
         if (effProvider && effProvider !== 'deterministic') {
-          providerSpawnHealth.recordProviderHealthy({ pipelineDir: PIPELINE, provider: effProvider });
+          providerSpawnHealth.recordProviderHealthy({ pipelineDir: PIPELINE(), provider: effProvider });
         }
       } catch { /* best-effort: no rompe el lifecycle */ }
     }
@@ -13868,7 +13924,7 @@ async function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, 
       // Generar reporte PDF de rechazo y enviar a Telegram (background, no bloquea)
       if (data.resultado === 'rechazado') {
         try {
-          const reportScript = path.join(PIPELINE, 'rejection-report.js');
+          const reportScript = path.join(PIPELINE(), 'rejection-report.js');
           // (#3088 / CA-1 + CA-6 + CA-9) provider/model resueltos por
           // agent-models.json. El rejection-report los inyecta en el header
           // del PDF y los usa para la regla determinística del audio. Si por
@@ -13903,7 +13959,8 @@ async function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, 
             reportArgs.push('--model', String(launchResult.model));
           }
           const reportChild = spawn(process.execPath, reportArgs, {
-            cwd: ROOT, stdio: 'ignore', detached: true, windowsHide: true
+            cwd: ROOT, stdio: 'ignore', detached: true, windowsHide: true,
+            env: envDeHijo(), // #7112 · CA-7.2
           });
           reportChild.unref();
           log('lanzamiento', `📄 Reporte de rechazo lanzado para ${skill}:#${issue}`);
@@ -14052,7 +14109,7 @@ function brazoHuerfanos(config) {
         try {
           const sfState = require('./lib/agent-launcher/spawn-failure-state');
           const marker = sfState.consumeSpawnFailureAnyProvider({
-            pipelineDir: PIPELINE,
+            pipelineDir: PIPELINE(),
             skill,
             issue,
           });
@@ -14160,7 +14217,7 @@ function brazoGhostbusters(config) {
   const cap = Math.max(parseInt(cfg.cap, 10) || 5, 1);
   const dryRun = cfg.dry_run !== false; // default true (RS-4)
   const ageDays = Math.max(parseInt(cfg.age_threshold_days, 10) || 30, 1);
-  const logFile = path.join(PIPELINE, 'logs', 'ghostbusters-cron.log');
+  const logFile = path.join(PIPELINE(), 'logs', 'ghostbusters-cron.log');
 
   const tick = () => {
     if (ghostbustersCronRunning) {
@@ -14170,7 +14227,7 @@ function brazoGhostbusters(config) {
     ghostbustersCronRunning = true;
     try {
       const args = [
-        path.join(PIPELINE, 'ghostbusters.js'),
+        path.join(PIPELINE(), 'ghostbusters.js'),
         '--worktrees',
         `--cap=${cap}`,
         `--age-days=${ageDays}`,
@@ -14181,6 +14238,7 @@ function brazoGhostbusters(config) {
       fs.writeSync(out, `\n===== ghostbusters-cron ${new Date().toISOString()} (dry_run=${dryRun}, cap=${cap}, age>${ageDays}d) =====\n`);
       const child = spawn(process.execPath, args, {
         cwd: ROOT, windowsHide: true, stdio: ['ignore', out, out],
+        env: envDeHijo(), // #7112 · CA-7.2
       });
       child.on('exit', (code) => {
         ghostbustersCronRunning = false;
@@ -14257,7 +14315,7 @@ function getRewindAdapterModule() {
 // como bus filesystem flat. Después de procesar, el consumer mueve a `listo/`
 // subdir (mantiene el directorio raíz limpio para que el producer detecte
 // fácilmente eventos nuevos por inspección visual / scripts auxiliares).
-const REWIND_EVENTS_DIR = path.join(PIPELINE, 'rejections');
+function REWIND_EVENTS_DIR() { return path.join(PIPELINE(), 'rejections'); }
 
 async function brazoRewind(config) {
   const rewindMod = getRewindModule();
@@ -14267,7 +14325,7 @@ async function brazoRewind(config) {
 
   // Sweep stale in-flight markers (CA-9 recovery post-crash).
   try {
-    const stale = rewindMod.sweepStaleInFlight(PIPELINE);
+    const stale = rewindMod.sweepStaleInFlight(PIPELINE());
     for (const s of stale) {
       log('rewind', `♻️ marker stale limpiado: ${path.basename(s.file)} (step=${s.marker.step})`);
     }
@@ -14275,8 +14333,8 @@ async function brazoRewind(config) {
 
   // Producer escribe los .json directamente en `REWIND_EVENTS_DIR/` (sin
   // subcarpeta `pendiente/`). Después de procesar movemos a `listo/`.
-  const pendDir = REWIND_EVENTS_DIR;
-  const listoDir = path.join(REWIND_EVENTS_DIR, 'listo');
+  const pendDir = REWIND_EVENTS_DIR();
+  const listoDir = path.join(REWIND_EVENTS_DIR(), 'listo');
   let entries;
   try { entries = fs.readdirSync(pendDir); }
   catch { return; }
@@ -14314,7 +14372,7 @@ async function brazoRewind(config) {
         operatorId,
         source,
         config,
-        pipelineRoot: PIPELINE,
+        pipelineRoot: PIPELINE(),
         yaml,
         activeProcesses,
         // #6747 — el alias `dev` llega con `skill: null` y se resuelve por
@@ -14337,7 +14395,7 @@ async function brazoRewind(config) {
       if (result.ok) {
         // Postear comentario en GitHub (CA-3).
         try {
-          const tmp = path.join(LOG_DIR, `rewind-comment-${issue}-${Date.now()}.md`);
+          const tmp = path.join(LOG_DIR(), `rewind-comment-${issue}-${Date.now()}.md`);
           fs.writeFileSync(tmp, result.commentBody);
           execSync(`gh issue comment ${issue} --body-file "${tmp}"`, { stdio: 'pipe' });
           try { fs.unlinkSync(tmp); } catch {}
@@ -14418,11 +14476,11 @@ async function brazoRewind(config) {
 
 // --- Sesión conversacional persistente ---
 
-const SESSION_FILE = path.join(PIPELINE, 'commander-session.json');
+function SESSION_FILE() { return path.join(PIPELINE(), 'commander-session.json'); }
 
 function loadSession() {
   try {
-    return JSON.parse(fs.readFileSync(SESSION_FILE, 'utf8'));
+    return JSON.parse(fs.readFileSync(SESSION_FILE(), 'utf8'));
   } catch {
     return { context: null, lastCommand: null, lastTimestamp: null, pendingAction: null };
   }
@@ -14440,7 +14498,7 @@ function saveSession(session) {
       session = { ...session, context: sanitizePipelineText(session.context) };
     }
   } catch { /* fail-closed via sanitizePipelineText, no debería tirar */ }
-  fs.writeFileSync(SESSION_FILE, JSON.stringify(session, null, 2));
+  fs.writeFileSync(SESSION_FILE(), JSON.stringify(session, null, 2));
 }
 
 // #3934 (CA-3 / SEC-1) — Sanitización reforzada del texto de un turno antes de
@@ -14507,7 +14565,7 @@ function appendCommanderHistory(historyFile, entry) {
 // NUNCA se reconcilia como `enviado`. El nombre de archivo NO es prueba de
 // entrega; la prueba es el `message_id` del API embebido en el recibo.
 function reconcileTelegramReceipts(opts = {}) {
-  const pipelineDir = opts.pipelineDir || PIPELINE;
+  const pipelineDir = opts.pipelineDir || PIPELINE();
   let result = { reconciled: 0, quarantined: 0 };
   try {
     const recibosDir = telegramReceipt.receiptsDir(pipelineDir);
@@ -15055,7 +15113,7 @@ async function cmdStatus(config) {
   // Servicios
   lines.push('\n*Servicios*');
   for (const svc of ['telegram', 'github', 'drive', 'commander']) {
-    const svcDir = path.join(PIPELINE, 'servicios', svc, 'pendiente');
+    const svcDir = path.join(PIPELINE(), 'servicios', svc, 'pendiente');
     const count = listWorkFiles(svcDir).length;
     if (count > 0) lines.push(`  ${svc}: ${count} pendientes`);
   }
@@ -15220,7 +15278,7 @@ async function cmdStatus(config) {
         prevProviderStatus = finalProvider;
       }
       if (statusVoiceBuffers.length > 0) {
-        const { correlationId: statusCid, enqueued } = dispatchVoiceParts(statusVoiceBuffers, chatId, path.join(LOG_DIR, 'media'));
+        const { correlationId: statusCid, enqueued } = dispatchVoiceParts(statusVoiceBuffers, chatId, path.join(LOG_DIR(), 'media'));
         if (enqueued > 0) log('commander', `[status] ${enqueued} parte(s) de audio encoladas con recibo por chunk (cid=${statusCid})`);
       }
       // EP1-H4 (#3919, CA-2): aviso consolidado al chat de deliverables si el TTS
@@ -15249,7 +15307,7 @@ function cmdGhostbusters() {
 }
 
 function cmdActividad(args) {
-  const historyFile = path.join(PIPELINE, 'commander-history.jsonl');
+  const historyFile = path.join(PIPELINE(), 'commander-history.jsonl');
   let lines = [];
   try {
     lines = fs.readFileSync(historyFile, 'utf8').trim().split('\n');
@@ -15337,7 +15395,7 @@ function cmdPausar() {
   } catch (e) {
     // Degradación segura: si el lock no se puede tomar, la pausa igual se
     // aplica — el halt del operador nunca puede quedar sin efecto.
-    try { fs.writeFileSync(PAUSE_FILE, JSON.stringify({
+    try { fs.writeFileSync(PAUSE_FILE(), JSON.stringify({
       source: 'telegram', ts: new Date().toISOString(),
       detail: 'pausa total solicitada por el operador vía /pausar (fallback sin lock)',
     })); } catch { /* best-effort */ }
@@ -15392,7 +15450,7 @@ function cmdCostos() {
   // Leer logs de agentes para estimar actividad
   const logFiles = [];
   try {
-    logFiles.push(...fs.readdirSync(LOG_DIR).filter(f => f.endsWith('.log') && !f.startsWith('.')));
+    logFiles.push(...fs.readdirSync(LOG_DIR()).filter(f => f.endsWith('.log') && !f.startsWith('.')));
   } catch {}
 
   if (logFiles.length === 0) return '📊 Sin datos de costos disponibles';
@@ -15404,7 +15462,7 @@ function cmdCostos() {
     const match = f.match(/^(\d+)-(.+)\.log$/);
     if (!match) continue;
     const [, issue, skill] = match;
-    const stat = fs.statSync(path.join(LOG_DIR, f));
+    const stat = fs.statSync(path.join(LOG_DIR(), f));
     const sizeKb = Math.round(stat.size / 1024);
     if (!skillStats[skill]) skillStats[skill] = { count: 0, totalKb: 0 };
     skillStats[skill].count++;
@@ -15441,7 +15499,7 @@ Formato de respuesta: lista numerada, una propuesta por item.`;
     const resultado = await ejecutarClaude(propositorPrompt, 'proponer historias');
 
     if (resultado) {
-      const proposalFile = path.join(PIPELINE, 'commander-proposals.json');
+      const proposalFile = path.join(PIPELINE(), 'commander-proposals.json');
       const proposals = { timestamp: new Date().toISOString(), count, text: resultado };
       fs.writeFileSync(proposalFile, JSON.stringify(proposals, null, 2));
 
@@ -16003,7 +16061,7 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
       try {
         commanderMP.auditCommanderRequest({
           commanderReqId: _reqRef, // #6458 - puente al canal de etapas
-          pipelineDir: PIPELINE,
+          pipelineDir: PIPELINE(),
           event: 'prompt_injection_attempt',
           providerIntended: 'anthropic',
           providerEffective: null,
@@ -16023,7 +16081,7 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
     let resolution;
     try {
       resolution = commanderMP.resolveCommanderProvider({
-        pipelineDir: PIPELINE,
+        pipelineDir: PIPELINE(),
         log: (l, m) => log(l || 'commander', m),
         // #4412 (Parte 2/3) — el balanceo ponderado (feature flag OFF por
         // default) clasifica tool-vs-chat desde el prompt para decidir qué
@@ -16045,7 +16103,7 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
       try {
         commanderMP.auditCommanderRequest({
           commanderReqId: _reqRef, // #6458 - puente al canal de etapas
-          pipelineDir: PIPELINE,
+          pipelineDir: PIPELINE(),
           event: 'resolver_error',
           providerIntended: 'anthropic',
           providerEffective: null,
@@ -16072,7 +16130,7 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
         let alt = null;
         try {
           alt = commanderMP.resolveCommanderProviderExcluding('anthropic', {
-            pipelineDir: PIPELINE,
+            pipelineDir: PIPELINE(),
             log: (l, m) => log(l || 'commander', m),
             issue: 'commander-chat',
           });
@@ -16088,7 +16146,7 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
           try {
             commanderMP.auditCommanderRequest({
               commanderReqId: _reqRef, // #6458 - puente al canal de etapas
-              pipelineDir: PIPELINE,
+              pipelineDir: PIPELINE(),
               event: 'gated_all',
               providerIntended: 'anthropic',
               providerEffective: null,
@@ -16153,7 +16211,7 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
       try {
         commanderMP.auditCommanderRequest({
           commanderReqId: _reqRef, // #6458 - puente al canal de etapas
-          pipelineDir: PIPELINE,
+          pipelineDir: PIPELINE(),
           event: 'gated_all',
           providerIntended: 'anthropic',
           providerEffective: null,
@@ -16178,12 +16236,12 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
     // Detrás de `reduced_mode.enabled` (default OFF → regresión cero) + kill_switch.
     try {
       const rmCfg = (loadConfig() || {}).reduced_mode || {};
-      if (commanderMP.shouldRespondReducedMode({ config: rmCfg, pipelineDir: PIPELINE })) {
+      if (commanderMP.shouldRespondReducedMode({ config: rmCfg, pipelineDir: PIPELINE() })) {
         // downProviders = pagos configurados en la chain del commander; en modo
         // reducido todos ellos están gateados por definición (CA-3: qué pagos caídos).
         let downProviders = [];
         try {
-          const models = JSON.parse(fs.readFileSync(path.join(PIPELINE, 'agent-models.json'), 'utf8'));
+          const models = JSON.parse(fs.readFileSync(path.join(PIPELINE(), 'agent-models.json'), 'utf8'));
           const skillCfg = models.skills && models.skills['telegram-commander'];
           if (skillCfg) {
             const names = [skillCfg.provider];
@@ -16199,7 +16257,7 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
         try {
           commanderMP.auditCommanderRequest({
             commanderReqId: _reqRef, // #6458 - puente al canal de etapas
-            pipelineDir: PIPELINE,
+            pipelineDir: PIPELINE(),
             event: 'reduced_mode',
             providerIntended: 'anthropic',
             providerEffective: null,
@@ -16250,7 +16308,7 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
         const episodeState = require('./lib/fallback-episode-state');
         const epNow = Date.now();
         const epRes = episodeState.recordDispatch({
-          pipelineDir: PIPELINE,
+          pipelineDir: PIPELINE(),
           provider: resolution.provider,
           crossProvider: true,
           chain: resolution.chainTried,
@@ -16315,7 +16373,7 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
     const commanderCredentialOperationId = commanderCredentialOperation
       ? commanderCredentialOperation.operationId : null;
     const emitirEventoDeRetryCommander = credentialRetryWiring.makeAuditEmitter({
-      pipelineDir: PIPELINE,
+      pipelineDir: PIPELINE(),
       logger: (m) => log('commander', m),
     });
 
@@ -16342,14 +16400,14 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
       const { provider: prov, attempt: intentoDeCredencial, operationId } =
         (arg && typeof arg === 'object') ? arg : { provider: arg };
       const { providersCfg } = buildChildEnvLib._resolveSkillConfig(
-        commanderMP.COMMANDER_SKILL, { pipelineDir: PIPELINE },
+        commanderMP.COMMANDER_SKILL, { pipelineDir: PIPELINE() },
       );
       const { snapshot } = await attemptSnapshot.createAttemptSnapshot({
         destination: attemptSnapshot.SNAPSHOT_DESTINATION.COMMANDER,
         provider: prov,
         providersCfg,
         config: commanderCfgRoot,
-        pipelineDir: PIPELINE,
+        pipelineDir: PIPELINE(),
         logger: (m) => log('commander', m),
       });
       const attemptProcessEnv = attemptSnapshot.composeAttemptProcessEnv({
@@ -16374,7 +16432,7 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
           fase: buildChildEnvLib.KERNEL_FASE,
           projectId: buildChildEnvLib.KERNEL_PROJECT_ID,
           warn: (m) => log('commander', m),
-          pipelineDir: PIPELINE,
+          pipelineDir: PIPELINE(),
           processEnv: attemptProcessEnv,
           pipelineExtras: { CLAUDE_PROJECT_DIR: ROOT },
           skillConfigOverride: { provider: prov },
@@ -16415,7 +16473,7 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
     // detectada. Fail-closed: si el sidecar no carga, el spawn no-Anthropic
     // se aborta y se responde canned.
     const drCheck = commanderMP.enforceDataResidency({
-      pipelineDir: PIPELINE,
+      pipelineDir: PIPELINE(),
       provider: resolution.provider,
       paths: [], // commander pre-spawn: sin paths declarativos hoy (ver #3198)
       chatId: getTelegramChatId(),
@@ -16513,7 +16571,7 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
           const userMsgForLLM = commanderMP.sanitizeUserPrompt(fallbackParts.userMessage).sanitized;
           let sysFile = null;
           try {
-            sysFile = path.join(PIPELINE, 'commander-system-prompt.md');
+            sysFile = path.join(PIPELINE(), 'commander-system-prompt.md');
             // #6563 — La persona va tal cual: los providers de respaldo vigentes
             // (openai-codex, antigravity) son agénticos y ven el repo, así que
             // ya no hay augment de contexto ni RAG por provider.
@@ -16545,7 +16603,7 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
           primaryProvider: resolution.primaryProvider || 'anthropic',
           resolveExcluding: (exclude) => commanderMP.resolveCommanderProviderExcluding(exclude, {
             skill: commanderMP.COMMANDER_SKILL,
-            pipelineDir: PIPELINE,
+            pipelineDir: PIPELINE(),
             log: (l, m) => log(l || 'commander', m),
             issue: 'commander-chat',
           }),
@@ -16574,7 +16632,7 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
         try {
           commanderMP.auditCommanderRequest({
             commanderReqId: _reqRef, // #6458 - puente al canal de etapas
-            pipelineDir: PIPELINE,
+            pipelineDir: PIPELINE(),
             event: 'fallback_chain_exhausted',
             providerIntended: resolution.primaryProvider || 'anthropic',
             providerEffective: failedProvider,
@@ -16652,7 +16710,7 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
             try {
               commanderMP.auditCommanderRequest({
                 commanderReqId: _reqRef, // #6458 - puente al canal de etapas
-                pipelineDir: PIPELINE,
+                pipelineDir: PIPELINE(),
                 event: 'spawn_error',
                 providerIntended: resolution.primaryProvider || 'anthropic',
                 providerEffective: provider,
@@ -16672,7 +16730,7 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
             // Data-residency por provider: los retries no pasaron por el check
             // del provider inicial, así que re-chequeamos para cada candidato.
             const drCheck2 = commanderMP.enforceDataResidency({
-              pipelineDir: PIPELINE,
+              pipelineDir: PIPELINE(),
               provider: res.provider,
               paths: [],
               chatId: getTelegramChatId(),
@@ -16694,7 +16752,7 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
               try {
                 commanderMP.auditCommanderRequest({
                   commanderReqId: _reqRef, // #6458 - puente al canal de etapas
-                  pipelineDir: PIPELINE,
+                  pipelineDir: PIPELINE(),
                   event: 'fallback_unavailable',
                   providerIntended: resolution.primaryProvider || 'anthropic',
                   providerEffective: res.provider,
@@ -16777,7 +16835,7 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
                 try {
                   commanderMP.auditCommanderRequest({
                     commanderReqId: _reqRef, // #6458 - puente al canal de etapas
-                    pipelineDir: PIPELINE,
+                    pipelineDir: PIPELINE(),
                     event: 'fallback_used',
                     providerIntended: resolution.primaryProvider || 'anthropic',
                     providerEffective: res.provider,
@@ -16824,7 +16882,7 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
               try {
                 commanderMP.auditCommanderRequest({
                   commanderReqId: _reqRef, // #6458 - puente al canal de etapas
-                  pipelineDir: PIPELINE,
+                  pipelineDir: PIPELINE(),
                   event: 'fallback_used',
                   providerIntended: resolution.primaryProvider || 'anthropic',
                   providerEffective: res.provider,
@@ -17067,7 +17125,7 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
           now: Date.now(),
           partialOutput: lastText, // se hashea, NUNCA se guarda contenido (SR-S2)
         });
-        inflightShadow.emitInflightSignal({ pipelineDir: PIPELINE, entry });
+        inflightShadow.emitInflightSignal({ pipelineDir: PIPELINE(), entry });
         log('commander', `🔎 [shadow] inflight_signal_observed{error_class=${errorClass}, request_id=${turnRequestId.slice(0, 20)}…}`);
       } catch (e) {
         log('commander', `⚠️ shadow detector emit falló (best-effort): ${e.message}`);
@@ -17112,7 +17170,7 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
         // #4329 / SR-4 — mismo budget efectivo (env-resuelto + clampeado) que el
         // kill duro; el fallback a DEFAULT_BUDGET_MS en el core queda como red.
         budgetMs: inflightFallback.TURN_BUDGET_MS,
-        pipelineDir: PIPELINE,
+        pipelineDir: PIPELINE(),
         lockNamespace: chatId,
         requestId: turnRequestId,
         log: (l, m) => log(l || 'commander', m),
@@ -17158,7 +17216,7 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
           // en `delivery_pending`. Cerrarlo es un EVENTO NUEVO
           // (`noteFallbackDeliveryResolved`), jamas una reescritura de este.
           inflightFallback.noteInflightCompleted({
-            pipelineDir: PIPELINE,
+            pipelineDir: PIPELINE(),
             skill: commanderMP.COMMANDER_SKILL,
             primaryProvider: 'anthropic',
             secondaryProvider: res.secondaryProvider,
@@ -17258,7 +17316,7 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
           try {
             const next = commanderMP.resolveCommanderProviderQuiet(
               weeklyQuotaMidTurn.provider,
-              { pipelineDir: PIPELINE, log: () => {} },
+              { pipelineDir: PIPELINE(), log: () => {} },
             );
             if (next && next.gated !== true) nextProvider = next.provider || null;
           } catch { /* best-effort: el copy degrada a genérico */ }
@@ -17293,7 +17351,7 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
         } : { tool_calls: toolCount };
         commanderMP.auditCommanderRequest({
           commanderReqId: _reqRef, // #6458 - puente al canal de etapas
-          pipelineDir: PIPELINE,
+          pipelineDir: PIPELINE(),
           event: 'dispatch',
           providerIntended: resolution.primaryProvider || 'anthropic',
           providerEffective: resolution.provider,
@@ -17506,7 +17564,7 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
                   operationId: commanderCredentialOperationId,
                   path: credentialRetryWiring.PRIMARY_PATH,
                   attempt: (commanderCredentialOperation && commanderCredentialOperation.retryConsumed) ? 2 : 1,
-                  pipelineDir: PIPELINE,
+                  pipelineDir: PIPELINE(),
                   onLog: (lvl, msg) => log('commander', msg),
                 });
                 // #5796 — la señal tipada viaja al outcome del intento; es lo
@@ -17552,7 +17610,7 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
               // El shape sanitizado lleva el campo `attempt` (SR-D.1).
               let hitState = null;
               try {
-                const hit = oneMWorkaround.recordHit({ sessionFile: SESSION_FILE });
+                const hit = oneMWorkaround.recordHit({ sessionFile: SESSION_FILE() });
                 hitState = hit.state;
                 if (hit.corrupt && hit.corrupt.length > 0) {
                   // SEC-4: corrupciones del JSON se loggean pero no crashean.
@@ -17796,7 +17854,7 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
           `Reintenté solo, incluso con contexto reducido, y aún así no salió. ` +
           `Dejalo descansar unos minutos y volvé a intentarlo.`;
         let extension = '';
-        try { extension = oneMWorkaround.formatHitExtension({ sessionFile: SESSION_FILE }); } catch {}
+        try { extension = oneMWorkaround.formatHitExtension({ sessionFile: SESSION_FILE() }); } catch {}
         sendTelegramPlain(baseMsg + extension);
       } catch { /* best-effort */ }
     };
@@ -17930,7 +17988,7 @@ function cmdRestart(args) {
   // que el callback de exec() nunca retornaba. El mensaje de confirmación lo
   // emite el nuevo pulpo desde sí mismo al arrancar.
   try {
-    fs.writeFileSync(path.join(PIPELINE, 'last-restart.json'),
+    fs.writeFileSync(path.join(PIPELINE(), 'last-restart.json'),
       JSON.stringify({
         timestamp: new Date().toISOString(),
         mode, source: 'telegram', paused, notified: false,
@@ -17953,7 +18011,7 @@ function cmdRestart(args) {
   const { spawn } = require('child_process');
   const fsMod = require('fs');
   const pausedArg = paused ? ' --paused' : '';
-  const spawnLogPath = path.join(PIPELINE, 'logs', 'restart-spawn.log');
+  const spawnLogPath = path.join(PIPELINE(), 'logs', 'restart-spawn.log');
   try {
     fsMod.writeFileSync(spawnLogPath,
       `--- restart spawn ${new Date().toISOString()} mode=${mode} ---\n`);
@@ -17964,7 +18022,7 @@ function cmdRestart(args) {
       stdio: ['ignore', logFd, logFd],
       shell: true,
       windowsHide: true,
-      env: { ...process.env, PATH: 'C:\\Workspaces\\bin;' + process.env.PATH },
+      env: envDeHijo({ PATH: 'C:\\Workspaces\\bin;' + process.env.PATH }), // #7112 · CA-7.2
     });
     child.unref();
     try { fsMod.closeSync(logFd); } catch {}
@@ -18075,7 +18133,7 @@ Ej: \`/unblock ${issue} reintentar usando la API REST\``;
   try {
     const ghBin = process.env.GH_BIN || 'gh';
     const body = `## ✅ Desbloqueado por humano\n\n**Skill:** \`${result.skill}\` · **Fase:** \`${result.from_phase}\` → \`${result.to_phase}\`\n\n**Orientación:**\n\n> ${guidance.replace(/\n/g, '\n> ')}\n\n_Vuelve a la cola del pipeline._`;
-    const tmpFile = path.join(PIPELINE, `.unblock-comment-${issue}-${Date.now()}.md`);
+    const tmpFile = path.join(PIPELINE(), `.unblock-comment-${issue}-${Date.now()}.md`);
     fs.writeFileSync(tmpFile, body);
     require('child_process').execSync(
       `"${ghBin}" issue comment ${issue} --body-file "${tmpFile}" --repo ${repoTarget.getPrimaryRepo()}`,
@@ -18222,8 +18280,8 @@ function getCommanderDispatcher() {
   const _cuaCfg = (_cfgRoot && typeof _cfgRoot.cua === 'object' && _cfgRoot.cua) || {};
 
   _commanderDispatcher = commanderDet.createDispatcher({
-    pipelineRoot: PIPELINE,
-    logsDir: LOG_DIR,
+    pipelineRoot: PIPELINE(),
+    logsDir: LOG_DIR(),
     expectedChatId: getTelegramChatId(),
     rateLimit: { burst: 10, ratePerMin: 30 },
     // Issue #3253 — CA-4: cooldown destructivo de 60s para restart/limpiar/
@@ -18236,8 +18294,8 @@ function getCommanderDispatcher() {
     // el .json + .ogg para que `servicio-telegram` los entregue.
     cua: {
       config: _cuaCfg,
-      pipelineRoot: PIPELINE,
-      telegramQueueDir: path.join(PIPELINE, 'servicios', 'telegram', 'pendiente'),
+      pipelineRoot: PIPELINE(),
+      telegramQueueDir: path.join(PIPELINE(), 'servicios', 'telegram', 'pendiente'),
       log: (...args) => log('cua', ...args),
     },
     // Issue #3541 — CA-SEC-6: el handler de `/rechazar` necesita la allowlist
@@ -18326,9 +18384,9 @@ function sanitizeWaveClarification(raw) {
 }
 
 async function brazoCommander(config) {
-  const commanderPendiente = path.join(PIPELINE, 'servicios', 'commander', 'pendiente');
-  const commanderTrabajando = path.join(PIPELINE, 'servicios', 'commander', 'trabajando');
-  const commanderListo = path.join(PIPELINE, 'servicios', 'commander', 'listo');
+  const commanderPendiente = path.join(PIPELINE(), 'servicios', 'commander', 'pendiente');
+  const commanderTrabajando = path.join(PIPELINE(), 'servicios', 'commander', 'trabajando');
+  const commanderListo = path.join(PIPELINE(), 'servicios', 'commander', 'listo');
 
   let archivos = listWorkFiles(commanderPendiente);
   log('commander', `${archivos.length} mensaje(s) pendiente(s)`);
@@ -18419,7 +18477,7 @@ async function _brazoCommanderInner(config, archivosIniciales, commanderPendient
     log('commander', `[presencia] writePresence falló (no bloqueante): ${e.message}`);
   }
 
-  const historyFile = path.join(PIPELINE, 'commander-history.jsonl');
+  const historyFile = path.join(PIPELINE(), 'commander-history.jsonl');
   const botToken = getTelegramToken();
   const chatId = getTelegramChatId();
   log('commander', `Token: ${botToken ? 'OK' : 'FALTA'}, ChatId: ${chatId || 'FALTA'}`);
@@ -18733,7 +18791,7 @@ async function _brazoCommanderInner(config, archivosIniciales, commanderPendient
     }
 
     try { moveFile(m._path, commanderListo); } catch {}
-    const logFile = path.join(LOG_DIR, 'commander.log');
+    const logFile = path.join(LOG_DIR(), 'commander.log');
     fs.appendFileSync(logFile, `[${new Date().toISOString()}] /${intent.command || '(unknown)'}\n${respuesta || '(sin respuesta)'}\n---\n`);
   }
 
@@ -18811,7 +18869,7 @@ async function _brazoCommanderInner(config, archivosIniciales, commanderPendient
     // cierra en el `finally` de este bloque para no dejar el fd colgado aun si
     // el turno tira excepción antes del envío (CA-6).
     const commanderReqId = commanderRequestLog.buildRequestId(chatId, Date.now());
-    const requestLog = commanderRequestLog.openRequestLog(LOG_DIR, commanderReqId);
+    const requestLog = commanderRequestLog.openRequestLog(LOG_DIR(), commanderReqId);
 
     // #3951 EP7-H4 — Vars de correlación del turno para clasificar el resultado
     // al cierre. Viven FUERA del `try` para ser visibles también en el `finally`
@@ -18861,7 +18919,7 @@ async function _brazoCommanderInner(config, archivosIniciales, commanderPendient
           cross_provider: classification.crossProviderDispatch,
         });
         // Sidecar que lee el dashboard sin parsear el cuerpo del log.
-        commanderRequestLog.writeRequestMeta(LOG_DIR, commanderReqId, {
+        commanderRequestLog.writeRequestMeta(LOG_DIR(), commanderReqId, {
           resultado: classification.resultado,
           provider: classification.provider,
           sameProviderVerification: classification.sameProviderVerification,
@@ -18956,7 +19014,7 @@ async function _brazoCommanderInner(config, archivosIniciales, commanderPendient
         log('commander', `🚫 SEC-2: sender Telegram id=${firstFromId} no autorizado — descartando ${textoLibre.length} msg(s)`);
         try {
           commanderIssueCreation.logSkillInvocation({
-            pipelineDir: PIPELINE,
+            pipelineDir: PIPELINE(),
             from: textoLibre[0].from || null,
             inputText: mensajeConsolidado,
             skillResult: 'blocked',
@@ -19058,7 +19116,7 @@ async function _brazoCommanderInner(config, archivosIniciales, commanderPendient
       let activeProvider = 'anthropic';
       try {
         const probe = commanderMP.resolveCommanderProvider({
-          pipelineDir: PIPELINE,
+          pipelineDir: PIPELINE(),
           log: (l, m) => log(l || 'commander', m),
         });
         if (probe && probe.provider) activeProvider = probe.provider;
@@ -19071,7 +19129,7 @@ async function _brazoCommanderInner(config, archivosIniciales, commanderPendient
         sendTelegram(blocked);
         try {
           commanderIssueCreation.logSkillInvocation({
-            pipelineDir: PIPELINE,
+            pipelineDir: PIPELINE(),
             from: textoLibre[0].from || null,
             inputText: mensajeConsolidado,
             skillInvoked: issueIntent.intent === commanderIssueCreation.INTENT_CREATE_SPLIT ? 'planner' : 'doc',
@@ -19122,7 +19180,7 @@ async function _brazoCommanderInner(config, archivosIniciales, commanderPendient
         docResult = await commanderDocCreate.createIssue({
           description: mensajeConsolidado,
           from: textoLibre[0].from || undefined,
-          pipelineDir: PIPELINE,
+          pipelineDir: PIPELINE(),
           force: forceDuplicate,
           ghPath: process.env.GH_PATH || 'gh',
           log: (l, m) => log(l || 'commander', m),
@@ -19147,7 +19205,7 @@ async function _brazoCommanderInner(config, archivosIniciales, commanderPendient
     const restartPattern = /\b(reinici|restart|levant[aá]|arranc[aá])\b/i;
     if (restartPattern.test(mensajeConsolidado)) {
       try {
-        const lastRestart = JSON.parse(fs.readFileSync(path.join(PIPELINE, 'last-restart.json'), 'utf8'));
+        const lastRestart = JSON.parse(fs.readFileSync(path.join(PIPELINE(), 'last-restart.json'), 'utf8'));
         const ageSec = (Date.now() - new Date(lastRestart.timestamp).getTime()) / 1000;
         if (ageSec < 120) {
           log('commander', `Restart solicitado pero ya hubo uno hace ${Math.round(ageSec)}s — skip`);
@@ -19183,7 +19241,7 @@ async function _brazoCommanderInner(config, archivosIniciales, commanderPendient
       // BACKGROUND más abajo, para el próximo turno — el usuario nunca la espera.
       let historial = '';
       let _convoLines = [];
-      const _summaryStoreFile = path.join(PIPELINE, conversationSummary.DEFAULT_STORE_FILENAME);
+      const _summaryStoreFile = path.join(PIPELINE(), conversationSummary.DEFAULT_STORE_FILENAME);
       try {
         const cutoff24h = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
         _convoLines = selectCommanderHistoryForChat(
@@ -19267,7 +19325,7 @@ REGLAS:
 5. NO menciones paths internos del pipeline (pendiente/, listo/, etc).
 5.bis. ESTADO DE LA OLA — INVIOLABLE (#4089): si el usuario pide el "estado de la ola" (o "cómo va/viene la ola", "avance de la ola", "situación de la ola", etc.), NO armes vos la tabla ni ningún cuadro/columna/listado de estado. Esa tabla la produce SIEMPRE el handler determinístico \`wave\`, en su formato fijo, y es la única fuente válida. Tenés PROHIBIDO construir, reescribir, resumir o reemplazar esa tabla a mano. Si tenés contexto extra o una corrección (ej. tablero vs main, un bloqueo), va como nota de texto corrido APARTE, nunca en lugar de la tabla y nunca con formato de tabla.
 6. Contexto del entorno:
-   - Pipeline dir: ${PIPELINE}
+   - Pipeline dir: ${PIPELINE()}
    - Dashboard: node .pipeline/dashboard.js (puerto 3200)
    - PIDs: .pipeline/*.pid
    - Logs: .pipeline/logs/
@@ -19288,7 +19346,7 @@ ${issueCreationBlock}`;
       try {
         const statePack = await commanderProjectState.buildProjectStatePack({
           cwd: ROOT,
-          pipelineDir: PIPELINE,
+          pipelineDir: PIPELINE(),
           log,
         });
         commanderPersonaAugmented = commanderProjectState.augmentCommanderPersona(
@@ -19377,7 +19435,7 @@ ${commanderConversation}`;
             const timedOutSkill = timeoutMatch[1];
             const timeoutDuration = Number(timeoutMatch[2]);
             commanderIssueCreation.logSkillInvocation({
-              pipelineDir: PIPELINE,
+              pipelineDir: PIPELINE(),
               from: textoLibre[0].from || null,
               inputText: mensajeConsolidado,
               inputTextTruncated: inputWasTruncated,
@@ -19433,7 +19491,7 @@ ${commanderConversation}`;
               auditError = 'launching_marker_without_tool_use';
             }
             commanderIssueCreation.logSkillInvocation({
-              pipelineDir: PIPELINE,
+              pipelineDir: PIPELINE(),
               from: textoLibre[0].from || null,
               inputText: mensajeConsolidado,
               inputTextTruncated: inputWasTruncated,
@@ -19643,7 +19701,7 @@ INSTRUCCIÓN: Integrá los complementos del usuario en tu respuesta. Generá UNA
         let sherlockReqLog = null;
         try {
           const sReqId = sherlockRequestLog.buildRequestId(commanderReqId, 'sherlock');
-          sherlockReqLog = sherlockRequestLog.openRequestLog(LOG_DIR, sReqId);
+          sherlockReqLog = sherlockRequestLog.openRequestLog(LOG_DIR(), sReqId);
         } catch { sherlockReqLog = null; }
         try {
         // Snapshot mínimo del estado del sistema. No incluimos paths sensibles
@@ -19665,8 +19723,8 @@ INSTRUCCIÓN: Integrá los complementos del usuario en tu respuesta. Generá UNA
         try {
           systemStateSnapshot = await commanderProjectState.buildSystemStateSnapshot({
             cwd: ROOT,
-            pipelineDir: PIPELINE,
-            legacy: { pendingCount, trabajandoCount, pipelineDir: PIPELINE },
+            pipelineDir: PIPELINE(),
+            legacy: { pendingCount, trabajandoCount, pipelineDir: PIPELINE() },
           });
         } catch (e) {
           log('commander', `#3936: systemState unificado falló (fail-open, snapshot mínimo): ${e && e.message}`);
@@ -19674,7 +19732,7 @@ INSTRUCCIÓN: Integrá los complementos del usuario en tu respuesta. Generá UNA
             `commander_pendiente_files=${pendingCount}\n` +
             `commander_trabajando_files=${trabajandoCount}\n` +
             `timestamp_iso=${new Date().toISOString()}\n` +
-            `pipeline_dir=${PIPELINE}`;
+            `pipeline_dir=${PIPELINE()}`;
         }
 
         // El provider del Commander hoy es siempre `anthropic` (ejecutarClaude
@@ -19715,7 +19773,7 @@ INSTRUCCIÓN: Integrá los complementos del usuario en tu respuesta. Generá UNA
           conversationContext: sherlockConvoContext, // #3922 EP2-H2
           commanderProvider,
           issueNumbers: sherlockIssueNumbers,
-          pipelineDir: PIPELINE,
+          pipelineDir: PIPELINE(),
           configLoader: loadConfig,
           log,
           cwd: ROOT,
@@ -19759,7 +19817,7 @@ INSTRUCCIÓN: Reelaborá tu respuesta tomando en cuenta las contradicciones dete
                 conversationContext: sherlockConvoContext, // #3922 EP2-H2
                 commanderProvider,
                 issueNumbers: sherlockIssueNumbers,
-                pipelineDir: PIPELINE,
+                pipelineDir: PIPELINE(),
                 configLoader: loadConfig,
                 log,
                 cwd: ROOT,
@@ -19886,7 +19944,7 @@ INSTRUCCIÓN: Reelaborá tu respuesta tomando en cuenta las contradicciones dete
         commanderMP.auditCommanderRequest({
           // #6458 - puente al canal de etapas del turno, SEUDONIMIZADO.
           commanderReqId: commanderRequestLog.buildAuditReqRef(commanderReqId),
-          pipelineDir: PIPELINE,
+          pipelineDir: PIPELINE(),
           event: 'commander_response',
           providerEffective: 'anthropic',
           chatId,
@@ -19977,7 +20035,7 @@ INSTRUCCIÓN: Reelaborá tu respuesta tomando en cuenta las contradicciones dete
               // audios ya entregados cuando solo falló la confirmación de entrega del texto.
               const voiceDedupeKey = voiceParts.computeDedupeKey({ chatId, text: outboundText });
               const { correlationId: voiceCid, enqueued, skipped } = dispatchVoiceParts(
-                voiceBuffers, chatId, path.join(LOG_DIR, 'media'), { dedupeKey: voiceDedupeKey });
+                voiceBuffers, chatId, path.join(LOG_DIR(), 'media'), { dedupeKey: voiceDedupeKey });
               // Voz entregada si se encoló algo nuevo O si ya estaba entregada (dedup).
               enviado = enqueued > 0 || skipped > 0;
               if (enqueued > 0) {
@@ -20052,7 +20110,7 @@ INSTRUCCIÓN: Reelaborá tu respuesta tomando en cuenta las contradicciones dete
         // reintroducir el bug por otra puerta.
         if (waveAnnexRequested) {
           try {
-            const annex = await waveAnnex.buildWaveAnnex({ pipelineRoot: PIPELINE });
+            const annex = await waveAnnex.buildWaveAnnex({ pipelineRoot: PIPELINE() });
             for (const bloque of annex.messages) {
               try { sendTelegram(bloque, { parseMode: annex.parseMode }); }
               catch (e) { log('commander', `[wave-anexo] fallo enviar bloque: ${e.message}`); }
@@ -20088,7 +20146,7 @@ INSTRUCCIÓN: Reelaborá tu respuesta tomando en cuenta las contradicciones dete
         try { sendTelegram(commanderIssueCreation.formatSkillFailureResponse({ kind, error: e.message })); } catch {}
         try {
           commanderIssueCreation.logSkillInvocation({
-            pipelineDir: PIPELINE,
+            pipelineDir: PIPELINE(),
             from: textoLibre[0].from || null,
             inputText: mensajeConsolidado,
             inputTextTruncated: inputWasTruncated,
@@ -20136,7 +20194,7 @@ INSTRUCCIÓN: Reelaborá tu respuesta tomando en cuenta las contradicciones dete
       try { moveFile(m._path, commanderListo); } catch {}
     }
 
-    const logFile = path.join(LOG_DIR, 'commander.log');
+    const logFile = path.join(LOG_DIR(), 'commander.log');
     fs.appendFileSync(logFile, `[${new Date().toISOString()}] TEXT (${textoLibre.length} msgs consolidados)\n---\n`);
     } finally {
       // #3951 EP7-H4 — red de seguridad: si ningún camino (envío feliz / catch)
@@ -20474,7 +20532,7 @@ function enqueueOrphanNotice(payload, opts = {}) {
   // El `text` del historial NO es el texto del aviso: el historial se inyecta
   // verbatim al contexto del Commander y el modelo lo leería como parte de la
   // conversación.
-  appendCommanderHistory(path.join(PIPELINE, 'commander-history.jsonl'), {
+  appendCommanderHistory(path.join(PIPELINE(), 'commander-history.jsonl'), {
     direction: 'out',
     status: 'encolado',
     correlation_id: correlationId,
@@ -20569,7 +20627,7 @@ function dispatchVoiceParts(buffers, chatId, mediaDir, opts = {}) {
     try {
       const outboundCfg = resolveTelegramOutboundConfig(loadConfig());
       const ttlMs = Number.isFinite(outboundCfg.stale_ttl_ms) ? outboundCfg.stale_ttl_ms : 86400000;
-      delivered = voiceParts.findDeliveredParts({ pipelineDir: PIPELINE, dedupeKey, now: nowMs, ttlMs });
+      delivered = voiceParts.findDeliveredParts({ pipelineDir: PIPELINE(), dedupeKey, now: nowMs, ttlMs });
     } catch (e) {
       log('telegram', `[voice] dedup lookup falló (best-effort, se reenvía normal): ${e.message}`);
     }
@@ -20619,7 +20677,7 @@ function dispatchVoiceParts(buffers, chatId, mediaDir, opts = {}) {
 
   try {
     voiceParts.initState({
-      pipelineDir: PIPELINE,
+      pipelineDir: PIPELINE(),
       correlationId,
       partTotal,
       chatId,
@@ -21500,8 +21558,8 @@ function orphanSweepGate(prevTick, everyTicks = ORPHAN_SWEEP_EVERY_TICKS) {
 //     Lee `process.env` en cada llamada (el ancla puede cambiar en caliente).
 function ejecutarBarridoHuerfanos(origen) {
   return commanderOrphanSweep.runOrphanSweep({
-    logDir: LOG_DIR,
-    pipelineDir: PIPELINE,
+    logDir: LOG_DIR(),
+    pipelineDir: PIPELINE(),
     currentBootId: PULPO_BOOT_ID,
     deps: {
       outboundStatus: commanderOutboundStatus,
@@ -21519,10 +21577,14 @@ function ejecutarBarridoHuerfanos(origen) {
 }
 
 // Archivo de control para pausar/reanudar desde fuera
-const PAUSE_FILE = path.join(PIPELINE, '.paused');
+// #7112 — canal `pausa`: un `.paused` que no se escribe es una pausa que no
+// ocurre; por eso el bloqueo es ruidoso (writeDir lanza), nunca un return mudo.
+function PAUSE_FILE() {
+  return writeTarget.writePath(process.env, { canal: 'pausa', destino: '.paused' }, '.paused');
+}
 
 function checkPauseFile() {
-  paused = fs.existsSync(PAUSE_FILE);
+  paused = fs.existsSync(PAUSE_FILE());
 }
 
 function checkDesyncFlag() {
@@ -21581,7 +21643,7 @@ function realignAllowlistToActiveWave(desync, opts = {}) {
     if (esViolacionDeConfig(e)) {
       // Copy por el generador ÚNICO (CA-UX-6): archivo + causa + acción, ya
       // redactados. Nunca el contenido crudo del config (SEC-1).
-      const copia = configSchema.describeConfigFailure(e, { archivo: e.archivo || CONFIG_PATH });
+      const copia = configSchema.describeConfigFailure(e, { archivo: e.archivo || CONFIG_PATH() });
       log('pulpo', configSchema.formatConfigFailureLog(copia, {
         titulo: 'GATE 3 realign-allowlist no enforzable — realign ABORTADO (allowlist sin mutar)',
       }));
@@ -23261,12 +23323,12 @@ function evaluateDesyncAndMaybeRealign(context, opts = {}) {
 // #2974. Acá poleamos por transición y delegamos al notifier (lib/quota-
 // notifier.js) que maneja inicial + recordatorios A→B→C→D + cierre + canned.
 // =============================================================================
-const QUOTA_FLAG_PATH = path.join(PIPELINE, 'quota-exhausted.json');
+function QUOTA_FLAG_PATH() { return path.join(PIPELINE(), 'quota-exhausted.json'); }
 
 function readQuotaFlag() {
   try {
-    if (!fs.existsSync(QUOTA_FLAG_PATH)) return null;
-    return JSON.parse(fs.readFileSync(QUOTA_FLAG_PATH, 'utf8'));
+    if (!fs.existsSync(QUOTA_FLAG_PATH())) return null;
+    return JSON.parse(fs.readFileSync(QUOTA_FLAG_PATH(), 'utf8'));
   } catch {
     return null;
   }
@@ -23282,7 +23344,7 @@ function countQueuedLlmAgents() {
   const llmFases = ['validacion', 'dev', 'verificacion', 'aprobacion'];
   let total = 0;
   for (const fase of llmFases) {
-    const dir = path.join(PIPELINE, 'desarrollo', fase, 'pendiente');
+    const dir = path.join(PIPELINE(), 'desarrollo', fase, 'pendiente');
     try {
       const files = fs.readdirSync(dir).filter(f => !f.startsWith('.') && !f.endsWith('.gitkeep') && !isMarkerArtifactPulpo(f));
       total += files.length;
@@ -23314,7 +23376,7 @@ const quotaNotifier = createQuotaNotifier({
   // bloqueamos cuando TODA la cadena está gateada (mismo veredicto que
   // `resolveSpawnWithFallback(...).gated`). Read-only: el helper silencia audit,
   // notice de Telegram y logs para no duplicar los side-effects del dispatch real.
-  isLlmGated: () => commanderMP.isCommanderChainGated({ pipelineDir: PIPELINE }),
+  isLlmGated: () => commanderMP.isCommanderChainGated({ pipelineDir: PIPELINE() }),
   // Heurístico de respaldo (no se usa mientras `isLlmGated` resuelva): provider
   // primario del commander para la comparación por-provider en tests aislados.
   getCommanderProvider: () => 'anthropic',
@@ -23357,7 +23419,7 @@ const STUCK_STALE_MS = 15 * 60 * 1000;
 // tareas en riesgo real (`selectRealRisk`), una vez por EPISODIO: mientras el
 // conjunto de tareas frenadas no cambie, no se reitera; si entra o sale una, sí.
 // La racha se sigue calculando y persistiendo, pero sólo para log/estado.
-const STUCK_HEALTH_FILE = path.join(PIPELINE, '.stuck-reconciler-health.json');
+function STUCK_HEALTH_FILE() { return path.join(PIPELINE(), '.stuck-reconciler-health.json'); }
 function emitStuckReconcilerLiveness(res, agg, titleOf) {
   try {
     // #6150 CA-1 — el filtro es POR DECISIÓN. El criterio agregado anterior
@@ -23366,16 +23428,16 @@ function emitStuckReconcilerLiveness(res, agg, titleOf) {
     const risks = selectRealRisk((res && res.decisions) || []);
 
     let prev = null;
-    try { prev = JSON.parse(fs.readFileSync(STUCK_HEALTH_FILE, 'utf8')); } catch { /* primera vez */ }
+    try { prev = JSON.parse(fs.readFileSync(STUCK_HEALTH_FILE(), 'utf8')); } catch { /* primera vez */ }
     const { next, emitSignal } = evaluateSilenceHealth(prev, { agg, risks });
 
     // SEC-5 — tmp + rename. Con `writeFileSync` directo, un corte a mitad de
     // escritura deja JSON inválido ⇒ `prev = null` ⇒ se pierde el episodio ⇒ el
     // "un aviso por episodio" degrada a "avisar de nuevo en cada ciclo".
     try {
-      const tmp = `${STUCK_HEALTH_FILE}.tmp`;
+      const tmp = `${STUCK_HEALTH_FILE()}.tmp`;
       fs.writeFileSync(tmp, JSON.stringify(next, null, 2));
-      fs.renameSync(tmp, STUCK_HEALTH_FILE);
+      fs.renameSync(tmp, STUCK_HEALTH_FILE());
     } catch { /* best-effort: nunca tumba el ciclo */ }
 
     // CA-2 — sin tareas en riesgo real no sale NADA a Telegram, por larga que
@@ -23429,7 +23491,7 @@ function runStuckReconcilerTick() {
     // un test pueda verificar la POLÍTICA REAL (allowlist de ola, dedupe por
     // marker/caché, escalado vía human-block) sin cargar este archivo.
     const deps = buildStuckReconcilerDeps({
-      config, PIPELINE, ROOT, pauseFile: PAUSE_FILE, ppMode,
+      config, PIPELINE: PIPELINE(), ROOT, pauseFile: PAUSE_FILE(), ppMode,
       nowMs: Date.now(), staleMs: STUCK_STALE_MS, parallelPhases,
       deps: {
         fs, partialPause, humanBlock, processLiveness,
@@ -23478,7 +23540,7 @@ function rotateHistory() {
   if (Date.now() - lastHistoryRotation < 3600000) return; // Rotar máx cada hora
   lastHistoryRotation = Date.now();
 
-  const historyFile = path.join(PIPELINE, 'commander-history.jsonl');
+  const historyFile = path.join(PIPELINE(), 'commander-history.jsonl');
   try {
     const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
     const lines = fs.readFileSync(historyFile, 'utf8').trim().split('\n');
@@ -23495,7 +23557,7 @@ function rotateHistory() {
 // --- MÉTRICAS HISTÓRICAS ---
 // Persiste snapshot cada ciclo (30s) a metrics-history.jsonl.
 // El dashboard lee este archivo para /metrics.
-const METRICS_FILE = path.join(PIPELINE, 'metrics-history.jsonl');
+function METRICS_FILE() { return path.join(PIPELINE(), 'metrics-history.jsonl'); }
 const METRICS_MAX_ENTRIES = 2880; // ~24h a 30s/ciclo
 let metricsLastRotation = 0;
 
@@ -23508,8 +23570,8 @@ function persistMetricsSnapshot(config) {
     const byFase = {};
     for (const [pName, pConfig] of Object.entries(config.pipelines)) {
       for (const fase of pConfig.fases) {
-        const tDir = path.join(PIPELINE, pName, fase, 'trabajando');
-        const pDir = path.join(PIPELINE, pName, fase, 'pendiente');
+        const tDir = path.join(PIPELINE(), pName, fase, 'trabajando');
+        const pDir = path.join(PIPELINE(), pName, fase, 'pendiente');
         byFase[fase] = {
           working: (byFase[fase]?.working || 0) + listWorkFiles(tDir).length,
           pending: (byFase[fase]?.pending || 0) + listWorkFiles(pDir).length
@@ -23536,16 +23598,16 @@ function persistMetricsSnapshot(config) {
       buildPriority: buildPriorityActive
     };
 
-    fs.appendFileSync(METRICS_FILE, JSON.stringify(snapshot) + '\n');
+    fs.appendFileSync(METRICS_FILE(), JSON.stringify(snapshot) + '\n');
 
     // Rotar cada 10min para no crecer indefinidamente
     const now = Date.now();
     if (now - metricsLastRotation > 600000) {
       metricsLastRotation = now;
       try {
-        const lines = fs.readFileSync(METRICS_FILE, 'utf8').split('\n').filter(Boolean);
+        const lines = fs.readFileSync(METRICS_FILE(), 'utf8').split('\n').filter(Boolean);
         if (lines.length > METRICS_MAX_ENTRIES) {
-          fs.writeFileSync(METRICS_FILE, lines.slice(-METRICS_MAX_ENTRIES).join('\n') + '\n');
+          fs.writeFileSync(METRICS_FILE(), lines.slice(-METRICS_MAX_ENTRIES).join('\n') + '\n');
         }
       } catch {}
     }
@@ -23980,7 +24042,7 @@ async function brazoPrMergeability(config) {
       // (mismo motivo que `telegramPendienteDir`, #5924).
       pipelineRoot: process.env.PIPELINE_DIR_OVERRIDE
         ? path.resolve(process.env.PIPELINE_DIR_OVERRIDE)
-        : PIPELINE,
+        : PIPELINE(),
       config,
       yaml,
       now: () => Date.now(),
@@ -24092,7 +24154,7 @@ async function reapStaleHumanBlocks({ allowlistSet } = {}) {
 
     // Quitar el label needs-human en GitHub + comentario de traza vía la cola.
     try {
-      const ghQueueDir = path.join(PIPELINE, 'servicios', 'github', 'pendiente');
+      const ghQueueDir = path.join(PIPELINE(), 'servicios', 'github', 'pendiente');
       fs.mkdirSync(ghQueueDir, { recursive: true });
       encolarOrdenGithub(
         path.join(ghQueueDir, `${m.issue}-remove-needs-human-${Date.now()}.json`),
@@ -24132,7 +24194,7 @@ function runReclaimChild({ issue, pr, headSha, timeoutMs, spawnImpl = spawn }) {
     let settled = false, out = '';
     const finish = (value) => { if (settled) return; settled = true; resolve(value); };
     const child = spawnImpl(process.execPath, [
-      path.join(PIPELINE, 'skills-deterministicos', 'delivery.js'), '--reclaim',
+      path.join(PIPELINE(), 'skills-deterministicos', 'delivery.js'), '--reclaim',
       `--pr=${pr}`, `--issue=${issue}`, `--head-sha=${headSha}`,
     // #6432 — `ROOT` es el checkout principal (el que tiene `origin/main` y el
     // remoto), NO el worktree del agente. Antes decía `REPO_ROOT`, que no existe
@@ -24192,7 +24254,7 @@ async function reapMergeChecksRaceBlocks({
   if (allowlistSet) markers = markers.filter((m) => allowlistSet.has(String(m.issue)));
   if (markers.length === 0) return;
   const maxAttempts = Number.isInteger(cfg.max_attempts) && cfg.max_attempts > 0 ? cfg.max_attempts : 3;
-  const ghQueueDir = path.join(PIPELINE, 'servicios', 'github', 'pendiente');
+  const ghQueueDir = path.join(PIPELINE(), 'servicios', 'github', 'pendiente');
   const prStates = {};
   for (const marker of markers) {
     ghThrottle();
@@ -24374,7 +24436,7 @@ async function reapVerifiableHumanBlocks({ allowlistSet, config } = {}) {
   for (const m of markers) {
     const p = m.precondition.predicate;
     counters[`${m.issue}::${p.kind}::${p.pr}`] = autoRecheckCounter.count({
-      pipelineDir: PIPELINE, issue: m.issue, kind: p.kind, pr: p.pr,
+      pipelineDir: PIPELINE(), issue: m.issue, kind: p.kind, pr: p.pr,
     });
   }
 
@@ -24387,14 +24449,14 @@ async function reapVerifiableHumanBlocks({ allowlistSet, config } = {}) {
   for (const m of blocked.filter(b => b.reason === 'techo-de-auto-destrabes-alcanzado')) {
     const p = m.predicate;
     if (!autoRecheckCounter.markCeilingNotified({
-      pipelineDir: PIPELINE, issue: m.issue, kind: p.kind, pr: p.pr,
+      pipelineDir: PIPELINE(), issue: m.issue, kind: p.kind, pr: p.pr,
     })) continue;
     const attempts = counters[`${m.issue}::${p.kind}::${p.pr}`];
     const notice = autoRecheckNotice.buildCeilingNotice({
       issue: m.issue, kind: p.kind, pr: p.pr, attempts,
     });
     try {
-      const ghQueueDir = path.join(PIPELINE, 'servicios', 'github', 'pendiente');
+      const ghQueueDir = path.join(PIPELINE(), 'servicios', 'github', 'pendiente');
       fs.mkdirSync(ghQueueDir, { recursive: true });
       encolarOrdenGithub(
         path.join(ghQueueDir, `${m.issue}-auto-recheck-ceiling-${Date.now()}.json`),
@@ -24449,7 +24511,7 @@ async function reapVerifiableHumanBlocks({ allowlistSet, config } = {}) {
     // Incrementar el techo AL DESTRABAR (no al re-bloquearse): el destrabe es
     // el evento que existe y es observable.
     autoRecheckCounter.increment({
-      pipelineDir: PIPELINE, issue: m.issue, kind: p.kind, pr: p.pr,
+      pipelineDir: PIPELINE(), issue: m.issue, kind: p.kind, pr: p.pr,
     });
     const releaseNumber = (counters[`${m.issue}::${p.kind}::${p.pr}`] || 0) + 1;
 
@@ -24469,7 +24531,7 @@ async function reapVerifiableHumanBlocks({ allowlistSet, config } = {}) {
 
     // Quitar el label + comentar, por la MISMA cola que el destrabe manual.
     try {
-      const ghQueueDir = path.join(PIPELINE, 'servicios', 'github', 'pendiente');
+      const ghQueueDir = path.join(PIPELINE(), 'servicios', 'github', 'pendiente');
       fs.mkdirSync(ghQueueDir, { recursive: true });
       encolarOrdenGithub(
         path.join(ghQueueDir, `${m.issue}-auto-recheck-remove-needs-human-${Date.now()}.json`),
@@ -24638,7 +24700,7 @@ async function _issueHasLinkedPr(issue) {
 // un paraguas que deja de auto-cerrarse en silencio se lee como cuelgue del
 // pipeline— se convertiría en spam cada 30 minutos. Se re-avisa pasado el TTL.
 const UMBRELLA_SKIP_NOTICE_TTL_MS = 24 * 60 * 60 * 1000;
-const UMBRELLA_SKIP_NOTICE_FILE = path.join(PIPELINE, 'desbloqueo-umbrella-avisos.json');
+function UMBRELLA_SKIP_NOTICE_FILE() { return path.join(PIPELINE(), 'desbloqueo-umbrella-avisos.json'); }
 
 function _notifyUmbrellaSkipOnce(issueNumber, reason, text) {
   return _notifyDesbloqueoOnce(`${issueNumber}::${reason}`, text);
@@ -24659,8 +24721,8 @@ function _notifyDesbloqueoOnce(key, text) {
   const now = Date.now();
   let state = {};
   try {
-    if (fs.existsSync(UMBRELLA_SKIP_NOTICE_FILE)) {
-      state = JSON.parse(fs.readFileSync(UMBRELLA_SKIP_NOTICE_FILE, 'utf8') || '{}');
+    if (fs.existsSync(UMBRELLA_SKIP_NOTICE_FILE())) {
+      state = JSON.parse(fs.readFileSync(UMBRELLA_SKIP_NOTICE_FILE(), 'utf8') || '{}');
     }
   } catch {
     state = {};
@@ -24682,9 +24744,9 @@ function _notifyDesbloqueoOnce(key, text) {
   // aviso ya emitido. El archivo esta gitignoreado (.gitignore, bloque de
   // estado runtime): es estado por checkout, no versionable.
   try {
-    const tmp = `${UMBRELLA_SKIP_NOTICE_FILE}.${process.pid}.tmp`;
+    const tmp = `${UMBRELLA_SKIP_NOTICE_FILE()}.${process.pid}.tmp`;
     fs.writeFileSync(tmp, JSON.stringify(state, null, 2));
-    fs.renameSync(tmp, UMBRELLA_SKIP_NOTICE_FILE);
+    fs.renameSync(tmp, UMBRELLA_SKIP_NOTICE_FILE());
   } catch (e) {
     log('desbloqueo', `No se pudo persistir el dedupe de avisos de paraguas: ${e.message}`);
   }
@@ -24741,7 +24803,7 @@ async function brazoDesbloqueoImpl(config) {
     const seenLive = new Set(blockedIssues.map(i => String(i.number)));
     if (blockedIssues.length === 0) {
       // Limpiar datos stale — si ya no hay bloqueados, el dashboard debe saberlo
-      try { fs.writeFileSync(path.join(PIPELINE, 'blocked-issues.json'), JSON.stringify({ blockedBy: {}, blocks: {} }, null, 2)); } catch {}
+      try { fs.writeFileSync(path.join(PIPELINE(), 'blocked-issues.json'), JSON.stringify({ blockedBy: {}, blocks: {} }, null, 2)); } catch {}
       // #4023 — Aunque GitHub no liste NINGÚN issue con el label, puede haber
       // markers huérfanos en disco (re-bloqueo fantasma #3953): el issue se
       // destrabó en GitHub pero quedó trabado en `bloqueado-dependencias/`.
@@ -25098,7 +25160,7 @@ async function brazoDesbloqueoImpl(config) {
 
     // Persistir mapeos para el dashboard
     try {
-      fs.writeFileSync(path.join(PIPELINE, 'blocked-issues.json'), JSON.stringify({ blockedBy, blocks }, null, 2));
+      fs.writeFileSync(path.join(PIPELINE(), 'blocked-issues.json'), JSON.stringify({ blockedBy, blocks }, null, 2));
     } catch (e) {
       log('desbloqueo', `Error persistiendo blocked-issues.json: ${e.message}`);
     }
@@ -25301,7 +25363,7 @@ function partialPauseDepsConfig(config) {
 
 function appendPartialPauseDepsLog(entry) {
   try {
-    const file = path.join(PIPELINE, PARTIAL_PAUSE_DEPS_DEFAULTS.logFile);
+    const file = path.join(PIPELINE(), PARTIAL_PAUSE_DEPS_DEFAULTS.logFile);
     const line = JSON.stringify({ timestamp: new Date().toISOString(), ...entry }) + '\n';
     fs.appendFileSync(file, line);
   } catch (e) {
@@ -25311,7 +25373,7 @@ function appendPartialPauseDepsLog(entry) {
 
 function writePartialPauseDepsState(state) {
   try {
-    const file = path.join(PIPELINE, PARTIAL_PAUSE_DEPS_DEFAULTS.stateFile);
+    const file = path.join(PIPELINE(), PARTIAL_PAUSE_DEPS_DEFAULTS.stateFile);
     fs.writeFileSync(file, JSON.stringify(state, null, 2));
   } catch (e) {
     log('pulpo', `[partial-pause-deps] Warning: write state failed: ${e.message}`);
@@ -25320,7 +25382,7 @@ function writePartialPauseDepsState(state) {
 
 function clearPartialPauseDepsState() {
   try {
-    const file = path.join(PIPELINE, PARTIAL_PAUSE_DEPS_DEFAULTS.stateFile);
+    const file = path.join(PIPELINE(), PARTIAL_PAUSE_DEPS_DEFAULTS.stateFile);
     if (fs.existsSync(file)) fs.unlinkSync(file);
   } catch {}
 }
@@ -25460,7 +25522,7 @@ async function brazoPartialPauseDeps(config) {
 
 async function mainLoop() {
   log('pulpo', `Pulpo V2 iniciado — poll cada ${loadConfig().timeouts?.poll_interval_seconds || 30}s`);
-  log('pulpo', `Pipeline: ${PIPELINE}`);
+  log('pulpo', `Pipeline: ${PIPELINE()}`);
   log('pulpo', `Claude launcher: ${CLAUDE_LAUNCHER.kind} → ${CLAUDE_LAUNCHER.cmd}`);
 
   // Incidente 2026-09-08 — recuperar las corridas que quedaron en vuelo del
@@ -25699,12 +25761,12 @@ async function mainLoop() {
         let markerWritten = false;
         let preexisting = false;
         try {
-          if (fs.existsSync(PAUSE_FILE)) {
+          if (fs.existsSync(PAUSE_FILE())) {
             // Idempotente: NUNCA pisamos una pausa preexistente (manual o de
             // corrupción) — la de otro origen gana.
             preexisting = true;
           } else {
-            fs.writeFileSync(PAUSE_FILE, JSON.stringify({
+            fs.writeFileSync(PAUSE_FILE(), JSON.stringify({
               source: 'kernel-cutover-degraded-halt',
               ts: new Date().toISOString(),
               detail: `encendido durable abortado: el store degradó a filesystem (causa ${(info && info.cause) || 'desconocido'})`,
@@ -25929,7 +25991,7 @@ async function mainLoop() {
   // acumulados. Si el JSON de session está corrupto, formatStartupLogLine cae
   // al estado vacío sin tirar (readState defensivo).
   try {
-    const startupLine = oneMWorkaround.formatStartupLogLine({ sessionFile: SESSION_FILE });
+    const startupLine = oneMWorkaround.formatStartupLogLine({ sessionFile: SESSION_FILE() });
     log('pulpo', startupLine);
   } catch (e) {
     log('pulpo', `WARN anthropic-1m startup log falló: ${e.message}`);
@@ -25948,8 +26010,8 @@ async function mainLoop() {
       osInfo: `${process.platform}-${process.arch}`,
       dropped,
     });
-    const auditPath = path.join(LOG_DIR, 'env-allowlist-audit.log');
-    try { fs.mkdirSync(LOG_DIR, { recursive: true }); } catch {}
+    const auditPath = path.join(LOG_DIR(), 'env-allowlist-audit.log');
+    try { fs.mkdirSync(LOG_DIR(), { recursive: true }); } catch {}
     fs.appendFileSync(auditPath, entry);
     log('pulpo', `env-allowlist-audit: ${dropped.length} vars descartadas registradas en ${auditPath}`);
   } catch (e) {
@@ -25962,7 +26024,7 @@ async function mainLoop() {
   // /T sobre el pulpo), así que el callback de exec() nunca enviaba el
   // mensaje de confirmación. Lo emite este nuevo pulpo al arrancar.
   try {
-    const lastRestartPath = path.join(PIPELINE, 'last-restart.json');
+    const lastRestartPath = path.join(PIPELINE(), 'last-restart.json');
     if (fs.existsSync(lastRestartPath)) {
       const data = JSON.parse(fs.readFileSync(lastRestartPath, 'utf8'));
       const ageMs = Date.now() - new Date(data.timestamp).getTime();
@@ -25981,7 +26043,7 @@ async function mainLoop() {
         // este arranque (loadConfig → clearFullPause), el marker ya no está y el
         // operador tiene que enterarse de que SÍ está despachando.
         let pauseActive = false;
-        try { pauseActive = fs.existsSync(PAUSE_FILE); } catch { /* fail-open al copy de pausa */ }
+        try { pauseActive = fs.existsSync(PAUSE_FILE()); } catch { /* fail-open al copy de pausa */ }
         let origin = null;
         if (pauseActive) {
           try { origin = partialPause.readFullPauseOrigin(); } catch { /* copy degradado, nunca throw */ }
@@ -26035,7 +26097,7 @@ async function mainLoop() {
       // consecutivos, recordBaselineCheck() limpia la alerta solo.
       if (!e.alerted) {
         try {
-          const result = restModeState.recordBaselineCheck({ pipelineDir: PIPELINE });
+          const result = restModeState.recordBaselineCheck({ pipelineDir: PIPELINE() });
           if (result.cleared) {
             log('anomaly', `Auto-clear: alerta resuelta tras 2 chequeos consecutivos en baseline.`);
           }
@@ -26052,13 +26114,13 @@ async function mainLoop() {
       // a cargo del operador acuse o silenciar.
       let snapshot = {};
       try {
-        snapshot = JSON.parse(fs.readFileSync(path.join(PIPELINE, 'metrics', 'snapshot.json'), 'utf8')) || {};
+        snapshot = JSON.parse(fs.readFileSync(path.join(PIPELINE(), 'metrics', 'snapshot.json'), 'utf8')) || {};
       } catch (_e) { /* snapshot ausente: top_skills vacío, alerta sigue */ }
       try {
-        const { state, shouldNotify } = restModeState.raiseAlert(e, snapshot, { pipelineDir: PIPELINE });
+        const { state, shouldNotify } = restModeState.raiseAlert(e, snapshot, { pipelineDir: PIPELINE() });
         log('anomaly', `Banner activo (raised_at=${state.raised_at}, snoozed=${state.snoozed_until || 'no'}). shouldNotify=${shouldNotify}`);
         if (shouldNotify) {
-          const result = costAnomalyAlert.sendTelegramAlert(e, snapshot, { pipelineDir: PIPELINE });
+          const result = costAnomalyAlert.sendTelegramAlert(e, snapshot, { pipelineDir: PIPELINE() });
           if (result.ok) {
             log('anomaly', `Telegram alert encolado: ${path.basename(result.file)} (${result.text.length} chars)`);
           } else {
@@ -26099,8 +26161,8 @@ async function mainLoop() {
     // ([1, 1440]), y el 60000 de config caía fuera de rango: devolvía 1 y el
     // `setInterval` de abajo corría cada 1 ms en vez de cada 60 s.
     const tickMs = waveWatchdog.parseTickMs(wwCfg0.tick_ms, waveWatchdog.DEFAULT_TICK_MS);
-    const stateFile = path.join(PIPELINE, 'state', 'wave-stall-watchdog-state.json');
-    const statusFile = path.join(PIPELINE, 'state', 'dispatch-watchdog-status.json');
+    const stateFile = path.join(PIPELINE(), 'state', 'wave-stall-watchdog-state.json');
+    const statusFile = path.join(PIPELINE(), 'state', 'dispatch-watchdog-status.json');
 
     // #5400 (rev-6, B1) — Espejo EN MEMORIA del estado del watchdog para cuando
     // la persistencia falla. `saveStateAtomic` es fail-soft: si `.pipeline/state/`
@@ -26179,7 +26241,7 @@ async function mainLoop() {
         //    lo trata como reloj degradado (nunca como "movió ficha").
         //    rev-1: si el write al FS falló pero este proceso SÍ despachó, gana
         //    el espejo en memoria — evita alertar por un fallo de disco.
-        const stamp = lastDispatch.readLastDispatch(STATE_DIR);
+        const stamp = lastDispatch.readLastDispatch(STATE_DIR());
         let lastDispatchTs = stamp ? stamp.ts : null;
         if (ultimoDespachoMemTs > 0 && (lastDispatchTs == null || ultimoDespachoMemTs > lastDispatchTs)) {
           lastDispatchTs = ultimoDespachoMemTs;
@@ -26383,7 +26445,7 @@ async function mainLoop() {
     const runTick = () => {
       try {
         const result = credentialRotationCron.runRotationTick({
-          pipelineDir: PIPELINE,
+          pipelineDir: PIPELINE(),
           now: new Date(),
           sendTelegramFn: sendTelegram,
           log: (msg) => log('credential-rotation', msg.replace(/^\[rotation-cron\] /, '')),
@@ -26418,7 +26480,7 @@ async function mainLoop() {
     const runTick = () => {
       try {
         const result = vaultAccessAudit.runAccessAuditTick({
-          pipelineDir: PIPELINE,
+          pipelineDir: PIPELINE(),
           config: auditCfg,
           // #5563 · CA-1 — la derivación de la allowlist necesita `hostId` /
           // `hostIdFromHostname`, que viven en `vault`, no en `access_audit`.
@@ -26475,7 +26537,7 @@ async function mainLoop() {
       const humanBlock = require('./lib/human-block');
 
       const producer = vaultCutProposal.createVaultCutProposal({
-        pipelineDir: PIPELINE,
+        pipelineDir: PIPELINE(),
         gate: operatorGate.getDefault(),
         runbook: cutCfg.runbook,
         proposalTimeoutMs: Number.isInteger(cutCfg.proposal_timeout_ms)
@@ -26598,7 +26660,7 @@ async function mainLoop() {
       // dispara un timer — pero el operador sí puede acreditarlos por CLI, y
       // entonces este tick tiene hosts reales que observar.
       const armado = require('./lib/vault-migration-wiring').createProductionVaultMigration({
-        pipelineDir: PIPELINE,
+        pipelineDir: PIPELINE(),
         loadConfig,
         logger: (msg) => log('vault-migration', String(msg).replace(/^\[vault-(migration|respawn)\] /, '')),
         canPublishEvidence: () => !!(getTelegramToken() && getTelegramChatId()),
@@ -26688,10 +26750,10 @@ async function mainLoop() {
     const runSecretsRecoveryTick = () => {
       try {
         const r = secretsHealthLib.autoRecover({
-          pauseFile: PAUSE_FILE,
+          pauseFile: PAUSE_FILE(),
           partialPause,
           logger: log,
-          pipelineDir: PIPELINE,
+          pipelineDir: PIPELINE(),
         });
         if (r.recovered) paused = false;
       } catch (err) {
@@ -26727,7 +26789,7 @@ async function mainLoop() {
       const runHbrTick = () => {
         try {
           const r = humanBlockReminder.runReminderTick({
-            pipelineDir: PIPELINE,
+            pipelineDir: PIPELINE(),
             listBlocked: () => humanBlock.listBlockedIssues(),
             // #6190 — `plain: true` es el 3er argumento que le faltaba a ESTE
             // emisor: los otros 6 ya lo mandaban. Era el último camino con el
@@ -26803,7 +26865,7 @@ async function mainLoop() {
     const agentModelsAlert = require('./lib/agent-models-change-alert');
     const tickAgentModels = () => {
       try {
-        const prev = agentModelsAlert.readLastNotifiedSha(PIPELINE);
+        const prev = agentModelsAlert.readLastNotifiedSha(PIPELINE());
         // CA-H-10 (post-rebote review #2): leer origin/main, NO HEAD local.
         // Si el pulpo arranca en una feature branch (caso real: agent/<n>-...),
         // HEAD apunta a commits que NUNCA llegaron a main y emitiríamos
@@ -26824,7 +26886,7 @@ async function mainLoop() {
           return;
         }
         if (!headSha || headSha === prev) return;
-        const result = agentModelsAlert.sendAlert(prev, headSha, { pipelineDir: PIPELINE, cwd: ROOT });
+        const result = agentModelsAlert.sendAlert(prev, headSha, { pipelineDir: PIPELINE(), cwd: ROOT });
         if (result && result.alerts && result.alerts.length > 0) {
           for (const a of result.alerts) {
             // skills_affected viene del alertResult (review #3 / contrato sendAlert↔caller).
@@ -26853,7 +26915,7 @@ async function mainLoop() {
   try {
     const tickAnthropic1mTtl = () => {
       try {
-        const decision = oneMWorkaround.checkTtlAlert({ sessionFile: SESSION_FILE });
+        const decision = oneMWorkaround.checkTtlAlert({ sessionFile: SESSION_FILE() });
         if (decision.corrupt && decision.corrupt.length > 0) {
           // SEC-4: si la corrupción fue en last_alert_sent_at, readState ya lo
           // reseteó a null, así que el tick puede continuar y emitir.
@@ -26863,10 +26925,10 @@ async function mainLoop() {
           return; // razones: flag_disabled | no_hits_ever | ttl_not_reached | cooldown_active.
         }
         // CA-6 + UX-2: mensaje canónico construido por el módulo.
-        const body = oneMWorkaround.formatTtlAlertMessage({ sessionFile: SESSION_FILE });
+        const body = oneMWorkaround.formatTtlAlertMessage({ sessionFile: SESSION_FILE() });
         try { sendTelegramPlain(body); } catch { /* best-effort */ }
         // CA-4 / SEC-6: persistir last_alert_sent_at para activar el cooldown.
-        oneMWorkaround.recordAlertSent({ sessionFile: SESSION_FILE });
+        oneMWorkaround.recordAlertSent({ sessionFile: SESSION_FILE() });
         log('commander', `[anthropic-1m] alerta TTL emitida (último hit=${decision.state.last_hit_at}, hits=${decision.state.hits_total}). Cooldown ${oneMWorkaround.COOLDOWN_DAYS}d activo.`);
       } catch (e) {
         log('commander', `[anthropic-1m] tick TTL error (best-effort): ${e.message}`);
@@ -26892,7 +26954,7 @@ async function mainLoop() {
   try {
     if (!oauthSessionExpiry || !oauthSessionCopy || !runOAuthExpiryTick) throw new Error('oauth_expiry_modules_unavailable');
     // Barrido del marker que haya dejado una corrida anterior al fix.
-    if (oauthSessionExpiry.purgeLegacyStateFile(PIPELINE)) {
+    if (oauthSessionExpiry.purgeLegacyStateFile(PIPELINE())) {
       log('commander', '[oauth-expiry] marker legacy dentro del repo eliminado');
     }
     const tickOAuthExpiry = () => {
@@ -26933,7 +26995,7 @@ async function mainLoop() {
         const result = await ghostCleaner.runWithLock({
           mode: 'execute',
           repoRoot: ROOT,
-          pipelineRoot: PIPELINE,
+          pipelineRoot: PIPELINE(),
         });
         if (result.lockSkip) {
           log('pulpo', `[ghost-artifact] tick skip — lock busy`);
@@ -27151,12 +27213,12 @@ async function mainLoop() {
       // si toca tickear (cada 15min) y si toca check semanal de keys. No
       // dispara LLM ni completion — solo /v1/models. Fire-and-forget.
       try {
-        const healthCron = require(path.join(PIPELINE, 'lib', 'multi-provider', 'health-cron'));
+        const healthCron = require(path.join(PIPELINE(), 'lib', 'multi-provider', 'health-cron'));
         healthCron.tickIfDue({}).then((tick) => {
           if (tick && tick.skipped) return;
           try {
-            const effectiveModel = require(path.join(PIPELINE, 'lib', 'metrics', 'effective-model'));
-            const notify = require(path.join(PIPELINE, 'lib', 'notify-telegram')).notifyTelegram;
+            const effectiveModel = require(path.join(PIPELINE(), 'lib', 'metrics', 'effective-model'));
+            const notify = require(path.join(PIPELINE(), 'lib', 'notify-telegram')).notifyTelegram;
             effectiveModel.evaluateDivergence({
               config: ((config.multi_provider || {}).effective_model_audit || {}),
               notify,
@@ -27498,7 +27560,8 @@ if (process.env.PULPO_NO_AUTOSTART === '1') {
     readYaml,
     readYamlSafe,
     WorkFileCorruptionError,
-    PAUSE_FILE,
+    // #7112 — getter: se resuelve en cada lectura, no al require.
+    get PAUSE_FILE() { return PAUSE_FILE(); },
     // #4832 — seam de integración del ciclo loadConfig ↔ haltOnConfigCorruption ↔
     // auto-recovery. Se ejercen sobre un tmpdir aislado vía PIPELINE_DIR_OVERRIDE
     // (que redirige CONFIG_PATH/PAUSE_FILE/cola-Telegram). Los getters/reset
@@ -27514,7 +27577,7 @@ if (process.env.PULPO_NO_AUTOSTART === '1') {
     // en el `.pipeline` real y deja pasar si cae en el tmpdir aislado.
     corridaDePrueba,
     efectoProductivoBloqueado,
-    CONFIG_PATH,
+    get CONFIG_PATH() { return CONFIG_PATH(); },
     _getPaused: () => paused,
     _resetConfigCorruptionState: () => {
       paused = false;
@@ -27700,11 +27763,11 @@ require('./singleton')('pulpo');
 try {
   if (secretsHealth && !secretsHealth.ok) {
     const res = require('./lib/secrets-health').applyHalt(secretsHealth, {
-      pauseFile: PAUSE_FILE,
+      pauseFile: PAUSE_FILE(),
       partialPause,
       sendTelegram: sendTelegramPlain,
       logger: log,
-      pipelineDir: PIPELINE,
+      pipelineDir: PIPELINE(),
     });
     if (res.halted) paused = true;
   }
@@ -27720,7 +27783,7 @@ try { require('./lib/ready-marker').signalReady('pulpo'); } catch {}
 // marker quedó stale, lo reescribimos con el HEAD que este proceso corre.
 // Best-effort: nunca bloquea el arranque del Pulpo.
 try {
-  const rb = require('./lib/runtime-boot').ensureBootMarker({ pipelineDir: PIPELINE, repoRoot: ROOT });
+  const rb = require('./lib/runtime-boot').ensureBootMarker({ pipelineDir: PIPELINE(), repoRoot: ROOT });
   if (rb && rb.wrote) log('pulpo', `Boot marker actualizado al arrancar: ${String(rb.sha || '').slice(0, 8)}`);
 } catch { /* noop */ }
 

@@ -28,8 +28,10 @@ const { withEnv } = require('../test-helpers/with-env');
 
 // El pipeline temporal tiene que existir ANTES de requerir pulpo.js: `PIPELINE`
 // se resuelve al cargar el módulo, igual que `PULPO_NO_AUTOSTART`. Por eso el
-// require va DENTRO del `withEnv`: cuando el helper restaura el entorno, el
-// módulo ya capturó ambos valores en sus constantes.
+// require va DENTRO del `withEnv`.
+// #7112 — el dir del pipeline YA NO se captura al require: `pulpo.js` lo resuelve
+// POR LLAMADA (SEC-13), así que cada test corre con el override vigente
+// (`enRaiz`); sin eso escribiría en el dir efímero del runner, no en RAIZ.
 const RAIZ = fs.mkdtempSync(path.join(os.tmpdir(), 'pulpo-huerfanos-'));
 
 const PIPELINE_NAME = 'desarrollo';
@@ -55,6 +57,14 @@ const {
     _setBootTsForTesting,
 } = pulpo;
 
+/** #7112 — corre `fn` con RAIZ como dir del pipeline (resolución por llamada). */
+function enRaiz(fn) {
+    return withEnv({ PIPELINE_DIR_OVERRIDE: RAIZ, PULPO_NO_AUTOSTART: '1' }, fn, {
+        permitirApagarControl: ['PULPO_NO_AUTOSTART'],
+        motivo: 'los brazos del pulpo resuelven el dir por llamada; el test necesita RAIZ vigente',
+    });
+}
+
 const CONFIG = {
     timeouts: { orphan_timeout_minutes: 10 },
     pipelines: { [PIPELINE_NAME]: { fases: [FASE] } },
@@ -78,7 +88,7 @@ function sembrarCorridaConMtimeHeredado(minutosDeAntiguedad) {
     return destino;
 }
 
-test('registro frío tras el reinicio: el barrido NO rebota la corrida', () => {
+test('registro frío tras el reinicio: el barrido NO rebota la corrida', () => enRaiz(() => {
     sembrarCorridaConMtimeHeredado(592);
     // El Pulpo acaba de bootear, igual que a las 10:09:23 del incidente, y sin
     // registro previo en disco: su vacío no prueba que la corrida haya muerto.
@@ -96,9 +106,9 @@ test('registro frío tras el reinicio: el barrido NO rebota la corrida', () => {
         fs.existsSync(path.join(PENDIENTE, DROPFILE)), false,
         'no debe haber sido rebotada a pendiente/',
     );
-});
+}));
 
-test('pasada la ventana de gracia, una corrida sin proceso sí se recupera', () => {
+test('pasada la ventana de gracia, una corrida sin proceso sí se recupera', () => enRaiz(() => {
     sembrarCorridaConMtimeHeredado(592);
     // Pulpo con vida de sobra: el desconocimiento ya no tiene excusa.
     _setBootTsForTesting(Date.now() - 120 * 60000);
@@ -113,9 +123,9 @@ test('pasada la ventana de gracia, una corrida sin proceso sí se recupera', () 
         fs.existsSync(path.join(PENDIENTE, DROPFILE)), true,
         'y volver a pendiente/ para reintentarse',
     );
-});
+}));
 
-test('con el registro rehidratado la gracia no aplica: lo que no figura, no vive', () => {
+test('con el registro rehidratado la gracia no aplica: lo que no figura, no vive', () => enRaiz(() => {
     // La gracia es la red para cuando el registro NO es confiable. Si el archivo
     // estaba y se rehidrató, su ausencia SÍ es evidencia de muerte y el barrido
     // debe hacer su trabajo aunque el Pulpo acabe de arrancar.
@@ -137,9 +147,9 @@ test('con el registro rehidratado la gracia no aplica: lo que no figura, no vive
         fs.existsSync(path.join(PENDIENTE, DROPFILE)), true,
         'con registro confiable la corrida colgada se recupera sin esperar la gracia',
     );
-});
+}));
 
-test('la entrada a trabajando/ refresca el mtime: la corrida deja de nacer vencida', () => {
+test('la entrada a trabajando/ refresca el mtime: la corrida deja de nacer vencida', () => enRaiz(() => {
     // Es la otra mitad del fix: sin esto, el dropfile que vuelve de pendiente/
     // entra a trabajando/ ya por encima del timeout.
     const enPendiente = path.join(PENDIENTE, DROPFILE);
@@ -153,7 +163,7 @@ test('la entrada a trabajando/ refresca el mtime: la corrida deja de nacer venci
 
     const edadMin = (Date.now() - fs.statSync(destino).mtimeMs) / 60000;
     assert.ok(edadMin < 1, `la corrida debe entrar joven a trabajando/, entró con ${edadMin.toFixed(1)} min`);
-});
+}));
 
 test.after(() => {
     try { fs.rmSync(RAIZ, { recursive: true, force: true }); } catch { /* best-effort */ }

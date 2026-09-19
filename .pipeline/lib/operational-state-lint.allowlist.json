@@ -15,9 +15,9 @@
   "rules": [
     {
       "file": "pulpo.js",
-      "anchor": "const PAUSE_FILE = path.join(PIPELINE, '.paused');",
-      "line": 21001,
-      "reason": "#5179 D3: const de modulo PAUSE_FILE (21 refs), no un call site. Lo usan 3 halts de ultimo recurso -el fallback de setFullPause- y el seam de test SEC-3 (#4832). Version estructural: #6104. Linea reubicada por los brazos credential-death de #6238 y oauth-session-expiry de #6239 (mismo call site, sin cambio de semantica)."
+      "anchor": "return writeTarget.writePath(process.env, { canal: 'pausa', destino: '.paused' }, '.paused');",
+      "line": 21583,
+      "reason": "#5179 D3 → #7112: PAUSE_FILE paso de const de modulo a FUNCION por llamada (SEC-13) sobre lib/write-target (canal pausa; con dir null avisa por stderr y lanza — CA-3). Mismo unico acceso al marker de pausa global: lo usan 3 halts de ultimo recurso -el fallback de setFullPause- y el seam de test SEC-3 (#4832). Version estructural: #6104."
     },
     {
       "file": "scripts/opstate-cutover-probe.js",
