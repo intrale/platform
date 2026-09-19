@@ -1,0 +1,169 @@
+# Ambiente de pruebas del pipeline — provisión (#7111)
+
+Comando que levanta, verifica y descarta un `pipelineDir` de pruebas **completo,
+reproducible y desechable**, fuera del checkout, que no comparte un solo archivo
+con el `.pipeline` productivo. Es la primera pieza tangible del épico #7102 y el
+destino que el resolvedor único de ambiente (`lib/pipeline-env.js`, #7110) deja
+en `dir: null` cuando el proceso corre en modo `pruebas`.
+
+## Comandos
+
+```bash
+npm run pruebas:env                 # provisiona (idempotente: completa lo faltante)
+npm run pruebas:env -- --fresh      # borra y recrea
+npm run pruebas:env -- --json       # salida para `| jq`
+npm run pruebas:env -- --print-env  # dos líneas para `eval`
+npm run pruebas:env:verify          # aislamiento contra el productivo
+npm run pruebas:env:destroy         # borra el ambiente entero
+node .pipeline/scripts/provision-test-env.js --help
+```
+
+Todos aceptan `--root <dir>` para usar otro directorio (el padre debe existir y
+estar fuera del repo). Un flag desconocido o mal tipeado (`--destory`,
+`--fresh=1`) sale `2` sin provisionar ni borrar nada.
+
+### Salida y exit codes
+
+Sin `--json`, stdout lleva el prefijo `[pruebas:env]` y una palabra clave que
+mapea 1:1 al exit code:
+
+| Palabra | Exit | Significado |
+|---|---|---|
+| `OK` | 0 | el estado final es el pedido |
+| `INCOMPLETO` | 1 | quedó residuo tras `--destroy`, o `--verify` encontró entradas compartidas / enlaces |
+| `ABORTADO` | 2 | fail-closed: no se creó ni se borró nada (destino no habilitado, root es un enlace, sin marcador, flag desconocido) |
+
+Caso feliz:
+
+```
+[pruebas:env] OK · ambiente provisionado en C:\Users\Administrator\AppData\Local\Temp\intrale-pipeline-pruebas
+[pruebas:env] 115 colas · 26 archivos copiados · productivo fuera del root: C:\Workspaces\Intrale\platform\.pipeline
+[pruebas:env] para apuntar un proceso: npm run pruebas:env -- --print-env
+```
+
+Los diagnósticos van a **stderr**; stdout es sólo el resultado. Con
+`--print-env`, stdout son exactamente dos líneas:
+
+```
+PIPELINE_REPO_ROOT=<root>
+PIPELINE_AMBIENTE=pruebas
+```
+
+Los paths siempre salen **canónicos** (`fs.realpathSync.native`): la forma 8.3
+(`ADMINI~1`) que devuelve `os.tmpdir()` en Windows nunca aparece en la salida.
+
+## Layout provisionado
+
+```
+<root>/                                 default: <tmpdir real>/intrale-pipeline-pruebas
+├── pipeline.config.json                copia byte a byte del manifiesto de producto
+└── .pipeline/
+    ├── config.yaml                     productivo + overlay (ver abajo)
+    ├── ambiente-pruebas.json           marcador { modo: 'pruebas', provisionerVersion, origen: { repoRoot, sha } }
+    ├── waves.json.template             copia
+    ├── waves.json                      sembrado desde el template; NO se pisa en corridas siguientes
+    ├── .partial-pause.json             { allowed_issues: [], source } — allowlist vacía == running; NO se pisa
+    ├── agent-models.json / agent-models.schema.json
+    ├── descriptors/  roles/            copia con walk + lstat
+    ├── <pipeline>/<fase>/<subestado>/  90 colas: 10 fases × 9 subestados, derivadas de config.yaml
+    ├── servicios/<svc>/<subestado>/    25 colas: 5 servicios × 5 subestados
+    └── logs/ state/ rejections/ metrics/ audit/ events/ locks/ …   vacíos
+```
+
+- `.paused` (halt total) se garantiza **ausente**.
+- El layout es fiel al productivo: `<root>/.pipeline` + manifiesto en el padre,
+  tal como lo ubica `config-resolver.productPathFor()`. Por eso alcanza con
+  `PIPELINE_REPO_ROOT=<root>` para apuntar un proceso.
+
+### Qué se copia y qué no
+
+**Allowlist** (lo único que se copia del productivo): `config.yaml`,
+`pipeline.config.json`, `waves.json.template`, `agent-models.json`,
+`agent-models.schema.json`, `descriptors/`, `roles/`.
+
+**Todo lo demás se crea vacío.** En particular NUNCA se copian `logs/` (2,2 GB
+de transcripts de agentes), `state/`, `commander-session.json`,
+`listener-offset.json`, `connectivity-state.json` ni el `waves.json` de runtime.
+
+**Overlay sobre `config.yaml`** (load → mutate → dump con `js-yaml`; se pierden
+los comentarios, el resto es semánticamente igual):
+
+| Clave | Valor | Por qué |
+|---|---|---|
+| `operational_state.durable` | `false` | no tocar DynamoDB del estado operativo |
+| `kernel.durable` | `false` | no encender el store DynamoDB del kernel |
+| `vault.enabled` | `false` | no leer/escribir parámetros del vault |
+
+Canales (telegram, github, proveedores) no se tocan acá: es alcance de #7113.
+
+## Cómo apuntar un proceso
+
+```bash
+eval "$(npm run -s pruebas:env -- --print-env)"
+node .pipeline/lib/pipeline-env.js   # o cualquier lector que reciba env
+```
+
+`pipelineEnv.resolve({ PIPELINE_REPO_ROOT: '<root>' })` devuelve
+`{ modo: 'pruebas', dir: '<root>/.pipeline' }`.
+
+## Garantías de seguridad (fail-closed)
+
+El único riesgo real del comando es **borrar o contaminar el productivo**. Se
+cierra por código, verificable por test:
+
+- El destino lo valida el resolvedor único: el candidato viaja **sólo** por
+  `PIPELINE_DIR_OVERRIDE` en el env que recibe `pipelineEnv.resolve()` y se exige
+  `modo === 'pruebas' && dir !== null`. Nunca `opts.pipelineDir`.
+- Antes de resolver se **eliminan** del env heredado `PIPELINE_AMBIENTE`,
+  `PIPELINE_ALLOW_PROD_SIDE_EFFECTS`, `PIPELINE_DIR_OVERRIDE`,
+  `PIPELINE_STATE_DIR`, `PIPELINE_REPO_ROOT` y `PIPELINE_RUNTIME_DIR`.
+- Defensa en profundidad por `realpath`: el root no puede ser, contener ni estar
+  contenido en el repo ni en el productivo (tampoco por short-path 8.3 ni por
+  junction); no puede ser el home ni un ancestro del home; no puede ser raíz de
+  drive.
+- Recorridos con `lstat`, nunca `stat` ni `fs.cpSync`: cualquier enlace en el
+  origen o en el ambiente **aborta**. Tras el `mkdir` del root se re-verifica
+  por realpath (race por nombre fijo en `%TEMP%`).
+- `destroy` sólo borra si el root no es enlace, está en ubicación segura y tiene
+  el marcador `ambiente-pruebas.json` con `modo: 'pruebas'`. Sin marcador no se
+  borra nada y se dice. El residuo (EPERM/EBUSY) se lista por nombre.
+- Sólo APIs `fs`. Única excepción: `execFileSync('git', ['rev-parse', 'HEAD'])`
+  con argv literal y best-effort (`sha: null` si falla).
+- Ni el marcador ni `--json` ni `--print-env` contienen valores del env.
+
+## API (para tests y helpers)
+
+```js
+const prov = require('.pipeline/lib/provision-test-env');
+const r = prov.provision({ env: {}, root, repoRoot, fresh });  // { root, pipelineDir, manifestPath, marker, creados, colas, copiados, … }
+prov.verifyIsolation({ root, productivo });                    // { ok, compartidos, links, marcador, … }
+prov.destroy({ root });                                        // { ok, existia, borrado, residuo, motivo? }
+prov.layoutFor(configObj);                                     // { fases, servicios, fijos }
+prov.snapshotTree(dir);                                        // [{ rel, tipo, size, mtimeMs }]
+```
+
+`fs`, `os` y `execFileSync` se inyectan por `deps` (segundo parámetro). La lib no
+lee `process.env` en ningún lugar.
+
+## Límites conocidos
+
+- **Un `pulpo.js` real apuntado al ambiente todavía no arranca**: carga código
+  (`roles/`, providers, `delivery.js`) y escribe `logs/pulpo.log` vía
+  `__dirname`, o sea desde el productivo. Los CAs de #7111 son estructurales; el
+  gap está registrado en #7408 y en el inventario de #7112.
+- Canales y credenciales de pruebas (telegram, github, vault namespace) → #7113.
+- Inversión del default (`pruebas` salvo declaración) y guardrail → #7112 /
+  #7114.
+- Bypass 8.3 dentro del resolvedor → #7407 (por eso el provisionador compara por
+  realpath por su cuenta).
+- Ambientes nombrados (`--name`) para correr varios en paralelo → #7422.
+
+## Tests
+
+`.pipeline/lib/__tests__/provision-test-env.test.js` — `node:test`, root por
+`mkdtempSync`, sin asignar `process.env`, cobertura 100 % de líneas / ramas /
+funciones de la lib y del CLI.
+
+```bash
+node --test --experimental-test-coverage .pipeline/lib/__tests__/provision-test-env.test.js
+```
