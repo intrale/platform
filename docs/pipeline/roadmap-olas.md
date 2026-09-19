@@ -158,6 +158,17 @@ después hay que corregir.
 > fresca" necesita el libro contable de cuota (#6558/#6559/#6560); el resto es independiente. Split en 6 hijas
 > (#7380–#7385) por funcionalidad entregable, con cadena 7380→7381→7382, 7383→7384, (7380,7383)→7385. #7371 (ola
 > activa) sigue siendo la mitigación urgente para Antigravity. Todo lo que estaba después de E8 corre una posición.
+>
+> **Ajuste 2026-09-19 (12:50 ART):** se agrega la **Ola Canal del operador · Rediseño de los avisos por Telegram**
+> (épico #7399, interna 27) en la **16.ª posición (última)**. Leo pidió repensar todo el esquema de notificación de
+> agentes a Telegram: hoy el canal emite por evento del pipeline (~350 envíos el 19/09, la mayoría ruido de infra) y
+> más de la mitad de los avisos de entregables ni siquiera llegan por el escapado de Markdown legacy. Alcance:
+> silencio por defecto con tres clases de mensaje (decisión / hito / digest), un mensaje vivo por issue que se edita
+> fase a fase, gramática común para avances, propuestas de mejora, bloqueos e hitos, texto plano o HTML, y
+> **audio TTS obligatorio en todo mensaje** (requisito crítico de Leo). Define la gramática que la Ola Propuestas
+> consume y consolida la familia de ~60 issues de avisos Telegram (hijas o cierre por grupos con OK de Leo).
+> Va al final **de forma provisoria**: la posición definitiva (antes de Propuestas, para que la gramática exista
+> antes de construir encima) es una decisión de reorden que Leo todavía no tomó; se ajusta cuando responda.
 
 | Posición | Bloque | Por qué acá | Estado |
 |----------|--------|-------------|--------|
@@ -179,6 +190,7 @@ después hay que corregir.
 | **13.ª** | **Ola App operadora · Métricas e historia** (épico #7352) | KPIs, costos y tokens por sesión/agente/ola, historial de eventos, DORA y velocidad, recomendaciones con gate humano y logs de agentes. Con esta ola la app cubre **toda** la funcionalidad del dashboard actual. | Planificada (interna 23) — épico en definición |
 | **14.ª** | **Ola Tablero fiel · El dashboard muestra el estado real de la ola** (épico #7356) | Que lo que el operador ve coincida con el estado real de la ola, sin mezclas ni fotos viejas. Va al final del bloque de app porque el dashboard local deja de ser la superficie principal cuando la app operadora esté completa. | Planificada (interna 15) — 16 issues + épico |
 | **15.ª** | **Ola Confiabilidad del Pulpo · Rebotes justos y muertes bien clasificadas** (épico #7368) | Que el pipeline distinga "el agente murió por cuota / API caída / entorno roto" de "el agente entregó código malo", y que cada rebote sea justo y único: muertes externas que no consumen el circuit breaker (#5082, #7095, #7025), contador de rebotes persistente que sólo cuenta el mismo hallazgo sin corregir (#7150, #7366), un solo rebote consolidado con todos los hallazgos de qa+tester+security+review (#7367), el watchdog no pisa veredictos (#6545, #7152), PR en conflicto vuelve al dev (#4637), la entrega no se rinde esperando la CI (#6648) y arranque sano tras un respawn (#6567, #6845). Cada ola posterior corre más barata si esto se arregla. | Planificada (interna 25) — 26 issues + épico · **creada el 18/09** |
+| **16.ª** | **Ola Canal del operador · Rediseño de los avisos por Telegram** (épico #7399) | El canal de Telegram deja de ser un log de eventos del pipeline y pasa a ser el canal del operador: silencio por defecto con tres clases de mensaje (🔴 decisión / 🟢 hito / 🟡 digest), un mensaje vivo por issue que se edita fase a fase, gramática común (qué pasó / qué necesito de vos / dónde está el detalle) para avances de agentes, propuestas de mejora, bloqueos e hitos, texto plano o HTML en vez de Markdown legacy, horario silencioso y acuse de audios. **Todo mensaje va con su audio TTS completo.** Define la gramática que la Ola Propuestas consume; consolida ~60 issues de avisos Telegram. Mockup con Claude Design aprobado antes de codear. | Planificada (interna 27) — épico en definición · **creada el 19/09** · posición provisoria, pendiente decidir si va antes de Propuestas |
 
 **Paralelizable en cualquier momento** (no toca el camino crítico): runbook de continuidad y modo
 degradado (E4) · reconciliación automática del registro (**#5055**). Los seis épicos nuevos
