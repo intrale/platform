@@ -1252,10 +1252,7 @@ function corridaDePrueba() {
  * @returns {object}
  */
 function envDeHijo(extra = {}) {
-  return buildChildEnvLib.conDeclaracionExplicita(
-    { ...process.env, PIPELINE_REPO_ROOT: ROOT, ...extra },
-    process.env,
-  );
+  return require('./lib/launcher-env').envDeLanzador({ processEnv: process.env, repoRoot: ROOT, extra });
 }
 
 /**
