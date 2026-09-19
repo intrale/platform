@@ -44,12 +44,25 @@ const parser = require('./lib/quota-snapshot-parser');
 const persist = require('./lib/quota-snapshot-persist');
 const alerterMod = require('./lib/quota-snapshot-alerter');
 const dropfileWriter = require('./lib/dropfile-writer');
+// #7112 (rebote rev-2 de verificacion) — los DESTINOS DE ESCRITURA (log y cola de
+// Telegram) se resuelven POR LLAMADA vía `lib/write-target` (SEC-13): antes
+// eran `const X = __dirname` + `path.join(X, …)`, un alias crudo inmune a
+// cualquier override que el escáner del inventario no veía y que desde la suite
+// escribía `logs/quota-snapshot.log` (y podía encolar a Telegram) en el
+// `.pipeline` de las libs. Lo que es CÓDIGO (el .ps1) o raíz de LECTURA
+// permitida del parser (`quota-snapshots/`, `allowedRoot`) sigue en `__dirname`.
+const writeTarget = require('./lib/write-target');
 
-const PIPELINE_DIR = __dirname;
-const DEFAULT_PS1_PATH = path.join(PIPELINE_DIR, 'scripts', 'capture-quota-snapshot.ps1');
-const DEFAULT_PNG_DIR = path.join(PIPELINE_DIR, 'quota-snapshots');
-const TG_OUTBOX_DIR = path.join(PIPELINE_DIR, 'servicios', 'telegram', 'pendiente');
-const LOG_FILE = path.join(PIPELINE_DIR, 'logs', 'quota-snapshot.log');
+const DEFAULT_PS1_PATH = path.join(__dirname, 'scripts', 'capture-quota-snapshot.ps1');
+const DEFAULT_PNG_DIR = path.join(__dirname, 'quota-snapshots');
+function tgOutboxDir() {
+  return writeTarget.writePath(process.env, { canal: 'colas', destino: 'servicios/telegram/pendiente' },
+    'servicios', 'telegram', 'pendiente');
+}
+function logFile() {
+  return writeTarget.writePath(process.env, { canal: 'logs', destino: 'logs/quota-snapshot.log' },
+    'logs', 'quota-snapshot.log');
+}
 
 const MIN_INTERVAL_MIN = 5;
 const MAX_INTERVAL_MIN = 1440;
@@ -58,8 +71,11 @@ const DEFAULT_INTERVAL_MIN = 60;
 function log(msg) {
   const line = `[${new Date().toISOString()}] ${msg}\n`;
   try {
-    if (!fs.existsSync(path.dirname(LOG_FILE))) fs.mkdirSync(path.dirname(LOG_FILE), { recursive: true });
-    fs.appendFileSync(LOG_FILE, line, 'utf8');
+    // Con `dir === null` (sin ambiente ni dir de pruebas) `logFile()` lanza: el
+    // aviso ya salió por stderr (write-target) y acá sólo se saltea el archivo.
+    const file = logFile();
+    if (!fs.existsSync(path.dirname(file))) fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.appendFileSync(file, line, 'utf8');
   } catch {}
   // Sin console.log para no contaminar stdout (puede haber wrappers).
 }
@@ -86,11 +102,12 @@ function getIntervalMs() {
 function enqueueTelegram(text) {
   // Drop al outbox de servicio-telegram. Mismo patrón que rollback.js / restart.js.
   try {
-    if (!fs.existsSync(TG_OUTBOX_DIR)) fs.mkdirSync(TG_OUTBOX_DIR, { recursive: true });
+    const outbox = tgOutboxDir();
+    if (!fs.existsSync(outbox)) fs.mkdirSync(outbox, { recursive: true });
     // #6226 — nombre único + escritura `wx`: dos dropfiles del mismo
     // milisegundo ya no se pisan entre sí ni pisan los de otro proceso.
     dropfileWriter.writeDropfileSync({
-      dir: TG_OUTBOX_DIR,
+      dir: outbox,
       suffix: 'quota-snapshot.json',
       data: JSON.stringify({ text, parse_mode: 'Markdown' }),
       onCollision: (name) => log(`Colisión de nombre de dropfile (${name}) — se reintenta`),
@@ -279,6 +296,11 @@ async function mainLoop() {
 }
 
 if (require.main === module) {
+  // #7112 · CA-6 — entrypoint del SO: lo lanza la tarea programada de Windows
+  // (`scripts/register-quota-snapshot-task.ps1`) sin nadie arriba que declare
+  // ambiente. Misma regla que `restart.js`: declara `productivo` sólo si no
+  // venía nada. Como módulo (tests) NO declara: cae al dir del runner.
+  require('./lib/launcher-env').declararRaiz(process.env);
   const once = process.argv.includes('--once');
   if (once) {
     runOnce().then((r) => {

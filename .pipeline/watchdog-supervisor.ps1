@@ -32,6 +32,14 @@ $SupLog = "$PipelineDir\logs\watchdog-supervisor.log"
 $RunnerJs = "$PipelineDir\watchdog-supervisor-run.js"
 $MainTask = 'Intrale-Pipeline-V2-Watchdog'
 
+# #7112 · CA-6 (rebote rev-2) — este .ps1 es la 2da tarea programada: un
+# entrypoint del SO sin nadie arriba que declare ambiente, igual que
+# watchdog.ps1 y launch.ps1. El runner Node que lanza resuelve sus escrituras
+# (watchdog-supervisor.log, watchdog-supervisor-state.json) por lib/write-target:
+# sin declaracion resolveria dir null y fallaria ruidoso en cada tick. Solo si
+# no venia seteada (un pipeline de pruebas puede declarar 'pruebas' explicito).
+if (-not $env:PIPELINE_AMBIENTE) { $env:PIPELINE_AMBIENTE = 'productivo' }
+
 if (-not (Test-Path "$PipelineDir\logs")) {
     New-Item -Path "$PipelineDir\logs" -ItemType Directory -Force | Out-Null
 }

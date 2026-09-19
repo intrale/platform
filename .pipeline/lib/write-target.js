@@ -26,6 +26,9 @@
  *   // y avisan por stderr una sola vez por (canal, destino).
  *   const dir = writeTarget.safeWriteDir(process.env, { canal: 'logs', destino: 'logs/pulpo.log' });
  *   if (dir) fs.appendFileSync(path.join(dir, 'logs', 'pulpo.log'), msg);
+ *   // …o el path completo (null si está bloqueado), también para LEER en el
+ *   // mismo dir en el que se escribe (contadores, mtimes):
+ *   const file = writeTarget.safeWritePath(process.env, { canal: 'logs', destino: 'logs/x.jsonl' }, 'logs', 'x.jsonl');
  *
  * Reglas (SEC-10, SEC-13, SEC-14 de #7112):
  *   - Resolución POR LLAMADA: el llamador pasa `process.env` en cada invocación.
@@ -198,6 +201,21 @@ function safeWriteDir(env, opts) {
     return r.dir;
 }
 
+/**
+ * `path.join(safeWriteDir(env, opts), ...segmentos)`, o `null` si está bloqueado.
+ * Para lecturas que deben mirar el MISMO dir en el que se escribe (contadores,
+ * mtimes) y para escritores `safe*`: una línea, sin `const dir = …; if (dir) …`.
+ *
+ * @param {object} env
+ * @param {object} opts mismas opciones que `writeDir`.
+ * @param {...string} segmentos
+ * @returns {string|null}
+ */
+function safeWritePath(env, opts, ...segmentos) {
+    const dir = safeWriteDir(env, opts);
+    return dir === null ? null : path.join(dir, ...segmentos);
+}
+
 /** ¿El error es un bloqueo de escritura de este módulo? */
 function esBloqueo(err) {
     return !!err && err.code === CODIGO_BLOQUEO;
@@ -207,6 +225,7 @@ module.exports = {
     writeDir,
     writePath,
     safeWriteDir,
+    safeWritePath,
     resolverEscritura,
     formatearBloqueo,
     esBloqueo,

@@ -913,7 +913,12 @@ let _snapshot24hRefreshing = false;
 let _snapshot24hLastRefresh = 0;
 const SNAPSHOT_TTL_MS = 10 * 60 * 1000;
 
-function maybeRefreshSnapshot(ROOT, snapshotPath) {
+// #7112 (rebote rev-2) — el hijo recibe `--pipeline-dir <PIPELINE>`: el dir que
+// el dashboard YA resolvió (ctx.PIPELINE, vía write-target en producción). Sin
+// eso, `metrics/aggregator.js` derivaba su destino de `lib/traceability.REPO_ROOT`
+// (PIPELINE_REPO_ROOT + git) e, invocado por un test en un worktree, reescribía
+// `metrics/snapshot*.json` del `.pipeline` productivo REAL (CA-5/CA-9).
+function maybeRefreshSnapshot(ROOT, snapshotPath, PIPELINE) {
     if (_snapshotRefreshing) return;
     let mtimeMs = 0;
     try { mtimeMs = require('fs').statSync(snapshotPath).mtimeMs; } catch {}
@@ -926,7 +931,7 @@ function maybeRefreshSnapshot(ROOT, snapshotPath) {
     try {
         const { spawn } = require('child_process');
         const aggregatorPath = path.join(__dirname, '..', 'metrics', 'aggregator.js');
-        const child = spawn(process.execPath, [aggregatorPath, '--once'], {
+        const child = spawn(process.execPath, [aggregatorPath, '--once', ...pipelineDirArgs(PIPELINE, snapshotPath)], {
             cwd: ROOT, detached: true, stdio: 'ignore', windowsHide: true,
         });
         child.unref();
@@ -935,11 +940,17 @@ function maybeRefreshSnapshot(ROOT, snapshotPath) {
     } catch { _snapshotRefreshing = false; }
 }
 
+/** `--pipeline-dir` para el aggregator: el PIPELINE del ctx, o el padre de `metrics/` del path pedido. */
+function pipelineDirArgs(PIPELINE, snapshotPath) {
+    const dir = PIPELINE || (snapshotPath ? path.dirname(path.dirname(snapshotPath)) : null);
+    return dir ? ['--pipeline-dir', dir] : [];
+}
+
 // CA-2.1 (#3357): refresh dedicado del snapshot 24h. El aggregator escribe
 // `snapshot.json` para el window pedido — para tener DOS snapshots paralelos
 // pasamos `--out snapshot-24h.json` (flag opcional aceptada por aggregator
 // post-#3357, fallback a comportamiento legacy si no se reconoce).
-function maybeRefreshSnapshot24h(ROOT, snapshot24hPath) {
+function maybeRefreshSnapshot24h(ROOT, snapshot24hPath, PIPELINE) {
     if (_snapshot24hRefreshing) return;
     let mtimeMs = 0;
     try { mtimeMs = require('fs').statSync(snapshot24hPath).mtimeMs; } catch {}
@@ -952,7 +963,7 @@ function maybeRefreshSnapshot24h(ROOT, snapshot24hPath) {
         const aggregatorPath = path.join(__dirname, '..', 'metrics', 'aggregator.js');
         const child = spawn(
             process.execPath,
-            [aggregatorPath, '--once', '--window', '24h', '--out', 'snapshot-24h.json'],
+            [aggregatorPath, '--once', '--window', '24h', '--out', 'snapshot-24h.json', ...pipelineDirArgs(PIPELINE, snapshot24hPath)],
             { cwd: ROOT, detached: true, stdio: 'ignore', windowsHide: true },
         );
         child.unref();
@@ -1025,12 +1036,12 @@ function kpisSlice(state, ctx) {
     try {
         const snap24hPath = path.join(PIPELINE, 'metrics', 'snapshot-24h.json');
         // Refresh paralelo del snapshot 24h (no bloquea response actual).
-        maybeRefreshSnapshot24h(ROOT, snap24hPath);
+        maybeRefreshSnapshot24h(ROOT, snap24hPath, PIPELINE);
         snapshot24h = safeReadJson(snap24hPath, null);
         // Fallback al snapshot all-time si el 24h aún no se generó (primer arranque).
         if (!snapshot24h) {
             const snapPath = path.join(PIPELINE, 'metrics', 'snapshot.json');
-            maybeRefreshSnapshot(ROOT, snapPath);
+            maybeRefreshSnapshot(ROOT, snapPath, PIPELINE);
             snapshot24h = safeReadJson(snapPath, null);
         }
         if (snapshot24h && snapshot24h.totals) {

@@ -35,6 +35,26 @@
       "via": "writeTarget.safeWriteDir"
     },
     {
+      "modulo": "build-log-staleness.js",
+      "funcion": "logsDirParaLectura",
+      "linea": 39,
+      "canal": "logs",
+      "destino": "logs/build-<issue>.log (lectura del mtime, mismo dir que escribe pulpo)",
+      "tier": 3,
+      "estado": "safe",
+      "via": "writeTarget.safeWriteDir"
+    },
+    {
+      "modulo": "build-log-staleness.js",
+      "funcion": "auditFilePath",
+      "linea": 50,
+      "canal": "logs",
+      "destino": "logs/audit/circuit-breaker.jsonl",
+      "tier": 3,
+      "estado": "migrado",
+      "via": "writeTarget.writeDir"
+    },
+    {
       "modulo": "circuit-breaker-infra.js",
       "funcion": "stateFile",
       "linea": 26,
@@ -171,6 +191,16 @@
       "linea": 944,
       "canal": "estado",
       "destino": "writeTarget.writeDir",
+      "tier": 3,
+      "estado": "migrado",
+      "via": "writeTarget.writeDir"
+    },
+    {
+      "modulo": "lib/agent-models-change-alert.js",
+      "funcion": "pipelineDir",
+      "linea": 1098,
+      "canal": "colas",
+      "destino": "servicios/telegram/pendiente",
       "tier": 3,
       "estado": "migrado",
       "via": "writeTarget.writeDir"
@@ -965,11 +995,12 @@
       "modulo": "lib/traceability.js",
       "funcion": "candidate",
       "linea": 33,
-      "canal": "estado",
-      "destino": "process.env.PIPELINE_*",
+      "canal": "logs",
+      "destino": ".claude/activity-log.jsonl (fuera del arbol .pipeline)",
       "tier": 3,
-      "estado": "pendiente",
-      "via": "process.env.PIPELINE_*"
+      "estado": "externo",
+      "via": "process.env.PIPELINE_*",
+      "nota": "REPO_ROOT (CLAUDE_PROJECT_DIR || PIPELINE_REPO_ROOT || literal + git) alimenta solo .claude/activity-log.jsonl y el cwd de git; desde rev-2 de #7112 ningun modulo deriva de el un destino dentro de .pipeline (metrics/aggregator y budget-config migrados a write-target); el activity-log migra por goteo (#5109)"
     },
     {
       "modulo": "lib/vault-cut-fallback.js",
@@ -1179,6 +1210,49 @@
       "via": "writeTarget.writeDir"
     },
     {
+      "modulo": "metrics/aggregator.js",
+      "funcion": "metricsDir",
+      "linea": 44,
+      "canal": "estado",
+      "destino": "metrics/snapshot.json + metrics/snapshot-24h.json",
+      "tier": 2,
+      "estado": "migrado",
+      "via": "writeTarget.writeDir",
+      "nota": "rebote rev-2 #7112: antes derivaba de lib/traceability.REPO_ROOT (PIPELINE_REPO_ROOT + git) y desde un test en worktree reescribia el snapshot del productivo real; dashboard-slices le pasa --pipeline-dir con el dir que el dashboard ya resolvio"
+    },
+    {
+      "modulo": "metrics/budget-config.js",
+      "funcion": "budgetDir",
+      "linea": 47,
+      "canal": "estado",
+      "destino": "metrics/budget-config.json",
+      "tier": 2,
+      "estado": "migrado",
+      "via": "writeTarget.writeDir"
+    },
+    {
+      "modulo": "metrics/budget-config.js",
+      "funcion": "budgetDirParaLectura",
+      "linea": 52,
+      "canal": "estado",
+      "destino": "metrics/budget-config.json (lectura, mismo dir)",
+      "tier": 2,
+      "estado": "safe",
+      "via": "writeTarget.safeWriteDir"
+    },
+    {
+      "modulo": "metrics/report-daily.js",
+      "funcion": "REPO_ROOT",
+      "linea": 18,
+      "canal": "logs",
+      "destino": "docs/qa/report-daily-*.html",
+      "tier": 3,
+      "estado": "externo",
+      "via": "traceability.REPO_ROOT",
+      "inmune": true,
+      "nota": "escribe el reporte HTML en docs/qa/ del repo (fuera del arbol .pipeline); REPO_ROOT de traceability solo alimenta ese destino y el cwd de git"
+    },
+    {
       "modulo": "migrate-recomendaciones-legacy.js",
       "funcion": "AUDIT_DIR_DEFAULT",
       "linea": 204,
@@ -1261,6 +1335,16 @@
       "via": "__dirname",
       "inmune": true,
       "nota": "raíz del repo (PIPELINE_MAIN_ROOT) para lecturas"
+    },
+    {
+      "modulo": "pulpo-liveness-run.js",
+      "funcion": "logDir",
+      "linea": 67,
+      "canal": "logs",
+      "destino": "logs/pulpo-liveness.log + logs/pulpo-liveness-state.json (PLV_LOG_DIR/PLV_STATE_FILE = override explicito de tests)",
+      "tier": 3,
+      "estado": "migrado",
+      "via": "writeTarget.writeDir"
     },
     {
       "modulo": "pulpo.js",
@@ -1394,6 +1478,27 @@
       "via": "process.env.PIPELINE_*"
     },
     {
+      "modulo": "quota-snapshot-scheduler.js",
+      "funcion": "tgOutboxDir",
+      "linea": 59,
+      "canal": "colas",
+      "destino": "servicios/telegram/pendiente",
+      "tier": 1,
+      "estado": "migrado",
+      "via": "writeTarget.writeDir",
+      "nota": "rebote rev-2 #7112: alias `const X = __dirname` que el escaner no veia; cola de Telegram (el derrame del 08/09)"
+    },
+    {
+      "modulo": "quota-snapshot-scheduler.js",
+      "funcion": "logFile",
+      "linea": 63,
+      "canal": "logs",
+      "destino": "logs/quota-snapshot.log",
+      "tier": 1,
+      "estado": "migrado",
+      "via": "writeTarget.writeDir"
+    },
+    {
       "modulo": "rejection-report.js",
       "funcion": "ROOT",
       "linea": 43,
@@ -1476,6 +1581,37 @@
       "tier": 3,
       "estado": "migrado",
       "via": "writeTarget.writeDir"
+    },
+    {
+      "modulo": "rollback.js",
+      "funcion": "stateDir",
+      "linea": 56,
+      "canal": "estado",
+      "destino": "*.pid (limpieza al matar procesos)",
+      "tier": 1,
+      "estado": "migrado",
+      "via": "writeTarget.writeDir"
+    },
+    {
+      "modulo": "rollback.js",
+      "funcion": "logFile",
+      "linea": 59,
+      "canal": "logs",
+      "destino": "logs/rollback.log",
+      "tier": 1,
+      "estado": "migrado",
+      "via": "writeTarget.writeDir"
+    },
+    {
+      "modulo": "rollback.js",
+      "funcion": "tgOutboxDir",
+      "linea": 62,
+      "canal": "colas",
+      "destino": "servicios/telegram/pendiente",
+      "tier": 1,
+      "estado": "migrado",
+      "via": "writeTarget.writeDir",
+      "nota": "rebote rev-2 #7112: alias `const X = __dirname` que el escaner no veia; rollback.js declara ambiente como entrypoint de emergencia (CA-6)"
     },
     {
       "modulo": "servicio-drive.js",
@@ -1787,11 +1923,32 @@
       "via": "writeTarget.writeDir"
     },
     {
+      "modulo": "smoke-test.js",
+      "funcion": "smokeLogFile",
+      "linea": 59,
+      "canal": "logs",
+      "destino": "logs/smoke-test.log",
+      "tier": 1,
+      "estado": "safe",
+      "via": "writeTarget.safeWriteDir",
+      "nota": "safe: el smoke es el camino de emergencia; con dir null el diagnostico sigue por consola"
+    },
+    {
       "modulo": "ux-metrics.js",
       "funcion": "DEFAULT_METRICS_DIR",
       "linea": 39,
       "canal": "logs",
       "destino": "writeTarget.writeDir",
+      "tier": 3,
+      "estado": "migrado",
+      "via": "writeTarget.writeDir"
+    },
+    {
+      "modulo": "watchdog-supervisor-run.js",
+      "funcion": "logDir",
+      "linea": 45,
+      "canal": "logs",
+      "destino": "logs/watchdog-supervisor.log + logs/watchdog-supervisor-state.json (WDS_LOG_DIR/WDS_STATE_FILE = override explicito de tests)",
       "tier": 3,
       "estado": "migrado",
       "via": "writeTarget.writeDir"

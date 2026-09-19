@@ -5,12 +5,17 @@
  *
  * Dos piezas, una por extremo de la cadena de declaración de ambiente:
  *
- * 1. `declararRaiz(processEnv)` — para los TRES entrypoints que un humano o el
- *    SO ejecutan y que no tienen a nadie arriba que declare por ellos:
- *    `restart.js`, `watchdog.ps1` y `launch.ps1` (los `.ps1` lo hacen en
- *    PowerShell, mismo contrato). Sólo ahí es legítimo el literal `productivo`,
- *    y sólo si la variable NO venía seteada (`??=`): #7111 puede lanzar un
- *    pipeline de pruebas declarando `pruebas` explícito y este helper lo respeta.
+ * 1. `declararRaiz(processEnv)` — para los entrypoints que un humano o el SO
+ *    ejecutan y que no tienen a nadie arriba que declare por ellos:
+ *    `restart.js`, `rollback.js` (emergencia: lo corre el operador a mano o lo
+ *    spawnea restart.js ya declarado), `quota-snapshot-scheduler.js` como main
+ *    (tarea programada de Windows, `scripts/register-quota-snapshot-task.ps1`),
+ *    y los `.ps1` de tareas programadas — `watchdog.ps1`, `watchdog-supervisor.ps1`,
+ *    `launch.ps1` — que lo hacen en PowerShell con el mismo contrato. Sólo ahí
+ *    es legítimo el literal `productivo`, y sólo si la variable NO venía seteada
+ *    (`??=`): #7111 puede lanzar un pipeline de pruebas declarando `pruebas`
+ *    explícito y este helper lo respeta. Un módulo cargado por un test (no main)
+ *    NUNCA declara: cae al dir del runner o falla ruidoso.
  *
  * 2. `envDeLanzador({ processEnv, repoRoot, extra })` — para todo proceso que
  *    un lanzador ya declarado spawnea (servicios, brazos, agentes): la

@@ -260,8 +260,11 @@ function installRollbackScript(dir) {
     // #7112 — `lib/rollback-guard.js` resuelve `rollback-state.json` vía
     // `lib/write-target` → `lib/pipeline-env` → `lib/config-resolver` →
     // `lib/config-schema`: la cadena entera forma parte del mínimo.
+    // #7112 (rebote rev-2) — rollback.js declara ambiente como entrypoint de
+    // emergencia (CA-6) vía `lib/launcher-env` → `lib/build-child-env` → `lib/safe-project-id`.
     for (const rel of ['rollback.js', 'pid-discovery.js', 'lib/rollback-guard.js', 'lib/dropfile-writer.js',
-        'lib/write-target.js', 'lib/pipeline-env.js', 'lib/config-resolver.js', 'lib/config-schema.js']) {
+        'lib/write-target.js', 'lib/pipeline-env.js', 'lib/config-resolver.js', 'lib/config-schema.js',
+        'lib/launcher-env.js', 'lib/build-child-env.js', 'lib/safe-project-id.js']) {
         const dst = path.join(dir, '.pipeline', rel);
         fs.mkdirSync(path.dirname(dst), { recursive: true });
         fs.copyFileSync(path.join(PIPELINE_DIR, rel), dst);

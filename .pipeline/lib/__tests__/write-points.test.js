@@ -201,3 +201,59 @@ test('sincronizar conserva canal/destino/tier/nota curados y el estado lectura',
         fs.rmSync(dir, { recursive: true, force: true });
     }
 });
+
+// Rebote rev-2 de verificacion (#7112): el escáner reconocía `path.join(__dirname, …)`
+// pero no el ALIAS `const X = __dirname;` + `path.join(X, …)` — así
+// `quota-snapshot-scheduler.js` (cola de Telegram + logs) y `smoke-test.js`
+// (logs) quedaban fuera del inventario y CA-1 bullet 2 se cumplía vacíamente.
+test('escáner: el alias `const X = __dirname;` que alimenta una escritura es pendiente e inmune', () => {
+    const dir = fixture({
+        'f.js': [
+            "const fs = require('fs'); const path = require('path');",
+            'const PIPELINE_DIR = __dirname;',
+            "const PS1 = path.join(PIPELINE_DIR, 'scripts', 'x.ps1');",
+            "const LOG_FILE = path.join(PIPELINE_DIR, 'logs', 'x.log');",
+            "function log(m) { fs.appendFileSync(LOG_FILE, m); }",
+            "function ps1() { return fs.readFileSync(PS1, 'utf8'); }",
+        ].join('\n'),
+        'g.js': [
+            "const fs = require('fs'); const path = require('path');",
+            'function dir() { const d = __dirname; return d; }',
+            "function save(s) { fs.writeFileSync(path.join(dir(), 'estado.json'), s); }",
+        ].join('\n'),
+        'h.js': [
+            "const fs = require('fs'); const path = require('path');",
+            'const CODE_DIR = __dirname;',
+            "function ps1() { return fs.readFileSync(path.join(CODE_DIR, 'x.ps1'), 'utf8'); }",
+        ].join('\n'),
+    });
+    try {
+        const r = scan.escanear(dir).map((e) => [e.modulo, e.funcion, e.estado, e.inmune]);
+        assert.deepStrictEqual(r, [
+            ['f.js', 'PIPELINE_DIR', 'pendiente', true],
+            ['g.js', 'dir', 'pendiente', true],
+        ], 'el alias de __dirname que termina en escritura tiene que estar; el que sólo lee, no');
+    } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+    }
+});
+
+test('escáner: `metrics/` entra al alcance (aggregator.js escribe snapshots dentro de .pipeline)', () => {
+    const dir = fixture({
+        'metrics/m.js': [
+            "const fs = require('fs'); const path = require('path');",
+            "const OUT = path.join(process.env.PIPELINE_REPO_ROOT || '.', '.pipeline', 'metrics');",
+            "function write(s) { fs.writeFileSync(path.join(OUT, 'snapshot.json'), s); }",
+        ].join('\n'),
+        'metrics/__tests__/m.test.js': "const fs = require('fs'); fs.writeFileSync(require('path').join(__dirname, 'x'), '');",
+    });
+    try {
+        const mods = scan.listarModulos(dir);
+        assert.ok(mods.includes('metrics/m.js'), `metrics/m.js fuera del alcance: ${mods.join(', ')}`);
+        assert.ok(!mods.some((m) => m.includes('__tests__')), 'los tests de metrics/ quedan fuera');
+        const r = scan.escanear(dir).map((e) => [e.modulo, e.funcion, e.estado]);
+        assert.deepStrictEqual(r, [['metrics/m.js', 'OUT', 'pendiente']]);
+    } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+    }
+});

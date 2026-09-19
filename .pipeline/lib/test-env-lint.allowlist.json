@@ -672,9 +672,15 @@
         },
         {
             "file": "lib/__tests__/dashboard-routes-budget.test.js",
-            "line": 27,
+            "line": 33,
             "kind": "deuda",
             "reason": "escritura de PIPELINE_REPO_ROOT fuera del helper"
+        },
+        {
+            "file": "lib/__tests__/dashboard-routes-budget.test.js",
+            "line": 34,
+            "kind": "deuda",
+            "reason": "escritura de PIPELINE_DIR_OVERRIDE fuera del helper"
         },
         {
             "file": "lib/__tests__/dashboard-routes-roadmap.test.js",

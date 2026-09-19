@@ -3,18 +3,25 @@
 /**
  * #7112 · CA-1 / SEC-15 — ESCÁNER ESTRUCTURAL DE PUNTOS DE ESCRITURA.
  *
- * Recorre `.pipeline/*.js` y `.pipeline/lib/**` (sin tests, scratch ni
- * `node_modules`) y devuelve, por módulo que ESCRIBE, cada PUNTO DE RESOLUCIÓN
+ * Recorre `.pipeline/*.js`, `.pipeline/lib/**` y `.pipeline/metrics/**` (sin
+ * tests, scratch ni `node_modules`) y devuelve, por módulo que ESCRIBE, cada PUNTO DE RESOLUCIÓN
  * de directorio: el lugar donde el módulo decide a qué `.pipeline` apunta.
  * Es la fuente contra la que `lib/write-points.json` se compara (diff = ∅) y la
  * entrada del guardrail de #7114.
  *
  * Un punto de resolución es una línea de CÓDIGO (no comentario) que:
- *   - usa `writeTarget.writeDir|writePath|safeWriteDir(` → `estado: migrado`
+ *   - usa `writeTarget.writeDir|writePath|safeWriteDir|safeWritePath(` → `estado: migrado`
  *     (o `safe` si es la variante que nunca lanza), o
  *   - lee `process.env.PIPELINE_DIR_OVERRIDE|PIPELINE_STATE_DIR|PIPELINE_REPO_ROOT`
  *     para armar un directorio → `estado: pendiente`, o
- *   - arma un path con `__dirname` (fuera de `require(...)`) → `estado: pendiente`.
+ *   - importa `REPO_ROOT` de `lib/traceability` (que lo deriva de
+ *     `PIPELINE_REPO_ROOT` + git y NO honra `PIPELINE_DIR_OVERRIDE`: inmune al
+ *     dir efímero del runner — rebote rev-2, `metrics/aggregator.js`) →
+ *     `estado: pendiente`, `inmune: true`, o
+ *   - arma un path con `__dirname` (fuera de `require(...)`) → `estado: pendiente`,
+ *     incluido el ALIAS `const X = __dirname;` (rebote rev-2 de #7112: la
+ *     forma que usaban `quota-snapshot-scheduler.js` y `smoke-test.js` y que
+ *     dejaba la cola de Telegram y dos logs fuera del inventario).
  *
  * Un módulo ESCRIBE si su código contiene alguna llamada de escritura
  * (`writeFileSync`, `appendFileSync`, `mkdirSync`, `renameSync`, `rmSync`,
@@ -40,8 +47,17 @@ const RE_ENV_DIR = /process\.env\.PIPELINE_(DIR_OVERRIDE|STATE_DIR|REPO_ROOT)\b/
 const RE_DIRNAME = /\b__dirname\b/;
 // Dos formas del envoltorio: `writeTarget.writeDir(` (require en cabecera) y
 // `require('./write-target').writeDir(` (require perezoso dentro de la función).
-const RE_WRITE_TARGET = /(?:\bwriteTarget|require\(\s*['"][^'"]*write-target['"]\s*\))\.(writeDir|writePath|safeWriteDir)\s*\(/;
+const RE_WRITE_TARGET = /(?:\bwriteTarget|require\(\s*['"][^'"]*write-target['"]\s*\))\.(writeDir|writePath|safeWriteDir|safeWritePath)\s*\(/;
 const RE_REQUIRE_DIRNAME = /require\([^)]*__dirname[^)]*\)/;
+// Formas en que una línea ARMA un directorio a partir de `__dirname`:
+//   path.join(__dirname, …) / path.resolve(__dirname, …) / path.dirname(__dirname)
+//   const X = __dirname;            (alias crudo — rebote rev-2)
+//   __dirname + '/logs' / `${__dirname}/logs`
+const RE_DIRNAME_ARMA = /path\.(join|resolve|dirname)\s*\([^)]*__dirname|=\s*__dirname\b|__dirname\s*\+|\$\{__dirname\}/;
+// `const { REPO_ROOT, … } = require('../lib/traceability')` o
+// `({ REPO_ROOT } = require('../lib/traceability'))`: raíz derivada de
+// PIPELINE_REPO_ROOT + git, ciega al override del runner (CA-5).
+const RE_TRACE_REPO_ROOT = /\bREPO_ROOT\b[^=]*=\s*require\(\s*['"][^'"]*traceability['"]\s*\)/;
 
 /** Directorios excluidos por nombre de segmento. */
 function esDirExcluido(nombre) {
@@ -78,6 +94,10 @@ function listarModulos(pipelineDir) {
         }
     };
     if (fs.existsSync(libDir)) walk(libDir, 'lib/');
+    // `metrics/` escribe dentro de `.pipeline` (snapshots del aggregator,
+    // budget-config.json): entra al alcance con el mismo filtro que `lib/`.
+    const metricsDir = path.join(raiz, 'metrics');
+    if (fs.existsSync(metricsDir)) walk(metricsDir, 'metrics/');
     return out.sort();
 }
 
@@ -94,8 +114,14 @@ function codigoDe(linea) {
  * `nombre(...) {` de método antes de la línea), si no `inline:L<n>`.
  */
 function nombreDelPunto(lineas, i) {
-    const m = codigoDe(lineas[i]).match(/^\s*(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=/);
+    const c0 = codigoDe(lineas[i]);
+    const m = c0.match(/^\s*(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=/);
     if (m) return m[1];
+    if (RE_TRACE_REPO_ROOT.test(c0)) return 'REPO_ROOT';
+    // Reasignación de una variable ya declarada (`REPO_ROOT = process.env…` en un
+    // `catch`): el identificador asignado nombra el punto, no la función contenedora.
+    const r = c0.match(/^\s*\(?\s*([A-Za-z_$][\w$]*)\s*=(?!=)/);
+    if (r && !['module', 'exports'].includes(r[1])) return r[1];
     for (let j = i; j >= 0; j--) {
         const c = codigoDe(lineas[j]);
         const f = c.match(/^\s*(?:async\s+)?function\s*\*?\s*([A-Za-z_$][\w$]*)\s*\(/)
@@ -126,9 +152,10 @@ function escanearModulo(abs) {
         if (RE_ESCRITURA.test(c)) escribe = true;
         let tipo = null;
         const wt = c.match(RE_WRITE_TARGET);
-        if (wt) tipo = wt[1] === 'safeWriteDir' ? 'safe' : 'migrado';
+        if (wt) tipo = wt[1] === 'safeWriteDir' || wt[1] === 'safeWritePath' ? 'safe' : 'migrado';
         else if (RE_ENV_DIR.test(c)) tipo = 'env';
-        else if (RE_DIRNAME.test(c) && !RE_REQUIRE_DIRNAME.test(c) && /path\.(join|resolve)\s*\(/.test(c)) tipo = 'dirname';
+        else if (RE_TRACE_REPO_ROOT.test(c)) tipo = 'trace';
+        else if (RE_DIRNAME.test(c) && !RE_REQUIRE_DIRNAME.test(c) && RE_DIRNAME_ARMA.test(c)) tipo = 'dirname';
         if (!tipo) continue;
         const funcion = nombreDelPunto(lineas, i);
         if (!porFuncion.has(funcion)) porFuncion.set(funcion, { funcion, linea: i + 1, tipos: new Set() });
@@ -145,14 +172,16 @@ function escanearModulo(abs) {
         if (!alimentaEscritura(lineas, lineasEscritura, p)) continue;
         const t = p.tipos;
         let estado;
-        if (t.has('env') || t.has('dirname')) estado = 'pendiente';
+        if (t.has('env') || t.has('dirname') || t.has('trace')) estado = 'pendiente';
         else if (t.has('safe') && !t.has('migrado')) estado = 'safe';
         else estado = 'migrado';
-        const via = t.has('dirname') && !t.has('env') ? '__dirname'
+        const via = t.has('dirname') && !t.has('env') && !t.has('trace') ? '__dirname'
             : t.has('env') ? 'process.env.PIPELINE_*'
-                : t.has('safe') ? 'writeTarget.safeWriteDir' : 'writeTarget.writeDir';
-        // Inmune a cualquier override: sólo __dirname, sin variable de entorno ni envoltorio.
-        const inmune = t.has('dirname') && !t.has('env') && !t.has('migrado') && !t.has('safe');
+                : t.has('trace') ? 'traceability.REPO_ROOT'
+                    : t.has('safe') ? 'writeTarget.safeWriteDir' : 'writeTarget.writeDir';
+        // Inmune al override del runner: __dirname crudo, o la raíz de
+        // traceability (PIPELINE_REPO_ROOT + git), sin variable de dir ni envoltorio.
+        const inmune = (t.has('dirname') || t.has('trace')) && !t.has('env') && !t.has('migrado') && !t.has('safe');
         puntos.push({ funcion: p.funcion, linea: p.linea, estado, via, inmune });
     }
     return { escribe, puntos };
@@ -345,6 +374,7 @@ function resumen(puntos) {
 module.exports = {
     escanear, escanearModulo, listarModulos, sincronizar, leerInventario, escribirInventario, rutaInventario,
     clave, tierDe, canalPorDefecto, ESTADOS, ESTADOS_CURADOS, CAMPOS_CURADOS, RE_ESCRITURA, RE_ENV_DIR, RE_WRITE_TARGET,
+    RE_DIRNAME_ARMA, RE_TRACE_REPO_ROOT,
 };
 
 if (require.main === module) {
