@@ -268,7 +268,10 @@ function runAgyVersion({ cmd, env, spawnImpl, timeoutMs }) {
 
 
 // Contrato probado: la versión se guarda saneada, nunca el stdout libre.
-const AGY_CLI_CONTRACT = Object.freeze({ min_version: '1.2.0', max_tested_version: '1.2.5' });
+// #7371 — pin subido a 1.2.7 el 19/9/2026 (mitigación inmediata: el auto-update
+// del CLI dejó a Antigravity fuera de la cascada en silencio). La política de
+// "versión por encima del máximo probado = advertencia" se implementa en #7371.
+const AGY_CLI_CONTRACT = Object.freeze({ min_version: '1.2.0', max_tested_version: '1.2.7' });
 function parseAgyVersion(stdout) {
     if (typeof stdout !== 'string') return null;
     const m = /^(\d+)\.(\d+)\.(\d+)/.exec(stdout.trim());

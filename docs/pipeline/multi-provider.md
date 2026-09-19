@@ -720,6 +720,8 @@ Convenciones:
 ### 4.4.1 Matriz modelo×agente sobre Antigravity — sign-off Leo 2026-09-18 (#6860)
 
 > **La conclusión caduca si `agy --version` ≠ 1.2.5** o cambian las fuentes contractuales. La auditoría de security del 2026-09-16 se realizó con 1.2.4; guru re-verificó la instalación con 1.2.5 el 2026-09-17. Desarrollo comprobó nuevamente 1.2.5 en los spawns del 2026-09-18 UTC. El gate security conserva la firma de la re-verificación contractual.
+>
+> **Pin operativo 1.2.7 (19/9/2026, #7371).** El CLI se auto-actualizó a 1.2.7 el 18/9 22:09 y el gate `cli_contract_mismatch` sacó a Antigravity de toda cascada en silencio durante la ventana de reposo de Anthropic (Commander mudo ~5 h). Por decisión del operador (Leo, 19/9): el pin `max_tested_version` sube a **1.2.7** como mitigación inmediata (round-trip `agy models` verificado OK con 1.2.7), y la política pasa a **"versión por encima del máximo probado = advertencia, no bloqueo"** (alerta + re-verificación diferida de TOS, ver #7371 y #7343). La re-verificación contractual con 1.2.7 queda **pendiente** en #7343; esta nota no la reemplaza.
 
 **TOS: la exclusión se mantiene.** Cuenta `authMethod=consumer`, no Enterprise. Los [términos de Antigravity](https://antigravity.google/terms) permiten retener interacciones para mejorar tecnologías y su revisión humana; pagar la licencia no acredita ausencia de entrenamiento. La [FAQ](https://antigravity.google/docs/faq/) remite a ajustes para el opt-out y [Plans](https://antigravity.google/docs/plans/) describe cuota/modelos. La auditoría también registró los hilos [168429](https://discuss.ai.google.dev/t/how-can-i-completely-opt-out-of-the-use-of-my-data-for-model-training/168429) y [125236](https://discuss.ai.google.dev/t/antigravity-data-training-opt-out/125236), sin confirmación de staff sobre el alcance del toggle de la IDE en el CLI. Fuente de la conclusión y evidencia local: comentario de security en #6860 (2026-09-16) y validación de guru (2026-09-17). Términos y FAQ consultados nuevamente durante desarrollo el 2026-09-18 UTC; no se declara `terms_no_training: true`.
 
@@ -2715,8 +2717,9 @@ no lleva material de auth):
 
 #### 14.3.1 Gemini / Antigravity CLI: round-trip real y cuatro estados (#6857, #7290)
 
-El probe ejecuta `agy --version` antes del catálogo y acepta el rango `1.2.0`–`1.2.5`
-(probado con el CLI instalado el 17/9/2026). `spec.cli_contract` permite ajustar el pin;
+El probe ejecuta `agy --version` antes del catálogo y acepta el rango `1.2.0`–`1.2.7`
+(1.2.5 probado el 17/9/2026; pin subido a 1.2.7 el 19/9/2026 por #7371, ver §4.4.1).
+`spec.cli_contract` permite ajustar el pin;
 un cambio de pin invalida la cache v2. Errores, timeout o versión fuera del rango
 producen rojo durable con TTL negativo; el probe nunca actualiza el binario.
 

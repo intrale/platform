@@ -111,7 +111,9 @@ const MANAGED_KEYS = Object.freeze([
         // un flag de entorno local: ver `cli-oauth-probe.js#probeCliProviderLive`
         // y `agy-catalog-probe.js`.
         catalog_probe: 'agy',
-        cli_contract: { min_version: '1.2.0', max_tested_version: '1.2.5' },
+        // #7371 — pin 1.2.7 (19/9/2026). Mantener en sync con AGY_CLI_CONTRACT
+        // de agy-catalog-probe.js hasta que #7371 lo deje en una única fuente.
+        cli_contract: { min_version: '1.2.0', max_tested_version: '1.2.7' },
         free_tier_notes: 'Antigravity CLI; disponibilidad sujeta a sesión OAuth y licencia/billing.',
     },
 ]);
