@@ -7,7 +7,7 @@
 // extremo del cable: `.claude/hooks/commander/callback-handler.js`.
 //
 // Aislamiento: `CLAUDE_PROJECT_DIR` apunta a un tmp ANTES de que se cargue
-// `human-block` (resuelve su PIPELINE_DIR desde ese env en require-time), y
+// `human-block` (#7456: el dir lo resuelve POR LLAMADA vía `PIPELINE_DIR_OVERRIDE`), y
 // `fetch` se stubea, así que ningún test toca el pipeline real ni la red.
 // =============================================================================
 'use strict';
@@ -22,7 +22,13 @@ const TMP_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'v3-degraded-cb-'));
 fs.mkdirSync(path.join(TMP_DIR, '.claude'), { recursive: true });
 fs.mkdirSync(path.join(TMP_DIR, '.pipeline', 'desarrollo', 'dev', 'trabajando'), { recursive: true });
 process.env.CLAUDE_PROJECT_DIR = TMP_DIR;
-process.env.PIPELINE_REPO_ROOT = TMP_DIR;
+// #7456 (D-4) — `human-block` resuelve su `.pipeline` por llamada vía `write-target`:
+// el dir de pruebas viaja SÓLO por `PIPELINE_DIR_OVERRIDE`. `PIPELINE_REPO_ROOT` es
+// contexto heredado del Pulpo (SEC-9 de #7112): fijarlo al mismo tmp anularía el
+// override ("dir de pruebas apunta al productivo") y el runner lo hereda del
+// productivo, así que se borra. `CLAUDE_PROJECT_DIR` sigue alimentando `trace.LOG_FILE`.
+delete process.env.PIPELINE_REPO_ROOT;
+process.env.PIPELINE_DIR_OVERRIDE = path.join(TMP_DIR, '.pipeline');
 
 // Raíz REAL del repo: es de donde sale el código de los módulos de `.pipeline/`.
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
@@ -70,8 +76,8 @@ const toastOf = (calls) => calls.find(c => c.method === 'answerCallbackQuery');
 const editOf = (calls) => calls.find(c => c.method === 'editMessageText');
 
 // ─── Audit real de `human-block` (R-SEC-9) ───────────────────────────────────
-// `human-block.js` resuelve su PIPELINE_DIR desde `CLAUDE_PROJECT_DIR` en
-// require-time, así que las entries caen en el tmp. Se leen del DISCO —no de un
+// `human-block.js` resuelve su `.pipeline` por llamada desde `PIPELINE_DIR_OVERRIDE`
+// (#7456), así que las entries caen en el tmp. Se leen del DISCO —no de un
 // fake que devuelva el eco de su input— para que el test falle si mañana el
 // audit deja de escribirse de verdad.
 const AUDIT_DIR = path.join(TMP_DIR, '.pipeline', 'audit');

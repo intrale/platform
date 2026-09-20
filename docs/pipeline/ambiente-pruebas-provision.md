@@ -122,6 +122,31 @@ En cambio `pipelineEnv.resolve({ PIPELINE_AMBIENTE: 'pruebas', PIPELINE_REPO_ROO
 devuelve `dir: null` (SEC-9 estricto): un escritor migrado a `write-target`
 falla ruidoso en vez de escribir.
 
+### Bloqueos humanos (`lib/human-block.js`, #7456)
+
+Un harness manual que ejercite los gates de decisión (`reportHumanBlock`,
+`unblockIssue`, `executeQuickAction`, el recordatorio) necesita declarar el
+ambiente **antes** de la primera llamada — no hace falta antes del `require`,
+porque desde #7456 el módulo resuelve su `.pipeline` **por llamada** vía
+`write-target`, pero sí antes de invocar cualquier función que lea o escriba:
+
+```bash
+# desde un worktree o desde el repo principal, da igual: nunca toca el .pipeline productivo
+PIPELINE_DIR_OVERRIDE="$(mktemp -d)/.pipeline" node -e "
+  require('./.pipeline/lib/human-block').reportHumanBlock({
+    issue: 7113, skill: 'intake', phase: 'validacion', pipeline: 'definicion',
+    reason: 'x', question: 'y?', moveFromActive: false })"
+```
+
+- El dir viaja **sólo** por `PIPELINE_DIR_OVERRIDE` (o `PIPELINE_STATE_DIR`).
+  `PIPELINE_REPO_ROOT` es contexto heredado del Pulpo y **no** habilita nada
+  (SEC-9): fijarlo al mismo tmp anula el override ("dir de pruebas apunta al
+  productivo").
+- Sin ambiente declarado la llamada **lanza** `EscrituraBloqueadaError` con las
+  tres líneas `[pipeline-env]` en stderr y no escribe en ningún lado. Es el
+  comportamiento buscado: el incidente del 20/09 (#7113/#7114 frenados ~7 h
+  desde un harness) no puede repetirse.
+
 ## Garantías de seguridad (fail-closed)
 
 El único riesgo real del comando es **borrar o contaminar el productivo**. Se
@@ -146,6 +171,51 @@ cierra por código, verificable por test:
 - Sólo APIs `fs`. Única excepción: `execFileSync('git', ['rev-parse', 'HEAD'])`
   con argv literal y best-effort (`sha: null` si falla).
 - Ni el marcador ni `--json` ni `--print-env` contienen valores del env.
+
+### Bloqueos humanos (`lib/human-block.js`, #7456)
+
+Los markers de bloqueo humano, sus sidecars, las órdenes que emite al
+servicio-github y el audit de acciones rápidas quedan cubiertos por el
+resolvedor único **sin canal nuevo** (D-1): se usan los canales existentes con
+`destino` granular en `lib/write-points.json`.
+
+| Qué escribe `human-block.js` | canal | destino |
+|---|---|---|
+| markers `<issue>.<skill>` + sidecars `.reason.json` / `.guidance.txt` / reconciler (`markersRoot()`) | `estado` | `<pipeline>/<fase>/bloqueado-humano` |
+| órdenes `label` / `remove-label` / `comment` para el servicio-github (`ghQueueDir()`) | `colas` | `servicios/github/pendiente` |
+| audit de acciones rápidas y auto-destrabe (`auditRoot()`) | `logs` | `audit/human-block-actions-*.jsonl` |
+| cache de títulos (`titleCacheDir()`, **sólo lectura**, `safeWriteDir`: nunca lanza) | `estado` | `.issue-title-cache.json` |
+
+Garantías, verificadas por `lib/__tests__/human-block-env-isolation.test.js`:
+
+- **Resolución por llamada** (SEC-10 / V4 de #7112): ninguna const de módulo ni
+  closure creada al `require` guarda el dir. Un override declarado después de
+  cargar el módulo se respeta igual.
+- **Lecturas y escrituras por la misma raíz** (SEC-HB-1): `findActiveMarker`,
+  `findBlockedMarker`, `listBlockedMarkers`, `listPhaseMarkers` y
+  `listBlockedIssues` resuelven igual que `reportHumanBlock` / `unblockIssue`.
+  Si no fuera así, un harness con override **movería** (`renameSync`) un
+  work-file real del pipeline productivo hacia un tmp.
+- **Confinamiento del destino** (SEC-HB-2): `pipeline` ∈ {`desarrollo`,
+  `definicion`}; `phase` / `skill` / `target_phase` son segmentos simples
+  (`^[a-z0-9][a-z0-9_-]*$`, sin `/`, `\` ni `..`) y el path final se verifica
+  contenido en el `pipelineDir` resuelto. Fallo → `throw`, nunca sanitización
+  silenciosa.
+- **Sin degradación muda** (SEC-HB-3): `enqueueNeedsHumanLabel` y
+  `enqueueGithub` resuelven la cola **fuera** de su `try/catch` best-effort, así
+  el bloqueo de ambiente lanza en vez de devolver `false` como un fallo de disco.
+- **Sin escape hatch propio** (SEC-HB-4): no hay `opts.pipelineDir`,
+  `opts.force` ni variable de entorno nueva; `deps.auditDir` es inyección de
+  tests y sólo alcanza al audit. `PIPELINE_ALLOW_PROD_SIDE_EFFECTS` tampoco
+  habilita nada sin declaración productiva.
+- **Recordatorio** (D-3): `human-block-reminder.js` no fija ningún dir; recibe
+  `pipelineDir` del llamador (`pulpo.js::PIPELINE()`, migrado en #7112) y sin él
+  devuelve `{ error: 'sin pipelineDir' }` sin escribir.
+
+Fuera de alcance (con issue propio): `trace.appendEvent` →
+`.claude/activity-log.jsonl` productivo (#7462); el ledger de reclaim que este
+módulo requiere (#7461); el punto ciego del escáner sobre `trace.REPO_ROOT`
+(#7460).
 
 ## API (para tests y helpers)
 

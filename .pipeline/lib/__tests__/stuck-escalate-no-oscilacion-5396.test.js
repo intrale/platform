@@ -42,10 +42,17 @@ function escalarEnSandbox() {
     const deliverable = 'issue: 5209\nfase: verificacion\npipeline: desarrollo\nresultado: rechazado\n';
     fs.writeFileSync(path.join(PIPELINE, 'desarrollo', 'verificacion', 'listo', '5209.qa'), deliverable);
 
+    // #7456 (D-4) — `human-block` resuelve su `.pipeline` por llamada vía
+    // `write-target`: el sandbox viaja por `PIPELINE_DIR_OVERRIDE` (pisa el dir
+    // efímero del runner que el hijo heredaría) y SIN `PIPELINE_REPO_ROOT`, que es
+    // contexto heredado (SEC-9) y anularía el override. `CLAUDE_PROJECT_DIR` sigue
+    // alimentando `traceability`.
+    const env = { ...process.env, CLAUDE_PROJECT_DIR: tmpRoot, PIPELINE_DIR_OVERRIDE: PIPELINE };
+    delete env.PIPELINE_REPO_ROOT;
     const r = spawnSync(process.execPath, [CHILD, tmpRoot], {
         encoding: 'utf8',
         timeout: 30000,
-        env: { ...process.env, CLAUDE_PROJECT_DIR: tmpRoot, PIPELINE_REPO_ROOT: tmpRoot },
+        env,
     });
     assert.equal(r.status, 0, `worker falló: ${r.stderr || r.stdout}`);
     const res = JSON.parse(r.stdout);

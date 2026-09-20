@@ -28,7 +28,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-// Aislar PIPELINE_DIR a un tmp por test setup
+// Aislar el .pipeline a un tmp por test setup (#7456: vía PIPELINE_DIR_OVERRIDE)
 const TMP_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'v3-blocked-seg-'));
 fs.mkdirSync(path.join(TMP_DIR, '.claude'), { recursive: true });
 fs.mkdirSync(path.join(TMP_DIR, '.pipeline', 'servicios', 'github', 'pendiente'), { recursive: true });
@@ -39,7 +39,13 @@ for (const phase of ['validacion', 'dev']) {
     }
 }
 process.env.CLAUDE_PROJECT_DIR = TMP_DIR;
-process.env.PIPELINE_REPO_ROOT = TMP_DIR;
+// #7456 (D-4) — `human-block` resuelve su `.pipeline` por llamada vía `write-target`:
+// el dir de pruebas viaja SÓLO por `PIPELINE_DIR_OVERRIDE`. `PIPELINE_REPO_ROOT` es
+// contexto heredado del Pulpo (SEC-9 de #7112): fijarlo al mismo tmp anularía el
+// override ("dir de pruebas apunta al productivo") y el runner lo hereda del
+// productivo, así que se borra. `CLAUDE_PROJECT_DIR` sigue alimentando `trace.LOG_FILE`.
+delete process.env.PIPELINE_REPO_ROOT;
+process.env.PIPELINE_DIR_OVERRIDE = path.join(TMP_DIR, '.pipeline');
 
 delete require.cache[require.resolve('../traceability')];
 delete require.cache[require.resolve('../human-block')];

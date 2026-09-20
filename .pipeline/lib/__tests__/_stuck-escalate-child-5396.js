@@ -1,10 +1,11 @@
 // =============================================================================
 // _stuck-escalate-child-5396.js — worker del test de #5396.
 //
-// `human-block.js` resuelve su `PIPELINE_DIR` desde `traceability.REPO_ROOT`, que
-// se calcula UNA VEZ al cargar el módulo a partir de `CLAUDE_PROJECT_DIR`. Para
-// ejercitar el escalado real contra un FS de mentira (y NO contra el `.pipeline`
-// de producción) hay que hacerlo en un proceso aparte con esa env var apuntando
+// `traceability.REPO_ROOT` se calcula UNA VEZ al cargar el módulo a partir de
+// `CLAUDE_PROJECT_DIR`, y `human-block.js` (#7456) resuelve su `.pipeline` por
+// llamada vía `write-target` desde `PIPELINE_DIR_OVERRIDE`. Para ejercitar el
+// escalado real contra un FS de mentira (y NO contra el `.pipeline` de
+// producción) hay que hacerlo en un proceso aparte con esas env vars apuntando
 // al tmpdir. De ahí este worker.
 //
 // Uso: node _stuck-escalate-child-5396.js <tmpRoot>   → imprime JSON por stdout.
@@ -30,6 +31,11 @@ try {
     }
 
     const humanBlock = require('../human-block');
+    // Misma guarda para el dir que resuelve `human-block` (#7456): tiene que ser
+    // el `.pipeline` del sandbox, nunca otro (ni el efímero del runner).
+    if (path.resolve(humanBlock.markersRoot()) !== path.resolve(tmpRoot, '.pipeline')) {
+        out({ ok: false, error: `markersRoot divergente: ${humanBlock.markersRoot()} != ${path.join(tmpRoot, '.pipeline')}` });
+    }
     const { buildStuckReconcilerDeps } = require('../stuck-reconciler-deps');
 
     const PIPELINE = path.join(tmpRoot, '.pipeline');

@@ -453,6 +453,39 @@
       "via": "writeTarget.writeDir"
     },
     {
+      "modulo": "lib/human-block.js",
+      "funcion": "markersRoot",
+      "linea": 82,
+      "canal": "estado",
+      "destino": "<pipeline>/<fase>/bloqueado-humano",
+      "tier": 3,
+      "estado": "migrado",
+      "via": "writeTarget.writeDir",
+      "nota": "#7456: markers/sidecars, órdenes github y audit resueltos por llamada; lecturas por la misma raíz (SEC-HB-1)"
+    },
+    {
+      "modulo": "lib/human-block.js",
+      "funcion": "ghQueueDir",
+      "linea": 92,
+      "canal": "colas",
+      "destino": "servicios/github/pendiente",
+      "tier": 3,
+      "estado": "migrado",
+      "via": "writeTarget.writeDir",
+      "nota": "#7456: markers/sidecars, órdenes github y audit resueltos por llamada; lecturas por la misma raíz (SEC-HB-1)"
+    },
+    {
+      "modulo": "lib/human-block.js",
+      "funcion": "auditRoot",
+      "linea": 102,
+      "canal": "logs",
+      "destino": "audit/human-block-actions-*.jsonl",
+      "tier": 3,
+      "estado": "migrado",
+      "via": "writeTarget.writeDir",
+      "nota": "#7456: markers/sidecars, órdenes github y audit resueltos por llamada; lecturas por la misma raíz (SEC-HB-1)"
+    },
+    {
       "modulo": "lib/issue-summary.js",
       "funcion": "PIPELINE",
       "linea": 22,
@@ -637,7 +670,7 @@
     {
       "modulo": "lib/notify-telegram.js",
       "funcion": "pipelineDir",
-      "linea": 86,
+      "linea": 91,
       "canal": "colas",
       "destino": "writeTarget.writeDir",
       "tier": 1,
@@ -708,7 +741,7 @@
     {
       "modulo": "lib/partial-pause-deps.js",
       "funcion": "CACHE_FILE",
-      "linea": 29,
+      "linea": 34,
       "canal": "pausa",
       "destino": "writeTarget.writeDir",
       "tier": 3,
@@ -894,7 +927,7 @@
     {
       "modulo": "lib/ready-marker.js",
       "funcion": "READY_DIR",
-      "linea": 25,
+      "linea": 30,
       "canal": "estado",
       "destino": "writeTarget.writeDir",
       "tier": 3,
@@ -904,7 +937,7 @@
     {
       "modulo": "lib/recommendations.js",
       "funcion": "CACHE_FILE",
-      "linea": 45,
+      "linea": 50,
       "canal": "estado",
       "destino": "writeTarget.writeDir",
       "tier": 3,
@@ -1460,7 +1493,7 @@
     {
       "modulo": "pulpo.js",
       "funcion": "PAUSE_FILE",
-      "linea": 21587,
+      "linea": 21612,
       "canal": "pausa",
       "destino": "writeTarget.writeDir",
       "tier": 1,

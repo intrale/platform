@@ -914,6 +914,16 @@ node -e "const { appendChained } = require('./.pipeline/lib/audit-log'); appendC
 ```
 
 Reglas inquebrantables del gate:
+- **Ambiente declarado (#7456, SEC-HB-5).** `reportHumanBlock` resuelve el
+  `.pipeline` por llamada vía `lib/write-target` y **falla ruidoso** sin
+  ambiente: desde un agente lanzado a mano (sin `PIPELINE_AMBIENTE=productivo`
+  en su env — el Pulpo sí lo propaga) o desde un **worktree**, la llamada de
+  arriba lanza `EscrituraBloqueadaError` con las tres líneas `[pipeline-env]`
+  y **nunca** escribe en el `.pipeline` principal. Es el comportamiento buscado
+  (incidente #7113/#7114 del 20/09): no existe variable de escape y no hay que
+  crearla. Para probar el gate sin tocar productivo:
+  `PIPELINE_DIR_OVERRIDE="$(mktemp -d)/.pipeline" node -e "…reportHumanBlock(…)"`
+  (sin `PIPELINE_REPO_ROOT`; ver `docs/pipeline/ambiente-pruebas-provision.md`).
 - **NUNCA** `writeFileSync`/append manual sobre `dedup-decisions.jsonl` — rompe
   la cadena. Exclusivamente `appendChained`.
 - El gate **no acepta** confirmaciones de identidad no verificada (A07): valida

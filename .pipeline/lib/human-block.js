@@ -38,13 +38,117 @@ const mergeRaceLedger = require('./merge-race-reclaim-ledger');
 // archivo ya requiere `decision-card` arriba, y `decision-card` necesita el
 // mismo enum; importarlo desde acá sería un ciclo que entrega `{}`.
 const { BLOCK_CAUSE_ENUM, normalizeBlockCause } = require('./block-cause');
+// #7456 — envoltorio único de puntos de escritura (#7112). Ver `markersRoot()`.
+const writeTarget = require('./write-target');
 
-const PIPELINE_DIR = path.join(trace.REPO_ROOT, '.pipeline');
 const PIPELINES = ['desarrollo', 'definicion'];
 const BLOCK_SUBDIR = 'bloqueado-humano';
 const ACTIVE_STATES = ['pendiente', 'trabajando', 'listo'];
-const GH_QUEUE_DIR = path.join(PIPELINE_DIR, 'servicios', 'github', 'pendiente');
 const NEEDS_HUMAN_LABEL = 'needs-human';
+
+// =============================================================================
+// #7456 — RESOLUCIÓN POR LLAMADA del `.pipeline` (SEC-10 / V4 de #7112).
+//
+// Hasta #7456 este módulo fijaba una const de módulo con el `.pipeline` bajo
+// el `REPO_ROOT` de `traceability` al `require`: ese valor localiza el REPO
+// (por git, incluso desde un worktree) y NO honra `PIPELINE_DIR_OVERRIDE`. Un harness de
+// pruebas que declaraba su ambiente ANTES de requerir el módulo igual escribía
+// markers, sidecars y órdenes de GitHub en la instalación productiva
+// (incidente #7113/#7114 del 20/09: ~7 h de freno real por un test).
+//
+// Reglas:
+//   - PROHIBIDO guardar el resultado en una const de módulo o en una closure
+//     creada al `require`. Cada función resuelve en cada invocación.
+//   - Una llamada a `writeTarget` INLINE por helper (no un `resolveDir(canal,
+//     destino)` compartido): el inventario `lib/write-points.json` atribuye el
+//     punto a la función que contiene la llamada y así cada canal queda
+//     declarado por separado (`markersRoot` → estado, `ghQueueDir` → colas,
+//     `auditRoot` → logs).
+//   - Sin ambiente declarado ⇒ `EscrituraBloqueadaError` ruidoso (las tres
+//     líneas `[pipeline-env]` las emite `write-target`; acá NO se reimplementa
+//     el mensaje). Nunca escritura silenciosa en productivo.
+//   - SEC-HB-1: las LECTURAS (`findActiveMarker`, `findBlockedMarker`,
+//     `listPhaseMarkers`, `listBlockedMarkers`, `listBlockedIssues`) resuelven
+//     por el MISMO camino que las escrituras. Si la lectura mirara productivo y
+//     la escritura el tmp, `reportHumanBlock` haría `renameSync` de un
+//     work-file REAL hacia un tmpdir que después se borra.
+//   - SEC-HB-4: sin escape hatch propio (`opts.pipelineDir`, `opts.force`,
+//     `PIPELINE_ALLOW_*`). El único camino a productivo es
+//     la declaración productiva del lanzador + dir productivo (SEC-1 de
+//     #7110; la variable la nombra sólo `pipeline-env.js`, CA-8 de #7110).
+// =============================================================================
+
+/** Raíz del `.pipeline` para markers y sidecars (lecturas Y escrituras, SEC-HB-1). */
+function markersRoot() {
+    return writeTarget.writeDir(process.env, { canal: 'estado', destino: '<pipeline>/<fase>/bloqueado-humano' });
+}
+
+/**
+ * Cola del servicio-github. SEC-HB-3: se resuelve FUERA de los `try/catch`
+ * best-effort de `enqueueNeedsHumanLabel` / `enqueueGithub`, para que el
+ * bloqueo nunca se degrade a un `return false` mudo.
+ */
+function ghQueueDir() {
+    return path.join(
+        writeTarget.writeDir(process.env, { canal: 'colas', destino: 'servicios/github/pendiente' }),
+        'servicios', 'github', 'pendiente');
+}
+
+/**
+ * Audit de acciones rápidas. `deps.auditDir` es inyección de tests (ya existía),
+ * no un bypass (SEC-HB-4): sólo alcanza al audit, no reactiva markers ni colas.
+ */
+function auditRoot(deps = {}) {
+    return deps.auditDir || path.join(
+        writeTarget.writeDir(process.env, { canal: 'logs', destino: 'audit/human-block-actions-*.jsonl' }), 'audit');
+}
+
+/**
+ * Cache de títulos: SÓLO lectura → `safeWriteDir` (`null` sin ambiente, nunca
+ * lanza). Las funciones de render se usan en tests sin ambiente y la ficha del
+ * operador degrada a "sin título" ante cualquier fallo (`issue-title-cache.js`).
+ */
+function titleCacheDir() {
+    return writeTarget.safeWriteDir(process.env, { canal: 'estado', destino: '.issue-title-cache.json' });
+}
+
+// SEC-HB-2 — confinamiento del path final. `writeTarget.writePath` es
+// `path.join` puro: no confina. `pipeline` / `phase` / `skill` / `target_phase`
+// los arma código que corre dentro de un agente LLM (runbook del planner,
+// `vault-cut-proposal.js`, `stuck-reconciler-deps.js`): un `../` ahí sale del
+// dir resuelto y cae en productivo. Fallo ⇒ `throw` con campo + valor + regla;
+// NUNCA se sanitiza en silencio (guideline UX-2).
+// Verificado: todas las fases y skills de `config.yaml` cumplen el regex.
+const RE_SEGMENTO = /^[a-z0-9][a-z0-9_-]*$/;
+
+function assertSegmento(nombre, valor) {
+    // `typeof` primero: `String(undefined)` es "undefined" y pasaría el regex.
+    if (typeof valor !== 'string' || !RE_SEGMENTO.test(valor)) {
+        throw new Error(`[human-block] ${nombre} inválido: "${valor}" (segmento simple, sin / \\ ..)`);
+    }
+    return valor;
+}
+
+function assertPipeline(valor) {
+    if (!PIPELINES.includes(valor)) {
+        throw new Error(`[human-block] pipeline inválido: "${valor}" (válidos: ${PIPELINES.join(' | ')})`);
+    }
+    return valor;
+}
+
+// Mismo criterio que `pipeline-env.dentroDe` (path.resolve + path.sep, sirve en
+// Windows). Se replica local en vez de exportarlo de pipeline-env: no tocar
+// #7110 acá. Ambos lados se resuelven desde la MISMA fuente (`root` devuelto
+// por `markersRoot()`), así los paths cortos 8.3 de Windows (`ADMINI~1`) no
+// desalinean la comparación.
+function assertConfinado(target, base) {
+    const t = path.resolve(target);
+    const b = path.resolve(base);
+    if (t !== b && !t.startsWith(b + path.sep)) {
+        throw new Error(`[human-block] destino fuera del pipelineDir resuelto: ${t}`);
+    }
+    return t;
+}
 
 // #6191 / SEC-F — Tope de `evidence` AL PERSISTIR (defensa en profundidad).
 //
@@ -65,14 +169,18 @@ const MAX_EVIDENCE_PERSISTIDA = 4096;
 // acá la aplicación del label evita que cada caller (pause-all, scripts manuales,
 // pulpo en barrido) tenga que duplicar la lógica y olvide aplicarlo.
 function enqueueNeedsHumanLabel(issue) {
+    // #7456 / SEC-HB-3 — la resolución va FUERA del `try`: sin ambiente
+    // declarado lanza `EscrituraBloqueadaError` y NUNCA se traga como fallo
+    // best-effort de disco. El `catch` de abajo sólo cubre errores de I/O.
+    const dir = ghQueueDir();
     try {
-        fs.mkdirSync(GH_QUEUE_DIR, { recursive: true });
+        fs.mkdirSync(dir, { recursive: true });
         const filename = `${issue}-${NEEDS_HUMAN_LABEL}-block-${Date.now()}.json`;
         // #6226 - escritura fail-closed: dos bloqueos del mismo issue en el
         // mismo milisegundo resolvian al mismo path y el segundo pisaba al
         // primero. Se conserva el nombre; solo ante colision se desambigua.
         dropfileWriter.writeUniqueFileSync({
-            dir: GH_QUEUE_DIR,
+            dir,
             filename,
             data: JSON.stringify({ action: 'label', issue: Number(issue), label: NEEDS_HUMAN_LABEL }),
             onCollision: (name, attempt) => console.warn(
@@ -231,8 +339,10 @@ const { isMarkerArtifact } = require('./marker-artifact');
 
 function findActiveMarker(issue) {
     const prefix = String(issue) + '.';
+    // #7456 / SEC-HB-1 — UNA resolución por llamada, misma raíz que la escritura.
+    const root = markersRoot();
     for (const pipeline of PIPELINES) {
-        const pipeRoot = path.join(PIPELINE_DIR, pipeline);
+        const pipeRoot = path.join(root, pipeline);
         let phases = [];
         try { phases = fs.readdirSync(pipeRoot).filter(f => fs.statSync(path.join(pipeRoot, f)).isDirectory()); }
         catch { continue; }
@@ -258,8 +368,10 @@ function findActiveMarker(issue) {
 
 function findBlockedMarker(issue) {
     const prefix = String(issue) + '.';
+    // #7456 / SEC-HB-1 — UNA resolución por llamada, misma raíz que la escritura.
+    const root = markersRoot();
     for (const pipeline of PIPELINES) {
-        const pipeRoot = path.join(PIPELINE_DIR, pipeline);
+        const pipeRoot = path.join(root, pipeline);
         let phases = [];
         try { phases = fs.readdirSync(pipeRoot).filter(f => fs.statSync(path.join(pipeRoot, f)).isDirectory()); }
         catch { continue; }
@@ -302,8 +414,10 @@ function findBlockedMarker(issue) {
 function listBlockedMarkers(issue) {
     const prefix = String(issue) + '.';
     const out = [];
+    // #7456 / SEC-HB-1 — UNA resolución por llamada, misma raíz que la escritura.
+    const root = markersRoot();
     for (const pipeline of PIPELINES) {
-        const pipeRoot = path.join(PIPELINE_DIR, pipeline);
+        const pipeRoot = path.join(root, pipeline);
         let phases = [];
         try { phases = fs.readdirSync(pipeRoot).filter(f => fs.statSync(path.join(pipeRoot, f)).isDirectory()); }
         catch { continue; }
@@ -604,9 +718,16 @@ function reportHumanBlock(opts) {
     if (!reason || !question) {
         throw new Error('reportHumanBlock requiere reason y question (justificación obligatoria)');
     }
+    // #7456 / SEC-HB-2 — segmentos simples ANTES de tocar el disco: un `../`
+    // acá saldría del dir resuelto. Fallo ⇒ throw, nunca sanitizar en silencio.
+    assertSegmento('skill', skill);
+    assertSegmento('phase', phase);
 
     let pipeline = opts.pipeline;
     let srcFile = null;
+    // `findActiveMarker` resuelve por `markersRoot()`: misma raíz que la
+    // escritura de abajo (SEC-HB-1). Sin ambiente declarado lanza acá, antes de
+    // cualquier efecto.
     const active = findActiveMarker(issue);
     if (!pipeline || opts.moveFromActive !== false) {
         if (active) {
@@ -614,9 +735,12 @@ function reportHumanBlock(opts) {
             srcFile = active.file;
         }
     }
-    pipeline = pipeline || 'desarrollo';
+    pipeline = assertPipeline(pipeline || 'desarrollo');
 
-    const targetDir = path.join(PIPELINE_DIR, pipeline, phase, BLOCK_SUBDIR);
+    // #7456 — UNA resolución por llamada, compartida por marker y sidecar, y
+    // confinamiento del destino final dentro de esa misma raíz (SEC-HB-2).
+    const root = markersRoot();
+    const targetDir = assertConfinado(path.join(root, pipeline, phase, BLOCK_SUBDIR), root);
     fs.mkdirSync(targetDir, { recursive: true });
     const marker = `${issue}.${skill}`;
     const targetFile = path.join(targetDir, marker);
@@ -689,8 +813,10 @@ function reportHumanBlock(opts) {
 
 function listBlockedIssues() {
     const result = [];
+    // #7456 / SEC-HB-1 — UNA resolución por llamada, misma raíz que la escritura.
+    const root = markersRoot();
     for (const pipeline of PIPELINES) {
-        const pipeRoot = path.join(PIPELINE_DIR, pipeline);
+        const pipeRoot = path.join(root, pipeline);
         let phases = [];
         try { phases = fs.readdirSync(pipeRoot).filter(f => fs.statSync(path.join(pipeRoot, f)).isDirectory()); }
         catch { continue; }
@@ -871,8 +997,10 @@ function listPhaseMarkers(opts = {}) {
         ? opts.states
         : PHASE_QUEUE_STATES;
     const result = [];
+    // #7456 / SEC-HB-1 — UNA resolución por llamada, misma raíz que la escritura.
+    const root = markersRoot();
     for (const pipeline of PIPELINES) {
-        const pipeRoot = path.join(PIPELINE_DIR, pipeline);
+        const pipeRoot = path.join(root, pipeline);
         let phases = [];
         try { phases = fs.readdirSync(pipeRoot).filter(f => fs.statSync(path.join(pipeRoot, f)).isDirectory()); }
         catch { continue; }
@@ -929,8 +1057,13 @@ function unblockIssue(opts) {
         return { ok: false, error: `Marker ${sourceFile} ya no existe (destrabado en paralelo)` };
     }
 
-    const targetPhase = opts.target_phase || blocked.phase;
-    const targetDir = path.join(PIPELINE_DIR, blocked.pipeline, targetPhase, 'pendiente');
+    // #7456 / SEC-HB-2 — `target_phase` lo arma el operador (`/unblock`) o un
+    // agente: segmento simple, pipeline de la whitelist y destino confinado
+    // dentro de la raíz resuelta EN ESTA llamada. Fallo ⇒ throw, sin sanitizar.
+    const targetPhase = assertSegmento('target_phase', opts.target_phase || blocked.phase);
+    const root = markersRoot();
+    const targetDir = assertConfinado(
+        path.join(root, assertPipeline(blocked.pipeline), targetPhase, 'pendiente'), root);
     fs.mkdirSync(targetDir, { recursive: true });
     const marker = `${issue}.${blocked.skill}`;
     const targetFile = path.join(targetDir, marker);
@@ -1109,7 +1242,8 @@ function reconcileBlockedMarkers({ issue, unlocker = 'github:label-removed', ski
     };
 
     let markers = [];
-    try { markers = listBlockedMarkers(n); } catch { markers = []; }
+    // #7456 — un bloqueo de ambiente NO se traga como 'sin markers' (SEC-HB-3).
+    try { markers = listBlockedMarkers(n); } catch (e) { if (writeTarget.esBloqueo(e)) throw e; markers = []; }
 
     for (const m of markers) {
         let action = 'none';
@@ -1119,7 +1253,7 @@ function reconcileBlockedMarkers({ issue, unlocker = 'github:label-removed', ski
             //     trabajo real (#5863). Se aplica POR CADA MARKER, no sólo al
             //     primero: ese "sólo al primero" es justo el bug de CA-25.
             const destino = path.join(
-                PIPELINE_DIR, m.pipeline, m.phase, 'pendiente', path.basename(m.file));
+                markersRoot(), m.pipeline, m.phase, 'pendiente', path.basename(m.file));
             if (fs.existsSync(destino)) {
                 try { fs.unlinkSync(m.file); } catch { /* best-effort */ }
                 removeMarkerSidecars(m.file); // puede no existir
@@ -1414,7 +1548,9 @@ const edadMinutosRaw = cardRender.edadMinutosRaw;
  * RECORDATORIO también la necesita y no puede requerir este módulo (garantía
  * estructural: no puede alcanzar `unblockIssue`). Ver el header de ese módulo.
  */
-const enriquecerConTitulo = (raws) => issueTitleCache.enriquecerConTitulo(raws, { pipelineDir: PIPELINE_DIR });
+// #7456 — SÓLO lectura: `titleCacheDir()` nunca lanza (`null` sin ambiente) y el
+// cache degrada a 'sin título' ante cualquier fallo. La ficha del operador no se rompe.
+const enriquecerConTitulo = (raws) => issueTitleCache.enriquecerConTitulo(raws, { pipelineDir: titleCacheDir() });
 
 /**
  * Render de producción del aviso de bloqueo: fichas de decisión en texto plano.
@@ -1528,13 +1664,16 @@ function isQuickAction(action) {
 // / comment). Generaliza enqueueNeedsHumanLabel. Fire-and-forget vía filesystem:
 // nunca bloquea ni invoca `gh` en proceso (regla "el pipeline no puede morir").
 function enqueueGithub(action, payload = {}) {
+    // #7456 / SEC-HB-3 — resolución FUERA del `try`: el bloqueo de ambiente
+    // lanza y nunca se degrada a `return false`. El `catch` sólo cubre I/O.
+    const dir = ghQueueDir();
     try {
-        fs.mkdirSync(GH_QUEUE_DIR, { recursive: true });
+        fs.mkdirSync(dir, { recursive: true });
         const issue = Number(payload.issue);
         const rnd = Math.random().toString(36).slice(2, 8);
         const filename = `${issue}-${action}-hb-${Date.now()}-${rnd}.json`;
         fs.writeFileSync(
-            path.join(GH_QUEUE_DIR, filename),
+            path.join(dir, filename),
             JSON.stringify({ ...payload, action, issue }),
         );
         return true;
@@ -1719,7 +1858,10 @@ function executeQuickAction({ issue, action, deps = {} } = {}) {
  * `unlocker` normalizado, así que la traza queda en los DOS canales sin abrir
  * una segunda máquina de destrabe.
  *
- * Nunca lanza: el audit no puede romper la operación.
+ * Nunca lanza por fallos del audit (el audit no puede romper la operación).
+ * Única excepción (#7456 / SEC-HB-3, P-3): sin ambiente declarado la resolución
+ * del dir lanza `EscrituraBloqueadaError` — un bloqueo de ambiente no se
+ * degrada a "audit falló".
  *
  * @param {object} entry
  * @param {number} entry.issue
@@ -1755,9 +1897,11 @@ function emitAutoReleased(entry = {}) {
     }
 
     // Canal 2 — audit-log con cadena hash (forense).
+    // #7456 / SEC-HB-3 (P-3) — el dir se resuelve FUERA del `try` best-effort:
+    // sin ambiente declarado lanza, nunca se traga como 'audit falló'.
+    const deps = entry.deps || {};
+    const dir = auditRoot(deps);
     try {
-        const deps = entry.deps || {};
-        const dir = deps.auditDir || path.join(PIPELINE_DIR, 'audit');
         const createAuditLog = deps.createAuditLog || require('./commander/audit-log').createAuditLog;
         let redact = deps.redact;
         if (typeof redact !== 'function') {
@@ -1790,13 +1934,17 @@ function emitAutoReleased(entry = {}) {
 
 /**
  * #4068 / CA-SEC-2 — Asienta la acción rápida (autorizada o rechazada) en un
- * audit-log dedicado `audit/human-block-actions-YYYY-MM-DD.jsonl`. Nunca lanza:
- * el audit no debe romper la operación.
+ * audit-log dedicado `audit/human-block-actions-YYYY-MM-DD.jsonl`. Nunca lanza
+ * por fallos del audit: el audit no debe romper la operación. Única excepción
+ * (#7456 / SEC-HB-3, P-3): sin ambiente declarado la resolución del dir lanza
+ * `EscrituraBloqueadaError`.
  */
 function auditQuickAction(entry = {}) {
+    // #7456 / SEC-HB-3 (P-3) — el dir se resuelve FUERA del `try` best-effort:
+    // sin ambiente declarado lanza, nunca se traga como 'audit falló'.
+    const deps = entry.deps || {};
+    const dir = auditRoot(deps);
     try {
-        const deps = entry.deps || {};
-        const dir = deps.auditDir || path.join(PIPELINE_DIR, 'audit');
         const createAuditLog = deps.createAuditLog || require('./commander/audit-log').createAuditLog;
         let redact = deps.redact;
         if (typeof redact !== 'function') {
@@ -2084,7 +2232,16 @@ module.exports = {
     sendNeedHumanAudio,
     enqueueNeedsHumanLabel,
     HUMAN_BLOCK_PATTERNS,
-    PIPELINE_DIR,
+    // #7456 — `PIPELINE_DIR` (const de módulo) se retiró: resolución por llamada.
+    markersRoot,
+    ghQueueDir,
+    auditRoot,
+    titleCacheDir,
+    // #7456 / SEC-HB-2 — validadores de confinamiento (expuestos para el test de
+    // aislamiento; no son un camino de escritura ni un bypass).
+    assertSegmento,
+    assertPipeline,
+    assertConfinado,
     PIPELINES,
     BLOCK_SUBDIR,
     reasonFilePath,

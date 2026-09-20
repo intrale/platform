@@ -414,6 +414,12 @@ function buildReminderMessage(due, nowMs, opts) {
  * @param {Function} [opts.log]
  * @param {Function} [opts.buildMarkup]  — (issue) => reply_markup | undefined.
  * @returns {{sent:boolean, due:number, error?:string}}
+ *
+ * #7456 (D-3) — el `pipelineDir` lo resuelve el LLAMADOR (`pulpo.js::PIPELINE()`,
+ * migrado a `write-target` en #7112); este módulo no fija ningún directorio al
+ * `require` y sin `pipelineDir` no escribe nada. El barrido usa el `listBlocked`
+ * inyectado, que el Pulpo arma con `human-block.listBlockedIssues()` (resolución
+ * por llamada desde #7456). Cubierto por `human-block-env-isolation.test.js`.
  */
 function runReminderTick(opts = {}) {
     const log = typeof opts.log === 'function' ? opts.log : () => {};

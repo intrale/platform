@@ -22,8 +22,9 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-// Aislar PIPELINE_DIR en un tmpdir ANTES de cargar el lib: `human-block` fija
-// su raíz a tiempo de carga. Mismo patrón que `human-block.test.js`.
+// Aislar el .pipeline en un tmpdir (#7456: `human-block` resuelve por llamada vía
+// `PIPELINE_DIR_OVERRIDE`; `traceability` sí fija su raíz al cargar). Mismo
+// patrón que `human-block.test.js`.
 const TMP_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'v3-reconcile-6448-'));
 const FASES = { definicion: ['analisis', 'criterios', 'sizing'], desarrollo: ['dev', 'verificacion'] };
 for (const [pipe, fases] of Object.entries(FASES)) {
@@ -35,7 +36,13 @@ for (const [pipe, fases] of Object.entries(FASES)) {
 }
 fs.mkdirSync(path.join(TMP_DIR, '.claude'), { recursive: true });
 process.env.CLAUDE_PROJECT_DIR = TMP_DIR;
-process.env.PIPELINE_REPO_ROOT = TMP_DIR;
+// #7456 (D-4) — `human-block` resuelve su `.pipeline` por llamada vía `write-target`:
+// el dir de pruebas viaja SÓLO por `PIPELINE_DIR_OVERRIDE`. `PIPELINE_REPO_ROOT` es
+// contexto heredado del Pulpo (SEC-9 de #7112): fijarlo al mismo tmp anularía el
+// override ("dir de pruebas apunta al productivo") y el runner lo hereda del
+// productivo, así que se borra. `CLAUDE_PROJECT_DIR` sigue alimentando `trace.LOG_FILE`.
+delete process.env.PIPELINE_REPO_ROOT;
+process.env.PIPELINE_DIR_OVERRIDE = path.join(TMP_DIR, '.pipeline');
 
 delete require.cache[require.resolve('../traceability')];
 delete require.cache[require.resolve('../human-block')];

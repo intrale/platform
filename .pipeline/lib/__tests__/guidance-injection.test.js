@@ -29,12 +29,17 @@ fs.mkdirSync(path.join(TMP_DIR, '.pipeline', 'desarrollo', 'dev', 'trabajando'),
 fs.mkdirSync(path.join(TMP_DIR, '.pipeline', 'desarrollo', 'dev', 'pendiente'), { recursive: true });
 const { withEnv } = require('../test-helpers/with-env');
 
-// `traceability.REPO_ROOT` (y con él `PIPELINE_DIR` de human-block) se resuelve
-// al cargar el módulo: el require va DENTRO del `withEnv` para que capture el
-// tmpdir y el helper restaure el entorno después.
+// `traceability.REPO_ROOT` se resuelve al cargar el módulo: el require va DENTRO
+// del `withEnv` para que capture el tmpdir y el helper restaure el entorno después.
+// #7456 (D-4) — `human-block` ya NO congela el dir al `require`: resuelve por
+// llamada vía `write-target`, y el dir de pruebas viaja por `PIPELINE_DIR_OVERRIDE`
+// (se fija a nivel de proceso, abajo). `PIPELINE_REPO_ROOT` es contexto heredado
+// (SEC-9): fijarlo al mismo tmp anularía el override, así que se borra.
+delete process.env.PIPELINE_REPO_ROOT;
+process.env.PIPELINE_DIR_OVERRIDE = path.join(TMP_DIR, '.pipeline');
 let hb;
 withEnv(
-    { CLAUDE_PROJECT_DIR: TMP_DIR, PIPELINE_REPO_ROOT: TMP_DIR },
+    { CLAUDE_PROJECT_DIR: TMP_DIR },
     () => {
         delete require.cache[require.resolve('../traceability')];
         delete require.cache[require.resolve('../merge-race-reclaim-ledger')];
