@@ -108,6 +108,9 @@ function buildChildEnvLibConProviderSintetico() {
  *  dos alias hostiles con el MISMO valor (uno "parecido", otro renombrado). */
 function fakeOperatorEnv(extra = {}) {
     return {
+        // #7113 — env productivo declarado por el lanzador (#7112); en pruebas
+        // buildChildEnv purga TELEGRAM_CHAT_ID y las API keys (CA-1/CA-4).
+        PIPELINE_AMBIENTE: 'productivo',
         PATH: 'C:\\fake\\bin',
         HOME: 'C:\\fake\\home',
         USERPROFILE: 'C:\\fake\\home',

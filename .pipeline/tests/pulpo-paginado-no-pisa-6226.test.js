@@ -28,9 +28,11 @@ fs.mkdirSync(QUEUE, { recursive: true });
 process.env.PIPELINE_DIR_OVERRIDE = SANDBOX;
 
 // Token con formato válido para que `loadTelegramSecrets` resuelva desde env.
+// #7113 — en pruebas (sin declaración productiva) el pulpo purga las variables
+// productivas y sólo lee las `_PRUEBAS`; con ellas encola en <dir>/servicios/telegram/pendiente.
 // NO es un secreto real — mismo patrón que cua-operator-resolve.test.js.
-process.env.TELEGRAM_BOT_TOKEN = '123456:AAAAAAAAAAAAAAAAAAAAAAAAAAAA';
-process.env.TELEGRAM_CHAT_ID = '99999';
+process.env.TELEGRAM_BOT_TOKEN_PRUEBAS = '123456:AAAAAAAAAAAAAAAAAAAAAAAAAAAA';
+process.env.TELEGRAM_CHAT_ID_PRUEBAS = '99999';
 
 process.env.PULPO_NO_AUTOSTART = '1';
 const pulpo = require('../pulpo.js');

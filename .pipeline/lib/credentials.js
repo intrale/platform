@@ -54,6 +54,11 @@ const path = require('path');
 
 const CANONICAL_PATH = path.join(os.homedir(), '.claude', 'secrets', 'credentials.json');
 const LEGACY_PATH = path.join(os.homedir(), '.claude', 'secrets', 'telegram-config.json');
+// #7113 (D-2) — store SEPARADO del ambiente de pruebas, misma estructura que el
+// canónico. No es un namespace dentro de `credentials.json`: un `loadIntoEnv`
+// de pruebas no puede ni ver el productivo. Quién lo elige: SOLO
+// `lib/credenciales-ambiente.js` (único punto de decisión por perfil).
+const CANONICAL_PATH_PRUEBAS = path.join(os.homedir(), '.claude', 'secrets', 'credentials.pruebas.json');
 
 // Directorio del store canónico — ancla de CA-4 (#5898). Vive FUERA del repo
 // POR DISEÑO: los secretos dentro del árbol versionado se pierden en cada
@@ -735,7 +740,7 @@ function evaluarVentanaBootstrap(cfg, { canonicalPath, legacyPath, ahora, logger
 
   // B1.4 — el archivo del fallback tiene que estar FUERA del árbol del repo,
   // aunque el flag esté encendido. No relajamos #5218 por la ventana.
-  for (const p of [canonicalPath, legacyPath]) {
+  for (const p of [canonicalPath, legacyPath].filter((x) => x !== null && x !== undefined)) {
     if (estaDentroDelRepo(p)) {
       logger(`[credentials] ERROR: el archivo de credenciales resuelve DENTRO del arbol del repo (${p}). `
         + 'Impacto: la ventana de bootstrap se RECHAZA aunque el flag este encendido (#5218). '
@@ -1632,7 +1637,10 @@ const LEGACY_KEY_BY_ENV = Object.freeze(Object.fromEntries(
  * @param {object} [opts]
  * @param {function} [opts.logger=console.log] Logger para warnings/errors.
  * @param {string}   [opts.canonicalPath]      Path del archivo canónico (override para tests).
- * @param {string}   [opts.legacyPath]         Path del archivo legacy (override para tests).
+ * @param {string|null} [opts.legacyPath]      Path del archivo legacy (override para tests).
+ *                                             `null` EXPLÍCITO = sin legacy (#7113, R-C): un
+ *                                             store de pruebas ausente NO cae al
+ *                                             `telegram-config.json` productivo.
  * @param {object}   [opts.env=process.env]    Env target (override para tests).
  * @param {object}   [opts.vaultConfig]        Sección `vault:` inyectada (tests).
  * @param {string}   [opts.pipelineDir]        Raíz de `.pipeline` para resolver config.yaml.
@@ -1647,7 +1655,8 @@ const LEGACY_KEY_BY_ENV = Object.freeze(Object.fromEntries(
 function loadIntoEnv(opts = {}) {
   const logger = typeof opts.logger === 'function' ? opts.logger : console.log;
   const canonicalPath = opts.canonicalPath || CANONICAL_PATH;
-  const legacyPath = opts.legacyPath || LEGACY_PATH;
+  // #7113 — `null` explícito neutraliza el legacy; `undefined` conserva el default.
+  const legacyPath = opts.legacyPath === null ? null : (opts.legacyPath || LEGACY_PATH);
   const env = opts.env || process.env;
 
   const result = {
@@ -1712,7 +1721,7 @@ function loadIntoEnv(opts = {}) {
     }
   }
 
-  if (!data && fs.existsSync(legacyPath)) {
+  if (!data && legacyPath !== null && fs.existsSync(legacyPath)) {
     try {
       data = readJsonFile(legacyPath);
       result.source = 'legacy';
@@ -1728,7 +1737,9 @@ function loadIntoEnv(opts = {}) {
     if (!vaultEstado.enabled) {
       // Con el gate cerrado, sin archivo no hay nada que hacer: exactamente el
       // mismo mensaje y el mismo camino de salida que antes de #5353.
-      logger(`[credentials] WARN: no se encontro ${canonicalPath} ni ${legacyPath}; process.env queda como esta`);
+      logger(legacyPath === null
+        ? `[credentials] WARN: no se encontro ${canonicalPath} (sin legacy); process.env queda como esta`
+        : `[credentials] WARN: no se encontro ${canonicalPath} ni ${legacyPath}; process.env queda como esta`);
       return result;
     }
     // Con el gate abierto la ausencia del archivo es el estado ESPERADO
@@ -2617,6 +2628,7 @@ module.exports = {
   // Los 10 símbolos históricos — ninguno se quita ni cambia de forma.
   loadIntoEnv,
   CANONICAL_PATH,
+  CANONICAL_PATH_PRUEBAS,
   LEGACY_PATH,
   ENV_MAPPING,
   LEGACY_MAPPING,

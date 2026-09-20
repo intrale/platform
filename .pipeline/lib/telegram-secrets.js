@@ -13,6 +13,17 @@
 // listener-telegram.js, servicio-telegram.js, rejection-report.js,
 // hydrate-provider-env.js). El cargador alternativo
 // `.pipeline/lib/credentials.js#loadIntoEnv()` cubre el path Pulpo multi-provider.
+//
+// #7113 (CA-3, RS-2) — POR PERFIL DE AMBIENTE. Ambas funciones aceptan
+// `{ env, ambiente }` (el env del proceso lo pasa el llamador; `ambiente` es el
+// resultado de `pipeline-env.resolve(env)` si ya lo tiene). En modo distinto de
+// `productivo` SOLO se mira la via 1 sobre las variables de PRUEBAS
+// (`TELEGRAM_BOT_TOKEN_PRUEBAS` / `TELEGRAM_CHAT_ID_PRUEBAS`, hidratadas por
+// `lib/credenciales-ambiente.js` desde `credentials.pruebas.json`): NO se
+// ejecutan las vias 2 (store productivo), 3 (home legacy) ni 4 (archivo
+// commiteado). Si faltan, el `throw TELEGRAM_SECRETS_MISSING` de siempre (los
+// callers ya degradan). Los nombres de las variables salen del modulo de
+// credenciales, nunca como literal sobre la global del proceso (ratchet CA-7).
 // =============================================================================
 
 'use strict';
@@ -52,22 +63,50 @@ function pickKey(value) {
 }
 
 /**
+ * #7113 — Resuelve (env, modo, nombres de variables) para ambas funciones.
+ * Requires diferidos a proposito: `credenciales-ambiente` carga `credentials`
+ * (pesado) y este modulo lo consumen procesos livianos; ademas evita cualquier
+ * ciclo de carga entre ambos.
+ */
+function perfilDelAmbiente(env, ambiente) {
+    const e = env && typeof env === 'object' ? env : process.env;
+    const pipelineEnv = require('./pipeline-env');
+    const amb = ambiente && typeof ambiente === 'object' ? ambiente : pipelineEnv.resolve(e);
+    const productivo = amb.modo === pipelineEnv.MODOS.PRODUCTIVO;
+    const { VARIABLES } = require('./credenciales-ambiente');
+    return { e, productivo, vars: productivo ? VARIABLES.productivo : VARIABLES.pruebas };
+}
+
+/**
  * Devuelve { bot_token, chat_id, source }.
  * Lanza Error si no encuentra credenciales validas en ninguna fuente.
  *
  * Prioridad (#3311):
  *   env > credentials.json (canonical, nested) > telegram-config.json home (flat) > legacy committed
+ *
+ * #7113: en modo distinto de `productivo` SOLO la via 1 sobre las variables
+ * `_PRUEBAS`; sin ellas lanza `TELEGRAM_SECRETS_MISSING`.
  */
-function loadTelegramSecrets({ legacyConfigPath, log } = {}) {
+function loadTelegramSecrets({ legacyConfigPath, log, env, ambiente } = {}) {
     const logger = typeof log === 'function' ? log : () => {};
+    const { e, productivo, vars } = perfilDelAmbiente(env, ambiente);
 
-    // 1) ENV
-    if (isLikelyToken(process.env.TELEGRAM_BOT_TOKEN) && process.env.TELEGRAM_CHAT_ID) {
+    // 1) ENV (variables del perfil: productivas o `_PRUEBAS`)
+    if (isLikelyToken(e[vars.botToken]) && e[vars.chatId]) {
         return {
-            bot_token: process.env.TELEGRAM_BOT_TOKEN,
-            chat_id: String(process.env.TELEGRAM_CHAT_ID),
+            bot_token: e[vars.botToken],
+            chat_id: String(e[vars.chatId]),
             source: 'env',
         };
+    }
+
+    // #7113 — en modo distinto de productivo no hay mas vias: ni store
+    // productivo, ni legacy del home, ni archivo commiteado (CA-3 bullet 1).
+    if (!productivo) {
+        const err = new Error(`Sin credenciales Telegram del ambiente de pruebas: faltan ${vars.botToken}+${vars.chatId} `
+            + '(se hidratan desde credentials.pruebas.json; ver docs/runbooks/ambiente-pruebas-credenciales.md).');
+        err.code = 'TELEGRAM_SECRETS_MISSING';
+        throw err;
     }
 
     // 2) Canonical credentials.json (#3311 - estructura nested unificada)
@@ -132,7 +171,12 @@ function loadTelegramSecrets({ legacyConfigPath, log } = {}) {
  * El consumidor decide que hacer cuando una key viene vacia (multimedia
  * loggea "falta openai_api_key" y degrada).
  */
-function loadApiKeys({ legacyConfigPath } = {}) {
+function loadApiKeys({ legacyConfigPath, env, ambiente } = {}) {
+    const { e, productivo, vars } = perfilDelAmbiente(env, ambiente);
+    // #7113 (CA-4) — en pruebas las API keys productivas NO se resuelven: ni del
+    // env (ya purgado), ni de ningun archivo. Vacias = el consumidor degrada.
+    if (!productivo) return { openai_api_key: '', anthropic_api_key: '' };
+
     const canonical = tryRead(CANONICAL_SECRETS) || {};
     const home = tryRead(HOME_SECRETS) || {};
     const legacy = legacyConfigPath ? (tryRead(legacyConfigPath) || {}) : {};
@@ -142,12 +186,12 @@ function loadApiKeys({ legacyConfigPath } = {}) {
 
     return {
         openai_api_key:
-            pickKey(process.env.OPENAI_API_KEY) ||
+            pickKey(e[vars.openaiApiKey]) ||
             pickKey(canonProv.openai && canonProv.openai.api_key) ||
             pickKey(home.openai_api_key) ||
             pickKey(legacy.openai_api_key),
         anthropic_api_key:
-            pickKey(process.env.ANTHROPIC_API_KEY) ||
+            pickKey(e[vars.anthropicApiKey]) ||
             pickKey(canonProv.anthropic && canonProv.anthropic.api_key) ||
             pickKey(home.anthropic_api_key) ||
             pickKey(legacy.anthropic_api_key),

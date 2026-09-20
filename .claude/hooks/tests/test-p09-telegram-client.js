@@ -73,6 +73,19 @@ describe("P-09: telegram-client.js compartido", () => {
         const configPath = path.join(__dirname, "..", "telegram-config.json");
         const inRepo = JSON.parse(fs.readFileSync(configPath, "utf8"));
 
+        // #7113 — el hook corre en un agente que el Pulpo spawnea con la
+        // declaración productiva (#7112, `buildChildEnv` copia PIPELINE_*). Sin
+        // ella `loadTelegramSecrets` resuelve `pruebas` y SOLO mira las variables
+        // `_PRUEBAS` (CA-3): las productivas se ignoran a propósito. El dir que
+        // pueda venir heredado (worktree de un agente) se quita para que la
+        // declaración resuelva al `.pipeline` de ESTE checkout (SEC-1), y la
+        // señal de corrida de test del runner (`NODE_TEST_CONTEXT`) también: en
+        // producción el hook no la tiene, y con ella la señal le gana a la
+        // declaración (SEC-5). Lo que se mide acá es la precedencia del
+        // chokepoint, no el resolvedor de ambiente.
+        const envHijo = { ...process.env };
+        for (const k of ["PIPELINE_REPO_ROOT", "PIPELINE_STATE_DIR", "PIPELINE_DIR_OVERRIDE", "NODE_TEST_CONTEXT", "NODE_ENV", "PULPO_NO_AUTOSTART"]) delete envHijo[k];
+
         const res = spawnSync(process.execPath, [
             "-e",
             `const c = require("${clientPath}").getConfig();`
@@ -80,7 +93,8 @@ describe("P-09: telegram-client.js compartido", () => {
         ], {
             encoding: "utf8",
             env: {
-                ...process.env,
+                ...envHijo,
+                PIPELINE_AMBIENTE: "productivo",
                 TELEGRAM_BOT_TOKEN: FAKE_BOT_TOKEN,
                 TELEGRAM_CHAT_ID: FAKE_CHAT_ID,
             },

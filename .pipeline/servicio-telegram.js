@@ -242,12 +242,31 @@ function log(msg) {
 // módulo) para que los tests `node --test` puedan importar las funciones puras
 // sin necesitar credenciales ni disparar `process.exit(1)`.
 let BOT_TOKEN, CHAT_ID;
+// #7113 (CA-3) — transporte del ambiente. Con el canal APAGADO (modo ≠
+// productivo sin credencial de pruebas) el servicio arranca igual y drena la
+// cola TRAZANDO cada saliente en `<dir>/servicios/telegram/trazas/` en vez de
+// llamar a `api.telegram.org`; nunca `process.exit(1)` por falta de secretos
+// productivos en un ambiente que por diseño no los tiene.
+let TRANSPORTE = null;
+function transporteTelegram() {
+  if (!TRANSPORTE) {
+    TRANSPORTE = require('./lib/credenciales-ambiente').transporteTelegram(process.env, {
+      logger: (m) => log(m),
+    });
+  }
+  return TRANSPORTE;
+}
 function loadSecretsOrExit() {
+  const transporte = transporteTelegram();
+  if (transporte.nulo) {
+    log(`transporte NULO (${transporte.motivo}): los salientes se trazan en ${transporte.trazasDir || 'stderr'} y no se envían`);
+    return;
+  }
   try {
-    const sec = loadTelegramSecrets({ legacyConfigPath: TELEGRAM_CONFIG, log });
+    const sec = loadTelegramSecrets({ legacyConfigPath: TELEGRAM_CONFIG, log, env: process.env });
     BOT_TOKEN = sec.bot_token;
     CHAT_ID = sec.chat_id;
-    log(`Secrets cargados desde: ${sec.source}`);
+    log(`Secrets cargados desde: ${sec.source} (modo=${transporte.modo}, destino=${transporte.destino})`);
   } catch (e) {
     console.error('FATAL: ' + e.message);
     health.markError(PIPELINE(), { code: e.code || 'NO_SECRETS', description: e.message, source: 'startup' });
@@ -291,7 +310,22 @@ function logDenialIfAny(method, err) {
  * POST con `retryable:true` porque sendMessage de Telegram tolera duplicados
  * con el mismo texto (Telegram de-dupea por chat_id + text cuando llega rápido).
  */
+/**
+ * #7113 — respuesta sintética del transporte nulo: `ok:true` + `message_id: 0`
+ * para que el drainer marque el saliente como procesado (la cola de pruebas
+ * tiene que vaciarse) y `nulo: true` para que un recibo lo distinga de un envío.
+ */
+function trazarEnVezDeEnviar(method, params, extra = {}) {
+  const transporte = transporteTelegram();
+  const texto = (params && (params.text || params.caption)) || extra.filename || '';
+  const r = transporte.trazar({ origen: `servicio-telegram:${method}`, chatId: CHAT_ID, texto, metodo: method });
+  log(`${method}: TRAZADO, no enviado (${transporte.motivo}) → ${r.archivo || 'stderr'}`);
+  return { ok: true, nulo: true, result: { message_id: 0, nulo: true } };
+}
+
 async function telegramSend(method, params) {
+  // #7113 (CA-3 bullet 3) — con el canal apagado no se abre conexión.
+  if (transporteTelegram().nulo) return trazarEnVezDeEnviar(method, params);
   const url = `https://api.telegram.org/bot${BOT_TOKEN}/${method}`;
   const body = { chat_id: CHAT_ID, ...params };
   try {
@@ -370,6 +404,8 @@ function buildMultipartBody({ chatId, fieldName, rawFilename, fileData, extraFie
 }
 
 async function telegramSendMultipart(method, fieldName, filePath, extra = {}, contentType = 'application/octet-stream') {
+  // #7113 (CA-3 bullet 3) — con el canal apagado no se abre conexión ni se lee el archivo.
+  if (transporteTelegram().nulo) return trazarEnVezDeEnviar(method, extra, { filename: path.basename(String(filePath || '')) });
   // CA-UX-EXT-3 + defensa CRLF: si el caller pasó `filename`, lo usamos
   // sanitizado; si no, basename del path en disco.
   const rawFilename = (typeof extra.filename === 'string' && extra.filename.length > 0)
