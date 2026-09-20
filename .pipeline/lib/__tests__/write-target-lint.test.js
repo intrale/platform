@@ -115,14 +115,18 @@ const TEST_VERDE_MKDTEMP = [
     PE + '.PIPELINE_DIR_OVERRIDE = dir;',
 ].join('\n');
 
-function testConValor(forma, valor) {
+// `variable` por defecto: una de DIRECTORIO (`PIPELINE_DIR_OVERRIDE` /
+// `PIPELINE_STATE_DIR`), cuyo valor ES el destino. `PIPELINE_REPO_ROOT` aporta
+// la RAIZ del repo (destino efectivo `<valor>/.pipeline`) y se prueba aparte
+// con un valor realista (rebote QA de #7114: `.pipeline/logs` como raiz era irreal).
+function testConValor(forma, valor, variable) {
     const cabecera = "const path = require('path'); const os = require('os');\n";
     switch (forma) {
-        case 'directa': return cabecera + PE + '.PIPELINE_DIR_OVERRIDE = ' + valor + ';\n';
-        case 'computed': return cabecera + PE + "['PIPELINE_STATE_DIR'] = " + valor + ';\n';
-        case 'Object.assign': return cabecera + 'Object.assign(' + PE + ', { PIPELINE_REPO_ROOT: ' + valor + ' });\n';
-        case 'withEnv': return cabecera + 'withEnv({ PIPELINE_DIR_OVERRIDE: ' + valor + ' }, () => {});\n';
-        case 'spawn env': return cabecera + "spawnSync('node', ['x.js'], { env: { ..." + PE + ', PIPELINE_DIR_OVERRIDE: ' + valor + ' } });\n';
+        case 'directa': return cabecera + PE + '.' + (variable || 'PIPELINE_DIR_OVERRIDE') + ' = ' + valor + ';\n';
+        case 'computed': return cabecera + PE + "['" + (variable || 'PIPELINE_STATE_DIR') + "'] = " + valor + ';\n';
+        case 'Object.assign': return cabecera + 'Object.assign(' + PE + ', { ' + (variable || 'PIPELINE_STATE_DIR') + ': ' + valor + ' });\n';
+        case 'withEnv': return cabecera + 'withEnv({ ' + (variable || 'PIPELINE_DIR_OVERRIDE') + ': ' + valor + ' }, () => {});\n';
+        case 'spawn env': return cabecera + "spawnSync('node', ['x.js'], { env: { ..." + PE + ', ' + (variable || 'PIPELINE_DIR_OVERRIDE') + ': ' + valor + ' } });\n';
         case 'pipelineDir:': return cabecera + 'resolve(' + PE + ', { pipelineDir: ' + valor + ' });\n';
         default: throw new Error(forma);
     }
@@ -386,7 +390,7 @@ for (const forma of FORMAS) {
             assert.strictEqual(h.line, 2);
             assert.strictEqual(h.destino, '.pipeline/logs');
             assert.strictEqual(h.canal, 'logs');
-            assert.ok(['PIPELINE_DIR_OVERRIDE', 'PIPELINE_STATE_DIR', 'PIPELINE_REPO_ROOT', 'pipelineDir'].includes(h.variable));
+            assert.ok(['PIPELINE_DIR_OVERRIDE', 'PIPELINE_STATE_DIR', 'pipelineDir'].includes(h.variable));
             const primera = r.lines.find((l) => /^LINT R3:/.test(l));
             assert.match(primera, /^LINT R3: \.pipeline\/tests\/caso\.test\.js:2 -> \.pipeline\/logs \(canal logs\)/);
             assert.match(primera, /variable: /);
@@ -499,6 +503,98 @@ test('R3 · valor NO resoluble (mkdtemp, variable, ensureTestRunDir) -> verde; e
         assert.match(r.lines[0], /^OK — \d+ modulos, \d+ tests escaneados, 0 hallazgos nuevos/);
         assert.ok(!r.lines.some((l) => /^LINT /.test(l)), 'sin observaciones');
     } finally { f.limpiar(); }
+});
+
+// ── R3 · PIPELINE_REPO_ROOT = raiz del repo (rebote QA de #7114) ─────────────
+//
+// `PIPELINE_REPO_ROOT` no es un dir de estado: el resolvedor le agrega
+// `/.pipeline` y los skills deterministicos (`build.js`, `delivery.js`,
+// `linter.js`, `tester.js`) la usan como `REPO_ROOT` y escriben debajo. Un test
+// que la fija a la RAIZ del repo apunta al productivo aunque la raiz no este
+// DENTRO de `.pipeline`. Antes del fix las 5 formas resolubles pasaban en verde.
+
+const FORMAS_ENV = FORMAS.filter((f) => f !== 'pipelineDir:');
+
+for (const forma of FORMAS_ENV) {
+    test(`R3 · PIPELINE_REPO_ROOT = raiz del repo (forma \`${forma}\`, path.join(__dirname, '..', '..')) -> rojo con destino .pipeline`, () => {
+        const f = fixture({
+            modulos: { 'lib/a.js': MOD_MIGRADO },
+            tests: { '.pipeline/tests/raiz.test.js': testConValor(forma, "path.join(__dirname, '..', '..')", 'PIPELINE_REPO_ROOT') },
+        });
+        try {
+            const r = f.run();
+            assert.strictEqual(r.code, 1, r.lines.join('\n'));
+            const h = r.hallazgos.find((x) => x.regla === 'R3');
+            assert.ok(h, 'hallazgo R3');
+            assert.strictEqual(h.file, '.pipeline/tests/raiz.test.js');
+            assert.strictEqual(h.line, 2);
+            assert.strictEqual(h.variable, 'PIPELINE_REPO_ROOT');
+            assert.strictEqual(h.destino, '.pipeline');
+            assert.strictEqual(h.canal, 'estado');
+            assert.match(h.reason, /destino efectivo es <valor>\/\.pipeline/);
+            const primera = r.lines.find((l) => /^LINT R3:/.test(l));
+            assert.match(primera, /^LINT R3: \.pipeline\/tests\/raiz\.test\.js:2 -> \.pipeline \(canal estado\)/);
+        } finally { f.limpiar(); }
+    });
+}
+
+test('R3 · PIPELINE_REPO_ROOT = raiz del repo en las otras formas de valor (template, `__dirname +`, path.resolve, literal absoluto) -> rojo', () => {
+    const f = fixture({ modulos: { 'lib/a.js': MOD_MIGRADO } });
+    try {
+        const casos = [
+            '`${__dirname}/../..`',
+            "__dirname " + PLUS + " '/../..'",
+            "path.resolve(__dirname, '..', '..')",
+            JSON.stringify(f.root),
+        ];
+        fs.mkdirSync(path.join(f.pipeline, 'tests'));
+        casos.forEach((v, i) => fs.writeFileSync(path.join(f.pipeline, 'tests', `r${i}.test.js`), testConValor('directa', v, 'PIPELINE_REPO_ROOT')));
+        const r = f.run();
+        assert.strictEqual(r.code, 1, r.lines.join('\n'));
+        const archivos = r.hallazgos.filter((h) => h.regla === 'R3').map((h) => h.file).sort();
+        assert.deepStrictEqual(archivos, casos.map((_, i) => `.pipeline/tests/r${i}.test.js`).sort(), r.lines.join('\n'));
+        for (const h of r.hallazgos) assert.strictEqual(h.destino, '.pipeline');
+    } finally { f.limpiar(); }
+});
+
+test('R3 · PIPELINE_REPO_ROOT fijada a un subdir del productivo sigue siendo rojo, con el destino efectivo <valor>/.pipeline', () => {
+    const f = fixture({
+        modulos: { 'lib/a.js': MOD_MIGRADO },
+        tests: { '.pipeline/tests/sub.test.js': testConValor('Object.assign', "path.join(__dirname, '..', 'logs')", 'PIPELINE_REPO_ROOT') },
+    });
+    try {
+        const r = f.run();
+        assert.strictEqual(r.code, 1, r.lines.join('\n'));
+        const h = r.hallazgos.find((x) => x.regla === 'R3');
+        assert.ok(h);
+        assert.strictEqual(h.destino, '.pipeline/logs/.pipeline');
+    } finally { f.limpiar(); }
+});
+
+test('R3 · PIPELINE_REPO_ROOT = OTRO repo (mkdtemp hermano, no heredado) -> verde; la derivacion no inventa productivos', () => {
+    const f = fixture({ modulos: { 'lib/a.js': MOD_MIGRADO } });
+    const otroRepo = fs.mkdtempSync(path.join(os.tmpdir(), 'wtl-7114-otro-'));
+    try {
+        fs.mkdirSync(path.join(otroRepo, '.pipeline'));
+        fs.mkdirSync(path.join(f.pipeline, 'tests'));
+        fs.writeFileSync(path.join(f.pipeline, 'tests', 'otro.test.js'), testConValor('directa', JSON.stringify(otroRepo), 'PIPELINE_REPO_ROOT'));
+        const r = f.run({ env: {} });
+        assert.strictEqual(r.code, 0, r.lines.join('\n'));
+        assert.ok(!r.hallazgos.some((h) => h.regla === 'R3'));
+    } finally {
+        f.limpiar();
+        fs.rmSync(otroRepo, { recursive: true, force: true });
+    }
+});
+
+test('R3 · destinoEfectivo: solo PIPELINE_REPO_ROOT deriva /.pipeline; las variables de DIRECTORIO y pipelineDir no', () => {
+    const base = path.join(os.tmpdir(), 'x');
+    assert.strictEqual(I.destinoEfectivo('PIPELINE_REPO_ROOT', base), path.join(base, '.pipeline'));
+    for (const v of ['PIPELINE_DIR_OVERRIDE', 'PIPELINE_STATE_DIR', 'pipelineDir']) {
+        assert.strictEqual(I.destinoEfectivo(v, base), base, v);
+    }
+    assert.strictEqual(I.VARIABLE_RAIZ, 'PIPELINE_REPO_ROOT');
+    assert.strictEqual(I.SUBDIR_RAIZ, '.pipeline');
 });
 
 test('R3 / SEC-9 · la union incluye PIPELINE_REPO_ROOT/.pipeline heredado del proceso', () => {
@@ -684,6 +780,17 @@ test('CA-6 · el hook pre-commit y el workflow de CI corren el guardrail (sin --
     assert.match(yml, /node lib\/write-target-lint\.js --check/);
     assert.match(yml, /write-target-lint\.test\.js/);
     assert.match(yml, /ADVISORY/);
+    // Rebote QA de #7114: el lint requiere `js-yaml` (via pipeline-env -> config-resolver),
+    // que vive en el package.json de la RAIZ. El job instala ANTES de correr, desde la
+    // raiz (sin `working-directory`) y sin scripts (SEC-5).
+    const install = yml.indexOf('npm ci --ignore-scripts');
+    const check = yml.indexOf('node lib/write-target-lint.js --check');
+    assert.ok(install > 0, 'el job instala las dependencias raiz con npm ci --ignore-scripts');
+    assert.ok(install < check, 'npm ci corre ANTES del lint');
+    const pasoInstall = yml.slice(yml.lastIndexOf('- name:', install), install);
+    assert.doesNotMatch(pasoInstall, /working-directory/, 'npm ci corre desde la raiz del repo');
+    const raiz = JSON.parse(fs.readFileSync(path.join(REPO_REAL, 'package.json'), 'utf8'));
+    assert.ok(raiz.dependencies && raiz.dependencies['js-yaml'], 'js-yaml sigue siendo dependencia raiz');
 });
 
 // ── helpers ──────────────────────────────────────────────────────────────────

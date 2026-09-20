@@ -37,6 +37,15 @@ jobs:
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '20'
+          cache: npm
+
+      # El lint carga `pipeline-env` -> `config-resolver` -> `js-yaml`, que vive
+      # en el `package.json` de la RAIZ (no de `.pipeline`). Sin este paso el job
+      # muere con exit 2 "Cannot find module 'js-yaml'" (rebote QA de #7114).
+      # `--ignore-scripts`: no hace falta compilar nativos (canvas/tesseract) ni
+      # correr `prepare` (husky) para un lint estatico; SEC-5, sin side effects.
+      - name: Install root dependencies
+        run: npm ci --ignore-scripts
 
       # `DEFAULT_PIPELINE_ROOT` se resuelve contra `__dirname`, nunca contra
       # `process.cwd()`: el hook lo invoca desde la raiz del repo y este job

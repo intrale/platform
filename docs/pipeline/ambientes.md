@@ -117,7 +117,10 @@ node .pipeline/lib/write-target-lint.js --write-baseline   # sólo cuando el bas
 
 Corre en `.husky/pre-commit` cuando hay archivos `.pipeline/` staged (universo
 completo, sin `--only`: R1 y R2 son propiedades del inventario entero) y en CI
-por `.github/workflows/write-target-lint.yml` (advisory hasta #6265). Fail-closed:
+por `.github/workflows/write-target-lint.yml` (advisory hasta #6265). El job
+instala las dependencias de la **raíz** con `npm ci --ignore-scripts` antes de
+correr: el lint carga `pipeline-env` → `config-resolver` → `js-yaml`, que vive
+en el `package.json` raíz, y sin ese paso muere con exit 2. Fail-closed:
 inventario, baseline o `pipeline-env` que no cargan ⇒ exit 2; cero módulos o
 cero tests escaneados ⇒ exit 1.
 
@@ -138,6 +141,13 @@ LINT R3: .pipeline/tests/foo.test.js:42 -> .pipeline/logs (canal logs)
 
 Detalles que importan:
 
+- `PIPELINE_REPO_ROOT` aporta la **raíz del repo**, no el dir de estado: R3
+  compara `<valor>/.pipeline` (la misma semántica que el resolvedor y que la
+  unión SEC-9). Fijarla a la raíz del repo (`path.join(__dirname, '..', '..')`
+  desde `.pipeline/tests/`) es rojo con destino `.pipeline`, aunque la raíz no
+  esté *dentro* de `.pipeline`; es el vector real de los skills determinísticos
+  (`build.js`, `delivery.js`, `linter.js`, `tester.js`), que resuelven
+  `REPO_ROOT = process.env.PIPELINE_REPO_ROOT || …` y escriben debajo.
 - La comparación es **canónica** (realpath del ancestro existente, minúsculas
   en Windows, sin `\\?\`): un drive en minúscula o una junction no evaden.
 - **La inexistencia del destino no exime**: `path.join(__dirname, 'no_existe')`

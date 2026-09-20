@@ -36,7 +36,10 @@
 //      `PIPELINE_REPO_ROOT` o la opcion `pipelineDir:` con un valor RESOLUBLE
 //      estaticamente (`path.join|resolve(__dirname, ...)`, `${__dirname}...`,
 //      `__dirname + ...`, literal absoluto) que cae dentro del `.pipeline`
-//      productivo es rojo. Las 6 formas de SEC-7: `process.env.X =`,
+//      productivo es rojo. `PIPELINE_REPO_ROOT` aporta la RAIZ del repo: el
+//      destino que se compara es `<valor>/.pipeline` (misma semantica que el
+//      resolvedor y que la union SEC-9), asi que fijarla a la raiz del repo
+//      es rojo aunque la raiz no este dentro de `.pipeline`. Las 6 formas de SEC-7: `process.env.X =`,
 //      `process.env['X'] =`, `Object.assign(process.env, {X})`, `withEnv({X})`,
 //      `env: {...process.env, X}` de spawn/exec/fork y `pipelineDir:`. Valor no
 //      resoluble (mkdtemp, variable, `ensureTestRunDir()`) NO es rojo: lo cubre
@@ -92,6 +95,22 @@ const ORIGENES_TESTS = Object.freeze([
 
 /** Variables que aportan DIRECTORIO al resolvedor (precedencia D-1 de `pipeline-env`). */
 const VARIABLES_DIR = Object.freeze(['PIPELINE_DIR_OVERRIDE', 'PIPELINE_STATE_DIR', 'PIPELINE_REPO_ROOT']);
+/**
+ * `PIPELINE_REPO_ROOT` aporta la RAIZ del repo, no el dir de estado: el
+ * resolvedor le agrega `/.pipeline` (`pipeline-env`, precedencia D-1) y los
+ * skills deterministicos (`build.js`, `delivery.js`, `linter.js`, `tester.js`)
+ * la usan como `REPO_ROOT` y escriben debajo. R3 compara entonces
+ * `<valor>/.pipeline` contra los miembros, igual que la union SEC-9: un test
+ * que la fija a la raiz del repo es rojo aunque la raiz no este DENTRO de
+ * `.pipeline` (rebote QA de #7114).
+ */
+const VARIABLE_RAIZ = 'PIPELINE_REPO_ROOT';
+const SUBDIR_RAIZ = '.pipeline';
+
+/** Destino EFECTIVO al que apunta una variable/opcion con el valor `resuelto`. */
+function destinoEfectivo(variable, resuelto) {
+    return variable === VARIABLE_RAIZ ? path.join(resuelto, SUBDIR_RAIZ) : resuelto;
+}
 /** Opcion que fija el dir por parametro (`modo: explicito` de `pipeline-env`, `write-target`, `test-run-dir`). */
 const OPCION_DIR = 'pipelineDir';
 
@@ -538,13 +557,16 @@ function lintTest(abs, repoRoot, miembros) {
         let expr = extraerExpresion(cand.resto);
         // Valor en la linea siguiente (`X:\n    path.join(__dirname, ...)`).
         if (!expr && lineas[cand.i + 1] !== undefined) expr = extraerExpresion(codigoDe(lineas[cand.i + 1]));
-        const resuelto = resolverValor(expr, testDir);
-        if (!resuelto) continue;
+        const valor = resolverValor(expr, testDir);
+        if (!valor) continue;
+        // `PIPELINE_REPO_ROOT` = raiz del repo -> el destino real es `<raiz>/.pipeline`.
+        const resuelto = destinoEfectivo(cand.variable, valor);
         const miembro = miembroQueContiene(resuelto, miembros);
         if (!miembro) continue;
         const destino = destinoRelativo(resuelto, miembro);
+        const derivado = resuelto !== valor ? ` (${cand.variable} es la raiz del repo: el destino efectivo es <valor>/${SUBDIR_RAIZ})` : '';
         out.push(hallazgo('R3', file, cand.i + 1, destino, canalDeDestino(destino),
-            `el test fija ${cand.variable} (forma ${cand.forma}) a un destino dentro del .pipeline productivo`
+            `el test fija ${cand.variable} (forma ${cand.forma}) a un destino dentro del .pipeline productivo` + derivado
             + (fs.existsSync(resuelto) ? '' : ' (el destino no existe hoy: un mkdirSync recursivo lo crea — SEC-2)'),
             { variable: cand.variable, forma: cand.forma, snippet: sanear(codigoDe(lineas[cand.i])), clave: file + '::' + cand.variable + '::' + destino }));
     }
@@ -859,10 +881,10 @@ module.exports = {
     _internal: {
         canonizar, miembrosProductivo, miembroQueContiene, destinoRelativo, sanear,
         loadInventario, loadBaseline, lintInventario, pendientesEfectivos,
-        listarTests, walkTests, inScope, lintTest, resolverValor, extraerExpresion, splitArgs, literalString,
+        listarTests, walkTests, inScope, lintTest, resolverValor, destinoEfectivo, extraerExpresion, splitArgs, literalString,
         formatHallazgo, remediosPara, deltaVsHead, canalDeDestino, assertWorktreeLimpio,
         REMEDIO_SYNC, REMEDIO_CURAR, REMEDIO_TEST, REMEDIO_BASELINE, REMEDIO_NO_VERIFY, REMEDIOS_TODOS,
-        SELF_EXEMPT, ORIGENES_TESTS, VARIABLES_DIR, OPCION_DIR, SKIP_DIRS, SCRATCH_DIR_RE,
+        SELF_EXEMPT, ORIGENES_TESTS, VARIABLES_DIR, VARIABLE_RAIZ, SUBDIR_RAIZ, OPCION_DIR, SKIP_DIRS, SCRATCH_DIR_RE,
         DEFAULT_PIPELINE_ROOT, BASELINE_FILE, INVENTARIO_FILE, LOG_PREFIX, CANALES,
         RE_ENV_ASIGNA, RE_PROPIEDAD,
     },
