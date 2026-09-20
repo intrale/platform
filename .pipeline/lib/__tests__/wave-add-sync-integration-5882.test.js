@@ -762,11 +762,11 @@ function setupIntegracionTelegram() {
     fs.mkdirSync(path.join(dir, 'servicios', 'telegram', 'pendiente'), { recursive: true });
     fs.mkdirSync(path.join(dir, 'state'), { recursive: true });
     _tgEnvPrevio6117 = {
-        token: process.env.TELEGRAM_BOT_TOKEN,
-        chat: process.env.TELEGRAM_CHAT_ID,
+        token: process.env.TELEGRAM_BOT_TOKEN_PRUEBAS,
+        chat: process.env.TELEGRAM_CHAT_ID_PRUEBAS,
     };
-    process.env.TELEGRAM_BOT_TOKEN = TG_TOKEN_FAKE_6117;
-    process.env.TELEGRAM_CHAT_ID = '999999';
+    process.env.TELEGRAM_BOT_TOKEN_PRUEBAS = TG_TOKEN_FAKE_6117;
+    process.env.TELEGRAM_CHAT_ID_PRUEBAS = '999999';
     // Estado de proceso: sin limpiarlo, un test silencia al siguiente.
     try { pulpo._resetAutoRepairFailureDedupe(); } catch (_) {}
     return dir;
@@ -774,10 +774,10 @@ function setupIntegracionTelegram() {
 
 function teardownIntegracionTelegram(dir) {
     if (_tgEnvPrevio6117) {
-        if (_tgEnvPrevio6117.token === undefined) delete process.env.TELEGRAM_BOT_TOKEN;
-        else process.env.TELEGRAM_BOT_TOKEN = _tgEnvPrevio6117.token;
-        if (_tgEnvPrevio6117.chat === undefined) delete process.env.TELEGRAM_CHAT_ID;
-        else process.env.TELEGRAM_CHAT_ID = _tgEnvPrevio6117.chat;
+        if (_tgEnvPrevio6117.token === undefined) delete process.env.TELEGRAM_BOT_TOKEN_PRUEBAS;
+        else process.env.TELEGRAM_BOT_TOKEN_PRUEBAS = _tgEnvPrevio6117.token;
+        if (_tgEnvPrevio6117.chat === undefined) delete process.env.TELEGRAM_CHAT_ID_PRUEBAS;
+        else process.env.TELEGRAM_CHAT_ID_PRUEBAS = _tgEnvPrevio6117.chat;
         _tgEnvPrevio6117 = null;
     }
     teardown(dir);

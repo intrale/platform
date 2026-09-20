@@ -151,6 +151,8 @@ function baseAgentModels() {
 // processEnv del operador con TODAS las API keys (worst case).
 function operatorProcessEnv() {
     return {
+        // #7113 — env productivo declarado (ver build-child-env-least-privilege.test.js).
+        PIPELINE_AMBIENTE: 'productivo',
         PATH: '/usr/bin:/bin',
         SystemRoot: 'C:\\Windows',
         ANTHROPIC_API_KEY: 'sk-ant-PRIMARY-secret',

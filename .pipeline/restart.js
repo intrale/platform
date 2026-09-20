@@ -49,15 +49,42 @@ require('./lib/java-home-normalizer').normalizeJavaHome({
   log: (msg) => console.error(msg),
 });
 
-// #3311 — Hidratar process.env desde ~/.claude/secrets/credentials.json antes
-// de spawnear los hijos del pipeline (pulpo, listener, svc-*). Los procesos
-// hijo heredan el env del padre, así que con una sola invocación acá todos
-// los componentes reciben las API keys de providers + tokens Telegram sin que
-// el operador tenga que setear setx manualmente. Degradación silenciosa si
-// el archivo no existe.
-require('./lib/credentials').loadIntoEnv({
+// #7112 · CA-6 — restart.js es uno de los TRES entrypoints humanos/SO de la
+// cadena de declaración de ambiente (con watchdog.ps1 y launch.ps1): nadie
+// declara por él, así que declara `productivo` si no venía nada (`??=`: #7111
+// puede lanzar un pipeline de pruebas declarando `pruebas` explícito). Sin esto,
+// sus PROPIAS escrituras (last-restart.json, logs/, colas) fallarían ruidoso al
+// correrlo desde la consola, y los servicios que spawnea nacerían sin ambiente.
+// #7113 — va ANTES de la hidratación por perfil: el perfil de credenciales se
+// resuelve sobre la declaración, no al revés.
+const launcherEnv = require('./lib/launcher-env');
+const writeTarget = require('./lib/write-target');
+launcherEnv.declararRaiz(process.env);
+
+// #7113 · ítem 9 — fail-fast por `dir === null` ANTES de hidratar y de matar o
+// relanzar servicios: sin ambiente resoluble no hay nada que reiniciar. Misma
+// decisión y mismo formateador que todo bloqueo de escritura (write-target).
+{
+  const arranque = writeTarget.resolverEscritura(process.env,
+    { canal: 'estado', destino: 'arranque de restart.js (.pipeline raíz)' });
+  if (arranque.bloqueo) {
+    console.error(`${arranque.bloqueo}\n[ambiente] sin dir: nada que reiniciar (abortado antes de hidratar credenciales)`);
+    process.exit(1);
+  }
+}
+
+// #3311 — Hidratar process.env antes de spawnear los hijos del pipeline (pulpo,
+// listener, svc-*). Los procesos hijo heredan el env del padre, así que con una
+// sola invocación acá todos los componentes reciben las API keys de providers +
+// tokens Telegram sin que el operador tenga que setear setx manualmente.
+// #7113 (CA-1) — POR PERFIL: `credentials.json` sólo en `productivo`; en
+// cualquier otro modo se purgan las productivas heredadas y se hidrata sólo
+// `credentials.pruebas.json` (ver `lib/credenciales-ambiente.js`). Los hijos
+// heredan el env ya hidratado/purgado. Bloque UX-1 una sola vez.
+const credAmb = require('./lib/credenciales-ambiente').aplicar(process.env, {
   logger: (m) => console.error(m),
 });
+for (const lineaAmbiente of credAmb.resumen) console.error(lineaAmbiente);
 
 // --- VALIDACIÓN FORCE_PROVIDER_OVERRIDE (#3680 CA-A9) ---
 // Boot fail-fast EN restart.js TAMBIÉN (no sólo pulpo). Si el operador hace
@@ -82,16 +109,6 @@ if (process.env.FORCE_PROVIDER_OVERRIDE && process.env.PULPO_ALLOW_FORCE_PROVIDE
     'pipeline corre en modo override forzado. Sólo emergencias documentadas.'
   );
 }
-
-// #7112 · CA-6 — restart.js es uno de los TRES entrypoints humanos/SO de la
-// cadena de declaración de ambiente (con watchdog.ps1 y launch.ps1): nadie
-// declara por él, así que declara `productivo` si no venía nada (`??=`: #7111
-// puede lanzar un pipeline de pruebas declarando `pruebas` explícito). Sin esto,
-// sus PROPIAS escrituras (last-restart.json, logs/, colas) fallarían ruidoso al
-// correrlo desde la consola, y los servicios que spawnea nacerían sin ambiente.
-const launcherEnv = require('./lib/launcher-env');
-const writeTarget = require('./lib/write-target');
-launcherEnv.declararRaiz(process.env);
 
 // El repo principal es el padre de ESTE archivo (código); el directorio del
 // pipeline (estado) se resuelve POR LLAMADA vía write-target (SEC-13): con la

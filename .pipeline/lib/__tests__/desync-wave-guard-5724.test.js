@@ -624,11 +624,11 @@ function setupTelegram() {
     const dir = setup();
     fs.mkdirSync(path.join(dir, 'servicios', 'telegram', 'pendiente'), { recursive: true });
     _tgEnvPrevio = {
-        token: process.env.TELEGRAM_BOT_TOKEN,
-        chat: process.env.TELEGRAM_CHAT_ID,
+        token: process.env.TELEGRAM_BOT_TOKEN_PRUEBAS,
+        chat: process.env.TELEGRAM_CHAT_ID_PRUEBAS,
     };
-    process.env.TELEGRAM_BOT_TOKEN = TG_TOKEN_FAKE;
-    process.env.TELEGRAM_CHAT_ID = '999999';
+    process.env.TELEGRAM_BOT_TOKEN_PRUEBAS = TG_TOKEN_FAKE;
+    process.env.TELEGRAM_CHAT_ID_PRUEBAS = '999999';
     // El dedupe del aviso de fallo es estado de PROCESO, no del tmpdir: sin
     // limpiarlo, un test que ya emitió una firma silencia al siguiente que use
     // la misma, y el fallo se lee como un bug del código bajo prueba.
@@ -638,10 +638,10 @@ function setupTelegram() {
 
 function teardownTelegram(dir) {
     if (_tgEnvPrevio) {
-        if (_tgEnvPrevio.token === undefined) delete process.env.TELEGRAM_BOT_TOKEN;
-        else process.env.TELEGRAM_BOT_TOKEN = _tgEnvPrevio.token;
-        if (_tgEnvPrevio.chat === undefined) delete process.env.TELEGRAM_CHAT_ID;
-        else process.env.TELEGRAM_CHAT_ID = _tgEnvPrevio.chat;
+        if (_tgEnvPrevio.token === undefined) delete process.env.TELEGRAM_BOT_TOKEN_PRUEBAS;
+        else process.env.TELEGRAM_BOT_TOKEN_PRUEBAS = _tgEnvPrevio.token;
+        if (_tgEnvPrevio.chat === undefined) delete process.env.TELEGRAM_CHAT_ID_PRUEBAS;
+        else process.env.TELEGRAM_CHAT_ID_PRUEBAS = _tgEnvPrevio.chat;
         _tgEnvPrevio = null;
     }
     teardown(dir);
