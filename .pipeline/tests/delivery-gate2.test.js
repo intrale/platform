@@ -12,7 +12,6 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { spawnSync } = require('node:child_process');
 
 const delivery = require('../delivery');
 const gate = require('../lib/operator-signature');
@@ -252,18 +251,29 @@ test('G1 · CA-6 — el entrypoint del CLI declara raíz (mismo patrón que roll
     const mainBlock = src.slice(src.indexOf('if (require.main === module) {'));
     assert.ok(mainBlock.length > 0, 'delivery.js tiene bloque main');
     assert.match(mainBlock, /require\('\.\/lib\/launcher-env'\)\.declararRaiz\(process\.env\)/);
-    // Como módulo NO declara. Se comprueba en un proceso hijo SIN la variable:
-    // el env de este runner no es evidencia (#7114 rebote rev-2 — bajo el Pulpo
-    // el tester hereda `PIPELINE_AMBIENTE=productivo` de watchdog.ps1 y asertar
-    // sobre `process.env` acá fallaba sin que delivery.js hiciera nada).
+    // "Sólo como main": la ÚNICA llamada a `declararRaiz` del archivo vive en el
+    // bloque main (fuera de él, un `require('../delivery')` declararía productivo
+    // a quien lo cargue — justamente lo que CA-6 prohíbe).
+    const llamadas = src.match(/\.declararRaiz\(/g) || [];
+    assert.strictEqual(llamadas.length, 1, 'delivery.js invoca declararRaiz exactamente una vez');
+    assert.strictEqual((src.slice(0, src.indexOf('if (require.main === module) {')).match(/\.declararRaiz\(/g) || []).length, 0,
+        'ninguna llamada a declararRaiz antes del bloque main');
+    // Como módulo NO declara. #7438 rev-2: NO se asserta el valor crudo de
+    // `PIPELINE_AMBIENTE` del runner — desde #7455 el Pulpo declara `productivo`
+    // a TODOS sus hijos (`conDeclaracionExplicita`, CA-7.2), y el `node --test`
+    // del tester lo hereda; asertar `!== 'productivo'` acá rompía la suite en
+    // producción para cualquier issue. Lo que importa es (a) que cargar el
+    // módulo en un proceso SIN declaración lo deje sin declaración, y (b) que el
+    // runner resuelva `pruebas` (SEC-5) sea cual sea el valor heredado.
+    const { execFileSync } = require('node:child_process');
     const envHijo = { ...process.env };
     delete envHijo.PIPELINE_AMBIENTE;
-    const hijo = spawnSync(process.execPath, [
-        '-e',
-        "require('./delivery'); process.stdout.write(String(process.env.PIPELINE_AMBIENTE))",
-    ], { cwd: path.join(__dirname, '..'), env: envHijo, encoding: 'utf8', windowsHide: true });
-    assert.strictEqual(hijo.status, 0, `require('./delivery') como módulo salió con ${hijo.status}: ${hijo.stderr}`);
-    assert.strictEqual(hijo.stdout, 'undefined', 'requerir delivery.js como módulo no declara ambiente');
+    const sinDeclarar = execFileSync(process.execPath, [
+        '-e', "require('./delivery'); process.stdout.write(String(process.env.PIPELINE_AMBIENTE));",
+    ], { cwd: path.join(__dirname, '..'), env: envHijo, encoding: 'utf8', windowsHide: true, timeout: 30000 });
+    assert.strictEqual(sinDeclarar, 'undefined', 'require(delivery) como módulo no declara PIPELINE_AMBIENTE');
+    assert.notStrictEqual(require('../lib/pipeline-env').resolve(process.env).modo, 'productivo',
+        'el runner de tests resuelve pruebas aunque herede la declaración del Pulpo (SEC-5)');
     // Y en `main` el `writeDir` de audit vive DENTRO del helper, no antes del kill switch.
     const mainFn = src.slice(src.indexOf('function main()'), src.indexOf('if (require.main === module) {'));
     assert.ok(!/writeDir\(/.test(mainFn), 'main() no resuelve el dir de audit por su cuenta');
