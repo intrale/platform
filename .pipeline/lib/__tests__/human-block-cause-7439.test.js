@@ -170,8 +170,8 @@ test('#7439 CA-5 — listBlockedIssues y listBlockedMarkers exponen `cause` y `s
     const markers = hb.listBlockedMarkers(7439);
     assert.equal(markers.length, 1);
     assert.equal(markers[0].cause, 'design-decision');
-    assert.deepEqual(Object.keys(markers[0]).sort(), ['cause', 'file', 'phase', 'pipeline', 'skill'],
-        'las claves históricas de listBlockedMarkers no cambian: sólo se suma cause');
+    assert.deepEqual(Object.keys(markers[0]).sort(), ['blocked_at', 'cause', 'file', 'phase', 'pipeline', 'skill', 'synthetic'],
+        'las claves históricas de listBlockedMarkers no cambian: se suman cause (#7439) y blocked_at + synthetic (#7440 CA-11)');
 });
 
 test('#7439 CA-5 — marker LEGACY sin `cause` ⇒ cause:null y signoff_verifiable:null en ambas lecturas', () => {

@@ -268,6 +268,11 @@ function appendGateAudit(record, opts = {}) {
             signoff_rejected: rechazados,
             signoff_corroboracion: r.signoff_corroboracion === undefined ? null : r.signoff_corroboracion,
             escalated: r.escalated === true,
+            // #7440 RS-4.6 — quién levantó el bloqueo después de la escalada
+            // (`'late-signoff'` cuando la firma del arquitecto llegó tarde).
+            // `null` en toda evaluación que no levanta; los registros previos
+            // sin la clave siguen leyéndose igual.
+            lifted_by: r.lifted_by == null ? null : textoTraza(r.lifted_by, 40),
             error: r.error == null ? null : textoTraza(r.error, MAX_ERROR),
         };
         appendJsonl(auditFilePath(GATE_AUDIT_FILE, opts), linea);

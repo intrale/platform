@@ -257,7 +257,7 @@ sin detectar.
 | 4 | **Review manual exigida por CODEOWNERS / ruleset** (`BLOCKED` **con los checks verdes**) | `detectMergeStateBlock` | Revisar y aprobar el PR | Telegram + botonera + audio |
 | 4b | **Check requerido en rojo** (`BLOCKED` con un check en `FAILURE`) | `detectMergeStateBlock` + `classifyChecks` | Devolver a desarrollo — **no** firmar | Telegram + botonera + audio |
 | 5 | **Rebotado N veces por la misma causa** | `detectRepeatedRejectionBlock` | Cómo destrabar: el pipeline no converge solo | Telegram + botonera + audio |
-| 6 | **Decisión de arquitectura no tomada** en definición | `detectDesignDecision` (`lib/design-decision-detect.js`) | Elegir entre las alternativas antes de que definición elija por default | Telegram + botonera |
+| 6 | **Decisión de arquitectura no tomada** en definición | `detectDesignDecision` (`lib/design-decision-detect.js`) | Elegir entre las alternativas antes de que definición elija por default. **Si la firma del arquitecto llega después de la escalada, el bloqueo se levanta solo** (#7440): sin Telegram, con un comentario de traza en el issue y contado como resuelto en el dashboard | Telegram + botonera |
 | 7 | **Bloqueo sin responder** (cualquiera de los anteriores) | `runReminderTick` (`lib/human-block-reminder.js`) | Recordatorio agrupado y espaciado | Telegram (un mensaje por tick) |
 
 > **`BLOCKED` no significa "sólo falta la review".** GitHub también lo devuelve
@@ -327,6 +327,49 @@ no tiene nada que decidir. De ahí que sea deliberadamente estrecho:
 - El **código entre backticks se ignora**: un nombre de símbolo o un path no es
   prosa donde se plantee una decisión.
 - Ante duda o señal no reconocida: **dejar pasar y registrar**, nunca frenar.
+
+**La firma que llega tarde no espera al operador.** Hay una carrera real (#7113):
+el intake evaluó el issue a las 18:44:23 y el arquitecto firmó a las 18:44:25.
+Antes, el gate reconocía el bloqueo vivo en el ciclo siguiente y no volvía a
+mirar: el issue quedaba en `needs-human` hasta que un humano lo notara. Desde
+#7440 el intake **re-consulta la firma** de un issue ya escalado y, si aparece,
+**levanta el bloqueo solo** — pero como es una acción del pipeline sobre un
+freno humano, sólo lo hace cuando se cumplen **las tres condiciones** a la vez:
+
+1. **Todos** los markers vivos del issue tienen causa `design-decision` (los
+   escribió este gate). Si hay además un marker pedido por un humano —una
+   pregunta del PO, un bloqueo manual—, no se toca nada y el log dice
+   `bloqueo mixto — hay un marker no originado por el gate`.
+2. La firma es **fuerte**: el comentario `<!-- architect-signoff issue=N -->`
+   pasa todas las reglas de siempre **y** la traza local
+   `architect-tokens.jsonl` la corrobora. Si la traza no está (respawn, disco
+   limpio), la firma **no alcanza** para levantar solo.
+3. Está dentro de la **ventana de throttle** (`architect.late_signoff_recheck_min`,
+   default 10 min entre re-consultas del mismo issue) y del **tope de edad**
+   (`architect.late_signoff_max_age_h`, default 48 h desde `blocked_at`). Un
+   bloqueo más viejo queda para el operador. Estas claves **no dependen de
+   `architect.enabled`** (ese gobierna el GATE 1 de pre-admisión, no este gate).
+
+Cuando levanta: descarta el marker con unlocker `architect-signoff:late`, quita
+`needs-human` con procedencia declarada (`guardrail_authorized` +
+`authorized_by`, o el guardrail SEC-B la descartaría), deja un comentario de
+traza en el issue ("♻️ Bloqueo de decisión levantado — firma del arquitecto
+posterior") y registra `lifted_by: late-signoff` en el audit del gate. **No
+avisa por Telegram**: el operador ya tiene el comentario en GitHub y el
+dashboard lo cuenta como resuelto sin tocar el SLA humano. El botón de la
+alerta original queda como no-op benigno.
+
+**Si no se levantó solo, el log dice por qué** (`grep "#N" logs/pulpo.log`):
+
+- `decisión de arquitectura ya escalada — sin re-consultar (<motivo>)`: no se
+  miró GitHub. `throttled` (todavía no pasó la ventana), `marker-viejo` (más de
+  48 h), `bloqueo-mixto` (hay un marker humano).
+- `decisión de arquitectura ya escalada — firma re-consultada, sin cambios
+  (<motivo>)`: se miró y no alcanza. `firma-no-settled` (no hay firma válida),
+  `traza-no-disponible` (hay firma pero la traza local no está: es el mismo
+  caso "no pude comprobarlo" de #7439 — destrabar a mano con el botón),
+  `traza-no-corrobora`, `reconcile-fallido` o `error` (fail-closed: el
+  bloqueo se conserva).
 
 > **Por qué la proximidad no es un detalle.** La primera versión evaluaba el tema
 > y el calificador sueltos sobre `title + body` concatenado. En bodies reales de

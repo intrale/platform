@@ -123,6 +123,7 @@ const UNLOCKER_ENUM = Object.freeze([
     'brazo-desbloqueo:precondicion',  // #4748 — deps cerradas
     'brazo-desbloqueo:merge-race',    // #6432 — reclaim de merge confirmado por gates
     'auto-recheck',                   // #6611 — predicado verificable resuelto
+    'architect-signoff:late',         // #7432 — firma del arquitecto aparecida después de la escalada del gate
 ]);
 
 // =============================================================================
@@ -156,8 +157,8 @@ const UNLOCKER_ENUM = Object.freeze([
 //     `dismissBlockedIssue`: descarta el desarrollo y manda el issue a
 //     `needs-definition`. No reanuda el ciclo de reclaim, así que no
 //     corresponde resetear el contador.
-//   · `brazo-desbloqueo:*` y `auto-recheck` AFUERA — por definición de D11:
-//     ninguna vía automática limpia.
+//   · `brazo-desbloqueo:*`, `auto-recheck` y `architect-signoff:late` AFUERA —
+//     por definición de D11: ninguna vía automática limpia (#7440 RS-4.4).
 // =============================================================================
 const MANUAL_UNLOCKERS = Object.freeze(new Set([
     'commander',
@@ -297,7 +298,13 @@ function findBlockedMarker(issue) {
  * auto-levantamiento (#7440, RS-4.1): fallo de lectura o valor fuera del enum
  * ⇒ `cause: null`, nunca lanza. Las claves históricas no cambian.
  *
- * @returns {Array<{pipeline: string, phase: string, skill: string, file: string, cause: string|null}>}
+ * #7440 (CA-11 / RS-4.12) — expone también `blocked_at` (ISO del
+ * `.reason.json`, `null` si falta o no parsea) y `synthetic` (declarado por
+ * `reportHumanBlock`). El tope de edad del auto-levantamiento se calcula desde
+ * `blocked_at`, no desde el `mtime`: un `touch` o una copia no rejuvenecen el
+ * marker.
+ *
+ * @returns {Array<{pipeline: string, phase: string, skill: string, file: string, cause: string|null, blocked_at: string|null, synthetic: boolean}>}
  */
 function listBlockedMarkers(issue) {
     const prefix = String(issue) + '.';
@@ -321,6 +328,8 @@ function listBlockedMarkers(issue) {
                         skill: f.slice(prefix.length),
                         file,
                         cause: normalizeBlockCause(meta && meta.cause),
+                        blocked_at: meta && typeof meta.blocked_at === 'string' ? meta.blocked_at : null,
+                        synthetic: !!(meta && meta.synthetic === true),
                     });
                 }
             }

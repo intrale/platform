@@ -95,6 +95,44 @@ test('listBlockedMarkers devuelve TODOS los markers, no el primero', () => {
     assert.ok(hb.findBlockedMarker(6431));
 });
 
+test('#7440 CA-11: listBlockedMarkers expone blocked_at (ISO del .reason.json) y synthetic; null/false si faltan o no parsean', () => {
+    resetFs();
+    ponerMarker({ pipeline: 'definicion', phase: 'analisis', issue: 7440, skill: 'definicion', reason: { synthetic: true, cause: 'design-decision' } });
+    const f2 = ponerMarker({ pipeline: 'definicion', phase: 'sizing', issue: 7440, skill: 'po' });
+    fs.writeFileSync(`${f2}.reason.json`, '{ roto', 'utf8');
+    ponerMarker({ pipeline: 'desarrollo', phase: 'dev', issue: 7440, skill: 'pipeline-dev', reason: { blocked_at: 12345, synthetic: 'true' } });
+
+    const porFase = Object.fromEntries(hb.listBlockedMarkers(7440).map((m) => [m.phase, m]));
+    assert.equal(porFase.analisis.blocked_at, '2026-08-24T13:29:23Z');
+    assert.equal(porFase.analisis.synthetic, true);
+    assert.equal(porFase.analisis.cause, 'design-decision');
+    assert.equal(porFase.sizing.blocked_at, null, 'sidecar ilegible ⇒ null, no lanza');
+    assert.equal(porFase.sizing.synthetic, false);
+    assert.equal(porFase.sizing.cause, null);
+    assert.equal(porFase.dev.blocked_at, null, 'blocked_at no-string ⇒ null');
+    assert.equal(porFase.dev.synthetic, false, 'synthetic sólo con `true` literal');
+    // Las claves históricas siguen (los call-sites destructuran por nombre).
+    for (const m of Object.values(porFase)) {
+        assert.deepEqual(Object.keys(m).sort(), ['blocked_at', 'cause', 'file', 'phase', 'pipeline', 'skill', 'synthetic']);
+    }
+});
+
+test('#7440 CA-9 bis: reconcileBlockedMarkers({ unlocker: architect-signoff:late }) audita origin sin normalizar a unknown', () => {
+    resetFs();
+    ponerMarker({ pipeline: 'definicion', phase: 'criterios', issue: 7441, skill: 'definicion', reason: { synthetic: true, cause: 'design-decision' } });
+    const trazas = [];
+    const rec = hb.reconcileBlockedMarkers({
+        issue: 7441, unlocker: 'architect-signoff:late', skillsPorFase: SKILLS_POR_FASE,
+        io: { appendUnblockAudit: (r) => { trazas.push(r); } },
+    });
+    assert.deepEqual(rec.reconciled.map((r) => r.action), ['descartado'], 'marker sintético del gate ⇒ descartado, no destrabado');
+    assert.equal(trazas.length, 1);
+    assert.equal(trazas[0].origin, 'architect-signoff:late');
+    assert.equal(trazas[0].action, 'descartado');
+    assert.deepEqual(fs.readdirSync(dir('definicion', 'criterios', 'pendiente')), [], 'no fabrica work-file');
+    resetFs();
+});
+
 test('listBlockedMarkers ignora artefactos (.reason.json, .guidance.txt)', () => {
     resetFs();
     const f = ponerMarker({ pipeline: 'definicion', phase: 'analisis', issue: 6431, skill: 'definicion' });
