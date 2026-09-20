@@ -1543,6 +1543,29 @@ function enqueueGithub(action, payload = {}) {
     }
 }
 
+// #7459 — ÚNICO punto que arma la orden de retiro de `needs-human`. Todo
+// destrabe (botones de la alerta, comando `/unblock` del Commander) pasa por
+// acá y por la cola del servicio-github: nunca `gh` en proceso (SEC-3) y
+// siempre `NEEDS_HUMAN_LABEL`, nunca el literal legacy `needs:human` (SEC-6).
+//
+// `authorizedBy` es OBLIGATORIO y sin default (SEC-1): el guardrail de #5690
+// exige procedencia atribuible y ningún call site futuro debe heredar una
+// procedencia anónima o la de otro canal. Lanza si falta: es un error de
+// programación, no de runtime, y tiene que quedar visible.
+//
+// `enqueue` inyectable para tests (espejo de `executeQuickAction({ deps })`).
+// Devuelve lo que devuelva `enqueue` (`true/false` con el real: nunca lanza).
+function enqueueRemoveNeedsHuman(issue, authorizedBy, { enqueue = enqueueGithub } = {}) {
+    const by = typeof authorizedBy === 'string' ? authorizedBy.trim() : '';
+    if (!by) throw new Error('enqueueRemoveNeedsHuman requiere authorizedBy no vacío');
+    return enqueue('remove-label', {
+        issue: Number(issue),
+        label: NEEDS_HUMAN_LABEL,
+        guardrail_authorized: true,
+        authorized_by: by,
+    });
+}
+
 /**
  * #4068 / CA-1 — Construye el `reply_markup` (inline_keyboard 2×2) con los 4
  * botones de acción rápida sobre un issue bloqueado.
@@ -1653,15 +1676,15 @@ function executeQuickAction({ issue, action, deps = {} } = {}) {
     // caller autorizó (token HMAC de la alerta de Telegram, o allowlist de
     // operadores del commander). Sin este marcador, los botones de destrabe
     // dejarían de funcionar.
-    const procedencia = {
-        guardrail_authorized: true,
-        authorized_by: `human-block:${action}`,
-    };
+    // #7459 — la orden se arma en `enqueueRemoveNeedsHuman` (punto único con
+    // el `/unblock` del Commander); la procedencia de los botones sigue siendo
+    // `human-block:<action>`, distinta de la del comando (SEC-1).
+    const removeNeedsHuman = () => enqueueRemoveNeedsHuman(i, `human-block:${action}`, { enqueue });
 
     switch (action) {
         case 'unblock': {
             const reactivated = reactivate({ unlocker: 'human-block-action:unblock' });
-            enqueue('remove-label', { issue: i, label: NEEDS_HUMAN_LABEL, ...procedencia });
+            removeNeedsHuman();
             if (reactivated.length === 0) {
                 return { ok: true, action, issue: i, noop: true, msg: `#${i} ya no estaba bloqueado (acción ya resuelta).` };
             }
@@ -1680,7 +1703,7 @@ function executeQuickAction({ issue, action, deps = {} } = {}) {
                 try { const r = dismiss({ issue: i, reason: 'Devuelto a definición desde la alerta de Telegram', unlocker: 'human-block-action:devolver' }); dismissed = !!(r && r.ok); }
                 catch { /* best-effort */ }
             }
-            enqueue('remove-label', { issue: i, label: NEEDS_HUMAN_LABEL, ...procedencia });
+            removeNeedsHuman();
             enqueue('label', { issue: i, label: 'needs-definition' });
             enqueue('comment', { issue: i, body: `## ↩️ Devuelto a definición\n\nUn humano devolvió #${i} a definición desde la alerta de Telegram. Se descarta el trabajo de desarrollo en curso y el issue vuelve a re-analizarse.` });
             return { ok: true, action, issue: i, dismissed, msg: `#${i} devuelto a definición.` };
@@ -1701,7 +1724,7 @@ function executeQuickAction({ issue, action, deps = {} } = {}) {
                 actor: deps.actor || 'human-block:priorizar',
                 note: 'Prioridad elevada desde la alerta de Telegram',
             });
-            enqueue('remove-label', { issue: i, label: NEEDS_HUMAN_LABEL, ...procedencia });
+            removeNeedsHuman();
             enqueue('comment', { issue: i, body: `## ⬆️ Prioridad elevada\n\nUn humano subió la prioridad de #${i} a \`priority:high\` desde la alerta de Telegram${reactivated.length ? ' y lo desbloqueó' : ''}.` });
             return { ok: true, action, issue: i, reactivated: reactivated.length, msg: `Prioridad de #${i} elevada a priority:high.` };
         }
@@ -2100,6 +2123,8 @@ module.exports = {
     HUMAN_BLOCK_CALLBACK_PREFIX,
     isQuickAction,
     enqueueGithub,
+    // #7459 — punto único de retiro de `needs-human` con procedencia obligatoria.
+    enqueueRemoveNeedsHuman,
     buildBlockedActionMarkup,
     executeQuickAction,
     auditQuickAction,
