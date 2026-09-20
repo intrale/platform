@@ -2,7 +2,20 @@
     "_doc": "Allowlist del guardrail #6260. SOLO suprime violations `deuda`. Una entry que cubre una violation ESTRICTA es ella misma una violation (SEC-2/SEC-6/CA-14): las estrictas no se perdonan, se arreglan o se congelan en el baseline.",
     "_files_doc": "`files` excluye un archivo entero; `rules` una linea puntual. `kind` es OBLIGATORIO en las dos (deuda | falso-positivo), sin default (CA-22). Una entry que ya no cubre nada es ella misma una violation (CA-21/R-5): sin eso la allowlist queda inflada para siempre y el guardrail deja de medir la deuda.",
     "min_scanned": 800,
-    "files": [],
+    "files": [
+        {
+            "file": "lib/__tests__/pulpo-config-recovery.test.js",
+            "line": 60,
+            "kind": "deuda",
+            "reason": "escritura de TELEGRAM_BOT_TOKEN_PRUEBAS fuera del helper"
+        },
+        {
+            "file": "lib/__tests__/pulpo-config-recovery.test.js",
+            "line": 61,
+            "kind": "deuda",
+            "reason": "escritura de TELEGRAM_CHAT_ID_PRUEBAS fuera del helper"
+        }
+    ],
     "rules": [
         {
             "file": "__tests__/planner-sizing-allowlist-promote.test.js",

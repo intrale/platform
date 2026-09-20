@@ -53,6 +53,12 @@ const BAD_YAML = 'foo: : : bad\n  : indentacion rota\n :nope';
 
 process.env.PULPO_NO_AUTOSTART = '1';
 process.env.PIPELINE_DIR_OVERRIDE = TMP_DIR;
+// #7113 — en pruebas el pulpo purga las credenciales productivas y sólo lee las
+// `_PRUEBAS`; sin ellas el transporte es NULO (traza, no encola) y este test
+// mide la alerta ENCOLADA en <dir>/servicios/telegram/pendiente. Antes dependía
+// de que el host tuviera credentials.json real hidratado: ahora es hermético.
+process.env.TELEGRAM_BOT_TOKEN_PRUEBAS = ['123456789', ':', 'A'.repeat(35)].join('');
+process.env.TELEGRAM_CHAT_ID_PRUEBAS = '99999';
 
 const pulpo = require('../../pulpo.js');
 const { PAUSE_FILE, CONFIG_PATH } = pulpo;

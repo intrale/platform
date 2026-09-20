@@ -669,31 +669,31 @@
         },
         {
             "file": "tests/cua-operator-resolve.test.js",
-            "line": 36,
-            "variable": "(clave no resoluble)",
-            "sentido": "(n/a)"
-        },
-        {
-            "file": "tests/cua-operator-resolve.test.js",
-            "line": 37,
-            "variable": "(clave no resoluble)",
-            "sentido": "(n/a)"
-        },
-        {
-            "file": "tests/cua-operator-resolve.test.js",
             "line": 39,
             "variable": "(clave no resoluble)",
             "sentido": "(n/a)"
         },
         {
             "file": "tests/cua-operator-resolve.test.js",
-            "line": 45,
+            "line": 40,
             "variable": "(clave no resoluble)",
             "sentido": "(n/a)"
         },
         {
             "file": "tests/cua-operator-resolve.test.js",
-            "line": 46,
+            "line": 42,
+            "variable": "(clave no resoluble)",
+            "sentido": "(n/a)"
+        },
+        {
+            "file": "tests/cua-operator-resolve.test.js",
+            "line": 48,
+            "variable": "(clave no resoluble)",
+            "sentido": "(n/a)"
+        },
+        {
+            "file": "tests/cua-operator-resolve.test.js",
+            "line": 49,
             "variable": "(clave no resoluble)",
             "sentido": "(n/a)"
         },
