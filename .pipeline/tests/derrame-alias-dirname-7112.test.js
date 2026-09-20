@@ -173,6 +173,48 @@ test('dashboard-slices: el spawn del aggregator recibe --pipeline-dir con el PIP
     }
 });
 
+test('dashboard-slices: con ctx sin PIPELINE absoluto (fixture PIPELINE vacío) NO spawnea el aggregator ni escribe <cwd>/metrics (derrame residual rev-2)', () => {
+    // Reproduce lib/__tests__/dashboard-router-view.test.js:68 (`fakeCtx = { PIPELINE: '', ROOT: '' }`):
+    // el path del snapshot quedaba relativo, pipelineDirArgs derivaba `--pipeline-dir .` y el hijo
+    // escribía `<cwd>/metrics/snapshot*.json` (raíz del worktree/clon) — visto en HEAD 156b89220.
+    const cp = require('child_process');
+    const original = cp.spawn;
+    const llamadas = [];
+    cp.spawn = (cmd, args) => {
+        llamadas.push(args);
+        const { EventEmitter } = require('events');
+        const fake = new EventEmitter();
+        fake.unref = () => {};
+        setImmediate(() => fake.emit('exit', 0));
+        return fake;
+    };
+    const cwdMetrics = path.join(process.cwd(), 'metrics');
+    const existiaAntes = fs.existsSync(cwdMetrics);
+    try {
+        delete require.cache[require.resolve('../lib/dashboard-slices')];
+        const slices = require('../lib/dashboard-slices');
+        for (const ctx of [
+            { ROOT: '', PIPELINE: '', GH_BIN: 'no-gh' },
+            { ROOT: undefined, PIPELINE: undefined, GH_BIN: 'no-gh' },
+            { ROOT: 'rel', PIPELINE: 'rel/.pipeline', GH_BIN: 'no-gh' },
+        ]) {
+            slices.kpisSlice({ issueMatrix: {} }, ctx);
+        }
+        assert.deepStrictEqual(llamadas, [], 'sin PIPELINE absoluto no puede spawnear el aggregator');
+        // pipelineDirArgs: sólo dirs absolutos; relativos/vacíos ⇒ [] (nada que pasar, nada que spawnear)
+        assert.deepStrictEqual(slices.pipelineDirArgs('', 'metrics/snapshot-24h.json'), []);
+        assert.deepStrictEqual(slices.pipelineDirArgs(undefined, 'metrics/snapshot.json'), []);
+        assert.deepStrictEqual(slices.pipelineDirArgs('rel/.pipeline', 'rel/.pipeline/metrics/snapshot.json'), []);
+        const abs = path.resolve(os.tmpdir(), 'abs-7112', '.pipeline');
+        assert.deepStrictEqual(slices.pipelineDirArgs(abs, path.join(abs, 'metrics', 'snapshot.json')), ['--pipeline-dir', abs]);
+        assert.deepStrictEqual(slices.pipelineDirArgs('', path.join(abs, 'metrics', 'snapshot.json')), ['--pipeline-dir', abs]);
+        assert.strictEqual(fs.existsSync(cwdMetrics), existiaAntes, `no debe aparecer ${cwdMetrics}`);
+    } finally {
+        cp.spawn = original;
+        delete require.cache[require.resolve('../lib/dashboard-slices')];
+    }
+});
+
 // ── (2) quota-snapshot-scheduler.js ────────────────────────────────────────
 
 test('quota-snapshot-scheduler: sin dir ni declaración no escribe log ni encola a Telegram; con override escribe en el dir de pruebas', () => {
