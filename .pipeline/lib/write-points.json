@@ -727,13 +727,13 @@
     },
     {
       "modulo": "lib/permission-override-telegram.js",
-      "funcion": "root",
-      "linea": 87,
+      "funcion": "enqueueTelegramNotification",
+      "linea": 93,
       "canal": "colas",
-      "destino": "process.env.PIPELINE_*",
+      "destino": "writeTarget.writeDir",
       "tier": 3,
-      "estado": "pendiente",
-      "via": "process.env.PIPELINE_*"
+      "estado": "migrado",
+      "via": "writeTarget.writeDir"
     },
     {
       "modulo": "lib/process-transitions.js",
