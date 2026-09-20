@@ -137,6 +137,42 @@ function resolveDeterministicScript({ skill, issue, ROOT, PIPELINE, onWorktreeHi
 }
 
 // -----------------------------------------------------------------------------
+// gradleLockPathFor — path del lock global de Gradle que el lanzador FIJA para
+// el hijo (#7112 rebote rev-3 · G2).
+//
+// `lib/gradle-lock.js` resuelve su default vía `lib/write-target` (canal
+// `estado`, SEC-13), y ese resolvedor ancla "productivo" al `.pipeline` del
+// checkout que CARGÓ la lib (`DEFAULT_PRODUCTIVE_DIR = <dir de la lib>/..`).
+// Cuando `resolveDeterministicScript` elige la copia del WORKTREE de
+// `build.js`/`tester.js` (la rama los modifica), esa copia carga
+// `../lib/gradle-lock` del worktree ⇒ su productivo es `<wt>/.pipeline`, y con
+// el env real del skill (`PIPELINE_AMBIENTE=productivo` + `PIPELINE_REPO_ROOT=
+// <repo principal>`) el resolvedor da `dir: null` (SEC-9: el contexto heredado
+// no aporta dir; con `PIPELINE_STATE_DIR` al productivo, SEC-3). `withGradleLock`
+// lanzaba `PIPELINE_ESCRITURA_BLOQUEADA` y todo issue `pipeline-dev` que tocara
+// esos scripts y necesitara Gradle moría en `build`/`verificacion`.
+//
+// El lock es COORDINACIÓN ENTRE PROCESOS, no estado de un ambiente: lo que hay
+// que serializar son los Gradle que lanza ESTE Pulpo, y el único que sabe cuál
+// es el `.pipeline` que coordina es el lanzador. Por eso lo fija acá, en el
+// env del hijo, derivado de `PIPELINE` (el dir del Pulpo: productivo en
+// producción, el override en un pipeline de pruebas) — `gradle-lock.js` ya lo
+// honra por `resolveLockPath()`. Se inyecta SIEMPRE (copia de ROOT o del
+// worktree): así el lock es el mismo archivo para todos los hijos de este
+// Pulpo, que es exactamente la propiedad que #4155 pide (CA-4).
+//
+// Sólo `build` y `tester` toman el lock; para `delivery`/`linter` la variable
+// es inerte. No cambia el inventario (`lib/write-points.json`): el destino
+// sigue siendo `locks/gradle-global.lock` bajo el `.pipeline` del Pulpo, ahora
+// por la vía del lanzador y no por la del `require`.
+// -----------------------------------------------------------------------------
+const GRADLE_LOCK_ENV = 'GRADLE_LOCK_PATH';
+
+function gradleLockPathFor(PIPELINE) {
+    return path.join(PIPELINE, 'locks', 'gradle-global.lock');
+}
+
+// -----------------------------------------------------------------------------
 // buildSpawn — devuelve el objeto spawn para el script determinístico.
 //
 // Contrato igual que el provider Anthropic: {cmd, args, spawnOpts}. Acá la
@@ -157,6 +193,9 @@ function buildSpawn({ skill, issue, trabajandoPath, cwd, env, ROOT, PIPELINE, on
     // #3605 — Opt-in. Default 'ignore'; 'pipe' habilita IPC operador→agente.
     // Sólo aplica si el skill determinístico implementa loop de lectura de stdin.
     const stdin = interactive_supported === true ? 'pipe' : 'ignore';
+    // #7112 rebote rev-3 (G2) — el lanzador fija el lock global de Gradle
+    // (ver `gradleLockPathFor`). Copia nueva: el `env` del llamador no se muta.
+    const childEnv = { ...(env || {}), [GRADLE_LOCK_ENV]: gradleLockPathFor(PIPELINE) };
     return {
         cmd: process.execPath,
         args: [scriptPath, String(issue), `--trabajando=${trabajandoPath}`],
@@ -167,7 +206,7 @@ function buildSpawn({ skill, issue, trabajandoPath, cwd, env, ROOT, PIPELINE, on
             // Defensa I1: shell:false SIEMPRE para skills determinísticos.
             shell: false,
             windowsHide: true,
-            env,
+            env: childEnv,
         },
         scriptPath,
     };
@@ -198,6 +237,9 @@ module.exports = {
     resolveDeterministicScript,
     worktreeOwnsScript,
     buildSpawn,
+    // #7112 rebote rev-3 (G2) — lock global de Gradle fijado por el lanzador.
+    GRADLE_LOCK_ENV,
+    gradleLockPathFor,
     parseTokensFromLog,
     detectQuotaExhausted,
     detectAuthenticationRejected,

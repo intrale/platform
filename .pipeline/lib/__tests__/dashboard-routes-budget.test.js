@@ -24,7 +24,14 @@ const TMP_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'v3-routes-budget-'));
 // Aislar REPO_ROOT al tmp (traceability lo resuelve por CLAUDE_PROJECT_DIR /
 // PIPELINE_REPO_ROOT) para NO escribir sobre el budget-config real del repo.
 process.env.CLAUDE_PROJECT_DIR = TMP_DIR;
-process.env.PIPELINE_REPO_ROOT = TMP_DIR;
+// #7112 (rebote rev-2, ajuste de test del MECANISMO — CA-11): budget-config ya no
+// deriva su destino de REPO_ROOT sino de lib/write-target, y en pruebas
+// PIPELINE_REPO_ROOT no es fuente válida de dir (SEC-9/CA-5): el dir de pruebas
+// se declara explícito con PIPELINE_DIR_OVERRIDE. Ya no se setea
+// PIPELINE_REPO_ROOT=TMP: con SEC-9 el override que cae bajo
+// `PIPELINE_REPO_ROOT/.pipeline` cuenta como "productivo heredado" y se anula.
+delete process.env.PIPELINE_REPO_ROOT;
+process.env.PIPELINE_DIR_OVERRIDE = path.join(TMP_DIR, '.pipeline');
 fs.mkdirSync(path.join(TMP_DIR, '.pipeline', 'metrics'), { recursive: true });
 
 try { delete require.cache[require.resolve('../traceability')]; } catch {}

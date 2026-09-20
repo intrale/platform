@@ -49,9 +49,14 @@
  * - D9  Sólo APIs `fs`. Única excepción: `execFileSync('git', ['rev-parse',
  *       'HEAD'])` con argv literal y best-effort.
  * - D10 Env saneado antes de resolver (`ENV_STRIP`). `--print-env` emite sólo
- *       `PIPELINE_REPO_ROOT` y la declaración de ambiente en `pruebas`
- *       (`ENV_AMBIENTE` del resolvedor; acá no se repite el literal: CA-8 de
- *       #7110 exige que `pipeline-env.js` sea el único módulo que lo nombra).
+ *       la declaración de ambiente en `pruebas` (`ENV_AMBIENTE` del resolvedor;
+ *       acá no se repite el literal: CA-8 de #7110 exige que `pipeline-env.js`
+ *       sea el único módulo que lo nombra) y `PIPELINE_DIR_OVERRIDE=<root>/.pipeline`
+ *       (#7112, SEC-9 estricto): el directorio viaja por la misma variable que
+ *       validó D1. NO emite `PIPELINE_REPO_ROOT`: en `pruebas` es contexto
+ *       heredado del checkout productivo, nunca aporta dir, y su `.pipeline`
+ *       integra la unión que SEC-3 protege (apuntarlo al root de pruebas
+ *       anularía el propio override).
  * - D11 No se toca `pipeline-env.js` ni `config-resolver.js`.
  *
  * ── Pureza ──────────────────────────────────────────────────────────────────
@@ -699,6 +704,8 @@ module.exports = {
     /** Nombre de la variable de declaración de ambiente y el valor que `--print-env` emite (D10). */
     ENV_AMBIENTE: pipelineEnv.ENV_AMBIENTE,
     MODO_PRUEBAS: pipelineEnv.MODOS.PRUEBAS,
+    /** Variable por la que viaja el dir de pruebas (D1; la emite `--print-env` desde #7112). */
+    ENV_DIR_OVERRIDE: 'PIPELINE_DIR_OVERRIDE',
     /** `.pipeline` productivo (fijo en código por el resolvedor). */
     DEFAULT_PRODUCTIVE_DIR: pipelineEnv.DEFAULT_PRODUCTIVE_DIR,
     SUBESTADOS,

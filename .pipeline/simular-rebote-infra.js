@@ -22,8 +22,12 @@
 const fs = require('fs');
 const path = require('path');
 
-const PIPELINE = path.resolve(__dirname);
-const TARGET = path.join(PIPELINE, 'infra-health.json');
+// #7112 — el destino se resuelve POR LLAMADA vía `lib/write-target` (SEC-13):
+// sin ambiente declarado ni dir de pruebas avisa por stderr y LANZA (CA-3).
+const writeTarget = require('./lib/write-target');
+function TARGET() {
+  return writeTarget.writePath(process.env, { canal: 'estado', destino: 'infra-health.json' }, 'infra-health.json');
+}
 
 const scenario = (process.argv[2] || 'ok').toLowerCase();
 
@@ -32,8 +36,9 @@ function isoNow(offsetMs = 0) {
 }
 
 function writeState(state) {
-  fs.writeFileSync(TARGET, JSON.stringify(state, null, 2));
-  console.log('[simular-rebote-infra] escrito ' + TARGET);
+  const target = TARGET();
+  fs.writeFileSync(target, JSON.stringify(state, null, 2));
+  console.log('[simular-rebote-infra] escrito ' + target);
   console.log(JSON.stringify(state, null, 2));
 }
 
@@ -100,11 +105,12 @@ switch (scenario) {
   }
   case 'clear':
   case 'off': {
-    if (fs.existsSync(TARGET)) {
-      fs.unlinkSync(TARGET);
-      console.log('[simular-rebote-infra] eliminado ' + TARGET + ' (sección no renderiza)');
+    const target = TARGET();
+    if (fs.existsSync(target)) {
+      fs.unlinkSync(target);
+      console.log('[simular-rebote-infra] eliminado ' + target + ' (sección no renderiza)');
     } else {
-      console.log('[simular-rebote-infra] no existía ' + TARGET);
+      console.log('[simular-rebote-infra] no existía ' + target);
     }
     break;
   }

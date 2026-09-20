@@ -22,6 +22,12 @@
 //   * Rutas relativas al repo con `/` (estables entre Windows y CI).
 //   * Sin `env` explicito en `run()`: hereda `process.env` igual que `node --test`.
 //     NUNCA serializa ni loguea `process.env`.
+//   * #7112 (CA-4): antes de `run()` provee el DIR DE PRUEBAS en un unico punto
+//     (`lib/test-run-dir.js`): `PIPELINE_DIR_OVERRIDE` a un `mkdtemp` bajo
+//     `os.tmpdir()` (nunca bajo `.pipeline/tmp/`) que los hijos heredan y se
+//     borra al terminar (tambien ante fallo/senal). Si ya venia seteado, se
+//     respeta y no se borra. Con el default invertido, el test que no dice nada
+//     cae ahi y no en el `.pipeline` productivo.
 //   * Exit code 1 si algun test falla o si no se encontro NINGUN archivo (correr
 //     "verde" con 0 tests es el falso positivo que esta historia elimina).
 //
@@ -40,6 +46,7 @@ const fs = require('fs');
 const path = require('path');
 const { execFileSync } = require('child_process');
 const { isScratchDirName } = require('../.pipeline/lib/scratch-dirs');
+const { ensureTestRunDir } = require('../.pipeline/lib/test-run-dir');
 
 // Mismos 4 origenes que el glob historico de package.json — no se amplia el universo.
 const PATTERNS = Object.freeze([
@@ -218,6 +225,19 @@ function main(argv = process.argv.slice(2), { repoRoot = path.resolve(__dirname,
   const { run } = require('node:test');
   const reporters = require('node:test/reporters');
   const reporter = opts.reporter === 'tap' ? reporters.tap : reporters.spec;
+
+  // #7112 · CA-4 — dir efimero de pruebas, UN solo punto, antes de spawnear.
+  // El helper deja `PIPELINE_DIR_OVERRIDE` en el env del proceso (su default):
+  // es lo que heredan los hijos. SEC-6 sigue valiendo: no se pasa `env`
+  // explicito a `run()` ni se serializa nada.
+  const runDir = ensureTestRunDir({
+    pipelineDir: path.join(repoRoot, '.pipeline'),
+    log: (l) => stderr.write('[test-pipeline] ' + l + '\n'),
+  });
+  // El borrado tambien cuelga de `exit`/senales (dentro del helper); aca se
+  // adelanta al cierre del stream para que la linea "borrado" salga antes del
+  // resumen del reporter cuando la corrida termina bien.
+  process.once('beforeExit', () => runDir.limpiar());
 
   // SEC-6: sin `env` explicito -> hereda process.env igual que `node --test` hoy.
   const stream = run({

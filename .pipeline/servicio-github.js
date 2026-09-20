@@ -60,15 +60,24 @@ const ROOT = process.env.PIPELINE_MAIN_ROOT || path.resolve(__dirname, '..');
 // #3025 — Sigue siendo el resolver del binario para `defaultGhClient`. Los
 // tests unit-puros usan `ghClient` mockeado y NO tocan este path.
 const GH_BIN = process.env.GH_BIN_OVERRIDE || 'C:\\Workspaces\\gh-cli\\bin\\gh.exe';
-const PIPELINE = process.env.PIPELINE_STATE_DIR || path.resolve(__dirname);
-const QUEUE_DIR = path.join(PIPELINE, 'servicios', 'github');
-const PENDIENTE = path.join(QUEUE_DIR, 'pendiente');
-const TRABAJANDO = path.join(QUEUE_DIR, 'trabajando');
-const LISTO = path.join(QUEUE_DIR, 'listo');
-const FALLIDO = path.join(QUEUE_DIR, 'fallido');
+// #7112 — El directorio base del pipeline se resuelve POR LLAMADA vía
+// `lib/write-target` sobre `lib/pipeline-env` (SEC-13): ninguna const de módulo
+// captura el destino al `require`. Sin ambiente declarado (`PIPELINE_AMBIENTE`
+// del lanzador) y sin dir de pruebas, `writeDir` avisa por stderr y LANZA:
+// nunca se escribe en el productivo por defecto (CA-3 / SEC-10).
+// Se conservan los identificadores en mayúsculas (`PIPELINE()`, `QUEUE_DIR()`…)
+// para que el reemplazo const→función sea mecánico: cada uso pasó de `X` a `X()`.
+const writeTarget = require('./lib/write-target');
+const COLA_GITHUB = Object.freeze({ canal: 'colas', destino: 'servicios/github' });
+function PIPELINE() { return writeTarget.writeDir(process.env, COLA_GITHUB); }
+function QUEUE_DIR() { return writeTarget.writePath(process.env, COLA_GITHUB, 'servicios', 'github'); }
+function PENDIENTE() { return path.join(QUEUE_DIR(), 'pendiente'); }
+function TRABAJANDO() { return path.join(QUEUE_DIR(), 'trabajando'); }
+function LISTO() { return path.join(QUEUE_DIR(), 'listo'); }
+function FALLIDO() { return path.join(QUEUE_DIR(), 'fallido'); }
 const MAX_RETRIES = 3;
-const LOG_DIR = path.join(PIPELINE, 'logs');
-const STALE_ORDERS_LOG = path.join(LOG_DIR, 'stale-orders.log');
+function LOG_DIR() { return writeTarget.writePath(process.env, { canal: 'logs', destino: 'logs/' }, 'logs'); }
+function STALE_ORDERS_LOG() { return path.join(LOG_DIR(), 'stale-orders.log'); }
 
 // #4693 CA-0 — resuelto vía repo-target (primary del manifiesto). El helper
 // es fail-closed: si el manifiesto falta/está roto, cae a 'intrale/platform'.
@@ -296,10 +305,10 @@ const defaultGhClient = {
 
 // --- Recovery: mover orphans de trabajando/ a pendiente/ al arrancar ---
 function recoverOrphans() {
-  const orphans = listWorkFiles(TRABAJANDO);
+  const orphans = listWorkFiles(TRABAJANDO());
   for (const file of orphans) {
     try {
-      fs.renameSync(file.path, path.join(PENDIENTE, file.name));
+      fs.renameSync(file.path, path.join(PENDIENTE(), file.name));
       log(`Recuperado orphan: ${file.name}`);
     } catch {}
   }
@@ -314,7 +323,7 @@ function checkCondenser(data) {
 
   // Contar items del grupo en listo/ y fallido/
   let completed = 0;
-  for (const dir of [LISTO, FALLIDO]) {
+  for (const dir of [LISTO(), FALLIDO()]) {
     for (const f of listWorkFiles(dir)) {
       try {
         const item = JSON.parse(fs.readFileSync(f.path, 'utf8'));
@@ -327,7 +336,7 @@ function checkCondenser(data) {
   if (completed < expected) return;
 
   // Proteccion anti-duplicado: flag atomico
-  const firedMarker = path.join(QUEUE_DIR, `condenser-fired-${group}.json`);
+  const firedMarker = path.join(QUEUE_DIR(), `condenser-fired-${group}.json`);
   try {
     fs.writeFileSync(firedMarker, JSON.stringify({ group, ts: Date.now() }), { flag: 'wx' });
   } catch {
@@ -338,7 +347,7 @@ function checkCondenser(data) {
 
   // Recolectar todos los resultados del grupo
   const results = [];
-  for (const dir of [LISTO, FALLIDO]) {
+  for (const dir of [LISTO(), FALLIDO()]) {
     const dirName = path.basename(dir);
     for (const f of listWorkFiles(dir)) {
       try {
@@ -358,7 +367,7 @@ function checkCondenser(data) {
   }
 
   // Escribir results JSON
-  const resultsPath = path.join(QUEUE_DIR, `condenser-results-${group}.json`);
+  const resultsPath = path.join(QUEUE_DIR(), `condenser-results-${group}.json`);
   fs.writeFileSync(resultsPath, JSON.stringify(results, null, 2));
 
   fireOnComplete(onComplete.command, resultsPath, group);
@@ -379,7 +388,7 @@ function fireOnComplete(command, resultsPath, group) {
   } catch (e) {
     log(`Condenser: error firing onComplete: ${e.message}`);
     // Marker para retry al reiniciar
-    const retryPath = path.join(QUEUE_DIR, `condenser-retry-${group}.json`);
+    const retryPath = path.join(QUEUE_DIR(), `condenser-retry-${group}.json`);
     fs.writeFileSync(retryPath, JSON.stringify({ group, command, resultsPath, error: e.message, ts: Date.now() }));
   }
 }
@@ -411,7 +420,7 @@ function parseCommandArgs(command) {
 
 // --- Retry de onComplete fallidos al arrancar ---
 function retryFailedOnCompletes() {
-  const retryFiles = listWorkFiles(QUEUE_DIR).filter(f => f.name.startsWith('condenser-retry-'));
+  const retryFiles = listWorkFiles(QUEUE_DIR()).filter(f => f.name.startsWith('condenser-retry-'));
   for (const file of retryFiles) {
     try {
       const data = JSON.parse(fs.readFileSync(file.path, 'utf8'));
@@ -634,7 +643,7 @@ function applyCreateIssueGuardrail(data, origen) {
 function recordLabelMutation(issue, label, action, target) {
   try {
     labelMutationLog.recordApplied({
-      pipelineDir: PIPELINE, issue, label, action, target,
+      pipelineDir: PIPELINE(), issue, label, action, target,
     });
   } catch { /* best-effort — nunca puede romper el procesamiento de la cola */ }
 }
@@ -739,7 +748,7 @@ function validateOrderFresh(data) {
 
 function logStaleOrder(entry) {
     try {
-        fs.mkdirSync(LOG_DIR, { recursive: true });
+        fs.mkdirSync(LOG_DIR(), { recursive: true });
         const line = JSON.stringify({
             ts: new Date().toISOString(),
             reason: entry.reason || 'unknown',
@@ -749,7 +758,7 @@ function logStaleOrder(entry) {
             current_mtime: entry.current_mtime ?? null,
             detail: entry.detail || null,
         }) + '\n';
-        fs.appendFileSync(STALE_ORDERS_LOG, line);
+        fs.appendFileSync(STALE_ORDERS_LOG(), line);
     } catch {
         // best-effort — no tirar el worker por un fallo de logging
     }
@@ -761,11 +770,11 @@ function logStaleOrder(entry) {
 // inyectar un fake JS puro. En producción no se pasa nada y se usa
 // `defaultGhClient` (mismo `execSync` que antes).
 function processQueue({ ghClient = defaultGhClient } = {}) {
-  const files = listWorkFiles(PENDIENTE);
+  const files = listWorkFiles(PENDIENTE());
   if (files.length === 0) return;
 
   for (const file of files) {
-    const trabajandoPath = path.join(TRABAJANDO, file.name);
+    const trabajandoPath = path.join(TRABAJANDO(), file.name);
     try { fs.renameSync(file.path, trabajandoPath); } catch { continue; }
 
     let data;
@@ -780,7 +789,7 @@ function processQueue({ ghClient = defaultGhClient } = {}) {
 
       // #7206: la precedencia sobrevive a reintentos y reinicios, y no depende
       // del orden lexicográfico de prefijos en readdirSync.
-      if (supersededGateOrder(data, { queueDir: QUEUE_DIR, name: file.name })) {
+      if (supersededGateOrder(data, { queueDir: QUEUE_DIR(), name: file.name })) {
         log(`Orden QA superada: ${file.name} por ${data.superseded_by}`);
       } else switch (data.action) {
         case 'comment':
@@ -938,7 +947,7 @@ function processQueue({ ghClient = defaultGhClient } = {}) {
       }
 
       // Escribir JSON enriquecido (puede tener result) y mover a listo
-      fs.writeFileSync(path.join(LISTO, file.name), JSON.stringify(data, null, 2));
+      fs.writeFileSync(path.join(LISTO(), file.name), JSON.stringify(data, null, 2));
       try { fs.unlinkSync(trabajandoPath); } catch {}
       checkCondenser(data);
 
@@ -950,12 +959,12 @@ function processQueue({ ghClient = defaultGhClient } = {}) {
         itemData.lastError = e.message;
 
         if (itemData.retries >= MAX_RETRIES) {
-          fs.writeFileSync(path.join(FALLIDO, file.name), JSON.stringify(itemData, null, 2));
+          fs.writeFileSync(path.join(FALLIDO(), file.name), JSON.stringify(itemData, null, 2));
           try { fs.unlinkSync(trabajandoPath); } catch {}
           log(`${file.name} → fallido/ (${itemData.retries} reintentos agotados)`);
           checkCondenser(itemData);
         } else {
-          fs.writeFileSync(path.join(PENDIENTE, file.name), JSON.stringify(itemData, null, 2));
+          fs.writeFileSync(path.join(PENDIENTE(), file.name), JSON.stringify(itemData, null, 2));
           try { fs.unlinkSync(trabajandoPath); } catch {}
           log(`${file.name} → pendiente/ (reintento ${itemData.retries}/${MAX_RETRIES})`);
         }
@@ -973,7 +982,7 @@ function processQueue({ ghClient = defaultGhClient } = {}) {
         try {
           let rawContent = null;
           try { rawContent = fs.readFileSync(trabajandoPath, 'utf8'); } catch {}
-          fs.writeFileSync(path.join(FALLIDO, file.name), JSON.stringify({
+          fs.writeFileSync(path.join(FALLIDO(), file.name), JSON.stringify({
             unparseable: true,
             error: inner.message,
             originalError: e.message,
@@ -994,7 +1003,7 @@ function processQueue({ ghClient = defaultGhClient } = {}) {
 // --- Main ---
 function main() {
   // Asegurar directorios
-  for (const dir of [PENDIENTE, TRABAJANDO, LISTO, FALLIDO]) {
+  for (const dir of [PENDIENTE(), TRABAJANDO(), LISTO(), FALLIDO()]) {
     fs.mkdirSync(dir, { recursive: true });
   }
 
@@ -1012,20 +1021,25 @@ function main() {
 // SOLO cuando este archivo es el entrypoint. Si lo `require()` un test, no
 // queremos tocar el FS real ni registrar handlers contra el process global.
 function installSignalHandlers() {
-  fs.writeFileSync(path.join(PIPELINE, 'svc-github.pid'), String(process.pid));
+  fs.writeFileSync(writeTarget.writePath(process.env, { canal: 'estado', destino: 'svc-github.pid' }, 'svc-github.pid'), String(process.pid));
+  // #7112 — handlers de crash: escritor `safe*`. Sin dir (pruebas sin override)
+  // saltea el archivo y conserva el console.error; jamás lanza acá.
+  const CRASH_LOG = { canal: 'logs', destino: 'logs/svc-github.log' };
   process.on('SIGINT', () => process.exit(0));
   process.on('SIGTERM', () => process.exit(0));
 
   process.on('uncaughtException', (err) => {
     // #2334: sanitizar antes de persistir stack a disco.
     const msg = sanitize(`[${new Date().toISOString()}] [svc-github] CRASH uncaughtException: ${err.stack || err.message}\n`);
-    try { fs.appendFileSync(path.join(LOG_DIR, 'svc-github.log'), msg); } catch {}
+    const crashLogDir = writeTarget.safeWriteDir(process.env, CRASH_LOG);
+    if (crashLogDir) { try { fs.appendFileSync(path.join(crashLogDir, 'logs', 'svc-github.log'), msg); } catch {} }
     console.error(msg);
     process.exit(1);
   });
   process.on('unhandledRejection', (reason) => {
     const msg = sanitize(`[${new Date().toISOString()}] [svc-github] CRASH unhandledRejection: ${reason?.stack || reason}\n`);
-    try { fs.appendFileSync(path.join(LOG_DIR, 'svc-github.log'), msg); } catch {}
+    const crashLogDir = writeTarget.safeWriteDir(process.env, CRASH_LOG);
+    if (crashLogDir) { try { fs.appendFileSync(path.join(crashLogDir, 'logs', 'svc-github.log'), msg); } catch {} }
     console.error(msg);
     process.exit(1);
   });
@@ -1044,8 +1058,8 @@ module.exports = {
   validateOrderFresh,
   logStaleOrder,
   STALE_ORDERS_LOG,
-  // Constantes que los tests necesitan (resueltas a partir de PIPELINE_STATE_DIR
-  // si se setea antes del require).
+  // #7112 — Ahora son FUNCIONES (resolución por llamada): los tests llaman
+  // `PENDIENTE()` etc. y el override puede setearse después del require.
   PENDIENTE,
   TRABAJANDO,
   LISTO,

@@ -21,6 +21,8 @@ const PIPELINE = path.join(TMP_DIR, '.pipeline');
 const LOG_DIR = path.join(PIPELINE, 'logs');
 fs.mkdirSync(LOG_DIR, { recursive: true });
 process.env.PIPELINE_STATE_DIR = PIPELINE;
+// #7112 — el runner deja PIPELINE_DIR_OVERRIDE global (precedencia D-1 sobre PIPELINE_STATE_DIR): se declara el mismo dir.
+process.env.PIPELINE_DIR_OVERRIDE = PIPELINE;
 
 const slices = require('../dashboard-slices');
 

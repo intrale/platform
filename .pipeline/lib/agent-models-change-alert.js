@@ -939,7 +939,9 @@ function stateHash(view) {
  */
 function sendAlert(prevSha, headSha, opts) {
     const _opts = opts || {};
-    const pipelineDir = _opts.pipelineDir || path.resolve(__dirname, '..');
+    // #7112 - resolución por llamada vía el envoltorio (SEC-13).
+    const pipelineDir = _opts.pipelineDir
+        || require('./write-target').writeDir(process.env, { canal: 'colas', destino: 'servicios/telegram/pendiente' });
     const now = typeof _opts.now === 'function' ? _opts.now() : Date.now();
     const dryRun = !!_opts.dryRun;
 
@@ -1054,7 +1056,7 @@ function cliMain(argv) {
     let prevSha = null;
     let headSha = null;
     let dryRun = false;
-    let pipelineDir = path.resolve(__dirname, '..');
+    let pipelineDir = null; // #7112 - sin --pipeline-dir lo resuelve el envoltorio por llamada.
     let cwd = process.cwd();
 
     for (let i = 0; i < args.length; i++) {
@@ -1090,6 +1092,10 @@ function cliMain(argv) {
             process.stderr.write(`[agent-models-change-alert] no pude resolver HEAD: ${e.message}\n`);
             process.exit(1);
         }
+    }
+
+    if (!pipelineDir) {
+        pipelineDir = require('./write-target').writeDir(process.env, { canal: 'colas', destino: 'servicios/telegram/pendiente' });
     }
 
     if (!prevSha) {

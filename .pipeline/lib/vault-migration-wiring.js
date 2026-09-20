@@ -63,8 +63,13 @@ const path = require('path');
 const vaultMigration = require('./vault-migration');
 const respawnReadiness = require('./vault-respawn-readiness');
 
-const REPO_ROOT = path.resolve(__dirname, '..', '..');
-const DEFAULT_PIPELINE_DIR = path.join(REPO_ROOT, '.pipeline');
+// #7112 — el destino se resuelve POR LLAMADA vía `lib/write-target` (SEC-13):
+// ninguna const de módulo captura `__dirname` al `require`. Sin ambiente
+// declarado ni dir de pruebas, `writeDir` avisa por stderr y LANZA (CA-3).
+// Identificadores conservados: cada uso `X` → `X()`.
+function DEFAULT_PIPELINE_DIR() {
+  return require('./write-target').writeDir(process.env, { canal: 'estado', destino: 'state/vault-migration/' });
+}
 
 /** Ledger de acreditaciones del operador. Vive junto al estado por host. */
 const ACREDITACIONES_FILE = 'acreditaciones.jsonl';
@@ -246,7 +251,7 @@ function createProductionVaultMigration(opts = {}) {
   const fs = opts.fs || nodeFs;
   const now = typeof opts.now === 'function' ? opts.now : Date.now;
   const logger = typeof opts.logger === 'function' ? opts.logger : () => {};
-  const pipelineDir = opts.pipelineDir ? path.resolve(opts.pipelineDir) : DEFAULT_PIPELINE_DIR;
+  const pipelineDir = opts.pipelineDir ? path.resolve(opts.pipelineDir) : DEFAULT_PIPELINE_DIR();
   const stateDir = path.join(pipelineDir, 'state', 'vault-migration');
   const auditPath = path.join(pipelineDir, 'audit', AUDIT_FILE);
   const acreditacionesPath = path.join(stateDir, ACREDITACIONES_FILE);

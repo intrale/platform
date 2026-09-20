@@ -77,8 +77,10 @@ const VALID_DECISIONS = Object.freeze(['signoff', 'rebote', 'abort']);
 
 function resolvePipelineDir(opts) {
     if (opts && opts.pipelineDir) return opts.pipelineDir;
-    // __dirname = .pipeline/lib → padre = .pipeline
-    return path.resolve(__dirname, '..');
+    // #7112 - resolución por llamada vía el envoltorio (SEC-13). El entorno se
+    // pasa entero al resolvedor; este módulo no lee ninguna variable por sí mismo.
+    const entorno = process.env;
+    return require('./write-target').writeDir(entorno, { canal: 'logs', destino: 'audit/architect-audit' });
 }
 
 function auditDir(opts) {

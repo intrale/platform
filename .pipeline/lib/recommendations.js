@@ -37,9 +37,18 @@ const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
 
-const REPO_ROOT = path.resolve(__dirname, '..', '..');
-const PIPELINE_DIR = path.join(REPO_ROOT, '.pipeline');
-const CACHE_FILE = path.join(PIPELINE_DIR, 'recommendations-cache.json');
+// #7112 — el destino se resuelve POR LLAMADA vía `lib/write-target` (SEC-13):
+// ninguna const de módulo captura `__dirname` al `require`. Sin ambiente
+// declarado ni dir de pruebas, `writeDir` avisa por stderr y LANZA (CA-3).
+// Identificadores conservados: cada uso `X` → `X()`.
+// Contrato tras #7112 (rebote rev-3): el default `cacheFile = CACHE_FILE()` se
+// evalúa al ENTRAR a `readCache`/`writeCache`/`refreshCache`, fuera de su
+// `try`. El `catch` sólo cubre la I/O (archivo ausente, JSON roto, disco): un
+// dir de escritura no resoluble LANZA y sube al llamador. Ya no es "best-effort
+// / nunca tira" salvo que el llamador inyecte `cacheFile`.
+function CACHE_FILE() {
+    return require('./write-target').writePath(process.env, { canal: 'estado', destino: 'recommendations-cache.json' }, 'recommendations-cache.json');
+}
 const CACHE_TTL_MS = 5 * 60 * 1000;
 
 const TIPO_LABEL = 'tipo:recomendacion';
@@ -63,7 +72,7 @@ function defaultGhRunner(args, opts = {}) {
     };
 }
 
-function readCache(cacheFile = CACHE_FILE) {
+function readCache(cacheFile = CACHE_FILE()) {
     try {
         const raw = fs.readFileSync(cacheFile, 'utf8');
         const parsed = JSON.parse(raw);
@@ -84,7 +93,7 @@ function emptyCache() {
     return { items: [], updatedAt: 0, error: null, totalAbiertas: null };
 }
 
-function writeCache(cache, cacheFile = CACHE_FILE) {
+function writeCache(cache, cacheFile = CACHE_FILE()) {
     try {
         fs.writeFileSync(cacheFile, JSON.stringify(cache, null, 2), 'utf8');
     } catch {}
@@ -151,7 +160,7 @@ function detectFromIssue(labels) {
     return null;
 }
 
-async function refreshCache({ ghRunner = defaultGhRunner, repo = 'intrale/platform', cacheFile = CACHE_FILE } = {}) {
+async function refreshCache({ ghRunner = defaultGhRunner, repo = 'intrale/platform', cacheFile = CACHE_FILE() } = {}) {
     const args = [
         'issue', 'list',
         '--repo', repo,
@@ -306,7 +315,7 @@ function reject({ issue, reason = '', ghRunner = defaultGhRunner, repo = 'intral
 }
 
 module.exports = {
-    CACHE_FILE,
+    get CACHE_FILE() { return CACHE_FILE(); },
     CACHE_TTL_MS,
     TIPO_LABEL,
     NEEDS_HUMAN_LABEL,

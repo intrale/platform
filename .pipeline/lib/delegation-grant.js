@@ -441,8 +441,9 @@ function createGrantAuthority(opts = {}) {
 
 /** Base de directorios del pipeline (REPO_ROOT/.pipeline) sin depender de cwd. */
 function auditLogDirBase() {
-    // `audit-log.js` vive en `.pipeline/lib/`; subimos un nivel → `.pipeline/`.
-    return path.resolve(__dirname, '..');
+    // #7112 — resolución POR LLAMADA vía el envoltorio (SEC-13): sin ambiente
+    // declarado ni dir de pruebas avisa por stderr y LANZA (CA-3), nunca `__dirname`.
+    return require('./write-target').writeDir(process.env, { canal: 'logs', destino: 'audit/delegation-grants.jsonl' });
 }
 
 module.exports = {

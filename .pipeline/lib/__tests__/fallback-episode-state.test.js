@@ -669,13 +669,22 @@ test('D10 — dispatcher y Commander resuelven al MISMO archivo de episodio', ()
     assert.equal(path.basename(desdeDispatcher), 'fallback-episode.json');
     assert.equal(path.basename(path.dirname(desdeDispatcher)), 'state');
 
-    // Y el default (sin pipelineDir) cae en el mismo `.pipeline/state`.
+    // Y el default (sin pipelineDir) cae en el `state/` del dir que resuelve el
+    // envoltorio de escritura (#7112): en pruebas es `PIPELINE_DIR_OVERRIDE`,
+    // nunca el `.pipeline/` del checkout. Sin dir declarado, se bloquea ruidoso.
+    const override = process.env.PIPELINE_DIR_OVERRIDE;
     const porDefecto = episodeState.episodeFilePath({});
     assert.equal(path.basename(path.dirname(porDefecto)), 'state');
     assert.equal(
         path.resolve(porDefecto),
-        path.resolve(__dirname, '..', '..', 'state', 'fallback-episode.json'),
+        path.resolve(override, 'state', 'fallback-episode.json'),
     );
+    delete process.env.PIPELINE_DIR_OVERRIDE;
+    try {
+        assert.throws(() => episodeState.episodeFilePath({}), (e) => e.code === 'PIPELINE_ESCRITURA_BLOQUEADA');
+    } finally {
+        process.env.PIPELINE_DIR_OVERRIDE = override;
+    }
 });
 
 test('D10 — el estado escrito por un emisor lo lee el otro', () => {

@@ -1369,3 +1369,84 @@ test('#5799: buildChildEnv sin processEnv sigue usando process.env (compatibilid
     });
     assert.ok(typeof env === 'object' && env !== null);
 });
+
+// =============================================================================
+// #7112 · CA-7 — la declaración de ambiente es explícita del launcher, nunca heredada
+// =============================================================================
+const pipelineEnv7112 = require('../lib/pipeline-env');
+const { conDeclaracionExplicita, buildMinimalCliEnv: buildMinimalCliEnv7112 } = require('../lib/build-child-env');
+const AMB = pipelineEnv7112.ENV_AMBIENTE;
+const PROD_REPO = require('node:path').dirname(pipelineEnv7112.DEFAULT_PRODUCTIVE_DIR);
+
+// El Pulpo productivo: declaración + PIPELINE_REPO_ROOT del repo principal, sin señal de test.
+function envPulpoProductivo(extra = {}) {
+    const env = fullOperatorEnv({ [AMB]: 'productivo', PIPELINE_REPO_ROOT: PROD_REPO });
+    delete env.NODE_TEST_CONTEXT; delete env.NODE_ENV; delete env.PULPO_NO_AUTOSTART;
+    return { ...env, ...extra };
+}
+
+test('#7112 CA-7.2: todo skill lanzado por el Pulpo (LLM y determinístico) recibe la declaración con el modo que el Pulpo resolvió', () => {
+    for (const skill of ['tester', 'dev', 'ux', 'qa', 'build', 'delivery', 'guru']) {
+        const env = buildChildEnv({ skill, processEnv: envPulpoProductivo() });
+        assert.equal(env[AMB], 'productivo', skill);
+        assert.equal(env.PIPELINE_REPO_ROOT, PROD_REPO, skill);
+    }
+});
+
+test('#7112 CA-7.1: la declaración NO viaja por el loop genérico PIPELINE_*: el hijo recibe el modo resuelto, no el literal heredado', () => {
+    // Pulpo bajo señal de test: hereda 'productivo' pero resolvió 'pruebas'.
+    const bajoTest = buildChildEnv({ skill: 'tester', processEnv: envPulpoProductivo({ NODE_TEST_CONTEXT: '1' }) });
+    assert.equal(bajoTest[AMB], 'pruebas', 'un Pulpo en pruebas jamás declara productivo a sus hijos');
+    // Un valor heredado basura tampoco pasa: se reemplaza por lo resuelto.
+    const basura = buildChildEnv({ skill: 'tester', processEnv: envPulpoProductivo({ [AMB]: 'produccion' }) });
+    assert.equal(basura[AMB], 'pruebas');
+    // Ni pipelineExtras puede meter un literal: la declaración se fija al final.
+    const porExtras = buildChildEnv({ skill: 'tester', processEnv: envPulpoProductivo({ NODE_ENV: 'test' }), pipelineExtras: { [AMB]: 'productivo' } });
+    assert.equal(porExtras[AMB], 'pruebas');
+});
+
+test('#7112 CA-7.3: el launcher nunca emite la declaración sin PIPELINE_REPO_ROOT (si sale una, sale la otra)', () => {
+    const sinRepo = envPulpoProductivo();
+    delete sinRepo.PIPELINE_REPO_ROOT;
+    const env = buildChildEnv({ skill: 'tester', processEnv: sinRepo });
+    assert.equal(env[AMB], undefined, 'sin contexto del repo no hay declaración: el hijo cae en pruebas/dir null');
+    assert.equal(env.PIPELINE_REPO_ROOT, undefined);
+    const conRepo = buildChildEnv({ skill: 'tester', processEnv: sinRepo, pipelineExtras: { PIPELINE_REPO_ROOT: PROD_REPO } });
+    assert.equal(conRepo[AMB], 'productivo', 'con el repo en pipelineExtras sí sale');
+    assert.equal(conRepo.PIPELINE_REPO_ROOT, PROD_REPO);
+});
+
+test('#7112 CA-7.2: el juez (buildMinimalCliEnv) no recibe la declaración: no propaga PIPELINE_*', () => {
+    const env = buildMinimalCliEnv7112({ processEnv: envPulpoProductivo() });
+    assert.equal(env[AMB], undefined);
+    assert.equal(env.PIPELINE_REPO_ROOT, undefined);
+});
+
+test('#7112 CA-7.1: camino legacy (spread de process.env) — conDeclaracionExplicita quita la heredada y fija la resuelta', () => {
+    const procEnv = envPulpoProductivo({ NODE_TEST_CONTEXT: '1' });
+    const legacy = conDeclaracionExplicita({ ...procEnv, PIPELINE_ISSUE: '1' }, procEnv);
+    assert.equal(legacy[AMB], 'pruebas', 'heredaba productivo, sale lo resuelto');
+    assert.equal(legacy.PIPELINE_ISSUE, '1');
+    const prod = conDeclaracionExplicita({ ...envPulpoProductivo() }, envPulpoProductivo());
+    assert.equal(prod[AMB], 'productivo');
+    const sinRepo = conDeclaracionExplicita({ [AMB]: 'productivo', PIPELINE_ISSUE: '1' }, envPulpoProductivo());
+    assert.equal(sinRepo[AMB], undefined, 'CA-7.3 también en el camino legacy');
+    // No muta el env recibido.
+    const base = { [AMB]: 'productivo', PIPELINE_REPO_ROOT: PROD_REPO };
+    conDeclaracionExplicita(base, envPulpoProductivo());
+    assert.equal(base[AMB], 'productivo');
+});
+
+test('#7112 CA-7.4: un test con señal dentro del agente sigue resolviendo pruebas con dir null aunque el env traiga la declaración explícita', () => {
+    const envAgente = buildChildEnv({ skill: 'tester', processEnv: envPulpoProductivo() });
+    for (const senal of [{ NODE_TEST_CONTEXT: 'child-v8' }, { NODE_ENV: 'test' }, { PULPO_NO_AUTOSTART: '1' }]) {
+        const amb = pipelineEnv7112.resolve({ ...envAgente, ...senal });
+        assert.equal(amb.modo, 'pruebas', JSON.stringify(senal));
+        assert.equal(amb.dir, null, JSON.stringify(senal));
+        assert.equal(amb.canales.telegram.enabled, false);
+    }
+    // Sin señal y con libs del productivo: caso D, escribe legítimamente al productivo.
+    const sinSenal = pipelineEnv7112.resolve(envAgente);
+    assert.equal(sinSenal.modo, 'productivo');
+    assert.equal(sinSenal.dir, pipelineEnv7112.DEFAULT_PRODUCTIVE_DIR);
+});

@@ -72,8 +72,8 @@ const SECRET_PATTERNS = [
 // -----------------------------------------------------------------------------
 
 function pipelineDirDefault() {
-    if (process.env.PIPELINE_DIR_OVERRIDE) return process.env.PIPELINE_DIR_OVERRIDE;
-    return path.resolve(__dirname, '..');
+    // #7112 - resolución por llamada vía el envoltorio (SEC-13).
+    return require('./write-target').writeDir(process.env, { canal: 'estado', destino: '.provider-quota-guard-state.json' });
 }
 
 function stateFile(pd) { return path.join(pd, '.provider-quota-guard-state.json'); }

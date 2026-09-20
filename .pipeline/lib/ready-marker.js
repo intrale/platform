@@ -19,18 +19,27 @@
 const fs = require('fs');
 const path = require('path');
 
-const PIPELINE_DIR = path.resolve(__dirname, '..');
-const READY_DIR = path.join(PIPELINE_DIR, 'ready');
+// #7112 - resolución POR LLAMADA (SEC-13): ninguna const captura el dir al
+// `require`; sin ambiente declarado la escritura se bloquea.
+// Contrato (rebote rev-3): los defaults `readyDir = READY_DIR()` de `markerPath`,
+// `readMarker`, `componentState` y `waitForMarkers` se evalúan al entrar, fuera
+// del `try`: sin dir resoluble LANZAN. Sólo `signalReady`, `clearMarker` y
+// `clearAllMarkers` (resuelven `READY_DIR()` dentro de su `try`) siguen
+// devolviendo `false`/`0` ante un dir no resoluble.
+function READY_DIR() {
+  return require('./write-target').writePath(process.env, { canal: 'estado', destino: 'ready/' }, 'ready');
+}
 
 function ensureDir() {
-  if (!fs.existsSync(READY_DIR)) fs.mkdirSync(READY_DIR, { recursive: true });
+  const dir = READY_DIR();
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 }
 
 // `readyDir` es opcional y por defecto apunta al directorio de markers del
 // checkout local (comportamiento histórico). El smoke-test lo usa para leer
 // los markers del runtime CANÓNICO cuando corre desde un worktree de agente,
 // donde el estado vivo no existe en la copia local del código (#4686).
-function markerPath(name, readyDir = READY_DIR) {
+function markerPath(name, readyDir = READY_DIR()) {
   return path.join(readyDir, `${name}.ready`);
 }
 
@@ -54,7 +63,7 @@ function signalReady(name, meta = {}) {
 }
 
 // Lee marker si existe. Retorna null si no existe o es inválido.
-function readMarker(name, readyDir = READY_DIR) {
+function readMarker(name, readyDir = READY_DIR()) {
   try {
     const raw = fs.readFileSync(markerPath(name, readyDir), 'utf8');
     return JSON.parse(raw);
@@ -78,11 +87,12 @@ function pidAlive(pid) {
 // para evitar leer markers viejos del ciclo anterior.
 function clearAllMarkers() {
   try {
-    if (!fs.existsSync(READY_DIR)) return 0;
+    const dir = READY_DIR();
+    if (!fs.existsSync(dir)) return 0;
     let n = 0;
-    for (const f of fs.readdirSync(READY_DIR)) {
+    for (const f of fs.readdirSync(dir)) {
       if (f.endsWith('.ready')) {
-        try { fs.unlinkSync(path.join(READY_DIR, f)); n++; } catch {}
+        try { fs.unlinkSync(path.join(dir, f)); n++; } catch {}
       }
     }
     return n;
@@ -100,7 +110,7 @@ function clearMarker(name) {
 //   ready    → marker existe y PID está vivo
 //   stale    → marker existe pero el PID murió (crash o no-arrancó)
 //   missing  → no hay marker (aún no señalizó ready)
-function componentState(name, readyDir = READY_DIR) {
+function componentState(name, readyDir = READY_DIR()) {
   const m = readMarker(name, readyDir);
   if (!m) return { state: 'missing', marker: null };
   if (!pidAlive(m.pid)) return { state: 'stale', marker: m };
@@ -111,7 +121,7 @@ function componentState(name, readyDir = READY_DIR) {
 // o hasta que se agote el timeout. Retorna detalle por componente.
 // Si `timeoutMs` se agota con alguno aún en `missing`, ese se reporta
 // como tal (no como fail duro) — el caller decide qué hacer.
-async function waitForMarkers(names, timeoutMs = 60000, pollMs = 1000, readyDir = READY_DIR) {
+async function waitForMarkers(names, timeoutMs = 60000, pollMs = 1000, readyDir = READY_DIR()) {
   const deadline = Date.now() + timeoutMs;
   let last = {};
   while (Date.now() < deadline) {

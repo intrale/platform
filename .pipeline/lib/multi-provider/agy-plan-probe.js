@@ -93,7 +93,10 @@ async function probeAgyPlan(opts = {}) {
     const now = Number.isFinite(opts.nowMs) ? opts.nowMs : Date.now();
     const fsImpl = opts.fsImpl || fs;
     const env = opts.env || process.env;
-    const file = path.join(opts.stateDir || process.env.PIPELINE_STATE_DIR || path.resolve(__dirname, '../../state'), 'agy-plan-probe.json');
+    // #7112 — sin `opts.stateDir` el dir sale del envoltorio (SEC-13): sin ambiente
+    // declarado ni dir de pruebas avisa por stderr y LANZA (CA-3), nunca `__dirname`.
+    const file = path.join(opts.stateDir
+        || require('../write-target').writePath(process.env, { canal: 'estado', destino: 'state/agy-plan-probe.json' }, 'state'), 'agy-plan-probe.json');
     const unknown = { reason_code: UNKNOWN, checked_at: new Date(now).toISOString(), groups: [] };
     const ttl = DEFAULT_TTL_MS;
     try {

@@ -36,7 +36,7 @@ Opciones:
   --fresh        borra el ambiente (si existe) y lo recrea
   --destroy      borra el ambiente entero (sólo si tiene marcador de pruebas)
   --verify       verifica que el ambiente no comparte nada con el productivo
-  --print-env    provisiona y emite PIPELINE_REPO_ROOT / PIPELINE_AMBIENTE (para eval)
+  --print-env    provisiona y emite PIPELINE_AMBIENTE / PIPELINE_DIR_OVERRIDE (para eval)
   --json         imprime el objeto de retorno de la lib en stdout (avisos a stderr)
   -h, --help     esta ayuda
 
@@ -98,8 +98,14 @@ function accionProvision(opts, io, deps) {
         // G-2: stdout exactamente dos líneas; todo lo demás a stderr.
         if (r.yaExistia && !opts.fresh) emitir(io.stderr, [`${PREFIJO} el ambiente ya existía en ${r.root}; se completó lo faltante (${r.creados.length} creados)`]);
         if (!v.ok) emitir(io.stderr, [`${PREFIJO} INCOMPLETO · ${v.motivo}`, ...listar([...v.compartidos, ...v.links])]);
-        io.stdout.write(`PIPELINE_REPO_ROOT=${r.root}\n`);
+        // #7112 / SEC-9 ESTRICTO: la declaración fija el MODO y el DIRECTORIO de
+        // pruebas viaja por `PIPELINE_DIR_OVERRIDE` (D1: el mismo candidato que
+        // validó el resolvedor). NO se emite `PIPELINE_REPO_ROOT`: en pruebas es
+        // contexto heredado del checkout productivo y nunca aporta dir; además
+        // su `.pipeline` es miembro de la unión que SEC-3 protege, así que
+        // apuntarlo al root de pruebas anularía este mismo override.
         io.stdout.write(`${lib.ENV_AMBIENTE}=${lib.MODO_PRUEBAS}\n`);
+        io.stdout.write(`${lib.ENV_DIR_OVERRIDE}=${r.pipelineDir}\n`);
         return code;
     }
     if (opts.json) {

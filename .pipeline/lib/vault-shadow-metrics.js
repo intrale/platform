@@ -84,8 +84,13 @@
 const nodeFs = require('fs');
 const path = require('path');
 
-const REPO_ROOT = path.resolve(__dirname, '..', '..');
-const DEFAULT_AUDIT_DIR = path.join(REPO_ROOT, '.pipeline', 'audit');
+// #7112 — el destino se resuelve POR LLAMADA vía `lib/write-target` (SEC-13):
+// ninguna const de módulo captura `__dirname` al `require`. Sin ambiente
+// declarado ni dir de pruebas, `writeDir` avisa por stderr y LANZA (CA-3).
+// Identificadores conservados: cada uso `X` → `X()`.
+function DEFAULT_AUDIT_DIR() {
+  return require('./write-target').writePath(process.env, { canal: 'logs', destino: 'audit/vault-shadow-*.jsonl' }, 'audit');
+}
 
 const JSONL_FILE = 'vault-resolution.jsonl';
 const T0_FILE = 'vault-resolution.t0.json';
@@ -284,7 +289,7 @@ function normalizarShadowWindow(raw) {
  */
 function createVaultShadowMetrics(opts = {}) {
   const fs = opts.fs || nodeFs;
-  const auditDir = opts.auditDir ? path.resolve(opts.auditDir) : DEFAULT_AUDIT_DIR;
+  const auditDir = opts.auditDir ? path.resolve(opts.auditDir) : DEFAULT_AUDIT_DIR();
   const now = typeof opts.now === 'function' ? opts.now : Date.now;
   const logger = typeof opts.logger === 'function' ? opts.logger : console.log;
   const notify = typeof opts.notify === 'function' ? opts.notify : null;

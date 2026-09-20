@@ -20,6 +20,8 @@ function loadServiceWithTempState() {
   }
 
   process.env.PIPELINE_STATE_DIR = pipeline;
+  // #7112 — el runner deja PIPELINE_DIR_OVERRIDE global (precedencia D-1 sobre PIPELINE_STATE_DIR): se declara el mismo dir.
+  process.env.PIPELINE_DIR_OVERRIDE = pipeline;
   const servicePath = path.resolve(__dirname, '..', 'servicio-github.js');
   delete require.cache[servicePath];
   const service = require(servicePath);

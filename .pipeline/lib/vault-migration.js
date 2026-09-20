@@ -99,8 +99,13 @@ const nodeCrypto = require('crypto');
 
 const { redactSecretValue, REDACTION_MARKER } = require('./redact');
 
-const REPO_ROOT = path.resolve(__dirname, '..', '..');
-const DEFAULT_STATE_DIR = path.join(REPO_ROOT, '.pipeline', 'state', 'vault-migration');
+// #7112 — el destino se resuelve POR LLAMADA vía `lib/write-target` (SEC-13):
+// ninguna const de módulo captura `__dirname` al `require`. Sin ambiente
+// declarado ni dir de pruebas, `writeDir` avisa por stderr y LANZA (CA-3).
+// Identificadores conservados: cada uso `X` → `X()`.
+function DEFAULT_STATE_DIR() {
+  return require('./write-target').writePath(process.env, { canal: 'estado', destino: 'state/vault-migration/' }, 'state', 'vault-migration');
+}
 
 const STATE_VERSION = 1;
 
@@ -292,7 +297,7 @@ function faltantes(esperados, declarados) {
  */
 function createVaultMigration(deps = {}) {
   const fs = deps.fs || nodeFs;
-  const stateDir = deps.stateDir ? path.resolve(deps.stateDir) : DEFAULT_STATE_DIR;
+  const stateDir = deps.stateDir ? path.resolve(deps.stateDir) : DEFAULT_STATE_DIR();
   const now = typeof deps.now === 'function' ? deps.now : Date.now;
   const logger = typeof deps.logger === 'function' ? deps.logger : () => {};
 

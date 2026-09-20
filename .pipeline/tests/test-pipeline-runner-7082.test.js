@@ -26,6 +26,8 @@ const { collectTestFiles, isExcludedRelPath, listUntracked, PATTERNS } = runner;
 
 const RUNNER_SRC = path.resolve(__dirname, '..', '..', 'scripts', 'test-pipeline.js');
 const SCRATCH_DIRS_SRC = path.resolve(__dirname, '..', 'lib', 'scratch-dirs.js');
+// #7112 · CA-4 — segunda dependencia del runner: el helper del dir efimero.
+const TEST_RUN_DIR_SRC = path.resolve(__dirname, '..', 'lib', 'test-run-dir.js');
 
 function git(dir, ...args) {
     const r = spawnSync('git', ['-C', dir, ...args], { encoding: 'utf8', windowsHide: true });
@@ -302,6 +304,7 @@ function instalarRunner(root) {
     const scratch = path.join(root, '.pipeline', 'lib', 'scratch-dirs.js');
     fs.mkdirSync(path.dirname(scratch), { recursive: true });
     fs.copyFileSync(SCRATCH_DIRS_SRC, scratch);
+    fs.copyFileSync(TEST_RUN_DIR_SRC, path.join(root, '.pipeline', 'lib', 'test-run-dir.js'));
     return dest;
 }
 
@@ -319,3 +322,74 @@ function correrRunner(root, args, envExtra = {}) {
 function correrList(root, ...extra) {
     return correrRunner(root, ['--list', ...extra]);
 }
+
+// ─── #7112 · CA-4 — dir efimero de pruebas provisto por el runner ───────────
+
+/**
+ * Fixture minimo con UN test que reporta a stdout el `PIPELINE_DIR_OVERRIDE`
+ * que hereda y deja un centinela adentro (asi se prueba que el dir existia
+ * durante la corrida y que se borro al terminar).
+ */
+function fixtureCA4(t) {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'tp7112-'));
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    git(root, 'init', '-q');
+    escribir(root, '.pipeline/config.yaml', 'pipeline: {}\n');
+    escribir(root, 'pipeline.config.json', '{}\n');
+    escribir(root, '.pipeline/tests/reporta-dir.test.js', [
+        "'use strict';",
+        "const test = require('node:test');",
+        "const fs = require('node:fs');",
+        "const path = require('node:path');",
+        "test('reporta el dir heredado', () => {",
+        "  const d = process.env.PIPELINE_DIR_OVERRIDE || '';",
+        "  const NL = String.fromCharCode(10);",
+        "  process.stdout.write('DIR_HEREDADO=' + d + NL);",
+        "  if (d) { fs.writeFileSync(path.join(d, 'centinela.txt'), 'x'); process.stdout.write('CENTINELA=' + fs.existsSync(path.join(d, 'centinela.txt')) + NL); }",
+        "});",
+        '',
+    ].join('\n'));
+    return root;
+}
+
+test('#7112 CA-4 · el runner setea PIPELINE_DIR_OVERRIDE a un mkdtemp bajo os.tmpdir() antes de run(), lo anuncia y lo borra al terminar', (t) => {
+    const root = fixtureCA4(t);
+    const r = correrRunner(root, ['--reporter=tap'], { PIPELINE_DIR_OVERRIDE: '' });
+    assert.equal(r.status, 0, r.stderr + r.stdout);
+    const m = r.stdout.match(/DIR_HEREDADO=(.+)/);
+    assert.ok(m, 'el test hijo reporto el dir: ' + r.stdout);
+    // El reporter TAP escapa las barras invertidas del stdout del hijo.
+    const dir = m[1].trim().replace(/\\\\/g, '\\');
+    const tmp = path.resolve(os.tmpdir());
+    assert.ok(dir.startsWith(tmp + path.sep), 'bajo os.tmpdir(): ' + dir);
+    assert.ok(path.basename(dir).startsWith('pipeline-tests-'), 'prefijo del helper');
+    assert.ok(!dir.includes(path.sep + '.pipeline' + path.sep), 'nunca bajo .pipeline/tmp (#7406)');
+    assert.match(r.stdout, /CENTINELA=true/, 'el dir existia durante la corrida');
+    assert.equal(fs.existsSync(dir), false, 'un dir por corrida y se borra al terminar');
+    assert.match(r.stderr, /\[test-pipeline\] dir de pruebas: .+ \(ef.mero, se borra al terminar\)/i);
+    assert.match(r.stderr, /\[test-pipeline\] dir de pruebas borrado/);
+});
+
+test('#7112 CA-4 · si PIPELINE_DIR_OVERRIDE ya viene seteado, el runner lo respeta, lo dice y no lo borra', (t) => {
+    const root = fixtureCA4(t);
+    const propio = fs.mkdtempSync(path.join(os.tmpdir(), 'tp7112-propio-'));
+    t.after(() => fs.rmSync(propio, { recursive: true, force: true }));
+    const r = correrRunner(root, ['--reporter=tap'], { PIPELINE_DIR_OVERRIDE: propio });
+    assert.equal(r.status, 0, r.stderr + r.stdout);
+    const heredado = (r.stdout.match(/DIR_HEREDADO=(.+)/) || [])[1];
+    assert.ok(heredado, 'el hijo reporto el dir: ' + r.stdout);
+    assert.equal(heredado.trim().replace(/\\\\/g, '\\'), propio, 'el hijo hereda el dir del llamador');
+    assert.equal(fs.existsSync(path.join(propio, 'centinela.txt')), true, 'el dir del llamador sigue ahi');
+    assert.match(r.stderr, /declarado por el llamador, no se borra/);
+    assert.doesNotMatch(r.stderr, /dir de pruebas borrado/);
+});
+
+test('#7112 CA-4 · --list no crea ningun dir efimero (el dir se provee solo antes de run())', (t) => {
+    const root = fixtureCA4(t);
+    const antes = fs.readdirSync(os.tmpdir()).filter((n) => n.startsWith('pipeline-tests-'));
+    const r = correrRunner(root, ['--list'], { PIPELINE_DIR_OVERRIDE: '' });
+    assert.equal(r.status, 0, r.stderr);
+    const despues = fs.readdirSync(os.tmpdir()).filter((n) => n.startsWith('pipeline-tests-'));
+    assert.deepEqual(despues, antes);
+    assert.doesNotMatch(r.stderr, /dir de pruebas/);
+});

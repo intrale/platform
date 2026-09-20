@@ -15,7 +15,7 @@
 const fs = require('fs');
 const path = require('path');
 const readline = require('readline');
-const { LOG_FILE, REPO_ROOT, estimateCostUsd, MODEL_PRICING } = require('../lib/traceability');
+const { LOG_FILE, estimateCostUsd, MODEL_PRICING } = require('../lib/traceability');
 const pricing = require('../lib/pricing');
 const { computeProjections } = require('./projections');
 // (#3962 EP8-H9 CA-4) Presupuesto mensual persistido — sobreescribe el default
@@ -28,8 +28,23 @@ try { budgetConfig = require('./budget-config'); } catch (_) { /* opcional */ }
 let redactLib = null;
 try { redactLib = require('../redact'); } catch (_) { /* opcional */ }
 
-const METRICS_DIR = path.join(REPO_ROOT, '.pipeline', 'metrics');
-const SNAPSHOT_FILE = path.join(METRICS_DIR, 'snapshot.json');
+// #7112 (rebote rev-2) — el DESTINO DE ESCRITURA (metrics/snapshot*.json) se
+// resuelve POR LLAMADA vía lib/write-target (SEC-13). Antes era
+// `REPO_ROOT/.pipeline/metrics` con el REPO_ROOT de lib/traceability
+// (CLAUDE_PROJECT_DIR || PIPELINE_REPO_ROOT || literal + `git rev-parse
+// --git-common-dir`): ignoraba PIPELINE_DIR_OVERRIDE y, spawneado por
+// dashboard-slices desde un test en un worktree, reescribía el snapshot del
+// .pipeline productivo REAL (CA-5/CA-9). De traceability sólo queda LOG_FILE, la
+// LECTURA de `.claude/activity-log.jsonl`, que vive fuera de `.pipeline`.
+// `opts.pipelineDir` (CLI `--pipeline-dir`, lo pasa dashboard-slices con el dir
+// que el dashboard ya resolvió) → modo `explicito` del resolvedor.
+function metricsDir(opts) {
+    const pipelineDir = opts && typeof opts.pipelineDir === 'string' && opts.pipelineDir.trim()
+        ? opts.pipelineDir : undefined;
+    return require('../lib/write-target').writePath(
+        process.env, { canal: 'estado', destino: 'metrics/snapshot.json', pipelineDir }, 'metrics',
+    );
+}
 const DEFAULT_REFRESH_MS = 60000;
 
 // Baseline horario (#2891 PR-B) — rolling window de 7-14 días.
@@ -684,13 +699,16 @@ function emitEmptySnapshot(options) {
 // snapshots paralelos (`snapshot.json` all-time + `snapshot-24h.json` para
 // el tokens24h del kpisSlice). Sanitización: el nombre no puede contener
 // path separators ni `..` — defensa contra path-traversal vía CLI flag.
-function writeSnapshot(snap, outName) {
-    ensureDir(METRICS_DIR);
-    let target = SNAPSHOT_FILE;
+// #7112: `opts.pipelineDir` opcional (ver `metricsDir`). Con dir === null el
+// envoltorio lanza EscrituraBloqueadaError antes de crear nada (SEC-10).
+function writeSnapshot(snap, outName, opts) {
+    const dir = metricsDir(opts);
+    ensureDir(dir);
+    let target = path.join(dir, 'snapshot.json');
     if (outName) {
         const safe = String(outName).trim();
         if (safe.length > 0 && !safe.includes('/') && !safe.includes('\\') && !safe.includes('..')) {
-            target = path.join(METRICS_DIR, safe);
+            target = path.join(dir, safe);
         }
     }
     const tmp = target + '.tmp';
@@ -700,12 +718,12 @@ function writeSnapshot(snap, outName) {
 
 async function runOnce(options) {
     const snap = await buildSnapshot(options);
-    writeSnapshot(snap, options && options.out);
+    writeSnapshot(snap, options && options.out, options);
     return snap;
 }
 
 function parseArgs(argv) {
-    const args = { once: false, window: 'all', refreshMs: DEFAULT_REFRESH_MS, lookbackDays: DEFAULT_LOOKBACK_DAYS, out: null };
+    const args = { once: false, window: 'all', refreshMs: DEFAULT_REFRESH_MS, lookbackDays: DEFAULT_LOOKBACK_DAYS, out: null, pipelineDir: null };
     for (let i = 2; i < argv.length; i++) {
         const a = argv[i];
         if (a === '--once') args.once = true;
@@ -713,8 +731,9 @@ function parseArgs(argv) {
         else if (a === '--refresh' && argv[i + 1]) { args.refreshMs = Math.max(5000, parseInt(argv[++i], 10) || DEFAULT_REFRESH_MS); }
         else if (a === '--lookback-days' && argv[i + 1]) { args.lookbackDays = clampLookbackDays(parseInt(argv[++i], 10)); }
         else if (a === '--out' && argv[i + 1]) { args.out = String(argv[++i] || '').trim(); }
+        else if (a === '--pipeline-dir' && argv[i + 1]) { args.pipelineDir = String(argv[++i] || '').trim(); }
         else if (a === '--help' || a === '-h') {
-            process.stdout.write('Uso: aggregator.js [--once] [--window 1h|24h|7d|all] [--refresh ms] [--lookback-days 7-14] [--out snapshot-24h.json]\n');
+            process.stdout.write('Uso: aggregator.js [--once] [--window 1h|24h|7d|all] [--refresh ms] [--lookback-days 7-14] [--out snapshot-24h.json] [--pipeline-dir <.pipeline>]\n');
             process.exit(0);
         }
     }
@@ -760,6 +779,5 @@ module.exports = {
     DEFAULT_LOOKBACK_DAYS,
     MIN_LOOKBACK_DAYS,
     MAX_LOOKBACK_DAYS,
-    SNAPSHOT_FILE,
-    METRICS_DIR,
+    metricsDir,
 };

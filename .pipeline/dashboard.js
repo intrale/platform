@@ -27,6 +27,8 @@ const yaml = require('js-yaml');
 // El dashboard NO tiene fallback permisivo: config inválida ⇒ `configErrorState`
 // explícito y cero decisiones derivadas (CA-8).
 const configResolver = require('./lib/config-resolver');
+// #7112 — envoltorio único de los puntos de escritura (resolución por llamada).
+const writeTarget = require('./lib/write-target');
 const configSchema = require('./lib/config-schema');
 const pidDiscovery = require('./pid-discovery');
 const {
@@ -162,9 +164,25 @@ let agentLogHistory = null;
 try { agentLogHistory = require('./lib/agent-log-history'); } catch { /* opcional */ }
 
 const PORT = parseInt(process.env.DASHBOARD_PORT) || 3200;
-const PIPELINE = process.env.PIPELINE_STATE_DIR || path.resolve(__dirname);
+// #7112 — El directorio base del pipeline se resuelve POR LLAMADA vía
+// `lib/write-target` sobre `lib/pipeline-env` (SEC-13): ninguna const de módulo
+// captura el destino al `require`. Sin ambiente declarado (`PIPELINE_AMBIENTE`
+// del lanzador) y sin dir de pruebas (`PIPELINE_DIR_OVERRIDE` / `PIPELINE_STATE_DIR`),
+// `writeDir` avisa por stderr y LANZA: un dashboard mal cableado falla ruidoso en
+// su primer acceso, nunca escribe en el productivo por defecto (CA-3 / SEC-10).
+// La precedencia D-1 del resolvedor conserva `PIPELINE_STATE_DIR` (launch.ps1).
+//
+// Se conservan los identificadores en mayúsculas (`PIPELINE()`, `LOG_DIR()`,
+// `TITLE_CACHE_FILE()`, `QA_ENV_SCRIPT()`) para que el reemplazo const→función
+// sea mecánico y el diff legible: cada uso pasó de `X` a `X()`. Los lectores
+// comparten la misma función: lo importante es que no haya const capturada.
+function PIPELINE() {
+  return writeTarget.writeDir(process.env, { canal: 'estado', destino: '.pipeline (raíz)' });
+}
 const ROOT = process.env.PIPELINE_MAIN_ROOT || path.resolve(__dirname, '..');
-const LOG_DIR = path.join(PIPELINE, 'logs');
+function LOG_DIR() {
+  return writeTarget.writePath(process.env, { canal: 'logs', destino: 'logs/' }, 'logs');
+}
 const GITHUB_BASE = 'https://github.com/intrale/platform/issues';
 
 // #5179 grupo 3b / CA-6b — Halt total leído por el envoltorio único de estado
@@ -294,18 +312,18 @@ const GH_BIN_DEFAULT = 'C:/Workspaces/gh-cli/bin/gh';
 const GH_BIN = process.env.GH_BIN || process.env.GH_PATH || GH_BIN_DEFAULT;
 
 // --- Issue title/label cache (persisted to disk, refreshed via gh CLI) ---
-const TITLE_CACHE_FILE = path.join(PIPELINE, '.issue-title-cache.json');
+function TITLE_CACHE_FILE() { return path.join(PIPELINE(), '.issue-title-cache.json'); }
 const TITLE_CACHE_TTL = 3600000; // 1 hour
 
 function loadIssueTitleCache() {
   try {
-    const raw = fs.readFileSync(TITLE_CACHE_FILE, 'utf8');
+    const raw = fs.readFileSync(TITLE_CACHE_FILE(), 'utf8');
     return JSON.parse(raw);
   } catch { return {}; }
 }
 
 function saveIssueTitleCache(cache) {
-  try { fs.writeFileSync(TITLE_CACHE_FILE, JSON.stringify(cache, null, 2)); } catch {}
+  try { fs.writeFileSync(TITLE_CACHE_FILE(), JSON.stringify(cache, null, 2)); } catch {}
 }
 
 function fetchIssueTitles(issueIds, cache) {
@@ -322,7 +340,7 @@ function fetchIssueTitles(issueIds, cache) {
   const batches = [];
   for (let i = 0; i < safeIds.length; i += 50) batches.push(safeIds.slice(i, i + 50));
   for (const batch of batches) {
-    const tmpQuery = path.join(PIPELINE, '.gh-query-' + Date.now() + '.graphql');
+    const tmpQuery = path.join(PIPELINE(), '.gh-query-' + Date.now() + '.graphql');
     try {
       // #3905 — `state` (OPEN/CLOSED) necesario para distinguir en la franja
       // "fuera de flujo" del board un issue de la allowlist sin ingresar (open)
@@ -398,7 +416,7 @@ async function fetchIssueTitlesAsync(issueIds, cache) {
   const batches = [];
   for (let i = 0; i < safeIds.length; i += 50) batches.push(safeIds.slice(i, i + 50));
   for (const batch of batches) {
-    const tmpQuery = path.join(PIPELINE, '.gh-query-' + Date.now() + '.graphql');
+    const tmpQuery = path.join(PIPELINE(), '.gh-query-' + Date.now() + '.graphql');
     try {
       const fields = batch.map((id, i) => `i${i}: issue(number:${id}) { number title state labels(first:10) { nodes { name } } }`).join(' ');
       const query = `{ repository(owner:"intrale",name:"platform") { ${fields} } }`;
@@ -475,7 +493,7 @@ function stopComponent(name) {
   if (!pid) return { ok: true, msg: `${name} no estaba corriendo` };
   try {
     execSync(`taskkill /PID ${pid} /F /T`, { timeout: 5000, windowsHide: true });
-    try { fs.unlinkSync(path.join(PIPELINE, comp.pid)); } catch {}
+    try { fs.unlinkSync(path.join(PIPELINE(), comp.pid)); } catch {}
     return { ok: true, msg: `${name} detenido (PID ${pid})` };
   } catch (e) { return { ok: false, msg: `Error deteniendo ${name}: ${e.message}` }; }
 }
@@ -486,10 +504,10 @@ function startComponent(name) {
   invalidateCache();
   const pid = getComponentPid(comp);
   if (pid) return { ok: true, msg: `${name} ya está corriendo (PID ${pid})` };
-  const scriptPath = path.join(PIPELINE, comp.script);
+  const scriptPath = path.join(PIPELINE(), comp.script);
   if (!fs.existsSync(scriptPath)) return { ok: false, msg: `Script ${comp.script} no existe` };
   try {
-    const logPath = path.join(LOG_DIR, `${comp.name}.log`);
+    const logPath = path.join(LOG_DIR(), `${comp.name}.log`);
     const logFd = fs.openSync(logPath, 'a');
     const child = spawn(process.execPath, [scriptPath], {
       cwd: ROOT, stdio: ['ignore', logFd, logFd], detached: true, windowsHide: true
@@ -545,14 +563,14 @@ let _operativoSync = null;
 try { _operativoSync = require('./lib/operativo-sync'); } catch { /* opcional */ }
 
 // QA Environment
-const QA_ENV_SCRIPT = path.join(PIPELINE, 'qa-environment.js');
+function QA_ENV_SCRIPT() { return path.join(PIPELINE(), 'qa-environment.js'); }
 
 function qaAction(action, component) {
-  if (!fs.existsSync(QA_ENV_SCRIPT)) return { ok: false, msg: 'qa-environment.js no existe' };
+  if (!fs.existsSync(QA_ENV_SCRIPT())) return { ok: false, msg: 'qa-environment.js no existe' };
   try {
     const cmd = component
-      ? `"${process.execPath}" "${QA_ENV_SCRIPT}" ${action} ${component}`
-      : `"${process.execPath}" "${QA_ENV_SCRIPT}" ${action}`;
+      ? `"${process.execPath}" "${QA_ENV_SCRIPT()}" ${action} ${component}`
+      : `"${process.execPath}" "${QA_ENV_SCRIPT()}" ${action}`;
     const output = execSync(cmd, {
       cwd: ROOT, encoding: 'utf8', timeout: 60000, windowsHide: true
     });
@@ -612,7 +630,7 @@ function pushResourceSample(cpu, mem) {
 // Uptime de un proceso vía mtime del archivo .pid
 function getProcessUptime(comp) {
   try {
-    const s = fs.statSync(path.join(PIPELINE, `${comp}.pid`));
+    const s = fs.statSync(path.join(PIPELINE(), `${comp}.pid`));
     return Date.now() - s.mtimeMs;
   } catch { return null; }
 }
@@ -760,7 +778,7 @@ function loadConfigOrError() {
     // `reload: true` = paridad con el comportamiento previo (antes se leía el
     // archivo en cada llamada), y necesario para que una corrección en caliente
     // de config.yaml se refleje sin reiniciar el dashboard.
-    const cfg = configResolver.resolve({ pipelineDir: PIPELINE, reload: true });
+    const cfg = configResolver.resolve({ pipelineDir: PIPELINE(), reload: true });
     if (configErrorState) {
       log(`configuración válida de nuevo: ${configErrorState.archivo} — estado de error levantado`);
       configErrorState = null;
@@ -1046,7 +1064,7 @@ function _scheduleOlaETARefresh(state) {
   let closedComputed = false;
   try {
     if (waveResolverLib) {
-      resolvedWave = waveResolverLib.resolveActiveWave({ pipelineRoot: PIPELINE });
+      resolvedWave = waveResolverLib.resolveActiveWave({ pipelineRoot: PIPELINE() });
       if (resolvedWave && Array.isArray(resolvedWave.issues)) activeIssues = resolvedWave.issues;
       if (!activeIssues.length) {
         try { log(`olaETA: ola activa sin issues (source=${resolvedWave && resolvedWave.source}) → métricas en estado sin-dato`); } catch {}
@@ -1054,7 +1072,7 @@ function _scheduleOlaETARefresh(state) {
     }
   } catch { activeIssues = []; resolvedWave = null; }
   try {
-    if (waveStateLib) resolvedWaveState = waveStateLib.getCachedWaveState({ pipelineRoot: PIPELINE });
+    if (waveStateLib) resolvedWaveState = waveStateLib.getCachedWaveState({ pipelineRoot: PIPELINE() });
     if (resolvedWave && resolvedWaveState) {
       // Require lazy DENTRO de la función (patrón anti-circular, idem L829).
       const { computeClosedSet } = require('./lib/commander-deterministic');
@@ -1145,8 +1163,8 @@ function _scheduleOlaETARefresh(state) {
             // #4449 — Reusar `resolvedWave`/`resolvedWaveState`/`closedIssues` ya
             // resueltos en el scope sync (evita duplicar las llamadas costosas). El
             // `||` preserva la robustez si la resolución sync falló (fallback local).
-            const wave = resolvedWave || waveResolverLib.resolveActiveWave({ pipelineRoot: PIPELINE });
-            const wState = resolvedWaveState || waveStateLib.getCachedWaveState({ pipelineRoot: PIPELINE });
+            const wave = resolvedWave || waveResolverLib.resolveActiveWave({ pipelineRoot: PIPELINE() });
+            const wState = resolvedWaveState || waveStateLib.getCachedWaveState({ pipelineRoot: PIPELINE() });
             // #4325 — sin `closedIssues`, `buildWaveSnapshot` deja `closedCount`
             // en 0 y `totalPct` colapsa a ~2% aunque la ola tenga issues CLOSED
             // en GitHub. `computeClosedSet` deriva los cerrados de la cache cruda
@@ -1165,7 +1183,7 @@ function _scheduleOlaETARefresh(state) {
             let waveStartTs = (wave && typeof wave.openedAt === 'string') ? Date.parse(wave.openedAt) : NaN;
             if (!Number.isFinite(waveStartTs)) {
               try {
-                const snaps = waveProgressLib.readSnapshots({ pipelineRoot: PIPELINE, waveKey });
+                const snaps = waveProgressLib.readSnapshots({ pipelineRoot: PIPELINE(), waveKey });
                 if (Array.isArray(snaps) && snaps.length) waveStartTs = snaps[0].ts;
               } catch { /* sin fallback → estado insufficient */ }
             }
@@ -1207,7 +1225,7 @@ function _scheduleOlaETARefresh(state) {
             // `{ts, avancePct}` — nunca metadata interna (SEC A03/A08). Placeholder
             // (serie con <2 puntos) queda a cargo del render del cliente.
             try {
-              const allSnaps = waveProgressLib.readSnapshots({ pipelineRoot: PIPELINE, waveKey });
+              const allSnaps = waveProgressLib.readSnapshots({ pipelineRoot: PIPELINE(), waveKey });
               if (Array.isArray(allSnaps) && allSnaps.length) {
                 waveSeries = allSnaps
                   .filter((s) => s && Number.isFinite(s.ts) && Number.isFinite(s.avancePct))
@@ -1402,14 +1420,14 @@ async function _computeProcStatusAsync() {
   // movió acá desde getPipelineState() para que la persistencia/lectura del log
   // de transiciones tampoco viva en el path sync del snapshot.
   if (processTransitions) {
-    try { processTransitions.recordSnapshot(procesos, { pipelineDir: PIPELINE }); }
+    try { processTransitions.recordSnapshot(procesos, { pipelineDir: PIPELINE() }); }
     catch { /* best-effort: el store de transiciones no debe romper el state */ }
   }
 
   // QA env: tasklist async por PID de servicio QA registrado.
   const qaEnv = { emulator: false };
   try {
-    const qaState = JSON.parse(fs.readFileSync(path.join(PIPELINE, 'qa-env-state.json'), 'utf8'));
+    const qaState = JSON.parse(fs.readFileSync(path.join(PIPELINE(), 'qa-env-state.json'), 'utf8'));
     // PID máximo válido en Windows (rango DWORD). Claves de metadata (timestamps)
     // superan este rango y dispararían "filtro inválido" → se filtran.
     const MAX_PID = 0xFFFFFFFF;
@@ -1434,7 +1452,7 @@ function _getEtaAveragesCached(allFases) {
   let result = {};
   if (etaMarkersLib) {
     try {
-      const markers = etaMarkersLib.collectMarkers({ root: PIPELINE, allFases, includeRejection: false });
+      const markers = etaMarkersLib.collectMarkers({ root: PIPELINE(), allFases, includeRejection: false });
       result = markers.perFaseSkill || {};
     } catch { result = {}; }
   } else {
@@ -1450,8 +1468,8 @@ function _getEtaAveragesCached(allFases) {
 function _computeEtaAveragesFallback(allFases) {
   const out = {};
   for (const { pipeline: pName, fase } of allFases) {
-    const procesadoDir = path.join(PIPELINE, pName, fase, 'procesado');
-    const listoDir = path.join(PIPELINE, pName, fase, 'listo');
+    const procesadoDir = path.join(PIPELINE(), pName, fase, 'procesado');
+    const listoDir = path.join(PIPELINE(), pName, fase, 'listo');
     for (const dir of [procesadoDir, listoDir]) {
       for (const f of listWorkFiles(dir)) {
         const skill = f.split('.').slice(1).join('.');
@@ -1530,7 +1548,7 @@ function* _genPipelineState() {
   // Issue matrix: cruzar issue × fase con datos enriquecidos
   state.issueMatrix = {};
   for (const { pipeline: pName, fase } of allFases) {
-    const baseDir = path.join(PIPELINE, pName, fase);
+    const baseDir = path.join(PIPELINE(), pName, fase);
     for (const [estado, dir] of [['pendiente','pendiente'],['trabajando','trabajando'],['listo','listo'],['procesado','procesado']]) {
       for (const f of listWorkFiles(path.join(baseDir, dir))) {
         const issue = f.split('.')[0];
@@ -1604,15 +1622,15 @@ function* _genPipelineState() {
 
         // Log disponible? Buscar {issue}-{skill}.log o build-{issue}.log
         let logFile = `${issue}-${skill}.log`;
-        if (!fs.existsSync(path.join(LOG_DIR, logFile)) && skill === 'build') {
+        if (!fs.existsSync(path.join(LOG_DIR(), logFile)) && skill === 'build') {
           logFile = `build-${issue}.log`;
         }
-        entry.hasLog = fs.existsSync(path.join(LOG_DIR, logFile));
+        entry.hasLog = fs.existsSync(path.join(LOG_DIR(), logFile));
         entry.logFile = logFile;
 
         // PDF de reporte de rechazo disponible?
         const rejectionPdf = `rejection-${issue}-${skill}.pdf`;
-        entry.hasRejectionPdf = fs.existsSync(path.join(LOG_DIR, rejectionPdf));
+        entry.hasRejectionPdf = fs.existsSync(path.join(LOG_DIR(), rejectionPdf));
         entry.rejectionPdf = rejectionPdf;
 
         state.issueMatrix[issue].fases[`${pName}/${fase}`].push(entry);
@@ -1709,7 +1727,7 @@ function* _genPipelineState() {
       const abiertos = new Set();
       for (const sub of ['pendiente', 'trabajando']) {
         let files;
-        try { files = fs.readdirSync(path.join(PIPELINE, 'verificacion-requeue', sub)); }
+        try { files = fs.readdirSync(path.join(PIPELINE(), 'verificacion-requeue', sub)); }
         catch { continue; }
         for (const nombre of files) {
           const m = /^(\d+)-.*\.json$/.exec(nombre);
@@ -1718,8 +1736,8 @@ function* _genPipelineState() {
       }
       // 2) Contadores `.<issue>.seal-retries` de la fase de verificacion.
       const faseDir = typeof _qaEvidenceSeal.verificacionFasePath === 'function'
-        ? _qaEvidenceSeal.verificacionFasePath(PIPELINE)
-        : path.join(PIPELINE, 'desarrollo', 'verificacion');
+        ? _qaEvidenceSeal.verificacionFasePath(PIPELINE())
+        : path.join(PIPELINE(), 'desarrollo', 'verificacion');
       let contadores = [];
       try { contadores = fs.readdirSync(faseDir); } catch { contadores = []; }
       for (const nombre of contadores) {
@@ -1727,7 +1745,7 @@ function* _genPipelineState() {
         if (!m) continue;
         const issue = m[1];
         let r;
-        try { r = _qaEvidenceSeal.readSealRetries({ pipelineDir: PIPELINE, issue }); }
+        try { r = _qaEvidenceSeal.readSealRetries({ pipelineDir: PIPELINE(), issue }); }
         catch { continue; }
         mapa[issue] = {
           intentos: Number.isInteger(r && r.intentos) ? r.intentos : 0,
@@ -1793,7 +1811,7 @@ function* _genPipelineState() {
         for (const e of entries) {
           if (e.estado !== 'pendiente') continue;
           const [pName, fName] = faseKey.split('/');
-          const yamlPath = path.join(PIPELINE, pName, fName, 'pendiente', `${id}.${e.skill}`);
+          const yamlPath = path.join(PIPELINE(), pName, fName, 'pendiente', `${id}.${e.skill}`);
           const y = readYamlSafe(yamlPath);
           if (y && (y.rebote_tipo === 'crossphase' || y.rebote_numero_crossphase)) {
             data.hasCrossphase = true;
@@ -1839,7 +1857,7 @@ function* _genPipelineState() {
   } else if (etaMarkersLib && typeof etaMarkersLib.collectMarkersChunked === 'function') {
     let markers = null;
     try {
-      markers = yield* etaMarkersLib.collectMarkersChunked({ root: PIPELINE, allFases, includeRejection: false });
+      markers = yield* etaMarkersLib.collectMarkersChunked({ root: PIPELINE(), allFases, includeRejection: false });
     } catch { markers = null; }
     state.etaAverages = (markers && markers.perFaseSkill) || {};
     _etaAveragesCache = state.etaAverages;
@@ -1939,8 +1957,8 @@ function* _genPipelineState() {
   // Servicios
   state.servicios = {};
   try {
-    for (const svc of fs.readdirSync(path.join(PIPELINE, 'servicios'))) {
-      const svcDir = path.join(PIPELINE, 'servicios', svc);
+    for (const svc of fs.readdirSync(path.join(PIPELINE(), 'servicios'))) {
+      const svcDir = path.join(PIPELINE(), 'servicios', svc);
       if (!fs.statSync(svcDir).isDirectory()) continue;
       state.servicios[svc] = {
         pendiente: listWorkFiles(path.join(svcDir, 'pendiente')).length,
@@ -1956,7 +1974,7 @@ function* _genPipelineState() {
   for (const [skill, max] of Object.entries(concurrencia)) {
     let running = 0;
     for (const { pipeline: pName, fase } of allFases) {
-      running += listWorkFiles(path.join(PIPELINE, pName, fase, 'trabajando')).filter(f => f.endsWith(`.${skill}`)).length;
+      running += listWorkFiles(path.join(PIPELINE(), pName, fase, 'trabajando')).filter(f => f.endsWith(`.${skill}`)).length;
     }
     state.skillLoad[skill] = { running, max };
   }
@@ -1964,7 +1982,7 @@ function* _genPipelineState() {
   // Actividad reciente
   state.actividad = [];
   try {
-    const lines = fs.readFileSync(path.join(PIPELINE, 'commander-history.jsonl'), 'utf8').trim().split('\n').slice(-20);
+    const lines = fs.readFileSync(path.join(PIPELINE(), 'commander-history.jsonl'), 'utf8').trim().split('\n').slice(-20);
     for (const line of lines) {
       try { const e = JSON.parse(line); state.actividad.push({ dir: e.direction, from: e.from || '', text: (e.text || '').slice(0, 150), ts: e.timestamp }); } catch {}
     }
@@ -2003,7 +2021,7 @@ function* _genPipelineState() {
   // Priority Windows (estado persistido por el Pulpo)
   state.priorityWindows = { qa: { active: false }, build: { active: false } };
   try {
-    const pwData = JSON.parse(fs.readFileSync(path.join(PIPELINE, 'priority-windows.json'), 'utf8'));
+    const pwData = JSON.parse(fs.readFileSync(path.join(PIPELINE(), 'priority-windows.json'), 'utf8'));
     if (pwData.qa) state.priorityWindows.qa = pwData.qa;
     if (pwData.build) state.priorityWindows.build = pwData.build;
   } catch {}
@@ -2014,7 +2032,7 @@ function* _genPipelineState() {
   state.costAnomaly = { active: false, visible: false, alert: null };
   if (restModeState) {
     try {
-      const alert = restModeState.getAlertState({ pipelineDir: PIPELINE });
+      const alert = restModeState.getAlertState({ pipelineDir: PIPELINE() });
       const visible = restModeState.shouldShowBanner(alert);
       state.costAnomaly = {
         active: !!alert.active,
@@ -2048,7 +2066,7 @@ function* _genPipelineState() {
   // Bloqueos entre issues
   state.blockedIssues = { blockedBy: {}, blocks: {} };
   try {
-    const blockedData = JSON.parse(fs.readFileSync(path.join(PIPELINE, 'blocked-issues.json'), 'utf8'));
+    const blockedData = JSON.parse(fs.readFileSync(path.join(PIPELINE(), 'blocked-issues.json'), 'utf8'));
     if (blockedData.blockedBy) state.blockedIssues.blockedBy = blockedData.blockedBy;
     if (blockedData.blocks) state.blockedIssues.blocks = blockedData.blocks;
   } catch {}
@@ -2058,7 +2076,7 @@ function* _genPipelineState() {
   // CA-8 / Security: lectura defensiva con try/catch + límite de tamaño (10KB) para evitar DoS.
   state.infraHealth = null;
   try {
-    const infraPath = path.join(PIPELINE, 'infra-health.json');
+    const infraPath = path.join(PIPELINE(), 'infra-health.json');
     if (fs.existsSync(infraPath)) {
       const stat = fs.statSync(infraPath);
       if (stat.size > 10240) {
@@ -2080,7 +2098,7 @@ function* _genPipelineState() {
   // los secrets faltan, en lugar de quedar el bot silenciosamente caido.
   state.telegramHealth = null;
   try {
-    const tgHealthPath = path.join(PIPELINE, 'telegram-health.json');
+    const tgHealthPath = path.join(PIPELINE(), 'telegram-health.json');
     if (fs.existsSync(tgHealthPath)) {
       const raw = fs.readFileSync(tgHealthPath, 'utf8');
       state.telegramHealth = JSON.parse(raw);
@@ -2109,7 +2127,7 @@ function* _genPipelineState() {
   state.disk = null;
   try {
     const dg = require('./lib/disk-guard');
-    const st = dg.readState({ pipelineDir: PIPELINE });
+    const st = dg.readState({ pipelineDir: PIPELINE() });
     if (st && st.measured_at) {
       state.disk = {
         level: st.level,
@@ -2144,7 +2162,7 @@ function* _genPipelineState() {
   state.activeWave = { label: 'Ola actual', issues: [], source: null };
   if (waveResolverLib && typeof waveResolverLib.resolveActiveWave === 'function') {
     try {
-      const w = waveResolverLib.resolveActiveWave({ pipelineRoot: PIPELINE });
+      const w = waveResolverLib.resolveActiveWave({ pipelineRoot: PIPELINE() });
       if (w && Array.isArray(w.issues)) state.activeWave = w;
     } catch { /* degrada a ola vacía */ }
   }
@@ -2203,7 +2221,7 @@ function* _genPipelineState() {
   state.quota = { snapshotAt: Date.now(), state: 'missing', ageMs: null, lastSnapshot: null, providers: {} };
   try {
     const { buildQuotaStateBlock } = require('./lib/quota-state-block');
-    state.quota = buildQuotaStateBlock({ PIPELINE, ROOT });
+    state.quota = buildQuotaStateBlock({ PIPELINE: PIPELINE(), ROOT });
   } catch { /* mantiene el default fail-closed */ }
 
   // #4778 (Ola Puente P6 · CA-1.4/CA-1.5) — Catálogo de productos + estado
@@ -2219,7 +2237,7 @@ function* _genPipelineState() {
   state.productState = {};
   try {
     const productCatalog = require('./lib/product-catalog');
-    const catalog = productCatalog.listProducts(path.join(PIPELINE, 'descriptors'));
+    const catalog = productCatalog.listProducts(path.join(PIPELINE(), 'descriptors'));
     // Resumen de pipeline del producto por defecto desde el propio issueMatrix
     // (NO se agrega estado de otros namespaces). Conteos honestos por estadoActual.
     let activos = 0, pendientes = 0, bloqueados = 0;
@@ -2252,7 +2270,7 @@ function* _genPipelineState() {
  * @returns {{ enabled, lastRunIso, lastCleanupIso, status, recent, cleanupCount24h }}
  */
 function readGhostArtifactSummary() {
-  const file = path.join(PIPELINE, 'audit', 'ghost-artifacts-cleanup.jsonl');
+  const file = path.join(PIPELINE(), 'audit', 'ghost-artifacts-cleanup.jsonl');
   let raw = '';
   try { raw = fs.readFileSync(file, 'utf8'); }
   catch {
@@ -2713,7 +2731,7 @@ function resolvePresentationPetition(startedAt, ttlMs) {
   if (!_presentationPetition || typeof _presentationPetition.resolvePetitionText !== 'function') return null;
   try {
     return _presentationPetition.resolvePetitionText(
-      path.join(PIPELINE, 'commander-history.jsonl'),
+      path.join(PIPELINE(), 'commander-history.jsonl'),
       startedAt,
       ttlMs,
       { redact: redactLogText },
@@ -2888,10 +2906,10 @@ function generateHTML(state) {
       return st.mtime.toLocaleString('es-AR', { timeZone: 'America/Argentina/Buenos_Aires', day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
     } catch { return '—'; }
   };
-  const dashboardBuild = fmtDate(path.join(PIPELINE, 'dashboard.js'));
-  const pulpoBuild = fmtDate(path.join(PIPELINE, 'pulpo.js'));
+  const dashboardBuild = fmtDate(path.join(PIPELINE(), 'dashboard.js'));
+  const pulpoBuild = fmtDate(path.join(PIPELINE(), 'pulpo.js'));
   let pulpoUptime = '—';
-  try { const lr = JSON.parse(fs.readFileSync(path.join(PIPELINE, 'last-restart.json'), 'utf8')); if (lr.timestamp) { const ms = Date.now() - new Date(lr.timestamp).getTime(); const h = Math.floor(ms / 3600000); const m = Math.floor((ms % 3600000) / 60000); pulpoUptime = h > 0 ? h + 'h ' + m + 'm' : m + 'm'; } } catch {}
+  try { const lr = JSON.parse(fs.readFileSync(path.join(PIPELINE(), 'last-restart.json'), 'utf8')); if (lr.timestamp) { const ms = Date.now() - new Date(lr.timestamp).getTime(); const h = Math.floor(ms / 3600000); const m = Math.floor((ms % 3600000) / 60000); pulpoUptime = h > 0 ? h + 'h ' + m + 'm' : m + 'm'; } } catch {}
   const isPaused = isFullPauseActive();
 
   // #2490 — Pausa parcial (allowlist de issues)
@@ -2962,14 +2980,14 @@ function generateHTML(state) {
   let dispatchCauseBannerHTML = '';
   try {
     const slices = require('./lib/dashboard-slices');
-    const dcSlice = slices.dispatchCauseSlice({}, { PIPELINE });
+    const dcSlice = slices.dispatchCauseSlice({}, { PIPELINE: PIPELINE() });
     dispatchCauseBannerHTML = renderDispatchCauseBanner(dcSlice);
   } catch {}
 
   // V3 detection: workers determinísticos en .pipeline/workers/*.js
   let v3Workers = [];
   try {
-    const workersDir = path.join(PIPELINE, 'workers');
+    const workersDir = path.join(PIPELINE(), 'workers');
     if (fs.existsSync(workersDir)) {
       v3Workers = fs.readdirSync(workersDir)
         .filter(f => f.endsWith('.js'))
@@ -7475,7 +7493,7 @@ body.standalone .section-collapsed .section-body{display:block !important}
         nada y sin resucitar la card de DORA (que sigue muerta, fuera del alcance
         de este issue). La anatomía de la fila es la del mockup acordado
         `assets/mockups/6440/02-dashboard-badge-huerfano.svg`. */''}
-  <details class="collapse-section"><summary>💬 Actividad Commander</summary><div class="collapse-body" style="max-height:300px;overflow-y:auto">${renderCommanderRequestLogs(LOG_DIR)}${actHTML}</div></details>
+  <details class="collapse-section"><summary>💬 Actividad Commander</summary><div class="collapse-body" style="max-height:300px;overflow-y:auto">${renderCommanderRequestLogs(LOG_DIR())}${actHTML}</div></details>
 
   <div class="footer" id="dash-footer">🟢 Live · Refresh on-demand &nbsp;|&nbsp; ${new Date().toLocaleString('es-AR')}</div>
 
@@ -10377,7 +10395,7 @@ function inferHistoricalActivity() {
   for (const [pName, pConfig] of Object.entries(config.pipelines)) {
     for (const fase of pConfig.fases) {
       for (const estado of ['procesado', 'listo', 'trabajando', 'pendiente']) {
-        const dir = path.join(PIPELINE, pName, fase, estado);
+        const dir = path.join(PIPELINE(), pName, fase, estado);
         for (const f of listWorkFiles(dir)) {
           const st = fileStat(path.join(dir, f));
           if (!st) continue;
@@ -10392,7 +10410,7 @@ function inferHistoricalActivity() {
 
   // 2. Activity log — tool calls como proxy de actividad
   try {
-    const archiveFile = path.join(path.dirname(PIPELINE), '.claude', 'activity-log.archive.jsonl');
+    const archiveFile = path.join(path.dirname(PIPELINE()), '.claude', 'activity-log.archive.jsonl');
     const lines = fs.readFileSync(archiveFile, 'utf8').split('\n').filter(Boolean);
     for (const l of lines) {
       try {
@@ -10451,8 +10469,8 @@ function getMetricsData() {
     return { snapshots: [], etaAverages: {}, entregas: [], tokenEstimates: { totalSessions: 0, totalTools: 0, totalEstimatedTokens: 0, bySession: [] }, totalProcessed: 0, totalRejected: 0, agentPerf: {} };
   }
   return kpisData.getMetricsSlice({
-    ROOT: path.dirname(PIPELINE),
-    PIPELINE,
+    ROOT: path.dirname(PIPELINE()),
+    PIPELINE: PIPELINE(),
     getPipelineState,
     loadConfig,
     listWorkFiles,
@@ -12117,7 +12135,7 @@ try {
   if (wizardSession) {
     const descansoFlow = require('./lib/wizard-descanso-flow');
     wizardSession.registerFlow('descanso', descansoFlow.createFlow({
-      pipelineDir: PIPELINE,
+      pipelineDir: PIPELINE(),
       loadConfig,
     }));
     wizardDescansoView = require('./views/dashboard/wizard-descanso');
@@ -12230,7 +12248,7 @@ function handleRequest(req, res) {
 
   // #3735 — Banner de consumo anómalo: GET /state + POST /ack + /snooze con
   // defensas CSRF D1/D2/D3. Mounted antes del catch-all GET-only.
-  if (costAnomalyApi && costAnomalyApi.route(req, res, { pipelineDir: PIPELINE, log })) {
+  if (costAnomalyApi && costAnomalyApi.route(req, res, { pipelineDir: PIPELINE(), log })) {
     return;
   }
   if (multiProviderView && (req.url === '/multi-provider' || req.url === '/multi-provider/')) {
@@ -12294,7 +12312,7 @@ function handleRequest(req, res) {
     }
     let items = [];
     try {
-      items = agentLogHistory ? agentLogHistory.listExecutions(LOG_DIR, issueRaw, agente) : [];
+      items = agentLogHistory ? agentLogHistory.listExecutions(LOG_DIR(), issueRaw, agente) : [];
     } catch { items = []; }
     // Cada item: { intento, file, bytes, mtime }. El `file` ya está validado
     // (derivado del glob), listo para pasarse a /logs/view/<file>.
@@ -12308,7 +12326,7 @@ function handleRequest(req, res) {
     const parts = req.url.slice(11).split('?');
     const filename = path.basename(parts[0]).replace(/[^a-zA-Z0-9\-\.]/g, '');
     const isLive = (parts[1] || '').includes('live=1');
-    const logPath = path.join(LOG_DIR, filename);
+    const logPath = path.join(LOG_DIR(), filename);
     if (!fs.existsSync(logPath)) { res.writeHead(404); res.end('Log no encontrado'); return; }
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     res.end(generateLogViewerHTML(filename, isLive));
@@ -12318,7 +12336,7 @@ function handleRequest(req, res) {
   // Servir logs y PDFs como archivos estáticos
   if (req.url.startsWith('/logs/') && !req.url.startsWith('/logs/stream/')) {
     const filename = path.basename(req.url.slice(6)).replace(/[^a-zA-Z0-9\-\.]/g, '');
-    const logPath = path.join(LOG_DIR, filename);
+    const logPath = path.join(LOG_DIR(), filename);
     if (fs.existsSync(logPath)) {
       const isPdf = filename.endsWith('.pdf');
       const contentType = isPdf ? 'application/pdf' : 'text/plain; charset=utf-8';
@@ -12363,7 +12381,7 @@ function handleRequest(req, res) {
   // SSE log streaming — tail -f style
   if (req.url.startsWith('/logs/stream/')) {
     const filename = path.basename(req.url.slice(13)).replace(/[^a-zA-Z0-9\-\.]/g, '');
-    const logPath = path.join(LOG_DIR, filename);
+    const logPath = path.join(LOG_DIR(), filename);
     if (!fs.existsSync(logPath)) {
       res.writeHead(404); res.end('Log no encontrado');
       return;
@@ -12514,7 +12532,7 @@ function handleRequest(req, res) {
               restartFn: restartComponent,
               rateLimiter: _opsRestartRateLimiter,
               audit: opsRestartAudit
-                ? (rec) => opsRestartAudit.appendOpsRestartAudit(rec, { pipelineDir: PIPELINE })
+                ? (rec) => opsRestartAudit.appendOpsRestartAudit(rec, { pipelineDir: PIPELINE() })
                 : null,
             }
           );
@@ -12575,7 +12593,7 @@ function handleRequest(req, res) {
         // #5646 (CA-3) — el HEAD previo se lee ANTES de `syncOperativoTree`:
         // esa llamada PISA el boot marker (`operativo-sync.js`), así que
         // después ya no queda ninguna referencia previa recuperable.
-        const _prevMarker = _runtimeBoot ? _runtimeBoot.readBootMarker({ pipelineDir: PIPELINE }) : null;
+        const _prevMarker = _runtimeBoot ? _runtimeBoot.readBootMarker({ pipelineDir: PIPELINE() }) : null;
         const _prevSha = (_prevMarker && _prevMarker.sha) ? _prevMarker.sha : null;
         // #4460 (fix rebote rev-1) — PASO CLAVE: avanzar el working tree a
         // origin/main ANTES de respawnear el Pulpo. Sin esto el restart es un
@@ -12588,7 +12606,7 @@ function handleRequest(req, res) {
         let syncMsg = '';
         let _headSha = null;
         if (_operativoSync) {
-          const sync = _operativoSync.syncOperativoTree({ repoRoot: ROOT, pipelineDir: PIPELINE });
+          const sync = _operativoSync.syncOperativoTree({ repoRoot: ROOT, pipelineDir: PIPELINE() });
           _headSha = (typeof sync.sha === 'string') ? sync.sha : null;
           syncMsg = sync.ok
             ? `sync✓ ${sync.msg}`
@@ -12617,7 +12635,7 @@ function handleRequest(req, res) {
                 prevSha: _prevSha,
                 headSha: _headSha,
                 repoRoot: ROOT,
-                pipelineDir: PIPELINE,
+                pipelineDir: PIPELINE(),
               })
               : {
                 components: _staleServices.ALL_COMPONENTS.slice(),
@@ -12668,7 +12686,7 @@ function handleRequest(req, res) {
               restartFn: restartComponent,
               rateLimiter: _opsRestartRateLimiter,
               audit: opsRestartAudit
-                ? (rec) => opsRestartAudit.appendOpsRestartAudit(rec, { pipelineDir: PIPELINE })
+                ? (rec) => opsRestartAudit.appendOpsRestartAudit(rec, { pipelineDir: PIPELINE() })
                 : null,
             }
           );
@@ -12676,7 +12694,7 @@ function handleRequest(req, res) {
           // El pendiente se baja SÓLO con el restart confirmado (CA-5): si falló,
           // el componente sigue marcado y lo toma el watchdog.
           if (decision.body.ok && _staleServices) {
-            try { _staleServices.clearComponent(_target, { pipelineDir: PIPELINE }); } catch { /* best-effort */ }
+            try { _staleServices.clearComponent(_target, { pipelineDir: PIPELINE() }); } catch { /* best-effort */ }
           }
           _resultados.push({ target: _target, decision });
         }
@@ -12824,7 +12842,7 @@ function handleRequest(req, res) {
         res.end(JSON.stringify({ ok: false, msg: 'projectId invalido' }));
         return;
       }
-      const descriptorsDir = path.join(PIPELINE, 'descriptors');
+      const descriptorsDir = path.join(PIPELINE(), 'descriptors');
       const descriptorPath = path.join(descriptorsDir, `${projectId}.json`);
       if (!path.resolve(descriptorPath).startsWith(path.resolve(descriptorsDir) + path.sep)) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -13278,7 +13296,7 @@ function handleRequest(req, res) {
         justification: 'Auto-include deps de allowlist actual desde dashboard',
       });
       // Limpiar el state de deps (ya no hay missing).
-      try { fs.unlinkSync(path.join(PIPELINE, 'partial-pause-deps-state.json')); } catch {}
+      try { fs.unlinkSync(path.join(PIPELINE(), 'partial-pause-deps-state.json')); } catch {}
       log(`Pausa parcial: include-deps aplicado — allowlist final: ${result.allowedIssues.join(',')}`);
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({
@@ -13363,7 +13381,7 @@ function handleRequest(req, res) {
         // dependencias frenan a cada issue. El tap sólo trae el número de issue
         // (no entra más en 64 bytes de `callback_data`), así que el conjunto se
         // deriva acá y nunca se toma del cliente.
-        const ppDepsStateFile = path.join(PIPELINE, 'partial-pause-deps-state.json');
+        const ppDepsStateFile = path.join(PIPELINE(), 'partial-pause-deps-state.json');
         const ppDepsRead = () => {
           try { return JSON.parse(fs.readFileSync(ppDepsStateFile, 'utf8')); }
           catch { return null; }
@@ -13423,7 +13441,7 @@ function handleRequest(req, res) {
   // #2893 — API: estado de detección de deps (alimenta el banner del dashboard).
   if (req.url === '/api/partial-pause/deps-state' && req.method === 'GET') {
     try {
-      const stateFile = path.join(PIPELINE, 'partial-pause-deps-state.json');
+      const stateFile = path.join(PIPELINE(), 'partial-pause-deps-state.json');
       if (!fs.existsSync(stateFile)) {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true, hasMissing: false }));
@@ -13493,7 +13511,7 @@ function handleRequest(req, res) {
   // =========================================================================
   if (req.url && req.url.startsWith('/api/agent-chat')) {
     const agentChat = require('./lib/agent-chat-handler');
-    return agentChat.handle(req, res, { PIPELINE, LOG_DIR, log });
+    return agentChat.handle(req, res, { PIPELINE: PIPELINE(), LOG_DIR: LOG_DIR(), log });
   }
 
   // =========================================================================
@@ -13586,7 +13604,8 @@ function handleRequest(req, res) {
 
     function logMutation(action, payload) {
       try {
-        const logDir = path.join(PIPELINE, 'logs');
+        // #7112 rebote rev-3 — canal `logs` (`LOG_DIR()`), no `estado`.
+        const logDir = LOG_DIR();
         if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, { recursive: true });
         const line = JSON.stringify({
           timestamp: new Date().toISOString(),
@@ -13857,8 +13876,8 @@ function handleRequest(req, res) {
           return;
         }
 
-        const trabajandoDir = path.join(PIPELINE, pl, fase, 'trabajando');
-        const pendienteDir = path.join(PIPELINE, pl, fase, 'pendiente');
+        const trabajandoDir = path.join(PIPELINE(), pl, fase, 'trabajando');
+        const pendienteDir = path.join(PIPELINE(), pl, fase, 'pendiente');
         const filename = `${issue}.${skill}`;
 
         // Buscar el archivo en trabajando/
@@ -13926,7 +13945,7 @@ function handleRequest(req, res) {
           res.end(JSON.stringify({ ok: false, msg: `Window "${win}" no válida (qa|build)` }));
           return;
         }
-        const pwFile = path.join(PIPELINE, 'priority-windows.json');
+        const pwFile = path.join(PIPELINE(), 'priority-windows.json');
         let current = {};
         try { current = JSON.parse(fs.readFileSync(pwFile, 'utf8')); } catch {}
         if (!current.qa) current.qa = { active: false };
@@ -14059,7 +14078,7 @@ function handleRequest(req, res) {
         return;
       }
       const cfg = fullCfg.rest_mode || {};
-      const window = restModeWindow.getWindow({ pipelineDir: PIPELINE });
+      const window = restModeWindow.getWindow({ pipelineDir: PIPELINE() });
       const now = Date.now();
       const within = restModeWindow.isWithinWindow(window, now);
       // #3241: incluir slice enriquecido para consumidores que quieran datos
@@ -14125,7 +14144,7 @@ function handleRequest(req, res) {
         // la precedencia.
         const payload = body ? JSON.parse(body) : {};
         const result = restModeWindow.setWindow(payload, {
-          pipelineDir: PIPELINE,
+          pipelineDir: PIPELINE(),
           actor: 'api',
         });
         if (!result.ok) {
@@ -15006,7 +15025,7 @@ function handleRequest(req, res) {
     const dashRoutes = require('./lib/dashboard-routes');
     const url = req.url || '';
     const isLegacy = (url === '/legacy' || url === '/legacy/');
-    if (!isLegacy && dashRoutes.handle(req, res, { getState: getCachedPipelineState, PIPELINE, ROOT, GH_BIN, getMetricsData, loadConfig })) {
+    if (!isLegacy && dashRoutes.handle(req, res, { getState: getCachedPipelineState, PIPELINE: PIPELINE(), ROOT, GH_BIN, getMetricsData, loadConfig })) {
       return;
     }
   } catch (e) {
@@ -15105,7 +15124,7 @@ function startListen() {
     if (!_usageRefreshTimer) {
       try {
         const anthropicUsage = require('./lib/anthropic-usage');
-        const usageMetricsDir = path.join(PIPELINE, 'metrics');
+        const usageMetricsDir = path.join(PIPELINE(), 'metrics');
         const kickUsage = () => {
           try { anthropicUsage.triggerRefreshAsync({ metricsDir: usageMetricsDir }); } catch { /* noop */ }
         };
@@ -15122,7 +15141,7 @@ function startListen() {
     // arrancar el worker de snapshot: el marker es best-effort y no debe
     // demorar el primer refresh ni el listen/ready.
     try {
-      const rb = require('./lib/runtime-boot').ensureBootMarker({ pipelineDir: PIPELINE, repoRoot: ROOT });
+      const rb = require('./lib/runtime-boot').ensureBootMarker({ pipelineDir: PIPELINE(), repoRoot: ROOT });
       if (rb && rb.wrote) log(`Boot marker actualizado al arrancar: ${String(rb.sha || '').slice(0, 8)}`);
     } catch { /* noop: no bloquear el boot del dashboard */ }
     // #4131-followup — Monitor de lag del event loop. Tras toda la cadena de
@@ -15163,7 +15182,7 @@ function startListen() {
       try {
         const { startFreezeWatchdog } = require('./lib/freeze-watchdog');
         _freezeWatchdog = startFreezeWatchdog({
-          logDir: LOG_DIR,
+          logDir: LOG_DIR(),
           thresholdMs: Number(process.env.DASHBOARD_FREEZE_THRESHOLD_MS) || 3000,
           getInflight: () => ({
             stateSnapshot: _stateRefreshInflight,
@@ -15187,7 +15206,10 @@ server.on('error', (err) => {
     return;
   }
   const msg = `[${new Date().toISOString()}] [dashboard] listen error: ${err?.stack || err}\n`;
-  try { fs.appendFileSync(path.join(LOG_DIR, 'dashboard.log'), msg); } catch {}
+  // #7112 (UX A3) — handler de crash: escritor `safe*`. Sin dir (pruebas sin
+  // override) saltea el archivo y conserva el console.error; jamás lanza acá.
+  const crashLogDir = writeTarget.safeWriteDir(process.env, { canal: 'logs', destino: 'logs/dashboard.log' });
+  if (crashLogDir) { try { fs.appendFileSync(path.join(crashLogDir, 'logs', 'dashboard.log'), msg); } catch {} }
   console.error(msg);
   process.exit(1);
 });
@@ -15196,20 +15218,26 @@ startListen();
 // dashboard.pid se mantiene como hint informativo (útil para mtime →
 // uptime y para diagnóstico humano). NO es fuente de verdad: el dashboard
 // descubre sus peers vía pid-discovery.
-try { fs.writeFileSync(path.join(PIPELINE, 'dashboard.pid'), String(process.pid)); } catch {}
+try { fs.writeFileSync(path.join(PIPELINE(), 'dashboard.pid'), String(process.pid)); } catch {}
 process.on('SIGINT', () => { if (_stateRefreshTimer) clearInterval(_stateRefreshTimer); if (_loopMonitor) _loopMonitor.stop(); if (_freezeWatchdog) _freezeWatchdog.stop(); server.close(); process.exit(0); });
 process.on('SIGTERM', () => { if (_stateRefreshTimer) clearInterval(_stateRefreshTimer); if (_loopMonitor) _loopMonitor.stop(); if (_freezeWatchdog) _freezeWatchdog.stop(); server.close(); process.exit(0); });
 
 // Crash handlers — loguear antes de morir para diagnóstico
 process.on('uncaughtException', (err) => {
   const msg = `[${new Date().toISOString()}] [dashboard] CRASH uncaughtException: ${err.stack || err.message}\n`;
-  try { fs.appendFileSync(path.join(LOG_DIR, 'dashboard.log'), msg); } catch {}
+  // #7112 (UX A3) — handler de crash: escritor `safe*`. Sin dir (pruebas sin
+  // override) saltea el archivo y conserva el console.error; jamás lanza acá.
+  const crashLogDir = writeTarget.safeWriteDir(process.env, { canal: 'logs', destino: 'logs/dashboard.log' });
+  if (crashLogDir) { try { fs.appendFileSync(path.join(crashLogDir, 'logs', 'dashboard.log'), msg); } catch {} }
   console.error(msg);
   process.exit(1);
 });
 process.on('unhandledRejection', (reason) => {
   const msg = `[${new Date().toISOString()}] [dashboard] CRASH unhandledRejection: ${reason?.stack || reason}\n`;
-  try { fs.appendFileSync(path.join(LOG_DIR, 'dashboard.log'), msg); } catch {}
+  // #7112 (UX A3) — handler de crash: escritor `safe*`. Sin dir (pruebas sin
+  // override) saltea el archivo y conserva el console.error; jamás lanza acá.
+  const crashLogDir = writeTarget.safeWriteDir(process.env, { canal: 'logs', destino: 'logs/dashboard.log' });
+  if (crashLogDir) { try { fs.appendFileSync(path.join(crashLogDir, 'logs', 'dashboard.log'), msg); } catch {} }
   console.error(msg);
   process.exit(1);
 });

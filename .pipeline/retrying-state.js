@@ -36,8 +36,13 @@
 const fs = require('fs');
 const path = require('path');
 
-const PIPELINE_DIR = path.resolve(__dirname);
-const DEFAULT_STATE_FILE = path.join(PIPELINE_DIR, 'retrying-state.json');
+// #7112 — sin `opts.stateFile`, el destino se resuelve POR LLAMADA vía
+// `lib/write-target` (SEC-13): ninguna const de módulo captura `__dirname`.
+// Sin ambiente declarado ni dir de pruebas avisa por stderr y LANZA (CA-3).
+const writeTarget = require('./lib/write-target');
+function DEFAULT_STATE_FILE() {
+  return writeTarget.writePath(process.env, { canal: 'estado', destino: 'retrying-state.json' }, 'retrying-state.json');
+}
 const SCHEMA_VERSION = 1;
 
 // CA7.4: ventana minima visible del estado `reintentando`.
@@ -116,7 +121,7 @@ function purgeExpired(state, nowMs, graceMs = 60 * 1000) {
  */
 function markRetrying(issues, opts = {}) {
   const fsMod = opts.fs || fs;
-  const filePath = opts.stateFile || DEFAULT_STATE_FILE;
+  const filePath = opts.stateFile || DEFAULT_STATE_FILE();
   const nowMs = Number(opts.now) || Date.now();
   const minRetryMs = Number.isFinite(opts.minRetryMs) ? opts.minRetryMs : DEFAULT_MIN_RETRY_MS;
   const reason = typeof opts.reason === 'string' && opts.reason.length > 0
@@ -170,7 +175,7 @@ function markRetrying(issues, opts = {}) {
  */
 function getActiveRetrying(opts = {}) {
   const fsMod = opts.fs || fs;
-  const filePath = opts.stateFile || DEFAULT_STATE_FILE;
+  const filePath = opts.stateFile || DEFAULT_STATE_FILE();
   const nowMs = Number(opts.now) || Date.now();
   const state = readState(filePath, fsMod);
   const active = {};
@@ -188,7 +193,7 @@ function getActiveRetrying(opts = {}) {
  */
 function sweepExpired(opts = {}) {
   const fsMod = opts.fs || fs;
-  const filePath = opts.stateFile || DEFAULT_STATE_FILE;
+  const filePath = opts.stateFile || DEFAULT_STATE_FILE();
   const nowMs = Number(opts.now) || Date.now();
   const graceMs = Number.isFinite(opts.graceMs) ? opts.graceMs : 60 * 1000;
 
@@ -216,7 +221,7 @@ module.exports = {
   purgeExpired,
   emptyState,
   // Constantes publicas
-  DEFAULT_STATE_FILE,
+  get DEFAULT_STATE_FILE() { return DEFAULT_STATE_FILE(); },
   SCHEMA_VERSION,
   DEFAULT_MIN_RETRY_MS,
   REASON_CONNECTIVITY_RESTORED,

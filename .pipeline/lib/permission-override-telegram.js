@@ -84,7 +84,13 @@ function enqueueTelegramNotification({ payload, pipelineRoot, fsImpl } = {}) {
         throw new Error('[permission-override-telegram] payload requerido.');
     }
     const _fs = fsImpl || fs;
-    const root = pipelineRoot || path.join(process.env.PIPELINE_REPO_ROOT || process.cwd(), '.pipeline');
+    // #7112 — sin `pipelineRoot` la cola se resuelve POR LLAMADA vía el
+    // envoltorio único (SEC-13), igual que notify-telegram.js y health-cron.js:
+    // honra PIPELINE_DIR_OVERRIDE / PIPELINE_STATE_DIR (dir efímero del runner)
+    // y sin ambiente declarado LANZA `EscrituraBloqueadaError` en vez de caer
+    // al productivo por `PIPELINE_REPO_ROOT` / `cwd` (derrame #1 del issue).
+    const root = pipelineRoot
+        || require('./write-target').writeDir(process.env, { canal: 'colas', destino: 'servicios/telegram/pendiente' });
     const svcDir = path.join(root, 'servicios', 'telegram', 'pendiente');
     if (!_fs.existsSync(svcDir)) {
         _fs.mkdirSync(svcDir, { recursive: true });

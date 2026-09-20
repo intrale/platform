@@ -197,7 +197,12 @@ const CONFIRM_FILE_DEFAULT = HOME_DEL_SO
     ? path.join(HOME_DEL_SO, '.claude', 'secrets', CONFIRM_FILE_NAME)
     : null;
 
-const AUDIT_DIR_DEFAULT = path.join(__dirname, 'audit');
+// #7112 — sin `auditDir` explícito, el destino se resuelve POR LLAMADA vía
+// `lib/write-target` (SEC-13): ninguna const de módulo captura `__dirname`.
+// Sin ambiente declarado ni dir de pruebas, `writeDir` avisa por stderr y LANZA.
+function AUDIT_DIR_DEFAULT() {
+    return require('./lib/write-target').writePath(process.env, { canal: 'logs', destino: 'audit/migrate-5678-*.jsonl' }, 'audit');
+}
 
 // Raíz del repo: el secreto de confirmación no puede vivir adentro del árbol
 // (un agente que lee el repositorio lo derivaría), y el WAL de una reversión
@@ -343,7 +348,7 @@ function redactarRegistro(valor) {
  * @param {{dir?:string, ts?:string}} [opts]
  * @returns {string}
  */
-function walPathFor({ dir = AUDIT_DIR_DEFAULT, ts = new Date().toISOString() } = {}) {
+function walPathFor({ dir = AUDIT_DIR_DEFAULT(), ts = new Date().toISOString() } = {}) {
     const slug = String(ts).replace(/[:.]/g, '-');
     return path.join(dir, `migrate-5678-${slug}.jsonl`);
 }
@@ -846,7 +851,7 @@ async function revertirDesdeWal({
     apply = false,
     env = process.env,
     confirmFile = CONFIRM_FILE_DEFAULT,
-    auditDir = AUDIT_DIR_DEFAULT,
+    auditDir = AUDIT_DIR_DEFAULT(),
     sleep = defaultSleep,
     log = console.log,
 }) {
@@ -1056,7 +1061,7 @@ async function run({
     canario = null,
     env = process.env,
     confirmFile = CONFIRM_FILE_DEFAULT,
-    auditDir = AUDIT_DIR_DEFAULT,
+    auditDir = AUDIT_DIR_DEFAULT(),
     sleep = defaultSleep,
     now = () => Date.now(),
     log = console.log,
@@ -1290,7 +1295,7 @@ module.exports = {
     LABELS_FLUJO_PIPELINE,
     CONFIRM_FILE_DEFAULT,
     CONFIRM_FILE_NAME,
-    AUDIT_DIR_DEFAULT,
+    get AUDIT_DIR_DEFAULT() { return AUDIT_DIR_DEFAULT(); },
     AbortoMigracion,
     // predicado
     esCandidato,

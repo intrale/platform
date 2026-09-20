@@ -37,10 +37,20 @@ const path = require('path');
 const crypto = require('crypto');
 const dropfileWriter = require('./lib/dropfile-writer');
 
-const PIPELINE_DIR = path.resolve(__dirname);
-const DEFAULT_DEDUP_FILE = path.join(PIPELINE_DIR, 'dedup-connectivity.json');
-const DEFAULT_RATE_LIMIT_FILE = path.join(PIPELINE_DIR, 'rate-limit-tts.json');
-const DEFAULT_TELEGRAM_DROP_DIR = path.join(PIPELINE_DIR, 'servicios', 'telegram', 'pendiente');
+// #7112 — sin `opts.*`, cada destino se resuelve POR LLAMADA vía
+// `lib/write-target` (SEC-13): ninguna const de módulo captura `__dirname` al
+// `require`. Sin ambiente declarado ni dir de pruebas, `writeDir` avisa por
+// stderr y LANZA (CA-3). Identificadores conservados: cada uso `X` → `X()`.
+const writeTarget = require('./lib/write-target');
+function DEFAULT_DEDUP_FILE() {
+  return writeTarget.writePath(process.env, { canal: 'estado', destino: 'dedup-connectivity.json' }, 'dedup-connectivity.json');
+}
+function DEFAULT_RATE_LIMIT_FILE() {
+  return writeTarget.writePath(process.env, { canal: 'estado', destino: 'rate-limit-tts.json' }, 'rate-limit-tts.json');
+}
+function DEFAULT_TELEGRAM_DROP_DIR() {
+  return writeTarget.writePath(process.env, { canal: 'colas', destino: 'servicios/telegram/pendiente/' }, 'servicios', 'telegram', 'pendiente');
+}
 
 // Ventanas (ms)
 const DEDUP_BUCKET_MS = 5 * 60 * 1000;     // bucket de 5 min (CA4)
@@ -398,7 +408,7 @@ function registerTtsEmission(state, issues, nowMs) {
  */
 function defaultSendTelegramMessage(text, opts, injected) {
   const fsMod = (injected && injected.fs) || fs;
-  const dropDir = (opts && opts.dropDir) || DEFAULT_TELEGRAM_DROP_DIR;
+  const dropDir = (opts && opts.dropDir) || DEFAULT_TELEGRAM_DROP_DIR();
   try { fsMod.mkdirSync(dropDir, { recursive: true }); } catch { /* exists */ }
   // #6226 - este productor encolaba `notifier-${Date.now()}-${process.pid}.json`
   // con `writeJsonAtomic` (tmp + rename, que SOBREESCRIBE sin error). El `pid`
@@ -476,8 +486,8 @@ async function defaultSendTtsAudio(script, opts) {
  */
 async function notify(event, opts = {}) {
   const now = (opts.now || Date.now)();
-  const dedupFile = opts.dedupFile || DEFAULT_DEDUP_FILE;
-  const rateFile = opts.rateLimitFile || DEFAULT_RATE_LIMIT_FILE;
+  const dedupFile = opts.dedupFile || DEFAULT_DEDUP_FILE();
+  const rateFile = opts.rateLimitFile || DEFAULT_RATE_LIMIT_FILE();
   const injected = { fs: opts.fs };
 
   const issues = [...new Set(

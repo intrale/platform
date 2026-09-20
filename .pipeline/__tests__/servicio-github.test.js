@@ -47,6 +47,10 @@ for (const d of [PENDIENTE, TRABAJANDO, LISTO, FALLIDO, LOG_DIR]) {
 }
 
 process.env.PIPELINE_STATE_DIR = PIPELINE;
+// #7112 — el runner de la suite deja `PIPELINE_DIR_OVERRIDE` apuntando a su dir
+// efímero y el resolvedor le da precedencia (D-1) sobre `PIPELINE_STATE_DIR`:
+// el servicio escribiría allá y este test miraría acá. Se declara el mismo dir.
+process.env.PIPELINE_DIR_OVERRIDE = PIPELINE;
 process.env.PIPELINE_MAIN_ROOT = TMP_DIR;
 // #3025 — ya NO existe `GH_BIN_OVERRIDE` apuntando a un .cmd: usamos un
 // `ghClient` mockeado en JS que reemplaza al `defaultGhClient` por completo.

@@ -78,11 +78,12 @@ function resolvePipelineDir(options = {}) {
     if (options && typeof options.pipelineDir === 'string' && options.pipelineDir) {
         return options.pipelineDir;
     }
-    // Consistencia con waves.js: honrar PIPELINE_DIR_OVERRIDE (apunta AL dir
-    // `.pipeline`) para que evidencia/audit caigan junto al estado de la ola.
-    if (process.env.PIPELINE_DIR_OVERRIDE) return process.env.PIPELINE_DIR_OVERRIDE;
-    const root = (options && options.pipelineRoot) || process.cwd();
-    return path.join(root, '.pipeline');
+    if (options && typeof options.pipelineRoot === 'string' && options.pipelineRoot) {
+        return path.join(options.pipelineRoot, '.pipeline');
+    }
+    // #7112 - resolución por llamada vía el envoltorio (SEC-13): el override
+    // de tests lo lee el resolvedor; sin ambiente declarado se bloquea.
+    return require('./write-target').writeDir(process.env, { canal: 'logs', destino: 'audit/' + AUDIT_FILE });
 }
 
 function auditPath(options = {}) {
@@ -313,8 +314,8 @@ function appendAudit(record, options = {}) {
     if (options && typeof options.appendAuditFn === 'function') {
         try { options.appendAuditFn(record); return true; } catch { return false; }
     }
-    const file = auditPath(options);
     try {
+        const file = auditPath(options);
         fs.mkdirSync(path.dirname(file), { recursive: true });
         const ts = (options.now instanceof Date ? options.now : new Date()).toISOString();
         const line = JSON.stringify({ ts, ...record }) + '\n';

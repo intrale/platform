@@ -52,7 +52,9 @@ const WHITELIST = ['provider', 'skill', 'issue', 'tokens_in', 'tokens_out', 'lat
 
 // Ruta canónica del JSONL de costo por provider.
 function defaultFile() {
-    return path.join(__dirname, '..', '..', 'state', 'provider-cost.jsonl');
+    // #7112 — resolución POR LLAMADA vía el envoltorio (SEC-13): sin ambiente
+    // declarado ni dir de pruebas avisa por stderr y LANZA (CA-3), nunca `__dirname`.
+    return require('../write-target').writePath(process.env, { canal: 'logs', destino: 'state/provider-cost.jsonl' }, 'state', 'provider-cost.jsonl');
 }
 
 /**

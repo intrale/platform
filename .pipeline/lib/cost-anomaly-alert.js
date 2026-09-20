@@ -148,10 +148,14 @@ function formatTelegramMessage(evaluation, snapshot, opts) {
  */
 function sendTelegramAlert(evaluation, snapshot, opts) {
     const _opts = opts || {};
-    const pipelineDir = _opts.pipelineDir || path.resolve(__dirname, '..');
-    const queueDir = path.join(pipelineDir, 'servicios', 'telegram', 'pendiente');
+    // #7112 - resolución por llamada vía el envoltorio (SEC-13); esta función
+    // no lanza: sin ambiente declarado devuelve `{ok:false}` sin escribir.
+    const pipelineDir = _opts.pipelineDir
+        || require('./write-target').safeWriteDir(process.env, { canal: 'colas', destino: 'servicios/telegram/pendiente' });
     const now = typeof _opts.now === 'function' ? _opts.now() : Date.now();
     const text = formatTelegramMessage(evaluation, snapshot, _opts);
+    if (!pipelineDir) return { ok: false, reason: 'escritura_bloqueada_sin_ambiente', text };
+    const queueDir = path.join(pipelineDir, 'servicios', 'telegram', 'pendiente');
 
     try {
         if (!fs.existsSync(queueDir)) {

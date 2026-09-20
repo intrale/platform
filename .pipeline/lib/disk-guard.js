@@ -47,7 +47,13 @@ const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');
 
-const DEFAULT_PIPELINE_DIR = path.resolve(__dirname, '..');
+// #7112 — el destino se resuelve POR LLAMADA vía `lib/write-target` (SEC-13):
+// ninguna const de módulo captura `__dirname` al `require`. Sin ambiente
+// declarado ni dir de pruebas, `writeDir` avisa por stderr y LANZA (CA-3).
+// Identificadores conservados: cada uso `X` → `X()`.
+function DEFAULT_PIPELINE_DIR() {
+  return require('./write-target').writeDir(process.env, { canal: 'estado', destino: 'disk-guard-state.json · audit/disk-guard.jsonl' });
+}
 const STATE_FILENAME = 'disk-guard-state.json';
 const AUDIT_FILENAME = 'disk-guard.jsonl';
 
@@ -331,11 +337,11 @@ function measureTotalGb(opts) {
 // -----------------------------------------------------------------------------
 
 function statePath(pipelineDir) {
-  return path.join(pipelineDir || DEFAULT_PIPELINE_DIR, STATE_FILENAME);
+  return path.join(pipelineDir || DEFAULT_PIPELINE_DIR(), STATE_FILENAME);
 }
 
 function auditPath(pipelineDir) {
-  return path.join(pipelineDir || DEFAULT_PIPELINE_DIR, 'audit', AUDIT_FILENAME);
+  return path.join(pipelineDir || DEFAULT_PIPELINE_DIR(), 'audit', AUDIT_FILENAME);
 }
 
 function emptyState() {

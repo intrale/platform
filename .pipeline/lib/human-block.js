@@ -34,6 +34,10 @@ const { validateBranchName } = require('./required-checks');
 // texto para el operador: le pide la ficha a `decision-card` y la dibuja.
 const decisionCard = require('./decision-card');
 const mergeRaceLedger = require('./merge-race-reclaim-ledger');
+// #7439 — causa estructurada del bloqueo. Módulo HOJA (0 requires): este
+// archivo ya requiere `decision-card` arriba, y `decision-card` necesita el
+// mismo enum; importarlo desde acá sería un ciclo que entrega `{}`.
+const { BLOCK_CAUSE_ENUM, normalizeBlockCause } = require('./block-cause');
 
 const PIPELINE_DIR = path.join(trace.REPO_ROOT, '.pipeline');
 const PIPELINES = ['desarrollo', 'definicion'];
@@ -288,7 +292,12 @@ function findBlockedMarker(issue) {
  * reconciliación tomaba uno solo y el otro quedaba huérfano: el issue seguía
  * apareciendo frenado y no volvía al despacho.
  *
- * @returns {Array<{pipeline: string, phase: string, skill: string, file: string}>}
+ * #7439 — expone además `cause` (normalizada contra `BLOCK_CAUSE_ENUM`, RS-C.1)
+ * leída del `.reason.json` del marker. Es el filtro de seguridad del
+ * auto-levantamiento (#7440, RS-4.1): fallo de lectura o valor fuera del enum
+ * ⇒ `cause: null`, nunca lanza. Las claves históricas no cambian.
+ *
+ * @returns {Array<{pipeline: string, phase: string, skill: string, file: string, cause: string|null}>}
  */
 function listBlockedMarkers(issue) {
     const prefix = String(issue) + '.';
@@ -304,10 +313,14 @@ function listBlockedMarkers(issue) {
             try { entries = fs.readdirSync(dir); } catch { continue; }
             for (const f of entries) {
                 if (f.startsWith(prefix) && f !== '.gitkeep' && !isMarkerArtifact(f)) {
+                    const file = path.join(dir, f);
+                    let meta = null;
+                    try { meta = JSON.parse(fs.readFileSync(reasonFilePath(file), 'utf8')); } catch { meta = null; }
                     out.push({
                         pipeline, phase,
                         skill: f.slice(prefix.length),
-                        file: path.join(dir, f),
+                        file,
+                        cause: normalizeBlockCause(meta && meta.cause),
                     });
                 }
             }
@@ -634,9 +647,21 @@ function reportHumanBlock(opts) {
     // como fallback para markers anteriores a este cambio).
     const synthetic = opts.moveFromActive === false && !active;
 
+    // #7439 RS-C.1 — causa estructurada, enum CERRADO en escritura: un valor
+    // fuera del enum no se persiste (la clave no existe en el JSON). Es la
+    // llave del filtro de auto-levantamiento de #7440: sólo el gate de
+    // decisión de arquitectura la pone (RS-C.2, único productor en pulpo.js).
+    const cause = normalizeBlockCause(opts.cause);
+    // #7439 UX-F — ¿la firma del arquitecto NO PUDO COMPROBARSE? Sólo el
+    // `false` EXPLÍCITO se persiste; la ficha elige con eso el "Por qué"
+    // ("no pude comprobar" vs "no encontré la firma"). Nunca se infiere.
+    const signoffVerifiable = opts.signoff_verifiable === false ? false : null;
+
     fs.writeFileSync(reasonFilePath(targetFile), JSON.stringify({
         issue, skill, phase, pipeline, reason, question,
         precondition,
+        ...(cause ? { cause } : {}),
+        ...(signoffVerifiable === false ? { signoff_verifiable: false } : {}),
         // #6448 UX-1 / CA-17 — la cita del issue que disparó el freno viaja en
         // CAMPO PROPIO, nunca concatenada dentro de `reason`. Se persiste para
         // que el recordatorio muestre la misma evidencia que el aviso inicial.
@@ -656,7 +681,10 @@ function reportHumanBlock(opts) {
         enqueueNeedsHumanLabel(issue);
     }
 
-    return { issue, skill, phase, pipeline, precondition, marker_path: targetFile };
+    return {
+        issue, skill, phase, pipeline, precondition, marker_path: targetFile,
+        cause, signoff_verifiable: signoffVerifiable,
+    };
 }
 
 function listBlockedIssues() {
@@ -679,6 +707,7 @@ function listBlockedIssues() {
                 if (!Number.isFinite(issue)) continue;
                 const file = path.join(dir, f);
                 let reason = '', question = '', blockedAt = null, precondition = null, evidence = '';
+                let cause = null, signoffVerifiable = null;
                 try {
                     const meta = JSON.parse(fs.readFileSync(reasonFilePath(file), 'utf8'));
                     reason = meta.reason || '';
@@ -687,7 +716,15 @@ function listBlockedIssues() {
                     precondition = meta.precondition || null;
                     // #6448 UX-1 — la cita del issue, si el gate la dejó.
                     evidence = meta.evidence || '';
+                    // #7439 — causa estructurada + verificabilidad de la firma.
+                    cause = meta.cause;
+                    signoffVerifiable = meta.signoff_verifiable;
                 } catch {}
+                // #7439 RS-C.1 — normalización EN LECTURA (molde
+                // `normalizePrecondition`): un `.reason.json` editado a mano o
+                // corrupto no produce una causa que ningún call-site escribió.
+                cause = normalizeBlockCause(cause);
+                signoffVerifiable = signoffVerifiable === false ? false : null;
                 // #4748 — Markers legacy sin `precondition` (backward-compat,
                 // SEC-4) o con forma inválida → default juicio humano → jamás
                 // elegibles para auto-destrabe.
@@ -698,6 +735,7 @@ function listBlockedIssues() {
                 result.push({
                     issue, skill, phase, pipeline,
                     reason, question, precondition, evidence,
+                    cause, signoff_verifiable: signoffVerifiable,
                     blocked_at: blockedAt || new Date(mtime).toISOString(),
                     age_hours: Math.round(ageHours * 10) / 10,
                     marker_path: file,
@@ -2022,6 +2060,9 @@ module.exports = {
     inferHumanBlockQuestion,
     classifyPrecondition,
     normalizePrecondition,
+    // #7439 — re-export del módulo hoja `block-cause.js` (causa estructurada).
+    BLOCK_CAUSE_ENUM,
+    normalizeBlockCause,
     // #6611 — auto-destrabe de bloqueos verificables.
     emitAutoReleased,
     normalizeUnlocker,

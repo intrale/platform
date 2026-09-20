@@ -21,12 +21,13 @@
 const fs = require('fs');
 const path = require('path');
 
-let REPO_ROOT;
-try {
-    ({ REPO_ROOT } = require('../lib/traceability'));
-} catch (_) {
-    REPO_ROOT = process.env.PIPELINE_REPO_ROOT || path.resolve(__dirname, '..', '..');
-}
+// #7112 (rebote rev-2) — el destino (`metrics/budget-config.json`) se resuelve
+// POR LLAMADA vía lib/write-target (SEC-13). Antes derivaba de
+// `lib/traceability.REPO_ROOT` (PIPELINE_REPO_ROOT + git), ciego a
+// PIPELINE_DIR_OVERRIDE: desde un test escribía en el `.pipeline` productivo.
+// `opts.path` / `opts.metricsDir` siguen siendo el override explícito (tests).
+const writeTarget = require('../lib/write-target');
+const BUDGET_OPTS = { canal: 'estado', destino: 'metrics/budget-config.json' };
 
 // Default alineado con `projections.DEFAULT_MONTHLY_TOKEN_USD` (env
 // METRICS_QUOTA_MONTHLY_USD, default 100). Si no hay archivo persistido, el
@@ -41,11 +42,27 @@ const BUDGET_MAX = 1000000;
 // Actor FIJO grabado server-side (REQ-SEC-3). Nunca proviene del body.
 const FIXED_ACTOR = 'operador-local';
 
+// Escritura: con dir === null LANZA (EscrituraBloqueadaError, SEC-10).
+function budgetDir() {
+    return writeTarget.writePath(process.env, BUDGET_OPTS, 'metrics');
+}
+// Lectura: misma resolución pero nunca lanza; con dir === null → null y
+// `readBudget` cae al default, igual que con ENOENT.
+function budgetDirParaLectura() {
+    return writeTarget.safeWritePath(process.env, BUDGET_OPTS, 'metrics');
+}
+
 function budgetPath(opts) {
     const o = opts || {};
     if (o.path) return o.path;
-    const dir = o.metricsDir || path.join(REPO_ROOT, '.pipeline', 'metrics');
-    return path.join(dir, 'budget-config.json');
+    return path.join(o.metricsDir || budgetDir(), 'budget-config.json');
+}
+
+function budgetPathParaLectura(opts) {
+    const o = opts || {};
+    if (o.path) return o.path;
+    const dir = o.metricsDir || budgetDirParaLectura();
+    return dir ? path.join(dir, 'budget-config.json') : null;
 }
 
 function defaultBudget() {
@@ -59,7 +76,8 @@ function defaultBudget() {
 
 // Lectura tolerante: ENOENT, JSON corrupto o valor inválido → default.
 function readBudget(opts) {
-    const file = budgetPath(opts);
+    const file = budgetPathParaLectura(opts);
+    if (!file) return defaultBudget();
     let raw;
     try {
         raw = JSON.parse(fs.readFileSync(file, 'utf8'));

@@ -214,7 +214,8 @@ test('el barrido del pulpo consulta la politica de veredicto caduco', () => {
     // `issue` y el `pipelineDir` del ESTADO. Sin esos dos la política no puede
     // corroborar el flag contra nada que haya escrito el pipeline, y vuelve a
     // creerle al agente.
-    assert.match(src, /isStaleVerdictRejection\(\{\s*fase,\s*rechazados,\s*issue,\s*pipelineDir: PIPELINE,?\s*\}\)/,
+    // #7112 (SEC-13): `PIPELINE` es función por llamada → `PIPELINE()`.
+    assert.match(src, /isStaleVerdictRejection\(\{\s*fase,\s*rechazados,\s*issue,\s*pipelineDir: PIPELINE\(\),?\s*\}\)/,
         'el barrido tiene que preguntarle a la política pasándole issue + pipelineDir');
 });
 

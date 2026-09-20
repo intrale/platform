@@ -163,7 +163,10 @@ test('drenador real descarta la revocación vieja sin crear nuevos work-files', 
   helpers.seedPipelineConfig(f.pipelineDir);
   helpers.seedRealProductManifest(f.pipelineDir);
   const { withEnv } = require('../lib/test-helpers/with-env');
-  const pulpo = withEnv({ PIPELINE_DIR_OVERRIDE: f.pipelineDir, PULPO_NO_AUTOSTART: '1' }, () => require('../pulpo'));
+  // #7112 — pulpo.js resuelve el dir POR LLAMADA: el override tiene que seguir
+  // vigente mientras corre el drenador, no sólo durante el require.
+  withEnv({ PIPELINE_DIR_OVERRIDE: f.pipelineDir, PULPO_NO_AUTOSTART: '1' }, () => {
+  const pulpo = require('../pulpo');
   const pending = path.join(f.pipelineDir, ...seal.REQUEUE_QUEUE_DIR);
   fs.mkdirSync(pending, { recursive: true });
   seal.requeueVerification({ pipelineDir: f.pipelineDir, issue: ISSUE, motivo: 'head-desincronizado' });
@@ -202,6 +205,7 @@ test('drenador real descarta la revocación vieja sin crear nuevos work-files', 
   for (const key of ['head_sellado', 'head_actual', 'tree_sellado', 'tree_actual']) {
     assert.match(event[key], /^[a-f0-9]{40}$/);
   }
+  }, { permitirApagarControl: ['PULPO_NO_AUTOSTART'], motivo: 'cargar pulpo.js como módulo para ejercitar el drenador sin arrancar el loop' });
 });
 
 test('productor no publica éxito sin auditoría y permite reintentar sin gastar contador', t => {

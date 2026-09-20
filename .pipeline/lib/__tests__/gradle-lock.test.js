@@ -24,7 +24,8 @@ process.env.GRADLE_LOCK_PATH = LOCK_PATH;
 
 const MOD_PATH = require.resolve('../gradle-lock');
 delete require.cache[MOD_PATH];
-const { withGradleLock, resolveLockPath, DEFAULT_LOCK_PATH } = require('../gradle-lock');
+const gradleLock = require('../gradle-lock');
+const { withGradleLock, resolveLockPath } = gradleLock;
 
 // El lock real de file-lock.js vive en `<lockPath>.lock` (lockPathOf añade el
 // sufijo). Verificamos su existencia, no la del path lógico.
@@ -36,8 +37,23 @@ test('resolveLockPath respeta el override GRADLE_LOCK_PATH', () => {
     assert.equal(resolveLockPath(), LOCK_PATH);
 });
 
-test('DEFAULT_LOCK_PATH apunta a .pipeline/locks/gradle-global.lock', () => {
-    assert.match(DEFAULT_LOCK_PATH.replace(/\\/g, '/'), /\.pipeline\/locks\/gradle-global\.lock$/);
+// #7112 — el default ya no se ancla a `__dirname`: se resuelve POR LLAMADA vía
+// `lib/write-target` sobre el dir del ambiente (acá, el override del fixture).
+test('DEFAULT_LOCK_PATH resuelve locks/gradle-global.lock bajo el dir del ambiente, por llamada', () => {
+    const dirA = fs.mkdtempSync(path.join(os.tmpdir(), 'gradle-lock-a-'));
+    const dirB = fs.mkdtempSync(path.join(os.tmpdir(), 'gradle-lock-b-'));
+    const previo = process.env.PIPELINE_DIR_OVERRIDE;
+    try {
+        process.env.PIPELINE_DIR_OVERRIDE = dirA;
+        assert.equal(gradleLock.DEFAULT_LOCK_PATH, path.join(dirA, 'locks', 'gradle-global.lock'));
+        process.env.PIPELINE_DIR_OVERRIDE = dirB;
+        assert.equal(gradleLock.DEFAULT_LOCK_PATH, path.join(dirB, 'locks', 'gradle-global.lock'));
+    } finally {
+        if (previo === undefined) delete process.env.PIPELINE_DIR_OVERRIDE;
+        else process.env.PIPELINE_DIR_OVERRIDE = previo;
+        fs.rmSync(dirA, { recursive: true, force: true });
+        fs.rmSync(dirB, { recursive: true, force: true });
+    }
 });
 
 test('withGradleLock ejecuta fn, devuelve su resultado y libera el lock', async () => {

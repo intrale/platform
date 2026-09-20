@@ -12,7 +12,9 @@ const WHITELIST = Object.freeze([
 const MODEL_ID = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 
 function defaultFile() {
-    return path.join(__dirname, '..', '..', 'state', 'effective-model.jsonl');
+    // #7112 — resolución POR LLAMADA vía el envoltorio (SEC-13): sin ambiente
+    // declarado ni dir de pruebas avisa por stderr y LANZA (CA-3), nunca `__dirname`.
+    return require('../write-target').writePath(process.env, { canal: 'logs', destino: 'state/effective-model.jsonl' }, 'state', 'effective-model.jsonl');
 }
 
 function normalizeModelId(value) {
@@ -186,10 +188,15 @@ function evaluateDivergence(deps = {}) {
     } catch { return []; }
 }
 
+// #7112 — dedupe de alertas: mismo envoltorio, por llamada (SEC-13).
+function dedupFile() {
+    return require('../write-target').writePath(process.env, { canal: 'estado', destino: 'state/effective-model-alerts.json' }, 'state', 'effective-model-alerts.json');
+}
+
 function persistentShouldNotify(key, _row, deps = {}) {
     try {
         const _fs = deps.fs || fs;
-        const file = deps.dedupFile || path.join(__dirname, '..', '..', 'state', 'effective-model-alerts.json');
+        const file = deps.dedupFile || dedupFile();
         let state = {};
         try { state = JSON.parse(_fs.readFileSync(file, 'utf8')); } catch {}
         const now = resolveNow(deps);
@@ -202,7 +209,7 @@ function persistentShouldNotify(key, _row, deps = {}) {
 function persistentMarkNotified(key, _row, deps = {}) {
     try {
         const _fs = deps.fs || fs;
-        const file = deps.dedupFile || path.join(__dirname, '..', '..', 'state', 'effective-model-alerts.json');
+        const file = deps.dedupFile || dedupFile();
         let state = {};
         try { state = JSON.parse(_fs.readFileSync(file, 'utf8')); } catch {}
         const now = resolveNow(deps);

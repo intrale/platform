@@ -964,7 +964,8 @@ test('CA-2/CA-3: el cableado de pulpo.js filtra por stage, redacta el log y NO a
   assert.match(codigo, /markerWritten/);
   assert.match(codigo, /preexisting/);
   // GURU-9 — idempotencia: nunca se pisa una pausa preexistente.
-  assert.match(codigo, /if \(fs\.existsSync\(PAUSE_FILE\)\)/, 'el halt debe ser idempotente');
+  // #7112 (SEC-13): PAUSE_FILE es función por llamada.
+  assert.match(codigo, /if \(fs\.existsSync\(PAUSE_FILE\(\)\)\)/, 'el halt debe ser idempotente');
   // CA-3 — el mapeo NO vive en el supervisor.
   const supervisorSrc = fs.readFileSync(path.join(__dirname, '..', 'kernel-supervisor.js'), 'utf8');
   assert.doesNotMatch(supervisorSrc, /kernel-degradation-alert|classifyDegradation/,

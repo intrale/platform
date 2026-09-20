@@ -19,6 +19,10 @@ $PipelineDir = "$RepoRoot\.pipeline"
 $env:PIPELINE_STATE_DIR = $PipelineDir
 $env:PIPELINE_MAIN_ROOT = $RepoRoot
 $env:NODE_PATH = "$RepoRoot\node_modules"
+# #7112 (CA-6) — declaracion de ambiente para todo lo que se lanza desde aca
+# (tercer entrypoint humano/SO, junto con restart.js y watchdog.ps1). Solo si
+# no venia seteada (un pipeline de pruebas puede declarar `pruebas` explicito).
+if (-not $env:PIPELINE_AMBIENTE) { $env:PIPELINE_AMBIENTE = 'productivo' }
 
 Write-Host '=== Pipeline V2 - Lanzamiento ===' -ForegroundColor Cyan
 

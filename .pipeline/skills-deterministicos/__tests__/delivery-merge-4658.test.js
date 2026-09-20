@@ -19,6 +19,10 @@ process.env.CLAUDE_PROJECT_DIR = TMP;
 
 delete require.cache[require.resolve('../delivery')];
 const delivery = require('../delivery');
+// #7112 (SEC-9): delivery.js ya capturó REPO_ROOT=TMP al require. Con la variable viva,
+// el resolvedor trata TMP/.pipeline como PRODUCTIVO (unión SEC-3) y anularía la escritura
+// del audit central bajo prueba. CLAUDE_PROJECT_DIR sigue apuntando al sandbox.
+delete process.env.PIPELINE_REPO_ROOT;
 const humanBlock = require('../../lib/human-block');
 
 // ── classifyMergeFailure (señal server-side, CA-2 / R7) ────────────────────

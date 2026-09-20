@@ -73,7 +73,9 @@ const VALID_SOURCES = Object.freeze(new Set(['primary', 'fallback', 'forced-over
 // Raíz por defecto del pipeline: `.pipeline/` (este módulo vive en
 // `.pipeline/lib/`). Los tests inyectan un dir temporal vía `pipelineRoot`.
 function defaultPipelineRoot() {
-    return path.join(__dirname, '..');
+    // #7112 — resolución POR LLAMADA vía el envoltorio (SEC-13): sin ambiente
+    // declarado ni dir de pruebas avisa por stderr y LANZA (CA-3), nunca `__dirname`.
+    return require('./write-target').writeDir(process.env, { canal: 'estado', destino: 'running-providers.json' });
 }
 
 function markersPath(pipelineRoot) {

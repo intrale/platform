@@ -57,12 +57,19 @@ try {
   };
 }
 
-const PIPELINE_DIR = path.resolve(__dirname);
-const STATE_FILE = path.join(PIPELINE_DIR, 'connectivity-state.json');
-const BLOCKED_FILE = path.join(PIPELINE_DIR, 'blocked-by-infra.json');
-const EVENTS_DIR = path.join(PIPELINE_DIR, 'events');
-const EVENTS_FILE = path.join(EVENTS_DIR, 'connectivity.jsonl');
-const TMP_DIR = path.join(PIPELINE_DIR, 'tmp');
+// #7112 — la raíz se resuelve POR LLAMADA vía `lib/write-target` (SEC-13):
+// ninguna const de módulo captura `__dirname` al `require`. Sin ambiente
+// declarado ni dir de pruebas, `writeDir` avisa por stderr y LANZA (CA-3).
+// Identificadores en mayúsculas conservados: cada uso `X` → `X()`.
+const writeTarget = require('./lib/write-target');
+function PIPELINE_DIR() {
+  return writeTarget.writeDir(process.env, { canal: 'estado', destino: 'connectivity-state.json' });
+}
+function STATE_FILE() { return path.join(PIPELINE_DIR(), 'connectivity-state.json'); }
+function BLOCKED_FILE() { return path.join(PIPELINE_DIR(), 'blocked-by-infra.json'); }
+function EVENTS_DIR() { return path.join(PIPELINE_DIR(), 'events'); }
+function EVENTS_FILE() { return path.join(EVENTS_DIR(), 'connectivity.jsonl'); }
+function TMP_DIR() { return path.join(PIPELINE_DIR(), 'tmp'); }
 
 const SCHEMA_VERSION = 1;
 
@@ -152,9 +159,9 @@ function readJsonSafe(filepath) {
  * donde rename cross-device falla).
  */
 function writeJsonAtomic(filepath, data) {
-  ensureDir(TMP_DIR);
+  ensureDir(TMP_DIR());
   ensureDir(path.dirname(filepath));
-  const tmp = path.join(TMP_DIR, `${path.basename(filepath)}.${process.pid}.${Date.now()}.tmp`);
+  const tmp = path.join(TMP_DIR(), `${path.basename(filepath)}.${process.pid}.${Date.now()}.tmp`);
   const payload = JSON.stringify(data, null, 2);
   const fd = fs.openSync(tmp, 'w', 0o600);
   try {
@@ -175,17 +182,17 @@ function writeJsonAtomic(filepath, data) {
 // --- Estado del probe (para detectar transicion) ---
 
 function getLast() {
-  return readJsonSafe(STATE_FILE);
+  return readJsonSafe(STATE_FILE());
 }
 
 function setLast(state) {
-  writeJsonAtomic(STATE_FILE, { ...state, schema_version: SCHEMA_VERSION });
+  writeJsonAtomic(STATE_FILE(), { ...state, schema_version: SCHEMA_VERSION });
 }
 
 // --- blocked-by-infra.json ---
 
 function getBlockedIssues() {
-  const data = readJsonSafe(BLOCKED_FILE);
+  const data = readJsonSafe(BLOCKED_FILE());
   if (!data || data.version !== SCHEMA_VERSION) {
     return { version: SCHEMA_VERSION, issues: [], lastEvent: null };
   }
@@ -200,7 +207,7 @@ function addBlockedIssue({ number, reason, detail }) {
     // Actualizar reason si cambio; mantener `since` original.
     existing.reason = normalizeReason(reason);
     if (detail) existing.detail = sanitizeForLog(detail);
-    writeJsonAtomic(BLOCKED_FILE, current);
+    writeJsonAtomic(BLOCKED_FILE(), current);
     return;
   }
   current.issues.push({
@@ -209,7 +216,7 @@ function addBlockedIssue({ number, reason, detail }) {
     reason: normalizeReason(reason),
     detail: detail ? sanitizeForLog(detail) : undefined,
   });
-  writeJsonAtomic(BLOCKED_FILE, current);
+  writeJsonAtomic(BLOCKED_FILE(), current);
 }
 
 function clearBlockedIssues(lastEvent) {
@@ -217,7 +224,7 @@ function clearBlockedIssues(lastEvent) {
   const cleared = current.issues.map((i) => Number(i.number));
   current.issues = [];
   if (lastEvent) current.lastEvent = lastEvent;
-  writeJsonAtomic(BLOCKED_FILE, current);
+  writeJsonAtomic(BLOCKED_FILE(), current);
   return cleared;
 }
 
@@ -229,13 +236,13 @@ function clearBlockedIssues(lastEvent) {
  */
 function rotateEventLogIfNeeded() {
   try {
-    if (!fs.existsSync(EVENTS_FILE)) return;
-    const stat = fs.statSync(EVENTS_FILE);
+    if (!fs.existsSync(EVENTS_FILE())) return;
+    const stat = fs.statSync(EVENTS_FILE());
     if (stat.size < EVENT_LOG_MAX_BYTES) return;
     // Desplazar desde la ultima hacia atras
     for (let i = EVENT_LOG_ROTATIONS; i >= 1; i--) {
-      const src = i === 1 ? EVENTS_FILE : `${EVENTS_FILE}.${i - 1}`;
-      const dst = `${EVENTS_FILE}.${i}`;
+      const src = i === 1 ? EVENTS_FILE() : `${EVENTS_FILE()}.${i - 1}`;
+      const dst = `${EVENTS_FILE()}.${i}`;
       if (fs.existsSync(src)) {
         if (i === EVENT_LOG_ROTATIONS && fs.existsSync(dst)) {
           try { fs.unlinkSync(dst); } catch {}
@@ -252,9 +259,9 @@ function rotateEventLogIfNeeded() {
  */
 function purgeOldEvents() {
   try {
-    if (!fs.existsSync(EVENTS_FILE)) return;
+    if (!fs.existsSync(EVENTS_FILE())) return;
     const cutoff = Date.now() - EVENT_LOG_MAX_AGE_DAYS * 24 * 60 * 60 * 1000;
-    const content = fs.readFileSync(EVENTS_FILE, 'utf8');
+    const content = fs.readFileSync(EVENTS_FILE(), 'utf8');
     const lines = content.split('\n').filter(Boolean);
     const kept = [];
     for (const line of lines) {
@@ -267,16 +274,16 @@ function purgeOldEvents() {
       }
     }
     if (kept.length === lines.length) return; // nada que purgar
-    ensureDir(EVENTS_DIR);
+    ensureDir(EVENTS_DIR());
     const rewritten = kept.join('\n') + (kept.length ? '\n' : '');
     // Escritura atomica para no perder el tail si crashea mid-rewrite
-    writeJsonAtomicRaw(EVENTS_FILE, rewritten);
+    writeJsonAtomicRaw(EVENTS_FILE(), rewritten);
   } catch {}
 }
 
 function writeJsonAtomicRaw(filepath, rawString) {
-  ensureDir(TMP_DIR);
-  const tmp = path.join(TMP_DIR, `${path.basename(filepath)}.${process.pid}.${Date.now()}.tmp`);
+  ensureDir(TMP_DIR());
+  const tmp = path.join(TMP_DIR(), `${path.basename(filepath)}.${process.pid}.${Date.now()}.tmp`);
   fs.writeFileSync(tmp, rawString, { mode: 0o600 });
   fs.renameSync(tmp, filepath);
 }
@@ -309,7 +316,7 @@ function applyDedup(event) {
 
 function emitEvent(event) {
   if (!event || typeof event !== 'object') return null;
-  ensureDir(EVENTS_DIR);
+  ensureDir(EVENTS_DIR());
   rotateEventLogIfNeeded();
   purgeOldEvents();
 
@@ -323,7 +330,7 @@ function emitEvent(event) {
 
   const payload = JSON.stringify(line) + '\n';
   try {
-    fs.appendFileSync(EVENTS_FILE, payload, { flag: 'a', mode: 0o600 });
+    fs.appendFileSync(EVENTS_FILE(), payload, { flag: 'a', mode: 0o600 });
   } catch (err) {
     // Best-effort: no romper pipeline por fallo de log.
   }
@@ -406,7 +413,7 @@ function recordProbeResult(probeResult, opts = {}) {
     try {
       const blk = getBlockedIssues();
       blk.lastEvent = { type: 'connectivity_restored', ts: payload.ts };
-      writeJsonAtomic(BLOCKED_FILE, blk);
+      writeJsonAtomic(BLOCKED_FILE(), blk);
     } catch { /* best-effort */ }
   }
 
@@ -434,10 +441,10 @@ module.exports = {
   EVENT_LOG_MAX_AGE_DAYS,
 
   // Paths publicos (utiles para tests)
-  STATE_FILE,
-  BLOCKED_FILE,
-  EVENTS_FILE,
-  EVENTS_DIR,
+  get STATE_FILE() { return STATE_FILE(); },
+  get BLOCKED_FILE() { return BLOCKED_FILE(); },
+  get EVENTS_FILE() { return EVENTS_FILE(); },
+  get EVENTS_DIR() { return EVENTS_DIR(); },
 
   // Hooks internos (tests)
   _resetDedupBuffer: () => dedupBuffer.clear(),

@@ -72,13 +72,19 @@
         },
         {
             "file": "__tests__/servicio-github.test.js",
-            "line": 50,
+            "line": 53,
+            "kind": "deuda",
+            "reason": "escritura de PIPELINE_DIR_OVERRIDE fuera del helper"
+        },
+        {
+            "file": "__tests__/servicio-github.test.js",
+            "line": 54,
             "kind": "deuda",
             "reason": "escritura de PIPELINE_MAIN_ROOT fuera del helper"
         },
         {
             "file": "__tests__/servicio-github.test.js",
-            "line": 56,
+            "line": 60,
             "kind": "deuda",
             "reason": "escritura de GH_BIN_OVERRIDE fuera del helper"
         },
@@ -623,6 +629,24 @@
             "reason": "escritura de TELEGRAM_LEO_OPERATOR_CHAT_ID fuera del helper"
         },
         {
+            "file": "lib/__tests__/credentials-vault-shadow-5448.test.js",
+            "line": 435,
+            "kind": "deuda",
+            "reason": "escritura de PIPELINE_DIR_OVERRIDE fuera del helper"
+        },
+        {
+            "file": "lib/__tests__/credentials-vault-shadow-5448.test.js",
+            "line": 450,
+            "kind": "deuda",
+            "reason": "escritura de PIPELINE_DIR_OVERRIDE fuera del helper"
+        },
+        {
+            "file": "lib/__tests__/credentials-vault-shadow-5448.test.js",
+            "line": 451,
+            "kind": "deuda",
+            "reason": "escritura de PIPELINE_DIR_OVERRIDE fuera del helper"
+        },
+        {
             "file": "lib/__tests__/dashboard-architect-badge.test.js",
             "line": 24,
             "kind": "deuda",
@@ -648,9 +672,15 @@
         },
         {
             "file": "lib/__tests__/dashboard-routes-budget.test.js",
-            "line": 27,
+            "line": 33,
             "kind": "deuda",
             "reason": "escritura de PIPELINE_REPO_ROOT fuera del helper"
+        },
+        {
+            "file": "lib/__tests__/dashboard-routes-budget.test.js",
+            "line": 34,
+            "kind": "deuda",
+            "reason": "escritura de PIPELINE_DIR_OVERRIDE fuera del helper"
         },
         {
             "file": "lib/__tests__/dashboard-routes-roadmap.test.js",
@@ -864,13 +894,13 @@
         },
         {
             "file": "lib/__tests__/desync-sync-4525.test.js",
-            "line": 54,
+            "line": 59,
             "kind": "deuda",
             "reason": "escritura de PIPELINE_DIR_OVERRIDE fuera del helper"
         },
         {
             "file": "lib/__tests__/desync-sync-4525.test.js",
-            "line": 60,
+            "line": 65,
             "kind": "deuda",
             "reason": "escritura de PIPELINE_DIR_OVERRIDE fuera del helper"
         },
@@ -1043,6 +1073,18 @@
             "reason": "escritura de PIPELINE_ROOT_OVERRIDE fuera del helper"
         },
         {
+            "file": "lib/__tests__/fallback-episode-state.test.js",
+            "line": 682,
+            "kind": "deuda",
+            "reason": "escritura de PIPELINE_DIR_OVERRIDE fuera del helper"
+        },
+        {
+            "file": "lib/__tests__/fallback-episode-state.test.js",
+            "line": 686,
+            "kind": "deuda",
+            "reason": "escritura de PIPELINE_DIR_OVERRIDE fuera del helper"
+        },
+        {
             "file": "lib/__tests__/gate3-config-failclosed.test.js",
             "line": 70,
             "kind": "deuda",
@@ -1068,7 +1110,31 @@
         },
         {
             "file": "lib/__tests__/gradle-lock.test.js",
-            "line": 82,
+            "line": 47,
+            "kind": "deuda",
+            "reason": "escritura de PIPELINE_DIR_OVERRIDE fuera del helper"
+        },
+        {
+            "file": "lib/__tests__/gradle-lock.test.js",
+            "line": 49,
+            "kind": "deuda",
+            "reason": "escritura de PIPELINE_DIR_OVERRIDE fuera del helper"
+        },
+        {
+            "file": "lib/__tests__/gradle-lock.test.js",
+            "line": 52,
+            "kind": "deuda",
+            "reason": "escritura de PIPELINE_DIR_OVERRIDE fuera del helper"
+        },
+        {
+            "file": "lib/__tests__/gradle-lock.test.js",
+            "line": 53,
+            "kind": "deuda",
+            "reason": "escritura de PIPELINE_DIR_OVERRIDE fuera del helper"
+        },
+        {
+            "file": "lib/__tests__/gradle-lock.test.js",
+            "line": 98,
             "kind": "deuda",
             "reason": "escritura de GRADLE_LOCK_PATH fuera del helper"
         },
@@ -1188,37 +1254,43 @@
         },
         {
             "file": "lib/__tests__/listener-callback.test.js",
-            "line": 75,
+            "line": 25,
+            "kind": "deuda",
+            "reason": "escritura de PIPELINE_DIR_OVERRIDE fuera del helper"
+        },
+        {
+            "file": "lib/__tests__/listener-callback.test.js",
+            "line": 77,
             "kind": "deuda",
             "reason": "escritura de TELEGRAM_LEO_OPERATOR_CHAT_ID fuera del helper"
         },
         {
             "file": "lib/__tests__/listener-callback.test.js",
-            "line": 222,
+            "line": 224,
             "kind": "deuda",
             "reason": "escritura de TELEGRAM_LEO_OPERATOR_CHAT_ID fuera del helper"
         },
         {
             "file": "lib/__tests__/listener-callback.test.js",
-            "line": 237,
+            "line": 239,
             "kind": "deuda",
             "reason": "escritura de TELEGRAM_LEO_OPERATOR_CHAT_ID fuera del helper"
         },
         {
             "file": "lib/__tests__/listener-callback.test.js",
-            "line": 316,
+            "line": 318,
             "kind": "deuda",
             "reason": "escritura de TELEGRAM_LEO_OPERATOR_CHAT_ID fuera del helper"
         },
         {
             "file": "lib/__tests__/listener-callback.test.js",
-            "line": 345,
+            "line": 347,
             "kind": "deuda",
             "reason": "escritura de TELEGRAM_LEO_OPERATOR_CHAT_ID fuera del helper"
         },
         {
             "file": "lib/__tests__/listener-callback.test.js",
-            "line": 361,
+            "line": 363,
             "kind": "deuda",
             "reason": "escritura de TELEGRAM_LEO_OPERATOR_CHAT_ID fuera del helper"
         },
@@ -2394,67 +2466,73 @@
         },
         {
             "file": "lib/__tests__/reconciler-admission-sweep.test.js",
-            "line": 36,
+            "line": 42,
             "kind": "deuda",
             "reason": "escritura de PIPELINE_REPO_ROOT fuera del helper"
         },
         {
             "file": "lib/__tests__/reconciler-admission-sweep.test.js",
-            "line": 37,
+            "line": 43,
             "kind": "deuda",
             "reason": "escritura de PIPELINE_STATE_DIR fuera del helper"
         },
         {
             "file": "lib/__tests__/reconciler-admission-sweep.test.js",
-            "line": 38,
+            "line": 44,
+            "kind": "deuda",
+            "reason": "escritura de PIPELINE_DIR_OVERRIDE fuera del helper"
+        },
+        {
+            "file": "lib/__tests__/reconciler-admission-sweep.test.js",
+            "line": 45,
             "kind": "deuda",
             "reason": "escritura de PIPELINE_MAIN_ROOT fuera del helper"
         },
         {
             "file": "lib/__tests__/reconciler-admission-sweep.test.js",
-            "line": 39,
+            "line": 46,
             "kind": "deuda",
             "reason": "ADMISSION_SWEEP_ENABLED escrita en el sentido seguro (apagar)"
         },
         {
             "file": "lib/__tests__/reconciler-admission-sweep.test.js",
-            "line": 40,
+            "line": 47,
             "kind": "deuda",
             "reason": "escritura de ADMISSION_GATE_DRY_RUN fuera del helper"
         },
         {
             "file": "lib/__tests__/reconciler-admission-sweep.test.js",
-            "line": 199,
+            "line": 206,
             "kind": "deuda",
             "reason": "ADMISSION_SWEEP_ENABLED escrita en el sentido seguro (apagar)"
         },
         {
             "file": "lib/__tests__/reconciler-admission-sweep.test.js",
-            "line": 253,
+            "line": 260,
             "kind": "deuda",
             "reason": "ADMISSION_SWEEP_ENABLED escrita en el sentido seguro (apagar)"
         },
         {
             "file": "lib/__tests__/reconciler-admission-sweep.test.js",
-            "line": 259,
+            "line": 266,
             "kind": "deuda",
             "reason": "escritura de ADMISSION_GATE_DRY_RUN fuera del helper"
         },
         {
             "file": "lib/__tests__/reconciler-admission-sweep.test.js",
-            "line": 281,
+            "line": 288,
             "kind": "deuda",
             "reason": "ADMISSION_SWEEP_ENABLED escrita en el sentido seguro (apagar)"
         },
         {
             "file": "lib/__tests__/reconciler-admission-sweep.test.js",
-            "line": 287,
+            "line": 294,
             "kind": "deuda",
             "reason": "ADMISSION_SWEEP_ENABLED escrita en el sentido seguro (apagar)"
         },
         {
             "file": "lib/__tests__/reconciler-admission-sweep.test.js",
-            "line": 307,
+            "line": 314,
             "kind": "deuda",
             "reason": "ADMISSION_SWEEP_ENABLED escrita en el sentido seguro (apagar)"
         },
@@ -2463,6 +2541,12 @@
             "line": 23,
             "kind": "deuda",
             "reason": "escritura de PIPELINE_STATE_DIR fuera del helper"
+        },
+        {
+            "file": "lib/__tests__/reconciler-stale-orders-slice.test.js",
+            "line": 25,
+            "kind": "deuda",
+            "reason": "escritura de PIPELINE_DIR_OVERRIDE fuera del helper"
         },
         {
             "file": "lib/__tests__/restart-preserve-pause-5399.test.js",
@@ -2544,19 +2628,25 @@
         },
         {
             "file": "lib/__tests__/servicio-reconciler.test.js",
-            "line": 19,
+            "line": 25,
             "kind": "deuda",
             "reason": "escritura de PIPELINE_REPO_ROOT fuera del helper"
         },
         {
             "file": "lib/__tests__/servicio-reconciler.test.js",
-            "line": 20,
+            "line": 26,
             "kind": "deuda",
             "reason": "escritura de PIPELINE_STATE_DIR fuera del helper"
         },
         {
             "file": "lib/__tests__/servicio-reconciler.test.js",
-            "line": 21,
+            "line": 27,
+            "kind": "deuda",
+            "reason": "escritura de PIPELINE_DIR_OVERRIDE fuera del helper"
+        },
+        {
+            "file": "lib/__tests__/servicio-reconciler.test.js",
+            "line": 28,
             "kind": "deuda",
             "reason": "escritura de PIPELINE_MAIN_ROOT fuera del helper"
         },
@@ -2586,37 +2676,91 @@
         },
         {
             "file": "lib/__tests__/servicio-telegram-failure.test.js",
-            "line": 416,
+            "line": 429,
             "kind": "deuda",
             "reason": "escritura de PIPELINE_DIR_OVERRIDE fuera del helper"
         },
         {
             "file": "lib/__tests__/servicio-telegram-failure.test.js",
-            "line": 418,
+            "line": 430,
+            "kind": "deuda",
+            "reason": "escritura de PIPELINE_STATE_DIR fuera del helper"
+        },
+        {
+            "file": "lib/__tests__/servicio-telegram-failure.test.js",
+            "line": 431,
+            "kind": "deuda",
+            "reason": "escritura de PIPELINE_REPO_ROOT fuera del helper"
+        },
+        {
+            "file": "lib/__tests__/servicio-telegram-failure.test.js",
+            "line": 437,
+            "kind": "deuda",
+            "reason": "escritura de PIPELINE_DIR_OVERRIDE fuera del helper"
+        },
+        {
+            "file": "lib/__tests__/servicio-telegram-failure.test.js",
+            "line": 438,
+            "kind": "deuda",
+            "reason": "escritura de PIPELINE_DIR_OVERRIDE fuera del helper"
+        },
+        {
+            "file": "lib/__tests__/servicio-telegram-failure.test.js",
+            "line": 439,
+            "kind": "deuda",
+            "reason": "escritura de PIPELINE_STATE_DIR fuera del helper"
+        },
+        {
+            "file": "lib/__tests__/servicio-telegram-failure.test.js",
+            "line": 440,
+            "kind": "deuda",
+            "reason": "escritura de PIPELINE_STATE_DIR fuera del helper"
+        },
+        {
+            "file": "lib/__tests__/servicio-telegram-failure.test.js",
+            "line": 441,
+            "kind": "deuda",
+            "reason": "escritura de PIPELINE_REPO_ROOT fuera del helper"
+        },
+        {
+            "file": "lib/__tests__/servicio-telegram-failure.test.js",
+            "line": 442,
+            "kind": "deuda",
+            "reason": "escritura de PIPELINE_REPO_ROOT fuera del helper"
+        },
+        {
+            "file": "lib/__tests__/servicio-telegram-failure.test.js",
+            "line": 451,
+            "kind": "deuda",
+            "reason": "escritura de PIPELINE_DIR_OVERRIDE fuera del helper"
+        },
+        {
+            "file": "lib/__tests__/servicio-telegram-failure.test.js",
+            "line": 453,
             "kind": "deuda",
             "reason": "escritura de NODE_ENV fuera del helper"
         },
         {
             "file": "lib/__tests__/servicio-telegram-failure.test.js",
-            "line": 423,
+            "line": 458,
             "kind": "deuda",
             "reason": "escritura de PIPELINE_DIR_OVERRIDE fuera del helper"
         },
         {
             "file": "lib/__tests__/servicio-telegram-failure.test.js",
-            "line": 424,
+            "line": 459,
             "kind": "deuda",
             "reason": "escritura de PIPELINE_DIR_OVERRIDE fuera del helper"
         },
         {
             "file": "lib/__tests__/servicio-telegram-failure.test.js",
-            "line": 425,
+            "line": 460,
             "kind": "deuda",
             "reason": "escritura de NODE_ENV fuera del helper"
         },
         {
             "file": "lib/__tests__/servicio-telegram-failure.test.js",
-            "line": 426,
+            "line": 461,
             "kind": "deuda",
             "reason": "escritura de NODE_ENV fuera del helper"
         },
@@ -2658,19 +2802,25 @@
         },
         {
             "file": "lib/__tests__/state-label-reconciler-step.test.js",
-            "line": 19,
+            "line": 24,
             "kind": "deuda",
             "reason": "escritura de PIPELINE_REPO_ROOT fuera del helper"
         },
         {
             "file": "lib/__tests__/state-label-reconciler-step.test.js",
-            "line": 20,
+            "line": 25,
             "kind": "deuda",
             "reason": "escritura de PIPELINE_STATE_DIR fuera del helper"
         },
         {
             "file": "lib/__tests__/state-label-reconciler-step.test.js",
-            "line": 21,
+            "line": 27,
+            "kind": "deuda",
+            "reason": "escritura de PIPELINE_DIR_OVERRIDE fuera del helper"
+        },
+        {
+            "file": "lib/__tests__/state-label-reconciler-step.test.js",
+            "line": 28,
             "kind": "deuda",
             "reason": "escritura de PIPELINE_MAIN_ROOT fuera del helper"
         },
@@ -3888,19 +4038,25 @@
         },
         {
             "file": "skills-deterministicos/__tests__/delivery-merge-4658.test.js",
-            "line": 162,
+            "line": 25,
+            "kind": "deuda",
+            "reason": "escritura de PIPELINE_REPO_ROOT fuera del helper"
+        },
+        {
+            "file": "skills-deterministicos/__tests__/delivery-merge-4658.test.js",
+            "line": 166,
             "kind": "deuda",
             "reason": "escritura de PIPELINE_DIR_OVERRIDE fuera del helper"
         },
         {
             "file": "skills-deterministicos/__tests__/delivery-merge-4658.test.js",
-            "line": 177,
+            "line": 181,
             "kind": "deuda",
             "reason": "escritura de PIPELINE_DIR_OVERRIDE fuera del helper"
         },
         {
             "file": "skills-deterministicos/__tests__/delivery-merge-4658.test.js",
-            "line": 178,
+            "line": 182,
             "kind": "deuda",
             "reason": "escritura de PIPELINE_DIR_OVERRIDE fuera del helper"
         },
@@ -4332,61 +4488,61 @@
         },
         {
             "file": "skills-deterministicos/__tests__/tester.test.js",
-            "line": 1599,
+            "line": 1658,
             "kind": "deuda",
             "reason": "escritura de GRADLE_LOCK_PATH fuera del helper"
         },
         {
             "file": "skills-deterministicos/__tests__/tester.test.js",
-            "line": 1615,
+            "line": 1674,
             "kind": "deuda",
             "reason": "escritura de GRADLE_LOCK_PATH fuera del helper"
         },
         {
             "file": "skills-deterministicos/__tests__/tester.test.js",
-            "line": 1616,
+            "line": 1675,
             "kind": "deuda",
             "reason": "escritura de GRADLE_LOCK_PATH fuera del helper"
         },
         {
             "file": "skills-deterministicos/__tests__/tester.test.js",
-            "line": 1627,
+            "line": 1686,
             "kind": "deuda",
             "reason": "escritura de GRADLE_LOCK_PATH fuera del helper"
         },
         {
             "file": "skills-deterministicos/__tests__/tester.test.js",
-            "line": 1639,
+            "line": 1698,
             "kind": "deuda",
             "reason": "escritura de GRADLE_LOCK_PATH fuera del helper"
         },
         {
             "file": "skills-deterministicos/__tests__/tester.test.js",
-            "line": 1640,
+            "line": 1699,
             "kind": "deuda",
             "reason": "escritura de GRADLE_LOCK_PATH fuera del helper"
         },
         {
             "file": "skills-deterministicos/__tests__/tester.test.js",
-            "line": 1768,
+            "line": 1827,
             "kind": "deuda",
             "reason": "escritura de PIPELINE_REPO_ROOT fuera del helper"
         },
         {
             "file": "skills-deterministicos/__tests__/tester.test.js",
-            "line": 1769,
+            "line": 1828,
             "kind": "deuda",
             "reason": "escritura de CLAUDE_PROJECT_DIR fuera del helper"
         },
         {
             "file": "skills-deterministicos/__tests__/tester.test.js",
-            "line": 1784,
+            "line": 1843,
             "kind": "deuda",
             "reason": "escritura de PIPELINE_REPO_ROOT fuera del helper"
         },
         {
             "file": "skills-deterministicos/__tests__/tester.test.js",
-            "line": 1785,
+            "line": 1844,
             "kind": "deuda",
             "reason": "escritura de CLAUDE_PROJECT_DIR fuera del helper"
         },
@@ -4563,6 +4719,12 @@
             "line": 22,
             "kind": "deuda",
             "reason": "escritura de PIPELINE_STATE_DIR fuera del helper"
+        },
+        {
+            "file": "test/servicio-github-gate-labels.test.js",
+            "line": 24,
+            "kind": "deuda",
+            "reason": "escritura de PIPELINE_DIR_OVERRIDE fuera del helper"
         },
         {
             "file": "tests/anomaly-detector.test.js",
@@ -4968,13 +5130,13 @@
         },
         {
             "file": "tests/merge-race-precondicion-e2e-6432.test.js",
-            "line": 77,
+            "line": 85,
             "kind": "deuda",
             "reason": "escritura de PIPELINE_REPO_ROOT fuera del helper"
         },
         {
             "file": "tests/merge-race-precondicion-e2e-6432.test.js",
-            "line": 78,
+            "line": 87,
             "kind": "deuda",
             "reason": "escritura de CLAUDE_PROJECT_DIR fuera del helper"
         },
@@ -5165,10 +5327,22 @@
             "reason": "escritura de PIPELINE_STATE_DIR fuera del helper"
         },
         {
+            "file": "tests/servicio-github-bom-poison.test.js",
+            "line": 59,
+            "kind": "deuda",
+            "reason": "escritura de PIPELINE_DIR_OVERRIDE fuera del helper"
+        },
+        {
             "file": "tests/servicio-github-label-guardrail.test.js",
             "line": 46,
             "kind": "deuda",
             "reason": "escritura de PIPELINE_STATE_DIR fuera del helper"
+        },
+        {
+            "file": "tests/servicio-github-label-guardrail.test.js",
+            "line": 50,
+            "kind": "deuda",
+            "reason": "escritura de PIPELINE_DIR_OVERRIDE fuera del helper"
         },
         {
             "file": "tests/validate-agent-models.test.js",

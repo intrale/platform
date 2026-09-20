@@ -32,7 +32,13 @@ try { infraNoise = require('./infra-noise'); } catch { /* fallback legacy */ }
 const MAIN_REPO = 'C:/Workspaces/Intrale/platform';
 const DEFAULT_AGE_THRESHOLD_DAYS = 30;
 const DEFAULT_CAP = 5;
-const AUDIT_FILE = path.join(__dirname, '..', 'audit', 'ghostbusters-worktrees.jsonl');
+// #7112 — el destino se resuelve POR LLAMADA vía `lib/write-target` (SEC-13):
+// ninguna const de módulo captura `__dirname` al `require`. Sin ambiente
+// declarado ni dir de pruebas, `writeDir` avisa por stderr y LANZA (CA-3).
+// Identificadores conservados: cada uso `X` → `X()`.
+function AUDIT_FILE() {
+  return require('./write-target').writePath(process.env, { canal: 'logs', destino: 'audit/ghostbusters-worktrees.jsonl' }, 'audit', 'ghostbusters-worktrees.jsonl');
+}
 
 function normPath(p) {
   return String(p || '').replace(/\\/g, '/').toLowerCase().replace(/\/+$/, '');
@@ -246,7 +252,7 @@ function removeWorktree(wtPath, {
 // RS-4 — Audit log JSONL append-only (patrón lib/handoff.js). Best-effort:
 // nunca rompe la corrida por un fallo de auditoría.
 // -----------------------------------------------------------------------------
-function appendAudit(entry, { auditFile = AUDIT_FILE, fsImpl = fs } = {}) {
+function appendAudit(entry, { auditFile = AUDIT_FILE(), fsImpl = fs } = {}) {
   try {
     fsImpl.mkdirSync(path.dirname(auditFile), { recursive: true });
     fsImpl.appendFileSync(auditFile, JSON.stringify(entry) + '\n', { encoding: 'utf8', flag: 'a' });
@@ -325,7 +331,7 @@ module.exports = {
   DEFAULT_AGE_THRESHOLD_DAYS,
   DEFAULT_CAP,
   NO_CAP,
-  AUDIT_FILE,
+  get AUDIT_FILE() { return AUDIT_FILE(); },
   isForbiddenTarget,
   isWorktreeSafeToDelete,
   checkAbandonment,

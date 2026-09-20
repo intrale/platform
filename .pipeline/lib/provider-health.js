@@ -91,8 +91,8 @@ const REPROBE_AUDIT_SUBDIR = path.join('logs', 'provider-reprobe.jsonl');
 
 function pipelineDir(opts = {}) {
     if (opts.pipelineDir) return opts.pipelineDir;
-    if (process.env.PIPELINE_DIR_OVERRIDE) return process.env.PIPELINE_DIR_OVERRIDE;
-    return path.resolve(__dirname, '..');
+    // #7112 - resolución por llamada vía el envoltorio (SEC-13).
+    return require('./write-target').writeDir(process.env, { canal: 'estado', destino: CACHE_FILE_SUBDIR });
 }
 
 function cacheFile(opts = {}) {

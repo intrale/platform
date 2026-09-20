@@ -33,8 +33,9 @@ const LINE_SEPARATORS = new RegExp('[' + ['\r','\n','\t','\u0085','\u2028','\u20
 
 function resolvePipelineDir(opts) {
     if (opts && opts.pipelineDir) return opts.pipelineDir;
-    // __dirname = .pipeline/lib → padre = .pipeline
-    return path.resolve(__dirname, '..');
+    // #7112 — resolución POR LLAMADA vía el envoltorio (SEC-13): sin ambiente
+    // declarado ni dir de pruebas avisa por stderr y LANZA (CA-3), nunca `__dirname`.
+    return require('./write-target').writeDir(process.env, { canal: 'logs', destino: 'audit/ops-restart.jsonl' });
 }
 
 function auditPath(opts) {

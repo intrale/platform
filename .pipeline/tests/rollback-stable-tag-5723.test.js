@@ -257,7 +257,14 @@ test('readDirtyPipelineCode acota el diff a .pipeline/ y usa el cwd que le pasan
 function installRollbackScript(dir) {
     // #6226 — `lib/dropfile-writer.js` se sumó al mínimo: rollback.js lo usa para
     // encolar su alerta de Telegram con nombre único y escritura `wx`.
-    for (const rel of ['rollback.js', 'pid-discovery.js', 'lib/rollback-guard.js', 'lib/dropfile-writer.js']) {
+    // #7112 — `lib/rollback-guard.js` resuelve `rollback-state.json` vía
+    // `lib/write-target` → `lib/pipeline-env` → `lib/config-resolver` →
+    // `lib/config-schema`: la cadena entera forma parte del mínimo.
+    // #7112 (rebote rev-2) — rollback.js declara ambiente como entrypoint de
+    // emergencia (CA-6) vía `lib/launcher-env` → `lib/build-child-env` → `lib/safe-project-id`.
+    for (const rel of ['rollback.js', 'pid-discovery.js', 'lib/rollback-guard.js', 'lib/dropfile-writer.js',
+        'lib/write-target.js', 'lib/pipeline-env.js', 'lib/config-resolver.js', 'lib/config-schema.js',
+        'lib/launcher-env.js', 'lib/build-child-env.js', 'lib/safe-project-id.js']) {
         const dst = path.join(dir, '.pipeline', rel);
         fs.mkdirSync(path.dirname(dst), { recursive: true });
         fs.copyFileSync(path.join(PIPELINE_DIR, rel), dst);
@@ -265,8 +272,12 @@ function installRollbackScript(dir) {
 }
 
 function runRollbackDryRun(dir, target) {
+    // `config-resolver`/`config-schema` requieren `js-yaml`/`ajv`: el repo temporal
+    // no tiene node_modules, así que se le presta el del repo real vía NODE_PATH.
+    const nodeModules = path.dirname(path.dirname(require.resolve('ajv/package.json')));
     const r = spawnSync(process.execPath, [path.join(dir, '.pipeline', 'rollback.js'), target, '--dry-run'], {
         cwd: dir, encoding: 'utf8', windowsHide: true, timeout: 60000,
+        env: { ...process.env, NODE_PATH: [process.env.NODE_PATH, nodeModules].filter(Boolean).join(path.delimiter) },
     });
     return { status: r.status, out: `${r.stdout || ''}${r.stderr || ''}` };
 }

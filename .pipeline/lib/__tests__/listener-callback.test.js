@@ -21,6 +21,8 @@ const path = require('path');
 // Aislar el estado del listener (history, media) a un dir temporal ANTES de
 // importar el módulo — PIPELINE se resuelve en require-time desde el env.
 process.env.PIPELINE_STATE_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'listener-cb-'));
+// #7112 — el runner deja PIPELINE_DIR_OVERRIDE global (precedencia D-1 sobre PIPELINE_STATE_DIR): se declara el mismo dir.
+process.env.PIPELINE_DIR_OVERRIDE = process.env.PIPELINE_STATE_DIR;
 
 // El módulo NO arranca el polling al importarse (guard `require.main === module`).
 const listener = require('../../listener-telegram');

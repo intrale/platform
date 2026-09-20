@@ -12,6 +12,16 @@ $RepoRoot = 'C:\Workspaces\Intrale\platform'
 $PipelineDir = "$RepoRoot\.pipeline"
 $LogDir = "$PipelineDir\logs"
 $LogFile = "$LogDir\watchdog.log"
+
+# #7112 (CA-6, Enmienda 1 de guru) — El watchdog es uno de los TRES entrypoints
+# humanos/SO de la cadena de declaracion de ambiente (con restart.js y
+# launch.ps1): relanza servicios SIN pasar por restart.js, asi que declara
+# `productivo` el mismo, antes de cualquier Start-Process (los hijos heredan el
+# env de este proceso). Sin esto, con el default invertido, cada servicio
+# relanzado resolveria `pruebas`/dir null, moriria en su primera escritura y
+# entraria en crash-loop cada 2 minutos. Solo si no venia seteada: un pipeline
+# de pruebas (#7111) puede declarar `pruebas` explicito y se respeta.
+if (-not $env:PIPELINE_AMBIENTE) { $env:PIPELINE_AMBIENTE = 'productivo' }
 # #4077 — Heartbeat propio del watchdog. Lo lee el supervisor externo
 # (watchdog-supervisor.ps1) para detectar si el watchdog dejó de correr.
 $HeartbeatFile = "$LogDir\watchdog.heartbeat"

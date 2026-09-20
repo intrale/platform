@@ -837,3 +837,232 @@ test('los cuatro copys de señal existen y no dejan ninguna key sin traducir', (
         assert.ok(copy.pregunta.endsWith('?'));
     }
 });
+
+// =============================================================================
+// #7439 — Aviso honesto cuando la firma del arquitecto NO PUDO COMPROBARSE
+//
+// Hoy `fetchSignoffContext` → `ok:false` (red, 5xx, ENOENT residual) produce el
+// MISMO copy que "no hay firma": el operador recibe "el alcance necesita tu
+// visto bueno" para un issue que ya tenía todas las firmas y no puede
+// distinguir el falso positivo sin abrir `pulpo.log`. El fail-closed NO se
+// relaja (escala igual); lo que cambia es que el aviso dice lo que pasó.
+// =============================================================================
+
+const dc7439 = require('../decision-card');
+
+/** Error técnico REAL del incidente: path interno + token. Nada de esto viaja. */
+const SIGNOFF_NO_VERIFICABLE = Object.freeze({
+    settled: false, verifiable: false,
+    reason: 'firma no verificable: gh falló: spawnSync C:/x/gh ENOENT token=abc',
+    rejected: [],
+});
+const FUGAS = ['ENOENT', 'C:/', 'token', 'spawnSync'];
+
+/** Un body que dispara varias señales a la vez, con marco decisorio. */
+const BODY_4_SENALES = 'Hay que definir entre dos alternativas para el store: '
+    + 'la opción A guarda el estado en disco local del host; '
+    + 'la opción B lo centraliza en un servicio compartido. '
+    + 'Hay que decidir si contratamos un servicio externo de un tercero (SaaS) para esto. '
+    + 'Hay que definir dónde se almacenan las credenciales del pipeline. '
+    + 'La ejecución tiene que poder ser distribuida multi-host en vez de local.';
+
+function sinFugas(texto, rotulo) {
+    for (const f of FUGAS) {
+        assert.ok(!String(texto || '').includes(f), `${rotulo} filtra "${f}": ${texto}`);
+    }
+}
+
+test('#7439 CA-1: con firma NO verificable escala y el copy dice que no pudo comprobarla (sin fugas)', () => {
+    const v = design.detectDesignDecision({
+        issue: 7113, title: 'Store del estado', body: BODY_CON_SENAL, signoff: SIGNOFF_NO_VERIFICABLE,
+    });
+    assert.equal(v.escalate, true, 'RS-3.2: el fail-closed no se relaja');
+    assert.equal(v.reason, design.buildOperatorReasonUnverifiable(7113, v.signals));
+    assert.equal(v.question, design.buildOperatorQuestionUnverifiable(7113));
+    assert.match(v.reason, /no pude comprobar si el arquitecto ya la firmó \(falló la consulta a GitHub, no falta la firma\)/);
+    assert.match(v.question, /^No pude comprobar si el arquitecto ya firmó #7113: falló la consulta a GitHub, no falta la firma\./);
+    assert.ok(v.question.endsWith('?'));
+    assert.ok(v.question.length <= design.MAX_PREGUNTA_OPERADOR, `pregunta de ${v.question.length} chars`);
+    for (const campo of ['reason', 'question', 'recommendation', 'fragment', 'note']) {
+        sinFugas(v[campo], `final.${campo}`);
+    }
+});
+
+test('#7439 CA-1 bis: la pregunta "no verificable" entra en el tope con issues de 1 a 7 dígitos', () => {
+    for (const issue of [1, 12, 123, 1234, 12345, 123456, 1234567]) {
+        const q = design.buildOperatorQuestionUnverifiable(issue);
+        assert.ok(q.length <= design.MAX_PREGUNTA_OPERADOR, `#${issue}: ${q.length} chars`);
+        assert.ok(q.endsWith('?'));
+        assert.ok(q.includes(`#${issue}`));
+    }
+});
+
+test('#7439 RS-3.1: los helpers "no verificable" son templates FIJOS — reciben sólo issue/keys, nunca signoff ni ctx', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'design-decision-detect.js'), 'utf8');
+    assert.match(src, /function buildOperatorReasonUnverifiable\(issue, keys\)/);
+    assert.match(src, /function buildOperatorQuestionUnverifiable\(issue\)/);
+    // Cuerpo de los dos helpers (sin los JSDoc): no interpolan nada que no sea
+    // `issue` o la lista de señales.
+    const ini = src.indexOf('function buildOperatorReasonUnverifiable');
+    const fin = src.indexOf('/**', src.indexOf('function buildOperatorQuestionUnverifiable'));
+    const cuerpo = src.slice(ini, fin > 0 ? fin : undefined)
+        .replace(/\/\*[\s\S]*?\*\//g, '')
+        .replace(/^\s*\/\/.*$/gm, '');
+    assert.ok(!/signoff|ctx\b|\.error|\.reason/.test(cuerpo), 'ningún acceso a signoff/ctx/error/reason en los templates');
+    // Y el mismo string sale igual sin importar qué "reason" traiga el signoff.
+    const a = design.detectDesignDecision({ issue: 7113, body: BODY_CON_SENAL, signoff: SIGNOFF_NO_VERIFICABLE });
+    const b = design.detectDesignDecision({ issue: 7113, body: BODY_CON_SENAL, signoff: { ...SIGNOFF_NO_VERIFICABLE, reason: 'otra cosa completamente distinta' } });
+    assert.equal(a.reason, b.reason);
+    assert.equal(a.question, b.question);
+});
+
+/**
+ * CA-2 — snapshot LITERAL del copy histórico por señal. Si alguien lo cambia
+ * a propósito, tiene que cambiar este test a propósito (UX-3 medido).
+ */
+const SNAPSHOT_HISTORICO = Object.freeze({
+    'alternativas-enumeradas': {
+        reason: 'Freno #7113 antes de definirlo. Si ya está decidido, dejalo escrito en el issue y sigo solo. Lo que vi: el issue plantea opciones excluyentes y no elige una.',
+        question: 'Antes de que el pipeline elija por su cuenta: ¿cuál de las opciones tomamos?',
+    },
+    'servicio-externo': {
+        reason: 'Freno #7113 antes de definirlo. Si ya está decidido, dejalo escrito en el issue y sigo solo. Lo que vi: el issue propone sumar un servicio de un tercero.',
+        question: 'Antes de que el pipeline elija por su cuenta: ¿sumamos ese servicio de tercero, con el costo y la dependencia que trae?',
+    },
+    'dato-critico': {
+        reason: 'Freno #7113 antes de definirlo. Si ya está decidido, dejalo escrito en el issue y sigo solo. Lo que vi: el issue define dónde va a vivir un dato crítico.',
+        question: 'Antes de que el pipeline elija por su cuenta: ¿dónde vive ese dato?',
+    },
+    'local-vs-distribuido': {
+        reason: 'Freno #7113 antes de definirlo. Si ya está decidido, dejalo escrito en el issue y sigo solo. Lo que vi: el issue define si esto corre en una sola máquina o en varias.',
+        question: 'Antes de que el pipeline elija por su cuenta: ¿una sola máquina o varias?',
+    },
+});
+
+test('#7439 CA-2: con `verifiable` ausente o true el copy histórico es BYTE A BYTE el de siempre (4 señales)', () => {
+    assert.deepEqual(Object.keys(SNAPSHOT_HISTORICO).sort(), Object.keys(design.SIGNAL_COPY).sort(),
+        'el snapshot cubre exactamente las señales del detector');
+    for (const [key, esperado] of Object.entries(SNAPSHOT_HISTORICO)) {
+        assert.equal(design.buildOperatorReason(7113, [key]), esperado.reason, `reason ${key}`);
+        assert.equal(design.buildOperatorQuestion([key]), esperado.question, `question ${key}`);
+    }
+    // De punta a punta: sin signoff, con signoff sin `verifiable`, con `verifiable:true`.
+    const variantes = [
+        undefined,
+        { settled: false, reason: 'no hay firma', rejected: [] },
+        { settled: false, verifiable: true, reason: 'no hay firma', rejected: [] },
+    ];
+    const ref = design.detectDesignDecision({ issue: 7113, body: BODY_CON_SENAL });
+    assert.equal(ref.escalate, true);
+    for (const signoff of variantes) {
+        const v = design.detectDesignDecision({ issue: 7113, body: BODY_CON_SENAL, signoff });
+        assert.equal(v.reason, SNAPSHOT_HISTORICO['alternativas-enumeradas'].reason);
+        assert.equal(v.question, SNAPSHOT_HISTORICO['alternativas-enumeradas'].question);
+        assert.deepEqual(v, ref, 'salida idéntica a la invocación sin signoff');
+    }
+    // La enumeración con más de MAX_SENALES_EN_COPY sigue resumiendo igual.
+    const cuatro = design.buildOperatorReason(7113, Object.keys(SNAPSHOT_HISTORICO));
+    assert.match(cuatro, /; y 1 cosa más\.$/);
+});
+
+test('#7439 CA-3 / RS-3.3: `{ settled:true, verifiable:false }` malformado ESCALA y no interpola signoff.reason', () => {
+    const malformado = { settled: true, verifiable: false, reason: 'firma no verificable: ENOENT C:/x token=abc', rejected: [] };
+    assert.equal(design.isDecisionSettled({ body: 'nada', labels: [], signoff: malformado }), false);
+    assert.equal(design.isDecisionSettled({ body: 'nada', labels: [], signoff: { settled: true, verifiable: true } }), true);
+    assert.equal(design.isDecisionSettled({ body: 'nada', labels: [], signoff: { settled: true } }), true, 'CA-15: sin `verifiable` nada cambia');
+
+    const v = design.detectDesignDecision({ issue: 7113, body: BODY_CON_SENAL, signoff: malformado });
+    assert.equal(v.escalate, true, 'fail-closed por construcción');
+    for (const campo of ['reason', 'question', 'recommendation', 'fragment', 'note']) sinFugas(v[campo], `final.${campo}`);
+    assert.equal(v.note, '', 'nunca entra a la rama que interpola signoff.reason');
+});
+
+test('#7439 CA-4 / RS-3.4: ni el copy histórico ni el "no verificable" caen en otra ficha (regex IMPORTADOS de decision-card)', () => {
+    assert.ok(dc7439.RE_FIRMA instanceof RegExp && dc7439.RE_INFRA instanceof RegExp && dc7439.RE_DEP instanceof RegExp,
+        'decision-card exporta los clasificadores como dato');
+    const keys = Object.keys(design.SIGNAL_COPY);
+    // Todas las combinaciones no vacías de las 4 señales (15) × issues de 1 a 6 dígitos.
+    const combos = [];
+    for (let m = 1; m < (1 << keys.length); m++) combos.push(keys.filter((_, i) => m & (1 << i)));
+    assert.equal(combos.length, 15);
+    let casos = 0;
+    for (const issue of [1, 12, 123, 1234, 12345, 123456]) {
+        for (const ks of combos) {
+            const noVer = `${design.buildOperatorReasonUnverifiable(issue, ks)} ${design.buildOperatorQuestionUnverifiable(issue)}`;
+            const hist = `${design.buildOperatorReason(issue, ks)} ${design.buildOperatorQuestion(ks)}`;
+            assert.equal(dc7439.RE_FIRMA.test(noVer), false, `RE_FIRMA (no verificable) #${issue} ${ks}`);
+            assert.equal(dc7439.RE_INFRA.test(noVer), false, `RE_INFRA (no verificable) #${issue} ${ks}`);
+            assert.equal(dc7439.RE_DEP.test(noVer), false, `RE_DEP (no verificable) #${issue} ${ks}`);
+            assert.equal(dc7439.RE_FIRMA.test(hist), false, `RE_FIRMA (histórico) #${issue} ${ks}`);
+            assert.equal(dc7439.RE_INFRA.test(hist), false, `RE_INFRA (histórico) #${issue} ${ks}`);
+            casos++;
+        }
+    }
+    assert.equal(casos, 90);
+});
+
+test('#7439 CA-1 ter: con varias señales a la vez el copy "no verificable" enumera y no filtra nada', () => {
+    const v = design.detectDesignDecision({ issue: 7113, body: BODY_4_SENALES, signoff: SIGNOFF_NO_VERIFICABLE });
+    assert.equal(v.escalate, true);
+    assert.ok(v.signals.length >= 2, `precondición: varias señales (${v.signals})`);
+    assert.match(v.reason, /^Freno #7113: plantea una decisión de arquitectura/);
+    assert.match(v.reason, /Lo que vi: el issue .+;/);
+    for (const campo of ['reason', 'question', 'recommendation', 'fragment']) sinFugas(v[campo], campo);
+});
+
+test('#7439 CA-6 / RS-C.2: `cause` la produce SÓLO el gate de decisión de arquitectura en pulpo.js', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', '..', 'pulpo.js'), 'utf8');
+    // El literal aparece UNA sola vez en todo el archivo…
+    const literales = src.split("'design-decision'").length - 1;
+    assert.equal(literales, 1, `el literal 'design-decision' aparece ${literales} veces en pulpo.js`);
+    // …y dentro del bloque "FRENA en definición — decisión de arquitectura".
+    const ini = src.indexOf('FRENA en definición — decisión de arquitectura');
+    assert.ok(ini > 0, 'precondición: el bloque del gate existe');
+    const fin = src.indexOf('continue; // NO entra a definición hasta que el operador decida.', ini);
+    assert.ok(fin > ini, 'precondición: fin del bloque');
+    const bloque = src.slice(ini, fin);
+    assert.ok(bloque.includes("'design-decision'"), 'el literal vive dentro del bloque del gate');
+    assert.match(bloque, /reportHumanBlock\(\{[\s\S]*?cause: causaDD,[\s\S]*?signoff_verifiable: firmaVerificableDD,/, 'el marker lleva cause + signoff_verifiable');
+    assert.match(bloque, /highlight: \{[\s\S]*?cause: causaDD,[\s\S]*?signoff_verifiable: firmaVerificableDD,/, 'el highlight del aviso inicial lleva los mismos dos campos');
+    // `signoff_verifiable` sólo viaja con el `false` explícito, y se calcula
+    // DENTRO del `else` donde vive `const firma` (región del gate completa).
+    const gateIni = src.indexOf('const veredicto = designDecision.detectDesignDecision(');
+    const gate = src.slice(gateIni, fin);
+    assert.match(gate, /firmaVerificableDD = firma\.verifiable === false \? false : undefined/);
+    // SCOPE (bug atrapado en dev): `firma` es `const` del `else`; el bloque
+    // que escala está FUERA de ese `else`. Referenciar `firma` ahí es un
+    // ReferenceError que el `try/catch` externo se traga y el gate deja pasar
+    // el issue en silencio. La variable se declara ANTES del `if (yaBloqueadoDD)`
+    // y el bloque de escalado no toca `firma.` directamente.
+    const declaracion = gate.indexOf('let firmaVerificableDD;');
+    const ramaYaBloqueado = gate.indexOf('if (yaBloqueadoDD) {');
+    assert.ok(declaracion > 0 && declaracion < ramaYaBloqueado,
+        '`firmaVerificableDD` se declara antes de la bifurcación, en el scope que alcanza al bloque de escalado');
+    assert.ok(!/\bfirma\./.test(bloque), 'el bloque que escala no referencia `firma.` (fuera de su scope)');
+    // Ningún OTRO call-site de reportHumanBlock pone `cause` ni `signoff_verifiable`.
+    const llamadas = [...src.matchAll(/reportHumanBlock\(\{/g)].map((m) => m.index);
+    assert.ok(llamadas.length >= 3, `precondición: hay varios call-sites (${llamadas.length})`);
+    for (const at of llamadas) {
+        if (at > ini && at < fin) continue;
+        const cierre = src.indexOf('});', at);
+        const args = src.slice(at, cierre);
+        assert.ok(!/\bcause:/.test(args), `call-site en offset ${at} pone cause`);
+        assert.ok(!/signoff_verifiable/.test(args), `call-site en offset ${at} pone signoff_verifiable`);
+    }
+    // El objeto `firma` no verificable lleva `verifiable:false` y el error crudo queda en `reason` (log/traza).
+    assert.match(src, /\{ settled: false, verifiable: false, reason: `firma no verificable: \$\{ctx\.error\}`, rejected: \[\] \}/);
+});
+
+test('#7439 RS-C.3: `cause` nunca se infiere del body, labels ni comentarios de GitHub', () => {
+    for (const f of ['../../pulpo.js', '../human-block.js', '../decision-card.js']) {
+        const src = fs.readFileSync(path.join(__dirname, f), 'utf8')
+            .replace(/\/\*[\s\S]*?\*\//g, '')
+            .replace(/^\s*\/\/.*$/gm, '');
+        // Toda asignación de `cause` en estos tres archivos sale de un literal
+        // del enum, de un `meta`/`d`/`opts` estructurado o de `normalizeBlockCause`.
+        for (const m of src.matchAll(/\bcause\s*[:=]\s*([^,\n]+)/g)) {
+            const rhs = m[1].trim();
+            assert.ok(!/body|labels|comments|title/i.test(rhs), `${f}: cause derivado de GitHub: ${rhs}`);
+        }
+    }
+});

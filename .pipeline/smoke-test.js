@@ -47,8 +47,17 @@ const { redactSecretValue } = require('./lib/redact');
 let _redactReadOutput = null;
 try { _redactReadOutput = require('./lib/commander/redact-read').redactReadOutput; } catch { /* opcional */ }
 
+// El directorio de CÓDIGO (self-checks, scripts) es `__dirname`. El destino de
+// ESCRITURA (logs/smoke-test.log) NO: se resuelve por llamada vía
+// lib/write-target (#7112, rebote rev-2 — antes `const X = __dirname` era un
+// alias crudo, inmune a todo override e invisible para el inventario, y la
+// suite escribía smoke-test.log en el .pipeline de las libs). Variante
+// `safe`: el smoke es el camino de emergencia y su diagnóstico sigue saliendo
+// por consola aunque el archivo esté bloqueado (aviso único por stderr).
 const PIPELINE_DIR = __dirname;
-const LOG_FILE = path.join(PIPELINE_DIR, 'logs', 'smoke-test.log');
+function smokeLogFile() {
+  return require('./lib/write-target').safeWritePath(process.env, { canal: 'logs', destino: 'logs/smoke-test.log' }, 'logs', 'smoke-test.log');
+}
 
 // --- Resolución del directorio de RUNTIME del pipeline (#4686) ---
 // El estado vivo del pipeline (last-restart.json, ready markers, colas) vive en
@@ -158,8 +167,11 @@ function runSelfChecks() {
 function log(msg) {
   const ts = new Date().toISOString().replace('T', ' ').slice(0, 19);
   const line = `[${ts}] ${msg}`;
-  try { fs.mkdirSync(path.dirname(LOG_FILE), { recursive: true }); } catch {}
-  try { fs.appendFileSync(LOG_FILE, line + '\n'); } catch {}
+  const file = smokeLogFile();
+  if (file) {
+    try { fs.mkdirSync(path.dirname(file), { recursive: true }); } catch {}
+    try { fs.appendFileSync(file, line + '\n'); } catch {}
+  }
   console.log(line);
 }
 
@@ -651,4 +663,8 @@ module.exports = {
   // Lista real de self-checks: la expone para que smoke-budget.test.js pueda
   // assertear SELF_CHECK_SKILLS.length === budget.SELF_CHECK_COUNT (#5725).
   SELF_CHECK_SKILLS,
+  // #7112 — el log resuelve su destino por llamada (write-target, safe); expuesto
+  // para que el test del rebote rev-2 verifique que no escribe fuera del dir de pruebas.
+  log,
+  smokeLogFile,
 };
