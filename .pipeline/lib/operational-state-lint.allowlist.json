@@ -18,6 +18,18 @@
       "anchor": "const sandboxHaltMarker = (sandboxDir) => path.join(sandboxDir, '.paused');",
       "line": 854,
       "reason": "#7189 CA-6: marker de halt del --abort-drill, escrito por el halt INYECTADO al sink real dentro de un directorio temporal (mkdtemp) — nunca en el .pipeline/ real. No es un acceso al estado del pipeline (ese va por readFullPauseOrigin() en --export-to-fs): es el artefacto que el aborto bajo prueba tiene que dejar en disco, con el mismo shape que haltCutoverDegraded de pulpo.js. Único literal .paused del archivo; helper único para escritura y verificación. Version estructural: exponer un halt inyectable con destino parametrizable desde operational-state-backend (#7194 H0 puede pedirlo si el drill se repite en ventana real)."
+    },
+    {
+      "file": "lib/provision-test-env.js",
+      "anchor": "const wavesAbs = path.join(candidato, 'waves.json');",
+      "line": 545,
+      "reason": "#7111 D3/D4 (provisionador del ambiente de pruebas, fs puro): waves.json (desde waves.json.template) se SIEMBRA en <root>/.pipeline de pruebas (candidato validado por pipelineEnv.resolve como modo=pruebas && dir!==null, nunca el .pipeline real) copiando el template/valor por defecto solo si falta. No es un acceso al estado operativo del pipeline: es la creacion del archivo vacio/inicial del ambiente desechable. El envoltorio (lib/waves.js, lib/partial-pause.js, lib/operational-state.js) se descarto a proposito porque lee process.env (D3: el provisionador recibe env por parametro y no puede depender de la global). Version estructural: que operational-state exponga un seed(dir) parametrizable (pendiente, sin issue); hasta entonces la excepcion queda anclada a esta unica linea. Preexistente en main desde #7430; la entry se agrega en el rebote 10/n de #7112 porque el hook bloquea cualquier commit que toque el archivo."
+    },
+    {
+      "file": "lib/provision-test-env.js",
+      "anchor": "const partialAbs = path.join(candidato, '.partial-pause.json');",
+      "line": 549,
+      "reason": "#7111 D3/D4 (provisionador del ambiente de pruebas, fs puro): .partial-pause.json (allowlist vacia == running) se SIEMBRA en <root>/.pipeline de pruebas (candidato validado por pipelineEnv.resolve como modo=pruebas && dir!==null, nunca el .pipeline real) copiando el template/valor por defecto solo si falta. No es un acceso al estado operativo del pipeline: es la creacion del archivo vacio/inicial del ambiente desechable. El envoltorio (lib/waves.js, lib/partial-pause.js, lib/operational-state.js) se descarto a proposito porque lee process.env (D3: el provisionador recibe env por parametro y no puede depender de la global). Version estructural: que operational-state exponga un seed(dir) parametrizable (pendiente, sin issue); hasta entonces la excepcion queda anclada a esta unica linea. Preexistente en main desde #7430; la entry se agrega en el rebote 10/n de #7112 porque el hook bloquea cualquier commit que toque el archivo."
     }
   ]
 }
