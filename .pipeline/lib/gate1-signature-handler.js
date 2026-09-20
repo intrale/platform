@@ -50,8 +50,10 @@
 // `null` en todos los barridos con la suite en verde.
 // =============================================================================
 
-const { execSync } = require('child_process');
+const { execFileSync } = require('child_process');
 const path = require('path');
+
+const { resolveGhBin } = require('./gh-bin');   // #7438
 
 const trace = require('./traceability');
 
@@ -105,20 +107,35 @@ function comentarioDeVeredicto(verdict) {
  * Síncrono y acotado (`timeout` + `windowsHide`, mismo criterio que
  * `pulpo.js`). Corre SÓLO en el click humano, nunca en el poll. Devuelve `null`
  * ante cualquier fallo — el handler lo trata como `unavailable` (fail-closed).
+ *
+ * #7438: el binario se resuelve con `resolveGhBin()` (el Pulpo bajo
+ * `watchdog.ps1` no tiene `gh` en el PATH) y se invoca por argv, nunca por
+ * shell (RS-1.2). `--repo intrale/platform` fija la lectura al repo canónico
+ * sin depender del remote del `cwd` (RS-1.5). El issue se valida como entero
+ * positivo ANTES de armar el comando: si falla, `exec` no se invoca (RS-1.3).
+ *
+ * `exec`/`ghBin` son inyectables SÓLO para tests; el handler lo consume vía
+ * `deps.readIssueBody` como siempre.
  */
-function defaultReadIssueBody(issue) {
+function defaultReadIssueBody(issue, { exec = execFileSync, ghBin } = {}) {
+    const n = Number(issue);
+    // RS-1.3 — entero positivo ANTES de armar args; nunca se invoca `exec` si falla.
+    if (!Number.isInteger(n) || n <= 0) return null;
     try {
-        const ghBin = process.env.GH_BIN || 'gh';
-        const raw = execSync(`${ghBin} issue view ${Number(issue)} --json body`, {
-            cwd: trace.REPO_ROOT,
-            encoding: 'utf8',
-            timeout: READ_ISSUE_TIMEOUT_MS,
-            windowsHide: true,
-        });
+        const raw = exec(
+            resolveGhBin({ ghBin }),
+            ['issue', 'view', String(n), '--repo', 'intrale/platform', '--json', 'body'],
+            {
+                cwd: trace.REPO_ROOT,
+                encoding: 'utf8',
+                timeout: READ_ISSUE_TIMEOUT_MS,
+                windowsHide: true,
+            },
+        );
         const parsed = JSON.parse(raw);
         return typeof parsed.body === 'string' ? parsed.body : null;
     } catch (_) {
-        return null;
+        return null;   // contrato null → unavailable (fail-closed) intacto
     }
 }
 
@@ -330,4 +347,6 @@ module.exports = {
     getDefault,
     VERDICT_POR_ACCION,
     READ_ISSUE_TIMEOUT_MS,
+    // #7438: exportada SÓLO para tests (CA-3: `exec` inyectable, "sin invocar").
+    defaultReadIssueBody,
 };

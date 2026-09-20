@@ -640,3 +640,74 @@ test('CA-B3 / anti-TOCTOU: si editan el body DESPUÉS de firmar, el gate vuelve 
         assert.equal(ev.decision, 'block', 'una firma vieja no vale para criterios nuevos');
     } finally { env.cleanup(); }
 });
+
+// -----------------------------------------------------------------------------
+// #7438 · CA-3 — `defaultReadIssueBody` resuelve el binario con lib/gh-bin.js,
+// invoca por argv (nunca por shell) y valida el issue ANTES de invocar `exec`.
+// Causa raíz de #7113: el Pulpo bajo `watchdog.ps1` no tiene `gh` en el PATH.
+// -----------------------------------------------------------------------------
+
+const { resolveGhBin } = require('../gh-bin');
+
+test('#7438 / CA-3: el source del handler no tiene execSync, ni ${ghBin}, ni el literal gh pelado', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'gate1-signature-handler.js'), 'utf8');
+    assert.doesNotMatch(src, /\bexecSync\b/, 'sólo execFileSync, por argv');
+    assert.doesNotMatch(src, /\$\{ghBin\}/, 'el binario nunca se interpola en un string de shell');
+    assert.doesNotMatch(src, /'gh'/, 'el binario lo resuelve lib/gh-bin.js');
+    assert.match(src, /require\(\s*['"]\.\/gh-bin['"]\s*\)/, 'consume el helper único');
+    assert.equal(typeof handlerMod.defaultReadIssueBody, 'function', 'exportada para que CA-3 sea verificable');
+});
+
+test('#7438 / RS-1.3: un issue que no es entero positivo devuelve null SIN invocar exec', () => {
+    for (const malo of ['abc', 0, -3, 1.5, '7113; rm -rf /', '', null, undefined, NaN, '00042abc', '../../etc']) {
+        let invocado = 0;
+        const r = handlerMod.defaultReadIssueBody(malo, { exec: () => { invocado++; return '{"body":"X"}'; } });
+        assert.equal(r, null, `issue ${JSON.stringify(malo)} ⇒ null`);
+        assert.equal(invocado, 0, `issue ${JSON.stringify(malo)} no puede llegar a exec`);
+    }
+});
+
+test('#7438 / CA-3: lee el body por argv contra el repo fijo con el binario resuelto', () => {
+    let argv = null;
+    const r = handlerMod.defaultReadIssueBody(7113, {
+        exec: (file, args, options) => { argv = { file, args, options }; return '{"body":"X"}'; },
+    });
+    assert.equal(r, 'X');
+    assert.equal(argv.file, resolveGhBin(), 'el binario es el resuelto por lib/gh-bin.js');
+    if (process.platform === 'win32') assert.notEqual(argv.file, 'gh', 'en win32 nunca el literal pelado');
+    assert.deepEqual(argv.args, ['issue', 'view', '7113', '--repo', 'intrale/platform', '--json', 'body'], 'RS-1.5: repo fijo');
+    assert.equal(argv.options.windowsHide, true);
+    assert.equal(argv.options.encoding, 'utf8');
+    assert.equal(argv.options.timeout, handlerMod.READ_ISSUE_TIMEOUT_MS);
+    assert.equal(typeof argv.options.cwd, 'string');
+    assert.ok(!('shell' in argv.options), 'RS-1.2: nunca por shell');
+});
+
+test('#7438 / CA-3: el issue entra como string numérico también, y ghBin inyectado tiene precedencia', () => {
+    let argv = null;
+    const r = handlerMod.defaultReadIssueBody('6207', {
+        ghBin: '/x/gh',
+        exec: (file, args) => { argv = { file, args }; return JSON.stringify({ body: BODY_A }); },
+    });
+    assert.equal(r, BODY_A);
+    assert.equal(argv.file, '/x/gh');
+    assert.equal(argv.args[2], '6207');
+});
+
+test('#7438 / CA-3: exec que LANZA (ENOENT, timeout) o JSON sin body ⇒ null (contrato unavailable intacto)', () => {
+    const enoent = () => { throw Object.assign(new Error('spawnSync gh ENOENT'), { code: 'ENOENT' }); };
+    assert.equal(handlerMod.defaultReadIssueBody(7113, { exec: enoent }), null);
+    assert.equal(handlerMod.defaultReadIssueBody(7113, { exec: () => { throw new Error('ETIMEDOUT'); } }), null);
+    assert.equal(handlerMod.defaultReadIssueBody(7113, { exec: () => 'no-soy-json' }), null);
+    assert.equal(handlerMod.defaultReadIssueBody(7113, { exec: () => '{"body":42}' }), null);
+    assert.equal(handlerMod.defaultReadIssueBody(7113, { exec: () => '{}' }), null);
+});
+
+test('#7438: el wiring deps.readIssueBody no cambia — un lector inyectado sigue mandando sobre el default', () => {
+    const env = mkEnv({ readIssueBody: () => BODY_A });
+    try {
+        const ids = env.armarEpisodio();
+        const res = env.handler.handleGate1Signature({ operatorId: OPERATOR, callbackData: ids.approve });
+        assert.equal(res.ok, true, 'con el lector inyectado el camino feliz no toca gh');
+    } finally { env.cleanup(); }
+});
