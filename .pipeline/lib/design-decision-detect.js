@@ -282,7 +282,11 @@ function isDecisionSettled({ body = '', labels = [], signoff = null } = {}) {
     // #6448 — la firma del arquitecto también cierra la decisión. Va AL FINAL
     // para que la invocación histórica de dos campos siga dando exactamente el
     // mismo resultado que antes (CA-15).
-    if (signoff && signoff.settled === true) return true;
+    //
+    // #7439 RS-3.3 — una firma NO VERIFICABLE nunca cierra la decisión, aunque
+    // el objeto venga malformado con `settled:true` (bug futuro del caller):
+    // fail-closed por construcción.
+    if (signoff && signoff.settled === true && signoff.verifiable !== false) return true;
     return false;
 }
 
@@ -607,15 +611,57 @@ function evaluateArchitectSignoff({ issue, comments, lastEditedAt, audit = null 
  */
 function buildOperatorReason(issue, keys) {
     const ref = issue ? ` #${issue}` : '';
-    const frases = keys
+    const lista = listaSenales(keys);
+    const cabeza = `Freno${ref} antes de definirlo. Si ya está decidido, dejalo escrito en el issue y sigo solo.`;
+    return lista ? `${cabeza} Lo que vi: el issue ${lista}.` : cabeza;
+}
+
+/**
+ * Enumeración de señales del motivo (UX-3). Compartida por el copy histórico y
+ * por el "no verificable" (#7439) para que un retoque futuro no los haga
+ * divergir. Máximo `MAX_SENALES_EN_COPY` enumeradas; el resto se resume.
+ * @param {string[]} keys
+ * @returns {string} `''` si no hay ninguna frase.
+ */
+function listaSenales(keys) {
+    const frases = (Array.isArray(keys) ? keys : [])
         .map((k) => (SIGNAL_COPY[k] || {}).frase)
         .filter(Boolean);
     const visibles = frases.slice(0, MAX_SENALES_EN_COPY);
     const sobran = frases.length - visibles.length;
     let lista = visibles.join('; ');
     if (sobran > 0) lista += `; y ${sobran} cosa${sobran === 1 ? '' : 's'} más`;
-    const cabeza = `Freno${ref} antes de definirlo. Si ya está decidido, dejalo escrito en el issue y sigo solo.`;
+    return lista;
+}
+
+/**
+ * #7439 UX-B / RS-3.1 — motivo que lee el operador cuando la firma del
+ * arquitecto NO PUDO COMPROBARSE (`fetchSignoffContext` → `ok:false`).
+ *
+ * Dice qué no pude hacer Y qué no significa en la misma frase ("falló la
+ * consulta a GitHub, no falta la firma"): es lo único que le permite al
+ * operador distinguir un falso positivo de un bloqueo genuino sin abrir el log.
+ *
+ * FIRMA RESTRINGIDA A PROPÓSITO: recibe sólo `issue` y `keys`. Nunca `signoff`
+ * ni `ctx`: el error técnico (stderr de `gh`, paths, tokens) va al log y a la
+ * traza redactada, jamás a Telegram. Template fijo, sin interpolar nada externo.
+ */
+function buildOperatorReasonUnverifiable(issue, keys) {
+    const ref = issue ? ` #${issue}` : '';
+    const lista = listaSenales(keys);
+    const cabeza = `Freno${ref}: plantea una decisión de arquitectura y no pude comprobar si el arquitecto ya la firmó (falló la consulta a GitHub, no falta la firma). Si ya está decidido, dejalo escrito en el issue y sigo solo.`;
     return lista ? `${cabeza} Lo que vi: el issue ${lista}.` : cabeza;
+}
+
+/**
+ * #7439 UX-B / RS-3.1 — pregunta que lee el operador cuando la firma no pudo
+ * comprobarse. Fija (≤ `MAX_PREGUNTA_OPERADOR`, termina en `?`); a diferencia
+ * de `buildOperatorQuestion` necesita el `issue` para el `#N`. No recibe
+ * `signoff` ni `ctx` (RS-3.1).
+ */
+function buildOperatorQuestionUnverifiable(issue) {
+    const ref = issue ? ` #${issue}` : '';
+    return `No pude comprobar si el arquitecto ya firmó${ref}: falló la consulta a GitHub, no falta la firma. ¿Lo dejo pasar o esperás a que lo revise?`;
 }
 
 /**
@@ -718,7 +764,11 @@ function detectDesignDecision({ issue, title = '', body = '', labels = [], signo
     // #6448 A-3 — la firma se evalúa ACÁ, después de `matched` y antes de armar
     // el escalado. Ponerla arriba obligaría al caller a consultar la red en el
     // camino feliz, que es exactamente lo que CA-12 prohíbe.
-    if (signoff && signoff.settled === true) {
+    //
+    // #7439 RS-3.3 — `verifiable:false` nunca entra acá, ni con `settled:true`
+    // malformado: esta es la ÚNICA rama que interpola `signoff.reason`, y con
+    // una firma no verificable ese texto trae el error crudo de `gh`.
+    if (signoff && signoff.settled === true && signoff.verifiable !== false) {
         return {
             ...base,
             signals: keys,
@@ -727,13 +777,17 @@ function detectDesignDecision({ issue, title = '', body = '', labels = [], signo
         };
     }
 
+    // #7439 CA-1/CA-2 — sólo el `false` EXPLÍCITO elige el copy "no pude
+    // comprobar"; ausente o `true` ⇒ copy histórico byte a byte.
+    const noVerificable = !!signoff && signoff.verifiable === false;
+
     return {
         escalate: true,
         signals: keys,
         // UX-2/UX-3 — copy del operador: acción primero, frases en castellano,
         // sin keys internas (esas van al log y a la traza, CA-20/CA-27).
-        reason: buildOperatorReason(issue, keys),
-        question: buildOperatorQuestion(keys),
+        reason: noVerificable ? buildOperatorReasonUnverifiable(issue, keys) : buildOperatorReason(issue, keys),
+        question: noVerificable ? buildOperatorQuestionUnverifiable(issue) : buildOperatorQuestion(keys),
         recommendation: 'Dejá la decisión escrita en el issue, con las opciones y la elegida. Si queda implícita, el paso siguiente la vuelve a asumir sin avisarte.',
         fragment: fragmento,
         note: '',
@@ -765,4 +819,7 @@ module.exports = {
     evaluateArchitectSignoff,
     buildOperatorReason,
     buildOperatorQuestion,
+    // #7439 — copy fijo cuando la firma no pudo comprobarse (RS-3.1).
+    buildOperatorReasonUnverifiable,
+    buildOperatorQuestionUnverifiable,
 };

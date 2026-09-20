@@ -117,6 +117,11 @@ const { redactAll } = require('./sherlock-audit-jsonl');
 // NUNCA al reves: el resolver es puro y no puede arrastrarse la superficie de
 // Telegram (saneo, presupuesto de caracteres), y al reves seria un ciclo.
 const { SELLO_COPY } = require('./sello-evidencia-state');
+// #7439 — causa estructurada del bloqueo. MISMA REGLA: `block-cause.js` es
+// hoja. NUNCA importar esto desde `human-block.js` (que requiere este módulo
+// en top-level): el ciclo entregaría `{}` y toda `cause` colapsaría a `null`
+// sin ningún error visible.
+const { normalizeBlockCause } = require('./block-cause');
 
 // -----------------------------------------------------------------------------
 // Caps de longitud (CA-A2 / UX §1.6).
@@ -188,6 +193,9 @@ const MAX_RETROCESO_CORTE = 256;
 
 const TIPOS = Object.freeze([
     'dependencia', 'circuit', 'firma', 'infra', 'rebote', 'pregunta', 'indeterminado',
+    // #7439 — decisión de arquitectura frenada por el gate (enrutada por
+    // `cause`, nunca por texto). Sin botones de GATE 1.
+    'decision',
 ]);
 
 /**
@@ -856,6 +864,15 @@ function normalizar(raw, nowMs) {
         // hay token que emitir). `null` = no se preguntó (call-sites que no
         // participan del gate); sólo el `false` EXPLÍCITO reclasifica.
         capacidadFirma: booleano(d.capacidad_firma_disponible),
+        // #7439 RS-D.1 — causa ESTRUCTURADA del bloqueo, validada contra el
+        // enum cerrado; fuera del enum ⇒ `null` ⇒ clasificación histórica.
+        // Viene del `.reason.json` (recordatorio) o del `highlight` del mismo
+        // gate (aviso inicial). Jamás se infiere del texto (RS-C.3).
+        cause: normalizeBlockCause(d.cause),
+        // #7439 UX-F — ¿la firma del arquitecto NO pudo comprobarse? Sólo el
+        // `false` EXPLÍCITO elige el "Por qué" de "no pude comprobar"; ausente
+        // o cualquier otra cosa ⇒ "no encontré la firma" (como `capacidadFirma`).
+        firmaVerificable: booleano(d.signoff_verifiable),
         autores: (Array.isArray(d.autores) ? d.autores : []).map((x) => rolLegible(x)).filter(Boolean),
         fechaCorta: sec(d.fecha_corta, 40),
         reasonCategory: String(d.reason_category || '').trim().toLowerCase(),
@@ -913,6 +930,14 @@ function clasificar(n) {
     // CA-A5 — "el motivo llegó vacío" es el caso MÁS FRECUENTE hoy (#6150 en la
     // medición de H-UX-2). Es indeterminado, no un tipo genérico.
     if (!hayTexto) return 'indeterminado';
+
+    // #7439 CA-7 / RS-D.1 — la causa estructurada gana sobre CUALQUIER regex
+    // de texto y sobre el label `needs-definition`. Va acá, inmediatamente
+    // después de `hayTexto` y ANTES de `RE_DEP`: la pregunta de la señal
+    // `servicio-externo` contiene "dependencia" y sin esto caería en
+    // `indeterminado` (verificado por guru); las otras tres caían en `firma`
+    // por el label, ofreciendo "Aprobar el alcance" para algo que no es GATE 1.
+    if (n.cause === 'design-decision') return 'decision';
 
     if (n.deps.length > 0 || RE_DEP.test(txt)) {
         // "Dice que espera algo pero no dice qué": sin número de dependencia no
@@ -1066,6 +1091,25 @@ const COPY = deepFreeze({
         sin_reco: 'No hay recomendación: el motivo del rechazo llegó vacío o ilegible.',
         ejemplo: 'corregir',
     },
+    // #7439 UX-E — decisión de arquitectura frenada por el gate. R-4: nada de
+    // acá se interpola desde el error técnico (`ctx.error`), que no viaja.
+    decision: {
+        por_que: 'El issue plantea una decisión de arquitectura que el pipeline no toma solo, y no encontré la firma del arquitecto.',
+        // Dice QUÉ no pude hacer y QUÉ NO significa en la misma frase: es lo
+        // único que le permite al operador distinguir un falso positivo de un
+        // bloqueo genuino sin abrir el log.
+        por_que_no_verificable: 'El issue plantea una decisión de arquitectura y el pipeline no pudo comprobar si el arquitecto ya la firmó: falló la consulta a GitHub, no falta la firma.',
+        // Termina en "hasta que decidas" A PROPÓSITO: el auto-levantamiento por
+        // firma es de #7440 y prometerlo antes de que exista es mentirle al
+        // operador.
+        costo: 'No entra a definición. El pedido vuelve cada 6 horas hasta que decidas.',
+        sin_reco: 'No hay recomendación: la decisión es de arquitectura y la tenés vos.',
+        // Sin valor de ejemplo A PROPÓSITO: no hay un valor de `/unblock` que
+        // represente las tres opciones, y uno inventado se pega tal cual y
+        // llega al agente como "INDICACIONES HUMANAS" (#6190). Ver
+        // `ORIENTACION_LIBRE`.
+        ejemplo: '',
+    },
     pregunta: {
         por_que: 'Un agente se trabó con una pregunta que no puede responder solo.',
         costo: 'El agente no sigue: el trabajo queda exactamente donde estaba.',
@@ -1101,6 +1145,7 @@ const CORTO = deepFreeze({
     rebote: '¿Se corrige o se acepta como está?',
     pregunta: 'Un agente te hizo una pregunta.',
     indeterminado: 'No sé qué hay que decidir.',
+    decision: '¿Decidís vos o ya está firmado?',
 });
 
 // Las cuatro consecuencias de `ACTION_META` re-redactadas por `ux` (H-UX-5): las
@@ -1198,6 +1243,13 @@ const OPCION = deepFreeze({
     replantear_por_pregunta: {
         etiqueta: 'Devolverlo a definición',
         consecuencia: 'Se descarta lo hecho y se replantea el alcance. Sirve cuando la pregunta muestra que el pedido estaba mal planteado.',
+    },
+    // #7439 UX-E — en ESTA hija es un destrabe HUMANO (`/unblock N …`); la
+    // consecuencia no promete re-consulta automática de la firma (eso es de
+    // #7440, RS-D.2).
+    ya_decidido: {
+        etiqueta: 'Ya está decidido en el issue',
+        consecuencia: 'Lo destrabás vos: el pipeline vuelve a leer el issue con tu indicación y sigue por definición.',
     },
 });
 
@@ -1543,6 +1595,42 @@ function fichaPregunta(n) {
     };
 }
 
+/**
+ * #7439 CA-7 — decisión de arquitectura frenada por el gate (`cause:
+ * 'design-decision'`). Calcada de `fichaPregunta`: la primera línea es la
+ * pregunta LITERAL del gate y NINGUNA opción es recomendada.
+ *
+ * SIN `aprobar_alcance` / `rechazar_alcance` / `ajustar_criterios` (RS-D.2):
+ * son semántica de GATE 1 (firma de definición) y acá no hay nada que firmar
+ * por botón. El "Por qué" distingue "no encontré la firma" de "no pude
+ * comprobarla" SÓLO por el dato estructurado `signoff_verifiable === false`
+ * (UX-F), nunca leyendo el texto.
+ */
+function fichaDecision(n) {
+    const vars = { issue: n.issue, ref: refIssue(n.issue) };
+    // La cita del issue (`evidence`) la antepone `buildDecisionCard` para todos
+    // los tipos (#6448 UX-1); acá sólo va la antigüedad.
+    const evidencia = [];
+    if (n.edad) evidencia.push(`Frenado ${n.edad}`);
+
+    return {
+        por_que: n.firmaVerificable === false
+            ? COPY.decision.por_que_no_verificable
+            : COPY.decision.por_que,
+        // UX §1.8 — LITERAL, como en `pregunta`.
+        que_se_decide: citado(n.question, MAX_PREGUNTA_LITERAL),
+        opciones: [
+            opcion(OPCION.responder_pregunta, vars, null),
+            opcion(OPCION.ya_decidido, vars, null),
+            opcion(OPCION.replantear_por_pregunta, vars, null),
+        ],
+        evidencia,
+        costo: COPY.decision.costo,
+        sin_reco: COPY.decision.sin_reco,
+        ejemplo: COPY.decision.ejemplo,
+    };
+}
+
 /** Qué dato falta, según el caso. Nunca un genérico vacío. */
 function faltaDe(n) {
     const txt = `${n.reason} ${n.question}`.trim();
@@ -1638,6 +1726,7 @@ const CONSTRUCTOR = deepFreeze({
     rebote: fichaRebote,
     pregunta: fichaPregunta,
     indeterminado: fichaIndeterminado,
+    decision: fichaDecision,
 });
 
 // =============================================================================
@@ -1891,6 +1980,13 @@ module.exports = {
     ORIENTACION_LIBRE,
     MOLDES_DE_ORIENTACION,
     esOrientacionMolde,
+    // #7439 CA-4 / RS-3.4 — los clasificadores de texto se exportan como DATO
+    // para que el test del copy del gate de decisión los IMPORTE en vez de
+    // copiarlos: una copia diverge y deja de proteger. Mismo criterio que
+    // `URL_RE` / `COMANDO_RE`.
+    RE_FIRMA,
+    RE_INFRA,
+    RE_DEP,
     MAX_CAMPO,
     MAX_EVIDENCIA,
     MAX_EVIDENCIAS,
