@@ -126,6 +126,40 @@ En cambio `pipelineEnv.resolve({ PIPELINE_AMBIENTE: 'pruebas', PIPELINE_REPO_ROO
 devuelve `dir: null` (SEC-9 estricto): un escritor migrado a `write-target`
 falla ruidoso en vez de escribir.
 
+### Bloqueos humanos (`lib/human-block.js`, #7456)
+
+El módulo de bloqueos humanos resuelve **por llamada** (nunca en una const de
+módulo) el directorio de cada cosa que escribe, a través de `write-target`:
+
+| Qué escribe | canal | destino (inventario `lib/write-points.json`) |
+|---|---|---|
+| markers `<issue>.<skill>` + sidecars `.reason.json` / `.guidance.txt` / reconciler | `estado` | `<pipeline>/<fase>/bloqueado-humano` |
+| órdenes `label` / `remove-label` / `comment` para el servicio-github | `colas` | `servicios/github/pendiente` |
+| audit de acciones rápidas (`auditQuickAction`, `emitAutoReleased`) | `logs` | `audit/*.jsonl` |
+| cache de títulos (`enriquecerConTitulo`) — **sólo lectura** | `estado` (`safeWriteDir`) | `.issue-title-cache.json` |
+
+No hay canal `bloqueos`: los bloqueos humanos quedan cubiertos bajo
+`estado`/`colas`/`logs` con `destino` granular. El recordatorio
+(`lib/human-block-reminder.js`) recibe el `pipelineDir` por parámetro desde el
+Pulpo (`pulpo.js::PIPELINE()`), que ya es un punto migrado.
+
+Un **harness manual** (p. ej. ejercitar los gates de decisión desde un worktree)
+tiene que declarar `PIPELINE_DIR_OVERRIDE` — **nunca** `PIPELINE_REPO_ROOT`,
+que es contexto heredado y anula el override (SEC-9):
+
+```bash
+PIPELINE_DIR_OVERRIDE="$(mktemp -d)/.pipeline" node -e "
+  require('./.pipeline/lib/human-block').reportHumanBlock({
+    issue: 7113, skill: 'intake', phase: 'validacion', pipeline: 'definicion',
+    reason: 'x', question: 'y?', moveFromActive: false })"
+```
+
+Marker, `.reason.json` y la orden de `needs-human` quedan bajo el tmp; el
+`.pipeline` productivo no se toca. Las lecturas del mismo flujo
+(`findActiveMarker`, `listBlockedIssues`) usan la **misma** raíz que la
+escritura: un harness no puede "encontrar" un work-file real y sacarlo del
+pipeline.
+
 ## Garantías de seguridad (fail-closed)
 
 El único riesgo real del comando es **borrar o contaminar el productivo**. Se
@@ -150,6 +184,17 @@ cierra por código, verificable por test:
 - Sólo APIs `fs`. Única excepción: `execFileSync('git', ['rev-parse', 'HEAD'])`
   con argv literal y best-effort (`sha: null` si falla).
 - Ni el marcador ni `--json` ni `--print-env` contienen valores del env.
+- **Bloqueos humanos (#7456):** sin ambiente declarado (ni `PIPELINE_AMBIENTE=productivo`
+  ni `PIPELINE_DIR_OVERRIDE`), `reportHumanBlock`, `unblockIssue`,
+  `enqueueNeedsHumanLabel`, `enqueueGithub` y las lecturas de markers lanzan
+  `EscrituraBloqueadaError` con el aviso de tres líneas `[pipeline-env]` en
+  stderr. La resolución ocurre **fuera** de los `try/catch` best-effort de los
+  encoladores: un bloqueo de ambiente nunca se traga como fallo de disco. No
+  existe escape hatch (`opts.pipelineDir`, `opts.force`, variable nueva);
+  `deps.auditDir` sólo alcanza al audit de acciones rápidas. Los segmentos
+  `skill`/`phase`/`target_phase` se validan como nombre simple
+  (`^[a-z0-9][a-z0-9_-]*$`), `pipeline` contra la whitelist y el destino final
+  se confina a la raíz resuelta. Test: `lib/__tests__/human-block-env-isolation.test.js`.
 
 ## API (para tests y helpers)
 

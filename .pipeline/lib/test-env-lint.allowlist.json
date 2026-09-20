@@ -2,7 +2,20 @@
     "_doc": "Allowlist del guardrail #6260. SOLO suprime violations `deuda`. Una entry que cubre una violation ESTRICTA es ella misma una violation (SEC-2/SEC-6/CA-14): las estrictas no se perdonan, se arreglan o se congelan en el baseline.",
     "_files_doc": "`files` excluye un archivo entero; `rules` una linea puntual. `kind` es OBLIGATORIO en las dos (deuda | falso-positivo), sin default (CA-22). Una entry que ya no cubre nada es ella misma una violation (CA-21/R-5): sin eso la allowlist queda inflada para siempre y el guardrail deja de medir la deuda.",
     "min_scanned": 800,
-    "files": [],
+    "files": [
+        {
+            "file": "lib/__tests__/pulpo-config-recovery.test.js",
+            "line": 60,
+            "kind": "deuda",
+            "reason": "escritura de TELEGRAM_BOT_TOKEN_PRUEBAS fuera del helper"
+        },
+        {
+            "file": "lib/__tests__/pulpo-config-recovery.test.js",
+            "line": 61,
+            "kind": "deuda",
+            "reason": "escritura de TELEGRAM_CHAT_ID_PRUEBAS fuera del helper"
+        }
+    ],
     "rules": [
         {
             "file": "__tests__/planner-sizing-allowlist-promote.test.js",
@@ -126,39 +139,57 @@
         },
         {
             "file": "__tests__/stuck-reconciler-wiring-5396.test.js",
-            "line": 652,
-            "kind": "deuda",
-            "reason": "escritura de CLAUDE_PROJECT_DIR fuera del helper"
-        },
-        {
-            "file": "__tests__/stuck-reconciler-wiring-5396.test.js",
             "line": 653,
             "kind": "deuda",
+            "reason": "escritura de CLAUDE_PROJECT_DIR fuera del helper"
+        },
+        {
+            "file": "__tests__/stuck-reconciler-wiring-5396.test.js",
+            "line": 656,
+            "kind": "deuda",
             "reason": "escritura de PIPELINE_REPO_ROOT fuera del helper"
         },
         {
             "file": "__tests__/stuck-reconciler-wiring-5396.test.js",
-            "line": 661,
+            "line": 657,
+            "kind": "deuda",
+            "reason": "escritura de PIPELINE_DIR_OVERRIDE fuera del helper"
+        },
+        {
+            "file": "__tests__/stuck-reconciler-wiring-5396.test.js",
+            "line": 665,
             "kind": "deuda",
             "reason": "escritura de CLAUDE_PROJECT_DIR fuera del helper"
         },
         {
             "file": "__tests__/stuck-reconciler-wiring-5396.test.js",
-            "line": 662,
+            "line": 666,
             "kind": "deuda",
             "reason": "escritura de CLAUDE_PROJECT_DIR fuera del helper"
         },
         {
             "file": "__tests__/stuck-reconciler-wiring-5396.test.js",
-            "line": 663,
+            "line": 667,
             "kind": "deuda",
             "reason": "escritura de PIPELINE_REPO_ROOT fuera del helper"
         },
         {
             "file": "__tests__/stuck-reconciler-wiring-5396.test.js",
-            "line": 664,
+            "line": 668,
             "kind": "deuda",
             "reason": "escritura de PIPELINE_REPO_ROOT fuera del helper"
+        },
+        {
+            "file": "__tests__/stuck-reconciler-wiring-5396.test.js",
+            "line": 669,
+            "kind": "deuda",
+            "reason": "escritura de PIPELINE_DIR_OVERRIDE fuera del helper"
+        },
+        {
+            "file": "__tests__/stuck-reconciler-wiring-5396.test.js",
+            "line": 670,
+            "kind": "deuda",
+            "reason": "escritura de PIPELINE_DIR_OVERRIDE fuera del helper"
         },
         {
             "file": "lib/__tests__/action-token.test.js",
@@ -252,9 +283,15 @@
         },
         {
             "file": "lib/__tests__/auto-recheck-pegado-6611.test.js",
-            "line": 40,
+            "line": 42,
             "kind": "deuda",
             "reason": "escritura de PIPELINE_REPO_ROOT fuera del helper"
+        },
+        {
+            "file": "lib/__tests__/auto-recheck-pegado-6611.test.js",
+            "line": 43,
+            "kind": "deuda",
+            "reason": "escritura de PIPELINE_DIR_OVERRIDE fuera del helper"
         },
         {
             "file": "lib/__tests__/blocked-segregation.test.js",
@@ -264,9 +301,15 @@
         },
         {
             "file": "lib/__tests__/blocked-segregation.test.js",
-            "line": 42,
+            "line": 44,
             "kind": "deuda",
             "reason": "escritura de PIPELINE_REPO_ROOT fuera del helper"
+        },
+        {
+            "file": "lib/__tests__/blocked-segregation.test.js",
+            "line": 45,
+            "kind": "deuda",
+            "reason": "escritura de PIPELINE_DIR_OVERRIDE fuera del helper"
         },
         {
             "file": "lib/__tests__/brazo-barrido-core.test.js",
@@ -816,9 +859,15 @@
         },
         {
             "file": "lib/__tests__/degraded-callback.test.js",
-            "line": 25,
+            "line": 27,
             "kind": "deuda",
             "reason": "escritura de PIPELINE_REPO_ROOT fuera del helper"
+        },
+        {
+            "file": "lib/__tests__/degraded-callback.test.js",
+            "line": 28,
+            "kind": "deuda",
+            "reason": "escritura de PIPELINE_DIR_OVERRIDE fuera del helper"
         },
         {
             "file": "lib/__tests__/deliverable-notify-drive.test.js",
@@ -926,37 +975,37 @@
             "file": "lib/__tests__/desync-wave-guard-5724.test.js",
             "line": 630,
             "kind": "deuda",
-            "reason": "escritura de TELEGRAM_BOT_TOKEN fuera del helper"
+            "reason": "escritura de TELEGRAM_BOT_TOKEN_PRUEBAS fuera del helper"
         },
         {
             "file": "lib/__tests__/desync-wave-guard-5724.test.js",
             "line": 631,
             "kind": "deuda",
-            "reason": "escritura de TELEGRAM_CHAT_ID fuera del helper"
+            "reason": "escritura de TELEGRAM_CHAT_ID_PRUEBAS fuera del helper"
         },
         {
             "file": "lib/__tests__/desync-wave-guard-5724.test.js",
             "line": 641,
             "kind": "deuda",
-            "reason": "escritura de TELEGRAM_BOT_TOKEN fuera del helper"
+            "reason": "escritura de TELEGRAM_BOT_TOKEN_PRUEBAS fuera del helper"
         },
         {
             "file": "lib/__tests__/desync-wave-guard-5724.test.js",
             "line": 642,
             "kind": "deuda",
-            "reason": "escritura de TELEGRAM_BOT_TOKEN fuera del helper"
+            "reason": "escritura de TELEGRAM_BOT_TOKEN_PRUEBAS fuera del helper"
         },
         {
             "file": "lib/__tests__/desync-wave-guard-5724.test.js",
             "line": 643,
             "kind": "deuda",
-            "reason": "escritura de TELEGRAM_CHAT_ID fuera del helper"
+            "reason": "escritura de TELEGRAM_CHAT_ID_PRUEBAS fuera del helper"
         },
         {
             "file": "lib/__tests__/desync-wave-guard-5724.test.js",
             "line": 644,
             "kind": "deuda",
-            "reason": "escritura de TELEGRAM_CHAT_ID fuera del helper"
+            "reason": "escritura de TELEGRAM_CHAT_ID_PRUEBAS fuera del helper"
         },
         {
             "file": "lib/__tests__/dispatch-facts.test.js",
@@ -1139,6 +1188,24 @@
             "reason": "escritura de GRADLE_LOCK_PATH fuera del helper"
         },
         {
+            "file": "lib/__tests__/guidance-injection.test.js",
+            "line": 37,
+            "kind": "deuda",
+            "reason": "escritura de CLAUDE_PROJECT_DIR fuera del helper"
+        },
+        {
+            "file": "lib/__tests__/guidance-injection.test.js",
+            "line": 38,
+            "kind": "deuda",
+            "reason": "escritura de PIPELINE_REPO_ROOT fuera del helper"
+        },
+        {
+            "file": "lib/__tests__/guidance-injection.test.js",
+            "line": 39,
+            "kind": "deuda",
+            "reason": "escritura de PIPELINE_DIR_OVERRIDE fuera del helper"
+        },
+        {
             "file": "lib/__tests__/human-block-manual-unlockers-6432.test.js",
             "line": 34,
             "kind": "deuda",
@@ -1170,9 +1237,15 @@
         },
         {
             "file": "lib/__tests__/human-block-reconcile-6448.test.js",
-            "line": 38,
+            "line": 40,
             "kind": "deuda",
             "reason": "escritura de PIPELINE_REPO_ROOT fuera del helper"
+        },
+        {
+            "file": "lib/__tests__/human-block-reconcile-6448.test.js",
+            "line": 41,
+            "kind": "deuda",
+            "reason": "escritura de PIPELINE_DIR_OVERRIDE fuera del helper"
         },
         {
             "file": "lib/__tests__/human-block.test.js",
@@ -1182,13 +1255,19 @@
         },
         {
             "file": "lib/__tests__/human-block.test.js",
-            "line": 18,
+            "line": 20,
             "kind": "deuda",
             "reason": "escritura de PIPELINE_REPO_ROOT fuera del helper"
         },
         {
+            "file": "lib/__tests__/human-block.test.js",
+            "line": 21,
+            "kind": "deuda",
+            "reason": "escritura de PIPELINE_DIR_OVERRIDE fuera del helper"
+        },
+        {
             "file": "lib/__tests__/hydrate-provider-env.test.js",
-            "line": 53,
+            "line": 58,
             "kind": "deuda",
             "reason": "escritura de OPENAI_API_KEY fuera del helper"
         },
@@ -2109,6 +2188,18 @@
             "line": 55,
             "kind": "deuda",
             "reason": "escritura de PIPELINE_DIR_OVERRIDE fuera del helper"
+        },
+        {
+            "file": "lib/__tests__/pulpo-config-recovery.test.js",
+            "line": 60,
+            "kind": "deuda",
+            "reason": "escritura de TELEGRAM_BOT_TOKEN_PRUEBAS fuera del helper"
+        },
+        {
+            "file": "lib/__tests__/pulpo-config-recovery.test.js",
+            "line": 61,
+            "kind": "deuda",
+            "reason": "escritura de TELEGRAM_CHAT_ID_PRUEBAS fuera del helper"
         },
         {
             "file": "lib/__tests__/pulpo-corruption.test.js",
@@ -3170,37 +3261,37 @@
             "file": "lib/__tests__/wave-add-sync-integration-5882.test.js",
             "line": 768,
             "kind": "deuda",
-            "reason": "escritura de TELEGRAM_BOT_TOKEN fuera del helper"
+            "reason": "escritura de TELEGRAM_BOT_TOKEN_PRUEBAS fuera del helper"
         },
         {
             "file": "lib/__tests__/wave-add-sync-integration-5882.test.js",
             "line": 769,
             "kind": "deuda",
-            "reason": "escritura de TELEGRAM_CHAT_ID fuera del helper"
+            "reason": "escritura de TELEGRAM_CHAT_ID_PRUEBAS fuera del helper"
         },
         {
             "file": "lib/__tests__/wave-add-sync-integration-5882.test.js",
             "line": 777,
             "kind": "deuda",
-            "reason": "escritura de TELEGRAM_BOT_TOKEN fuera del helper"
+            "reason": "escritura de TELEGRAM_BOT_TOKEN_PRUEBAS fuera del helper"
         },
         {
             "file": "lib/__tests__/wave-add-sync-integration-5882.test.js",
             "line": 778,
             "kind": "deuda",
-            "reason": "escritura de TELEGRAM_BOT_TOKEN fuera del helper"
+            "reason": "escritura de TELEGRAM_BOT_TOKEN_PRUEBAS fuera del helper"
         },
         {
             "file": "lib/__tests__/wave-add-sync-integration-5882.test.js",
             "line": 779,
             "kind": "deuda",
-            "reason": "escritura de TELEGRAM_CHAT_ID fuera del helper"
+            "reason": "escritura de TELEGRAM_CHAT_ID_PRUEBAS fuera del helper"
         },
         {
             "file": "lib/__tests__/wave-add-sync-integration-5882.test.js",
             "line": 780,
             "kind": "deuda",
-            "reason": "escritura de TELEGRAM_CHAT_ID fuera del helper"
+            "reason": "escritura de TELEGRAM_CHAT_ID_PRUEBAS fuera del helper"
         },
         {
             "file": "lib/__tests__/wave-add-ux-copy-5882.test.js",
@@ -5256,19 +5347,19 @@
         },
         {
             "file": "tests/pulpo-paginado-no-pisa-6226.test.js",
-            "line": 32,
+            "line": 34,
             "kind": "deuda",
-            "reason": "escritura de TELEGRAM_BOT_TOKEN fuera del helper"
-        },
-        {
-            "file": "tests/pulpo-paginado-no-pisa-6226.test.js",
-            "line": 33,
-            "kind": "deuda",
-            "reason": "escritura de TELEGRAM_CHAT_ID fuera del helper"
+            "reason": "escritura de TELEGRAM_BOT_TOKEN_PRUEBAS fuera del helper"
         },
         {
             "file": "tests/pulpo-paginado-no-pisa-6226.test.js",
             "line": 35,
+            "kind": "deuda",
+            "reason": "escritura de TELEGRAM_CHAT_ID_PRUEBAS fuera del helper"
+        },
+        {
+            "file": "tests/pulpo-paginado-no-pisa-6226.test.js",
+            "line": 37,
             "kind": "deuda",
             "reason": "PULPO_NO_AUTOSTART escrita en el sentido seguro (apagar)"
         },

@@ -139,6 +139,28 @@ function redactUrlLike(urlText) {
 }
 
 /**
+ * #7113 (RS-2, A09) — ÚNICA redacción de un texto que va a una traza de
+ * Telegram: `redactUrlLike` (token embebido en `/bot<TOKEN>/`, query params
+ * sensibles, userinfo) + el `chat_id` literal → `<chat_id>`. Era el inline de
+ * `telegram-notifier.appendNotifierLog`; se extrae para que el transporte nulo
+ * del ambiente de pruebas (`lib/credenciales-ambiente.js`) y el notifier pasen
+ * por la MISMA función y no diverjan.
+ *
+ * @param {string} msg texto crudo (puede contener URL con token y el chat_id).
+ * @param {{chatId?: string|number|null}} [opts]
+ * @returns {string}
+ */
+function redactTelegram(msg, opts) {
+    let redacted = redactUrlLike(String(msg == null ? '' : msg));
+    const chatId = opts && opts.chatId;
+    if (chatId !== undefined && chatId !== null && String(chatId) !== '') {
+        const re = new RegExp(String(chatId).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g');
+        redacted = redacted.replace(re, '<chat_id>');
+    }
+    return redacted;
+}
+
+/**
  * Walk recursivo que redacta:
  *  - Claves sensibles de JSON (CA-6)
  *  - Emails en strings (CA-6)
@@ -480,6 +502,8 @@ module.exports = {
     redactEmail,
     redactEmailsInText,
     redactUrlLike,
+    // #7113 — redacción única de trazas/logs de Telegram (token + chat_id).
+    redactTelegram,
     redactStack,
     redactError,
     isSensitiveHeader,

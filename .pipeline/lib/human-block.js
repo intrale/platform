@@ -39,12 +39,86 @@ const mergeRaceLedger = require('./merge-race-reclaim-ledger');
 // mismo enum; importarlo desde acá sería un ciclo que entrega `{}`.
 const { BLOCK_CAUSE_ENUM, normalizeBlockCause } = require('./block-cause');
 
-const PIPELINE_DIR = path.join(trace.REPO_ROOT, '.pipeline');
+// #7456 / SEC-10 · V4 de #7112 — resolución POR LLAMADA del directorio de
+// escritura. PROHIBIDO guardar el resultado en una const de módulo o en una
+// closure creada al `require`: el incidente del 20/09 (markers sintéticos de
+// #7113/#7114 en producción) nació de una const fijada a tiempo de carga con
+// el `REPO_ROOT` de `traceability`, que resuelve la raíz PRODUCTIVA incluso desde un worktree
+// y con `PIPELINE_DIR_OVERRIDE` declarado. `traceability` se conserva sólo
+// para `trace.appendEvent` (localizar el repo, no destino de escritura).
+//
+// Una llamada a `writeTarget` INLINE por helper (no un resolvedor compartido):
+// el inventario `lib/write-points.json` atribuye el punto a la función que
+// contiene la llamada, y así cada canal queda declarado por separado.
+const writeTarget = require('./write-target');
+
 const PIPELINES = ['desarrollo', 'definicion'];
 const BLOCK_SUBDIR = 'bloqueado-humano';
 const ACTIVE_STATES = ['pendiente', 'trabajando', 'listo'];
-const GH_QUEUE_DIR = path.join(PIPELINE_DIR, 'servicios', 'github', 'pendiente');
 const NEEDS_HUMAN_LABEL = 'needs-human';
+
+/**
+ * Raíz del `.pipeline` para markers y sidecars. Se usa para las LECTURAS y las
+ * ESCRITURAS del mismo flujo (SEC-HB-1): si la lectura resolviera productivo y
+ * la escritura un tmp, un harness sacaría un work-file real del pipeline.
+ * Sin ambiente declarado lanza `EscrituraBloqueadaError` (fail-closed).
+ */
+function markersRoot() {
+    return writeTarget.writeDir(process.env, { canal: 'estado', destino: '<pipeline>/<fase>/bloqueado-humano' });
+}
+
+/**
+ * Cola del servicio-github. Se resuelve FUERA de los `try/catch` best-effort
+ * de los encoladores (SEC-HB-3): un bloqueo de ambiente nunca se traga como
+ * fallo de disco.
+ */
+function ghQueueDir() {
+    return path.join(
+        writeTarget.writeDir(process.env, { canal: 'colas', destino: 'servicios/github/pendiente' }),
+        'servicios', 'github', 'pendiente');
+}
+
+/**
+ * Audit de acciones rápidas. `deps.auditDir` es inyección de tests, NO un
+ * bypass (SEC-HB-4): sólo alcanza al audit, nunca reactiva markers ni colas.
+ */
+function auditRoot(deps = {}) {
+    return deps.auditDir || path.join(
+        writeTarget.writeDir(process.env, { canal: 'logs', destino: 'audit/quick-actions.jsonl' }), 'audit');
+}
+
+/**
+ * Cache de títulos: SÓLO lectura → `safeWriteDir` (null sin ambiente, nunca
+ * lanza; las funciones de render se usan en tests sin ambiente declarado).
+ */
+function titleCacheDir() {
+    return writeTarget.safeWriteDir(process.env, { canal: 'estado', destino: '.issue-title-cache.json' });
+}
+
+// SEC-HB-2 — confinamiento. `writeTarget.writePath` es `path.join` puro: no
+// confina. Los segmentos que llegan del llamador (skill/phase/pipeline) se
+// validan ANTES de armar el path y el destino final se verifica contra la raíz
+// resuelta. Fallo → `throw`, nunca sanitizar en silencio.
+const RE_SEGMENTO = /^[a-z0-9][a-z0-9_-]*$/;
+function assertSegmento(nombre, valor) {
+    if (!RE_SEGMENTO.test(String(valor))) {
+        throw new Error(`[human-block] ${nombre} inválido: "${valor}" (segmento simple, sin / \\ ..)`);
+    }
+    return String(valor);
+}
+function assertPipeline(valor) {
+    if (!PIPELINES.includes(valor)) throw new Error(`[human-block] pipeline inválido: "${valor}"`);
+    return valor;
+}
+// Mismo criterio que `pipeline-env.dentroDe` (path.resolve + path.sep, sirve
+// en Windows). Replicado local en vez de exportarlo de pipeline-env (#7110).
+function assertConfinado(target, base) {
+    const t = path.resolve(target), b = path.resolve(base);
+    if (t !== b && !t.startsWith(b + path.sep)) {
+        throw new Error(`[human-block] destino fuera del pipelineDir resuelto: ${t}`);
+    }
+    return t;
+}
 
 // #6191 / SEC-F — Tope de `evidence` AL PERSISTIR (defensa en profundidad).
 //
@@ -65,14 +139,16 @@ const MAX_EVIDENCE_PERSISTIDA = 4096;
 // acá la aplicación del label evita que cada caller (pause-all, scripts manuales,
 // pulpo en barrido) tenga que duplicar la lógica y olvide aplicarlo.
 function enqueueNeedsHumanLabel(issue) {
+    // #7456 SEC-HB-3: lanza EscrituraBloqueadaError sin ambiente — NUNCA se traga.
+    const dir = ghQueueDir();
     try {
-        fs.mkdirSync(GH_QUEUE_DIR, { recursive: true });
+        fs.mkdirSync(dir, { recursive: true });
         const filename = `${issue}-${NEEDS_HUMAN_LABEL}-block-${Date.now()}.json`;
         // #6226 - escritura fail-closed: dos bloqueos del mismo issue en el
         // mismo milisegundo resolvian al mismo path y el segundo pisaba al
         // primero. Se conserva el nombre; solo ante colision se desambigua.
         dropfileWriter.writeUniqueFileSync({
-            dir: GH_QUEUE_DIR,
+            dir,
             filename,
             data: JSON.stringify({ action: 'label', issue: Number(issue), label: NEEDS_HUMAN_LABEL }),
             onCollision: (name, attempt) => console.warn(
@@ -231,8 +307,9 @@ const { isMarkerArtifact } = require('./marker-artifact');
 
 function findActiveMarker(issue) {
     const prefix = String(issue) + '.';
+    const root = markersRoot();
     for (const pipeline of PIPELINES) {
-        const pipeRoot = path.join(PIPELINE_DIR, pipeline);
+        const pipeRoot = path.join(root, pipeline);
         let phases = [];
         try { phases = fs.readdirSync(pipeRoot).filter(f => fs.statSync(path.join(pipeRoot, f)).isDirectory()); }
         catch { continue; }
@@ -258,8 +335,9 @@ function findActiveMarker(issue) {
 
 function findBlockedMarker(issue) {
     const prefix = String(issue) + '.';
+    const root = markersRoot();
     for (const pipeline of PIPELINES) {
-        const pipeRoot = path.join(PIPELINE_DIR, pipeline);
+        const pipeRoot = path.join(root, pipeline);
         let phases = [];
         try { phases = fs.readdirSync(pipeRoot).filter(f => fs.statSync(path.join(pipeRoot, f)).isDirectory()); }
         catch { continue; }
@@ -302,8 +380,9 @@ function findBlockedMarker(issue) {
 function listBlockedMarkers(issue) {
     const prefix = String(issue) + '.';
     const out = [];
+    const root = markersRoot();
     for (const pipeline of PIPELINES) {
-        const pipeRoot = path.join(PIPELINE_DIR, pipeline);
+        const pipeRoot = path.join(root, pipeline);
         let phases = [];
         try { phases = fs.readdirSync(pipeRoot).filter(f => fs.statSync(path.join(pipeRoot, f)).isDirectory()); }
         catch { continue; }
@@ -601,6 +680,9 @@ function reportHumanBlock(opts) {
     if (!issue || !skill || !phase) {
         throw new Error('reportHumanBlock requiere issue, skill, phase');
     }
+    // #7456 SEC-HB-2 — segmentos simples: nada de / \ .. en el path del marker.
+    assertSegmento('skill', skill);
+    assertSegmento('phase', phase);
     if (!reason || !question) {
         throw new Error('reportHumanBlock requiere reason y question (justificación obligatoria)');
     }
@@ -614,9 +696,12 @@ function reportHumanBlock(opts) {
             srcFile = active.file;
         }
     }
-    pipeline = pipeline || 'desarrollo';
+    pipeline = assertPipeline(pipeline || 'desarrollo');
 
-    const targetDir = path.join(PIPELINE_DIR, pipeline, phase, BLOCK_SUBDIR);
+    // #7456 — UNA resolución por llamada (findActiveMarker ya resolvió con la
+    // misma función: lectura y escritura comparten raíz, SEC-HB-1).
+    const root = markersRoot();
+    const targetDir = assertConfinado(path.join(root, pipeline, phase, BLOCK_SUBDIR), root);
     fs.mkdirSync(targetDir, { recursive: true });
     const marker = `${issue}.${skill}`;
     const targetFile = path.join(targetDir, marker);
@@ -689,8 +774,9 @@ function reportHumanBlock(opts) {
 
 function listBlockedIssues() {
     const result = [];
+    const root = markersRoot();
     for (const pipeline of PIPELINES) {
-        const pipeRoot = path.join(PIPELINE_DIR, pipeline);
+        const pipeRoot = path.join(root, pipeline);
         let phases = [];
         try { phases = fs.readdirSync(pipeRoot).filter(f => fs.statSync(path.join(pipeRoot, f)).isDirectory()); }
         catch { continue; }
@@ -871,8 +957,9 @@ function listPhaseMarkers(opts = {}) {
         ? opts.states
         : PHASE_QUEUE_STATES;
     const result = [];
+    const root = markersRoot();
     for (const pipeline of PIPELINES) {
-        const pipeRoot = path.join(PIPELINE_DIR, pipeline);
+        const pipeRoot = path.join(root, pipeline);
         let phases = [];
         try { phases = fs.readdirSync(pipeRoot).filter(f => fs.statSync(path.join(pipeRoot, f)).isDirectory()); }
         catch { continue; }
@@ -929,8 +1016,11 @@ function unblockIssue(opts) {
         return { ok: false, error: `Marker ${sourceFile} ya no existe (destrabado en paralelo)` };
     }
 
-    const targetPhase = opts.target_phase || blocked.phase;
-    const targetDir = path.join(PIPELINE_DIR, blocked.pipeline, targetPhase, 'pendiente');
+    const targetPhase = assertSegmento('target_phase', opts.target_phase || blocked.phase);
+    // #7456 — resolución por llamada + confinamiento (SEC-HB-2).
+    const root = markersRoot();
+    const targetDir = assertConfinado(
+        path.join(root, assertPipeline(blocked.pipeline), targetPhase, 'pendiente'), root);
     fs.mkdirSync(targetDir, { recursive: true });
     const marker = `${issue}.${blocked.skill}`;
     const targetFile = path.join(targetDir, marker);
@@ -1109,7 +1199,8 @@ function reconcileBlockedMarkers({ issue, unlocker = 'github:label-removed', ski
     };
 
     let markers = [];
-    try { markers = listBlockedMarkers(n); } catch { markers = []; }
+    // #7456 SEC-HB-3: el bloqueo de ambiente NO es un fallo best-effort — se propaga.
+    try { markers = listBlockedMarkers(n); } catch (e) { if (writeTarget.esBloqueo(e)) throw e; markers = []; }
 
     for (const m of markers) {
         let action = 'none';
@@ -1119,7 +1210,7 @@ function reconcileBlockedMarkers({ issue, unlocker = 'github:label-removed', ski
             //     trabajo real (#5863). Se aplica POR CADA MARKER, no sólo al
             //     primero: ese "sólo al primero" es justo el bug de CA-25.
             const destino = path.join(
-                PIPELINE_DIR, m.pipeline, m.phase, 'pendiente', path.basename(m.file));
+                markersRoot(), m.pipeline, m.phase, 'pendiente', path.basename(m.file));
             if (fs.existsSync(destino)) {
                 try { fs.unlinkSync(m.file); } catch { /* best-effort */ }
                 removeMarkerSidecars(m.file); // puede no existir
@@ -1414,7 +1505,7 @@ const edadMinutosRaw = cardRender.edadMinutosRaw;
  * RECORDATORIO también la necesita y no puede requerir este módulo (garantía
  * estructural: no puede alcanzar `unblockIssue`). Ver el header de ese módulo.
  */
-const enriquecerConTitulo = (raws) => issueTitleCache.enriquecerConTitulo(raws, { pipelineDir: PIPELINE_DIR });
+const enriquecerConTitulo = (raws) => issueTitleCache.enriquecerConTitulo(raws, { pipelineDir: titleCacheDir() });
 
 /**
  * Render de producción del aviso de bloqueo: fichas de decisión en texto plano.
@@ -1528,19 +1619,44 @@ function isQuickAction(action) {
 // / comment). Generaliza enqueueNeedsHumanLabel. Fire-and-forget vía filesystem:
 // nunca bloquea ni invoca `gh` en proceso (regla "el pipeline no puede morir").
 function enqueueGithub(action, payload = {}) {
+    // #7456 SEC-HB-3: lanza EscrituraBloqueadaError sin ambiente — NUNCA se traga.
+    const dir = ghQueueDir();
     try {
-        fs.mkdirSync(GH_QUEUE_DIR, { recursive: true });
+        fs.mkdirSync(dir, { recursive: true });
         const issue = Number(payload.issue);
         const rnd = Math.random().toString(36).slice(2, 8);
         const filename = `${issue}-${action}-hb-${Date.now()}-${rnd}.json`;
         fs.writeFileSync(
-            path.join(GH_QUEUE_DIR, filename),
+            path.join(dir, filename),
             JSON.stringify({ ...payload, action, issue }),
         );
         return true;
     } catch {
         return false;
     }
+}
+
+// #7459 — ÚNICO punto que arma la orden de retiro de `needs-human`. Todo
+// destrabe (botones de la alerta, comando `/unblock` del Commander) pasa por
+// acá y por la cola del servicio-github: nunca `gh` en proceso (SEC-3) y
+// siempre `NEEDS_HUMAN_LABEL`, nunca el literal legacy `needs:human` (SEC-6).
+//
+// `authorizedBy` es OBLIGATORIO y sin default (SEC-1): el guardrail de #5690
+// exige procedencia atribuible y ningún call site futuro debe heredar una
+// procedencia anónima o la de otro canal. Lanza si falta: es un error de
+// programación, no de runtime, y tiene que quedar visible.
+//
+// `enqueue` inyectable para tests (espejo de `executeQuickAction({ deps })`).
+// Devuelve lo que devuelva `enqueue` (`true/false` con el real: nunca lanza).
+function enqueueRemoveNeedsHuman(issue, authorizedBy, { enqueue = enqueueGithub } = {}) {
+    const by = typeof authorizedBy === 'string' ? authorizedBy.trim() : '';
+    if (!by) throw new Error('enqueueRemoveNeedsHuman requiere authorizedBy no vacío');
+    return enqueue('remove-label', {
+        issue: Number(issue),
+        label: NEEDS_HUMAN_LABEL,
+        guardrail_authorized: true,
+        authorized_by: by,
+    });
 }
 
 /**
@@ -1653,15 +1769,15 @@ function executeQuickAction({ issue, action, deps = {} } = {}) {
     // caller autorizó (token HMAC de la alerta de Telegram, o allowlist de
     // operadores del commander). Sin este marcador, los botones de destrabe
     // dejarían de funcionar.
-    const procedencia = {
-        guardrail_authorized: true,
-        authorized_by: `human-block:${action}`,
-    };
+    // #7459 — la orden se arma en `enqueueRemoveNeedsHuman` (punto único con
+    // el `/unblock` del Commander); la procedencia de los botones sigue siendo
+    // `human-block:<action>`, distinta de la del comando (SEC-1).
+    const removeNeedsHuman = () => enqueueRemoveNeedsHuman(i, `human-block:${action}`, { enqueue });
 
     switch (action) {
         case 'unblock': {
             const reactivated = reactivate({ unlocker: 'human-block-action:unblock' });
-            enqueue('remove-label', { issue: i, label: NEEDS_HUMAN_LABEL, ...procedencia });
+            removeNeedsHuman();
             if (reactivated.length === 0) {
                 return { ok: true, action, issue: i, noop: true, msg: `#${i} ya no estaba bloqueado (acción ya resuelta).` };
             }
@@ -1680,7 +1796,7 @@ function executeQuickAction({ issue, action, deps = {} } = {}) {
                 try { const r = dismiss({ issue: i, reason: 'Devuelto a definición desde la alerta de Telegram', unlocker: 'human-block-action:devolver' }); dismissed = !!(r && r.ok); }
                 catch { /* best-effort */ }
             }
-            enqueue('remove-label', { issue: i, label: NEEDS_HUMAN_LABEL, ...procedencia });
+            removeNeedsHuman();
             enqueue('label', { issue: i, label: 'needs-definition' });
             enqueue('comment', { issue: i, body: `## ↩️ Devuelto a definición\n\nUn humano devolvió #${i} a definición desde la alerta de Telegram. Se descarta el trabajo de desarrollo en curso y el issue vuelve a re-analizarse.` });
             return { ok: true, action, issue: i, dismissed, msg: `#${i} devuelto a definición.` };
@@ -1701,7 +1817,7 @@ function executeQuickAction({ issue, action, deps = {} } = {}) {
                 actor: deps.actor || 'human-block:priorizar',
                 note: 'Prioridad elevada desde la alerta de Telegram',
             });
-            enqueue('remove-label', { issue: i, label: NEEDS_HUMAN_LABEL, ...procedencia });
+            removeNeedsHuman();
             enqueue('comment', { issue: i, body: `## ⬆️ Prioridad elevada\n\nUn humano subió la prioridad de #${i} a \`priority:high\` desde la alerta de Telegram${reactivated.length ? ' y lo desbloqueó' : ''}.` });
             return { ok: true, action, issue: i, reactivated: reactivated.length, msg: `Prioridad de #${i} elevada a priority:high.` };
         }
@@ -1757,7 +1873,7 @@ function emitAutoReleased(entry = {}) {
     // Canal 2 — audit-log con cadena hash (forense).
     try {
         const deps = entry.deps || {};
-        const dir = deps.auditDir || path.join(PIPELINE_DIR, 'audit');
+        const dir = auditRoot(deps);
         const createAuditLog = deps.createAuditLog || require('./commander/audit-log').createAuditLog;
         let redact = deps.redact;
         if (typeof redact !== 'function') {
@@ -1783,6 +1899,7 @@ function emitAutoReleased(entry = {}) {
             release_number: Number.isFinite(Number(entry.release_number)) ? Number(entry.release_number) : null,
         });
     } catch (e) {
+        if (writeTarget.esBloqueo(e)) throw e; // #7456 SEC-HB-3
         try { process.stderr.write('[human-block] emitAutoReleased audit falló: ' + e.message + '\n'); } catch (_) {}
         return null;
     }
@@ -1796,7 +1913,7 @@ function emitAutoReleased(entry = {}) {
 function auditQuickAction(entry = {}) {
     try {
         const deps = entry.deps || {};
-        const dir = deps.auditDir || path.join(PIPELINE_DIR, 'audit');
+        const dir = auditRoot(deps);
         const createAuditLog = deps.createAuditLog || require('./commander/audit-log').createAuditLog;
         let redact = deps.redact;
         if (typeof redact !== 'function') {
@@ -1834,6 +1951,7 @@ function auditQuickAction(entry = {}) {
             grant_nonce: entry.grant_nonce || null,
         });
     } catch (e) {
+        if (writeTarget.esBloqueo(e)) throw e; // #7456 SEC-HB-3
         try { process.stderr.write(`[human-block] auditQuickAction falló: ${e.message}\n`); } catch (_) {}
         return null;
     }
@@ -2084,7 +2202,13 @@ module.exports = {
     sendNeedHumanAudio,
     enqueueNeedsHumanLabel,
     HUMAN_BLOCK_PATTERNS,
-    PIPELINE_DIR,
+    // #7456 — resolución por llamada (reemplaza la const de módulo exportada;
+    // cero consumidores productivos la usaban). Expuestos para el test de
+    // aislamiento y para quien necesite la raíz que el módulo REALMENTE usa.
+    markersRoot,
+    ghQueueDir,
+    auditRoot,
+    titleCacheDir,
     PIPELINES,
     BLOCK_SUBDIR,
     reasonFilePath,
@@ -2100,6 +2224,8 @@ module.exports = {
     HUMAN_BLOCK_CALLBACK_PREFIX,
     isQuickAction,
     enqueueGithub,
+    // #7459 — punto único de retiro de `needs-human` con procedencia obligatoria.
+    enqueueRemoveNeedsHuman,
     buildBlockedActionMarkup,
     executeQuickAction,
     auditQuickAction,

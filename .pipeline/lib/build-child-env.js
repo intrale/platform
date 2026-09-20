@@ -588,6 +588,21 @@ function buildChildEnv(opts = {}) {
         }
     }
 
+    // 2b. #7113 · CA-4 / RS-4 — hijo en ambiente de PRUEBAS. Cuelga del mismo
+    //     `resolve(processEnv)` que usa `conDeclaracionExplicita` (P-5 del
+    //     guru), nunca de la variable heredada: un Pulpo en pruebas no puede
+    //     "colar" productivo a un hijo. Las sesiones OAuth de los CLIs
+    //     (`CLAUDE_CONFIG_DIR` / `CODEX_HOME`) apuntan a un sentinel bajo el dir
+    //     de pruebas (inexistente salvo provisión explícita): un CLI real falla
+    //     en origen en vez de caer a `~/.claude` / `~/.codex` y consumir cuota
+    //     productiva. La purga de credenciales productivas se aplica al FINAL
+    //     (después de scopes y extras), ver paso 7.
+    const ambienteHijo = pipelineEnv.resolve(processEnv);
+    const hijoEnPruebas = ambienteHijo.modo !== pipelineEnv.MODOS.PRODUCTIVO;
+    if (hijoEnPruebas) {
+        Object.assign(out, require('./credenciales-ambiente').sesionesDePruebas(ambienteHijo.dir));
+    }
+
     // 3. API key del provider (fail-fast si declara una y no existe).
     if (providerKeyVar) {
         if (processEnv[providerKeyVar] === undefined) {
@@ -679,10 +694,18 @@ function buildChildEnv(opts = {}) {
     //    para no revelar nombres alternativos ni valores en logs.
     // 6. #7112 · CA-7.2/7.3 — declaración de ambiente explícita, con el modo
     //    que resolvió ESTE proceso; sólo si el hijo lleva PIPELINE_REPO_ROOT.
-    return stripReservedChildSecrets(
+    // 7. #7113 · CA-1 bullet 4 — defensa en profundidad sobre
+    //    `stripReservedChildSecrets` (que sólo retira el material de firma de
+    //    Telegram): en pruebas NINGUNA credencial productiva cruza al hijo,
+    //    aunque un scope (`github`, `telegram-hooks`) o una extra la hubiera
+    //    copiado. El env del Pulpo ya viene purgado por `credenciales-ambiente`;
+    //    esto cubre un `processEnv` entregado por el caller (snapshot #5799).
+    const final = stripReservedChildSecrets(
         conDeclaracionExplicita({ ...out, ...pipelineExtras }, processEnv),
         processEnv,
     );
+    if (hijoEnPruebas) require('./credenciales-ambiente').purgarClavesProductivas(final);
+    return final;
 }
 
 // -----------------------------------------------------------------------------

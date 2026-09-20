@@ -562,3 +562,29 @@ test('un hallazgo real sigue saliendo 1, no 2', () => {
   const resultado = scanRange(directory, base, 'text');
   assert.equal(resultado.status, 1, 'el contrato de exit codes distingue hallazgo (1) de fallo de git (2)');
 });
+
+// #7113 (CA-8) — el ambiente de pruebas trae DOS formas nuevas de secreto que
+// podrían terminar en un fixture o en `credentials.pruebas.json` copiado por
+// error al repo: un bot token de Telegram de pruebas y un fine-grained PAT de
+// GitHub sin write. El sanitizer los reconoce POR FORMA, no por origen, así que
+// el gate los bloquea sin código nuevo. Valores sintéticos armados en runtime.
+const SYNTHETIC_BOT_TOKEN = ['123456789', ':', 'AAHfiqksKZ8WmR2zSjiQ7_v4TVd4jrIkT9Q'].join('');
+const SYNTHETIC_FINE_PAT = ['github', '_pat_', 'A'.repeat(82)].join('');
+
+test('#7113 CA-8 · un bot token de Telegram de pruebas staged bloquea el commit', () => {
+  const directory = sandboxRepo('secret-scan-7113-bot-');
+  stageFile(directory, '.claude/hooks/config.json',
+    JSON.stringify({ telegram: { bot_token: SYNTHETIC_BOT_TOKEN } }));
+  const result = run({ cwd: directory, allowlist: EMPTY_ALLOWLIST, format: 'text' });
+  assert.equal(result.exitCode, 1, 'el bot token de pruebas debe bloquear');
+  assert.match(result.output, /TELEGRAM_BOT_TOKEN/);
+});
+
+test('#7113 CA-8 · un fine-grained PAT de GitHub (identidad de pruebas) staged bloquea el commit', () => {
+  const directory = sandboxRepo('secret-scan-7113-pat-');
+  stageFile(directory, '.claude/hooks/config.json',
+    JSON.stringify({ github: { [SECRET_FIELD]: SYNTHETIC_FINE_PAT } }));
+  const result = run({ cwd: directory, allowlist: EMPTY_ALLOWLIST, format: 'text' });
+  assert.equal(result.exitCode, 1, 'el PAT de pruebas debe bloquear');
+  assert.match(result.output, /GITHUB_TOKEN/);
+});

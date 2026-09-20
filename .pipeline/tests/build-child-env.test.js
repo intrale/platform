@@ -35,6 +35,9 @@ const {
 // -----------------------------------------------------------------------------
 function fullOperatorEnv(extra = {}) {
     return {
+        // #7113 — env productivo declarado por el lanzador (#7112): sin la
+        // declaración el hijo se arma en PRUEBAS y se purgan las credenciales.
+        PIPELINE_AMBIENTE: 'productivo',
         // System (Windows + Unix)
         PATH: '/usr/bin:/bin',
         PATHEXT: '.COM;.EXE;.BAT;.CMD',
@@ -829,6 +832,7 @@ test('#3198: partial override { provider } repro exacto del rejection (anthropic
         pipelineDir: '/c/Workspaces/Intrale/platform/.pipeline',
         fsImpl: fakeFs,
         processEnv: {
+            PIPELINE_AMBIENTE: 'productivo', // #7113 — env productivo declarado (#7112)
             PATH: '/tmp/path',
             SystemRoot: 'C:/Windows',
             ANTHROPIC_API_KEY: 'sk-ant-test',
@@ -1300,6 +1304,7 @@ test('#5799: la copia con snapshot preserva PATH aunque Windows lo guarde como "
     // Repro del riesgo real: `process.env` resuelve case-insensitive en Windows,
     // un objeto literal NO. Sin canonicalizacion, el hijo se queda sin PATH.
     const baseWindows = {
+        PIPELINE_AMBIENTE: 'productivo', // #7113 — env productivo declarado (#7112)
         Path: 'C:\\bin;C:\\Windows\\System32',
         ProgramFiles: 'C:\\Program Files',
         windir: 'C:\\Windows',

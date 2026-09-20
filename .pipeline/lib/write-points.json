@@ -351,7 +351,7 @@
     {
       "modulo": "lib/design-decision-gate-io.js",
       "funcion": "resolvePipelineDir",
-      "linea": 83,
+      "linea": 84,
       "canal": "estado",
       "destino": "__dirname",
       "tier": 3,
@@ -461,6 +461,39 @@
       "tier": 3,
       "estado": "migrado",
       "via": "writeTarget.writeDir"
+    },
+    {
+      "modulo": "lib/human-block.js",
+      "funcion": "markersRoot",
+      "linea": 67,
+      "canal": "estado",
+      "destino": "<pipeline>/<fase>/bloqueado-humano",
+      "tier": 3,
+      "estado": "migrado",
+      "via": "writeTarget.writeDir",
+      "nota": "#7456 — resolución por llamada; markers/sidecars/órdenes GitHub/audit de bloqueos humanos. Sin ambiente declarado: EscrituraBloqueadaError."
+    },
+    {
+      "modulo": "lib/human-block.js",
+      "funcion": "ghQueueDir",
+      "linea": 77,
+      "canal": "colas",
+      "destino": "servicios/github/pendiente",
+      "tier": 3,
+      "estado": "migrado",
+      "via": "writeTarget.writeDir",
+      "nota": "#7456 — resolución por llamada; markers/sidecars/órdenes GitHub/audit de bloqueos humanos. Sin ambiente declarado: EscrituraBloqueadaError."
+    },
+    {
+      "modulo": "lib/human-block.js",
+      "funcion": "auditRoot",
+      "linea": 87,
+      "canal": "logs",
+      "destino": "audit/*.jsonl",
+      "tier": 3,
+      "estado": "migrado",
+      "via": "writeTarget.writeDir",
+      "nota": "#7456 — resolución por llamada; markers/sidecars/órdenes GitHub/audit de bloqueos humanos. Sin ambiente declarado: EscrituraBloqueadaError."
     },
     {
       "modulo": "lib/issue-summary.js",
@@ -1371,7 +1404,7 @@
     {
       "modulo": "pulpo.js",
       "funcion": "log",
-      "linea": 645,
+      "linea": 681,
       "canal": "logs",
       "destino": "__dirname",
       "tier": 1,
@@ -1383,7 +1416,7 @@
     {
       "modulo": "pulpo.js",
       "funcion": "crashLogDir",
-      "linea": 672,
+      "linea": 710,
       "canal": "logs",
       "destino": "writeTarget.safeWriteDir",
       "tier": 1,
@@ -1393,7 +1426,7 @@
     {
       "modulo": "pulpo.js",
       "funcion": "ROOT",
-      "linea": 686,
+      "linea": 724,
       "canal": "estado",
       "destino": "__dirname",
       "tier": 1,
@@ -1405,7 +1438,7 @@
     {
       "modulo": "pulpo.js",
       "funcion": "PIPELINE",
-      "linea": 707,
+      "linea": 745,
       "canal": "estado",
       "destino": "writeTarget.writeDir",
       "tier": 1,
@@ -1415,7 +1448,7 @@
     {
       "modulo": "pulpo.js",
       "funcion": "LOG_DIR",
-      "linea": 711,
+      "linea": 749,
       "canal": "logs",
       "destino": "writeTarget.writeDir",
       "tier": 1,
@@ -1425,7 +1458,7 @@
     {
       "modulo": "pulpo.js",
       "funcion": "telegramPendienteDir",
-      "linea": 881,
+      "linea": 919,
       "canal": "colas",
       "destino": "writeTarget.writeDir",
       "tier": 1,
@@ -1434,20 +1467,8 @@
     },
     {
       "modulo": "pulpo.js",
-      "funcion": "p",
-      "linea": 1076,
-      "canal": "estado",
-      "destino": "__dirname",
-      "tier": 1,
-      "estado": "lectura",
-      "via": "__dirname",
-      "inmune": true,
-      "nota": "lee agent-models.json (loadAgentModelsRuntime)"
-    },
-    {
-      "modulo": "pulpo.js",
       "funcion": "prod",
-      "linea": 1267,
+      "linea": 1310,
       "canal": "estado",
       "destino": "__dirname",
       "tier": 1,
@@ -1459,7 +1480,7 @@
     {
       "modulo": "pulpo.js",
       "funcion": "ghWritesBloqueadas",
-      "linea": 1300,
+      "linea": 1343,
       "canal": "estado",
       "destino": "process.env.PIPELINE_*",
       "tier": 1,
@@ -1470,7 +1491,7 @@
     {
       "modulo": "pulpo.js",
       "funcion": "ghCommentOnIssue",
-      "linea": 1329,
+      "linea": 1372,
       "canal": "estado",
       "destino": "__dirname",
       "tier": 1,
@@ -1482,7 +1503,7 @@
     {
       "modulo": "pulpo.js",
       "funcion": "PAUSE_FILE",
-      "linea": 21612,
+      "linea": 21687,
       "canal": "pausa",
       "destino": "writeTarget.writeDir",
       "tier": 1,
@@ -1565,7 +1586,7 @@
     {
       "modulo": "restart.js",
       "funcion": "ROOT",
-      "linea": 99,
+      "linea": 116,
       "canal": "estado",
       "destino": "__dirname",
       "tier": 1,
@@ -1577,7 +1598,7 @@
     {
       "modulo": "restart.js",
       "funcion": "PIPELINE",
-      "linea": 101,
+      "linea": 118,
       "canal": "estado",
       "destino": "writeTarget.writeDir",
       "tier": 1,
@@ -1887,7 +1908,7 @@
     {
       "modulo": "servicio-telegram.js",
       "funcion": "REAL_ALERT_QUEUE",
-      "linea": 530,
+      "linea": 566,
       "canal": "colas",
       "destino": "writeTarget.writeDir",
       "tier": 1,
@@ -1897,7 +1918,7 @@
     {
       "modulo": "servicio-telegram.js",
       "funcion": "mediaBaseDir",
-      "linea": 1088,
+      "linea": 1124,
       "canal": "colas",
       "destino": "writeTarget.writeDir",
       "tier": 1,
@@ -1907,7 +1928,7 @@
     {
       "modulo": "servicio-telegram.js",
       "funcion": "crashLogDir",
-      "linea": 1434,
+      "linea": 1470,
       "canal": "colas",
       "destino": "writeTarget.safeWriteDir",
       "tier": 1,

@@ -1,0 +1,74 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "VaultPruebasReadHostScoped",
+      "Effect": "Allow",
+      "Action": [
+        "ssm:GetParameter",
+        "ssm:GetParameters",
+        "ssm:GetParametersByPath"
+      ],
+      "Resource": "arn:aws:ssm:REGION:ACCOUNT:parameter/intrale/intrale-pruebas/hosts/HOST/*"
+    },
+    {
+      "Sid": "VaultPruebasReadSharedScoped",
+      "Effect": "Allow",
+      "Action": [
+        "ssm:GetParameter",
+        "ssm:GetParameters",
+        "ssm:GetParametersByPath"
+      ],
+      "Resource": "arn:aws:ssm:REGION:ACCOUNT:parameter/intrale/intrale-pruebas/shared/*"
+    },
+    {
+      "Sid": "VaultPruebasDecryptViaSsm",
+      "Effect": "Allow",
+      "Action": [
+        "kms:Decrypt"
+      ],
+      "Resource": "arn:aws:kms:REGION:ACCOUNT:key/CMK_ID",
+      "Condition": {
+        "StringEquals": {
+          "kms:ViaService": "ssm.REGION.amazonaws.com"
+        },
+        "StringLike": {
+          "kms:EncryptionContext:PARAMETER_ARN": [
+            "arn:aws:ssm:REGION:ACCOUNT:parameter/intrale/intrale-pruebas/hosts/HOST/*",
+            "arn:aws:ssm:REGION:ACCOUNT:parameter/intrale/intrale-pruebas/shared/*"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "VaultPruebasDenyProductivo",
+      "Effect": "Deny",
+      "Action": [
+        "ssm:*"
+      ],
+      "Resource": "arn:aws:ssm:REGION:ACCOUNT:parameter/intrale/intrale/*"
+    },
+    {
+      "Sid": "VaultPruebasDenySecretsManager",
+      "Effect": "Deny",
+      "Action": [
+        "secretsmanager:*"
+      ],
+      "Resource": "arn:aws:secretsmanager:REGION:ACCOUNT:secret:*"
+    },
+    {
+      "Sid": "VaultPruebasDenyWrite",
+      "Effect": "Deny",
+      "Action": [
+        "ssm:PutParameter",
+        "ssm:DeleteParameter",
+        "ssm:DeleteParameters",
+        "ssm:LabelParameterVersion",
+        "secretsmanager:PutSecretValue",
+        "secretsmanager:UpdateSecret",
+        "secretsmanager:DeleteSecret"
+      ],
+      "Resource": "*"
+    }
+  ]
+}

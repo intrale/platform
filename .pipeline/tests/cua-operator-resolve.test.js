@@ -27,7 +27,10 @@ const { resolveCuaOperatorChatIds } = pulpo;
 const FAKE_BOT_TOKEN = '123456:AAAAAAAAAAAAAAAAAAAAAAAAAAAA';
 
 function withEnv(overrides, fn) {
-  const keys = ['TELEGRAM_LEO_OPERATOR_CHAT_ID', 'TELEGRAM_BOT_TOKEN', 'TELEGRAM_CHAT_ID'];
+  // #7113 — el runner corre en ambiente de PRUEBAS: el chat principal se lee de
+  // las variables `_PRUEBAS` (las productivas se ignoran por perfil, CA-3).
+  const keys = ['TELEGRAM_LEO_OPERATOR_CHAT_ID', 'TELEGRAM_BOT_TOKEN', 'TELEGRAM_CHAT_ID',
+    'TELEGRAM_BOT_TOKEN_PRUEBAS', 'TELEGRAM_CHAT_ID_PRUEBAS'];
   const saved = {};
   for (const k of keys) saved[k] = process.env[k];
   try {
@@ -81,7 +84,7 @@ test('dedup: mismo id en config y en la credential → aparece una sola vez', ()
 });
 
 test('fallback: config vacío y sin credential dedicada → usa el chat principal (getTelegramChatId)', () => {
-  withEnv({ TELEGRAM_BOT_TOKEN: FAKE_BOT_TOKEN, TELEGRAM_CHAT_ID: '55555' }, () => {
+  withEnv({ TELEGRAM_BOT_TOKEN_PRUEBAS: FAKE_BOT_TOKEN, TELEGRAM_CHAT_ID_PRUEBAS: '55555' }, () => {
     const r = resolveCuaOperatorChatIds([]);
     assert.deepEqual(r, ['55555'],
       'sin operator_chat_ids ni credential dedicada, el operador es el chat principal autorizado');

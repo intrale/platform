@@ -27,9 +27,37 @@ const execFileAsync = promisify(execFile);
 // SINGLETON. Sin esto el Tiempo 2 no tiene de dónde leerlo.
 let secretsHealth = null;
 
-const credLoad = require('./lib/credentials').loadIntoEnv({
+// #7113 · ítem 8 / P-6 — FAIL-FAST por `dir === null` ANTES de hidratar o purgar
+// nada: un Pulpo sin ambiente declarado ni dir de pruebas no tiene dónde
+// escribir (SEC-10 de #7112) y sin esto moriría más abajo con un throw en
+// top-level que el watchdog respawnea cada 2 min sin backoff (#5073). La
+// decisión NO se duplica: es `write-target.resolverEscritura` (el mismo
+// formateador de tres líneas de todo bloqueo) y se sale con `process.exit(1)`
+// limpio. NO aplica al `require` en modo test (`PULPO_NO_AUTOSTART=1`): esos
+// tests cargan el módulo sin arrancar nada.
+if (process.env.PULPO_NO_AUTOSTART !== '1') {
+  const arranque = writeTarget.resolverEscritura(process.env,
+    { canal: 'estado', destino: 'arranque del pulpo (.pipeline raíz)' });
+  if (arranque.bloqueo) {
+    process.stderr.write(`${arranque.bloqueo}\n[ambiente] sin dir: nada que arrancar (boot abortado antes de hidratar credenciales)\n`);
+    process.exit(1);
+  }
+}
+
+// #7113 (CA-1, D-3) — hidratación POR PERFIL DE AMBIENTE. `credenciales-ambiente`
+// recibe el env del proceso, resuelve el ambiente (`lib/pipeline-env`) y decide
+// QUÉ store hidratar: `credentials.json` sólo en `productivo`; en cualquier otro
+// modo purga las credenciales productivas heredadas de la shell, hidrata SOLO
+// `credentials.pruebas.json` (a variables `_PRUEBAS`) y apunta GitHub, sesiones
+// OAuth y `agent-models.json` al dir de pruebas. `hidratacion` conserva la forma
+// de `loadIntoEnv` que consume `secrets-health.evaluateFromDisk`.
+const credencialesAmbiente = require('./lib/credenciales-ambiente');
+const credAmb = credencialesAmbiente.aplicar(process.env, {
   logger: (m) => process.stderr.write(m + '\n'),
 });
+const credLoad = credAmb.hidratacion;
+// UX-1 — bloque de canales, una sola vez (una línea en productivo).
+for (const lineaAmbiente of credAmb.resumen) process.stderr.write(lineaAmbiente + '\n');
 
 // #5243 Tiempo 1 — evaluar la salud de los secretos con el retorno de
 // `loadIntoEnv` (hasta ahora descartado). Es el único punto donde `hydrated` /
@@ -47,7 +75,13 @@ const credLoad = require('./lib/credentials').loadIntoEnv({
 // un `required_when` mal declarado en el manifiesto frenaría el pipeline entero
 // y sin escape hatch destrabarlo exigiría un hotfix de código.
 try {
-  if (process.env.PULPO_SKIP_SECRETS_HALT !== '1') {
+  if (credAmb.ambiente.modo !== pipelineEnv.MODOS.PRODUCTIVO) {
+    // #7113 — en pruebas los canales apagados son el estado ESPERADO (D-1) y ya
+    // lo narra el bloque `[ambiente]`; el health-check mide el store productivo
+    // y su halt avisa por Telegram real: no aplica a este ambiente.
+    secretsHealth = { ok: true, halt: false, degraded: false, omitido: 'pruebas' };
+    process.stderr.write(`[secrets-health] omitido (modo=${credAmb.ambiente.modo}: los canales se resuelven por perfil)\n`);
+  } else if (process.env.PULPO_SKIP_SECRETS_HALT !== '1') {
     secretsHealth = require('./lib/secrets-health').evaluateFromDisk(credLoad);
   } else {
     process.stderr.write('[secrets-health] WARN health-check SKIPPED via PULPO_SKIP_SECRETS_HALT=1\n');
@@ -641,8 +675,12 @@ require('./lib/java-home-normalizer').normalizeJavaHome({
 // TTS/Whisper vía `multimedia.js`). Mantener una sola fuente evita divergencias
 // al rotar la key. Idempotente y no sobreescribe si el operador setea la var
 // explícitamente en el SO.
+// #7113 (CA-4) — recibe el perfil: en modo ≠ productivo no corre (las API keys
+// productivas no se hidratan en pruebas; TTS/STT/Vision degradan).
 require('./lib/hydrate-provider-env').hydrateProviderEnv({
   legacyConfigPath: path.join(__dirname, '..', '.claude', 'hooks', 'telegram-config.json'),
+  env: process.env,
+  ambiente: credAmb.ambiente,
   log: (msg) => {
     try { fs.appendFileSync(path.join(LOG_DIR(), 'pulpo.log'), `[${new Date().toISOString()}] ${msg}\n`); } catch {}
     console.error(msg);
@@ -1073,7 +1111,12 @@ function leerContextosRequeridos() {
 let AGENT_MODELS = null;
 function loadAgentModelsRuntime() {
   try {
-    const p = path.join(__dirname, 'agent-models.json');
+    // #7113 (CA-4) — el archivo lo fija el perfil de canales: el productivo en
+    // `productivo` (= `__dirname/agent-models.json`, como siempre) y el
+    // deterministic-only generado en el dir de pruebas en cualquier otro modo.
+    // `null` (no se pudo generar) ⇒ sin modelos: ningún agente resuelve a un LLM.
+    const p = credAmb.canales.proveedores.agentModelsPath;
+    if (!p) { AGENT_MODELS = null; return; }
     AGENT_MODELS = JSON.parse(fsForAgentModels.readFileSync(p, 'utf8'));
   } catch (e) {
     AGENT_MODELS = null;
@@ -18085,7 +18128,11 @@ function cmdBloqueados() {
   return lines.join('\n');
 }
 
-function cmdUnblock(args) {
+// #7459 — `deps.humanBlock` es sólo para tests: permite inyectar el módulo
+// cargado bajo un `PIPELINE_REPO_ROOT` temporal (SEC-4) o un doble que
+// devuelva `false` en los encolados (respuesta honesta, CA-3). El dispatch
+// del Commander lo llama sin `deps`.
+function cmdUnblock(args, deps = {}) {
   const trimmed = (args || '').trim();
   if (!trimmed) {
     return '❌ Uso: `/unblock <issue> <orientación>`\nEj: `/unblock 2480 usar la API REST en lugar de gRPC`';
@@ -18114,39 +18161,45 @@ Ej: \`/unblock ${issue} reintentar usando la API REST\``;
     }
   } catch {}
 
-  let humanBlock;
-  try { humanBlock = require('./lib/human-block'); }
-  catch (e) { return `⚠️ No pude cargar el módulo de bloqueos: ${e.message}`; }
+  const hb = deps.humanBlock || humanBlock;
 
+  // `unblockIssue` mueve UN marker con orientación (#6190); el botón de la
+  // alerta, en cambio, reactiva todos los markers del issue sin orientación.
   let result;
-  try { result = humanBlock.unblockIssue({ issue, guidance, unlocker: 'commander:telegram' }); }
+  try { result = hb.unblockIssue({ issue, guidance, unlocker: 'commander:telegram' }); }
   catch (e) { return `❌ Error desbloqueando #${issue}: ${e.message}`; }
 
   if (!result.ok) return `⚠️ ${result.error}`;
 
-  // Best-effort: quitar label needs:human del issue en GitHub
-  try {
-    const ghBin = process.env.GH_BIN || 'gh';
-    require('child_process').execSync(
-      `"${ghBin}" issue edit ${issue} --remove-label "needs:human" --repo ${repoTarget.getPrimaryRepo()}`,
-      { stdio: 'ignore', timeout: 15000 }
-    );
-  } catch {}
+  // #7459 — el marker YA está en pendiente/ (no hay rollback). Lo que sigue va
+  // por la cola del servicio-github, que es el único camino con guardrail de
+  // procedencia para retirar `needs-human` (#5690 SEC-B) y que no depende de
+  // tener `gh` en el PATH del Pulpo. Nunca `gh` en proceso (SEC-3). Antes se
+  // hacía con un binario pelado y el label legacy: fallaba en silencio y el
+  // Pulpo volvía a ver el issue como bloqueado tras el ✅.
+  // `authorized_by` propio del canal (SEC-1): distinto del de los botones
+  // (`human-block:unblock`) para que el audit JSONL los distinga.
+  const labelOk = hb.enqueueRemoveNeedsHuman(issue, 'commander:telegram:unblock') === true;
+  const body = `## ✅ Desbloqueado por humano\n\n**Skill:** \`${result.skill}\` · **Fase:** \`${result.from_phase}\` → \`${result.to_phase}\`\n**Canal:** comando /unblock por Telegram\n\n**Orientación:**\n\n> ${guidance.replace(/\n/g, '\n> ')}\n\n_Vuelve a la cola del pipeline._`;
+  const commentOk = hb.enqueueGithub('comment', { issue, body }) === true;
 
-  // Best-effort: comentar en el issue con la orientación
-  try {
-    const ghBin = process.env.GH_BIN || 'gh';
-    const body = `## ✅ Desbloqueado por humano\n\n**Skill:** \`${result.skill}\` · **Fase:** \`${result.from_phase}\` → \`${result.to_phase}\`\n\n**Orientación:**\n\n> ${guidance.replace(/\n/g, '\n> ')}\n\n_Vuelve a la cola del pipeline._`;
-    const tmpFile = path.join(PIPELINE(), `.unblock-comment-${issue}-${Date.now()}.md`);
-    fs.writeFileSync(tmpFile, body);
-    require('child_process').execSync(
-      `"${ghBin}" issue comment ${issue} --body-file "${tmpFile}" --repo ${repoTarget.getPrimaryRepo()}`,
-      { stdio: 'ignore', timeout: 15000 }
-    );
-    try { fs.unlinkSync(tmpFile); } catch {}
-  } catch {}
+  const lineaSkillFase = `*Skill:* \`${result.skill}\` · *Fase:* \`${result.from_phase}\` → \`${result.to_phase}\``;
+  if (labelOk && commentOk) {
+    // Copy de éxito intacto (CA-3 / G-1): el ✅ ahora sí promete algo que el
+    // sistema cumple (la orden quedó tomada; sale en el próximo tick).
+    return `✅ Issue *#${issue}* desbloqueado.\n${lineaSkillFase}\n*Orientación guardada* para que el próximo agente la lea al arrancar.`;
+  }
 
-  return `✅ Issue *#${issue}* desbloqueado.\n*Skill:* \`${result.skill}\` · *Fase:* \`${result.from_phase}\` → \`${result.to_phase}\`\n*Orientación guardada* para que el próximo agente la lea al arrancar.`;
+  // Respuesta honesta (CA-3 / G-2 / G-3): primero qué SÍ pasó, después qué no,
+  // después qué hacer. Sin paths ni stack en Telegram (SEC-5): eso va al log.
+  log('commander', `[unblock] #${issue} marker movido a ${result.to_phase}/pendiente; encolado remove-label=${labelOk} comment=${commentOk}`);
+  if (!labelOk) {
+    // Con o sin comentario: el issue SIGUE frenado hasta que alguien quite el
+    // label. "A mano" sólo acá, que es donde el operador tiene que actuar.
+    return `⚠️ Issue *#${issue}*: la orientación quedó guardada y el marker volvió a la cola, pero *no pude encolar el retiro del label* \`needs-human\`. Quitalo a mano en GitHub o el Pulpo lo va a seguir viendo bloqueado.\n${lineaSkillFase}`;
+  }
+  // Sólo falló el comentario: el issue SÍ se destraba; falta el rastro en GitHub.
+  return `⚠️ Issue *#${issue}* desbloqueado, pero *no pude encolar el comentario* con la orientación en GitHub. El agente la va a leer igual desde el marker; si querés que quede en el issue, pegala a mano.\n${lineaSkillFase}`;
 }
 
 function cmdHelp() {
@@ -20244,6 +20297,15 @@ function sendTelegramWithMarkup(text, replyMarkup, opts) {
     log('telegram', `⛔ saliente SUPRIMIDO (entorno de prueba: ${bloqueoPrueba}) — la cola de destino es la productiva, no se encola`);
     return null;
   }
+  // #7113 (CA-3) — transporte por ambiente. Con el canal apagado (modo ≠
+  // productivo sin credencial de pruebas) NO se encola ni se abre red: se deja
+  // una traza redactada en `<dir>/servicios/telegram/trazas/` y se corta acá.
+  const transporte = telegramTransporte();
+  if (transporte.nulo) {
+    const tz = transporte.trazar({ origen: 'pulpo:sendTelegramWithMarkup', texto: text });
+    log('telegram', `transporte nulo (${transporte.motivo}) — trazado en ${tz.archivo || 'stderr'}`);
+    return null;
+  }
   const token = getTelegramToken();
   const chatId = getTelegramChatId();
   if (!token || !chatId) { log('telegram', 'Sin token/chatId'); return null; }
@@ -20310,20 +20372,30 @@ function sendTelegramWithMarkup(text, replyMarkup, opts) {
     // best-effort SIN cola ni recibo: queda FUERA de alcance de la reconciliación
     // (no hay forma de confirmar entrega de forma cross-proceso acá). Devolvemos
     // null para que el caller NO registre un correlationId que nunca se reconcilia.
-    const https = require('https');
-    const data = JSON.stringify({ chat_id: chatId, text: msg });
-    const req = https.request({
-      hostname: 'api.telegram.org',
-      path: `/bot${token}/sendMessage`,
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data) }
+    // #7113 (CA-3 bullet 3) — el HTTPS directo pasa por el transporte del
+    // ambiente: SOLO en productivo abre conexión; en cualquier otro modo se
+    // traza (aunque exista bot de pruebas: el único camino a él es la cola).
+    const r = transporte.enviarDirecto({
+      metodo: 'sendMessage', token, chatId, payload: { text: msg },
+      origen: 'pulpo:fallback-https',
+      onError: (err) => log('telegram', `Error directo: ${err.message}`),
     });
-    req.on('error', (err) => log('telegram', `Error directo: ${err.message}`));
-    req.write(data);
-    req.end();
-    log('telegram', `Enviado directo (${msg.length} chars)`);
+    if (r.nulo) log('telegram', `fallback directo TRAZADO, no enviado (${transporte.motivo}) → ${r.archivo || 'stderr'}`);
+    else log('telegram', `Enviado directo (${msg.length} chars)`);
     return null;
   }
+}
+
+// #7113 — transporte de Telegram del ambiente, resuelto POR LLAMADA sobre el
+// env del proceso (el perfil ya está calculado en el boot; las credenciales
+// `_PRUEBAS` pueden setearse después del `require` en los tests).
+const TELEGRAM_TRAZAS_ESTADO = { trazados: 0, ultimoArchivo: null };
+function telegramTransporte() {
+  return credencialesAmbiente.transporteTelegram(process.env, {
+    ambiente: credAmb.ambiente,
+    estado: TELEGRAM_TRAZAS_ESTADO,
+    logger: (m) => { try { log('telegram', m); } catch { process.stderr.write(m + '\n'); } },
+  });
 }
 
 // #6192 — Botones de firma del GATE 1 (parte 3 del split de #6173).
@@ -20705,23 +20777,22 @@ function dispatchVoiceParts(buffers, chatId, mediaDir, opts = {}) {
 // (no encolado vía svc-telegram) porque el servicio no maneja sendChatAction
 // y el indicador pierde valor si se atrasa por la cola.
 function sendChatActionTyping() {
-  const token = getTelegramToken();
-  const chatId = getTelegramChatId();
-  if (!token || !chatId) return;
+  // #7113 (CA-3 bullet 3) — segundo HTTPS directo del pulpo: pasa por el
+  // transporte del ambiente (traza en modo ≠ productivo, nunca red).
   try {
-    const https = require('https');
-    const data = JSON.stringify({ chat_id: chatId, action: 'typing' });
-    const req = https.request({
-      hostname: 'api.telegram.org',
-      path: `/bot${token}/sendChatAction`,
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data) },
-      timeout: 3000,
+    const transporte = telegramTransporte();
+    if (transporte.directoBloqueado) {
+      transporte.trazar({ origen: 'pulpo:sendChatActionTyping', texto: '', metodo: 'sendChatAction' });
+      return;
+    }
+    const token = getTelegramToken();
+    const chatId = getTelegramChatId();
+    if (!token || !chatId) return;
+    transporte.enviarDirecto({
+      metodo: 'sendChatAction', token, chatId, payload: { action: 'typing' },
+      origen: 'pulpo:sendChatActionTyping', timeout: 3000,
+      onError: () => { /* best-effort, sin log para no spammear */ },
     });
-    req.on('error', () => { /* best-effort, sin log para no spammear */ });
-    req.on('timeout', () => { try { req.destroy(); } catch {} });
-    req.write(data);
-    req.end();
   } catch { /* swallow — no debe interrumpir el flow */ }
 }
 
@@ -20760,8 +20831,12 @@ function getSherlockWaitBudgetMs(cfgOverride) {
 function _loadTgSecrets() {
   try {
     const { loadTelegramSecrets } = require('./lib/telegram-secrets');
+    // #7113 (CA-3) — por perfil: en modo ≠ productivo sólo las variables
+    // `_PRUEBAS` del env; nunca el store productivo ni el archivo commiteado.
     return loadTelegramSecrets({
       legacyConfigPath: path.join(ROOT, '.claude', 'hooks', 'telegram-config.json'),
+      env: process.env,
+      ambiente: credAmb.ambiente,
     });
   } catch { return null; }
 }
@@ -27369,6 +27444,8 @@ process.on('SIGINT', () => {
 });
 process.on('SIGTERM', () => {
   log('pulpo', 'SIGTERM recibido — cerrando');
+  // #7113 (UX-2) — dónde quedó la traza del transporte nulo, si hubo.
+  try { const r = telegramTransporte().resumen(); if (r) process.stderr.write(`${r}\n`); } catch {}
   try { quotaNotifier.dispose(); } catch {}
   running = false;
 });
@@ -27564,6 +27641,9 @@ if (process.env.PULPO_NO_AUTOSTART === '1') {
     _verifyHumanBlockLive,
     _shouldReblockForHuman,
     HUMAN_BLOCK_LABELS,
+    // #7459 — handler de /unblock del Commander, expuesto para el test de
+    // regresión (retiro de needs-human por la cola auditada, sin gh en proceso).
+    cmdUnblock,
     UNBLOCK_WEDGE_TIMEOUT_MS,
     REENTRY_LOG_COOLDOWN_MS,
     _getUnblockState: () => ({
@@ -27682,7 +27762,18 @@ if (process.env.PULPO_NO_AUTOSTART === '1') {
 if (process.env.PULPO_SKIP_AGENT_MODELS_VALIDATE !== '1') {
   try {
     const agentModelsValidate = require('./lib/agent-models-validate');
+    // #7113 (CA-4) — se valida el archivo que el perfil de canales fija (el
+    // productivo en `productivo`, el deterministic-only del dir de pruebas en
+    // cualquier otro modo). Sin archivo en pruebas ⇒ abortar: un Pulpo sin
+    // `agent-models.json` de pruebas caería al default de Anthropic.
+    const agentModelsPath = credAmb.canales.proveedores.agentModelsPath;
+    if (!agentModelsPath) {
+      process.stderr.write(`[validate] FATAL sin agent-models.json para modo=${credAmb.ambiente.modo}: `
+        + `${credAmb.canales.proveedores.motivo || 'sin motivo'} — boot abortado\n`);
+      process.exit(2);
+    }
     agentModelsValidate.validateOrExit({
+      jsonPath: agentModelsPath,
       contextLabel: 'boot abortado',
       // checkEnv:true (re-activado en #3154 después del fix temporal de #3153).
       // validateCredentialsEnvPresence hace bypass de providers con
@@ -27705,8 +27796,8 @@ if (process.env.PULPO_SKIP_AGENT_MODELS_VALIDATE !== '1') {
     // path/fix, nunca valores de credentials_env.
     const { validateChains } = require('./lib/multi-provider/validate-chains');
     const chainsConfig = agentModelsValidate.parseJsonOrJsonc(
-      fs.readFileSync(agentModelsValidate.CANONICAL_JSON_PATH, 'utf8'),
-      agentModelsValidate.CANONICAL_JSON_PATH,
+      fs.readFileSync(agentModelsPath, 'utf8'),
+      agentModelsPath,
     );
     const chainsResult = validateChains(chainsConfig);
     if (!chainsResult.ok) {

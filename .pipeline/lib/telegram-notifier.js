@@ -61,7 +61,7 @@ const os = require('node:os');
 const path = require('node:path');
 
 const httpClient = require('./http-client');
-const { redactUrlLike } = require('./redact');
+const { redactTelegram } = require('./redact');
 
 // -----------------------------------------------------------------------------
 // Constantes (CA-UX-2, CA-S-2, CA-F-9, CA-F-10, CA-UX-1, CA-UX-5, CA-UX-6)
@@ -128,11 +128,9 @@ function _resetRateLimit() {
 function appendNotifierLog(logPath, msg, chatId) {
     try {
         const ts = new Date().toISOString();
-        let redacted = redactUrlLike(String(msg));
-        if (chatId) {
-            const re = new RegExp(escapeRegExp(String(chatId)), 'g');
-            redacted = redacted.replace(re, '<chat_id>');
-        }
+        // #7113 — la redacción (token + chat_id) vive en `redact.redactTelegram`,
+        // compartida con el transporte nulo del ambiente de pruebas.
+        const redacted = redactTelegram(String(msg), { chatId: chatId || null });
         const line = `[${ts}] [telegram-notifier] ${redacted}\n`;
         fs.mkdirSync(path.dirname(logPath), { recursive: true });
         fs.appendFileSync(logPath, line, 'utf8');
@@ -140,10 +138,6 @@ function appendNotifierLog(logPath, msg, chatId) {
         // Fail-soft: si no podemos loguear, el caller igual recibe
         // `{ ok: false, ... }` y el pipeline sigue.
     }
-}
-
-function escapeRegExp(s) {
-    return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 // -----------------------------------------------------------------------------

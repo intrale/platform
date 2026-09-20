@@ -39,6 +39,11 @@ const REPO_ROOT = path.resolve(__dirname, '..', '..');
 // apareciera en un mensaje de error, el prefijo `FAKE-` lo delata.
 function fakeOperatorEnv() {
     return {
+        // #7113 — el env del operador PRODUCTIVO viene declarado por el lanzador
+        // (#7112). Sin la declaración el hijo se arma en PRUEBAS y buildChildEnv
+        // purga toda credencial productiva (CA-1/CA-4 de #7113), que no es lo
+        // que estos casos miden.
+        PIPELINE_AMBIENTE: 'productivo',
         PATH: '/usr/bin:/bin',
         SystemRoot: 'C:\\Windows',
         ANTHROPIC_API_KEY: 'FAKE-anthropic-key',

@@ -406,6 +406,14 @@ function buildReminderMessage(due, nowMs, opts) {
  *
  * NUNCA lanza y NUNCA modifica el estado de bloqueo de ningún issue.
  *
+ * #7456 — Este módulo NO resuelve el `.pipeline` por su cuenta: el `pipelineDir`
+ * lo pasa el llamador (`pulpo.js::PIPELINE()`, punto ya migrado a `write-target`)
+ * y sin él no se escribe nada (`error: 'sin pipelineDir'`). El barrido de
+ * markers va por `opts.listBlocked` (el Pulpo inyecta `humanBlock.listBlockedIssues`,
+ * que resuelve por llamada). Así el estado del recordatorio y los markers que
+ * mira salen SIEMPRE del mismo ambiente; cubierto por
+ * `lib/__tests__/human-block-env-isolation.test.js`.
+ *
  * @param {object} opts
  * @param {string} opts.pipelineDir
  * @param {Function} opts.listBlocked    — () => Array (inyectable en tests).
