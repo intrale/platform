@@ -55,10 +55,21 @@ const ENV_MAPPING = Object.freeze({
     openai_api_key: 'OPENAI_API_KEY',
 });
 
-function hydrateProviderEnv({ legacyConfigPath, log, loadKeysFn } = {}) {
+// #7113 (CA-4, RS-4) — por perfil de ambiente: en modo distinto de `productivo`
+// NO se llama al loader (todas sus vias son productivas: store canonico, legacy
+// del home, archivo commiteado) y `process.env` queda intacto. El resultado
+// lleva `omitido: 'pruebas'` para que el boot lo narre.
+function hydrateProviderEnv({ legacyConfigPath, log, loadKeysFn, env, ambiente } = {}) {
     const logger = typeof log === 'function' ? log : () => {};
+    const e = env && typeof env === 'object' ? env : process.env;
+    const pipelineEnv = require('./pipeline-env');
+    const amb = ambiente && typeof ambiente === 'object' ? ambiente : pipelineEnv.resolve(e);
+    if (amb.modo !== pipelineEnv.MODOS.PRODUCTIVO) {
+        logger(`[pulpo] env hydration: omitida (modo=${amb.modo}: las API keys de proveedores no se hidratan en pruebas)`);
+        return { hydrated: [], alreadySet: [], missing: [], omitido: 'pruebas' };
+    }
     const loader = typeof loadKeysFn === 'function' ? loadKeysFn : loadApiKeys;
-    const keys = loader({ legacyConfigPath });
+    const keys = loader({ legacyConfigPath, env: e, ambiente: amb });
 
     const hydrated = [];
     const alreadySet = [];

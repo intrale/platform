@@ -369,19 +369,19 @@
         },
         {
             "file": "lib/__tests__/hydrate-provider-env.test.js",
-            "line": 30,
-            "variable": "(clave no resoluble)",
-            "sentido": "(n/a)"
-        },
-        {
-            "file": "lib/__tests__/hydrate-provider-env.test.js",
             "line": 35,
             "variable": "(clave no resoluble)",
             "sentido": "(n/a)"
         },
         {
             "file": "lib/__tests__/hydrate-provider-env.test.js",
-            "line": 36,
+            "line": 40,
+            "variable": "(clave no resoluble)",
+            "sentido": "(n/a)"
+        },
+        {
+            "file": "lib/__tests__/hydrate-provider-env.test.js",
+            "line": 41,
             "variable": "(clave no resoluble)",
             "sentido": "(n/a)"
         },
@@ -753,13 +753,13 @@
         },
         {
             "file": "tests/pulpo-agent-spawn-env-containment.test.js",
-            "line": 797,
+            "line": 800,
             "variable": "(clave no resoluble)",
             "sentido": "(n/a)"
         },
         {
             "file": "tests/pulpo-agent-spawn-env-containment.test.js",
-            "line": 804,
+            "line": 807,
             "variable": "(clave no resoluble)",
             "sentido": "(n/a)"
         },
