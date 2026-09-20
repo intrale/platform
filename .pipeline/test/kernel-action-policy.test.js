@@ -13,6 +13,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
+const os = require('node:os');
 
 const policy = require('../lib/kernel-action-policy');
 
@@ -243,7 +244,9 @@ test('#5174 · inyectar config null/no-objeto NO cae a la lectura ambiental', ()
     // Raíz inexistente: si el resolver llegara a leer, tiraría. Que resuelva a
     // los defaults prueba que la inyección cortocircuitó TODA lectura.
     const prev = process.env.PIPELINE_DIR_OVERRIDE;
-    process.env.PIPELINE_DIR_OVERRIDE = path.join(__dirname, '__no_existe_5174__');
+    // #7114 (SEC-2): subdir inexistente bajo os.tmpdir(), nunca bajo el .pipeline del repo
+    // (la inexistencia no exime: un mkdirSync recursivo lo crearia en el productivo).
+    process.env.PIPELINE_DIR_OVERRIDE = path.join(os.tmpdir(), '__no_existe_5174__');
     try {
         assert.equal(policy.resolvePolicy('worktree-reset', { config: null }).mode, 'notify-and-proceed');
         assert.equal(policy.resolvePolicy('realign-allowlist', { config: null }).mode, 'wait-confirmation');
@@ -262,7 +265,9 @@ test('#5174 · inyectar config null/no-objeto NO cae a la lectura ambiental', ()
 // un camino que hoy es fail-closed (#5172).
 test('#5174 · config undefined NO cortocircuita: sigue leyendo fail-closed', () => {
     const prev = process.env.PIPELINE_DIR_OVERRIDE;
-    process.env.PIPELINE_DIR_OVERRIDE = path.join(__dirname, '__no_existe_5174__');
+    // #7114 (SEC-2): subdir inexistente bajo os.tmpdir(), nunca bajo el .pipeline del repo
+    // (la inexistencia no exime: un mkdirSync recursivo lo crearia en el productivo).
+    process.env.PIPELINE_DIR_OVERRIDE = path.join(os.tmpdir(), '__no_existe_5174__');
     try {
         assert.throws(() => policy.resolvePolicy('worktree-reset', { config: undefined }));
     } finally {

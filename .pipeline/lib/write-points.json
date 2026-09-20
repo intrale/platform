@@ -174,6 +174,16 @@
       "via": "writeTarget.writeDir"
     },
     {
+      "modulo": "kernel-bootstrap/parity-e2e-9.1.js",
+      "funcion": "main",
+      "linea": 92,
+      "canal": "logs",
+      "destino": "logs/parity-9.1.json",
+      "tier": 3,
+      "estado": "safe",
+      "via": "writeTarget.safeWriteDir"
+    },
+    {
       "modulo": "lib/agent-models-change-alert.js",
       "funcion": "logFile",
       "linea": 350,
@@ -1181,6 +1191,18 @@
       "via": "writeTarget.writeDir"
     },
     {
+      "modulo": "lib/write-target-lint.js",
+      "funcion": "DEFAULT_PIPELINE_ROOT",
+      "linea": 74,
+      "canal": "estado",
+      "destino": "lib/write-target-lint.baseline.json",
+      "tier": 3,
+      "estado": "externo",
+      "via": "__dirname",
+      "inmune": true,
+      "nota": "no es destino del resolvedor de ambiente: --write-baseline reescribe un archivo FUENTE versionado (el baseline del propio lint, como test-env-lint.js con sus JSON, fuera del alcance por el prefijo test-) por comando explicito del dev, nunca en runtime del Pulpo ni sobre colas/logs/estado/pausa. El --check solo lee."
+    },
+    {
       "modulo": "listener-telegram.js",
       "funcion": "PIPELINE",
       "linea": 24,
@@ -1481,7 +1503,7 @@
     {
       "modulo": "pulpo.js",
       "funcion": "PAUSE_FILE",
-      "linea": 21677,
+      "linea": 21687,
       "canal": "pausa",
       "destino": "writeTarget.writeDir",
       "tier": 1,
@@ -1942,6 +1964,67 @@
       "tier": 2,
       "estado": "migrado",
       "via": "writeTarget.writeDir"
+    },
+    {
+      "modulo": "skills-deterministicos/build.js",
+      "funcion": "REPO_ROOT",
+      "linea": 48,
+      "canal": "logs",
+      "destino": "logs/<agente>.log + desarrollo/*/trabajando/* (colas) + qa/artifacts (externo)",
+      "tier": 3,
+      "estado": "pendiente",
+      "via": "process.env.PIPELINE_*"
+    },
+    {
+      "modulo": "skills-deterministicos/delivery.js",
+      "funcion": "REPO_ROOT",
+      "linea": 46,
+      "canal": "logs",
+      "destino": "logs/<agente>.log + desarrollo/*/trabajando/* (colas)",
+      "tier": 3,
+      "estado": "pendiente",
+      "via": "process.env.PIPELINE_*"
+    },
+    {
+      "modulo": "skills-deterministicos/delivery.js",
+      "funcion": "savedOverride",
+      "linea": 1880,
+      "canal": "logs",
+      "destino": "lectura del override para restaurarlo en finally",
+      "tier": 3,
+      "estado": "lectura",
+      "via": "process.env.PIPELINE_*",
+      "nota": "guarda process.env.PIPELINE_DIR_OVERRIDE para restaurarlo en el finally de auditFailClosedDecision; la escritura (absence-audit) es el punto auditFailClosedDecision de este mismo modulo."
+    },
+    {
+      "modulo": "skills-deterministicos/delivery.js",
+      "funcion": "auditFailClosedDecision",
+      "linea": 1882,
+      "canal": "logs",
+      "destino": "absence-audit.safeAppendDecision via PIPELINE_DIR_OVERRIDE=REPO_ROOT/.pipeline (mutacion en runtime, #7393)",
+      "tier": 3,
+      "estado": "pendiente",
+      "via": "process.env.PIPELINE_*"
+    },
+    {
+      "modulo": "skills-deterministicos/linter.js",
+      "funcion": "REPO_ROOT",
+      "linea": 35,
+      "canal": "logs",
+      "destino": "logs/<agente>.log + desarrollo/*/trabajando/* (colas)",
+      "tier": 3,
+      "estado": "pendiente",
+      "via": "process.env.PIPELINE_*"
+    },
+    {
+      "modulo": "skills-deterministicos/tester.js",
+      "funcion": "REPO_ROOT",
+      "linea": 51,
+      "canal": "logs",
+      "destino": "logs/<agente>.log + desarrollo/*/trabajando/* (colas) + qa/artifacts (externo)",
+      "tier": 3,
+      "estado": "pendiente",
+      "via": "process.env.PIPELINE_*"
     },
     {
       "modulo": "smoke-test.js",

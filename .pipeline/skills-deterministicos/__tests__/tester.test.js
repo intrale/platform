@@ -1248,6 +1248,53 @@ test('escribe en el dir del llamador', () => { fs.writeFileSync(path.join(proces
     fs.rmSync(propio, { recursive: true, force: true });
 });
 
+// #7114 (rebote rev-2) — el Pulpo spawnea al tester con
+// `PIPELINE_AMBIENTE=productivo` declarado (watchdog.ps1, #7455). La batería es
+// una corrida de PRUEBAS: los hijos de `node --test` reciben `pruebas` explícito
+// (no borrado: `declararRaiz` usa `??=`) y el tester avisa que reemplazó la
+// declaración heredada. Sin esto, `delivery-gate2` G1·CA-6 fallaba sólo bajo
+// el Pulpo y cualquier entrypoint spawneado como main desde un test resolvía
+// productivo.
+test('#7114 — runNodeTests declara PIPELINE_AMBIENTE=pruebas a los hijos aunque el llamador venga en productivo', async () => {
+    const fresh = fs.mkdtempSync(path.join(require('os').tmpdir(), 'v3-tester-7114-amb-'));
+    fs.mkdirSync(path.join(fresh, '.pipeline', 'tests'), { recursive: true });
+    fs.mkdirSync(path.join(fresh, '.pipeline', 'logs'), { recursive: true });
+    fs.writeFileSync(path.join(fresh, '.pipeline', 'tests', 'amb.test.js'), `
+const test = require('node:test');
+const assert = require('node:assert/strict');
+test('la bateria corre en pruebas', () => {
+  assert.equal(process.env.PIPELINE_AMBIENTE, 'pruebas');
+});
+`);
+    const env = { ...process.env, PIPELINE_AMBIENTE: 'productivo' };
+    const lineas = [];
+    const r = await tester.runNodeTests(fresh, env, { onLog: (l) => lineas.push(l) });
+    assert.equal(r.exit_code, 0, r.stderr);
+    assert.equal(r.summary.tests, 1);
+    assert.equal(r.summary.failures, 0);
+    assert.equal(env.PIPELINE_AMBIENTE, 'productivo', 'no muta el env recibido');
+    assert.ok(lineas.some((l) => l === '[tester:node-test] PIPELINE_AMBIENTE=productivo heredado → hijos de node --test corren con pruebas'), lineas.join('\n'));
+});
+
+test('#7114 — runNodeTests declara pruebas también sin declaración heredada, sin avisar', async () => {
+    const fresh = fs.mkdtempSync(path.join(require('os').tmpdir(), 'v3-tester-7114-amb2-'));
+    fs.mkdirSync(path.join(fresh, '.pipeline', 'tests'), { recursive: true });
+    fs.mkdirSync(path.join(fresh, '.pipeline', 'logs'), { recursive: true });
+    fs.writeFileSync(path.join(fresh, '.pipeline', 'tests', 'amb.test.js'), `
+const test = require('node:test');
+const assert = require('node:assert/strict');
+test('la bateria corre en pruebas', () => { assert.equal(process.env.PIPELINE_AMBIENTE, 'pruebas'); });
+`);
+    const env = { ...process.env };
+    delete env.PIPELINE_AMBIENTE;
+    const lineas = [];
+    const r = await tester.runNodeTests(fresh, env, { onLog: (l) => lineas.push(l) });
+    assert.equal(r.exit_code, 0, r.stderr);
+    assert.equal(r.summary.failures, 0);
+    assert.equal(env.PIPELINE_AMBIENTE, undefined, 'no muta el env recibido');
+    assert.ok(!lineas.some((l) => /PIPELINE_AMBIENTE=.* heredado/.test(l)), 'sin declaración heredada no hay aviso');
+});
+
 test('runNodeTests — test fallido devuelve exit_code:1 y failures>0', async () => {
     const fresh = fs.mkdtempSync(path.join(require('os').tmpdir(), 'v3-tester-fail-'));
     fs.mkdirSync(path.join(fresh, '.pipeline', 'tests'), { recursive: true });

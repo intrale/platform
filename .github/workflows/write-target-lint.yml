@@ -1,0 +1,60 @@
+name: Write Target Lint
+
+# Issue #7114 — defensa en profundidad del guardrail por DESTINO de escritura
+# (cierre de la Ola 9.4.1 · Ambiente de pruebas del CORE). El hook pre-commit
+# local es bypassable con `--no-verify`; este job duplica el lint en CI.
+#
+# R-A7 / SEC-10 — hoy el UNICO required check de `main` es `pr-status`, y los
+# otros lints del repo tampoco estan en su `needs:`. Hasta que cierre #6265
+# (cablear el job como required check del merge) este guardrail es ADVISORY en
+# CI y bloqueante solo en el hook local. Cablearlo esta fuera del alcance de
+# #7114 a proposito (mismo precedente que #6260).
+
+on:
+  pull_request:
+    branches: [ main, develop ]
+    paths:
+      - '.pipeline/**'
+      - '.github/workflows/write-target-lint.yml'
+  push:
+    branches: [ main ]
+    paths:
+      - '.pipeline/**'
+
+# SEC-5 — el job solo lee el checkout. Sin escritura sobre el repo.
+permissions:
+  contents: read
+
+jobs:
+  write-target-lint:
+    runs-on: ubuntu-latest
+    name: Write target lint (destinos de escritura vs .pipeline productivo)
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Setup Node 20
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      # El lint carga `pipeline-env` -> `config-resolver` -> `js-yaml`, que vive
+      # en el `package.json` de la RAIZ (no de `.pipeline`). Sin este paso el job
+      # muere con exit 2 "Cannot find module 'js-yaml'" (rebote QA de #7114).
+      # `--ignore-scripts`: no hace falta compilar nativos (canvas/tesseract) ni
+      # correr `prepare` (husky) para un lint estatico; SEC-5, sin side effects.
+      - name: Install root dependencies
+        run: npm ci --ignore-scripts
+
+      # `DEFAULT_PIPELINE_ROOT` se resuelve contra `__dirname`, nunca contra
+      # `process.cwd()`: el hook lo invoca desde la raiz del repo y este job
+      # desde `.pipeline`, y el resultado tiene que ser el mismo. El lint no usa
+      # el glob nativo de `fs` (Node >= 22.17): walk propio, corre en Node 20.
+      - name: Run write-target lint
+        working-directory: .pipeline
+        run: node lib/write-target-lint.js --check
+
+      - name: Run write-target unit tests
+        working-directory: .pipeline
+        run: node --test lib/__tests__/write-target-lint.test.js lib/__tests__/write-points.test.js

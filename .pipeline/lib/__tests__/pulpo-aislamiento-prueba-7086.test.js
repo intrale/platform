@@ -69,9 +69,14 @@ test('un prefijo que sólo comparte texto con el directorio productivo no se con
 });
 
 test('PIPELINE_ALLOW_PROD_SIDE_EFFECTS=1 es el escape hatch explicito del operador', () => {
+    // R0 de #7114: el hatch es variable de control (`encender`); este test
+    // ejercita justamente el sentido inseguro, con opt-in nominal y motivo.
     withEnv({ PIPELINE_ALLOW_PROD_SIDE_EFFECTS: '1' }, () => {
         assert.equal(corridaDePrueba(), null);
         assert.equal(efectoProductivoBloqueado(path.join(PIPELINE_REAL, '.paused')), null);
+    }, {
+        permitirApagarControl: ['PIPELINE_ALLOW_PROD_SIDE_EFFECTS'],
+        motivo: 'verifica que el escape hatch del operador anula la senal de corrida de prueba (solo lectura de guards)',
     });
 });
 // --- Wiring: los dos call-sites consultan el guard --------------------------

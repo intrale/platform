@@ -1206,120 +1206,6 @@
             "reason": "escritura de PIPELINE_DIR_OVERRIDE fuera del helper"
         },
         {
-            "file": "lib/__tests__/human-block-env-isolation.test.js",
-            "line": 83,
-            "kind": "deuda",
-            "reason": "escritura de PIPELINE_ENV fuera del helper"
-        },
-        {
-            "file": "lib/__tests__/human-block-env-isolation.test.js",
-            "line": 84,
-            "kind": "deuda",
-            "reason": "escritura de PIPELINE_AMBIENTE fuera del helper"
-        },
-        {
-            "file": "lib/__tests__/human-block-env-isolation.test.js",
-            "line": 85,
-            "kind": "deuda",
-            "reason": "escritura de PIPELINE_DIR_OVERRIDE fuera del helper"
-        },
-        {
-            "file": "lib/__tests__/human-block-env-isolation.test.js",
-            "line": 86,
-            "kind": "deuda",
-            "reason": "escritura de PIPELINE_REPO_ROOT fuera del helper"
-        },
-        {
-            "file": "lib/__tests__/human-block-env-isolation.test.js",
-            "line": 87,
-            "kind": "deuda",
-            "reason": "escritura de PIPELINE_STATE_DIR fuera del helper"
-        },
-        {
-            "file": "lib/__tests__/human-block-env-isolation.test.js",
-            "line": 88,
-            "kind": "deuda",
-            "reason": "escritura de CLAUDE_PROJECT_DIR fuera del helper"
-        },
-        {
-            "file": "lib/__tests__/human-block-env-isolation.test.js",
-            "line": 92,
-            "kind": "deuda",
-            "reason": "escritura de PIPELINE_DIR_OVERRIDE fuera del helper"
-        },
-        {
-            "file": "lib/__tests__/human-block-env-isolation.test.js",
-            "line": 96,
-            "kind": "deuda",
-            "reason": "escritura de PIPELINE_ENV fuera del helper"
-        },
-        {
-            "file": "lib/__tests__/human-block-env-isolation.test.js",
-            "line": 96,
-            "kind": "deuda",
-            "reason": "escritura de PIPELINE_ENV fuera del helper"
-        },
-        {
-            "file": "lib/__tests__/human-block-env-isolation.test.js",
-            "line": 97,
-            "kind": "deuda",
-            "reason": "escritura de PIPELINE_AMBIENTE fuera del helper"
-        },
-        {
-            "file": "lib/__tests__/human-block-env-isolation.test.js",
-            "line": 97,
-            "kind": "deuda",
-            "reason": "escritura de PIPELINE_AMBIENTE fuera del helper"
-        },
-        {
-            "file": "lib/__tests__/human-block-env-isolation.test.js",
-            "line": 98,
-            "kind": "deuda",
-            "reason": "escritura de PIPELINE_DIR_OVERRIDE fuera del helper"
-        },
-        {
-            "file": "lib/__tests__/human-block-env-isolation.test.js",
-            "line": 98,
-            "kind": "deuda",
-            "reason": "escritura de PIPELINE_DIR_OVERRIDE fuera del helper"
-        },
-        {
-            "file": "lib/__tests__/human-block-env-isolation.test.js",
-            "line": 99,
-            "kind": "deuda",
-            "reason": "escritura de PIPELINE_REPO_ROOT fuera del helper"
-        },
-        {
-            "file": "lib/__tests__/human-block-env-isolation.test.js",
-            "line": 99,
-            "kind": "deuda",
-            "reason": "escritura de PIPELINE_REPO_ROOT fuera del helper"
-        },
-        {
-            "file": "lib/__tests__/human-block-env-isolation.test.js",
-            "line": 100,
-            "kind": "deuda",
-            "reason": "escritura de PIPELINE_STATE_DIR fuera del helper"
-        },
-        {
-            "file": "lib/__tests__/human-block-env-isolation.test.js",
-            "line": 100,
-            "kind": "deuda",
-            "reason": "escritura de PIPELINE_STATE_DIR fuera del helper"
-        },
-        {
-            "file": "lib/__tests__/human-block-env-isolation.test.js",
-            "line": 101,
-            "kind": "deuda",
-            "reason": "escritura de CLAUDE_PROJECT_DIR fuera del helper"
-        },
-        {
-            "file": "lib/__tests__/human-block-env-isolation.test.js",
-            "line": 101,
-            "kind": "deuda",
-            "reason": "escritura de CLAUDE_PROJECT_DIR fuera del helper"
-        },
-        {
             "file": "lib/__tests__/human-block-manual-unlockers-6432.test.js",
             "line": 34,
             "kind": "deuda",
@@ -2302,6 +2188,18 @@
             "line": 55,
             "kind": "deuda",
             "reason": "escritura de PIPELINE_DIR_OVERRIDE fuera del helper"
+        },
+        {
+            "file": "lib/__tests__/pulpo-config-recovery.test.js",
+            "line": 60,
+            "kind": "deuda",
+            "reason": "escritura de TELEGRAM_BOT_TOKEN_PRUEBAS fuera del helper"
+        },
+        {
+            "file": "lib/__tests__/pulpo-config-recovery.test.js",
+            "line": 61,
+            "kind": "deuda",
+            "reason": "escritura de TELEGRAM_CHAT_ID_PRUEBAS fuera del helper"
         },
         {
             "file": "lib/__tests__/pulpo-corruption.test.js",
@@ -4681,61 +4579,61 @@
         },
         {
             "file": "skills-deterministicos/__tests__/tester.test.js",
-            "line": 1658,
+            "line": 1705,
             "kind": "deuda",
             "reason": "escritura de GRADLE_LOCK_PATH fuera del helper"
         },
         {
             "file": "skills-deterministicos/__tests__/tester.test.js",
-            "line": 1674,
+            "line": 1721,
             "kind": "deuda",
             "reason": "escritura de GRADLE_LOCK_PATH fuera del helper"
         },
         {
             "file": "skills-deterministicos/__tests__/tester.test.js",
-            "line": 1675,
+            "line": 1722,
             "kind": "deuda",
             "reason": "escritura de GRADLE_LOCK_PATH fuera del helper"
         },
         {
             "file": "skills-deterministicos/__tests__/tester.test.js",
-            "line": 1686,
+            "line": 1733,
             "kind": "deuda",
             "reason": "escritura de GRADLE_LOCK_PATH fuera del helper"
         },
         {
             "file": "skills-deterministicos/__tests__/tester.test.js",
-            "line": 1698,
+            "line": 1745,
             "kind": "deuda",
             "reason": "escritura de GRADLE_LOCK_PATH fuera del helper"
         },
         {
             "file": "skills-deterministicos/__tests__/tester.test.js",
-            "line": 1699,
+            "line": 1746,
             "kind": "deuda",
             "reason": "escritura de GRADLE_LOCK_PATH fuera del helper"
         },
         {
             "file": "skills-deterministicos/__tests__/tester.test.js",
-            "line": 1827,
+            "line": 1874,
             "kind": "deuda",
             "reason": "escritura de PIPELINE_REPO_ROOT fuera del helper"
         },
         {
             "file": "skills-deterministicos/__tests__/tester.test.js",
-            "line": 1828,
+            "line": 1875,
             "kind": "deuda",
             "reason": "escritura de CLAUDE_PROJECT_DIR fuera del helper"
         },
         {
             "file": "skills-deterministicos/__tests__/tester.test.js",
-            "line": 1843,
+            "line": 1890,
             "kind": "deuda",
             "reason": "escritura de PIPELINE_REPO_ROOT fuera del helper"
         },
         {
             "file": "skills-deterministicos/__tests__/tester.test.js",
-            "line": 1844,
+            "line": 1891,
             "kind": "deuda",
             "reason": "escritura de CLAUDE_PROJECT_DIR fuera del helper"
         },
@@ -4867,37 +4765,37 @@
         },
         {
             "file": "test/kernel-action-policy.test.js",
-            "line": 246,
+            "line": 249,
             "kind": "deuda",
             "reason": "escritura de PIPELINE_DIR_OVERRIDE fuera del helper"
         },
         {
             "file": "test/kernel-action-policy.test.js",
-            "line": 255,
+            "line": 258,
             "kind": "deuda",
             "reason": "escritura de PIPELINE_DIR_OVERRIDE fuera del helper"
         },
         {
             "file": "test/kernel-action-policy.test.js",
-            "line": 256,
-            "kind": "deuda",
-            "reason": "escritura de PIPELINE_DIR_OVERRIDE fuera del helper"
-        },
-        {
-            "file": "test/kernel-action-policy.test.js",
-            "line": 265,
-            "kind": "deuda",
-            "reason": "escritura de PIPELINE_DIR_OVERRIDE fuera del helper"
-        },
-        {
-            "file": "test/kernel-action-policy.test.js",
-            "line": 269,
+            "line": 259,
             "kind": "deuda",
             "reason": "escritura de PIPELINE_DIR_OVERRIDE fuera del helper"
         },
         {
             "file": "test/kernel-action-policy.test.js",
             "line": 270,
+            "kind": "deuda",
+            "reason": "escritura de PIPELINE_DIR_OVERRIDE fuera del helper"
+        },
+        {
+            "file": "test/kernel-action-policy.test.js",
+            "line": 274,
+            "kind": "deuda",
+            "reason": "escritura de PIPELINE_DIR_OVERRIDE fuera del helper"
+        },
+        {
+            "file": "test/kernel-action-policy.test.js",
+            "line": 275,
             "kind": "deuda",
             "reason": "escritura de PIPELINE_DIR_OVERRIDE fuera del helper"
         },

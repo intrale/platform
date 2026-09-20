@@ -22,6 +22,7 @@
 const fs = require('fs');
 const path = require('path');
 const parity = require('../lib/kernel-parity');
+const writeTarget = require('../lib/write-target');
 
 function parseArgs(argv) {
   const out = { baselineRef: parity.BASELINE_TAG, outFile: null, quiet: false };
@@ -83,13 +84,22 @@ function main() {
     console.log(`\n${report.passed ? '✓ PARIDAD TOTAL' : '✗ REGRESIÓN DETECTADA'}\n`);
   }
 
-  const outFile = args.outFile || path.join(__dirname, '..', 'logs', 'parity-9.1.json');
-  try {
-    fs.mkdirSync(path.dirname(outFile), { recursive: true });
-    fs.writeFileSync(outFile, JSON.stringify(report, null, 2) + '\n');
-    if (!args.quiet) console.log(`evidencia: ${outFile}`);
-  } catch (e) {
-    console.error(`no se pudo escribir la evidencia en ${outFile}: ${e.message}`);
+  // #7114 / #7451: el default de la evidencia resuelve por `lib/write-target`
+  // (canal `logs`), nunca por `__dirname`: sin ambiente declarado el destino es
+  // `null`, se avisa por stderr y NO se escribe en el `.pipeline` productivo.
+  // `--out <file>` sigue siendo el override explícito del operador.
+  const outFile = args.outFile
+    || writeTarget.safeWritePath(process.env, { canal: 'logs', destino: 'logs/parity-9.1.json' }, 'logs', 'parity-9.1.json');
+  if (!outFile) {
+    console.error('evidencia NO escrita: sin ambiente declarado (PIPELINE_AMBIENTE=productivo) ni --out <file>');
+  } else {
+    try {
+      fs.mkdirSync(path.dirname(outFile), { recursive: true });
+      fs.writeFileSync(outFile, JSON.stringify(report, null, 2) + '\n');
+      if (!args.quiet) console.log(`evidencia: ${outFile}`);
+    } catch (e) {
+      console.error(`no se pudo escribir la evidencia en ${outFile}: ${e.message}`);
+    }
   }
 
   process.exit(report.passed ? 0 : 1);

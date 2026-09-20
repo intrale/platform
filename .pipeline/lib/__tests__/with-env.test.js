@@ -511,8 +511,9 @@ test('CA-32 · el contrato exportado se DERIVA del registro y conserva su shape'
     assert.ok(SECURITY_CONTROL_VARS.every((r) => r instanceof RegExp), 'sigue siendo de RegExp');
     assert.ok(Object.isFrozen(SECURITY_CONTROL_VARS), 'sigue congelado');
     assert.strictEqual(SECURITY_CONTROL_VARS.length, registro.size,
-        'una RegExp por entrada del registro (13 `nombre` + 3 `patron`)');
-    assert.strictEqual(SECURITY_CONTROL_VARS.length, 16);
+        'una RegExp por entrada del registro (15 `nombre` + 3 `patron`)');
+    // 16 -> 18 en #7114 (R0): PIPELINE_AMBIENTE y PIPELINE_ALLOW_PROD_SIDE_EFFECTS entran al registro.
+    assert.strictEqual(SECURITY_CONTROL_VARS.length, 18);
     // Y el helper NO reimplementa la lista: no queda ningun literal de patron
     // de control escrito a mano en el archivo (R-A12).
     const src = fs.readFileSync(HELPER_PATH, 'utf8');

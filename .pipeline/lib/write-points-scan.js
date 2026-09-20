@@ -3,7 +3,8 @@
 /**
  * #7112 · CA-1 / SEC-15 — ESCÁNER ESTRUCTURAL DE PUNTOS DE ESCRITURA.
  *
- * Recorre `.pipeline/*.js`, `.pipeline/lib/**` y `.pipeline/metrics/**` (sin
+ * Recorre `.pipeline/*.js`, `.pipeline/lib/**`, `.pipeline/metrics/**`,
+ * `.pipeline/skills-deterministicos/**` y `.pipeline/kernel-bootstrap/**` (sin
  * tests, scratch ni `node_modules`) y devuelve, por módulo que ESCRIBE, cada PUNTO DE RESOLUCIÓN
  * de directorio: el lugar donde el módulo decide a qué `.pipeline` apunta.
  * Es la fuente contra la que `lib/write-points.json` se compara (diff = ∅) y la
@@ -64,7 +65,7 @@ function esDirExcluido(nombre) {
     return nombre === 'node_modules' || nombre === '__tests__' || nombre === 'tests'
         || nombre === 'fixtures' || nombre === '_test-helpers' || nombre === 'test-helpers'
         || nombre === 'assets' || nombre === 'views'
-        || nombre === '_tmp' || /^tmp/.test(nombre) || nombre === 'skills-deterministicos';
+        || nombre === '_tmp' || /^tmp/.test(nombre);
 }
 
 function esArchivoExcluido(nombre) {
@@ -98,6 +99,16 @@ function listarModulos(pipelineDir) {
     // budget-config.json): entra al alcance con el mismo filtro que `lib/`.
     const metricsDir = path.join(raiz, 'metrics');
     if (fs.existsSync(metricsDir)) walk(metricsDir, 'metrics/');
+    // #7114 / #7451 (SEC-3): los skills determinísticos (`tester.js`, `delivery.js`,
+    // `build.js`, `linter.js`) escriben en `logs/` y en las colas vía
+    // `REPO_ROOT = PIPELINE_REPO_ROOT || CLAUDE_PROJECT_DIR || __dirname/../..`, y
+    // `kernel-bootstrap/parity-e2e-9.1.js` escribía evidencia bajo `logs/`. Estaban
+    // fuera del alcance con 0 entradas: punto ciego silencioso del inventario que
+    // el guardrail de #7114 heredaba. Mismo filtro que `lib/`.
+    for (const extra of ['skills-deterministicos', 'kernel-bootstrap']) {
+        const dir = path.join(raiz, extra);
+        if (fs.existsSync(dir)) walk(dir, extra + '/');
+    }
     return out.sort();
 }
 

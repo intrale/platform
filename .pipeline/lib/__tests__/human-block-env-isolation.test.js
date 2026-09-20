@@ -25,6 +25,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { withEnv } = require('../test-helpers/with-env');
 
 // ── Fixtures ────────────────────────────────────────────────────────────────
 const PROD = fs.mkdtempSync(path.join(os.tmpdir(), 'hb7456-prod-'));
@@ -68,46 +69,43 @@ function listarRecursivo(root) {
 // el módulo ya resuelva por llamada — es el escenario que se quiere cubrir.
 // SEC-9 (D-4 de la receta): `PIPELINE_REPO_ROOT` heredado del runner anularía
 // el override; se borra. `CLAUDE_PROJECT_DIR` alimenta `trace.LOG_FILE`.
-// Claves LITERALES (no `process.env[k]`): `test-env-lint` exige que cada
-// escritura de env sea resoluble estáticamente.
-const ENV_ORIGINAL = {
-    PIPELINE_ENV: process.env.PIPELINE_ENV,
-    PIPELINE_AMBIENTE: process.env.PIPELINE_AMBIENTE,
-    PIPELINE_DIR_OVERRIDE: process.env.PIPELINE_DIR_OVERRIDE,
-    PIPELINE_REPO_ROOT: process.env.PIPELINE_REPO_ROOT,
-    PIPELINE_STATE_DIR: process.env.PIPELINE_STATE_DIR,
-    CLAUDE_PROJECT_DIR: process.env.CLAUDE_PROJECT_DIR,
-};
+// Las escrituras de env van SIEMPRE por `withEnv` (helper único de
+// aislamiento, #6258/#6260): R0 de #7114 registra `PIPELINE_AMBIENTE` como
+// variable de control con sentido `cualquiera`, así que tocarla a mano en un
+// test es una violation ESTRICTA que ninguna allowlist perdona. Borrarla es la
+// posición INERTE (default `pruebas`), declarada a propósito vía el opt-in
+// nominal con motivo.
+const ENV_SIN_AMBIENTE = Object.freeze({
+    PIPELINE_ENV: undefined,
+    PIPELINE_AMBIENTE: undefined,
+    PIPELINE_DIR_OVERRIDE: undefined,
+    PIPELINE_REPO_ROOT: undefined,
+    PIPELINE_STATE_DIR: undefined,
+    CLAUDE_PROJECT_DIR: PROJECT,
+});
+const OPT_IN_7114 = Object.freeze({
+    permitirApagarControl: ['PIPELINE_AMBIENTE'],
+    motivo: 'el test borra PIPELINE_AMBIENTE para partir del default pruebas (sin declaracion): posicion inerte',
+});
 
-function sinAmbiente() {
-    delete process.env.PIPELINE_ENV;
-    delete process.env.PIPELINE_AMBIENTE;
-    delete process.env.PIPELINE_DIR_OVERRIDE;
-    delete process.env.PIPELINE_REPO_ROOT;
-    delete process.env.PIPELINE_STATE_DIR;
-    process.env.CLAUDE_PROJECT_DIR = PROJECT;
+/** Corre `fn` SIN ambiente declarado y restaura el env al salir, pase lo que pase. */
+function sinAmbiente(fn) {
+    return withEnv(ENV_SIN_AMBIENTE, fn, OPT_IN_7114);
 }
-function declararPruebas() {
-    sinAmbiente();
-    process.env.PIPELINE_DIR_OVERRIDE = TMP_PIPELINE;
-}
-function restaurarEnv() {
-    // Un `set` por variable, literal, para que el lint pueda resolverlas.
-    if (ENV_ORIGINAL.PIPELINE_ENV === undefined) delete process.env.PIPELINE_ENV; else process.env.PIPELINE_ENV = ENV_ORIGINAL.PIPELINE_ENV;
-    if (ENV_ORIGINAL.PIPELINE_AMBIENTE === undefined) delete process.env.PIPELINE_AMBIENTE; else process.env.PIPELINE_AMBIENTE = ENV_ORIGINAL.PIPELINE_AMBIENTE;
-    if (ENV_ORIGINAL.PIPELINE_DIR_OVERRIDE === undefined) delete process.env.PIPELINE_DIR_OVERRIDE; else process.env.PIPELINE_DIR_OVERRIDE = ENV_ORIGINAL.PIPELINE_DIR_OVERRIDE;
-    if (ENV_ORIGINAL.PIPELINE_REPO_ROOT === undefined) delete process.env.PIPELINE_REPO_ROOT; else process.env.PIPELINE_REPO_ROOT = ENV_ORIGINAL.PIPELINE_REPO_ROOT;
-    if (ENV_ORIGINAL.PIPELINE_STATE_DIR === undefined) delete process.env.PIPELINE_STATE_DIR; else process.env.PIPELINE_STATE_DIR = ENV_ORIGINAL.PIPELINE_STATE_DIR;
-    if (ENV_ORIGINAL.CLAUDE_PROJECT_DIR === undefined) delete process.env.CLAUDE_PROJECT_DIR; else process.env.CLAUDE_PROJECT_DIR = ENV_ORIGINAL.CLAUDE_PROJECT_DIR;
+/** Corre `fn` con el harness del PO (sólo `PIPELINE_DIR_OVERRIDE`) y restaura al salir. */
+function declararPruebas(fn) {
+    return withEnv({ ...ENV_SIN_AMBIENTE, PIPELINE_DIR_OVERRIDE: TMP_PIPELINE }, fn, OPT_IN_7114);
 }
 
 sembrarProd();
-declararPruebas();
 delete require.cache[require.resolve('../traceability')];
 delete require.cache[require.resolve('../human-block')];
-const hb = require('../human-block');
-const reminder = require('../human-block-reminder');
-const writeTarget = require('../write-target');
+// El `require` se hace con el override YA declarado (harness del PO).
+const { hb, reminder, writeTarget } = declararPruebas(() => ({
+    hb: require('../human-block'),
+    reminder: require('../human-block-reminder'),
+    writeTarget: require('../write-target'),
+}));
 const writePointsScan = require('../write-points-scan');
 
 const BLOQUEO_7113 = {
@@ -116,8 +114,7 @@ const BLOQUEO_7113 = {
 };
 
 // ── Escenario 1: harness con ambiente de pruebas declarado ───────────────────
-test('E1 · harness con PIPELINE_DIR_OVERRIDE: marker, sidecar, orden GitHub y recordatorio quedan bajo TMP; PROD intacto', () => {
-    declararPruebas();
+test('E1 · harness con PIPELINE_DIR_OVERRIDE: marker, sidecar, orden GitHub y recordatorio quedan bajo TMP; PROD intacto', () => declararPruebas(() => {
     const antes = snapshot(PROD);
 
     // (a) Igual que el PO: `moveFromActive: false` → marker sintético.
@@ -167,11 +164,10 @@ test('E1 · harness con PIPELINE_DIR_OVERRIDE: marker, sidecar, orden GitHub y r
     assert.equal(u.ok, true, JSON.stringify(u));
     assert.ok(fs.existsSync(path.join(TMP_PIPELINE, 'definicion', 'validacion', 'pendiente', '7113.intake')));
     assert.deepEqual(snapshot(PROD), antes, 'PROD cambió durante /unblock');
-});
+}));
 
 // ── Escenario 2: sin ambiente declarado → fail-closed ────────────────────────
-test('E2 · sin PIPELINE_ENV/PIPELINE_AMBIENTE/PIPELINE_DIR_OVERRIDE el módulo lanza EscrituraBloqueadaError y no escribe', () => {
-    sinAmbiente();
+test('E2 · sin PIPELINE_ENV/PIPELINE_AMBIENTE/PIPELINE_DIR_OVERRIDE el módulo lanza EscrituraBloqueadaError y no escribe', () => sinAmbiente(() => {
     const antesProd = snapshot(PROD);
     const antesTmp = snapshot(TMP);
 
@@ -197,12 +193,10 @@ test('E2 · sin PIPELINE_ENV/PIPELINE_AMBIENTE/PIPELINE_DIR_OVERRIDE el módulo 
 
     assert.deepEqual(snapshot(PROD), antesProd, 'PROD cambió sin ambiente declarado');
     assert.deepEqual(snapshot(TMP), antesTmp, 'TMP cambió sin ambiente declarado');
-    declararPruebas();
-});
+}));
 
 // ── Escenario 3: confinamiento de segmentos (SEC-HB-2) ───────────────────────
-test('E3 · skill/phase/pipeline con traversal o fuera de la whitelist → throw, cero archivos nuevos', () => {
-    declararPruebas();
+test('E3 · skill/phase/pipeline con traversal o fuera de la whitelist → throw, cero archivos nuevos', () => declararPruebas(() => {
     const antesProd = listarRecursivo(PROD);
     const antesTmp = listarRecursivo(TMP);
 
@@ -228,7 +222,7 @@ test('E3 · skill/phase/pipeline con traversal o fuera de la whitelist → throw
     const nuevosTmp = listarRecursivo(TMP).filter((p) => !antesTmp.includes(p));
     assert.ok(!nuevosTmp.some((p) => p.includes('7116')), `archivos de 7116 en TMP: ${nuevosTmp}`);
     assert.ok(!nuevosTmp.some((p) => p.includes('fuera') || p.includes('..')), `path hostil en TMP: ${nuevosTmp}`);
-});
+}));
 
 // ── Escenario 4: guardrail del módulo (reemplaza al fix del escáner, D-2) ────
 test('E4 · el fuente no fija el directorio de escritura en una const de módulo y el inventario declara sus canales', () => {
@@ -256,8 +250,7 @@ test('E4 · el fuente no fija el directorio de escritura en una const de módulo
 });
 
 // ── Escenario 5: `gh` no se invoca — la orden queda como archivo en la cola ──
-test('E5 · human-block no spawnea `gh`: la orden queda en la cola como archivo (documentación ejecutable)', () => {
-    declararPruebas();
+test('E5 · human-block no spawnea `gh`: la orden queda en la cola como archivo (documentación ejecutable)', () => declararPruebas(() => {
     const cp = require('child_process');
     const spawns = [];
     const orig = { spawnSync: cp.spawnSync, execSync: cp.execSync, execFileSync: cp.execFileSync, spawn: cp.spawn, exec: cp.exec, execFile: cp.execFile };
@@ -274,10 +267,9 @@ test('E5 · human-block no spawnea `gh`: la orden queda en la cola como archivo 
     const cola = fs.readdirSync(path.join(TMP_PIPELINE, 'servicios', 'github', 'pendiente'));
     assert.ok(cola.some((f) => f.startsWith('7118-needs-human-block-')));
     assert.ok(cola.some((f) => f.startsWith('7118-comment-hb-')));
-});
+}));
 
 test.after(() => {
-    restaurarEnv();
     for (const d of [PROD, TMP, PROJECT]) {
         try { fs.rmSync(d, { recursive: true, force: true }); } catch { /* best-effort */ }
     }
