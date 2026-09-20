@@ -52,7 +52,12 @@ function conEnv(cambios, fn) {
     Object.assign(vars, cambios);
     writeTarget._resetAvisos();
     try {
-        return withEnv(vars, fn);
+        // R0 de #7114: PIPELINE_AMBIENTE es variable de control (`cualquiera`);
+        // borrarla es la posicion INERTE (default `pruebas`), declarada a proposito.
+        return withEnv(vars, fn, {
+            permitirApagarControl: ['PIPELINE_AMBIENTE'],
+            motivo: 'el test borra PIPELINE_AMBIENTE para partir del default pruebas (sin declaracion): posicion inerte',
+        });
     } finally {
         writeTarget._resetAvisos();
     }

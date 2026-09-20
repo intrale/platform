@@ -6,6 +6,10 @@ con el `.pipeline` productivo. Es la primera pieza tangible del épico #7102 y e
 destino que el resolvedor único de ambiente (`lib/pipeline-env.js`, #7110) deja
 en `dir: null` cuando el proceso corre en modo `pruebas`.
 
+El modelo de los dos ambientes, las capas que impiden el derrame y el
+procedimiento de promoción de un cambio del CORE están en
+[`ambientes.md`](ambientes.md) (#7114).
+
 ## Comandos
 
 ```bash

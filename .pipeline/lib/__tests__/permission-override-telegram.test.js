@@ -112,7 +112,12 @@ const ENV_7112_LIMPIO = Object.freeze({
 });
 
 function withEnv7112(patch, fn) {
-    return withEnv({ ...ENV_7112_LIMPIO, ...patch }, fn);
+    // R0 de #7114: PIPELINE_AMBIENTE es variable de control (`cualquiera`);
+    // borrarla es la posicion INERTE (default `pruebas`), declarada a proposito.
+    return withEnv({ ...ENV_7112_LIMPIO, ...patch }, fn, {
+        permitirApagarControl: ['PIPELINE_AMBIENTE'],
+        motivo: 'el test borra PIPELINE_AMBIENTE para partir del default pruebas (sin declaracion): posicion inerte',
+    });
 }
 
 function walk7112(dir) {

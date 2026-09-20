@@ -4674,37 +4674,37 @@
         },
         {
             "file": "test/kernel-action-policy.test.js",
-            "line": 246,
+            "line": 249,
             "kind": "deuda",
             "reason": "escritura de PIPELINE_DIR_OVERRIDE fuera del helper"
         },
         {
             "file": "test/kernel-action-policy.test.js",
-            "line": 255,
+            "line": 258,
             "kind": "deuda",
             "reason": "escritura de PIPELINE_DIR_OVERRIDE fuera del helper"
         },
         {
             "file": "test/kernel-action-policy.test.js",
-            "line": 256,
-            "kind": "deuda",
-            "reason": "escritura de PIPELINE_DIR_OVERRIDE fuera del helper"
-        },
-        {
-            "file": "test/kernel-action-policy.test.js",
-            "line": 265,
-            "kind": "deuda",
-            "reason": "escritura de PIPELINE_DIR_OVERRIDE fuera del helper"
-        },
-        {
-            "file": "test/kernel-action-policy.test.js",
-            "line": 269,
+            "line": 259,
             "kind": "deuda",
             "reason": "escritura de PIPELINE_DIR_OVERRIDE fuera del helper"
         },
         {
             "file": "test/kernel-action-policy.test.js",
             "line": 270,
+            "kind": "deuda",
+            "reason": "escritura de PIPELINE_DIR_OVERRIDE fuera del helper"
+        },
+        {
+            "file": "test/kernel-action-policy.test.js",
+            "line": 274,
+            "kind": "deuda",
+            "reason": "escritura de PIPELINE_DIR_OVERRIDE fuera del helper"
+        },
+        {
+            "file": "test/kernel-action-policy.test.js",
+            "line": 275,
             "kind": "deuda",
             "reason": "escritura de PIPELINE_DIR_OVERRIDE fuera del helper"
         },
