@@ -305,7 +305,7 @@ test('indeterminado: "espera algo pero no dice qué" no puede proponer esperar a
     assert.match(card.falta, /no dice cuál/);
 });
 
-/** Un `raw` por cada uno de los 7 tipos del mapa. */
+/** Un `raw` por cada uno de los 8 tipos del mapa. */
 const UNO_POR_TIPO = [
     { issue: 1, reason: 'dependency_block: espera #2' },
     { issue: 3, reason: 'circuit breaker: rebotes agotados' },
@@ -314,9 +314,11 @@ const UNO_POR_TIPO = [
     { issue: 6, tipo: 'rebote', reason: 'rechazado por el control' },
     { issue: 7, question: '¿Seguimos?' },
     { issue: 8, reason: '' },
+    // #7439 — enrutado por la causa estructurada, no por el texto.
+    { issue: 9, cause: 'design-decision', question: '¿Una sola máquina o varias?' },
 ];
 
-test('los 7 tipos del mapa están cubiertos y ninguno queda sin plantilla', () => {
+test('los 8 tipos del mapa están cubiertos y ninguno queda sin plantilla', () => {
     const vistos = new Set();
     const casos = UNO_POR_TIPO;
     for (const raw of casos) {
@@ -707,7 +709,11 @@ test('el módulo es PURO: sin filesystem, sin red, sin estado del pipeline', () 
     //   - './sello-evidencia-state' : #6498 CA-11. Fuente UNICA del copy del
     //     sello de evidencia, compartida con el badge del dashboard. Copiar el
     //     literal aca reintroduciria el copy divergente que cerro #6190.
-    assert.deepEqual(requires, ['./sherlock-audit-jsonl', './sello-evidencia-state'],
+    //   - './block-cause'           : #7439 RS-D.1. Enum CERRADO de la causa
+    //     estructurada del bloqueo, compartido con `human-block.js` (escritura
+    //     y lectura del marker). Hoja de 0 requires (verificado abajo): no se
+    //     puede importar desde `human-block` porque ese modulo requiere este.
+    assert.deepEqual(requires, ['./sherlock-audit-jsonl', './sello-evidencia-state', './block-cause'],
         'toda excepcion al contrato de pureza va justificada en la allowlist de arriba');
     assert.ok(!/\bDate\.now\(\)/.test(src), 'el "ahora" se inyecta, no se lee');
 });
@@ -1594,4 +1600,16 @@ test('#6498 — el módulo del copy del sello que importa la ficha también es P
     assert.ok(!/\bDate\.now\(\)/.test(src), 'el resolver no lee el reloj');
     assert.ok(!/\bprocess\.env\b/.test(src), 'el resolver no lee el entorno');
     assert.ok(!/\brequire\(['"](fs|path|node:fs|node:path)['"]\)/.test(src), 'el resolver no toca el filesystem');
+});
+
+test('#7439 — el módulo de la causa del bloqueo que importa la ficha también es PURO', () => {
+    // Misma razón que el test del sello: la pureza de `decision-card.js` se
+    // evadiría por transitividad si `block-cause.js` hiciera I/O.
+    const src = fs.readFileSync(path.join(__dirname, '..', 'block-cause.js'), 'utf8')
+        .replace(/\/\*[\s\S]*?\*\//g, '')
+        .replace(/^\s*\/\/.*$/gm, '');
+    const requires = [...src.matchAll(/require\((['"])(.+?)\1\)/g)].map((m) => m[2]);
+    assert.deepEqual(requires, [], 'el enum de la causa no requiere nada (módulo hoja)');
+    assert.ok(!/\bDate\.now\(\)/.test(src), 'no lee el reloj');
+    assert.ok(!/\bprocess\.env\b/.test(src), 'no lee el entorno');
 });

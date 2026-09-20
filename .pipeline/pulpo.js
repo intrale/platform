@@ -21282,6 +21282,11 @@ function brazoIntake(config) {
               const yaBloqueadoDD = humanBlock.findBlockedMarker(issueNum);
               let final = veredicto;
               let saltar = false;
+              // #7439 UX-F — ¿la firma del arquitecto NO PUDO COMPROBARSE?
+              // Declarada ACÁ (fuera del `else` donde vive `firma`) porque se
+              // consume más abajo, en el bloque que escala. Sólo el `false`
+              // EXPLÍCITO viaja; con él la ficha dice "no pude comprobar".
+              let firmaVerificableDD;
 
               if (yaBloqueadoDD) {
                 // #6448 — EL CICLO CERRADO. Acá había un `continue` seco: el
@@ -21328,7 +21333,13 @@ function brazoIntake(config) {
                   // CA-14 / RS-3.1 — fail-closed del carril de firma: si no se
                   // pudo comprobar que un humano firmó, se escala. El motivo
                   // técnico va al log y a la traza, nunca al operador.
-                  : { settled: false, reason: `firma no verificable: ${ctx.error}`, rejected: [] };
+                  //
+                  // #7439 — `verifiable:false` es lo que hace que el detector
+                  // elija el copy "no pude comprobar si el arquitecto ya firmó"
+                  // (falló la consulta a GitHub, no falta la firma). El
+                  // `reason` con `ctx.error` sigue yendo SOLO a la traza y al log.
+                  : { settled: false, verifiable: false, reason: `firma no verificable: ${ctx.error}`, rejected: [] };
+                firmaVerificableDD = firma.verifiable === false ? false : undefined;
 
                 final = designDecision.detectDesignDecision({
                   issue: nIssue,
@@ -21369,6 +21380,13 @@ function brazoIntake(config) {
 
               if (!saltar) {
               log('intake', `🧭 #${issueNum} FRENA en definición — decisión de arquitectura (señales: ${final.signals.join(', ')})`);
+              // #7439 RS-C.2 / RS-C.3 — ÚNICO productor de `cause` en todo
+              // pulpo.js (el literal aparece UNA sola vez, acá): es la llave del
+              // filtro de auto-levantamiento de #7440 y ningún otro call-site de
+              // `reportHumanBlock` la pone. Sólo se llega acá con
+              // `final.escalate === true`, así que el highlight tampoco la lleva
+              // sin escalado.
+              const causaDD = 'design-decision';
               try {
                 humanBlock.reportHumanBlock({
                   issue: nIssue,
@@ -21380,6 +21398,9 @@ function brazoIntake(config) {
                   // #6448 UX-1 — la cita va en campo propio, nunca concatenada
                   // dentro del motivo (medido: concatenada no llega nunca).
                   evidence: final.fragment,
+                  // #7439 — ver `causaDD` arriba.
+                  cause: causaDD,
+                  signoff_verifiable: firmaVerificableDD,
                   moveFromActive: false,
                 });
               } catch (e) {
@@ -21394,6 +21415,10 @@ function brazoIntake(config) {
                     reason: final.reason, question: final.question,
                     recommendation: final.recommendation,
                     evidence: final.fragment,
+                    // #7439 CA-8 — mismos dos campos que el marker, para que el
+                    // aviso inicial y el recordatorio de 6 h clasifiquen igual.
+                    cause: causaDD,
+                    signoff_verifiable: firmaVerificableDD,
                   },
                 });
                 let markupDD;

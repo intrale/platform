@@ -59,6 +59,9 @@ const cardRender = require('./decision-card-render');
 // no le da a este módulo ninguna capacidad de destrabe, así que no viola la
 // garantía estructural de arriba.
 const issueTitleCache = require('./issue-title-cache');
+// #7439 — causa estructurada del bloqueo (enum cerrado). Módulo HOJA, sin
+// requires: se puede cargar desde acá sin riesgo de ciclo.
+const { normalizeBlockCause } = require('./block-cause');
 
 // Escalones de recordatorio, en horas desde el bloqueo. Después del último se
 // repite cada `RECURRING_EVERY_HOURS`.
@@ -252,6 +255,17 @@ function evaluateReminders({ now, blocked, state, reclaim } = {}) {
                 pipeline: b.pipeline || null,
                 reason: b.reason || '',
                 question: b.question || '',
+                // #7439 CA-4-UX — la causa ESTRUCTURADA del bloqueo y la
+                // verificabilidad de la firma viajan al `due` tal cual las
+                // expone `listBlockedIssues()` (ya normalizadas, RS-C.1). Sin
+                // esto el recordatorio de 6 h perdía `cause`, el title-cache
+                // aportaba `needs-definition` y `clasificar` caía en `firma`:
+                // «¿Aprobás el alcance…?» / «visto bueno» / `/unblock N aprobar`
+                // — exactamente el copy de GATE 1 que este issue elimina para
+                // el gate de decisión de arquitectura. El aviso inicial no
+                // pasaba por acá y por eso salía bien.
+                cause: normalizeBlockCause(b.cause),
+                signoff_verifiable: b.signoff_verifiable === false ? false : null,
                 age_hours: Math.round(ageHours * 10) / 10,
                 reminder_number: target,
             });
