@@ -12,8 +12,11 @@ const path = require('path');
 const os = require('os');
 const { spawn } = require('child_process');
 
+// `ROOT` (raíz del repo): sólo LECTURAS (telegram-config.json, tts-config.json).
+// Las escrituras de estado van por `lib/write-target` (#7112, SEC-13).
 const ROOT = process.env.PIPELINE_MAIN_ROOT || path.resolve(__dirname, '..');
 const TG_CONFIG_PATH = path.join(ROOT, '.claude', 'hooks', 'telegram-config.json');
+const writeTarget = require('./lib/write-target');
 const { loadTelegramSecrets, loadApiKeys } = require('./lib/telegram-secrets');
 const { transcribeLocal: whisperLocal, isAvailable: whisperLocalAvailable } = require('./lib/whisper-local');
 
@@ -374,11 +377,16 @@ function shouldNotifyDegradation(stateObj, chatId, tipo, nowMs, windowMs = DEGRA
 // Estado persistente dedicado para los avisos de degradación (SEC-4: escritura
 // atómica write-tmp + rename porque el pipeline es event-driven con escrituras
 // concurrentes; load tolerante a corrupción).
-const DEGRADATION_NOTIFY_STATE_PATH = path.join(ROOT, '.pipeline', '.degradation-notify-state.json');
+// #7112 — el estado se resuelve POR LLAMADA vía `lib/write-target` (SEC-13):
+// sin ambiente declarado ni dir de pruebas, `writeDir` avisa por stderr y
+// LANZA; los `try/catch` de load/save lo absorben (best-effort, ya loggean).
+function DEGRADATION_NOTIFY_STATE_PATH() {
+  return writeTarget.writePath(process.env, { canal: 'estado', destino: '.degradation-notify-state.json' }, '.degradation-notify-state.json');
+}
 
 function loadDegradationNotifyState() {
   try {
-    const parsed = JSON.parse(fs.readFileSync(DEGRADATION_NOTIFY_STATE_PATH, 'utf8'));
+    const parsed = JSON.parse(fs.readFileSync(DEGRADATION_NOTIFY_STATE_PATH(), 'utf8'));
     if (parsed && typeof parsed === 'object' && parsed.entries && typeof parsed.entries === 'object') {
       return parsed;
     }
@@ -388,9 +396,9 @@ function loadDegradationNotifyState() {
 
 function saveDegradationNotifyState(state) {
   try {
-    const tmp = `${DEGRADATION_NOTIFY_STATE_PATH}.${process.pid}.tmp`;
+    const tmp = `${DEGRADATION_NOTIFY_STATE_PATH()}.${process.pid}.tmp`;
     fs.writeFileSync(tmp, JSON.stringify(state, null, 2));
-    fs.renameSync(tmp, DEGRADATION_NOTIFY_STATE_PATH); // rename atómico
+    fs.renameSync(tmp, DEGRADATION_NOTIFY_STATE_PATH()); // rename atómico
   } catch (e) {
     log(`Degradation notify state save error: ${e.message}`);
   }
@@ -538,7 +546,8 @@ async function preprocessMessage(msg, botToken, opts = {}) {
         result.extras.push(`[Imagen: ${description}]`);
       } else {
         // base64 sin API key — guardar a disco para que Claude lo lea
-        const imgPath = path.join(__dirname, 'logs', 'media', `img-${Date.now()}.jpg`);
+        // #7112 — destino resuelto por llamada (SEC-13); sin ambiente ni dir de pruebas LANZA.
+        const imgPath = writeTarget.writePath(process.env, { canal: 'logs', destino: 'logs/media/' }, 'logs', 'media', `img-${Date.now()}.jpg`);
         fs.mkdirSync(path.dirname(imgPath), { recursive: true });
         fs.writeFileSync(imgPath, imgBuffer);
         log(`Imagen guardada (sin API key Vision): ${imgPath}`);
@@ -624,15 +633,18 @@ function loadTtsConfig(profileName = 'default') {
 }
 
 // Estado persistente: último provider usado (para detectar transiciones)
-const TTS_STATE_PATH = path.join(ROOT, '.pipeline', '.tts-state.json');
+// #7112 — resolución POR LLAMADA vía `lib/write-target` (ver DEGRADATION_NOTIFY_STATE_PATH).
+function TTS_STATE_PATH() {
+  return writeTarget.writePath(process.env, { canal: 'estado', destino: '.tts-state.json' }, '.tts-state.json');
+}
 
 function loadTtsState() {
-  try { return JSON.parse(fs.readFileSync(TTS_STATE_PATH, 'utf8')); }
+  try { return JSON.parse(fs.readFileSync(TTS_STATE_PATH(), 'utf8')); }
   catch { return { lastProvider: null }; }
 }
 
 function saveTtsState(state) {
-  try { fs.writeFileSync(TTS_STATE_PATH, JSON.stringify(state, null, 2)); }
+  try { fs.writeFileSync(TTS_STATE_PATH(), JSON.stringify(state, null, 2)); }
   catch (e) { log(`TTS state save error: ${e.message}`); }
 }
 

@@ -3882,7 +3882,8 @@ function archiveWave(waveNumber, metadata = {}) {
             logWarn(`archiveWave falló mid-transaction: ${err.message}. Restaurando snapshot.`);
             const restore = restoreFromSnapshots(markerPayload);
             if (!restore.ok) {
-                const failedPath = path.join(pipelineDir(), `wave-archive.failed.${ts}.json`);
+                // #7112 - punto de escritura resuelto por el envoltorio (canal estado).
+                const failedPath = require('./write-target').writePath(process.env, { canal: 'estado', destino: 'wave-archive.failed.*.json' }, `wave-archive.failed.${ts}.json`);
                 try {
                     fs.writeFileSync(failedPath, JSON.stringify({
                         failed_at: new Date().toISOString(),

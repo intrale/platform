@@ -138,8 +138,10 @@ function policyKey(action) {
 // mismo criterio que tenía el `require('js-yaml')` que reemplaza.
 // -----------------------------------------------------------------------------
 function pipelineDir() {
-    if (process.env.PIPELINE_DIR_OVERRIDE) return process.env.PIPELINE_DIR_OVERRIDE;
-    return path.resolve(__dirname, '..');
+    // #7112 — familia F: el cuerpo pasa a UNA línea sobre el envoltorio (SEC-13).
+    // `PIPELINE_DIR_OVERRIDE` sigue mandando (precedencia D-1 del resolvedor); sin
+    // ambiente declarado ni dir de pruebas avisa por stderr y LANZA (CA-3), nunca `__dirname`.
+    return require('./write-target').writeDir(process.env, { canal: 'colas', destino: 'servicios/telegram/pendiente/ · state/kernel-gate-dedupe.json' });
 }
 
 function loadGate3Config(opts) {

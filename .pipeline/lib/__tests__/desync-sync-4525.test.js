@@ -37,6 +37,7 @@ const waves = require('../waves');
 const waveAudit = require('../wave-audit');
 const splitProvenance = require('../split-provenance');
 const pulpo = require('../../pulpo.js');
+const helpers = require('./_test-helpers');
 
 // -----------------------------------------------------------------------------
 // Helpers de fixture (mismo patrón que desync-sync-4439.test.js)
@@ -47,6 +48,10 @@ function rmrf(d) { try { fs.rmSync(d, { recursive: true, force: true }); } catch
 
 function setup() {
     const dir = mkTmp();
+    // #7112 — pulpo.js resuelve TODO por llamada (config incluida): el fixture
+    // necesita config.yaml + manifiesto, antes los leía del __dirname capturado.
+    helpers.seedPipelineConfig(dir);
+    helpers.seedRealProductManifest(dir);
     fs.mkdirSync(path.join(dir, 'logs'), { recursive: true });
     fs.mkdirSync(path.join(dir, 'desarrollo'), { recursive: true });
     fs.mkdirSync(path.join(dir, 'definicion'), { recursive: true });

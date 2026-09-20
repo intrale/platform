@@ -14,8 +14,14 @@ const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
 
-const PIPELINE = path.resolve(__dirname, '..');
-const CACHE_FILE = path.join(PIPELINE, '.issue-summary-cache.json');
+// #7112 — el destino se resuelve POR LLAMADA vía `lib/write-target` (SEC-13):
+// ninguna const de módulo captura `__dirname` al `require`. Sin ambiente
+// declarado ni dir de pruebas, `writeDir` avisa por stderr y LANZA (CA-3).
+// Identificadores conservados: cada uso `X` → `X()`.
+function PIPELINE() {
+    return require('./write-target').writeDir(process.env, { canal: 'estado', destino: '.issue-summary-cache.json · .gh-summary-*.graphql' });
+}
+function CACHE_FILE() { return path.join(PIPELINE(), '.issue-summary-cache.json'); }
 const CACHE_TTL_MS = 6 * 3600 * 1000; // 6 horas
 const BATCH_SIZE = 20; // issues por query GraphQL (body+comments es pesado)
 const FETCH_TIMEOUT_MS = 30000;
@@ -47,7 +53,7 @@ let _inflight = false;
 
 function loadCache() {
     try {
-        return JSON.parse(fs.readFileSync(CACHE_FILE, 'utf8'));
+        return JSON.parse(fs.readFileSync(CACHE_FILE(), 'utf8'));
     } catch {
         return {};
     }
@@ -55,7 +61,7 @@ function loadCache() {
 
 function saveCache(cache) {
     try {
-        fs.writeFileSync(CACHE_FILE, JSON.stringify(cache, null, 2));
+        fs.writeFileSync(CACHE_FILE(), JSON.stringify(cache, null, 2));
     } catch {}
 }
 
@@ -277,7 +283,7 @@ function runGraphQLBatch(issueIds) {
             `i${i}: issue(number:${id}) { number body comments(last:20) { nodes { author { login } body createdAt } } }`
         ).join(' ');
         const query = `{ repository(owner:"intrale",name:"platform") { ${fields} } }`;
-        const tmpFile = path.join(PIPELINE, '.gh-summary-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7) + '.graphql');
+        const tmpFile = path.join(PIPELINE(), '.gh-summary-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7) + '.graphql');
         try {
             fs.writeFileSync(tmpFile, query);
         } catch (e) {
@@ -320,6 +326,6 @@ module.exports = {
     extractRecentEvents,
     stripMarkdown,
     isNoiseComment,
-    CACHE_FILE,
+    get CACHE_FILE() { return CACHE_FILE(); },
     CACHE_TTL_MS,
 };

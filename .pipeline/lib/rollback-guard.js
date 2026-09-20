@@ -52,7 +52,13 @@
 const fs = require('fs');
 const path = require('path');
 
-const STATE_FILE = path.join(__dirname, '..', 'rollback-state.json');
+// #7112 — el destino se resuelve POR LLAMADA vía `lib/write-target` (SEC-13):
+// ninguna const de módulo captura `__dirname` al `require`. Sin ambiente
+// declarado ni dir de pruebas, `writeDir` avisa por stderr y LANZA (CA-3).
+// Identificadores conservados: cada uso `X` → `X()`.
+function STATE_FILE() {
+    return require('./write-target').writePath(process.env, { canal: 'estado', destino: 'rollback-state.json' }, 'rollback-state.json');
+}
 
 /**
  * Archivos que gobiernan el ciclo de vida del pipeline. Si el rollback los
@@ -243,7 +249,7 @@ function defaultState() {
  * tiene un shape inesperado devolvemos el default. Un rollback no puede
  * fallar por un JSON truncado.
  */
-function readState(file = STATE_FILE) {
+function readState(file = STATE_FILE()) {
     try {
         if (!fs.existsSync(file)) return defaultState();
         const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
@@ -255,7 +261,7 @@ function readState(file = STATE_FILE) {
 }
 
 /** Escritura atómica (.tmp + rename). Devuelve el estado escrito. */
-function writeState(state, file = STATE_FILE) {
+function writeState(state, file = STATE_FILE()) {
     const next = { ...defaultState(), ...state };
     const tmp = file + '.tmp';
     try {
@@ -274,7 +280,7 @@ function writeState(state, file = STATE_FILE) {
  * Resetear el contador. Se llama cuando un smoke test pasa limpio: eso
  * significa que el pipeline está sano y la cadena de rollbacks se cortó.
  */
-function clearState(file = STATE_FILE) {
+function clearState(file = STATE_FILE()) {
     try {
         if (!fs.existsSync(file)) return false; // no había racha que cortar
         fs.unlinkSync(file);
@@ -555,7 +561,7 @@ function buildHaltAlert(ctx) {
 }
 
 module.exports = {
-    STATE_FILE,
+    get STATE_FILE() { return STATE_FILE(); },
     LIFECYCLE_FILES,
     PIPELINE_CODE_EXTENSIONS,
     RUNTIME_STATE_FILES,

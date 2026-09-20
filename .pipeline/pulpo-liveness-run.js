@@ -54,21 +54,34 @@
 const fs = require('fs');
 const path = require('path');
 
+// Directorio de CÓDIGO (config.yaml a leer): `__dirname`, fijo a propósito (#5172).
 const PIPELINE_DIR = __dirname;
-const LOG_DIR = process.env.PLV_LOG_DIR || path.join(PIPELINE_DIR, 'logs');
-const RUN_LOG = path.join(LOG_DIR, 'pulpo-liveness.log');
+// #7112 (rebote rev-2) — los DESTINOS DE ESCRITURA (log de corridas y estado de
+// la serie) se resuelven POR LLAMADA vía lib/write-target (SEC-13): antes eran
+// `const X = __dirname` + path.join(X, 'logs'), alias crudo inmune a cualquier
+// override e invisible para el inventario. `PLV_LOG_DIR`/`PLV_STATE_FILE` siguen
+// siendo el override explícito de los tests herméticos (path que el test declara).
+// En producción lo lanza watchdog.ps1, que declara PIPELINE_AMBIENTE=productivo.
+function logDir() {
+  return process.env.PLV_LOG_DIR
+    || require('./lib/write-target').writePath(process.env, { canal: 'logs', destino: 'logs/pulpo-liveness.log' }, 'logs');
+}
+function runLog() { return path.join(logDir(), 'pulpo-liveness.log'); }
 // #5821 CA-1 — La serie y los contadores viven acá porque el runner es efímero.
-// Bajo LOG_DIR (overridable por `PLV_LOG_DIR`) para que los tests herméticos
+// Bajo logDir() (overridable por `PLV_LOG_DIR`) para que los tests herméticos
 // arranquen siempre con estado limpio sin tocar el de producción.
-const STATE_FILE = process.env.PLV_STATE_FILE || path.join(LOG_DIR, 'pulpo-liveness-state.json');
+function stateFile() {
+  return process.env.PLV_STATE_FILE || path.join(logDir(), 'pulpo-liveness-state.json');
+}
 
 const liveness = require('./lib/pulpo-liveness');
 
 function log(msg) {
   try {
-    fs.mkdirSync(LOG_DIR, { recursive: true });
+    // Con dir === null logDir() lanza (aviso único por stderr, write-target): fail-soft.
+    fs.mkdirSync(logDir(), { recursive: true });
     const ts = new Date().toISOString();
-    fs.appendFileSync(RUN_LOG, `[${ts}] ${msg}\n`);
+    fs.appendFileSync(runLog(), `[${ts}] ${msg}\n`);
   } catch (_) {
     /* fail-soft: si no podemos loguear, seguimos */
   }
@@ -310,9 +323,9 @@ function confirmKill() {
       'pulpo_liveness_kill_window_minutes'
     );
     const now = Date.now();
-    const state = margin.loadState(STATE_FILE);
+    const state = margin.loadState(stateFile());
     const next = margin.recordKill(state, now, windowMinutes);
-    margin.saveStateAtomic(STATE_FILE, next);
+    margin.saveStateAtomic(stateFile(), next);
     log(`kill CONFIRMADO por el SO y contabilizado — killsInWindow=${next.kills.length}`);
   } catch (err) {
     log(`WARN no se pudo contabilizar el kill confirmado: ${err && err.message}`);
@@ -392,7 +405,7 @@ function main() {
       killWindowMinutes: supervisorInt(cfg.pulpo_liveness_kill_window_minutes, margin.DEFAULT_KILL_WINDOW_MINUTES, 'pulpo_liveness_kill_window_minutes'),
     };
 
-    state = margin.loadState(STATE_FILE);
+    state = margin.loadState(stateFile());
 
     // El umbral se calcula sobre la serie HISTÓRICA, ANTES de incorporar la
     // muestra de este ciclo: si el ciclo actual resulta ser un cuelgue, su
@@ -673,7 +686,7 @@ function main() {
     }
 
     try {
-      margin.saveStateAtomic(STATE_FILE, next);
+      margin.saveStateAtomic(stateFile(), next);
     } catch (err) {
       // Fail-soft: perder la serie sólo devuelve el umbral al piso (dirección
       // segura). Jamás debe cambiar la decisión ya tomada.

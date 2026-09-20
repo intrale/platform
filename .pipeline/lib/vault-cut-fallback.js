@@ -166,7 +166,10 @@ function accepted(result) {
 }
 
 async function executeVaultCutFallback(opts = {}) {
-  const configPath = path.resolve(opts.configPath || path.join(__dirname, '..', 'config.yaml'));
+  // #7112 — el `.pipeline` base (config.yaml + audit/) sale del envoltorio (SEC-13):
+  // sin ambiente declarado ni dir de pruebas avisa por stderr y LANZA (CA-3).
+  const configPath = path.resolve(opts.configPath
+    || require('./write-target').writePath(process.env, { canal: 'logs', destino: 'audit/vault-cut-fallback.jsonl' }, 'config.yaml'));
   const fsImpl = opts.fsImpl || fs;
   const auditPath = opts.auditPath || path.join(path.dirname(configPath), 'audit', 'vault-cut-fallback.jsonl');
   const now = typeof opts.now === 'function' ? opts.now : () => new Date();

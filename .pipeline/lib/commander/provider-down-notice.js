@@ -56,10 +56,17 @@ const { EVENT, shouldEmitAudio } = require('../audio-policy');
 // Rutas
 // -----------------------------------------------------------------------------
 // __dirname = .pipeline/lib/commander → '..','..' = .pipeline
-const PIPELINE_DIR = path.resolve(__dirname, '..', '..');
-const CLIP_DIR = path.join(PIPELINE_DIR, 'assets', 'audio', 'provider-down');
+// __dirname = .pipeline/lib/commander → '..','..' = .pipeline
+// `CLIP_DIR`/`COPY_PATH` son assets versionados (sólo LECTURA): siguen anclados al módulo.
+const CLIP_DIR = path.resolve(__dirname, '..', '..', 'assets', 'audio', 'provider-down');
 const COPY_PATH = path.join(CLIP_DIR, 'copy.json');
-const AUDIO_STATE_PATH = path.join(PIPELINE_DIR, '.provider-down-audio-state.json');
+// #7112 — el destino se resuelve POR LLAMADA vía `lib/write-target` (SEC-13):
+// ninguna const de módulo captura `__dirname` al `require`. Sin ambiente
+// declarado ni dir de pruebas, `writeDir` avisa por stderr y LANZA (CA-3).
+// Identificadores conservados: cada uso `X` → `X()`.
+function AUDIO_STATE_PATH() {
+    return require('../write-target').writePath(process.env, { canal: 'estado', destino: '.provider-down-audio-state.json' }, '.provider-down-audio-state.json');
+}
 
 /** Cap de longitud para texto y guion hablado (CA-7 / CA-11). */
 const MAX_CHARS = 600;
@@ -468,7 +475,7 @@ function shouldEmitDownAudio(stateObj, causeKey, nowMs, opts = {}) {
  * @param {string} [statePath]
  * @returns {{ok: boolean, state: object}}
  */
-function loadDownAudioState(statePath = AUDIO_STATE_PATH) {
+function loadDownAudioState(statePath = AUDIO_STATE_PATH()) {
     let raw;
     try {
         raw = fs.readFileSync(statePath, 'utf8');
@@ -497,7 +504,7 @@ function loadDownAudioState(statePath = AUDIO_STATE_PATH) {
  * @param {string} [statePath]
  * @returns {boolean} true si quedó persistido.
  */
-function saveDownAudioState(state, statePath = AUDIO_STATE_PATH) {
+function saveDownAudioState(state, statePath = AUDIO_STATE_PATH()) {
     const tmp = `${statePath}.${process.pid}.tmp`;
     try {
         fs.writeFileSync(tmp, JSON.stringify(state, null, 2));
@@ -582,7 +589,7 @@ async function sendDownNoticeAudio(deps = {}) {
             readClip,
             now,
             ttsTimeoutMs = TTS_TIMEOUT_MS,
-            statePath = AUDIO_STATE_PATH,
+            statePath = AUDIO_STATE_PATH(),
             cooldownOpts = {},
         } = deps;
 
@@ -667,7 +674,7 @@ module.exports = {
     // Constantes
     CLIP_DIR,
     COPY_PATH,
-    AUDIO_STATE_PATH,
+    get AUDIO_STATE_PATH() { return AUDIO_STATE_PATH(); },
     CAUSE_TO_KEY,
     CLIPS,
     GENERIC_KEY,

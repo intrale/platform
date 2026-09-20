@@ -1189,6 +1189,65 @@ test('multiplicación', () => { assert.equal(2 * 3, 6); });
     assert.ok(r.report_file && fs.existsSync(r.report_file), 'report file debe existir');
 });
 
+// #7112 · CA-4 (Enmienda 2 de guru) — la suite que corre el pipeline pasa por
+// `node --test` directo, fuera de `scripts/test-pipeline.js`. El mismo helper
+// (`lib/test-run-dir.js`) provee el dir efímero en el `childEnv`: un test que
+// no declara dir cae en un mkdtemp bajo os.tmpdir(), y ese dir se borra al
+// terminar la batería. Si el llamador ya trae `PIPELINE_DIR_OVERRIDE`, se respeta.
+test('#7112 CA-4 — runNodeTests provee PIPELINE_DIR_OVERRIDE bajo os.tmpdir() a los hijos y lo borra al terminar', async () => {
+    const fresh = fs.mkdtempSync(path.join(require('os').tmpdir(), 'v3-tester-7112-'));
+    fs.mkdirSync(path.join(fresh, '.pipeline', 'tests'), { recursive: true });
+    fs.mkdirSync(path.join(fresh, '.pipeline', 'logs'), { recursive: true });
+    fs.writeFileSync(path.join(fresh, '.pipeline', 'tests', 'dir.test.js'), `
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+test('hereda el dir de pruebas', () => {
+  const d = process.env.PIPELINE_DIR_OVERRIDE;
+  assert.ok(d, 'PIPELINE_DIR_OVERRIDE presente');
+  fs.writeFileSync(path.join(d, 'centinela.txt'), 'x');
+});
+`);
+    const env = { ...process.env };
+    delete env.PIPELINE_DIR_OVERRIDE;
+    const lineas = [];
+    const r = await tester.runNodeTests(fresh, env, { onLog: (l) => lineas.push(l) });
+    assert.equal(r.exit_code, 0, r.stderr);
+    assert.equal(r.summary.tests, 1);
+    assert.equal(r.summary.failures, 0);
+    assert.equal(r.test_run_dir_creado, true);
+    const tmp = path.resolve(require('os').tmpdir());
+    assert.ok(r.test_run_dir.startsWith(tmp + path.sep), 'bajo os.tmpdir(): ' + r.test_run_dir);
+    assert.ok(path.basename(r.test_run_dir).startsWith('pipeline-tests-'));
+    assert.ok(!r.test_run_dir.includes(path.sep + '.pipeline' + path.sep), 'nunca bajo .pipeline/');
+    assert.equal(fs.existsSync(r.test_run_dir), false, 'borrado al terminar la batería');
+    assert.equal(env.PIPELINE_DIR_OVERRIDE, undefined, 'no muta el env recibido');
+    assert.ok(lineas.some((l) => /\[tester:node-test\] dir de pruebas: .+ \(ef.mero, se borra al terminar\)/.test(l)), lineas.join('\n'));
+    assert.ok(lineas.some((l) => l === '[tester:node-test] dir de pruebas borrado'), lineas.join('\n'));
+});
+
+test('#7112 CA-4 — runNodeTests respeta un PIPELINE_DIR_OVERRIDE ya declarado por el llamador y no lo borra', async () => {
+    const fresh = fs.mkdtempSync(path.join(require('os').tmpdir(), 'v3-tester-7112b-'));
+    fs.mkdirSync(path.join(fresh, '.pipeline', 'tests'), { recursive: true });
+    fs.mkdirSync(path.join(fresh, '.pipeline', 'logs'), { recursive: true });
+    const propio = fs.mkdtempSync(path.join(require('os').tmpdir(), 'v3-tester-7112-propio-'));
+    fs.writeFileSync(path.join(fresh, '.pipeline', 'tests', 'dir.test.js'), `
+const test = require('node:test');
+const fs = require('node:fs');
+const path = require('node:path');
+test('escribe en el dir del llamador', () => { fs.writeFileSync(path.join(process.env.PIPELINE_DIR_OVERRIDE, 'centinela.txt'), 'x'); });
+`);
+    const lineas = [];
+    const r = await tester.runNodeTests(fresh, { ...process.env, PIPELINE_DIR_OVERRIDE: propio }, { onLog: (l) => lineas.push(l) });
+    assert.equal(r.exit_code, 0, r.stderr);
+    assert.equal(r.test_run_dir_creado, false);
+    assert.equal(r.test_run_dir, path.resolve(propio));
+    assert.ok(fs.existsSync(path.join(propio, 'centinela.txt')), 'el dir del llamador no se borra');
+    assert.ok(lineas.some((l) => /declarado por el llamador, no se borra/.test(l)));
+    fs.rmSync(propio, { recursive: true, force: true });
+});
+
 test('runNodeTests — test fallido devuelve exit_code:1 y failures>0', async () => {
     const fresh = fs.mkdtempSync(path.join(require('os').tmpdir(), 'v3-tester-fail-'));
     fs.mkdirSync(path.join(fresh, '.pipeline', 'tests'), { recursive: true });

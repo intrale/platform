@@ -21,9 +21,18 @@ const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
 
-const REPO_ROOT = path.resolve(__dirname, '..', '..');
-const PIPELINE_DIR = path.join(REPO_ROOT, '.pipeline');
-const CACHE_FILE = path.join(PIPELINE_DIR, 'partial-pause-deps-cache.json');
+// #7112 — el destino se resuelve POR LLAMADA vía `lib/write-target` (SEC-13):
+// ninguna const de módulo captura `__dirname` al `require`. Sin ambiente
+// declarado ni dir de pruebas, `writeDir` avisa por stderr y LANZA (CA-3).
+// Identificadores conservados: cada uso `X` → `X()`.
+// Contrato tras #7112 (rebote rev-3): el default `cacheFile = CACHE_FILE()` se
+// evalúa al ENTRAR a `readCache`/`writeCache`/`fetchIssueInfo`…, fuera de su
+// `try`. El `catch` sólo cubre la I/O (archivo ausente, JSON roto, disco): un
+// dir de escritura no resoluble LANZA y sube al llamador. Ya no es "best-effort
+// / nunca tira" salvo que el llamador inyecte `cacheFile`.
+function CACHE_FILE() {
+    return require('./write-target').writePath(process.env, { canal: 'pausa', destino: 'partial-pause-deps-cache.json' }, 'partial-pause-deps-cache.json');
+}
 const CACHE_TTL_MS = 5 * 60 * 1000;
 const MAX_DEPTH = 3;
 // Cap absoluto de profundidad (defensa contra opts.maxDepth descontrolado).
@@ -77,7 +86,7 @@ function defaultGhRunner(args, opts = {}) {
     };
 }
 
-function readCache(cacheFile = CACHE_FILE) {
+function readCache(cacheFile = CACHE_FILE()) {
     try {
         const raw = fs.readFileSync(cacheFile, 'utf8');
         const parsed = JSON.parse(raw);
@@ -92,7 +101,7 @@ function emptyCache() {
     return { issues: {}, updatedAt: 0 };
 }
 
-function writeCache(cache, cacheFile = CACHE_FILE) {
+function writeCache(cache, cacheFile = CACHE_FILE()) {
     try {
         fs.writeFileSync(cacheFile, JSON.stringify(cache, null, 2), 'utf8');
     } catch {}
@@ -193,7 +202,7 @@ function degradedEntry(existing, now, cause) {
  * Usa cache TTL 5 min.
  * @returns {{state: 'open'|'closed'|'unknown', deps: number[], title: string, fetchedAt: number, error?: string}}
  */
-function fetchIssueInfo(issueNum, { ghRunner = defaultGhRunner, repo = 'intrale/platform', cache = null, cacheFile = CACHE_FILE, now = Date.now() } = {}) {
+function fetchIssueInfo(issueNum, { ghRunner = defaultGhRunner, repo = 'intrale/platform', cache = null, cacheFile = CACHE_FILE(), now = Date.now() } = {}) {
     const c = cache || readCache(cacheFile);
     const key = String(issueNum);
     const existing = c.issues[key];
@@ -283,7 +292,7 @@ function fetchIssueInfo(issueNum, { ghRunner = defaultGhRunner, repo = 'intrale/
  * }}
  */
 function resolveOpenDeps(issueNum, opts = {}) {
-    const { ghRunner = defaultGhRunner, repo = 'intrale/platform', cacheFile = CACHE_FILE, now = Date.now() } = opts;
+    const { ghRunner = defaultGhRunner, repo = 'intrale/platform', cacheFile = CACHE_FILE(), now = Date.now() } = opts;
     // maxDepth override (issue #3142): permite a `/promote` aumentar el alcance
     // a 5 niveles (cumple CA-Sec-12) sin tocar callers existentes (default 3).
     // Se clampea contra [1, ABSOLUTE_MAX_DEPTH] para evitar loops descontrolados.
@@ -413,7 +422,7 @@ function alertSignature(issueNum, missingDeps) {
 }
 
 module.exports = {
-    CACHE_FILE,
+    get CACHE_FILE() { return CACHE_FILE(); },
     CACHE_TTL_MS,
     MAX_DEPTH,
     ABSOLUTE_MAX_DEPTH,

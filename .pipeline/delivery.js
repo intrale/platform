@@ -156,6 +156,43 @@ function resolveAuthorizedSigners(config, env = process.env) {
   return Array.from(ids);
 }
 
+// #7112 rebote rev-3 (G1) — Paso 5.5 de `main` como función: decide si GATE 2
+// aplica y, sólo entonces, resuelve el dir de `audit/` y revalida la firma.
+//
+// El orden importa y es el defecto que corrige: `operatorSignature.evaluate`
+// persiste en `<pipelineDir>/audit/`, y ese dir se resuelve por llamada vía
+// `lib/write-target` (SEC-13), que sin ambiente declarado ni dir de pruebas
+// avisa por stderr y LANZA (CA-3). Con el kill switch OFF no hay escritura que
+// resolver, así que tampoco hay nada que bloquear: "OFF ⇒ no-op" tiene que ser
+// cierto también para el CLI manual del operador (sesión interactiva, sin
+// `PIPELINE_AMBIENTE`; `.claude/skills/delivery/SKILL.md`). Con el gate ON el
+// bloqueo se conserva tal cual: fail-closed, nunca `__dirname`.
+//
+// `resolveAuditDir` y `spawnSyncImpl` son puntos de inyección para tests; en
+// producción `main` no los pasa.
+//
+// @returns {{skipped: true}|{skipped: false, ok: boolean, reason: string}}
+function runOperatorSignatureGate({ issue, cwd, config, env = process.env, resolveAuditDir, spawnSyncImpl } = {}) {
+  const cfg = config || {};
+  if (!(((cfg.operator_signature || {}).enabled === true) && issue)) {
+    return { skipped: true };
+  }
+  const pipelineDir = typeof resolveAuditDir === 'function'
+    ? resolveAuditDir()
+    : require('./lib/write-target').writeDir(env, { canal: 'logs', destino: 'audit/ (firma de aceptación, GATE 2)' });
+  const _spawnSync = spawnSyncImpl || spawnSync;
+  const headRev = _spawnSync('git', ['-C', cwd, 'rev-parse', 'HEAD'], { encoding: 'utf8' });
+  const headSha = headRev.status === 0 ? (headRev.stdout || '').trim() : '';
+  const gate = checkOperatorSignatureGate({
+    issueNumber: parseInt(issue, 10),
+    headSha,
+    config: cfg,
+    authorizedSigners: resolveAuthorizedSigners(cfg, env),
+    pipelineDir,
+  });
+  return { skipped: false, ok: gate.ok, reason: gate.reason };
+}
+
 // ---- CLI parsing -----------------------------------------------------------
 
 function parseArgs(argv) {
@@ -427,23 +464,23 @@ function main() {
 
   // 5.5 #4575 — GATE 2 defense-in-depth: revalidar firma verde ligada al HEAD
   // actual antes de tocar remoto (anti-TOCTOU CA-3). Kill switch OFF ⇒ no-op.
-  const pipelineDir = path.join(__dirname);
-  const cfg = loadConfigFailClosed(pipelineDir);
-  if (((cfg.operator_signature || {}).enabled === true) && args.issue) {
-    const headRev = spawnSync('git', ['-C', cwd, 'rev-parse', 'HEAD'], { encoding: 'utf8' });
-    const headSha = headRev.status === 0 ? (headRev.stdout || '').trim() : '';
-    const gate = checkOperatorSignatureGate({
-      issueNumber: parseInt(args.issue, 10),
-      headSha,
-      config: cfg,
-      authorizedSigners: resolveAuthorizedSigners(cfg),
-      pipelineDir,
-    });
-    if (!gate.ok) {
-      console.error(`❌ Merge/entrega bloqueado — ${gate.reason}`);
+  // #7112 rebote rev-3 (G1) — la CONFIG (lectura del kill switch) se resuelve
+  // por la cadena D-1 del `config-resolver` (`PIPELINE_DIR_OVERRIDE` >
+  // `PIPELINE_STATE_DIR` > `PIPELINE_REPO_ROOT/.pipeline` > este checkout): es
+  // la misma precedencia que seguía el `writeDir` que estaba acá, sin el
+  // bloqueo. El dir de ESCRITURA de `audit/` lo resuelve
+  // `runOperatorSignatureGate` vía `lib/write-target` SÓLO con el gate
+  // encendido. Antes `writeDir` se evaluaba acá, antes del `if`, y el CLI
+  // manual (sesión interactiva del operador, sin `PIPELINE_AMBIENTE`) moría con
+  // `PIPELINE_ESCRITURA_BLOQUEADA` sin push ni PR aunque GATE 2 estuviera OFF.
+  const cfg = loadConfigFailClosed();
+  const gate2 = runOperatorSignatureGate({ issue: args.issue, cwd, config: cfg });
+  if (!gate2.skipped) {
+    if (!gate2.ok) {
+      console.error(`❌ Merge/entrega bloqueado — ${gate2.reason}`);
       process.exit(1);
     }
-    console.log(`🔏 GATE 2 OK: ${gate.reason}`);
+    console.log(`🔏 GATE 2 OK: ${gate2.reason}`);
   }
 
   // 5.6 #6496 — GATE 3: CADUCIDAD DEL VEREDICTO DE QA.
@@ -651,6 +688,13 @@ function main() {
 }
 
 if (require.main === module) {
+  // #7112 rebote rev-3 (G1) · CA-6 — entrypoint HUMANO: el skill `/delivery` lo
+  // corre en la sesión interactiva del operador (`.claude/skills/delivery/SKILL.md`),
+  // sin nadie arriba que declare ambiente. Misma regla que `rollback.js` y
+  // `quota-snapshot-scheduler.js`: declara `productivo` sólo si no venía nada
+  // (`??=`); lanzado por un agente del Pulpo ya viene declarado y se respeta.
+  // Como módulo (tests) NO declara: cae al dir del runner o falla ruidoso.
+  require('./lib/launcher-env').declararRaiz(process.env);
   try {
     main();
   } catch (err) {
@@ -670,6 +714,9 @@ module.exports = {
   // #4575 — GATE 2 defense-in-depth (exportados para tests)
   checkOperatorSignatureGate,
   resolveAuthorizedSigners,
+  // #7112 rebote rev-3 (G1) — paso 5.5 de `main` (kill switch OFF ⇒ no resuelve
+  // ni escribe nada; exportado para tests)
+  runOperatorSignatureGate,
   // #5172 — renombrado desde `loadConfigBestEffort`: ya no es best-effort, es
   // fail-closed. El nombre viejo describía justo la degradación que se eliminó.
   loadConfigFailClosed,

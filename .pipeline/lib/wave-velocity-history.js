@@ -63,8 +63,10 @@ let _appendCounter = 0;
 function pipelineRoot(pipelineRootArg) {
     if (pipelineRootArg) return pipelineRootArg;
     if (process.env.PIPELINE_ROOT_OVERRIDE) return process.env.PIPELINE_ROOT_OVERRIDE;
-    if (process.env.PIPELINE_DIR_OVERRIDE) return process.env.PIPELINE_DIR_OVERRIDE;
-    return path.join(__dirname, '..');
+    // #7112 — familia F: el cuerpo pasa a UNA línea sobre el envoltorio (SEC-13).
+    // `PIPELINE_DIR_OVERRIDE` sigue mandando (precedencia D-1 del resolvedor); sin
+    // ambiente declarado ni dir de pruebas avisa por stderr y LANZA (CA-3), nunca `__dirname`.
+    return require('./write-target').writeDir(process.env, { canal: 'logs', destino: 'wave-velocity-history.jsonl' });
 }
 
 function storePath(pipelineRootArg) {

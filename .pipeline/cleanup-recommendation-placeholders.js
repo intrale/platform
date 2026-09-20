@@ -22,7 +22,12 @@ const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');
 
-const PIPELINE = path.resolve(__dirname);
+// #7112 — la raíz del pipeline se resuelve POR LLAMADA vía `lib/write-target`
+// (SEC-13): sin ambiente declarado ni dir de pruebas avisa por stderr y LANZA.
+const writeTarget = require('./lib/write-target');
+function PIPELINE() {
+  return writeTarget.writeDir(process.env, { canal: 'estado', destino: '<pipeline>/<fase>/archivado/' });
+}
 const GH_BIN = process.env.GH_BIN || 'C:\\Workspaces\\gh-cli\\bin\\gh.exe';
 
 function listRecommendationIssues() {
@@ -40,7 +45,7 @@ function listRecommendationIssues() {
 function walkBlockedDirs() {
     const matches = [];
     for (const pipeline of ['definicion', 'desarrollo']) {
-        const root = path.join(PIPELINE, pipeline);
+        const root = path.join(PIPELINE(), pipeline);
         if (!fs.existsSync(root)) continue;
         for (const phase of fs.readdirSync(root)) {
             const blockedDir = path.join(root, phase, 'bloqueado-humano');
@@ -83,7 +88,7 @@ function cleanup() {
         if (!reason) { skippedNoReason++; continue; }
         if (reason.blocked_by !== 'svc-reconciler') { skippedNotReconciler++; continue; }
 
-        const archiveDir = path.join(PIPELINE, m.pipeline, m.phase, 'archivado');
+        const archiveDir = path.join(PIPELINE(), m.pipeline, m.phase, 'archivado');
         fs.mkdirSync(archiveDir, { recursive: true });
         const stamp = new Date().toISOString().slice(0, 10);
         const dstMarker = path.join(archiveDir, `${m.fileName}.cleaned-recommendation-${stamp}`);

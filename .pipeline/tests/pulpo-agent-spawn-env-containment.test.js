@@ -276,6 +276,13 @@ const UTILITARIOS = [
     { marca: 'QA_ISSUE', motivo: 'execSync de qa-generate-test-cases.js (script node propio, no agente)' },
     { marca: "PATH: 'C:", motivo: 'relanzador de restart en background (cmd.exe, no agente)' },
     { marca: 'adbEnv', motivo: 'execSync de adb (pull/rm de evidencia QA en el emulador, no agente)' },
+    // #7112 · CA-7.2 — los spawns de scripts PROPIOS del Pulpo (rotate-caches,
+    // disk-guard, ghostbusters, rejection-report, relanzador de restart) declaran
+    // el ambiente explícito vía `envDeHijo()` (launcher-env). Antes heredaban
+    // `process.env` sin `env:` y no entraban en esta enumeración; siguen sin ser
+    // agentes ni providers: el material reservado de agentes lo filtra
+    // `buildChildEnv`, no este camino.
+    { marca: 'envDeHijo(', motivo: 'spawn de scripts node propios del Pulpo con declaración de ambiente explícita (#7112 CA-7.2), no agente' },
 ];
 
 // Expresiones `env:` esperadas en los sitios de CLASE AGENTE. Cardinalidad = 4.
@@ -457,7 +464,7 @@ async function evaluarConstruirEnvCommander({
         aislamiento,
         { pipeline: { credential_snapshot_enabled: snapshotEnabled } },
         { COMMANDER_SKILL: 'commander' },
-        PIPELINE_DIR,
+        () => PIPELINE_DIR, // #7112 · PIPELINE es función por llamada (SEC-13)
         () => {},
     );
     return fn(provider);
@@ -498,7 +505,7 @@ async function evaluarEnvDeIntentoAgente({
         '5796',
         { provider, source: 'fallback' },
         { pipeline: { credential_snapshot_enabled: snapshotEnabled } },
-        PIPELINE_DIR,
+        () => PIPELINE_DIR, // #7112 · PIPELINE es función por llamada (SEC-13)
         () => {},
     );
     return fn();

@@ -32,20 +32,31 @@
 const fs = require('fs');
 const path = require('path');
 
+// Directorio de CÓDIGO (config.yaml a leer): `__dirname`, fijo a propósito (#5172).
 const PIPELINE_DIR = __dirname;
-// Paths overridables por env sólo para tests herméticos (default = producción).
-// No exponen nada sensible: apuntan a logs/estado locales.
-const LOG_DIR = process.env.WDS_LOG_DIR || path.join(PIPELINE_DIR, 'logs');
-const STATE_FILE = process.env.WDS_STATE_FILE || path.join(LOG_DIR, 'watchdog-supervisor-state.json');
-const SUP_LOG = path.join(LOG_DIR, 'watchdog-supervisor.log');
+// #7112 (rebote rev-2) — los DESTINOS DE ESCRITURA (log y estado del supervisor)
+// se resuelven POR LLAMADA vía lib/write-target (SEC-13): antes eran
+// `const X = __dirname` + path.join(X, 'logs'), alias crudo inmune a cualquier
+// override e invisible para el inventario. `WDS_LOG_DIR`/`WDS_STATE_FILE` siguen
+// siendo el override explícito de los tests herméticos (path que el test declara).
+// En producción lo lanza watchdog-supervisor.ps1, que declara PIPELINE_AMBIENTE.
+function logDir() {
+  return process.env.WDS_LOG_DIR
+    || require('./lib/write-target').writePath(process.env, { canal: 'logs', destino: 'logs/watchdog-supervisor.log' }, 'logs');
+}
+function stateFile() {
+  return process.env.WDS_STATE_FILE || path.join(logDir(), 'watchdog-supervisor-state.json');
+}
+function supLog() { return path.join(logDir(), 'watchdog-supervisor.log'); }
 
 const supervisor = require('./lib/watchdog-supervisor');
 
 function log(msg) {
   try {
-    fs.mkdirSync(LOG_DIR, { recursive: true });
+    // Con dir === null logDir() lanza (aviso único por stderr, write-target): fail-soft.
+    fs.mkdirSync(logDir(), { recursive: true });
     const ts = new Date().toISOString();
-    fs.appendFileSync(SUP_LOG, `[${ts}] ${msg}\n`);
+    fs.appendFileSync(supLog(), `[${ts}] ${msg}\n`);
   } catch (_) {
     /* fail-soft: si no podemos loguear, seguimos */
   }
@@ -213,7 +224,7 @@ function main() {
   const heartbeatExists = envFlag('WDS_HB_EXISTS');
   const heartbeatAgeMs = envHeartbeatAgeMs();
   const taskHealthy = envTaskHealthy();
-  const state = supervisor.loadState(STATE_FILE);
+  const state = supervisor.loadState(stateFile());
 
   const decision = supervisor.decide({
     heartbeatExists,
@@ -235,7 +246,7 @@ function main() {
 
   if (decision.action === 'relaunch') {
     const newState = supervisor.recordRelaunch(state, now, windowMinutes);
-    supervisor.saveStateAtomic(STATE_FILE, newState);
+    supervisor.saveStateAtomic(stateFile(), newState);
     notify(
       'warn',
       `Watchdog stale (${decision.staleReason}), relanzando la tarea principal`,
@@ -247,7 +258,7 @@ function main() {
     const windowMs = windowMinutes * 60 * 1000;
     if (!state.lastEscalationTs || now - state.lastEscalationTs >= windowMs) {
       const newState = supervisor.recordEscalation(state, now);
-      supervisor.saveStateAtomic(STATE_FILE, newState);
+      supervisor.saveStateAtomic(stateFile(), newState);
       notify(
         'error',
         `Watchdog sigue stale tras ${decision.restartsInWindow} relanzamientos: cap alcanzado`,

@@ -158,8 +158,14 @@ test('archivo malformado: fallo terminal inmediato (no loop infinito)', () => {
 
   assert.equal(verdict, 'failed');
   assert.ok(fs.existsSync(path.join(FALLIDO, name)), 'un archivo ilegible va directo a fallido/');
-  // CA-7: la suite no deposita nada en ninguna cola de Telegram.
-  assert.equal(listAlerts().length, 0, 'la emisión está suprimida en sandbox');
+  // CA-7 / #7112: la cola EFECTIVA de la alerta es la del sandbox (la resuelve
+  // `write-target` por llamada, igual que la cola real de este servicio), así
+  // que la alerta se deposita ahí y nunca en la cola productiva. Antes (#5924
+  // R5) la cola real salía de `__dirname` crudo y el sandbox se detectaba como
+  // "fuera" → supresión; con la resolución única ya no hay dos rutas.
+  const alerts = listAlerts();
+  assert.equal(alerts.length, 1, 'la alerta queda en la cola del sandbox');
+  assert.ok(alerts[0].startsWith('alert-svc-telegram'));
 });
 
 test('anti-recursión: no se re-notifica el fallo de una alerta propia', () => {
@@ -397,15 +403,44 @@ test('#5924 R6: un description con backticks o saltos no puede cerrar el bloque'
 // -----------------------------------------------------------------------------
 // #5924 / R5 — Aislamiento derivado del PATH, no de una env var de modo
 // -----------------------------------------------------------------------------
-test('#5924 R5: con la cola fuera de la ruta real, la emisión se suprime', () => {
+// #7112 — `REAL_ALERT_QUEUE()` ya no sale de `__dirname` crudo: se resuelve POR
+// LLAMADA por `write-target` sobre el MISMO canal `colas` que usa notify-telegram.
+// En sandbox ambas rutas coinciden (la del override) → `cola_real` y la alerta
+// se deposita en el sandbox, nunca en el productivo (que sin declaración de
+// ambiente no es alcanzable: `dir === null`).
+test('#5924 R5 / #7112: la cola efectiva y la real coinciden en el sandbox → no se suprime', () => {
   resetQueues();
   const supp = resolveAlertSuppression();
-  assert.equal(supp.suppress, true, 'el sandbox está fuera de la cola real');
-  assert.equal(supp.reason, 'cola_fuera_de_la_ruta_real');
+  assert.equal(supp.suppress, false, 'misma resolución para ambas colas');
+  assert.equal(supp.reason, 'cola_real');
+  assert.equal(path.resolve(supp.queueDir), path.resolve(PENDIENTE), 'la cola efectiva es la del sandbox');
+  assert.equal(path.resolve(svc.REAL_ALERT_QUEUE()), path.resolve(QUEUE_DIR), 'la "real" también es la del sandbox');
 
   const emitido = notifyTelegramFailure('drop-supr.json', 'boom', 5, { data: { text: 'x' } });
-  assert.equal(emitido, false, 'no emite');
-  assert.equal(listAlerts().length, 0, 'no deja archivos en ninguna cola');
+  assert.equal(emitido, true, 'emite a la cola del sandbox');
+  assert.equal(listAlerts().length, 1, 'la alerta queda en el sandbox');
+});
+
+test('#7112: sin dir resoluble la cola real LANZA y la supresión falla hacia la visibilidad', () => {
+  const previoOverride = process.env.PIPELINE_DIR_OVERRIDE;
+  const previoState = process.env.PIPELINE_STATE_DIR;
+  const previoRepo = process.env.PIPELINE_REPO_ROOT;
+  try {
+    delete process.env.PIPELINE_DIR_OVERRIDE;
+    delete process.env.PIPELINE_STATE_DIR;
+    delete process.env.PIPELINE_REPO_ROOT;
+    assert.throws(() => svc.REAL_ALERT_QUEUE(), (e) => e && e.code === 'PIPELINE_ESCRITURA_BLOQUEADA');
+    const supp = resolveAlertSuppression();
+    assert.equal(supp.suppress, false, 'ante ambigüedad NO se suprime');
+    assert.equal(supp.reason, 'cola_no_resoluble');
+  } finally {
+    if (previoOverride === undefined) delete process.env.PIPELINE_DIR_OVERRIDE;
+    else process.env.PIPELINE_DIR_OVERRIDE = previoOverride;
+    if (previoState === undefined) delete process.env.PIPELINE_STATE_DIR;
+    else process.env.PIPELINE_STATE_DIR = previoState;
+    if (previoRepo === undefined) delete process.env.PIPELINE_REPO_ROOT;
+    else process.env.PIPELINE_REPO_ROOT = previoRepo;
+  }
 });
 
 test('#5924 R5: producción NO se puede silenciar con una env var', () => {

@@ -37,10 +37,31 @@ const path = require('path');
 const { scanNodeProcesses, invalidateCache } = require('./pid-discovery');
 const guard = require('./lib/rollback-guard');
 const dropfileWriter = require('./lib/dropfile-writer');
+const writeTarget = require('./lib/write-target');
 
+// #7112 · CA-6 — rollback.js es un entrypoint de emergencia: lo spawnea
+// restart.js (que ya declara y le pasa el env por envDeServicio) o lo corre el
+// operador a mano desde la consola, sin nadie arriba que declare por él. Misma
+// regla que restart.js: declara productivo sólo si no venía nada. Corre como
+// main SIEMPRE (IIFE al final), nunca como módulo de un test.
+require('./lib/launcher-env').declararRaiz(process.env);
+
+// Directorio de CÓDIGO (restart.js a relanzar, raíz del repo para git).
 const PIPELINE_DIR = __dirname;
 const ROOT = path.resolve(PIPELINE_DIR, '..');
-const LOG_FILE = path.join(PIPELINE_DIR, 'logs', 'rollback.log');
+// Destinos de ESCRITURA (rollback.log, cola de Telegram, .pid): por llamada vía
+// lib/write-target (#7112, rebote rev-2 — antes eran el alias crudo
+// `const X = __dirname`, inmune a todo override e invisible para el inventario).
+function stateDir() {
+  return writeTarget.writeDir(process.env, { canal: 'estado', destino: '.pipeline (raíz, rollback.js: *.pid)' });
+}
+function logFile() {
+  return writeTarget.writePath(process.env, { canal: 'logs', destino: 'logs/rollback.log' }, 'logs', 'rollback.log');
+}
+function tgOutboxDir() {
+  return writeTarget.writePath(process.env, { canal: 'colas', destino: 'servicios/telegram/pendiente' },
+    'servicios', 'telegram', 'pendiente');
+}
 const ARGS = process.argv.slice(2);
 const TARGET = ARGS.find((a) => !a.startsWith('--')) || 'pipeline-stable';
 const FORCE = ARGS.includes('--force');
@@ -58,8 +79,9 @@ const STDOUT_IS_LOG = process.env.ROLLBACK_STDIO_IS_LOG === '1';
 function log(msg) {
   const ts = new Date().toISOString().replace('T', ' ').slice(0, 19);
   const line = `[${ts}] ${msg}`;
-  try { fs.mkdirSync(path.dirname(LOG_FILE), { recursive: true }); } catch {}
-  try { fs.appendFileSync(LOG_FILE, line + '\n'); } catch {}
+  // Con dir === null logFile() lanza (aviso único por stderr, write-target) y el
+  // archivo se saltea; la consola sigue siendo el diagnóstico del operador.
+  try { const file = logFile(); fs.mkdirSync(path.dirname(file), { recursive: true }); fs.appendFileSync(file, line + '\n'); } catch {}
   if (!STDOUT_IS_LOG) console.log(line);
 }
 
@@ -71,8 +93,8 @@ function fail(msg, code = 1) {
 
 function enqueueTelegramAlert(text) {
   const msg = text.length > 4000 ? text.slice(0, 4000) + '...' : text;
-  const svcDir = path.join(PIPELINE_DIR, 'servicios', 'telegram', 'pendiente');
   try {
+    const svcDir = tgOutboxDir();
     if (!fs.existsSync(svcDir)) fs.mkdirSync(svcDir, { recursive: true });
     // #6226 — nombre único + escritura `wx`: dos dropfiles del mismo
     // milisegundo ya no se pisan entre sí ni pisan los de otro proceso.
@@ -297,8 +319,9 @@ function killPipelineProcesses() {
 
   // Limpiar PID files.
   try {
-    for (const f of fs.readdirSync(PIPELINE_DIR)) {
-      if (f.endsWith('.pid')) { try { fs.unlinkSync(path.join(PIPELINE_DIR, f)); } catch {} }
+    const dir = stateDir();
+    for (const f of fs.readdirSync(dir)) {
+      if (f.endsWith('.pid')) { try { fs.unlinkSync(path.join(dir, f)); } catch {} }
     }
   } catch {}
 

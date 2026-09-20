@@ -76,9 +76,17 @@ const ACTIVATION_ISSUE = '#5263';
 const CANONICAL_HINT = '~/.claude/secrets/credentials.json';
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
-const PIPELINE_DIR = path.resolve(__dirname, '..');
-const HEALTH_JSON_PATH = path.join(PIPELINE_DIR, 'secrets-health.json');
-const GUARD_LOG_PATH = path.join(PIPELINE_DIR, 'logs', 'secrets-guard.log');
+// #7112 — el destino se resuelve POR LLAMADA vía `lib/write-target` (SEC-13):
+// ninguna const de módulo captura `__dirname` al `require`. Sin ambiente
+// declarado ni dir de pruebas, `writeDir` avisa por stderr y LANZA (CA-3).
+// Identificadores conservados: cada uso `X` → `X()`.
+function HEALTH_JSON_PATH() {
+    return require('./write-target').writePath(process.env, { canal: 'estado', destino: 'secrets-health.json' }, 'secrets-health.json');
+}
+// Log propio del guard: best-effort (el `try/catch` del llamador lo absorbe).
+function GUARD_LOG_PATH() {
+    return require('./write-target').writePath(process.env, { canal: 'logs', destino: 'logs/secrets-guard.log' }, 'logs', 'secrets-guard.log');
+}
 
 /** Clave bajo la que viven los contadores dentro de `secrets-health.json`. */
 const HEALTH_MIGRATION_KEY = 'migration';
@@ -486,8 +494,8 @@ function defaultLog(line) {
     // Log propio: garantiza la evidencia de enganche tambien para los hooks,
     // cuyo stderr no siempre queda registrado. `.pipeline/logs/` es gitignored.
     try {
-        fs.mkdirSync(path.dirname(GUARD_LOG_PATH), { recursive: true });
-        fs.appendFileSync(GUARD_LOG_PATH, `[${new Date().toISOString()}] ${line}\n`);
+        fs.mkdirSync(path.dirname(GUARD_LOG_PATH()), { recursive: true });
+        fs.appendFileSync(GUARD_LOG_PATH(), `[${new Date().toISOString()}] ${line}\n`);
     } catch { /* best-effort: el guard nunca puede tumbar al llamador */ }
 }
 
@@ -525,7 +533,7 @@ function toNumber(value, fallback) {
  * tanto no habilita el corte por accidente.
  */
 function flushCounters({
-    targetPath = HEALTH_JSON_PATH,
+    targetPath = HEALTH_JSON_PATH(),
     fsImpl = fs,
     uninstrumentedReaders,
     counters,
@@ -557,7 +565,7 @@ function flushCounters({
 }
 
 /** Pone los acumulados en cero y estampa `ts_reset`. Lo usa #5263 antes de medir. */
-function resetHealthCounters({ targetPath = HEALTH_JSON_PATH, fsImpl = fs } = {}) {
+function resetHealthCounters({ targetPath = HEALTH_JSON_PATH(), fsImpl = fs } = {}) {
     try {
         const doc = readJsonSafe(targetPath, fsImpl) || {};
         const prev = (doc[HEALTH_MIGRATION_KEY] && typeof doc[HEALTH_MIGRATION_KEY] === 'object')
@@ -704,9 +712,9 @@ module.exports = {
     WARN_PREFIX,
     RUNBOOK,
     ACTIVATION_ISSUE,
-    HEALTH_JSON_PATH,
+    get HEALTH_JSON_PATH() { return HEALTH_JSON_PATH(); },
     HEALTH_MIGRATION_KEY,
-    GUARD_LOG_PATH,
+    get GUARD_LOG_PATH() { return GUARD_LOG_PATH(); },
     REPO_ROOT,
     // Internos expuestos para test unitario.
     isSubPath,

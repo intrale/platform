@@ -12,11 +12,20 @@ require('./lib/force-windows-hide').apply();
 const fs = require("fs");
 const path = require("path");
 
-const PIPELINE = process.env.PIPELINE_STATE_DIR || path.resolve(__dirname);
-const ROOT = process.env.PIPELINE_MAIN_ROOT || path.resolve(PIPELINE, "..");
+// #7112 — El directorio base del pipeline se resuelve POR LLAMADA vía
+// `lib/write-target` sobre `lib/pipeline-env` (SEC-13): ninguna const de módulo
+// captura el destino al `require`. Sin ambiente declarado (`PIPELINE_AMBIENTE`
+// del lanzador) y sin dir de pruebas, `writeDir` avisa por stderr y LANZA:
+// nunca se escribe en el productivo por defecto (CA-3 / SEC-10). Se conservan
+// los identificadores en mayúsculas para que el reemplazo const→función sea
+// mecánico: cada uso pasó de `X` a `X()`.
+const writeTarget = require("./lib/write-target");
+function PIPELINE() { return writeTarget.writeDir(process.env, { canal: "estado", destino: "outbox-drain.pid" }); }
+// Raíz del repo (LECTURA: require del hook telegram-outbox), no punto de escritura.
+const ROOT = process.env.PIPELINE_MAIN_ROOT || path.resolve(__dirname, "..");
 const DRAIN_INTERVAL_MS = 3000;
 const PULPO_CHECK_INTERVAL_MS = 15000;
-const PID_FILE = path.join(PIPELINE, "outbox-drain.pid");
+function PID_FILE() { return path.join(PIPELINE(), "outbox-drain.pid"); }
 
 // Singleton: si ya hay otro corriendo, salir silenciosamente
 const { spawnSync } = require("child_process");
@@ -48,11 +57,11 @@ if (existing) {
 }
 
 // Escribir PID
-fs.writeFileSync(PID_FILE, String(process.pid));
+fs.writeFileSync(PID_FILE(), String(process.pid));
 process.on("exit", () => {
   try {
-    const current = fs.readFileSync(PID_FILE, "utf8").trim();
-    if (current === String(process.pid)) fs.unlinkSync(PID_FILE);
+    const current = fs.readFileSync(PID_FILE(), "utf8").trim();
+    if (current === String(process.pid)) fs.unlinkSync(PID_FILE());
   } catch {}
 });
 

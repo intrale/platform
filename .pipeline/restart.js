@@ -83,8 +83,28 @@ if (process.env.FORCE_PROVIDER_OVERRIDE && process.env.PULPO_ALLOW_FORCE_PROVIDE
   );
 }
 
-const PIPELINE = path.resolve(__dirname);
-const ROOT = path.resolve(PIPELINE, '..');
+// #7112 · CA-6 — restart.js es uno de los TRES entrypoints humanos/SO de la
+// cadena de declaración de ambiente (con watchdog.ps1 y launch.ps1): nadie
+// declara por él, así que declara `productivo` si no venía nada (`??=`: #7111
+// puede lanzar un pipeline de pruebas declarando `pruebas` explícito). Sin esto,
+// sus PROPIAS escrituras (last-restart.json, logs/, colas) fallarían ruidoso al
+// correrlo desde la consola, y los servicios que spawnea nacerían sin ambiente.
+const launcherEnv = require('./lib/launcher-env');
+const writeTarget = require('./lib/write-target');
+launcherEnv.declararRaiz(process.env);
+
+// El repo principal es el padre de ESTE archivo (código); el directorio del
+// pipeline (estado) se resuelve POR LLAMADA vía write-target (SEC-13): con la
+// declaración de arriba y libs del productivo resuelve exactamente __dirname.
+const ROOT = path.resolve(__dirname, '..');
+function PIPELINE() {
+  return writeTarget.writeDir(process.env, { canal: 'estado', destino: '.pipeline (raíz, restart.js)' });
+}
+
+/** #7112 · CA-7.2 — env de cada servicio/brazo que restart.js spawnea. */
+function envDeServicio(extra = {}) {
+  return launcherEnv.envDeLanzador({ processEnv: process.env, repoRoot: ROOT, extra });
+}
 
 // #2880 — capturar mtime de este archivo al cargarse, para detectar después
 // de syncWithMain() si el `git reset --hard FETCH_HEAD` cambió el código del
@@ -128,7 +148,7 @@ function marcarComponentesConCodigoViejo(prevHead, head) {
       prevSha: prevHead || undefined,
       headSha: head,
       repoRoot: ROOT,
-      pipelineDir: PIPELINE,
+      pipelineDir: PIPELINE(),
     });
     if (!res.components.length) {
       // CA-2 / UX G-1: el caso "no afectó a nadie" también deja una línea; sin
@@ -218,7 +238,7 @@ function syncWithMain() {
       // `writeBootMarker` sólo por orden de lectura: el cómputo usa `prevHead`
       // explícito, no el marker.
       marcarComponentesConCodigoViejo(prevHead, head);
-      const res = require('./lib/runtime-boot').writeBootMarker(head, { pipelineDir: PIPELINE });
+      const res = require('./lib/runtime-boot').writeBootMarker(head, { pipelineDir: PIPELINE() });
       if (res && res.ok) log(`Boot marker actualizado: ${head.slice(0, 8)}`);
     } catch (e2) {
       log(`Warning: no se pudo escribir runtime-boot.json: ${(e2 && e2.message || '').slice(0, 80)}`);
@@ -263,7 +283,7 @@ function readDeclaredPipelinePids() {
   const map = new Map();
   for (const comp of COMPONENTS) {
     try {
-      const raw = fs.readFileSync(path.join(PIPELINE, comp.pid), 'utf8').trim();
+      const raw = fs.readFileSync(path.join(PIPELINE(), comp.pid), 'utf8').trim();
       const pid = parseInt(raw, 10);
       if (pid && !Number.isNaN(pid) && pid !== process.pid) map.set(pid, comp.pid);
     } catch {}
@@ -338,7 +358,7 @@ function killAll() {
 
   // Limpiar PID files
   for (const comp of COMPONENTS) {
-    try { fs.unlinkSync(path.join(PIPELINE, comp.pid)); } catch {}
+    try { fs.unlinkSync(path.join(PIPELINE(), comp.pid)); } catch {}
   }
 
   // Limpiar ready markers — cada componente debe reescribir el suyo
@@ -351,9 +371,9 @@ function killAll() {
   // IMPORTANTE: limpiar AMBAS colas — si hay un mensaje de restart pendiente
   // y el usuario ya hizo restart manual, el mensaje se re-procesaría
   // provocando un segundo restart que mata el dashboard recién levantado
-  const cmdPendiente = path.join(PIPELINE, 'servicios', 'commander', 'pendiente');
-  const cmdTrabajando = path.join(PIPELINE, 'servicios', 'commander', 'trabajando');
-  const cmdListo = path.join(PIPELINE, 'servicios', 'commander', 'listo');
+  const cmdPendiente = path.join(PIPELINE(), 'servicios', 'commander', 'pendiente');
+  const cmdTrabajando = path.join(PIPELINE(), 'servicios', 'commander', 'trabajando');
+  const cmdListo = path.join(PIPELINE(), 'servicios', 'commander', 'listo');
   try {
     if (!fs.existsSync(cmdListo)) fs.mkdirSync(cmdListo, { recursive: true });
     for (const dir of [cmdTrabajando, cmdPendiente]) {
@@ -393,7 +413,7 @@ function killAll() {
   //   El helper `annotateAndMoveOrphans` está testeado en
   //   `lib/__tests__/restart-orphan-annotator.test.js`.
   const { movedCount: orphansMoved } = annotateAndMoveOrphans({
-    pipelineRoot: PIPELINE,
+    pipelineRoot: PIPELINE(),
     pipelinesScan: ['desarrollo', 'definicion'],
     restartAt: new Date().toISOString(),
   });
@@ -402,7 +422,7 @@ function killAll() {
   // Escribir timestamp de último restart para evitar restarts encadenados
   try {
     fs.writeFileSync(
-      path.join(PIPELINE, 'last-restart.json'),
+      path.join(PIPELINE(), 'last-restart.json'),
       JSON.stringify({ timestamp: new Date().toISOString(), pid: process.pid })
     );
   } catch {}
@@ -515,7 +535,7 @@ function lanzarComponente(comp, logsDir, truncarLog) {
       log(`  ${comp.name}: usando kernel migrado @${resolved.version} (${scriptPath})`);
     }
   } else {
-    scriptPath = path.join(PIPELINE, comp.script);
+    scriptPath = path.join(PIPELINE(), comp.script);
   }
   if (!fs.existsSync(scriptPath)) return null;
 
@@ -532,7 +552,9 @@ function lanzarComponente(comp, logsDir, truncarLog) {
     stdio: ['ignore', logFd, logFd],
     detached: true,
     windowsHide: true,
-    env: { ...process.env, NODE_PATH: path.join(ROOT, 'node_modules') }
+    // #7112 · CA-6/CA-7.2 — declaración de ambiente EXPLÍCITA (modo resuelto por
+    // restart.js) + PIPELINE_REPO_ROOT, para cada servicio del pipeline.
+    env: envDeServicio({ NODE_PATH: path.join(ROOT, 'node_modules') }),
   });
   child.unref();
   fs.closeSync(logFd);
@@ -547,7 +569,7 @@ function lanzarComponente(comp, logsDir, truncarLog) {
 function launchAll() {
   log('=== START ===');
 
-  const logsDir = path.join(PIPELINE, 'logs');
+  const logsDir = path.join(PIPELINE(), 'logs');
   if (!fs.existsSync(logsDir)) fs.mkdirSync(logsDir, { recursive: true });
 
   const lanzados = [];
@@ -578,7 +600,7 @@ function componenteVivo(name) {
 //
 // @returns {{vivos:string[], muertos:string[], degradado:boolean}}
 function verificarArranque(lanzados) {
-  const logsDir = path.join(PIPELINE, 'logs');
+  const logsDir = path.join(PIPELINE(), 'logs');
   log('=== VERIFICACIÓN POST-ARRANQUE ===');
 
   // Misma clasificación que usa el barrido del watchdog: un solo lugar decide
@@ -640,7 +662,7 @@ function launchAllVerificado() {
 // --- SMOKE TEST + TAG pipeline-stable + AUTO-ROLLBACK ---
 
 function runSmokeTest() {
-  const script = path.join(PIPELINE, 'smoke-test.js');
+  const script = path.join(PIPELINE(), 'smoke-test.js');
   if (!fs.existsSync(script)) {
     log('Smoke test ausente, se omite');
     return { ok: true, skipped: true };
@@ -801,7 +823,7 @@ function hasStableTag() {
 
 function enqueueTelegramAlert(text) {
   const msg = text.length > 4000 ? text.slice(0, 4000) + '...' : text;
-  const svcDir = path.join(PIPELINE, 'servicios', 'telegram', 'pendiente');
+  const svcDir = path.join(PIPELINE(), 'servicios', 'telegram', 'pendiente');
   try {
     if (!fs.existsSync(svcDir)) fs.mkdirSync(svcDir, { recursive: true });
     // #6226 — nombre único + escritura `wx`: dos dropfiles del mismo
@@ -827,13 +849,13 @@ function launchRollbackOrphan() {
   // sale de inmediato, y el rollback orphan es libre de matar lo que
   // quiera — nuestro proceso ya no existe. No hay loop de self-kill.
   log('=== AUTO-ROLLBACK (orphan detached) ===');
-  const script = path.join(PIPELINE, 'rollback.js');
+  const script = path.join(PIPELINE(), 'rollback.js');
   if (!fs.existsSync(script)) {
     log('rollback.js ausente — no se puede ejecutar rollback');
     return false;
   }
 
-  const logsDir = path.join(PIPELINE, 'logs');
+  const logsDir = path.join(PIPELINE(), 'logs');
   if (!fs.existsSync(logsDir)) fs.mkdirSync(logsDir, { recursive: true });
   const logPath = path.join(logsDir, 'rollback.log');
   const logFd = fs.openSync(logPath, 'a');
@@ -847,7 +869,7 @@ function launchRollbackOrphan() {
     // ROLLBACK_STDIO_IS_LOG — su stdout ya apunta a rollback.log (logFd). Sin
     // esta señal rollback.js escribiría cada línea dos veces: una por
     // appendFileSync y otra por console.log (#5723, G-6).
-    env: { ...process.env, NODE_PATH: path.join(ROOT, 'node_modules'), ROLLBACK_STDIO_IS_LOG: '1' },
+    env: envDeServicio({ NODE_PATH: path.join(ROOT, 'node_modules'), ROLLBACK_STDIO_IS_LOG: '1' }), // #7112 · CA-6
   });
   child.unref();
   fs.closeSync(logFd);
@@ -865,7 +887,7 @@ function status() {
 
   invalidateCache();
   for (const comp of COMPONENTS) {
-    if (!fs.existsSync(path.join(PIPELINE, comp.script))) continue;
+    if (!fs.existsSync(path.join(PIPELINE(), comp.script))) continue;
 
     // Descubrir PID al vuelo — el SO es la fuente de verdad.
     const found = findPidByComponent(comp.name);

@@ -92,8 +92,10 @@ function createAlerter(deps) {
   const sendMessage = deps.sendMessage;
   const threshold = Number.isFinite(deps.threshold) ? deps.threshold : DEFAULT_THRESHOLD;
   const log = typeof deps.log === 'function' ? deps.log : () => {};
+  // #7112 — sin `deps.statePath` el destino sale del envoltorio (SEC-13): sin
+  // ambiente declarado ni dir de pruebas avisa por stderr y LANZA (CA-3).
   const statePath = deps.statePath
-    || path.resolve(__dirname, '..', '.quota-alerter-state.json');
+    || require('./write-target').writePath(process.env, { canal: 'estado', destino: '.quota-alerter-state.json' }, '.quota-alerter-state.json');
 
   function loadState() {
     try {

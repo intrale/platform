@@ -49,7 +49,13 @@ const crypto = require('node:crypto');
 
 const CANONICAL_SIDECAR_PATH = path.resolve(__dirname, '..', 'data-residency-exclusions.json');
 const CANONICAL_SCHEMA_PATH = path.resolve(__dirname, '..', 'data-residency-exclusions.schema.json');
-const CANONICAL_AUDIT_PATH = path.resolve(__dirname, '..', 'audit', 'data-residency-filter.jsonl');
+// #7112 — el destino se resuelve POR LLAMADA vía `lib/write-target` (SEC-13):
+// ninguna const de módulo captura `__dirname` al `require`. Sin ambiente
+// declarado ni dir de pruebas, `writeDir` avisa por stderr y LANZA (CA-3).
+// Identificadores conservados: cada uso `X` → `X()`.
+function CANONICAL_AUDIT_PATH() {
+  return require('./write-target').writePath(process.env, { canal: 'logs', destino: 'audit/data-residency-filter.jsonl' }, 'audit', 'data-residency-filter.jsonl');
+}
 
 // Categorías especiales del policy. Si una entrada del sidecar lista
 // `non_anthropic`, aplica a cualquier provider que NO sea `anthropic` ni
@@ -431,7 +437,7 @@ function hashPath(p) {
 function appendAudit({ skill, provider, blocked, auditPath, fsImpl }) {
   if (!Array.isArray(blocked) || blocked.length === 0) return { written: 0 };
   const _fs = fsImpl || fs;
-  const target = auditPath || CANONICAL_AUDIT_PATH;
+  const target = auditPath || CANONICAL_AUDIT_PATH();
   const dir = path.dirname(target);
   try {
     _fs.mkdirSync(dir, { recursive: true });
@@ -592,7 +598,7 @@ module.exports = {
   // Constantes públicas.
   CANONICAL_SIDECAR_PATH,
   CANONICAL_SCHEMA_PATH,
-  CANONICAL_AUDIT_PATH,
+  get CANONICAL_AUDIT_PATH() { return CANONICAL_AUDIT_PATH(); },
   CATEGORY_ANTHROPIC,
   CATEGORY_DETERMINISTIC,
   CATEGORY_NON_ANTHROPIC,

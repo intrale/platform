@@ -629,7 +629,8 @@ test('provision resuelve el destino por pipeline-env y aborta si el candidato ca
     // --print-env no reemite el env heredado.
     const o = io(envHostil);
     assert.strictEqual(cli.main(['--root', root, '--print-env'], o, DEPS_SIN_GIT), 0);
-    assert.strictEqual(o.out, `PIPELINE_REPO_ROOT=${root}\nPIPELINE_AMBIENTE=pruebas\n`);
+    assert.strictEqual(o.out, `PIPELINE_AMBIENTE=pruebas\nPIPELINE_DIR_OVERRIDE=${path.join(root, '.pipeline')}\n`);
+    assert.doesNotMatch(o.out, /PIPELINE_REPO_ROOT/, 'SEC-9 estricto: el root de pruebas no viaja como contexto heredado');
     assert.doesNotMatch(o.out + o.err, /ALLOW_PROD|STATE_DIR|productivo=|lo-que-sea/);
     fs.rmSync(base, { recursive: true, force: true });
 });
@@ -919,13 +920,27 @@ test('el CLI expone exit codes 0/1/2 y --print-env emite sólo dos líneas', () 
     // --print-env: exactamente dos líneas en stdout; avisos a stderr (G-2).
     o = io();
     assert.strictEqual(cli.main(['--root', root, '--print-env'], o, DEPS_SIN_GIT), 0);
-    assert.deepStrictEqual(o.out.split('\n'), [`PIPELINE_REPO_ROOT=${root}`, 'PIPELINE_AMBIENTE=pruebas', '']);
+    assert.deepStrictEqual(o.out.split('\n'), ['PIPELINE_AMBIENTE=pruebas', `PIPELINE_DIR_OVERRIDE=${path.join(root, '.pipeline')}`, '']);
     assert.match(o.err, /ya existía/);
-    // El PIPELINE_REPO_ROOT emitido es el que el resolvedor entiende como pruebas.
-    const amb = pipelineEnv.resolve({ PIPELINE_REPO_ROOT: root });
+    // El par emitido (declaración explícita de pruebas + override) es el que el resolvedor
+    // entiende como pruebas con dir. #7112 / SEC-9 ESTRICTO: PIPELINE_REPO_ROOT es contexto
+    // heredado del checkout productivo y NUNCA aporta dir (ni con la declaración de pruebas);
+    // el dir viaja por PIPELINE_DIR_OVERRIDE, la misma variable que validó D1.
+    const lineasEnv = Object.fromEntries(o.out.trim().split('\n').map((l) => l.split(/=(.*)/s).slice(0, 2)));
+    const amb = pipelineEnv.resolve(lineasEnv);
     assert.strictEqual(amb.modo, 'pruebas');
     assert.strictEqual(amb.dir, path.join(root, '.pipeline'));
+    assert.strictEqual(amb.origen, 'PIPELINE_DIR_OVERRIDE');
     assert.strictEqual(configResolver.productPathFor(amb.dir), path.join(root, PRODUCT_FILENAME));
+    // Evaluado en un shell de agente (hereda PIPELINE_REPO_ROOT=<checkout productivo>): mismo dir,
+    // y la unión de SEC-3 sigue protegiendo el .pipeline productivo.
+    const prodRoot = path.dirname(DEFAULT_PRODUCTIVE_DIR);
+    assert.strictEqual(pipelineEnv.resolve({ ...lineasEnv, PIPELINE_REPO_ROOT: prodRoot }).dir, path.join(root, '.pipeline'));
+    assert.strictEqual(pipelineEnv.resolve({ PIPELINE_AMBIENTE: 'pruebas', PIPELINE_REPO_ROOT: prodRoot, PIPELINE_DIR_OVERRIDE: DEFAULT_PRODUCTIVE_DIR }).dir, null);
+    // El viejo par root + declaración ya NO resuelve dir (SEC-9 estricto): por eso no se emite.
+    assert.strictEqual(pipelineEnv.resolve({ PIPELINE_REPO_ROOT: root, PIPELINE_AMBIENTE: 'pruebas' }).dir, null);
+    // Y si se emitiera el root de pruebas como REPO_ROOT, la unión anularía el propio override.
+    assert.strictEqual(pipelineEnv.resolve({ ...lineasEnv, PIPELINE_REPO_ROOT: root }).dir, null);
 
     // --fresh humano.
     o = io();
@@ -1042,7 +1057,7 @@ test('el CLI expone exit codes 0/1/2 y --print-env emite sólo dos líneas', () 
     };
     let c = corrida(['--print-env']);
     assert.strictEqual(c.code, 0);
-    assert.strictEqual(c.out, `PIPELINE_REPO_ROOT=${rootSpawn}\nPIPELINE_AMBIENTE=pruebas\n`);
+    assert.strictEqual(c.out, `PIPELINE_AMBIENTE=pruebas\nPIPELINE_DIR_OVERRIDE=${path.join(rootSpawn, '.pipeline')}\n`);
     c = corrida(['--destory']);
     assert.strictEqual(c.code, 2);
     assert.strictEqual(c.out, '');

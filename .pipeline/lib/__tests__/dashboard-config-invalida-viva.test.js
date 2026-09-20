@@ -74,6 +74,9 @@ test('#5172 CA-8: con config.yaml inválido el dashboard sirve la pantalla de er
             ...process.env,
             DASHBOARD_PORT: String(PORT),
             PIPELINE_STATE_DIR: PIPE,
+            // #7112 — el runner canónico deja PIPELINE_DIR_OVERRIDE en el env del
+            // proceso (precedencia D-1 > PIPELINE_STATE_DIR): el spawn lo declara explícito.
+            PIPELINE_DIR_OVERRIDE: PIPE,
             PIPELINE_MAIN_ROOT: TMP,
         },
         stdio: ['ignore', 'pipe', 'pipe'],
@@ -126,6 +129,9 @@ test('#5172 CA-8: con config.yaml válido el tablero se sirve normal (no hay fal
             ...process.env,
             DASHBOARD_PORT: String(port),
             PIPELINE_STATE_DIR: PIPE,
+            // #7112 — el runner canónico deja PIPELINE_DIR_OVERRIDE en el env del
+            // proceso (precedencia D-1 > PIPELINE_STATE_DIR): el spawn lo declara explícito.
+            PIPELINE_DIR_OVERRIDE: PIPE,
             PIPELINE_MAIN_ROOT: TMP,
         },
         stdio: ['ignore', 'pipe', 'pipe'],

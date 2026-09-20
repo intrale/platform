@@ -32,6 +32,20 @@
  *   `PIPELINE_REPO_ROOT` (+ `/.pipeline`). La variable aporta DIRECTORIO, nunca
  *   modo: `PIPELINE_DIR_OVERRIDE` seteado y sin declaración sigue siendo
  *   `pruebas` porque no hay declaración, no porque exista la variable.
+ * - SEC-9 (#7112): en `pruebas`, `PIPELINE_REPO_ROOT` NO es fuente válida de
+ *   `dir`, SIN EXCEPCIONES (tampoco con `PIPELINE_AMBIENTE=pruebas` explícito).
+ *   Es la variable de contexto productivo que el Pulpo hereda a todos sus hijos
+ *   (agentes en worktree incluidos), no la declaración de un test: sin
+ *   `PIPELINE_DIR_OVERRIDE` / `PIPELINE_STATE_DIR` explícitos ⇒ `dir: null`.
+ *   El ambiente de pruebas de #7111 (`provision-test-env --print-env`) emite
+ *   por eso `PIPELINE_DIR_OVERRIDE=<root>/.pipeline` y NO `PIPELINE_REPO_ROOT`
+ *   (que además integra la unión de SEC-3 y anularía ese mismo override).
+ *   Además, "dentro del productivo" es la UNIÓN de `DEFAULT_PRODUCTIVE_DIR` y
+ *   `PIPELINE_REPO_ROOT/.pipeline`: un módulo cargado desde un worktree sigue
+ *   protegiendo el `.pipeline` del repo principal (aditivo, nunca menos).
+ * - Los escritores NO llaman a `resolve` directo: usan el envoltorio
+ *   `lib/write-target.js` (`writeDir(env, { canal })`), que aplica la regla de
+ *   #7112 — con `dir === null` no se escribe y se falla ruidoso (SEC-10).
  * - `opts.pipelineDir` → `modo: 'explicito'`: el dir es el parámetro y los
  *   canales son SIEMPRE los de pruebas (SEC-2). Path arbitrario + canales reales
  *   es una combinación inconstruible a propósito.
@@ -61,20 +75,25 @@
  *
  * Los guards `corridaDePrueba()`, `efectoProductivoBloqueado()` y
  * `ghWritesBloqueadas()` de `pulpo.js` NO se retiran (CA explícito de #7102).
- * Conviven con este resolvedor y ante discrepancia gana el más conservador:
+ * Conviven con este resolvedor y la reconciliación (#7112, SEC-12) es SÓLO POR
+ * AND: una escritura sale si este resolvedor habilita el canal Y el guard
+ * devuelve `null`. Ningún guard perdió una condición:
  *
  * 1. `ghWritesBloqueadas()` trata `PIPELINE_DIR_OVERRIDE` como señal de pruebas;
  *    este resolvedor NO infiere modo de esa variable (5 sitios productivos la
  *    mutan en runtime — `commander-deterministic.js`, `wave-resolver.js`,
  *    `skills-deterministicos/delivery.js` — y se auto-clasificarían como pruebas
- *    a mitad de una operación; ver #7393). Se reconcilia en #7112.
+ *    a mitad de una operación; ver #7393). El guard conserva ese check y ADEMÁS
+ *    exige `canales.github.escrituras === true` de este resolvedor.
  * 2. `corridaDePrueba()` evalúa el escape hatch ANTES que las señales y lo honra
  *    sin exigir declaración; este resolvedor lo evalúa DESPUÉS y sólo lo honra
  *    con `PIPELINE_AMBIENTE=productivo` (SEC-5). Deliberado: el resolvedor es
  *    más conservador que el guard.
- * 3. Vocabulario de señales: `corridaDePrueba()` nombra `NODE_TEST_CONTEXT`
- *    como `'node --test'`; acá se usa el NOMBRE DE LA VARIABLE (es lo que el
- *    operador puede grepear). Unificar cuando #7112 migre.
+ * 3. Vocabulario de señales: unificado en #7112 — `corridaDePrueba()` también
+ *    nombra cada señal por su VARIABLE (`NODE_TEST_CONTEXT`), que es lo que el
+ *    operador puede grepear.
+ * 4. `efectoProductivoBloqueado()` bloquea la misma unión que `esProductivo`
+ *    (SEC-9): `.pipeline` propio + `PIPELINE_REPO_ROOT/.pipeline`.
  *
  * @module pipeline-env
  */
@@ -136,15 +155,48 @@ function resolverDir(e) {
 }
 
 /**
+ * SEC-9 (#7112): variable de contexto productivo que el Pulpo hereda a sus
+ * hijos. En `pruebas` NO cuenta como declaración de directorio.
+ */
+const ENV_CONTEXTO_HEREDADO = 'PIPELINE_REPO_ROOT';
+
+/**
+ * `.pipeline` del repo principal según el contexto heredado, o `null` si no
+ * viene. Segundo miembro de la unión que protege `dentroDelProductivo` (SEC-9).
+ *
+ * @param {object} e entorno ya normalizado.
+ * @returns {string|null}
+ */
+function productivoHeredado(e) {
+    const v = e[ENV_CONTEXTO_HEREDADO];
+    if (typeof v !== 'string' || !v.trim()) return null;
+    const cand = ENV_ROOT_VARS.find((c) => c.env === ENV_CONTEXTO_HEREDADO);
+    const base = path.resolve(v);
+    return cand && cand.suffix ? path.join(base, cand.suffix) : base;
+}
+
+function dentroDe(dir, raiz) {
+    return dir === raiz || dir.startsWith(raiz + path.sep);
+}
+
+/**
  * Mismo criterio que `efectoProductivoBloqueado()` (`pulpo.js`): `path.resolve`
  * de ambos lados y comparación con `path.sep` (funciona en Windows).
  *
+ * SEC-9 (#7112): se evalúa contra la UNIÓN `{ DEFAULT_PRODUCTIVE_DIR,
+ * PIPELINE_REPO_ROOT/.pipeline }`. Cargado desde un worktree, el módulo sigue
+ * reconociendo el `.pipeline` del repo principal como productivo. Aditivo:
+ * nunca protege menos que antes.
+ *
  * @param {string} dir
+ * @param {object} [e] entorno ya normalizado (aporta el miembro heredado).
  * @returns {boolean}
  */
-function dentroDelProductivo(dir) {
+function dentroDelProductivo(dir, e = {}) {
     const d = path.resolve(dir);
-    return d === DEFAULT_PRODUCTIVE_DIR || d.startsWith(DEFAULT_PRODUCTIVE_DIR + path.sep);
+    if (dentroDe(d, DEFAULT_PRODUCTIVE_DIR)) return true;
+    const heredado = productivoHeredado(e);
+    return heredado !== null && dentroDe(d, heredado);
 }
 
 /**
@@ -194,11 +246,35 @@ function armar(modo, dir, origen, motivo) {
  * #7086 (avisos a Telegram real desde un test) no puede repetirse por un test
  * que apunte al `.pipeline` real.
  */
-function armarPruebas(dir, origen, motivo) {
-    if (dir !== null && dentroDelProductivo(dir)) {
+function armarPruebas(dir, origen, motivo, e = {}) {
+    if (dir === null) return armar(MODOS.PRUEBAS, null, origen, motivo);
+    // El dir que sale de PIPELINE_REPO_ROOT cae trivialmente dentro de su propio
+    // miembro de la unión: para ese origen sólo cuenta el productivo PROPIO como
+    // "apunta al productivo"; el resto es SEC-9.
+    const dentro = origen === ENV_CONTEXTO_HEREDADO
+        ? dentroDe(path.resolve(dir), DEFAULT_PRODUCTIVE_DIR)
+        : dentroDelProductivo(dir, e);
+    if (dentro) {
         // `motivo` siempre viene con la causa original (señal, declaración, hatch):
         // se conserva a continuación para que el operador vea las dos cosas.
         return armar(MODOS.PRUEBAS, null, origen, `dir de pruebas apunta al productivo (${origen}); ${motivo}`);
+    }
+    if (origen === ENV_CONTEXTO_HEREDADO) {
+        // SEC-9 ESTRICTO: el contexto heredado del Pulpo NUNCA aporta dir en
+        // pruebas, ni siquiera con `PIPELINE_AMBIENTE=pruebas` explícito. La
+        // declaración de ambiente dice el MODO; el DIRECTORIO de pruebas viaja
+        // sólo por `PIPELINE_DIR_OVERRIDE` / `PIPELINE_STATE_DIR` (es lo que
+        // emite `provision-test-env --print-env`, D10 de #7111). Motivo: un
+        // módulo cargado desde un worktree tiene su PROPIO `DEFAULT_PRODUCTIVE_DIR`
+        // y no puede reconocer el `.pipeline` del repo principal como productivo
+        // salvo por esta misma variable; si `PIPELINE_REPO_ROOT` valiera como dir
+        // bajo una declaración de pruebas, `PIPELINE_AMBIENTE=pruebas` +
+        // `PIPELINE_REPO_ROOT=<repo principal>` resolvería al productivo REAL con
+        // canales "de pruebas" (vector V2 del security review de #7112). Nota:
+        // con SEC-3 arriba, el caso "apunta al productivo propio" ya salió con su
+        // motivo; acá cae todo lo demás.
+        return armar(MODOS.PRUEBAS, null, origen,
+            `${ENV_CONTEXTO_HEREDADO} es contexto heredado, no un dir de pruebas (SEC-9); ${motivo}`);
     }
     return armar(MODOS.PRUEBAS, dir, origen, motivo);
 }
@@ -258,7 +334,7 @@ function resolve(env, opts = {}) {
 
     // 2. señal de test gana a la declaración; el escape hatch sólo la anula (SEC-5).
     if (senal && !hatch) {
-        return armarPruebas(dir, origen, `corrida de prueba (${senal})`);
+        return armarPruebas(dir, origen, `corrida de prueba (${senal})`, e);
     }
 
     // 3. productivo requiere declaración + dir productivo fijo (SEC-1).
@@ -268,18 +344,38 @@ function resolve(env, opts = {}) {
             : null;
         if (dir === null) return armar(MODOS.PRODUCTIVO, DEFAULT_PRODUCTIVE_DIR, 'default', motivo);
         if (dir === DEFAULT_PRODUCTIVE_DIR) return armar(MODOS.PRODUCTIVO, dir, origen, motivo);
-        return armarPruebas(dir, origen, `declaración productiva con dir no productivo (${origen})`);
+        return armarPruebas(dir, origen, `declaración productiva con dir no productivo (${origen})`, e);
     }
 
     // 4. sin declaración (o no reconocida) → pruebas.
     const motivo = senal && hatch
         ? `escape hatch ${ENV_ESCAPE_HATCH} sin declaración productiva (${declaracion.motivo})`
         : declaracion.motivo;
-    return armarPruebas(dir, origen, motivo);
+    return armarPruebas(dir, origen, motivo, e);
+}
+
+/**
+ * ¿`dir` cae dentro del productivo? Exportado para que los guards del Pulpo
+ * (`efectoProductivoBloqueado`) bloqueen la misma unión que este módulo (SEC-9).
+ * Nunca lanza: un destino no resoluble no es productivo.
+ *
+ * @param {string} dir
+ * @param {object} env entorno del proceso, pasado por el llamador.
+ * @returns {boolean}
+ */
+function esProductivo(dir, env) {
+    const e = env && typeof env === 'object' ? env : {};
+    try {
+        return dentroDelProductivo(String(dir || ''), e);
+    } catch {
+        return false;
+    }
 }
 
 module.exports = {
     resolve,
+    esProductivo,
+    VALOR_PRODUCTIVO,
     MODOS,
     DEFAULT_PRODUCTIVE_DIR,
     ENV_AMBIENTE,

@@ -133,7 +133,10 @@ function setNested(obj, dotPath, value) {
  */
 function createFlow(opts = {}) {
     const credentialsPath = opts.credentialsPath || credentials.CANONICAL_PATH;
-    const auditDir = opts.auditDir || path.join(__dirname, '..', '..', '..', 'logs');
+    // #7112 — sin `opts.auditDir` el destino sale del envoltorio (SEC-13): sin
+    // ambiente declarado ni dir de pruebas avisa por stderr y LANZA (CA-3).
+    const auditDir = opts.auditDir
+        || require('../../write-target').writePath(process.env, { canal: 'logs', destino: 'logs/ (wizard providers)' }, 'logs');
     const now = typeof opts.now === 'function' ? opts.now : Date.now;
     const lockImpl = opts.fileLockImpl || fileLock;
     const auditImpl = opts.auditImpl || auditLog;

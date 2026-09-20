@@ -153,3 +153,112 @@ test('resolveAuthorizedSigners ignora el operador de env vacio o en blanco', () 
         delivery.resolveAuthorizedSigners({ cua: { operator_chat_ids: ['1'] } }));
     assert.deepStrictEqual([...signers], ['1']);
 });
+
+// ---- #7112 rebote rev-3 (G1) · paso 5.5 de `main` como función --------------
+//
+// El CLI manual de `/delivery` corre en la sesión interactiva del operador, sin
+// `PIPELINE_AMBIENTE`. Con el kill switch OFF el paso 5.5 no tiene nada que
+// escribir, así que `lib/write-target` NO debe evaluarse: "OFF ⇒ no-op" tiene
+// que ser cierto también sin ambiente declarado. Con el gate ON el bloqueo
+// fail-closed (CA-3) se conserva.
+
+const writeTarget = require('../lib/write-target');
+
+// Env de una sesión interactiva: sin declaración, sin dir de pruebas, sin señal
+// de test (`NODE_TEST_CONTEXT` del runner NO se hereda: se arma explícito).
+const ENV_INTERACTIVO = Object.freeze({ PATH: '/usr/bin', HOME: '/home/leo' });
+
+test('G1 · kill switch OFF sin PIPELINE_AMBIENTE ⇒ no resuelve dir, no lanza, no escribe', () => {
+    const rutaDeAudit = [];
+    const gits = [];
+    const r = delivery.runOperatorSignatureGate({
+        issue: '7112', cwd: process.cwd(),
+        config: { operator_signature: { enabled: false } },
+        env: ENV_INTERACTIVO,
+        resolveAuditDir: () => { rutaDeAudit.push(1); return mkTmp(); },
+        spawnSyncImpl: () => { gits.push(1); return { status: 0, stdout: SHA }; },
+    });
+    assert.deepStrictEqual(r, { skipped: true });
+    assert.strictEqual(rutaDeAudit.length, 0, 'con el gate OFF no se resuelve ningún dir de escritura');
+    assert.strictEqual(gits.length, 0, 'con el gate OFF no se consulta git');
+});
+
+test('G1 · kill switch OFF sin PIPELINE_AMBIENTE ⇒ el camino REAL (write-target) tampoco lanza', () => {
+    // Sin inyectar `resolveAuditDir`: si el `writeDir` se evaluara antes del
+    // `if`, este env lanzaría `PIPELINE_ESCRITURA_BLOQUEADA` (es el
+    // reproductor del rechazo de review).
+    assert.throws(
+        () => writeTarget.writeDir(ENV_INTERACTIVO, { canal: 'logs', destino: 'audit/ (test G1)', stderr: { write() {} } }),
+        (e) => writeTarget.esBloqueo(e),
+        'precondición: este env sí bloquea la escritura',
+    );
+    const r = delivery.runOperatorSignatureGate({
+        issue: '7112', cwd: process.cwd(),
+        config: { operator_signature: { enabled: false } },
+        env: ENV_INTERACTIVO,
+    });
+    assert.deepStrictEqual(r, { skipped: true });
+});
+
+test('G1 · sin --issue ⇒ no-op aunque el gate esté ON (misma condición que main)', () => {
+    const r = delivery.runOperatorSignatureGate({
+        issue: undefined, cwd: process.cwd(),
+        config: { operator_signature: { enabled: true, gate_mode: 'enforce' } },
+        env: ENV_INTERACTIVO,
+    });
+    assert.deepStrictEqual(r, { skipped: true });
+});
+
+test('G1 · gate ON sin PIPELINE_AMBIENTE ⇒ sigue fail-closed: lanza el bloqueo de escritura (CA-3)', () => {
+    writeTarget._resetAvisos();
+    assert.throws(
+        () => delivery.runOperatorSignatureGate({
+            issue: '7112', cwd: process.cwd(),
+            config: { operator_signature: { enabled: true, gate_mode: 'enforce' } },
+            env: ENV_INTERACTIVO,
+        }),
+        (e) => writeTarget.esBloqueo(e) && e.canal === 'logs' && /audit\//.test(e.destino),
+    );
+});
+
+test('G1 · gate ON con dir resuelto ⇒ revalida firma↔HEAD (bloquea sin firma, aprueba con firma verde)', () => {
+    const pipelineDir = mkTmp();
+    const spawnSyncImpl = () => ({ status: 0, stdout: `${SHA}\n` });
+    const cfg = { operator_signature: { enabled: true, gate_mode: 'enforce' }, cua: { operator_chat_ids: [SIGNER] } };
+
+    const sinFirma = delivery.runOperatorSignatureGate({
+        issue: '4575', cwd: process.cwd(), config: cfg, env: ENV_INTERACTIVO,
+        resolveAuditDir: () => pipelineDir, spawnSyncImpl,
+    });
+    assert.strictEqual(sinFirma.skipped, false);
+    assert.strictEqual(sinFirma.ok, false);
+    assert.match(sinFirma.reason, /GATE 2/);
+
+    const nres = gate.issueNonce({ issueId: 4575, sha: SHA, options: { pipelineDir, now: 1000 } });
+    gate.recordAcceptanceSignature({
+        issueId: 4575, signedBy: SIGNER, signedCommit: SHA, nonce: nres.nonce, verdict: 'signed',
+        options: { pipelineDir, authorizedSigners: [SIGNER], now: 1001 },
+    });
+    const conFirma = delivery.runOperatorSignatureGate({
+        issue: '4575', cwd: process.cwd(), config: cfg, env: ENV_INTERACTIVO,
+        resolveAuditDir: () => pipelineDir, spawnSyncImpl,
+    });
+    assert.deepStrictEqual({ skipped: conFirma.skipped, ok: conFirma.ok }, { skipped: false, ok: true });
+});
+
+test('G1 · CA-6 — el entrypoint del CLI declara raíz (mismo patrón que rollback.js) y sólo como main', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'delivery.js'), 'utf8');
+    const mainBlock = src.slice(src.indexOf('if (require.main === module) {'));
+    assert.ok(mainBlock.length > 0, 'delivery.js tiene bloque main');
+    assert.match(mainBlock, /require\('\.\/lib\/launcher-env'\)\.declararRaiz\(process\.env\)/);
+    // Como módulo (este test lo requirió arriba) NO declaró: el runner sigue en pruebas.
+    assert.notStrictEqual(process.env.PIPELINE_AMBIENTE, 'productivo');
+    // Y en `main` el `writeDir` de audit vive DENTRO del helper, no antes del kill switch.
+    const mainFn = src.slice(src.indexOf('function main()'), src.indexOf('if (require.main === module) {'));
+    assert.ok(!/writeDir\(/.test(mainFn), 'main() no resuelve el dir de audit por su cuenta');
+    assert.match(mainFn, /runOperatorSignatureGate\(\{ issue: args\.issue, cwd, config: cfg \}\)/);
+    // La config del kill switch sigue la cadena D-1 del config-resolver (sin dir
+    // explícito): `PIPELINE_DIR_OVERRIDE` > `PIPELINE_STATE_DIR` > …, la misma
+    // precedencia que tenía el `writeDir` reemplazado.
+    assert.match(mainFn, /const cfg = loadConfigFailClosed\(\);/);
+});

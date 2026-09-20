@@ -16,8 +16,15 @@ const path = require('path');
 
 // #3940 — el path es overridable por env para que los tests puedan apuntar a
 // un archivo temporal sin tocar el estado real del pipeline en producción.
-const STATE_FILE = process.env.CB_INFRA_STATE_FILE || path.join(__dirname, 'circuit-breaker-infra.json');
-const STATE_TMP = STATE_FILE + '.tmp';
+// #7112 — sin `CB_INFRA_STATE_FILE`, el directorio se resuelve POR LLAMADA vía
+// `lib/write-target` (SEC-13): ninguna const de módulo captura `__dirname` al
+// `require`. Sin ambiente declarado ni dir de pruebas, `writeDir` avisa por
+// stderr y LANZA (CA-3 / SEC-10); `readState` lo absorbe (devuelve el default).
+const writeTarget = require('./lib/write-target');
+function stateFile() {
+  return process.env.CB_INFRA_STATE_FILE
+    || writeTarget.writePath(process.env, { canal: 'estado', destino: 'circuit-breaker-infra.json' }, 'circuit-breaker-infra.json');
+}
 
 /** Umbral de fallos consecutivos que abre el CB. */
 const CONSECUTIVE_THRESHOLD = 3;
@@ -118,8 +125,9 @@ function shouldAutoResume({ precheckOk, cbOpen, streak, threshold, suspended }) 
  */
 function readState() {
   try {
-    if (!fs.existsSync(STATE_FILE)) return defaultState();
-    const raw = fs.readFileSync(STATE_FILE, 'utf8');
+    const file = stateFile();
+    if (!fs.existsSync(file)) return defaultState();
+    const raw = fs.readFileSync(file, 'utf8');
     const parsed = JSON.parse(raw);
     // Validación mínima de shape.
     if (!parsed || typeof parsed !== 'object') return defaultState();
@@ -141,8 +149,9 @@ function readState() {
  */
 function writeState(state) {
   const next = { ...defaultState(), ...state };
-  fs.writeFileSync(STATE_TMP, JSON.stringify(next, null, 2));
-  fs.renameSync(STATE_TMP, STATE_FILE);
+  const file = stateFile();
+  fs.writeFileSync(file + '.tmp', JSON.stringify(next, null, 2));
+  fs.renameSync(file + '.tmp', file);
   return next;
 }
 
@@ -269,7 +278,9 @@ function isOpen() {
 }
 
 module.exports = {
-  STATE_FILE,
+  // Getter: el path se resuelve en cada acceso (compat con quienes leían la const).
+  get STATE_FILE() { return stateFile(); },
+  stateFile,
   CONSECUTIVE_THRESHOLD,
   AUTO_RESUME_FLAP_WINDOW_MS,
   INFRA_ERROR_CODES,

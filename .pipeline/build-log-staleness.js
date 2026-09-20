@@ -30,12 +30,30 @@
 const fs = require('fs');
 const path = require('path');
 
-// Paths relativos al .pipeline/ — cuando pulpo.js requiere este módulo,
-// __dirname apunta a .pipeline/
-const PIPELINE = __dirname;
-const LOG_DIR = path.join(PIPELINE, 'logs');
-const AUDIT_DIR = path.join(LOG_DIR, 'audit');
-const AUDIT_FILE = path.join(AUDIT_DIR, 'circuit-breaker.jsonl');
+// #7112 (rebote rev-2) — `logs/` se resuelve POR LLAMADA vía lib/write-target,
+// el MISMO dir en el que pulpo.js escribe `build-<N>.log` (`LOG_DIR()`): antes
+// era `const PIPELINE = __dirname` + path.join(…), un alias crudo inmune a
+// cualquier override e invisible para el inventario. La lectura del mtime usa
+// la variante `safe`: con dir === null no hay log que inspeccionar (exists:false).
+function logsDirParaLectura() {
+  return require('./lib/write-target').safeWritePath(process.env, { canal: 'logs', destino: 'logs/build-<issue>.log' }, 'logs');
+}
+
+// #7112 (rebote rev-2) — el audit JSONL es un destino de ESCRITURA: se resuelve
+// POR LLAMADA vía lib/write-target (SEC-13). Antes era `const PIPELINE = __dirname`
+// + path.join(…), alias crudo inmune a cualquier override e invisible para el
+// inventario. El default del parámetro `auditFile` se evalúa en cada llamada, así
+// que un test que setea el override después del require también queda cubierto.
+const AUDIT_REL = ['logs', 'audit', 'circuit-breaker.jsonl'];
+const AUDIT_OPTS = { canal: 'logs', destino: 'logs/audit/circuit-breaker.jsonl' };
+function auditFilePath() {
+  return require('./lib/write-target').writePath(process.env, AUDIT_OPTS, ...AUDIT_REL);
+}
+// Variante para la LECTURA del contador (misma resolución, nunca lanza): con
+// dir === null devuelve null y el contador es 0, como cuando el archivo no existe.
+function auditFilePathSafe() {
+  return require('./lib/write-target').safeWritePath(process.env, AUDIT_OPTS, ...AUDIT_REL);
+}
 
 // Clamp mínimo hardcoded: 5 minutos. Evita que una config maliciosa o
 // errónea (ej. `build_log_max_age_hours: 0`) marque TODO como stale y
@@ -64,7 +82,8 @@ function isValidIssueNumber(issue) {
  * llamar SIEMPRE después de `isValidIssueNumber(issue) === true`.
  */
 function buildLogPathFor(issue) {
-  return path.join(LOG_DIR, `build-${issue}.log`);
+  const dir = logsDirParaLectura();
+  return dir ? path.join(dir, `build-${issue}.log`) : null;
 }
 
 /**
@@ -131,6 +150,7 @@ function inspectBuildLog(issue, thresholdMs) {
     return { exists: false };
   }
   const p = buildLogPathFor(issue);
+  if (!p) return { exists: false };
   let stat;
   try {
     stat = fs.statSync(p);
@@ -445,8 +465,8 @@ function isGateRejectStale(reject, head, opts) {
  * @param {string} [auditFile]
  * @returns {number}
  */
-function getStaleResetCount(issue, auditFile = AUDIT_FILE) {
-  if (!isValidIssueNumber(issue)) return 0;
+function getStaleResetCount(issue, auditFile = auditFilePathSafe()) {
+  if (!isValidIssueNumber(issue) || !auditFile) return 0;
   let content;
   try {
     content = fs.readFileSync(auditFile, 'utf8');
@@ -479,11 +499,15 @@ function getStaleResetCount(issue, auditFile = AUDIT_FILE) {
  * @param {object} entry
  * @param {string} [auditFile]
  */
-function appendAuditReset(entry, auditFile = AUDIT_FILE) {
+function appendAuditReset(entry, auditFile) {
   try {
-    fs.mkdirSync(path.dirname(auditFile), { recursive: true });
+    // La resolución va DENTRO del try: con dir === null `auditFilePath()` lanza
+    // (aviso único por stderr, write-target) y el audit se saltea — best-effort,
+    // como cualquier otro fallo de escritura.
+    const file = auditFile || auditFilePath();
+    fs.mkdirSync(path.dirname(file), { recursive: true });
     const line = JSON.stringify(entry) + '\n';
-    fs.appendFileSync(auditFile, line);
+    fs.appendFileSync(file, line);
   } catch {
     // Best-effort: si falla el write (permisos/disco), seguimos.
   }
@@ -564,9 +588,9 @@ module.exports = {
   DEFAULT_STALENESS_HOURS,
   DEFAULT_MAX_RESETS_PER_ISSUE,
 
-  // Paths expuestos para tests y overrides
-  AUDIT_FILE,
-  AUDIT_DIR,
+  // Paths expuestos para tests y overrides (#7112: el audit es una función por
+  // llamada; con dir === null lanza EscrituraBloqueadaError)
+  auditFilePath,
   buildLogPathFor,
 
   // Helpers

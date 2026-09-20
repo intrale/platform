@@ -72,8 +72,8 @@ function validateActor(value) {
 // Resolución de paths. `PIPELINE_DIR_OVERRIDE` aísla tests.
 // -----------------------------------------------------------------------------
 function pipelineDir() {
-    if (process.env.PIPELINE_DIR_OVERRIDE) return process.env.PIPELINE_DIR_OVERRIDE;
-    return path.resolve(__dirname, '..');
+    // #7112 - resolución por llamada vía el envoltorio (SEC-13).
+    return require('./write-target').writeDir(process.env, { canal: 'logs', destino: 'audit/operator-absence.jsonl' });
 }
 
 function operatorAbsenceFile() {

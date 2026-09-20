@@ -62,9 +62,9 @@ function stateFile() {
     // Mismo override que `quota-exhausted.pipelineDir()`. Sin esto el throttle
     // vive siempre en el `.pipeline/` del checkout: los tests aislados le
     // escribirían encima al estado real y compartirían la ventana entre sí.
-    const base = process.env.PIPELINE_DIR_OVERRIDE
-        || path.join(__dirname, '..');
-    return path.join(base, 'state', 'quota-reset-reconcile.json');
+    // #7112 — resolución POR LLAMADA vía el envoltorio (SEC-13): sin ambiente
+    // declarado ni dir de pruebas avisa por stderr y LANZA (CA-3), nunca `__dirname`.
+    return require('./write-target').writePath(process.env, { canal: 'estado', destino: 'state/quota-reset-reconcile.json' }, 'state', 'quota-reset-reconcile.json');
 }
 
 function readState() {

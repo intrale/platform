@@ -128,7 +128,17 @@ module.exports = { migrateStrayDeliverables, entryKey, safeReadIndex };
 
 // CLI one-shot: `node .pipeline/lib/migrate-stray-deliverables.js`
 if (require.main === module) {
-    const repoRoot = path.resolve(__dirname, '..', '..');
+    // #7112 — el destino canónico es `<repoRoot>/.pipeline/deliverables/`: el
+    // `.pipeline` se resuelve vía el envoltorio (SEC-13) y el root es su padre.
+    // Sin ambiente declarado ni dir de pruebas avisa por stderr y LANZA (CA-3).
+    const pipelineDir = require('./write-target').writeDir(process.env, { canal: 'estado', destino: 'deliverables/' });
+    if (path.basename(pipelineDir) !== '.pipeline') {
+        // Un dir de pruebas (p. ej. el efímero del runner) no tiene un repo
+        // alrededor con `deliverables/` stray: no hay nada que migrar.
+        process.stderr.write(`[migrate-stray-deliverables] ${pipelineDir} no es un .pipeline de repo; nada que migrar\n`);
+        process.exit(0);
+    }
+    const repoRoot = path.dirname(pipelineDir);
     const report = migrateStrayDeliverables({ repoRoot });
     // eslint-disable-next-line no-console
     console.log(JSON.stringify(report, null, 2));

@@ -90,7 +90,7 @@ test('los dos canales derramados consultan el guard antes de escribir', () => {
     const iHalt = src.indexOf('function haltOnConfigCorruption(');
     assert.ok(iHalt > 0, 'haltOnConfigCorruption tiene que existir');
     const cuerpoHalt = src.slice(iHalt, iHalt + 900);
-    assert.match(cuerpoHalt, /efectoProductivoBloqueado\(PAUSE_FILE\)/,
+    assert.match(cuerpoHalt, /efectoProductivoBloqueado\(PAUSE_FILE\(\)\)/,
         'el halt tiene que consultar el guard con el marker de pausa de destino');
 
     assert.ok(!/appendFileSync\(path\.join\(__dirname, 'logs', 'pulpo\.log'\), safeMsg/.test(src),

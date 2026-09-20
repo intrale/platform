@@ -74,7 +74,16 @@ try {
 process.env.PULPO_NO_AUTOSTART = '1';
 process.env.PULPO_SKIP_AGENT_MODELS_VALIDATE = '1';
 process.env.PIPELINE_DIR_OVERRIDE = TMP_PIPE;
-process.env.PIPELINE_REPO_ROOT = TMP_ROOT;
+// #7112 rebote rev-3 — SEC-9: `PIPELINE_REPO_ROOT/.pipeline` integra la unión
+// "productivo" que `dentroDelProductivo` protege. Con `PIPELINE_REPO_ROOT =
+// TMP_ROOT` el override `TMP_ROOT/.pipeline` "apuntaba al productivo" (SEC-3),
+// `PIPELINE()` daba `dir: null` y el `require` de pulpo.js moría en el
+// registro de corridas: el archivo entero pasaba como UN test verde sin
+// ejecutar ninguno (falso verde). Mismo patrón que
+// `state-label-reconciler-step.test.js`: el "repo" del contexto heredado es un
+// dir hermano vacío, fuera del árbol de estado del fixture.
+process.env.PIPELINE_REPO_ROOT = path.join(TMP_ROOT, 'repo');
+fs.mkdirSync(process.env.PIPELINE_REPO_ROOT, { recursive: true });
 process.env.CLAUDE_PROJECT_DIR = TMP_ROOT;
 
 // HERMETICIDAD: el circuit breaker manda un audio TTS best-effort al escalar.

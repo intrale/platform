@@ -434,6 +434,11 @@ const SHIMS = {
     'watchdog-supervisor': path.join(REAL_LIB, 'watchdog-supervisor.js'),
     'notify-telegram': path.join(REAL_LIB, 'notify-telegram.js'),
     'config-resolver': path.join(REAL_LIB, 'config-resolver.js'),
+    // #7112 (rebote rev-2, ajuste de fixture — CA-11): el runner resuelve su log y
+    // su estado POR LLAMADA vía lib/write-target (antes `const X = __dirname`).
+    // Sin este shim el require lazy falla en el tmpdir y el log se pierde en el
+    // fail-soft (ENOENT en logs/pulpo-liveness.log).
+    'write-target': path.join(REAL_LIB, 'write-target.js'),
 };
 
 // Config con `min_samples` bajo para que los tests no necesiten 100 ciclos

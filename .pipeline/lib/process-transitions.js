@@ -51,8 +51,9 @@ const _lastState = new Map();
 
 function resolvePipelineDir(opts) {
     if (opts && opts.pipelineDir) return opts.pipelineDir;
-    // __dirname = .pipeline/lib → padre = .pipeline
-    return path.resolve(__dirname, '..');
+    // #7112 — resolución POR LLAMADA vía el envoltorio (SEC-13): sin ambiente
+    // declarado ni dir de pruebas avisa por stderr y LANZA (CA-3), nunca `__dirname`.
+    return require('./write-target').writeDir(process.env, { canal: 'logs', destino: 'process-transitions.jsonl' });
 }
 
 function storePath(opts) {
