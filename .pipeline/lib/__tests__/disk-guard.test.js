@@ -214,6 +214,80 @@ test('una liberación chica NO alerta', () => {
   assert.strictEqual(d.alert.should, false);
 });
 
+// --- Limpieza inefectiva -----------------------------------------------------
+// El incidente 2026-09-05: 10 horas de corridas con exit 0 liberando 0,00 GB
+// mientras el disco caía de 13 a 5 GB, sin un solo aviso. Los tres motivos que
+// existían presuponen que la limpieza funcionó; el modo de falla real es el
+// contrario y no tenía cobertura.
+
+test('tres corridas seguidas sin liberar nada alertan que la limpieza no sirve', () => {
+  let state = Object.assign(dg.emptyState(), { level: dg.LEVELS.RED, last_alert_at: NOW });
+  let d;
+  for (let i = 1; i <= 3; i++) {
+    d = dg.decide({
+      freeGb: 6, budget: B, state, now: NOW + i * 60000,
+      freedGbThisRun: 0, cleanupRan: true,
+    });
+    state = d.nextState;
+  }
+  assert.strictEqual(d.alert.should, true);
+  assert.strictEqual(d.alert.reason, 'limpieza-inefectiva');
+  assert.strictEqual(d.alert.ineffectiveRuns, 3);
+});
+
+test('el aviso de limpieza inefectiva no se repite en cada tick', () => {
+  let state = Object.assign(dg.emptyState(), { level: dg.LEVELS.RED, ineffective_runs: 2 });
+  const primera = dg.decide({
+    freeGb: 6, budget: B, state, now: NOW, freedGbThisRun: 0, cleanupRan: true,
+  });
+  assert.strictEqual(primera.alert.reason, 'limpieza-inefectiva');
+  assert.strictEqual(primera.nextState.ineffective_runs, 0, 'el contador se reinicia al avisar');
+  const segunda = dg.decide({
+    freeGb: 6, budget: B, state: primera.nextState, now: NOW + 60000,
+    freedGbThisRun: 0, cleanupRan: true,
+  });
+  assert.notStrictEqual(segunda.alert.reason, 'limpieza-inefectiva');
+});
+
+test('una corrida que sí libera reinicia la cuenta de inefectivas', () => {
+  const state = Object.assign(dg.emptyState(), { level: dg.LEVELS.RED, ineffective_runs: 2 });
+  const d = dg.decide({
+    freeGb: 6, budget: B, state, now: NOW, freedGbThisRun: 3, cleanupRan: true,
+  });
+  assert.strictEqual(d.nextState.ineffective_runs, 0);
+  assert.notStrictEqual(d.alert.reason, 'limpieza-inefectiva');
+});
+
+test('un tick sin limpieza no cuenta como corrida inefectiva', () => {
+  // `brazoDiskGuard` evalúa en cada tick del Pulpo; sólo las corridas reales de
+  // rotate-caches/reclaim-worktrees pasan `cleanupRan`.
+  const state = Object.assign(dg.emptyState(), { level: dg.LEVELS.RED, ineffective_runs: 2 });
+  const d = dg.decide({ freeGb: 6, budget: B, state, now: NOW });
+  assert.strictEqual(d.nextState.ineffective_runs, 2);
+});
+
+test('en verde una limpieza sin efecto no alerta: no hay nada que liberar', () => {
+  let state = Object.assign(dg.emptyState(), { level: dg.LEVELS.GREEN });
+  let d;
+  for (let i = 1; i <= 5; i++) {
+    d = dg.decide({
+      freeGb: 120, budget: B, state, now: NOW + i * 60000,
+      freedGbThisRun: 0, cleanupRan: true,
+    });
+    state = d.nextState;
+  }
+  assert.strictEqual(d.alert.should, false);
+});
+
+test('la alerta de limpieza inefectiva dice que hace falta una mano', () => {
+  const texto = dg.alertText({
+    level: dg.LEVELS.RED, freeGb: 5, budget: B, freedGb: 0,
+    frozen: true, reason: 'limpieza-inefectiva', ineffectiveRuns: 4,
+  });
+  assert.match(texto, /no libera nada/);
+  assert.match(texto, /4 corrida/);
+});
+
 // -----------------------------------------------------------------------------
 // Throttles y re-entrada
 // -----------------------------------------------------------------------------

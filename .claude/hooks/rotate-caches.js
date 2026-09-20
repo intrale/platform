@@ -202,6 +202,81 @@ function rotateWorktreeArtifacts() {
     }
 }
 
+// --- 5. Temporales de agentes fuera de %TEMP% --------------------------------
+// Los agentes (qa, po, ux, review) crean copias del repo y scratch dirs en
+// `C:\Temp` y `C:\tmp` con nombre de issue (`qa5244-ci-...`, `po6432-wt`).
+// Ninguna automatizacion los miraba: `rotate-caches` solo veia los caches de
+// maquina y `ghostbusters` solo `C:\Workspaces`. En la medicion 2026-09-05
+// sumaban 15,5 GB de issues ya cerrados — mas que todos los worktrees juntos.
+//
+// El criterio es la ANTIGUEDAD del arbol (48h), no el estado del issue: consultar
+// GitHub por cada entrada es caro y falla sin red, mientras que un temporal sin
+// tocar en dias no lo usa nadie. Se respeta el dir de la sesion de Claude en
+// curso (ahi viven los outputs de tareas en background).
+// `%TEMP%` entra tambien: 10 GB en la medicion 2026-09-05, y ninguna
+// automatizacion lo miraba pese a ser donde caen los temporales por defecto.
+const AGENT_TEMP_DIRS = ["C:\\Temp", "C:\\tmp", os.tmpdir()];
+// Nombres que no se tocan ni aunque el arbol se vea viejo. `claude` es el
+// scratchpad de las sesiones: ahi viven los outputs de tareas en background,
+// y una sesion reanudada puede leer archivos que no escribio hace 48h.
+const AGENT_TEMP_KEEP = new Set(["claude", "chocolatey", "gradle", ".gradle"]);
+const AGENT_TEMP_AGE_MS = 48 * 60 * 60 * 1000;
+
+// mtime del propio dir no basta: en Windows no se propaga desde los hijos, asi
+// que un arbol tocado hoy puede tener el raiz con fecha vieja. Se mira el mtime
+// mas nuevo del arbol, cortando apenas se encuentra algo fresco.
+function newestMtime(target, deadline, depth = 0) {
+    let newest = 0;
+    try { newest = fs.lstatSync(target).mtimeMs; } catch (e) { return 0; }
+    if (newest > deadline || depth > 4) return newest;
+    let entries;
+    try { entries = fs.readdirSync(target, { withFileTypes: true }); }
+    catch (e) { return newest; }
+    for (const e of entries) {
+        if (e.isSymbolicLink()) continue;
+        const child = path.join(target, e.name);
+        const m = e.isDirectory() ? newestMtime(child, deadline, depth + 1) : safeMtime(child);
+        if (m > newest) newest = m;
+        if (newest > deadline) break;
+    }
+    return newest;
+}
+
+function safeMtime(f) {
+    try { return fs.lstatSync(f).mtimeMs; } catch (e) { return 0; }
+}
+
+function rotateAgentTempDirs() {
+    log("Temporales de agentes (" + AGENT_TEMP_DIRS.join(", ") + ")");
+    const deadline = Date.now() - AGENT_TEMP_AGE_MS;
+    // El scratchpad de la sesion de Claude en curso vive bajo %TEMP%, pero el
+    // agente puede haber sido lanzado con TEMP apuntando a cualquiera de estos
+    // dirs: se excluye por prefijo, no por nombre.
+    const protectedPaths = [process.env.TEMP, process.env.TMP, process.cwd()]
+        .filter(Boolean)
+        .map(d => path.resolve(d).toLowerCase());
+    const vistos = new Set();
+    for (const base of AGENT_TEMP_DIRS) {
+        const baseKey = path.resolve(base).toLowerCase();
+        if (vistos.has(baseKey)) continue;
+        vistos.add(baseKey);
+        let entries;
+        try { entries = fs.readdirSync(base, { withFileTypes: true }); }
+        catch (e) { continue; }
+        let sub = 0;
+        for (const e of entries) {
+            if (e.isSymbolicLink()) continue;
+            const target = path.join(base, e.name);
+            if (AGENT_TEMP_KEEP.has(e.name.toLowerCase())) continue;
+            const lower = path.resolve(target).toLowerCase();
+            if (protectedPaths.some(p => p.startsWith(lower))) continue;
+            if (newestMtime(target, deadline) > deadline) continue;
+            sub += reclaim(target, path.join(base, e.name));
+        }
+        if (sub > 0) log("  " + base + ": " + gb(sub));
+    }
+}
+
 function main() {
     const before = freeBytes();
     if (Number.isFinite(before)) log("Libre antes: " + gb(before));
@@ -215,6 +290,7 @@ function main() {
     rotatePuppeteer();
     rotateNpmCache();
     rotateWorktreeArtifacts();
+    rotateAgentTempDirs();
 
     log("");
     log("Recuperado" + (DRY_RUN ? " (estimado, dry-run)" : "") + ": " + gb(freed));
@@ -224,4 +300,7 @@ function main() {
 
 if (require.main === module) main();
 
-module.exports = { compareVersions, dirSize, hasFreshHeartbeat, BUILD_ARTIFACTS, WALK_SKIP };
+module.exports = {
+    compareVersions, dirSize, hasFreshHeartbeat, newestMtime,
+    BUILD_ARTIFACTS, WALK_SKIP, AGENT_TEMP_DIRS, AGENT_TEMP_AGE_MS, AGENT_TEMP_KEEP,
+};

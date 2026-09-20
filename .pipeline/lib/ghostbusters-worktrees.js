@@ -277,6 +277,103 @@ function applyCap(candidates, cap = DEFAULT_CAP) {
 }
 
 // -----------------------------------------------------------------------------
+// RESCATE DE TRABAJO LOCAL (worktrees eternamente protegidos)
+//
+// `isWorktreeSafeToDelete` responde "¿hay trabajo que sólo existe acá?" y para
+// eso está bien. El problema es que su respuesta nunca cambia sola: un
+// `session/*` de abril con un commit sin pushear sigue protegido en septiembre
+// y para siempre. En la medición 2026-09-05 eran 17 de 18 candidatos — por eso
+// el guardián de disco reclamaba 0,00 GB corrida tras corrida.
+//
+// La salida no es relajar el guard: es SACARLE la exclusividad al trabajo. Si
+// el worktree lleva más de `rescueAfterDays` sin actividad, se commitea lo
+// pendiente y se deja un tag de backup. El tag vive en el object store del
+// repo, que los worktrees COMPARTEN, así que sobrevive al borrado del
+// directorio y el trabajo se recupera con `git checkout <tag>`.
+//
+// Fail-closed: si cualquier paso del rescate falla, el worktree queda protegido
+// igual que antes. Nunca se borra trabajo que no se pudo respaldar.
+// -----------------------------------------------------------------------------
+const DEFAULT_RESCUE_AFTER_DAYS = 90;
+
+// Ramas sobre las que el rescate NO puede commitear. Un worktree viejo puede
+// tener `main` checked out (pasó en la corrida del 2026-09-05: un worktree de
+// abril tenía la `main` LOCAL, y el commit de rescate la movió 134 días atrás,
+// por delante de `origin/main`). El trabajo pendiente de un worktree así no
+// vale mover una rama compartida: se protege el worktree y decide una persona.
+const RESCUE_FORBIDDEN_BRANCHES = new Set(['main', 'master', 'develop']);
+
+function worktreeAgeDays(wtPath, { fsImpl = fs, nowMs = Date.now() } = {}) {
+  try {
+    const stat = fsImpl.statSync(wtPath);
+    const created = (stat.birthtimeMs && stat.birthtimeMs > 0) ? stat.birthtimeMs : stat.mtimeMs;
+    return (nowMs - created) / (24 * 60 * 60 * 1000);
+  } catch {
+    return NaN;
+  }
+}
+
+/**
+ * Respalda el trabajo local de un worktree y devuelve { rescued, tag, reason }.
+ *
+ * `rescued: false` significa "seguí protegiéndolo": el llamador NO debe borrar.
+ */
+function rescueLocalWork(wtPath, branch, {
+  spawnImpl = spawnSync,
+  fsImpl = fs,
+  nowMs = Date.now(),
+  rescueAfterDays = DEFAULT_RESCUE_AFTER_DAYS,
+  dryRun = false,
+  logger = () => {},
+} = {}) {
+  const ageDays = worktreeAgeDays(wtPath, { fsImpl, nowMs });
+  if (!Number.isFinite(ageDays) || ageDays < rescueAfterDays) {
+    return { rescued: false, reason: `antigüedad ${Number.isFinite(ageDays) ? Math.floor(ageDays) + 'd' : 'desconocida'} < ${rescueAfterDays}d de rescate` };
+  }
+
+  // En dry-run se informa la elegibilidad y NO se toca git: un `--dry-run` que
+  // commitea y taguea no es un dry-run.
+  if (dryRun) {
+    return { rescued: true, tag: '(dry-run, sin crear)', ageDays: Math.floor(ageDays), dryRun: true };
+  }
+
+  const st = gitRun(['status', '--porcelain'], { cwd: wtPath, spawnImpl });
+  if (!st.ok) return { rescued: false, reason: 'no pude inspeccionar git status' };
+
+  // El tag apunta a un commit, así que lo pendiente hay que commitearlo antes —
+  // y ese commit avanza la rama del worktree. Sobre una rama compartida eso es
+  // inaceptable, así que ahí el rescate no se hace.
+  if (st.stdout.trim() && RESCUE_FORBIDDEN_BRANCHES.has(String(branch || '').toLowerCase())) {
+    return { rescued: false, reason: `no commiteo trabajo pendiente sobre la rama protegida ${branch}` };
+  }
+
+  const sello = new Date(nowMs).toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z');
+  const slug = (branch || 'detached').replace(/[^A-Za-z0-9._-]/g, '-');
+  const tag = `rescate/${slug}-${sello}`;
+
+  if (st.stdout.trim()) {
+    const add = gitRun(['add', '-A'], { cwd: wtPath, spawnImpl });
+    if (!add.ok) return { rescued: false, reason: 'no pude stagear el trabajo pendiente' };
+    const msg = `[rescate] WIP de ${branch || 'detached HEAD'} antes de reclamar el worktree por inactividad (${Math.floor(ageDays)}d)`;
+    const commit = gitRun(['commit', '-m', msg, '--no-verify'], { cwd: wtPath, spawnImpl });
+    if (!commit.ok) return { rescued: false, reason: 'no pude commitear el trabajo pendiente' };
+  }
+
+  // Tag LOCAL, nunca pusheado: mismo criterio que backup-agent-branch.js.
+  const tagged = gitRun(['tag', tag], { cwd: wtPath, spawnImpl });
+  if (!tagged.ok) return { rescued: false, reason: `no pude crear el tag ${tag}` };
+
+  // Verificación explícita: sin esto el borrado confiaría en un exit code.
+  const check = gitRun(['rev-parse', '--verify', `refs/tags/${tag}`], { cwd: wtPath, spawnImpl });
+  if (!check.ok || !check.stdout.trim()) {
+    return { rescued: false, reason: `el tag ${tag} no quedó registrado` };
+  }
+
+  logger(`💾 Trabajo de ${wtPath} respaldado en el tag ${tag} (recuperable con: git checkout ${tag})`);
+  return { rescued: true, tag, sha: check.stdout.trim(), ageDays: Math.floor(ageDays) };
+}
+
+// -----------------------------------------------------------------------------
 // Sweep: procesa la lista de candidatos ya filtrados (seguridad + abandono),
 // aplica cap, ejecuta borrado (o no, en dry-run) y escribe audit JSONL.
 // `candidates`: [{ path, branch, issue, reason, diskBytes, skip?, skipReason? }]
@@ -323,6 +420,10 @@ function sweepWorktrees(candidates, {
 module.exports = {
   MAIN_REPO,
   DEFAULT_AGE_THRESHOLD_DAYS,
+  DEFAULT_RESCUE_AFTER_DAYS,
+  RESCUE_FORBIDDEN_BRANCHES,
+  worktreeAgeDays,
+  rescueLocalWork,
   DEFAULT_CAP,
   NO_CAP,
   AUDIT_FILE,

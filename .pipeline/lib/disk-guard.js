@@ -131,6 +131,11 @@ const DEFAULT_BUDGET = Object.freeze({
   // Si una corrida libera más que esto, se avisa aunque no haya cambio de
   // nivel: "sin borrado silencioso de cosas grandes".
   alert_freed_gb: 5,
+  // Una corrida de limpieza que libera menos que esto no movió la aguja.
+  ineffective_freed_gb: 0.5,
+  // Cuántas corridas inefectivas seguidas hacen falta para avisar que el
+  // guardián no puede solo. Ver el bloque "Limpieza inefectiva" en decide().
+  ineffective_runs_alert: 3,
 });
 
 // Clamps de seguridad, con el mismo criterio que `ghostbusters_cron`: un valor
@@ -145,6 +150,8 @@ const CLAMPS = Object.freeze({
   reclaim_throttle_min: [5, 24 * 60],
   alert_cooldown_min: [5, 24 * 60],
   alert_freed_gb: [0.1, 500],
+  ineffective_freed_gb: [0.01, 100],
+  ineffective_runs_alert: [1, 50],
 });
 
 // Fases del pipeline que se frenan en `red`. Son las que consumen disco a
@@ -350,6 +357,7 @@ function emptyState() {
     last_alert_at: 0,
     last_alert_level: null,
     freed_gb_since_alert: 0,
+    ineffective_runs: 0,
   };
 }
 
@@ -421,7 +429,7 @@ function appendAudit(entry, { pipelineDir, auditFile, fsImpl = fs } = {}) {
  * pesadas es un estado continuo (se evalúa por `actions`), mientras que rotar
  * cachés es un evento puntual (se dispara por `run`).
  */
-function decide({ freeGb, budget, state, now = Date.now(), freedGbThisRun = 0 } = {}) {
+function decide({ freeGb, budget, state, now = Date.now(), freedGbThisRun = 0, cleanupRan = false } = {}) {
   const b = (budget && budget.green_gb !== undefined) ? budget : normalizeBudget(budget);
   const prev = Object.assign(emptyState(), state || {});
   const level = classify(freeGb, b);
@@ -457,8 +465,27 @@ function decide({ freeGb, budget, state, now = Date.now(), freedGbThisRun = 0 } 
   const alertable = sev !== undefined && sev >= SEVERITY[LEVELS.ORANGE];
   const cooldownDue = now - (prev.last_alert_at || 0) >= b.alert_cooldown_min * 60 * 1000;
   let alertReason = null;
+
+  // Limpieza inefectiva (#6708 no lo cubría). El guardián avisaba SÓLO cuando
+  // la limpieza funcionaba: `escalada`, `persistencia` y `liberacion-grande`
+  // presuponen que algo se movió. El modo de falla real es el contrario — el
+  // 2026-09-05 corrió 10 horas seguidas, exit 0, liberando 0,00 GB por corrida
+  // mientras el disco caía de 13 a 5 GB, y nadie se enteró: `persistencia` sólo
+  // dispara cada `alert_cooldown_min` y no dice que el remedio no sirve.
+  // Se cuentan las corridas seguidas que no movieron la aguja; al llegar al
+  // umbral se avisa que el guardián no da abasto y hace falta una mano.
+  let ineffectiveRuns = prev.ineffective_runs || 0;
+  if (cleanupRan) {
+    ineffectiveRuns = (Number(freedGbThisRun) < b.ineffective_freed_gb)
+      ? ineffectiveRuns + 1
+      : 0;
+  }
+  const ineffective = alertable && ineffectiveRuns >= b.ineffective_runs_alert;
+
   if (alertable && (prevSev === undefined || sev > prevSev)) {
     alertReason = 'escalada';
+  } else if (ineffective) {
+    alertReason = 'limpieza-inefectiva';
   } else if (alertable && cooldownDue) {
     alertReason = 'persistencia';
   } else if (Number(freedGbThisRun) >= b.alert_freed_gb) {
@@ -474,6 +501,9 @@ function decide({ freeGb, budget, state, now = Date.now(), freedGbThisRun = 0 } 
     last_reclaim_at: run.reclaimWorktrees ? now : prev.last_reclaim_at,
     last_alert_at: alertReason ? now : prev.last_alert_at,
     last_alert_level: alertReason ? level : prev.last_alert_level,
+    // Se reinicia al avisar: el próximo aviso exige otra tanda completa de
+    // corridas inefectivas, en vez de repetirse en cada tick.
+    ineffective_runs: alertReason === 'limpieza-inefectiva' ? 0 : ineffectiveRuns,
   });
 
   return {
@@ -484,7 +514,7 @@ function decide({ freeGb, budget, state, now = Date.now(), freedGbThisRun = 0 } 
     actions,
     run,
     frozen,
-    alert: { should: !!alertReason, reason: alertReason },
+    alert: { should: !!alertReason, reason: alertReason, ineffectiveRuns },
     nextState,
     budget: b,
   };
@@ -521,7 +551,7 @@ function isHeavyPhaseFrozen(fase, skill, { pipelineDir, state, statePath: sp } =
  * Texto de la alerta a Telegram. Sin interpolar nada que venga de afuera: todo
  * son números medidos por este módulo y literales del presupuesto.
  */
-function alertText({ level, freeGb, budget, freedGb = 0, frozen = false, reason }) {
+function alertText({ level, freeGb, budget, freedGb = 0, frozen = false, reason, ineffectiveRuns = 0 }) {
   const b = budget || DEFAULT_BUDGET;
   const emoji = LEVEL_EMOJI[level] || '⚪';
   const free = Number.isFinite(Number(freeGb)) ? `${Number(freeGb).toFixed(1)} GB` : 'desconocido';
@@ -539,6 +569,13 @@ function alertText({ level, freeGb, budget, freedGb = 0, frozen = false, reason 
   }
   if (reason === 'persistencia') {
     lines.push('_(re-aviso: el umbral sigue cruzado)_');
+  }
+  if (reason === 'limpieza-inefectiva') {
+    lines.push(
+      `⚠️ *La limpieza automática no libera nada*: ${ineffectiveRuns} corrida(s) seguidas ` +
+      `por debajo de ${b.ineffective_freed_gb} GB. El guardián no da abasto — hay que ` +
+      'revisar a mano qué está ocupando el disco.'
+    );
   }
   return lines.join('\n');
 }
