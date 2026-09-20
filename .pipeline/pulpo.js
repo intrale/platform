@@ -18363,7 +18363,11 @@ function cmdBloqueados() {
   return lines.join('\n');
 }
 
-function cmdUnblock(args) {
+// #7459 — `deps.humanBlock` es sólo para tests: permite inyectar el módulo
+// cargado bajo un `PIPELINE_REPO_ROOT` temporal (SEC-4) o un doble que
+// devuelva `false` en los encolados (respuesta honesta, CA-3). El dispatch
+// del Commander lo llama sin `deps`.
+function cmdUnblock(args, deps = {}) {
   const trimmed = (args || '').trim();
   if (!trimmed) {
     return '❌ Uso: `/unblock <issue> <orientación>`\nEj: `/unblock 2480 usar la API REST en lugar de gRPC`';
@@ -18392,39 +18396,45 @@ Ej: \`/unblock ${issue} reintentar usando la API REST\``;
     }
   } catch {}
 
-  let humanBlock;
-  try { humanBlock = require('./lib/human-block'); }
-  catch (e) { return `⚠️ No pude cargar el módulo de bloqueos: ${e.message}`; }
+  const hb = deps.humanBlock || humanBlock;
 
+  // `unblockIssue` mueve UN marker con orientación (#6190); el botón de la
+  // alerta, en cambio, reactiva todos los markers del issue sin orientación.
   let result;
-  try { result = humanBlock.unblockIssue({ issue, guidance, unlocker: 'commander:telegram' }); }
+  try { result = hb.unblockIssue({ issue, guidance, unlocker: 'commander:telegram' }); }
   catch (e) { return `❌ Error desbloqueando #${issue}: ${e.message}`; }
 
   if (!result.ok) return `⚠️ ${result.error}`;
 
-  // Best-effort: quitar label needs:human del issue en GitHub
-  try {
-    const ghBin = process.env.GH_BIN || 'gh';
-    require('child_process').execSync(
-      `"${ghBin}" issue edit ${issue} --remove-label "needs:human" --repo ${repoTarget.getPrimaryRepo()}`,
-      { stdio: 'ignore', timeout: 15000 }
-    );
-  } catch {}
+  // #7459 — el marker YA está en pendiente/ (no hay rollback). Lo que sigue va
+  // por la cola del servicio-github, que es el único camino con guardrail de
+  // procedencia para retirar `needs-human` (#5690 SEC-B) y que no depende de
+  // tener `gh` en el PATH del Pulpo. Nunca `gh` en proceso (SEC-3). Antes se
+  // hacía con un binario pelado y el label legacy: fallaba en silencio y el
+  // Pulpo volvía a ver el issue como bloqueado tras el ✅.
+  // `authorized_by` propio del canal (SEC-1): distinto del de los botones
+  // (`human-block:unblock`) para que el audit JSONL los distinga.
+  const labelOk = hb.enqueueRemoveNeedsHuman(issue, 'commander:telegram:unblock') === true;
+  const body = `## ✅ Desbloqueado por humano\n\n**Skill:** \`${result.skill}\` · **Fase:** \`${result.from_phase}\` → \`${result.to_phase}\`\n**Canal:** comando /unblock por Telegram\n\n**Orientación:**\n\n> ${guidance.replace(/\n/g, '\n> ')}\n\n_Vuelve a la cola del pipeline._`;
+  const commentOk = hb.enqueueGithub('comment', { issue, body }) === true;
 
-  // Best-effort: comentar en el issue con la orientación
-  try {
-    const ghBin = process.env.GH_BIN || 'gh';
-    const body = `## ✅ Desbloqueado por humano\n\n**Skill:** \`${result.skill}\` · **Fase:** \`${result.from_phase}\` → \`${result.to_phase}\`\n\n**Orientación:**\n\n> ${guidance.replace(/\n/g, '\n> ')}\n\n_Vuelve a la cola del pipeline._`;
-    const tmpFile = path.join(PIPELINE(), `.unblock-comment-${issue}-${Date.now()}.md`);
-    fs.writeFileSync(tmpFile, body);
-    require('child_process').execSync(
-      `"${ghBin}" issue comment ${issue} --body-file "${tmpFile}" --repo ${repoTarget.getPrimaryRepo()}`,
-      { stdio: 'ignore', timeout: 15000 }
-    );
-    try { fs.unlinkSync(tmpFile); } catch {}
-  } catch {}
+  const lineaSkillFase = `*Skill:* \`${result.skill}\` · *Fase:* \`${result.from_phase}\` → \`${result.to_phase}\``;
+  if (labelOk && commentOk) {
+    // Copy de éxito intacto (CA-3 / G-1): el ✅ ahora sí promete algo que el
+    // sistema cumple (la orden quedó tomada; sale en el próximo tick).
+    return `✅ Issue *#${issue}* desbloqueado.\n${lineaSkillFase}\n*Orientación guardada* para que el próximo agente la lea al arrancar.`;
+  }
 
-  return `✅ Issue *#${issue}* desbloqueado.\n*Skill:* \`${result.skill}\` · *Fase:* \`${result.from_phase}\` → \`${result.to_phase}\`\n*Orientación guardada* para que el próximo agente la lea al arrancar.`;
+  // Respuesta honesta (CA-3 / G-2 / G-3): primero qué SÍ pasó, después qué no,
+  // después qué hacer. Sin paths ni stack en Telegram (SEC-5): eso va al log.
+  log('commander', `[unblock] #${issue} marker movido a ${result.to_phase}/pendiente; encolado remove-label=${labelOk} comment=${commentOk}`);
+  if (!labelOk) {
+    // Con o sin comentario: el issue SIGUE frenado hasta que alguien quite el
+    // label. "A mano" sólo acá, que es donde el operador tiene que actuar.
+    return `⚠️ Issue *#${issue}*: la orientación quedó guardada y el marker volvió a la cola, pero *no pude encolar el retiro del label* \`needs-human\`. Quitalo a mano en GitHub o el Pulpo lo va a seguir viendo bloqueado.\n${lineaSkillFase}`;
+  }
+  // Sólo falló el comentario: el issue SÍ se destraba; falta el rastro en GitHub.
+  return `⚠️ Issue *#${issue}* desbloqueado, pero *no pude encolar el comentario* con la orientación en GitHub. El agente la va a leer igual desde el marker; si querés que quede en el issue, pegala a mano.\n${lineaSkillFase}`;
 }
 
 function cmdHelp() {
@@ -27919,6 +27929,9 @@ if (process.env.PULPO_NO_AUTOSTART === '1') {
     LATE_SIGNOFF_DEFAULTS,
     LATE_SIGNOFF_NO_RECHECK_REASONS,
     HUMAN_BLOCK_LABELS,
+    // #7459 — handler de /unblock del Commander, expuesto para el test de
+    // regresión (retiro de needs-human por la cola auditada, sin gh en proceso).
+    cmdUnblock,
     UNBLOCK_WEDGE_TIMEOUT_MS,
     REENTRY_LOG_COOLDOWN_MS,
     _getUnblockState: () => ({

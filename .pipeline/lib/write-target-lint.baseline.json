@@ -1,0 +1,27 @@
+{
+  "_doc": "Ratchet shrink-only del guardrail por destino (#7114). `pendientes`: puntos del inventario que resuelven ad-hoc, clave modulo::funcion (nunca por linea). `tests`: destinos estaticos de tests dentro del .pipeline productivo, clave archivo::variable::destino. Crecer = exit 1. Se regenera SOLO cuando encoge: node .pipeline/lib/write-target-lint.js --write-baseline. Goteo de pendientes: #7464.",
+  "pendientes": [
+    "anomaly-detector.js::REPO_ROOT",
+    "lib/commander-deterministic.js::current",
+    "lib/commander-deterministic.js::prev",
+    "lib/commander-deterministic.js::withOperationalStateRoot",
+    "lib/ghost-artifact-cleaner.js::repoRoot",
+    "lib/multi-provider-coverage/api.js::PIPELINE_ROOT",
+    "lib/multi-provider/agent-models-rw.js::PIPELINE_ROOT",
+    "lib/multi-provider/api.js::PIPELINE_ROOT",
+    "lib/project-context.js::bindingsDir",
+    "lib/project-context.js::pipelineDir",
+    "lib/waves.js::pipelineDir",
+    "qa-environment.js::PIPELINE",
+    "skills-deterministicos/build.js::REPO_ROOT",
+    "skills-deterministicos/delivery.js::REPO_ROOT",
+    "skills-deterministicos/delivery.js::auditFailClosedDecision",
+    "skills-deterministicos/linter.js::REPO_ROOT",
+    "skills-deterministicos/tester.js::REPO_ROOT"
+  ],
+  "tests": [
+    ".pipeline/test-dev-routing-regression.js::pipelineDir::.pipeline",
+    ".pipeline/test/kernel-action-policy.test.js::pipelineDir::.pipeline",
+    ".pipeline/tests/model-propagation-rollout.test.js::pipelineDir::.pipeline"
+  ]
+}

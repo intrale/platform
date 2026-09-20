@@ -45,6 +45,7 @@ const { worktreeNeedle } = require('../lib/worktree-prefix');
 // `PIPELINE_DIR_OVERRIDE` bajo `os.tmpdir()`; con el default invertido, los
 // tests que no declaran dir caen ahí y no fallan ruidoso ni tocan el productivo.
 const { ensureTestRunDir } = require('../lib/test-run-dir');
+const pipelineEnv = require('../lib/pipeline-env');
 
 // ── Constantes y paths ──────────────────────────────────────────────
 const REPO_ROOT = process.env.PIPELINE_REPO_ROOT || process.env.CLAUDE_PROJECT_DIR || path.resolve(__dirname, '..', '..');
@@ -1039,6 +1040,25 @@ async function runNodeTests(repoRoot, env, opts = {}) {
         // conocidas y lo prepende. Idempotente y no muta el env recibido.
         let childEnv = { ...env };
         delete childEnv.NODE_TEST_CONTEXT;
+        // #7114 (rebote rev-2) — la batería corre SIEMPRE en `pruebas`. El tester
+        // determinístico es un lanzador de suite (`docs/pipeline/ambientes.md`
+        // §1/§3): el Pulpo lo spawnea con `PIPELINE_AMBIENTE=productivo`
+        // declarado (watchdog.ps1, #7455) y sin sanear los hijos de `node --test`
+        // heredaban esa declaración. Consecuencias: (a) tests que asertan sobre
+        // la variable del proceso (`delivery-gate2` G1·CA-6) fallaban sólo bajo
+        // el Pulpo; (b) un entrypoint spawneado como main desde un test
+        // (`declararRaiz` respeta lo que viene) resolvía productivo con el dir
+        // real. Declaramos `pruebas` EXPLÍCITO (no borrar: `declararRaiz` usa
+        // `??=`, y `provision-test-env --print-env` emite la misma forma). El
+        // dir viaja aparte por `PIPELINE_DIR_OVERRIDE` (abajo). Sólo se avisa
+        // cuando había otra cosa declarada.
+        const ambienteHeredado = childEnv[pipelineEnv.ENV_AMBIENTE];
+        if (ambienteHeredado !== pipelineEnv.MODOS.PRUEBAS) {
+            childEnv[pipelineEnv.ENV_AMBIENTE] = pipelineEnv.MODOS.PRUEBAS;
+            if (typeof ambienteHeredado === 'string' && ambienteHeredado.trim()) {
+                onLog(`[tester:node-test] ${pipelineEnv.ENV_AMBIENTE}=${ambienteHeredado} heredado → hijos de node --test corren con ${pipelineEnv.MODOS.PRUEBAS}`);
+            }
+        }
         // #7112 · CA-4 — dir efímero de pruebas en el env del child (sólo si no
         // viene ya seteado por el llamador). Se borra al terminar la batería con
         // `runDir.limpiar()` (sentencia antes del `return`, más abajo — no hay

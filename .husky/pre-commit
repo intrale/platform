@@ -100,6 +100,39 @@ if [ "$RUN_TEST_ENV_LINT" = "1" ] && [ -f ".pipeline/lib/test-env-lint.js" ]; th
   fi
 fi
 
+# =============================================================================
+# Issue #7114 — Guardrail por DESTINO de escritura (cierre de la Ola 9.4.1).
+#
+# Extiende `test-env-lint` de variables a destinos: falla si un modulo
+# productivo escribe sin estar en el inventario `lib/write-points.json` (R1),
+# si aparece un punto `pendiente` nuevo fuera del ratchet shrink-only (R2), o
+# si un test fija `PIPELINE_DIR_OVERRIDE` / `PIPELINE_STATE_DIR` /
+# `PIPELINE_REPO_ROOT` / `pipelineDir:` a un destino resoluble estaticamente
+# dentro del `.pipeline` productivo (R3). El `--check` imprime archivo, linea y
+# destino de cada rojo y el remedio en orden (nunca `--no-verify`).
+#
+# ANCLA DE INSERCION: inmediatamente despues del `fi` que cierra el bloque de
+# `test-env-lint` y antes de "Validacion de agent-models (#3081)".
+#
+# SIN `--only` (CA-25 / CA-6 de #7114): R1 y R2 son propiedades del universo
+# completo; un scan filtrado deja pasar un escritor en un archivo no staged. En
+# un repo con baseline al dia el verde es UNA linea: el ratchet absorbe lo que el
+# commit no toco. Gate por PRESENCIA de `.pipeline/` staged, exit code propagado
+# sin `|| true`. En CI: `.github/workflows/write-target-lint.yml` (advisory
+# hasta #6265).
+# =============================================================================
+RUN_WRITE_TARGET_LINT=0
+case "$TOUCHED_FILES" in
+  *".pipeline/"*) RUN_WRITE_TARGET_LINT=1 ;;
+esac
+if [ "$RUN_WRITE_TARGET_LINT" = "1" ] && [ -f ".pipeline/lib/write-target-lint.js" ]; then
+  node .pipeline/lib/write-target-lint.js --check
+  WRITE_TARGET_LINT_EXIT=$?
+  if [ "$WRITE_TARGET_LINT_EXIT" != "0" ]; then
+    exit "$WRITE_TARGET_LINT_EXIT"
+  fi
+fi
+
 # Validación de agent-models (#3081): gate propio.
 RUN_VALIDATE=0
 case "$TOUCHED_FILES" in

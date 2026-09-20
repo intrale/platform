@@ -904,6 +904,15 @@ auth propia): `lib/human-block.js#reportHumanBlock` (operador autenticado
 SEC-1..SEC-5 de `commander-deterministic`) + `lib/audit-log.js#appendChained`
 (hash-chain SHA-256, fail-closed con lock):
 
+> ⚠️ **#7456 (SEC-HB-5):** `reportHumanBlock` resuelve el `.pipeline` destino
+> por llamada vía `write-target`. Desde el proceso de un agente lanzado a mano
+> (sin `PIPELINE_AMBIENTE=productivo`) o desde un worktree, la llamada **falla
+> ruidoso** (`EscrituraBloqueadaError`, aviso `[pipeline-env]` en stderr) y
+> **nunca** escribe en el `.pipeline` principal. Es el comportamiento buscado:
+> el bloqueo real lo emite el Pulpo con el ambiente productivo declarado. Para
+> ensayar el runbook, declarar `PIPELINE_DIR_OVERRIDE` a un tmp (nunca
+> `PIPELINE_REPO_ROOT`).
+
 ```bash
 # 1) Bloquear y pedir confirmación explícita del operador autenticado.
 node -e "const { reportHumanBlock } = require('./.pipeline/lib/human-block'); reportHumanBlock({ issue: Number(process.argv[1]), skill: 'planner', phase: 'criterios', reason: process.argv[2], question: process.argv[3] });" "<ISSUE_GANADOR>" "Fusión/cierre de #<victima> contra #<ganador> (similitud <nivel>, score <pct>%)" "¿Confirmás cerrar #<victima> y fusionar en #<ganador>? Requiere operador autenticado."

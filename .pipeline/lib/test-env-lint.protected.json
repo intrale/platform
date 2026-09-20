@@ -83,6 +83,18 @@
       "sentido_inseguro": "cualquiera"
     },
     {
+      "nombre": "PIPELINE_AMBIENTE",
+      "motivo": "declara el ambiente del proceso; el unico valor productivo es `productivo`, y con el un test resuelve el .pipeline real y enciende canales reales (Telegram, GitHub, vault intrale). Como el esquema no admite un valor concreto como sentido, TODA escritura es insegura (R0 de #7114 / SEC-8): un test que necesite setearla o borrarla usa el opt-in de withEnv con motivo",
+      "control_que_apaga": "lib/pipeline-env.js:108-114 — leerDeclaracion(): PIPELINE_AMBIENTE=productivo es la unica forma de obtener dir y canales productivos",
+      "sentido_inseguro": "cualquiera"
+    },
+    {
+      "nombre": "PIPELINE_ALLOW_PROD_SIDE_EFFECTS",
+      "motivo": "escape hatch del operador que anula la senal de corrida de prueba (NODE_TEST_CONTEXT / PULPO_NO_AUTOSTART / NODE_ENV=test); encendido en un test con declaracion productiva heredada, el test escribe en el .pipeline real (R0 de #7114 / SEC-8)",
+      "control_que_apaga": "lib/pipeline-env.js:108-114 (ENV_ESCAPE_HATCH) y corridaDePrueba() de pulpo.js — senal de corrida de prueba",
+      "sentido_inseguro": "encender"
+    },
+    {
       "patron": "^PULPO_SKIP_[A-Z0-9_]+$",
       "motivo": "familia PULPO_SKIP_* — saltear una validacion es el sentido inseguro. Familia ABIERTA a proposito (SEC-6 / R-8): el proximo PULPO_SKIP_* nace protegido solo, sin que nadie lo agregue a ninguna lista.",
       "control_que_apaga": "la validacion que cada PULPO_SKIP_* saltea",
