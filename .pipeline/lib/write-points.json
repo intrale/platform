@@ -1160,7 +1160,7 @@
     {
       "modulo": "lib/write-target-lint.js",
       "funcion": "DEFAULT_PIPELINE_ROOT",
-      "linea": 71,
+      "linea": 74,
       "canal": "estado",
       "destino": "lib/write-target-lint.baseline.json",
       "tier": 3,
@@ -1998,7 +1998,7 @@
     {
       "modulo": "skills-deterministicos/tester.js",
       "funcion": "REPO_ROOT",
-      "linea": 50,
+      "linea": 51,
       "canal": "logs",
       "destino": "logs/<agente>.log + desarrollo/*/trabajando/* (colas) + qa/artifacts (externo)",
       "tier": 3,

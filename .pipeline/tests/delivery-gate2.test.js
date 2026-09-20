@@ -12,6 +12,7 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { spawnSync } = require('node:child_process');
 
 const delivery = require('../delivery');
 const gate = require('../lib/operator-signature');
@@ -251,8 +252,18 @@ test('G1 · CA-6 — el entrypoint del CLI declara raíz (mismo patrón que roll
     const mainBlock = src.slice(src.indexOf('if (require.main === module) {'));
     assert.ok(mainBlock.length > 0, 'delivery.js tiene bloque main');
     assert.match(mainBlock, /require\('\.\/lib\/launcher-env'\)\.declararRaiz\(process\.env\)/);
-    // Como módulo (este test lo requirió arriba) NO declaró: el runner sigue en pruebas.
-    assert.notStrictEqual(process.env.PIPELINE_AMBIENTE, 'productivo');
+    // Como módulo NO declara. Se comprueba en un proceso hijo SIN la variable:
+    // el env de este runner no es evidencia (#7114 rebote rev-2 — bajo el Pulpo
+    // el tester hereda `PIPELINE_AMBIENTE=productivo` de watchdog.ps1 y asertar
+    // sobre `process.env` acá fallaba sin que delivery.js hiciera nada).
+    const envHijo = { ...process.env };
+    delete envHijo.PIPELINE_AMBIENTE;
+    const hijo = spawnSync(process.execPath, [
+        '-e',
+        "require('./delivery'); process.stdout.write(String(process.env.PIPELINE_AMBIENTE))",
+    ], { cwd: path.join(__dirname, '..'), env: envHijo, encoding: 'utf8', windowsHide: true });
+    assert.strictEqual(hijo.status, 0, `require('./delivery') como módulo salió con ${hijo.status}: ${hijo.stderr}`);
+    assert.strictEqual(hijo.stdout, 'undefined', 'requerir delivery.js como módulo no declara ambiente');
     // Y en `main` el `writeDir` de audit vive DENTRO del helper, no antes del kill switch.
     const mainFn = src.slice(src.indexOf('function main()'), src.indexOf('if (require.main === module) {'));
     assert.ok(!/writeDir\(/.test(mainFn), 'main() no resuelve el dir de audit por su cuenta');

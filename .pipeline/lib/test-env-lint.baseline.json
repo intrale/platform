@@ -699,25 +699,25 @@
         },
         {
             "file": "tests/delivery-gate2.test.js",
-            "line": 94,
-            "variable": "(clave no resoluble)",
-            "sentido": "(n/a)"
-        },
-        {
-            "file": "tests/delivery-gate2.test.js",
             "line": 95,
             "variable": "(clave no resoluble)",
             "sentido": "(n/a)"
         },
         {
             "file": "tests/delivery-gate2.test.js",
-            "line": 101,
+            "line": 96,
             "variable": "(clave no resoluble)",
             "sentido": "(n/a)"
         },
         {
             "file": "tests/delivery-gate2.test.js",
             "line": 102,
+            "variable": "(clave no resoluble)",
+            "sentido": "(n/a)"
+        },
+        {
+            "file": "tests/delivery-gate2.test.js",
+            "line": 103,
             "variable": "(clave no resoluble)",
             "sentido": "(n/a)"
         },
