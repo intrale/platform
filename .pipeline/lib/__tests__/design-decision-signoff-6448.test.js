@@ -26,6 +26,7 @@ const path = require('path');
 const design = require('../design-decision-detect');
 const io = require('../design-decision-gate-io');
 const humanBlock = require('../human-block');
+const { resolveGhBin } = require('../gh-bin');
 
 // -----------------------------------------------------------------------------
 // Fixtures congelados. Son datos REALES del incidente, no invenciones parecidas:
@@ -372,6 +373,40 @@ test('A-6: ningún módulo del gate usa `updatedAt` como fecha de edición', () 
     }
 });
 
+// -----------------------------------------------------------------------------
+// #7438 — el binario `gh` se resuelve con el helper único (causa raíz de #7113)
+// -----------------------------------------------------------------------------
+
+test('#7438 / RS-1.4: `exec` que lanza ENOENT ⇒ ok:false con `gh falló:`, y el file NO es el literal pelado', () => {
+    let argv = null;
+    const enoent = () => {
+        throw Object.assign(new Error('spawnSync gh ENOENT'), { code: 'ENOENT' });
+    };
+    const r = io.fetchSignoffContext(7113, { exec: (file, args, options) => { argv = { file, args, options }; return enoent(); } });
+    assert.deepEqual(r, { ok: false, lastEditedAt: null, comments: [], error: 'gh falló: spawnSync gh ENOENT' });
+    assert.equal(argv.file, resolveGhBin(), 'el binario que se intentó es el resuelto por el helper');
+    if (process.platform === 'win32') assert.notEqual(argv.file, 'gh');
+});
+
+test('#7438: `ghBin` inyectado tiene precedencia y las options llevan windowsHide sin shell', () => {
+    let argv = null;
+    io.fetchSignoffContext(7113, { ghBin: '/x/gh', exec: (file, args, options) => { argv = { file, args, options }; return '{}'; } });
+    assert.equal(argv.file, '/x/gh');
+    assert.deepEqual(argv.args.slice(0, 2), ['api', 'graphql']);
+    assert.equal(argv.options.windowsHide, true, 'sin flash de consola bajo watchdog.ps1');
+    assert.equal(argv.options.encoding, 'utf8');
+    assert.equal(typeof argv.options.timeout, 'number');
+    assert.ok(!('shell' in argv.options), 'RS-1.2: nunca por shell');
+});
+
+test('#7438 / CA-2: design-decision-gate-io.js consume lib/gh-bin.js y no tiene `gh` pelado ni execSync', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'design-decision-gate-io.js'), 'utf8');
+    assert.match(src, /require\(['"]\.\/gh-bin['"]\)/, 'debe consumir el helper único');
+    assert.doesNotMatch(src, /'gh'/, 'cero literal `gh` pelado');
+    assert.doesNotMatch(src, /\bexecSync\b/, 'cero execSync');
+    assert.doesNotMatch(src, /\$\{ghBin\}/, 'cero interpolación del binario');
+});
+
 test('CA-14: falla de red / respuesta inválida ⇒ escala, y nunca lanza', () => {
     const casos = [
         ['exec explota', () => { throw new Error('gh: connect ETIMEDOUT'); }],
@@ -434,8 +469,12 @@ test('CA-16: el número de issue va como variable tipada, jamás interpolado', (
     assert.match(io.SIGNOFF_QUERY, /\$num:Int!/, 'va como variable tipada de GraphQL');
 
     let argv = null;
-    io.fetchSignoffContext(6431, { exec: (file, args) => { argv = { file, args }; return '{}'; } });
-    assert.equal(argv.file, 'gh', 'se invoca por argv, nunca por shell');
+    io.fetchSignoffContext(6431, { exec: (file, args, options) => { argv = { file, args, options }; return '{}'; } });
+    // #7438: el binario ya no es el literal pelado sino el resuelto por el helper.
+    assert.equal(argv.file, resolveGhBin(), 'se invoca el binario resuelto por resolveGhBin()');
+    assert.ok(Array.isArray(argv.args), 'se invoca por argv, nunca por shell');
+    assert.ok(!argv.options || !('shell' in argv.options), 'sin `shell` en las options');
+    if (process.platform === 'win32') assert.notEqual(argv.file, 'gh', 'en win32 nunca el literal pelado');
     assert.ok(argv.args.includes('-F'), 'el número entra como variable (`-F`), no como parte del query');
     assert.ok(argv.args.includes('num=6431'));
 

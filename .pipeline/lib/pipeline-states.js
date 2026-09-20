@@ -85,6 +85,7 @@ const { spawnSync } = require('node:child_process');
 const auditLog = require('./audit-log');
 const { redactSensitive } = require('./redact');
 const { fetchPrInfoForIssue } = require('./pr-info-fetcher');
+const { resolveGhBin } = require('./gh-bin');
 
 // =============================================================================
 // Constantes
@@ -96,7 +97,6 @@ const AUDIT_DIR = path.join(PIPELINE_DIR, 'audit');
 const AUDIT_FILE = path.join(AUDIT_DIR, 'rejections-blocked.jsonl');
 
 const GH_API_TIMEOUT_MS = 5000;      // CA-2: 5s, no 30s — operador espera.
-const GH_BIN_DEFAULT = process.platform === 'win32' ? 'C:/Workspaces/gh-cli/bin/gh' : 'gh';
 const REPO = 'intrale/platform';
 
 const MAX_ISSUE_NUMBER = 10_000_000; // CA-6: límite superior razonable.
@@ -275,7 +275,7 @@ function redactBareKeyValuePairs(text) {
  */
 function defaultGhRunner(args, options) {
     const o = options || {};
-    const ghBin = o.ghBin || process.env.GH_BIN || process.env.GH_PATH || GH_BIN_DEFAULT;
+    const ghBin = resolveGhBin({ ghBin: o.ghBin });   // #7438: helper único
     const r = spawnSync(ghBin, args, {
         encoding: 'utf8',
         timeout: o.timeoutMs || GH_API_TIMEOUT_MS,
