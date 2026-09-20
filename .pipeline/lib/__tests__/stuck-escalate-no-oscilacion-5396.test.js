@@ -24,6 +24,15 @@ const { reconcileLabelToFilesystem, decidirFasePlaceholder } = require('../../se
 
 const CHILD = path.join(__dirname, '_stuck-escalate-child-5396.js');
 
+// #7456 (D-4): el hijo hereda el env del runner; PIPELINE_REPO_ROOT productivo
+// anularia el override (SEC-9), asi que se quita y el dir de escritura viaja
+// SOLO por PIPELINE_DIR_OVERRIDE. CLAUDE_PROJECT_DIR alimenta trace.REPO_ROOT.
+function envHijo(root) {
+    const env = { ...process.env, CLAUDE_PROJECT_DIR: root, PIPELINE_DIR_OVERRIDE: path.join(root, '.pipeline') };
+    delete env.PIPELINE_REPO_ROOT;
+    return env;
+}
+
 /**
  * Monta un repo de mentira con un deliverable en `listo/` y corre el escalado
  * real en un proceso hijo (ver el worker: `human-block` fija su root al cargar).
@@ -45,7 +54,7 @@ function escalarEnSandbox() {
     const r = spawnSync(process.execPath, [CHILD, tmpRoot], {
         encoding: 'utf8',
         timeout: 30000,
-        env: { ...process.env, CLAUDE_PROJECT_DIR: tmpRoot, PIPELINE_REPO_ROOT: tmpRoot },
+        env: envHijo(tmpRoot),
     });
     assert.equal(r.status, 0, `worker falló: ${r.stderr || r.stdout}`);
     const res = JSON.parse(r.stdout);
@@ -192,7 +201,7 @@ test('riesgo #3: el worker aborta si human-block resuelve a otro root', () => {
     const r = spawnSync(process.execPath, [CHILD, path.join(otro, 'inexistente')], {
         encoding: 'utf8',
         timeout: 30000,
-        env: { ...process.env, CLAUDE_PROJECT_DIR: otro, PIPELINE_REPO_ROOT: otro },
+        env: envHijo(otro),
     });
     const res = JSON.parse(r.stdout);
     assert.equal(res.ok, false);
