@@ -648,10 +648,14 @@ function withRealHumanBlock(fn) {
     const prev = {
         claude: process.env.CLAUDE_PROJECT_DIR,
         repo: process.env.PIPELINE_REPO_ROOT,
+        override: process.env.PIPELINE_DIR_OVERRIDE,
     };
     process.env.CLAUDE_PROJECT_DIR = root;
-    process.env.PIPELINE_REPO_ROOT = root;
-    // `human-block` congela PIPELINE_DIR al requerirse → hay que cargarlo fresco.
+    // #7456 (D-4): PIPELINE_REPO_ROOT heredado anularía el override (SEC-9); el
+    // dir de escritura de human-block se declara SOLO por PIPELINE_DIR_OVERRIDE.
+    delete process.env.PIPELINE_REPO_ROOT;
+    process.env.PIPELINE_DIR_OVERRIDE = pipelineDir;
+    // `traceability` congela REPO_ROOT al requerirse → hay que cargarlo fresco.
     const mods = ['../lib/human-block', '../lib/traceability'];
     for (const m of mods) delete require.cache[require.resolve(m)];
     const humanBlock = require('../lib/human-block');
@@ -662,6 +666,8 @@ function withRealHumanBlock(fn) {
         else process.env.CLAUDE_PROJECT_DIR = prev.claude;
         if (prev.repo === undefined) delete process.env.PIPELINE_REPO_ROOT;
         else process.env.PIPELINE_REPO_ROOT = prev.repo;
+        if (prev.override === undefined) delete process.env.PIPELINE_DIR_OVERRIDE;
+        else process.env.PIPELINE_DIR_OVERRIDE = prev.override;
         for (const m of mods) delete require.cache[require.resolve(m)];
     }
 }

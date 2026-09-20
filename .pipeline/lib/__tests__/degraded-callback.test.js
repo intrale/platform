@@ -22,7 +22,10 @@ const TMP_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'v3-degraded-cb-'));
 fs.mkdirSync(path.join(TMP_DIR, '.claude'), { recursive: true });
 fs.mkdirSync(path.join(TMP_DIR, '.pipeline', 'desarrollo', 'dev', 'trabajando'), { recursive: true });
 process.env.CLAUDE_PROJECT_DIR = TMP_DIR;
-process.env.PIPELINE_REPO_ROOT = TMP_DIR;
+// #7456 (D-4): el runner hereda PIPELINE_REPO_ROOT del productivo; fijarlo al
+// tmp anula el override (SEC-9). El dir de escritura se declara por override.
+delete process.env.PIPELINE_REPO_ROOT;
+process.env.PIPELINE_DIR_OVERRIDE = path.join(TMP_DIR, '.pipeline');
 
 // Raíz REAL del repo: es de donde sale el código de los módulos de `.pipeline/`.
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');

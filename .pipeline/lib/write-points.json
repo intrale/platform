@@ -341,7 +341,7 @@
     {
       "modulo": "lib/design-decision-gate-io.js",
       "funcion": "resolvePipelineDir",
-      "linea": 83,
+      "linea": 84,
       "canal": "estado",
       "destino": "__dirname",
       "tier": 3,
@@ -451,6 +451,39 @@
       "tier": 3,
       "estado": "migrado",
       "via": "writeTarget.writeDir"
+    },
+    {
+      "modulo": "lib/human-block.js",
+      "funcion": "markersRoot",
+      "linea": 67,
+      "canal": "estado",
+      "destino": "<pipeline>/<fase>/bloqueado-humano",
+      "tier": 3,
+      "estado": "migrado",
+      "via": "writeTarget.writeDir",
+      "nota": "#7456 — resolución por llamada; markers/sidecars/órdenes GitHub/audit de bloqueos humanos. Sin ambiente declarado: EscrituraBloqueadaError."
+    },
+    {
+      "modulo": "lib/human-block.js",
+      "funcion": "ghQueueDir",
+      "linea": 77,
+      "canal": "colas",
+      "destino": "servicios/github/pendiente",
+      "tier": 3,
+      "estado": "migrado",
+      "via": "writeTarget.writeDir",
+      "nota": "#7456 — resolución por llamada; markers/sidecars/órdenes GitHub/audit de bloqueos humanos. Sin ambiente declarado: EscrituraBloqueadaError."
+    },
+    {
+      "modulo": "lib/human-block.js",
+      "funcion": "auditRoot",
+      "linea": 87,
+      "canal": "logs",
+      "destino": "audit/*.jsonl",
+      "tier": 3,
+      "estado": "migrado",
+      "via": "writeTarget.writeDir",
+      "nota": "#7456 — resolución por llamada; markers/sidecars/órdenes GitHub/audit de bloqueos humanos. Sin ambiente declarado: EscrituraBloqueadaError."
     },
     {
       "modulo": "lib/issue-summary.js",
@@ -637,7 +670,7 @@
     {
       "modulo": "lib/notify-telegram.js",
       "funcion": "pipelineDir",
-      "linea": 86,
+      "linea": 91,
       "canal": "colas",
       "destino": "writeTarget.writeDir",
       "tier": 1,
@@ -708,7 +741,7 @@
     {
       "modulo": "lib/partial-pause-deps.js",
       "funcion": "CACHE_FILE",
-      "linea": 29,
+      "linea": 34,
       "canal": "pausa",
       "destino": "writeTarget.writeDir",
       "tier": 3,
@@ -894,7 +927,7 @@
     {
       "modulo": "lib/ready-marker.js",
       "funcion": "READY_DIR",
-      "linea": 25,
+      "linea": 30,
       "canal": "estado",
       "destino": "writeTarget.writeDir",
       "tier": 3,
@@ -904,7 +937,7 @@
     {
       "modulo": "lib/recommendations.js",
       "funcion": "CACHE_FILE",
-      "linea": 45,
+      "linea": 50,
       "canal": "estado",
       "destino": "writeTarget.writeDir",
       "tier": 3,
@@ -1460,7 +1493,7 @@
     {
       "modulo": "pulpo.js",
       "funcion": "PAUSE_FILE",
-      "linea": 21587,
+      "linea": 21612,
       "canal": "pausa",
       "destino": "writeTarget.writeDir",
       "tier": 1,

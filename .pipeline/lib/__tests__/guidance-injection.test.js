@@ -27,22 +27,21 @@ const TMP_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'v3-guidance-injection-'))
 fs.mkdirSync(path.join(TMP_DIR, '.claude'), { recursive: true });
 fs.mkdirSync(path.join(TMP_DIR, '.pipeline', 'desarrollo', 'dev', 'trabajando'), { recursive: true });
 fs.mkdirSync(path.join(TMP_DIR, '.pipeline', 'desarrollo', 'dev', 'pendiente'), { recursive: true });
-const { withEnv } = require('../test-helpers/with-env');
-
-// `traceability.REPO_ROOT` (y con él `PIPELINE_DIR` de human-block) se resuelve
-// al cargar el módulo: el require va DENTRO del `withEnv` para que capture el
-// tmpdir y el helper restaure el entorno después.
-let hb;
-withEnv(
-    { CLAUDE_PROJECT_DIR: TMP_DIR, PIPELINE_REPO_ROOT: TMP_DIR },
-    () => {
-        delete require.cache[require.resolve('../traceability')];
-        delete require.cache[require.resolve('../merge-race-reclaim-ledger')];
-        delete require.cache[require.resolve('../human-block')];
-        require('../traceability');
-        hb = require('../human-block');
-    },
-);
+// `traceability.REPO_ROOT` se resuelve al cargar el módulo (de ahí el require
+// fresco). `human-block`, en cambio, resuelve su dir de escritura POR LLAMADA
+// (#7456, vía `PIPELINE_DIR_OVERRIDE`): el env tiene que quedar vigente durante
+// TODO el archivo — un `withEnv` acotado al require lo restauraría y las
+// escrituras irían al dir del runner. Cada archivo de test corre en su propio
+// proceso, así que fijar `process.env` acá no filtra a otros tests.
+// D-4: sin PIPELINE_REPO_ROOT (heredado del productivo anularía el override, SEC-9).
+process.env.CLAUDE_PROJECT_DIR = TMP_DIR;
+delete process.env.PIPELINE_REPO_ROOT;
+process.env.PIPELINE_DIR_OVERRIDE = path.join(TMP_DIR, '.pipeline');
+delete require.cache[require.resolve('../traceability')];
+delete require.cache[require.resolve('../merge-race-reclaim-ledger')];
+delete require.cache[require.resolve('../human-block')];
+require('../traceability');
+const hb = require('../human-block');
 
 const gi = require('../guidance-injection');
 const { GUIDANCE_SUFFIXES } = require('../marker-artifact');
