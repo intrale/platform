@@ -193,6 +193,15 @@ después hay que corregir.
 > por el resolvedor de ambiente ni por `write-target`, y quedó fuera del inventario de #7112). Tercera excepción explícita,
 > con el criterio más fuerte de todos: es el defecto que la ola viene a cerrar, reproducido en vivo por un agente de la
 > propia ola. La ola pasa a 13 issues (incluidas las tres hijas del split de #7432: #7438, #7439 y #7440).
+>
+> **Ajuste 2026-09-20 (12:34 ART):** Leo pidió armar una ola grande dedicada a las **estimaciones**: "la estimación del
+> tiempo de finalización de cada agente es muy mala, la de la ola activa es muy mala y no tenemos estimaciones de las olas
+> planificadas; que normalice, busque previsibilidad en base a la historia y la experiencia, que el margen de error se
+> reduzca considerablemente y que sea conocido". Se creó el épico **#7477** y la **Ola Estimaciones previsibles** (interna 28)
+> en la **17.ª posición (última), de forma provisoria**: la posición definitiva es una decisión de reorden que Leo todavía
+> no tomó. Es una ola **nueva** (olas planificadas congeladas): absorbe como hijas los 12 issues abiertos dispersos sobre ETA
+> (#4735, #2599, #2898, #2784, #2897, #3524, #4054, #6268, #6267, #2378, #4059, #2899) con marker canónico en el épico;
+> #4737 queda en Tablero fiel, donde ya estaba. Nada cambia en la ola activa ni en las demás planificadas.
 
 | Posición | Bloque | Por qué acá | Estado |
 |----------|--------|-------------|--------|
@@ -215,6 +224,7 @@ después hay que corregir.
 | **14.ª** | **Ola App operadora · Métricas e historia** (épico #7352) | KPIs, costos y tokens por sesión/agente/ola, historial de eventos, DORA y velocidad, recomendaciones con gate humano y logs de agentes. Con esta ola la app cubre **toda** la funcionalidad del dashboard actual. | Planificada (interna 23) — épico en definición |
 | **15.ª** | **Ola Tablero fiel · El dashboard muestra el estado real de la ola** (épico #7356) | Que lo que el operador ve coincida con el estado real de la ola, sin mezclas ni fotos viejas. Va al final del bloque de app porque el dashboard local deja de ser la superficie principal cuando la app operadora esté completa. | Planificada (interna 15) — 16 issues + épico |
 | **16.ª** | **Ola Confiabilidad del Pulpo · Rebotes justos y muertes bien clasificadas** (épico #7368) | Que el pipeline distinga "el agente murió por cuota / API caída / entorno roto" de "el agente entregó código malo", y que cada rebote sea justo y único: muertes externas que no consumen el circuit breaker (#5082, #7095, #7025), contador de rebotes persistente que sólo cuenta el mismo hallazgo sin corregir (#7150, #7366), un solo rebote consolidado con todos los hallazgos de qa+tester+security+review (#7367), el watchdog no pisa veredictos (#6545, #7152), PR en conflicto vuelve al dev (#4637), la entrega no se rinde esperando la CI (#6648) y arranque sano tras un respawn (#6567, #6845). Cada ola posterior corre más barata si esto se arregla. | Planificada (interna 25) — 26 issues + épico · **creada el 18/09** |
+| **17.ª** | **Ola Estimaciones previsibles · ETA de agentes, ola y roadmap con error conocido** (épico #7477) | Un único modelo de estimación para las tres capas —agente/fase, ola activa y olas planificadas del roadmap— calculado desde la historia real del pipeline (markers por fase, transiciones, velocidad por ola, rebotes, reposo de proveedores, espera del operador), con intervalo p50/p90 y **margen de error conocido y visible** junto a cada estimación, medido por backtesting contra olas cerradas y reducido de manera medible. Unifica `eta.js`, `eta-wave.js`, `mission-ola-eta.js` y el handler `wave` (#4735, #2378), percentiles por skill+fase (#2784), fases restantes con concurrencia (#2599, #2898), fuente canónica de tiempos (#2897, #3524) y estimación previa de cada ola planificada con fechas encadenadas. Va al final de forma provisoria hasta que Leo decida su posición. | Planificada (interna 28) — 12 issues + épico · **creada el 20/09** |
 
 **Paralelizable en cualquier momento** (no toca el camino crítico): runbook de continuidad y modo
 degradado (E4) · reconciliación automática del registro (**#5055**). Los seis épicos nuevos
