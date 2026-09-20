@@ -235,3 +235,104 @@ test('#7439 — enriquecerConTitulo (recordatorio de 6 h) preserva `cause` y `si
     assert.equal(enriquecidas[0].cause, 'design-decision');
     assert.equal(enriquecidas[0].signoff_verifiable, false);
 });
+
+// -----------------------------------------------------------------------------
+// CA-4-UX en el recordatorio de 6 h — camino REAL, de punta a punta (rebote QA)
+//
+// El test anterior atajaba por `enriquecerConTitulo` y no pasaba por
+// `evaluateReminders`, que armaba cada `due` a mano y DESCARTABA `cause` y
+// `signoff_verifiable`. Resultado en producción: el title-cache aportaba
+// `needs-definition`, `clasificar` caía en `firma` y el recordatorio decía
+// «¿Aprobás el alcance de #N…?» / «visto bueno» / `/unblock N aprobar` — el
+// copy de GATE 1 que este issue elimina. Acá se ejecuta `runReminderTick` con
+// la fila tal cual sale de `listBlockedIssues()` (marker escrito por
+// `reportHumanBlock`), con el title-cache real en disco y `needs-definition`
+// en los labels, que es la condición que hacía caer la clasificación.
+// -----------------------------------------------------------------------------
+
+const reminder = require('../human-block-reminder');
+const { TITLE_CACHE_FILE } = require('../issue-title-cache');
+
+function correrTickReal({ signoffVerifiable, ageHours }) {
+    resetFs();
+    hb.reportHumanBlock({
+        ...BASE,
+        cause: 'design-decision',
+        ...(signoffVerifiable === false ? { signoff_verifiable: false } : {}),
+    });
+    // Fila REAL (no fabricada) con la antigüedad forzada para que el
+    // recordatorio esté vencido: `evaluateReminders` prefiere `blocked_at`.
+    const now = new Date();
+    const filas = hb.listBlockedIssues()
+        .filter((b) => b.issue === 7439)
+        .map((b) => ({ ...b, blocked_at: new Date(now.getTime() - ageHours * 3600000).toISOString() }));
+    assert.equal(filas.length, 1);
+    assert.equal(filas[0].cause, 'design-decision', 'precondición: la fila real trae la causa');
+
+    const pipelineDir = fs.mkdtempSync(path.join(os.tmpdir(), 'v3-hb-7439-tick-'));
+    fs.writeFileSync(path.join(pipelineDir, TITLE_CACHE_FILE), JSON.stringify({
+        7439: { title: 'Aviso honesto al operador', labels: ['needs-definition', 'area:pipeline'] },
+    }));
+    const stateFile = path.join(pipelineDir, 'reminder-state.json');
+
+    let texto = null;
+    const r = reminder.runReminderTick({
+        pipelineDir, stateFile, now,
+        listBlocked: () => filas,
+        sendTelegram: (t) => { texto = t; },
+    });
+    return { r, texto };
+}
+
+test('#7439 CA-4-UX — runReminderTick con la fila real de listBlockedIssues NO emite el copy de firma (GATE 1)', () => {
+    const { r, texto } = correrTickReal({ signoffVerifiable: false, ageHours: 6.5 });
+    assert.deepEqual(r, { sent: true, due: 1 });
+    assert.equal(typeof texto, 'string');
+    assert.doesNotMatch(texto, /Aprob[aá]s el alcance/, 'el recordatorio ofrecía firmar el alcance');
+    assert.doesNotMatch(texto, /visto bueno/, 'el recordatorio explicaba el freno como falta de firma de definición');
+    assert.doesNotMatch(texto, /\/unblock 7439 aprobar/, 'el recordatorio proponía el comando de GATE 1');
+    assert.doesNotMatch(texto, /Aprobar el alcance|Ajustar los criterios/, 'opciones de GATE 1 en la ficha');
+    assert.doesNotMatch(texto, /^ *\d+\. Rechazar$/m, 'opción "Rechazar" de GATE 1 en la ficha');
+    // Copy UX-F literal: la firma no PUDO comprobarse, no es que falte.
+    assert.match(texto, /no pudo comprobar/);
+    assert.match(texto, /falló la consulta a GitHub, no falta la firma/);
+    // La primera línea de la ficha es la pregunta LITERAL del gate (UX §1.8).
+    assert.match(texto, /¿Lo dejo pasar o esperás a que lo revise\?/);
+    assert.match(texto, /Ya está decidido en el issue/);
+});
+
+test('#7439 CA-4-UX — runReminderTick sin `signoff_verifiable:false` elige el "Por qué" de "no encontré la firma"', () => {
+    const { r, texto } = correrTickReal({ signoffVerifiable: null, ageHours: 6.5 });
+    assert.deepEqual(r, { sent: true, due: 1 });
+    assert.doesNotMatch(texto, /Aprob[aá]s el alcance|visto bueno/);
+    assert.doesNotMatch(texto, /no pudo comprobar/);
+    assert.match(texto, /no encontré la firma del arquitecto/);
+});
+
+test('#7439 — evaluateReminders propaga `cause` y `signoff_verifiable` normalizados al `due`', () => {
+    const now = Date.now();
+    const base = {
+        issue: 7439, skill: 'definicion', phase: 'criterios', pipeline: 'definicion',
+        reason: 'r', question: 'q', blocked_at: new Date(now - 7 * 3600000).toISOString(), age_hours: 7,
+    };
+    const { due } = reminder.evaluateReminders({
+        now,
+        state: { issues: {} },
+        blocked: [
+            { ...base, issue: 1, cause: 'design-decision', signoff_verifiable: false },
+            { ...base, issue: 2, cause: 'design-decision' },
+            // Fuera del enum / sin normalizar: nunca llega al `due` tal cual.
+            { ...base, issue: 3, cause: 'otra-cosa', signoff_verifiable: 'false' },
+            { ...base, issue: 4 },
+        ],
+    });
+    const porIssue = Object.fromEntries(due.map((d) => [d.issue, d]));
+    assert.equal(porIssue[1].cause, 'design-decision');
+    assert.equal(porIssue[1].signoff_verifiable, false);
+    assert.equal(porIssue[2].cause, 'design-decision');
+    assert.equal(porIssue[2].signoff_verifiable, null);
+    assert.equal(porIssue[3].cause, null);
+    assert.equal(porIssue[3].signoff_verifiable, null);
+    assert.equal(porIssue[4].cause, null);
+    assert.equal(porIssue[4].signoff_verifiable, null);
+});
