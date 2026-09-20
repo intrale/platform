@@ -14,8 +14,11 @@
  *    `launch.ps1` — que lo hacen en PowerShell con el mismo contrato. Sólo ahí
  *    es legítimo el literal `productivo`, y sólo si la variable NO venía seteada
  *    (`??=`): #7111 puede lanzar un pipeline de pruebas declarando `pruebas`
- *    explícito y este helper lo respeta. Un módulo cargado por un test (no main)
- *    NUNCA declara: cae al dir del runner o falla ruidoso.
+ *    explícito y este helper lo respeta. Esa declaración fija sólo el MODO: el
+ *    DIRECTORIO de pruebas viaja por `PIPELINE_DIR_OVERRIDE` (lo emite
+ *    `provision-test-env --print-env`); `PIPELINE_REPO_ROOT` nunca lo aporta en
+ *    pruebas (SEC-9 estricto de `pipeline-env`). Un módulo cargado por un test
+ *    (no main) NUNCA declara: cae al dir del runner o falla ruidoso.
  *
  * 2. `envDeLanzador({ processEnv, repoRoot, extra })` — para todo proceso que
  *    un lanzador ya declarado spawnea (servicios, brazos, agentes): la

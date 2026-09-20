@@ -253,24 +253,88 @@ test('#7112 CA-5/SEC-9 · con PIPELINE_DIR_OVERRIDE o PIPELINE_STATE_DIR explíc
     }
 });
 
-test('#7112 SEC-9 · con PIPELINE_AMBIENTE=pruebas EXPLÍCITO, PIPELINE_REPO_ROOT sí es el root de pruebas (contrato --print-env de #7111); inferido o heredado como productivo, no', () => {
+test('#7112 SEC-9 ESTRICTO · ni con PIPELINE_AMBIENTE=pruebas EXPLÍCITO PIPELINE_REPO_ROOT aporta dir: el dir de pruebas viaja por PIPELINE_DIR_OVERRIDE (contrato --print-env de #7111)', () => {
     const root = tmpDir('sec9-explicito');
-    // Declaración explícita de pruebas + root: es lo que emite `provision-test-env --print-env`.
-    const explicito = resolve({ PIPELINE_AMBIENTE: 'pruebas', PIPELINE_REPO_ROOT: root });
-    assert.strictEqual(explicito.modo, MODOS.PRUEBAS);
-    assert.strictEqual(explicito.dir, path.join(path.resolve(root), '.pipeline'));
-    assert.strictEqual(explicito.origen, 'PIPELINE_REPO_ROOT');
-    assert.strictEqual(explicito.canales.telegram.enabled, false);
-    // Sin declaración: sigue siendo contexto heredado (SEC-9).
-    assert.strictEqual(resolve({ PIPELINE_REPO_ROOT: root }).dir, null);
-    // Con señal de test aunque declare pruebas: la señal gana y REPO_ROOT no aporta dir.
-    assert.strictEqual(resolve({ NODE_TEST_CONTEXT: '1', PIPELINE_AMBIENTE: 'pruebas', PIPELINE_REPO_ROOT: root }).dir,
-        path.join(path.resolve(root), '.pipeline'), 'la declaración explícita de pruebas sigue valiendo bajo señal');
-    // Herencia de un agente (productivo degradado a pruebas): REPO_ROOT no aporta dir.
+    const rootPipeline = path.join(path.resolve(root), '.pipeline');
+    // Declaración explícita de pruebas + root SOLO: la declaración fija el modo,
+    // pero REPO_ROOT sigue siendo contexto heredado y no aporta dir (fail-closed).
+    const soloRoot = resolve({ PIPELINE_AMBIENTE: 'pruebas', PIPELINE_REPO_ROOT: root });
+    assert.strictEqual(soloRoot.modo, MODOS.PRUEBAS);
+    assert.strictEqual(soloRoot.dir, null, 'la declaración de pruebas NO habilita PIPELINE_REPO_ROOT como dir');
+    assert.strictEqual(soloRoot.origen, 'PIPELINE_REPO_ROOT');
+    assert.match(soloRoot.motivo, /PIPELINE_REPO_ROOT es contexto heredado/);
+    assert.match(soloRoot.motivo, /declaración explícita de pruebas/, 'conserva la causa original');
+    // El par que emite `provision-test-env --print-env`: el dir llega por PIPELINE_DIR_OVERRIDE.
+    const par = resolve({ PIPELINE_AMBIENTE: 'pruebas', PIPELINE_DIR_OVERRIDE: rootPipeline });
+    assert.strictEqual(par.modo, MODOS.PRUEBAS);
+    assert.strictEqual(par.dir, rootPipeline);
+    assert.strictEqual(par.origen, 'PIPELINE_DIR_OVERRIDE');
+    assert.strictEqual(par.canales.telegram.enabled, false);
+    // Evaluado en un shell que hereda PIPELINE_REPO_ROOT=<checkout productivo>: mismo dir.
     const prod = path.dirname(DEFAULT_PRODUCTIVE_DIR);
+    assert.strictEqual(resolve({ PIPELINE_AMBIENTE: 'pruebas', PIPELINE_REPO_ROOT: prod, PIPELINE_DIR_OVERRIDE: rootPipeline }).dir, rootPipeline);
+    // Si --print-env emitiera PIPELINE_REPO_ROOT=<root de pruebas>, la unión de SEC-3 tomaría
+    // <root>/.pipeline como productivo y anularía el propio override: por eso NO lo emite.
+    const conRootDePruebas = resolve({ PIPELINE_AMBIENTE: 'pruebas', PIPELINE_REPO_ROOT: root, PIPELINE_DIR_OVERRIDE: rootPipeline });
+    assert.strictEqual(conRootDePruebas.dir, null);
+    assert.match(conRootDePruebas.motivo, /apunta al productivo \(PIPELINE_DIR_OVERRIDE\)/);
+    // Con señal de test: idéntico (la señal no cambia la fuente del dir).
+    assert.strictEqual(resolve({ NODE_TEST_CONTEXT: '1', PIPELINE_AMBIENTE: 'pruebas', PIPELINE_REPO_ROOT: root }).dir, null);
+    assert.strictEqual(resolve({ NODE_TEST_CONTEXT: '1', PIPELINE_AMBIENTE: 'pruebas', PIPELINE_DIR_OVERRIDE: rootPipeline }).dir, rootPipeline);
+    // Sin declaración: contexto heredado (SEC-9).
+    assert.strictEqual(resolve({ PIPELINE_REPO_ROOT: root }).dir, null);
+    // Herencia de un agente (productivo degradado a pruebas): REPO_ROOT no aporta dir.
     assert.strictEqual(resolve({ PIPELINE_AMBIENTE: 'productivo', PIPELINE_REPO_ROOT: prod, NODE_TEST_CONTEXT: '1' }).dir, null);
-    // Y SEC-3 sigue anulando un root explícito de pruebas que apunte al productivo.
+    // SEC-3 sigue anulando un root explícito de pruebas que apunte al productivo.
     assert.strictEqual(resolve({ PIPELINE_AMBIENTE: 'pruebas', PIPELINE_REPO_ROOT: prod }).dir, null);
+    // Y un PIPELINE_DIR_OVERRIDE dentro del productivo se anula aunque declare pruebas (SEC-3 unión).
+    const overrideProd = resolve({ PIPELINE_AMBIENTE: 'pruebas', PIPELINE_REPO_ROOT: prod, PIPELINE_DIR_OVERRIDE: DEFAULT_PRODUCTIVE_DIR });
+    assert.strictEqual(overrideProd.dir, null);
+    assert.match(overrideProd.motivo, /apunta al productivo \(PIPELINE_DIR_OVERRIDE\)/);
+});
+
+test('#7112 SEC-9 (rebote security V2) · cargado desde un worktree, PIPELINE_AMBIENTE=pruebas + PIPELINE_REPO_ROOT=<repo principal> resuelve dir null: el .pipeline productivo REAL nunca es dir de pruebas', () => {
+    // Env real de un shell de agente (hereda PIPELINE_REPO_ROOT del Pulpo) al que
+    // alguien le suma `PIPELINE_AMBIENTE=pruebas`. Con el módulo del worktree,
+    // DEFAULT_PRODUCTIVE_DIR es OTRO directorio y no puede reconocer el
+    // productivo real: la única defensa es que REPO_ROOT jamás aporte dir.
+    const { mod, pipelineDir } = cargarDesdeOtroDirname('sec9-v2');
+    const prod = path.dirname(DEFAULT_PRODUCTIVE_DIR);
+    assert.notStrictEqual(mod.DEFAULT_PRODUCTIVE_DIR, DEFAULT_PRODUCTIVE_DIR, 'precondición: el módulo vive en otro __dirname');
+    assert.strictEqual(mod.DEFAULT_PRODUCTIVE_DIR, pipelineDir);
+
+    const out = mod.resolve({ PIPELINE_AMBIENTE: 'pruebas', PIPELINE_REPO_ROOT: prod });
+    assert.strictEqual(out.modo, MODOS.PRUEBAS);
+    assert.strictEqual(out.dir, null, 'vector V2: el productivo real no puede salir como dir de pruebas');
+    assert.strictEqual(out.origen, 'PIPELINE_REPO_ROOT');
+    assert.match(out.motivo, /SEC-9/);
+    assert.strictEqual(out.canales.telegram.enabled, false);
+    assert.strictEqual(out.canales.github.escrituras, false);
+
+    // Variante con señal de corrida de prueba (el caso (3) del rechazo): mismo resultado.
+    const conSenal = mod.resolve({ PIPELINE_AMBIENTE: 'pruebas', PIPELINE_REPO_ROOT: prod, NODE_TEST_CONTEXT: '1' });
+    assert.strictEqual(conSenal.modo, MODOS.PRUEBAS);
+    assert.strictEqual(conSenal.dir, null, 'la señal de test tampoco habilita el dir heredado');
+    assert.match(conSenal.motivo, /NODE_TEST_CONTEXT/);
+    assert.match(conSenal.motivo, /SEC-9/);
+
+    // Y con el par de --print-env (override a un root ajeno al productivo) más el
+    // PIPELINE_REPO_ROOT=<repo principal> heredado del Pulpo, sí hay dir: el de pruebas.
+    const rootPruebas = tmpDir('sec9-v2-root');
+    const ok = mod.resolve({ PIPELINE_AMBIENTE: 'pruebas', PIPELINE_REPO_ROOT: prod, PIPELINE_DIR_OVERRIDE: path.join(rootPruebas, '.pipeline') });
+    assert.strictEqual(ok.dir, path.join(path.resolve(rootPruebas), '.pipeline'));
+    assert.strictEqual(ok.origen, 'PIPELINE_DIR_OVERRIDE');
+    // Pero un override que apunte al .pipeline del repo principal se anula por la unión (SEC-3 + SEC-9).
+    const overrideProd = mod.resolve({ PIPELINE_AMBIENTE: 'pruebas', PIPELINE_REPO_ROOT: prod, PIPELINE_DIR_OVERRIDE: DEFAULT_PRODUCTIVE_DIR });
+    assert.strictEqual(overrideProd.dir, null);
+});
+
+test('#7112 SEC-9 · el fuente de armarPruebas no exceptúa ninguna declaración: PIPELINE_REPO_ROOT como origen siempre cae a null en pruebas', () => {
+    const src = fuenteSinComentarios(fs.readFileSync(SRC_PATH, 'utf8'));
+    const bloque = src.slice(src.indexOf('function armarPruebas'), src.indexOf('function leerDeclaracion'));
+    assert.match(bloque, /origen === ENV_CONTEXTO_HEREDADO\)\s*\{/, 'la rama SEC-9 se decide sólo por el origen');
+    assert.doesNotMatch(bloque, /ENV_CONTEXTO_HEREDADO\s*&&/, 'sin condición extra sobre la declaración de ambiente');
+    assert.doesNotMatch(bloque, /ENV_AMBIENTE/, 'armarPruebas no mira la declaración: no hay excepción por PIPELINE_AMBIENTE=pruebas');
 });
 
 test('#7112 CA-5/SEC-9 · dentroDelProductivo bloquea la UNIÓN: un override dentro de PIPELINE_REPO_ROOT/.pipeline se anula aunque el módulo viva en otro __dirname', () => {

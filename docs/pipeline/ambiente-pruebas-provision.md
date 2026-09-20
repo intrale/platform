@@ -45,9 +45,22 @@ Los diagnósticos van a **stderr**; stdout es sólo el resultado. Con
 `--print-env`, stdout son exactamente dos líneas:
 
 ```
-PIPELINE_REPO_ROOT=<root>
 PIPELINE_AMBIENTE=pruebas
+PIPELINE_DIR_OVERRIDE=<root>/.pipeline
 ```
+
+La declaración fija el **modo**; el **directorio** viaja por
+`PIPELINE_DIR_OVERRIDE` (la misma variable con la que el provisionador validó el
+destino, D1). `--print-env` **no emite `PIPELINE_REPO_ROOT`**: desde #7112
+(SEC-9 estricto) esa variable es el contexto heredado del checkout productivo
+—el Pulpo la fija con su propio `ROOT` para todos sus hijos— y en modo
+`pruebas` **nunca aporta directorio**, ni siquiera acompañada de
+`PIPELINE_AMBIENTE=pruebas`. Además su `.pipeline` integra la unión que SEC-3
+protege: si se emitiera con el root de pruebas, el propio override quedaría
+anulado por "apunta al productivo". El shell que hace `eval` conserva el
+`PIPELINE_REPO_ROOT` que ya tenía (si es el de un agente, el del repo
+principal), y así el `.pipeline` real sigue protegido mientras se escribe en
+el de pruebas.
 
 Los paths siempre salen **canónicos** (`fs.realpathSync.native`): la forma 8.3
 (`ADMINI~1`) que devuelve `os.tmpdir()` en Windows nunca aparece en la salida.
@@ -103,8 +116,11 @@ eval "$(npm run -s pruebas:env -- --print-env)"
 node .pipeline/lib/pipeline-env.js   # o cualquier lector que reciba env
 ```
 
-`pipelineEnv.resolve({ PIPELINE_REPO_ROOT: '<root>' })` devuelve
-`{ modo: 'pruebas', dir: '<root>/.pipeline' }`.
+`pipelineEnv.resolve({ PIPELINE_AMBIENTE: 'pruebas', PIPELINE_DIR_OVERRIDE: '<root>/.pipeline' })`
+devuelve `{ modo: 'pruebas', dir: '<root>/.pipeline', origen: 'PIPELINE_DIR_OVERRIDE' }`.
+En cambio `pipelineEnv.resolve({ PIPELINE_AMBIENTE: 'pruebas', PIPELINE_REPO_ROOT: '<root>' })`
+devuelve `dir: null` (SEC-9 estricto): un escritor migrado a `write-target`
+falla ruidoso en vez de escribir.
 
 ## Garantías de seguridad (fail-closed)
 

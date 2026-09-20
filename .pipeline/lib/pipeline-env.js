@@ -33,9 +33,13 @@
  *   modo: `PIPELINE_DIR_OVERRIDE` seteado y sin declaración sigue siendo
  *   `pruebas` porque no hay declaración, no porque exista la variable.
  * - SEC-9 (#7112): en `pruebas`, `PIPELINE_REPO_ROOT` NO es fuente válida de
- *   `dir`. Es la variable de contexto productivo que el Pulpo hereda a todos
- *   sus hijos (agentes en worktree incluidos), no la declaración de un test:
- *   sin `PIPELINE_DIR_OVERRIDE` / `PIPELINE_STATE_DIR` explícitos ⇒ `dir: null`.
+ *   `dir`, SIN EXCEPCIONES (tampoco con `PIPELINE_AMBIENTE=pruebas` explícito).
+ *   Es la variable de contexto productivo que el Pulpo hereda a todos sus hijos
+ *   (agentes en worktree incluidos), no la declaración de un test: sin
+ *   `PIPELINE_DIR_OVERRIDE` / `PIPELINE_STATE_DIR` explícitos ⇒ `dir: null`.
+ *   El ambiente de pruebas de #7111 (`provision-test-env --print-env`) emite
+ *   por eso `PIPELINE_DIR_OVERRIDE=<root>/.pipeline` y NO `PIPELINE_REPO_ROOT`
+ *   (que además integra la unión de SEC-3 y anularía ese mismo override).
  *   Además, "dentro del productivo" es la UNIÓN de `DEFAULT_PRODUCTIVE_DIR` y
  *   `PIPELINE_REPO_ROOT/.pipeline`: un módulo cargado desde un worktree sigue
  *   protegiendo el `.pipeline` del repo principal (aditivo, nunca menos).
@@ -255,13 +259,20 @@ function armarPruebas(dir, origen, motivo, e = {}) {
         // se conserva a continuación para que el operador vea las dos cosas.
         return armar(MODOS.PRUEBAS, null, origen, `dir de pruebas apunta al productivo (${origen}); ${motivo}`);
     }
-    if (origen === ENV_CONTEXTO_HEREDADO && e[ENV_AMBIENTE] !== MODOS.PRUEBAS) {
-        // SEC-9: el contexto heredado del Pulpo no es la declaración de un test.
-        // Excepción: con `PIPELINE_AMBIENTE=pruebas` EXPLÍCITO el proceso sí
-        // declaró (es el par que emite `provision-test-env --print-env`, #7111):
-        // ahí PIPELINE_REPO_ROOT es el root del ambiente de pruebas, no herencia.
-        // Un agente hereda `productivo` (CA-7.2), nunca `pruebas`, así que V2
-        // sigue cerrado; y SEC-3 (arriba) ya anuló el caso en que apunte al productivo.
+    if (origen === ENV_CONTEXTO_HEREDADO) {
+        // SEC-9 ESTRICTO: el contexto heredado del Pulpo NUNCA aporta dir en
+        // pruebas, ni siquiera con `PIPELINE_AMBIENTE=pruebas` explícito. La
+        // declaración de ambiente dice el MODO; el DIRECTORIO de pruebas viaja
+        // sólo por `PIPELINE_DIR_OVERRIDE` / `PIPELINE_STATE_DIR` (es lo que
+        // emite `provision-test-env --print-env`, D10 de #7111). Motivo: un
+        // módulo cargado desde un worktree tiene su PROPIO `DEFAULT_PRODUCTIVE_DIR`
+        // y no puede reconocer el `.pipeline` del repo principal como productivo
+        // salvo por esta misma variable; si `PIPELINE_REPO_ROOT` valiera como dir
+        // bajo una declaración de pruebas, `PIPELINE_AMBIENTE=pruebas` +
+        // `PIPELINE_REPO_ROOT=<repo principal>` resolvería al productivo REAL con
+        // canales "de pruebas" (vector V2 del security review de #7112). Nota:
+        // con SEC-3 arriba, el caso "apunta al productivo propio" ya salió con su
+        // motivo; acá cae todo lo demás.
         return armar(MODOS.PRUEBAS, null, origen,
             `${ENV_CONTEXTO_HEREDADO} es contexto heredado, no un dir de pruebas (SEC-9); ${motivo}`);
     }
