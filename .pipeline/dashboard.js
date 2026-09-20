@@ -13604,7 +13604,8 @@ function handleRequest(req, res) {
 
     function logMutation(action, payload) {
       try {
-        const logDir = path.join(PIPELINE(), 'logs');
+        // #7112 rebote rev-3 — canal `logs` (`LOG_DIR()`), no `estado`.
+        const logDir = LOG_DIR();
         if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, { recursive: true });
         const line = JSON.stringify({
           timestamp: new Date().toISOString(),

@@ -60,14 +60,19 @@ function proyectarParaDisco(info) {
 class ActiveProcessRegistry extends Map {
     /**
      * @param {object} [opts]
-     * @param {string} [opts.file]              ruta del archivo de estado
+     * @param {string|(() => string)} [opts.file] ruta del archivo de estado, o
+     *   una función que la resuelve POR LLAMADA (#7112 rebote rev-3, SEC-13:
+     *   el Pulpo la deriva de `PIPELINE()`, que no debe capturarse al `require`).
+     *   Si la función lanza (dir de escritura bloqueado sin ambiente declarado),
+     *   el registro se comporta como sin archivo: no persiste, y rehidrata
+     *   `confiable: false`.
      * @param {typeof fs} [opts.fsImpl]
      * @param {(pid:number)=>boolean} [opts.isProcessAlive]
      * @param {(msg:string)=>void} [opts.onLog]
      */
     constructor(opts = {}) {
         super();
-        this._file = opts.file || null;
+        this._fileSpec = opts.file || null;
         this._fs = opts.fsImpl || fs;
         this._isProcessAlive = typeof opts.isProcessAlive === 'function'
             ? opts.isProcessAlive
@@ -96,6 +101,22 @@ class ActiveProcessRegistry extends Map {
     }
 
     /**
+     * Ruta del archivo de estado, resuelta en el momento (nunca cacheada).
+     * @returns {string|null} `null` si no hay archivo o si la resolución lanzó.
+     */
+    _archivo() {
+        const spec = this._fileSpec;
+        if (typeof spec !== 'function') return spec || null;
+        try {
+            const r = spec();
+            return typeof r === 'string' && r ? r : null;
+        } catch (e) {
+            this._log(`registro de corridas sin archivo resoluble: ${e.message}`);
+            return null;
+        }
+    }
+
+    /**
      * Carga el registro del disco y descarta las corridas cuyo PID ya no vive.
      * Idempotente. Devuelve el detalle para que el caller pueda loguearlo.
      *
@@ -108,10 +129,11 @@ class ActiveProcessRegistry extends Map {
      * @returns {{ rehidratadas: number, descartadas: number, error: string|null, confiable: boolean }}
      */
     rehidratar() {
-        if (!this._file) return { rehidratadas: 0, descartadas: 0, error: null, confiable: false };
+        const file = this._archivo();
+        if (!file) return { rehidratadas: 0, descartadas: 0, error: null, confiable: false };
         let crudo;
         try {
-            crudo = this._fs.readFileSync(this._file, 'utf8');
+            crudo = this._fs.readFileSync(file, 'utf8');
         } catch {
             // No existe todavía: primer arranque. No es un error, pero tampoco
             // podemos afirmar que no haya corridas en vuelo.
@@ -151,7 +173,9 @@ class ActiveProcessRegistry extends Map {
     }
 
     _persistir() {
-        if (!this._file || this._silenciado) return;
+        if (this._silenciado) return;
+        const file = this._archivo();
+        if (!file) return;
         const corridas = {};
         for (const [key, info] of super.entries()) {
             const proyeccion = proyectarParaDisco(info);
@@ -164,13 +188,13 @@ class ActiveProcessRegistry extends Map {
         }, null, 2);
 
         try {
-            this._fs.mkdirSync(path.dirname(this._file), { recursive: true });
+            this._fs.mkdirSync(path.dirname(file), { recursive: true });
             // Escritura atómica: un Pulpo que muere a mitad de la escritura no
             // deja el registro truncado (que se leería como "nadie corre" y
             // volvería a habilitar el rebote masivo).
-            const tmp = `${this._file}.tmp.${process.pid}`;
+            const tmp = `${file}.tmp.${process.pid}`;
             this._fs.writeFileSync(tmp, payload, 'utf8');
-            this._fs.renameSync(tmp, this._file);
+            this._fs.renameSync(tmp, file);
         } catch (e) {
             this._log(`no pude persistir el registro de corridas: ${e.message}`);
         }

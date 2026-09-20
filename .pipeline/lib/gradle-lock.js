@@ -42,6 +42,16 @@ const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000;
 /**
  * Resuelve el path del lock global. Permite override por env (`GRADLE_LOCK_PATH`)
  * para que los tests aíslen el lock sin tocar el del pipeline real.
+ *
+ * #7112 rebote rev-3 (G2) — en el pipeline la variable la fija SIEMPRE el
+ * lanzador (`lib/agent-launcher/providers/deterministic.js` → `gradleLockPathFor`)
+ * con el `.pipeline` del Pulpo que coordina: el lock es coordinación entre
+ * procesos, no estado de un ambiente. El default por `write-target` queda para
+ * el skill corrido a mano; cargado desde la copia del WORKTREE de `build.js`/
+ * `tester.js`, ese default resuelve contra `<wt>/.pipeline` y con el env real
+ * del skill (ambiente productivo declarado por el Pulpo + `PIPELINE_REPO_ROOT=
+ * <repo principal>`) da `dir: null` (SEC-9) ⇒ lanzaría. Por eso el override no
+ * es sólo para tests.
  * @returns {string}
  */
 function resolveLockPath() {

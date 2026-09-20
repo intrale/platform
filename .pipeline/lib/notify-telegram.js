@@ -42,6 +42,11 @@
 //   - Cero deps npm. Cero red directa — usa la cola del servicio-telegram.
 //   - Fail-soft: si el drop falla (FS lleno, permisos), NO propaga — solo
 //     loguea warning. Una alerta perdida no debe romper el caller.
+//     EXCEPCIÓN (#7112, CA-3, aprobada por security): la RESOLUCIÓN del dir de
+//     la cola (`telegramQueueDir()` → `write-target`) se evalúa fuera del
+//     `try` y LANZA `PIPELINE_ESCRITURA_BLOQUEADA` sin ambiente declarado ni
+//     dir de pruebas. Un proceso mal cableado no encola en silencio en el
+//     productivo: muere ruidoso en su primera alerta.
 // =============================================================================
 
 'use strict';

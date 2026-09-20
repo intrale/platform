@@ -144,7 +144,7 @@
     {
       "modulo": "dashboard.js",
       "funcion": "REPO_ROOT_LOCAL",
-      "linea": 14325,
+      "linea": 14326,
       "canal": "estado",
       "destino": "__dirname",
       "tier": 2,
@@ -156,7 +156,7 @@
     {
       "modulo": "dashboard.js",
       "funcion": "crashLogDir",
-      "linea": 15210,
+      "linea": 15211,
       "canal": "logs",
       "destino": "writeTarget.safeWriteDir",
       "tier": 2,
@@ -165,10 +165,10 @@
     },
     {
       "modulo": "delivery.js",
-      "funcion": "pipelineDir",
-      "linea": 433,
-      "canal": "estado",
-      "destino": "__dirname",
+      "funcion": "runOperatorSignatureGate",
+      "linea": 182,
+      "canal": "logs",
+      "destino": "audit/ (firma de aceptación, GATE 2) — sólo se resuelve con operator_signature.enabled=true (#7112 rebote rev-3, G1)",
       "tier": 3,
       "estado": "migrado",
       "via": "writeTarget.writeDir"
@@ -1403,7 +1403,7 @@
     {
       "modulo": "pulpo.js",
       "funcion": "telegramPendienteDir",
-      "linea": 880,
+      "linea": 881,
       "canal": "colas",
       "destino": "writeTarget.writeDir",
       "tier": 1,
@@ -1413,7 +1413,7 @@
     {
       "modulo": "pulpo.js",
       "funcion": "p",
-      "linea": 1075,
+      "linea": 1076,
       "canal": "estado",
       "destino": "__dirname",
       "tier": 1,
@@ -1425,7 +1425,7 @@
     {
       "modulo": "pulpo.js",
       "funcion": "prod",
-      "linea": 1266,
+      "linea": 1267,
       "canal": "estado",
       "destino": "__dirname",
       "tier": 1,
@@ -1437,7 +1437,7 @@
     {
       "modulo": "pulpo.js",
       "funcion": "ghWritesBloqueadas",
-      "linea": 1299,
+      "linea": 1300,
       "canal": "estado",
       "destino": "process.env.PIPELINE_*",
       "tier": 1,
@@ -1448,7 +1448,7 @@
     {
       "modulo": "pulpo.js",
       "funcion": "ghCommentOnIssue",
-      "linea": 1328,
+      "linea": 1329,
       "canal": "estado",
       "destino": "__dirname",
       "tier": 1,
@@ -1460,7 +1460,7 @@
     {
       "modulo": "pulpo.js",
       "funcion": "PAUSE_FILE",
-      "linea": 21580,
+      "linea": 21587,
       "canal": "pausa",
       "destino": "writeTarget.writeDir",
       "tier": 1,
@@ -1543,7 +1543,7 @@
     {
       "modulo": "restart.js",
       "funcion": "ROOT",
-      "linea": 100,
+      "linea": 99,
       "canal": "estado",
       "destino": "__dirname",
       "tier": 1,
@@ -1555,7 +1555,7 @@
     {
       "modulo": "restart.js",
       "funcion": "PIPELINE",
-      "linea": 102,
+      "linea": 101,
       "canal": "estado",
       "destino": "writeTarget.writeDir",
       "tier": 1,
@@ -1865,7 +1865,7 @@
     {
       "modulo": "servicio-telegram.js",
       "funcion": "REAL_ALERT_QUEUE",
-      "linea": 521,
+      "linea": 530,
       "canal": "colas",
       "destino": "writeTarget.writeDir",
       "tier": 1,
@@ -1875,7 +1875,7 @@
     {
       "modulo": "servicio-telegram.js",
       "funcion": "mediaBaseDir",
-      "linea": 1079,
+      "linea": 1088,
       "canal": "colas",
       "destino": "writeTarget.writeDir",
       "tier": 1,
@@ -1885,7 +1885,7 @@
     {
       "modulo": "servicio-telegram.js",
       "funcion": "crashLogDir",
-      "linea": 1425,
+      "linea": 1434,
       "canal": "colas",
       "destino": "writeTarget.safeWriteDir",
       "tier": 1,

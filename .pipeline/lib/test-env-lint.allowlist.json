@@ -5130,13 +5130,13 @@
         },
         {
             "file": "tests/merge-race-precondicion-e2e-6432.test.js",
-            "line": 77,
+            "line": 85,
             "kind": "deuda",
             "reason": "escritura de PIPELINE_REPO_ROOT fuera del helper"
         },
         {
             "file": "tests/merge-race-precondicion-e2e-6432.test.js",
-            "line": 78,
+            "line": 87,
             "kind": "deuda",
             "reason": "escritura de CLAUDE_PROJECT_DIR fuera del helper"
         },

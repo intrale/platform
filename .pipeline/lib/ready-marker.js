@@ -21,6 +21,11 @@ const path = require('path');
 
 // #7112 - resolución POR LLAMADA (SEC-13): ninguna const captura el dir al
 // `require`; sin ambiente declarado la escritura se bloquea.
+// Contrato (rebote rev-3): los defaults `readyDir = READY_DIR()` de `markerPath`,
+// `readMarker`, `componentState` y `waitForMarkers` se evalúan al entrar, fuera
+// del `try`: sin dir resoluble LANZAN. Sólo `signalReady`, `clearMarker` y
+// `clearAllMarkers` (resuelven `READY_DIR()` dentro de su `try`) siguen
+// devolviendo `false`/`0` ante un dir no resoluble.
 function READY_DIR() {
   return require('./write-target').writePath(process.env, { canal: 'estado', destino: 'ready/' }, 'ready');
 }

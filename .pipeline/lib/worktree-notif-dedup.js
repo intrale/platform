@@ -108,7 +108,7 @@ function readEntry(dedupPath, fsImpl) {
     return { ts: Number.isFinite(Date.parse(raw)) ? raw : null, skills: [] };
 }
 
-/** Escribe el entry normalizado. Best-effort. */
+/** Escribe el entry normalizado. Best-effort sobre la I/O (recibe el path ya resuelto). */
 function writeEntry(dedupPath, entry, fsImpl) {
     try {
         fsImpl.mkdirSync(path.dirname(dedupPath), { recursive: true });
@@ -151,8 +151,10 @@ function shouldNotify(issue, fase, opts = {}) {
 }
 
 /**
- * Marca como notificado escribiendo el timestamp actual. Best-effort.
- * Preserva los skills ya registrados por `recordSkill`.
+ * Marca como notificado escribiendo el timestamp actual. Best-effort sobre la
+ * I/O, no sobre la resolución del dir: el default `stateDir = DEFAULT_STATE_DIR()`
+ * se evalúa al entrar, fuera del `try`, y sin dir de escritura resoluble LANZA
+ * (#7112, CA-3). Preserva los skills ya registrados por `recordSkill`.
  */
 function markNotified(issue, fase, opts = {}) {
     const { stateDir = DEFAULT_STATE_DIR(), fsImpl = fs, now = Date.now() } = opts;

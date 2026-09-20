@@ -89,7 +89,6 @@ if (process.env.FORCE_PROVIDER_OVERRIDE && process.env.PULPO_ALLOW_FORCE_PROVIDE
 // puede lanzar un pipeline de pruebas declarando `pruebas` explícito). Sin esto,
 // sus PROPIAS escrituras (last-restart.json, logs/, colas) fallarían ruidoso al
 // correrlo desde la consola, y los servicios que spawnea nacerían sin ambiente.
-const pipelineEnv = require('./lib/pipeline-env');
 const launcherEnv = require('./lib/launcher-env');
 const writeTarget = require('./lib/write-target');
 launcherEnv.declararRaiz(process.env);

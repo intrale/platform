@@ -690,8 +690,8 @@ const ROOT = path.resolve(__dirname, '..');
 // al MISMO directorio. Esto habilita el test de integración hermético del ciclo
 // loadConfig ↔ haltOnConfigCorruption ↔ auto-recovery sobre un tmpdir aislado,
 // sin tocar el `.paused` real ni la cola de Telegram de producción.
-// En producción la env var NUNCA está definida → PIPELINE = __dirname (idéntico
-// al comportamiento previo; cero cambio en caliente).
+// (Hasta #7112 decía "en producción la env var nunca está definida →
+// PIPELINE = __dirname"; ya no: ver el bloque siguiente.)
 // #7112 — El directorio base del pipeline se resuelve POR LLAMADA vía
 // `lib/write-target` sobre `lib/pipeline-env` (SEC-13): ninguna const de módulo
 // captura el destino al `require`. Sin ambiente declarado (`PIPELINE_AMBIENTE`
@@ -872,8 +872,9 @@ const PULPO_BOOT_ID = `${process.pid}-${Date.now()}`;
 // cola de Telegram de producción (11 en la medición del 13/08/2026), que el
 // servicio después intentaba enviar como si fueran avisos legítimos.
 //
-// En producción `PIPELINE_DIR_OVERRIDE` NUNCA está definida → devuelve
-// exactamente `path.join(PIPELINE, …)`. Cero cambio en caliente.
+// (Hasta #7112 el cuerpo era un `if (PIPELINE_DIR_OVERRIDE) …` sobre una
+// constante; desde #7112 todo `PIPELINE()` es por llamada y este helper sólo
+// nombra el canal.)
 function telegramPendienteDir() {
   // #7112 — canal `colas`, resuelto por llamada (la precedencia D-1 ya honra
   // PIPELINE_DIR_OVERRIDE dentro del resolvedor).
@@ -2938,8 +2939,12 @@ let graciaPostBootMinutos = 0;
 // viva", rebotando fases sanas 20 segundos después del boot. Ahora el registro
 // se persiste y se rehidrata revalidando cada PID contra el SO.
 const { ActiveProcessRegistry } = require('./lib/active-process-registry');
+// #7112 rebote rev-3 — el archivo se resuelve POR LLAMADA (SEC-13): antes
+// `path.join(PIPELINE(), …)` se evaluaba acá, al `require`, y el path quedaba
+// capturado toda la vida del proceso (en tests, el registro apuntaba al dir
+// del runner aunque el test seteara el override después).
 const activeProcesses = new ActiveProcessRegistry({ // key: "skill:issue" → { pid, startTime }
-  file: path.join(PIPELINE(), 'state', 'active-processes.json'),
+  file: () => path.join(PIPELINE(), 'state', 'active-processes.json'),
   isProcessAlive: (pid) => isProcessAlive(pid),
   onLog: (msg) => log('huerfanos', msg),
 });
@@ -14214,7 +14219,8 @@ function brazoGhostbusters(config) {
   const cap = Math.max(parseInt(cfg.cap, 10) || 5, 1);
   const dryRun = cfg.dry_run !== false; // default true (RS-4)
   const ageDays = Math.max(parseInt(cfg.age_threshold_days, 10) || 30, 1);
-  const logFile = path.join(PIPELINE(), 'logs', 'ghostbusters-cron.log');
+  // #7112 rebote rev-3 — canal `logs` (`LOG_DIR()`), no `estado`.
+  const logFile = path.join(LOG_DIR(), 'ghostbusters-cron.log');
 
   const tick = () => {
     if (ghostbustersCronRunning) {
@@ -18008,7 +18014,8 @@ function cmdRestart(args) {
   const { spawn } = require('child_process');
   const fsMod = require('fs');
   const pausedArg = paused ? ' --paused' : '';
-  const spawnLogPath = path.join(PIPELINE(), 'logs', 'restart-spawn.log');
+  // #7112 rebote rev-3 — canal `logs` (`LOG_DIR()`), no `estado`.
+  const spawnLogPath = path.join(LOG_DIR(), 'restart-spawn.log');
   try {
     fsMod.writeFileSync(spawnLogPath,
       `--- restart spawn ${new Date().toISOString()} mode=${mode} ---\n`);

@@ -513,7 +513,16 @@ function outboundIssue(data) {
 // vía `write-target` sobre el mismo canal `colas` de este servicio: el ambiente
 // lo declara el lanzador (`PIPELINE_AMBIENTE=productivo`) y sin declaración la
 // resolución LANZA (nunca apunta al productivo por defecto). El `try/catch` de
-// abajo convierte ese bloqueo en `error_resolviendo_cola` → NO se suprime.
+// abajo convierte ese bloqueo en `cola_no_resoluble` / `error_resolviendo_cola`
+// → NO se suprime.
+//
+// #7112 rebote rev-3 — desde #7112 `REAL_ALERT_QUEUE()` y la cola efectiva de
+// `notify-telegram` salen del MISMO resolvedor con el MISMO env, así que la rama
+// `suppress: true` (`cola_fuera_de_la_ruta_real`) no es alcanzable en la
+// práctica: con override las dos apuntan al sandbox (`cola_real`), y sin dir la
+// real lanza antes de comparar. Se conserva como defensa en profundidad por si
+// las dos resoluciones vuelven a divergir (p. ej. `notify-telegram` cargado
+// desde otro checkout); no es un camino que hoy tome un test ni producción.
 //
 // Fail-closed hacia la VISIBILIDAD: ante cualquier ambigüedad (path no
 // resoluble, excepción) → NO se suprime, se alerta.

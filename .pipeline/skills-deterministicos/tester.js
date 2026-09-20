@@ -1040,9 +1040,10 @@ async function runNodeTests(repoRoot, env, opts = {}) {
         let childEnv = { ...env };
         delete childEnv.NODE_TEST_CONTEXT;
         // #7112 · CA-4 — dir efímero de pruebas en el env del child (sólo si no
-        // viene ya seteado por el llamador). Se borra al terminar la batería, en
-        // el `finally` de más abajo; sin handlers de señal propios (el tester ya
-        // maneja su cierre) — el `exit` del proceso también lo borra.
+        // viene ya seteado por el llamador). Se borra al terminar la batería con
+        // `runDir.limpiar()` (sentencia antes del `return`, más abajo — no hay
+        // `finally` acá); sin handlers de señal propios (el tester ya maneja su
+        // cierre) — el hook de `exit` del proceso también lo borra.
         const runDir = ensureTestRunDir({
             env: childEnv,
             pipelineDir: path.join(repoRoot, '.pipeline'),

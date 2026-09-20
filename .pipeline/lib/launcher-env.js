@@ -10,8 +10,10 @@
  *    `restart.js`, `rollback.js` (emergencia: lo corre el operador a mano o lo
  *    spawnea restart.js ya declarado), `quota-snapshot-scheduler.js` como main
  *    (tarea programada de Windows, `scripts/register-quota-snapshot-task.ps1`),
- *    y los `.ps1` de tareas programadas — `watchdog.ps1`, `watchdog-supervisor.ps1`,
- *    `launch.ps1` — que lo hacen en PowerShell con el mismo contrato. Sólo ahí
+ *    `delivery.js` como main (CLI manual del skill `/delivery` en la sesión
+ *    interactiva del operador; #7112 rebote rev-3, G1), y los `.ps1` de tareas
+ *    programadas — `watchdog.ps1`, `watchdog-supervisor.ps1`, `launch.ps1` —
+ *    que lo hacen en PowerShell con el mismo contrato. Sólo ahí
  *    es legítimo el literal `productivo`, y sólo si la variable NO venía seteada
  *    (`??=`): #7111 puede lanzar un pipeline de pruebas declarando `pruebas`
  *    explícito y este helper lo respeta. Esa declaración fija sólo el MODO: el

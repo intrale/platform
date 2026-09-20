@@ -25,6 +25,11 @@ const { spawnSync } = require('child_process');
 // ninguna const de módulo captura `__dirname` al `require`. Sin ambiente
 // declarado ni dir de pruebas, `writeDir` avisa por stderr y LANZA (CA-3).
 // Identificadores conservados: cada uso `X` → `X()`.
+// Contrato tras #7112 (rebote rev-3): el default `cacheFile = CACHE_FILE()` se
+// evalúa al ENTRAR a `readCache`/`writeCache`/`fetchIssueInfo`…, fuera de su
+// `try`. El `catch` sólo cubre la I/O (archivo ausente, JSON roto, disco): un
+// dir de escritura no resoluble LANZA y sube al llamador. Ya no es "best-effort
+// / nunca tira" salvo que el llamador inyecte `cacheFile`.
 function CACHE_FILE() {
     return require('./write-target').writePath(process.env, { canal: 'pausa', destino: 'partial-pause-deps-cache.json' }, 'partial-pause-deps-cache.json');
 }
