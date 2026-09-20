@@ -28,6 +28,7 @@
 const fs = require('fs');
 const path = require('path');
 const { execFileSync } = require('child_process');
+const { resolveGhBin } = require('./gh-bin');   // #7438
 
 const { redactAll } = require('./sherlock-audit-jsonl');
 const { parseGraphqlBody } = require('./gh-title-fetch');
@@ -103,9 +104,12 @@ function auditFilePath(fileName, opts) {
  * @param {object} [opts]
  * @param {Function} [opts.exec] — inyectable para tests (CA-31). Firma de
  *   `execFileSync(file, args, options) → string`.
+ * @param {string} [opts.ghBin] — override del binario `gh` (#7438). Si falta,
+ *   se resuelve con `resolveGhBin()` (env `GH_BIN` → `GH_PATH` → default por
+ *   plataforma): el Pulpo bajo `watchdog.ps1` no tiene `gh` en el PATH.
  * @returns {{ok: boolean, lastEditedAt: (string|null), comments: Array, error: (string|null)}}
  */
-function fetchSignoffContext(issue, { exec = execFileSync } = {}) {
+function fetchSignoffContext(issue, { exec = execFileSync, ghBin } = {}) {
     const fallo = (motivo) => ({
         ok: false, lastEditedAt: null, comments: [], error: String(motivo).slice(0, MAX_ERROR),
     });
@@ -120,13 +124,14 @@ function fetchSignoffContext(issue, { exec = execFileSync } = {}) {
 
     let salida;
     try {
-        salida = exec('gh', [
+        // #7438 / RS-1.2: binario resuelto, args como array, sin `shell`.
+        salida = exec(resolveGhBin({ ghBin }), [
             'api', 'graphql',
             '-f', `query=${SIGNOFF_QUERY}`,
             '-f', `owner=${GH_OWNER}`,
             '-f', `repo=${GH_REPO}`,
             '-F', `num=${n}`,
-        ], { encoding: 'utf8', timeout: GH_TIMEOUT_MS });
+        ], { encoding: 'utf8', timeout: GH_TIMEOUT_MS, windowsHide: true });
     } catch (e) {
         // `gh` imprime el body con `errors` en stdout aunque salga con exit≠0:
         // se intenta parsear igual antes de darlo por perdido.
