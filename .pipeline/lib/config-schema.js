@@ -169,6 +169,11 @@ const AUTHORITY_PREFIXES = Object.freeze([
     'architect.enabled',
     'architect.gate_mode',
     'architect.go_live_date',
+    // #7515 (SEC-7515-6) — allowlist de cuentas que pueden meter texto en el
+    // registro de propuestas desde un repo público (`recomendacion-agente`).
+    // `propuestas` entera es kernel (cuota/tope = mecanismo); la allowlist es
+    // autoridad y no puede venir por entorno ni por el manifiesto de producto.
+    'propuestas.autores_permitidos',
 ]);
 
 // Clasificación completa de las secciones top-level de `config.yaml`
@@ -237,6 +242,11 @@ const SIDE_MAP = Object.freeze({
     deliverable_notifications: 'kernel',
     'deliverable_notifications.skills': 'producto',       // whitelist de skills del producto
     'deliverable_notifications.attachments_per_skill': 'producto',
+    // #7515 — registro de propuestas al operador: cuota diaria y tope de vivas
+    // son mecanismo del pipeline; la allowlist de autores es autoridad
+    // (también en AUTHORITY_PREFIXES, que gana en `resolveSide`).
+    propuestas: 'kernel',
+    'propuestas.autores_permitidos': 'autoridad',
     cua: 'kernel',
     kernel: 'kernel',
     // #5352 — el vault direcciona secretos de INFRAESTRUCTURA por host: es
@@ -335,6 +345,19 @@ function hasProductoDescendant(segs) {
         e.side === 'producto'
         && e.segs.length > segs.length
         && matchesPrefix(e.segs.slice(0, segs.length), segs));
+}
+
+/**
+ * #7515 — ¿Existe algún prefijo de AUTORIDAD estrictamente por debajo de `segs`?
+ * Sirve para que una sección de kernel con una sub-clave de autoridad
+ * (`propuestas.autores_permitidos`) se reporte con SU lado cuando aparece del
+ * lado producto, en vez de colapsar al lado del padre: el operador tiene que
+ * leer "autoridad" y no "kernel" cuando lo que se intenta mover es la allowlist.
+ */
+function hasAutoridadDescendant(segs) {
+    return AUTHORITY_PATTERNS.some((pat) =>
+        pat.length > segs.length
+        && matchesPrefix(pat.slice(0, segs.length), segs));
 }
 
 // -----------------------------------------------------------------------------
@@ -553,6 +576,25 @@ const SCHEMA = {
         // ConfigSchemaViolation. Va en el MISMO commit que la sección nueva.
         telegram_voice_outbound: OBJ(),
         deliverable_notifications: OBJ(),
+        // #7515 — registro único de propuestas al operador (parte 2/3 de #6807).
+        // Sección ESTRICTA: la raíz está cerrada y esta declaración va en el
+        // MISMO commit que la sección `propuestas:` de config.yaml — si una
+        // está y la otra no, config.yaml no valida y el Pulpo no arranca.
+        // `max_vivas` se cota a `MAX_PROPUESTAS_VIVAS` (500) del sustrato
+        // (CA-PO-4): un valor mayor persistiría en FS una forma que el modo
+        // durable lee como `degraded`.
+        propuestas: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+                cuota_diaria_por_productor: { type: 'integer', minimum: 1 },
+                max_vivas: { type: 'integer', minimum: 1, maximum: 500 },
+                autores_permitidos: {
+                    type: 'array',
+                    items: { type: 'string', minLength: 1 },
+                },
+            },
+        },
         cua: OBJ(),
         kernel: OBJ(),
 
@@ -1363,6 +1405,14 @@ function collectSideViolations(node, segs, out, esperado = 'producto') {
             continue;
         }
         if (esperado === 'producto' && esMapa && hasProductoDescendant(childSegs)) {
+            collectSideViolations(child, childSegs, out, esperado);
+            continue;
+        }
+        // #7515 — sección NO admitida que esconde un prefijo de autoridad
+        // (`propuestas.autores_permitidos`): se baja para que la violación se
+        // reporte con el lado más específico. Las secciones que YA son de
+        // autoridad enteras no bajan (el padre ya nombra el lado correcto).
+        if (esperado === 'producto' && esMapa && side !== 'autoridad' && hasAutoridadDescendant(childSegs)) {
             collectSideViolations(child, childSegs, out, esperado);
             continue;
         }

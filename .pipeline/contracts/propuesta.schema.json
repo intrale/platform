@@ -1,0 +1,67 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://intrale.local/pipeline/contracts/propuesta.schema.json",
+  "title": "Propuesta al operador - contrato unico de publicacion en el registro (#7515, parte 2/3 de #6807)",
+  "description": "Payload que un productor entrega a propuestas-registry.publicar(). Es el contrato de ENTRADA: no declara los campos que el registro deriva o sella (productor, id, estado, clave_dedup, creada_en) ni la procedencia (que viaja por ctx, SEC-7515-1). Si vienen en el payload caen por additionalProperties:false. Agnostico de canal: no hay nada de presentacion aca.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["titulo", "tipo", "accion", "evidencia", "beneficio", "costo", "riesgo", "sensible"],
+  "properties": {
+    "titulo": {
+      "description": "UX-1: una linea, 12-90 chars, sin * ni _, sin URL, sin emoji, sin controles. Es presentacion: NO entra al hash.",
+      "type": "string",
+      "minLength": 12,
+      "maxLength": 90,
+      "pattern": "^(?!.*(https?://|www\\.))[^\\r\\n*_\\p{Cc}\\p{Cf}\\p{Extended_Pictographic}]+$"
+    },
+    "tipo": {
+      "type": "string",
+      "enum": ["mejora-de-proceso", "cambio-de-configuracion", "correccion", "riesgo", "ticket-nuevo"]
+    },
+    "accion": {
+      "description": "Que se propone hacer. Entra al hash normalizada (trim, lowercase, espacios colapsados). El tope de bytes (2048) lo aplica el registro sobre el texto YA redactado.",
+      "type": "string",
+      "minLength": 1
+    },
+    "evidencia": {
+      "description": "El hecho verificable que dispara la propuesta. tipo y referencia entran al hash; resumen no.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tipo", "referencia", "resumen"],
+      "properties": {
+        "tipo": { "type": "string", "minLength": 1, "maxLength": 60 },
+        "referencia": { "type": "string", "minLength": 1, "maxLength": 300 },
+        "resumen": { "type": "string", "minLength": 1, "maxLength": 300 }
+      }
+    },
+    "beneficio": { "type": "string", "minLength": 1, "maxLength": 300 },
+    "costo": { "$ref": "#/definitions/escala" },
+    "riesgo": { "$ref": "#/definitions/escala" },
+    "sensible": {
+      "description": "true => el contenido no debe salir a canales publicos. El registro la fuerza a true para tipo=riesgo y para agente=security (forzarSensible), nunca la rebaja.",
+      "type": "boolean"
+    },
+    "agente": {
+      "description": "Skill que origino la recomendacion (solo productor recomendacion-agente, #7361).",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 40,
+      "pattern": "^[a-z0-9][a-z0-9-]*$"
+    },
+    "issue_origen": { "type": "integer", "minimum": 1 },
+    "categoria": { "type": "string", "minLength": 1, "maxLength": 60 },
+    "referencia": { "type": "string", "minLength": 1, "maxLength": 300 }
+  },
+  "definitions": {
+    "escala": {
+      "description": "UX-2: escala cerrada + detalle opcional acotado.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["nivel"],
+      "properties": {
+        "nivel": { "type": "string", "enum": ["bajo", "medio", "alto"] },
+        "detalle": { "type": "string", "maxLength": 300 }
+      }
+    }
+  }
+}
