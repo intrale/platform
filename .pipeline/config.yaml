@@ -807,6 +807,81 @@ multi_provider:
       # Vigencia del marker de degradación (respaldo anti-zombie). Default 90 min.
       marker_ttl_minutes: 90
 
+  # ---------------------------------------------------------------------------
+  # Techo de cuota contratada por proveedor (#6559)
+  # ---------------------------------------------------------------------------
+  # El HABER del libro contable de cuota: cuánta cuota EXISTE por proveedor y
+  # por período. El consumo real lo registra #6558 (`provider-cost.jsonl`, v2);
+  # saldo, ritmo y proyección los calcula #6560 leyendo este bloque vía
+  # `lib/multi-provider/validate-quota-ceilings.js#getQuotaCeiling`.
+  #
+  # FAIL-CLOSED en el boot: todo proveedor ACTIVO en el ruteo (default_provider,
+  # skills.*.provider, skills.*.fallbacks[].provider de agent-models.json, y
+  # multi_provider.order si existe) tiene que tener su techo declarado acá. Si
+  # falta, el pulpo NO arranca y el error nombra al proveedor; nunca se asume
+  # infinito. `deterministic` (sin LLM) está exento. Un proveedor dado de baja
+  # (#6563) no necesita techo, pero si lo conserva se valida igual.
+  #
+  # Ids: los CANÓNICOS de agent-models.json (`anthropic`, `openai-codex`,
+  # `antigravity`) — mismos que `quota_alert`. La sección es CERRADA: una clave
+  # o un id mal escritos frenan el arranque con sugerencia, no se ignoran.
+  #
+  # Campos por proveedor (los 5 son obligatorios):
+  #   plan        — nombre del plan contratado (texto libre).
+  #   periodo     — horario | diario | semanal. Se declara la VENTANA LARGA del
+  #                 proveedor (la que agrega el libro contable y la que el panel
+  #                 de cuotas muestra como ventana larga: Sem / Día).
+  #   techo       — cuota del período en la `unidad` que el proveedor expone.
+  #                 Si `unidad: porcentaje`, el techo es SIEMPRE 100.
+  #   unidad      — tokens | mensajes | creditos | porcentaje.
+  #   reposicion  — cuándo se repone, en hora local de QUOTA_TZ_OFFSET_MIN
+  #                 (default ART, UTC-3; misma ancla que weekly-quota.js):
+  #                   semanal → "dom 21:00"   (día abreviado lun..dom + HH:MM)
+  #                   diario  → "03:00"       (HH:MM)
+  #                   horario → ":00"         (minuto de corte dentro de la hora)
+  #                   "rolling" → ventana móvil desde el primer uso; el corte lo
+  #                               informa el proveedor en `resets_at`.
+  #
+  # Ejemplo completo, copiable:
+  #   quota:
+  #     anthropic:
+  #       plan: "Claude Max"
+  #       periodo: semanal
+  #       techo: 100
+  #       unidad: porcentaje
+  #       reposicion: "dom 21:00"
+  #
+  # Cambio de plan: editar `plan` y `techo`/`unidad` en el mismo PR y reiniciar
+  # el pulpo (el motor sólo relee este schema al respawn). Ver
+  # docs/pipeline/multi-provider.md §18.
+  quota:
+    # Claude Max: la cuota semanal se expone como % de utilización
+    # (`seven_day`); reset domingo 21:00 hora local (weekly-quota.js).
+    anthropic:
+      plan: "Claude Max"
+      periodo: semanal
+      techo: 100
+      unidad: porcentaje
+      reposicion: "dom 21:00"
+    # ChatGPT Plus: Codex expone `used_percent` de la ventana semanal
+    # (`window_minutes: 10080`) con `resets_at` móvil desde el primer uso.
+    openai-codex:
+      plan: "ChatGPT Plus"
+      periodo: semanal
+      techo: 100
+      unidad: porcentaje
+      reposicion: rolling
+    # Google One (Antigravity): ventana larga diaria según el panel de cuotas
+    # (`provider-quota.js`: long = Día). El CLI `agy` todavía no reporta consumo
+    # verificable (admission.reports_usage: false); plan y techo se confirman
+    # en #6564. Mientras tanto la declaración es el % del cupo diario.
+    antigravity:
+      plan: "Google One"
+      periodo: diario
+      techo: 100
+      unidad: porcentaje
+      reposicion: rolling
+
 # =============================================================================
 # Presupuesto de ritmo (pacing budget) por proveedor (#4289)
 # =============================================================================
