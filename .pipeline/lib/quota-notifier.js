@@ -79,7 +79,41 @@ const QUOTA_COPY = {
     'Descartado · no se contamina la calibracion.\n' +
     'Verifica login en Claude Desktop.\n' +
     'EXPECTED_CLAUDE_ACCOUNT no coincide con account_handle.',
+  // #7185 — créditos de reset de codex. Copies del contrato UX (comentario de
+  // validación del issue), en el mismo registro ASCII que el resto del bloque.
+  // Sólo se interpolan campos del sistema: {n_creditos}, {n}, {hhmm},
+  // {countdown}, {pct}. NUNCA title/description del crédito ni error.message.
+  // (a) canje exitoso — reemplaza a `restored` para esa transición, una sola vez.
+  resetCreditRedeemed:
+    'Canjee un reset de codex: la cuota semanal quedo liberada.\n' +
+    'Creditos de reset restantes: {n_creditos}.\n' +
+    'Drenando cola de {n} agentes encolados.',
+  resetCreditRedeemedEmpty:
+    'Canjee un reset de codex: la cuota semanal quedo liberada.\n' +
+    'Creditos de reset restantes: {n_creditos}.\n' +
+    'No habia agentes encolados. Pipeline directo a operacion full.',
+  // (b) segundo agotamiento semanal con el crédito ya usado (max_per_week).
+  resetCreditAlreadyUsed:
+    'Codex sin cuota semanal otra vez y el credito de reset ya se uso esta semana.\n' +
+    'Reset semanal estimado: {hhmm} (en {countdown}).\n' +
+    'Si queres canjear otro a mano: /usage en el TUI de codex.',
+  // (e) app-server sin respuesta ≥ 1 h de barridos consecutivos — una sola vez.
+  appServerUnavailable:
+    'No pude consultar el app-server de codex en la ultima hora; el flag de cuota sigue su curso.',
+  // (f) drenado por reconciliación en vivo (CA-9) — variante de `restored`.
+  restoredLiveReconcile:
+    'Cuota codex restaurada antes de lo previsto: la ventana semanal esta al {pct}% segun snapshot en vivo.\n' +
+    'Drenando cola de {n} agentes encolados.',
+  restoredLiveReconcileEmpty:
+    'Cuota codex restaurada antes de lo previsto: la ventana semanal esta al {pct}% segun snapshot en vivo.\n' +
+    'No habia agentes encolados. Pipeline directo a operacion full.',
 };
+
+// #7185 — Ventana en la que un `onFlagCleared` posterior se atribuye al canje /
+// a la reconciliación en vivo que acaba de ocurrir. Cubre el lag del poll del
+// flag en pulpo (ticks de segundos) con margen; pasado el TTL el contexto se
+// descarta para no etiquetar mal un clear ajeno.
+const CLEAR_CONTEXT_TTL_MS = 2 * 60 * 1000;
 
 // Etiquetas para logging (mapean rotationIndex → letra)
 const REMINDER_LABELS = ['A', 'B', 'C', 'D'];
@@ -288,6 +322,13 @@ function createQuotaNotifier(deps) {
     // finito. Inicializar a 0 sería bug si now() arranca en 0 (clock mockeado
     // de tests) — falsy && truthy quedaría como "nunca envío" cuando ya envió.
     lastCannedAt: Number.NEGATIVE_INFINITY,
+    // #7185 — contexto para el próximo `onFlagCleared`:
+    //   suppressClearUntil: epoch-ms hasta el cual se OMITE el `restored`
+    //     genérico (el canje ya mandó su propio mensaje → un solo mensaje por evento).
+    //   pendingClearVariant: {kind:'live_reconcile', pct, at} → `onFlagCleared`
+    //     usa la variante que explica por qué se restauró antes de lo previsto.
+    suppressClearUntil: Number.NEGATIVE_INFINITY,
+    pendingClearVariant: null,
   };
 
   function safeRedact(text) {
@@ -366,15 +407,36 @@ function createQuotaNotifier(deps) {
    */
   function onFlagCleared() {
     if (!state.flagData) return; // idempotente: no había flag activo
-    const blockDuration = now() - state.flagSetAt;
+    const t = now();
+    const blockDuration = t - state.flagSetAt;
     stopReminders();
-    if (blockDuration >= minBlockDurationForRestoredMs) {
+    // #7185 — el canje del crédito ya contó la transición con su propio mensaje:
+    // un segundo "restaurada" sería el mensaje doble que el contrato UX prohíbe.
+    const suppressed = t < state.suppressClearUntil;
+    const variant = state.pendingClearVariant
+      && (t - state.pendingClearVariant.at) < CLEAR_CONTEXT_TTL_MS
+      ? state.pendingClearVariant
+      : null;
+    state.suppressClearUntil = Number.NEGATIVE_INFINITY;
+    state.pendingClearVariant = null;
+    if (suppressed) {
+      log('quota-notifier: restaurada omitida — la transicion ya fue notificada por el canje del credito (#7185)');
+    } else if (blockDuration >= minBlockDurationForRestoredMs) {
       const queued = getQueuedAgentsCount();
-      const tpl = queued >= 1 ? QUOTA_COPY.restored : QUOTA_COPY.restoredEmpty;
+      let tpl;
+      if (variant && variant.kind === 'live_reconcile') {
+        tpl = queued >= 1 ? QUOTA_COPY.restoredLiveReconcile : QUOTA_COPY.restoredLiveReconcileEmpty;
+      } else {
+        tpl = queued >= 1 ? QUOTA_COPY.restored : QUOTA_COPY.restoredEmpty;
+      }
       // #4565: el mensaje de restaurada debe nombrar el provider que se recuperó,
       // no hardcodear "Anthropic". state.flagData sigue disponible (se limpia abajo).
-      emit(interpolate(tpl, { n: queued, provider: providerLabel(state.flagData && state.flagData.provider) }));
-      log(`quota-notifier: restaurada enviada (queued=${queued}, duracion=${(blockDuration / 1000).toFixed(1)}s)`);
+      emit(interpolate(tpl, {
+        n: queued,
+        provider: providerLabel(state.flagData && state.flagData.provider),
+        pct: variant && Number.isFinite(variant.pct) ? Math.round(variant.pct) : 0,
+      }));
+      log(`quota-notifier: restaurada enviada (queued=${queued}, duracion=${(blockDuration / 1000).toFixed(1)}s${variant ? `, variante=${variant.kind}` : ''})`);
     } else {
       log(`quota-notifier: bloqueo duro ${(blockDuration / 1000).toFixed(1)}s (<${minBlockDurationForRestoredMs / 1000}s) — omito mensaje de restaurada`);
     }
@@ -444,6 +506,65 @@ function createQuotaNotifier(deps) {
     return { gated: true, debounced: false, text: safe };
   }
 
+  // ---------------------------------------------------------------------------
+  // #7185 — créditos de reset de codex
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Canje exitoso (`outcome: reset` / `alreadyRedeemed`). Emite el copy (a) y
+   * marca la transición para que el `onFlagCleared` que sigue al `clearFlag`
+   * NO mande el `restored` genérico: un solo mensaje por evento. Se emite aunque
+   * el bloqueo haya sido corto: un crédito consumido siempre se informa.
+   *
+   * @param {{creditsRemaining:number}} info
+   */
+  function notifyResetCreditRedeemed(info) {
+    const remaining = info && Number.isFinite(info.creditsRemaining)
+      ? Math.max(0, Math.trunc(info.creditsRemaining))
+      : 0;
+    const queued = getQueuedAgentsCount();
+    const tpl = queued >= 1 ? QUOTA_COPY.resetCreditRedeemed : QUOTA_COPY.resetCreditRedeemedEmpty;
+    emit(interpolate(tpl, { n_creditos: remaining, n: queued }));
+    state.suppressClearUntil = now() + CLEAR_CONTEXT_TTL_MS;
+    log(`quota-notifier: canje de reset de codex notificado (restantes=${remaining}, queued=${queued})`);
+  }
+
+  /**
+   * Segundo agotamiento semanal con el crédito ya usado (`max_per_week`).
+   * El caller garantiza "una vez por agotamiento"; acá sólo se formatea.
+   *
+   * @param {{resetsAtMs:number}} info  reset semanal estimado (epoch ms).
+   */
+  function notifyResetCreditAlreadyUsed(info) {
+    const resetsAt = info && Number.isFinite(info.resetsAtMs) ? info.resetsAtMs : NaN;
+    const t = now();
+    emit(interpolate(QUOTA_COPY.resetCreditAlreadyUsed, {
+      hhmm: formatHHMM(resetsAt),
+      countdown: formatCountdown(resetsAt, t),
+    }));
+    log('quota-notifier: aviso de credito de reset ya usado esta semana enviado');
+  }
+
+  /** App-server de codex sin respuesta ≥ 1 h (copy e). El caller controla el "una sola vez". */
+  function notifyAppServerUnavailable() {
+    emit(QUOTA_COPY.appServerUnavailable);
+    log('quota-notifier: alerta de app-server de codex sin respuesta enviada');
+  }
+
+  /**
+   * Marca que el próximo `onFlagCleared` se debe a la reconciliación en vivo
+   * (CA-9): el mensaje de restaurada explica el motivo (copy f). No emite nada.
+   *
+   * @param {{pct:number}} info  porcentaje de la ventana semanal según el snapshot.
+   */
+  function markLiveReconcileClear(info) {
+    state.pendingClearVariant = {
+      kind: 'live_reconcile',
+      pct: info && Number.isFinite(info.pct) ? info.pct : 0,
+      at: now(),
+    };
+  }
+
   /**
    * Snapshot read-only del estado interno. Útil para `/status`, debugging y
    * tests que verifican el lifecycle.
@@ -463,6 +584,9 @@ function createQuotaNotifier(deps) {
       rotationIndex: state.rotationIndex,
       hasInterval: state.intervalHandle != null,
       lastCannedAt: state.lastCannedAt,
+      // #7185
+      suppressClearUntil: state.suppressClearUntil,
+      pendingClearVariant: state.pendingClearVariant ? state.pendingClearVariant.kind : null,
     };
   }
 
@@ -473,6 +597,8 @@ function createQuotaNotifier(deps) {
     state.flagSetAt = 0;
     state.rotationIndex = 0;
     state.lastCannedAt = Number.NEGATIVE_INFINITY;
+    state.suppressClearUntil = Number.NEGATIVE_INFINITY;
+    state.pendingClearVariant = null;
   }
 
   return {
@@ -481,6 +607,11 @@ function createQuotaNotifier(deps) {
     handleCommanderFreeText,
     getState,
     dispose,
+    // #7185
+    notifyResetCreditRedeemed,
+    notifyResetCreditAlreadyUsed,
+    notifyAppServerUnavailable,
+    markLiveReconcileClear,
   };
 }
 
@@ -491,6 +622,7 @@ module.exports = {
   DEFAULT_REMINDER_INTERVAL_MIN,
   DEBOUNCE_CANNED_MS,
   MIN_BLOCK_DURATION_FOR_RESTORED_MS,
+  CLEAR_CONTEXT_TTL_MS,
   PROVIDER_LABELS,
   DEFAULT_PROVIDER_KEY,
   formatHHMM,

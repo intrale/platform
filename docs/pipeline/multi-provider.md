@@ -940,6 +940,57 @@ rm .pipeline/quota-exhausted.json
 
 → desbloquea el pipeline en el spawn siguiente. Documentar el motivo en commit / Telegram.
 
+#### 5.3.3 Créditos de reset de codex y reconciliación en vivo del flag ([#7185](https://github.com/intrale/platform/issues/7185))
+
+Codex (plan ChatGPT) otorga cada tanto **créditos de reset de límite de uso** (en el TUI: `/usage` → *Redeem usage limit reset*). El pipeline los canjea solo cuando conviene, y aprovecha la misma lectura para corregir el flag de cuota con evidencia fresca.
+
+**Módulos:** [`lib/codex-reset-credit.js`](../../.pipeline/lib/codex-reset-credit.js) (decisiones) + [`lib/codex-app-server-client.js`](../../.pipeline/lib/codex-app-server-client.js) (JSON-RPC 2.0 por stdio contra `codex app-server`, spawn **efímero**: el proceso termina al cerrar stdin, sin daemon ni proceso residente; timeout duro + `kill()` en el camino de falla).
+
+**Dónde corre:** en el mismo gancho que el reconciliador de #7181 (`pulpo.js`, justo antes de `resolveSpawnWithFallback`), **fire-and-forget**: no bloquea el spawn; su efecto impacta en el siguiente. Throttle persistido de 5 min, un solo barrido en vuelo. Sin slot de `openai-codex` en `quota-exhausted.json` → `noop` sin tocar disco ni spawnear nada.
+
+Una sola lectura de `account/rateLimits/read` alimenta dos ramas:
+
+| Rama | Regla | Qué hace |
+|---|---|---|
+| **Reconciliación en vivo** (CA-9…CA-12) | Ventana gobernante del snapshot (`pickGoverningWindow`, la más consumida). Si el backend publica `ordinaryUsageAllowed: true`, la ventana está `< 100 %` y no hay `rateLimitReachedType` → el flag ya no es cierto → `shortenResetsAt` a *ahora* (drena). Sin permiso publicado, regla literal: acortar sólo si el `resetsAt` observado es anterior al del flag. | **Sólo acorta, nunca alarga.** Un snapshot al 100 % no toca el flag. Backoff: como mucho un drenado en vivo por hora (si el flag reaparece, el CLI y el snapshot no coinciden — no se insiste). |
+| **Canje** (CA-1…CA-7) | Sólo si el flag sigue vigente y lo agotado es la **ventana semanal** (`secondary`, 10080 min). El cap rolling de 5 h **no** se canjea: se libera solo. Fuente de la ventana: snapshot en vivo, con los rollouts locales (#7181) como respaldo; si no se puede determinar → no canjea. | `account/rateLimitResetCredit/consume` con `idempotencyKey` (UUID) **persistido antes de llamar** y reusado en reintentos (`alreadyRedeemed` = éxito, jamás un segundo crédito). Un intento lógico por agotamiento (clave `detected_at`); `max_per_week` por **semana de codex** (medida por el `resetsAt` semanal observado al canjear, no por calendario). Tras `outcome: reset` → `clearFlag({provider:'openai-codex'})` (drena sólo ese slot) + Telegram con créditos restantes. |
+
+**Nombres reales del schema** (codex-cli 0.154.0; el issue los nombra distinto): `rateLimits.primary/secondary.{usedPercent, windowDurationMins, resetsAt}` (`resetsAt` en **segundos** epoch) y `rateLimitResetCredits.{availableCount, credits|null}` a nivel raíz. `credits: null` = sólo se conoce el conteo → se canjea sin `creditId` y el backend elige; con filas, hace falta una `status: available` + `resetType: codexRateLimits` (fail-closed ante filas inelegibles). Los schemas salen de `codex app-server generate-json-schema --out <dir>` (`v2/GetAccountRateLimitsResponse.json`, `v2/ConsumeAccountRateLimitResetCreditParams.json`, `v2/ConsumeAccountRateLimitResetCreditResponse.json`).
+
+**Fail-safe:** app-server caído, timeout, error JSON-RPC (sin login) o schema distinto → **fail-open del flag** (queda como está) y **fail-closed del crédito** (no se consume). Una sola lectura fallida corta ambas ramas. Nunca se canjea ni se drena "por las dudas".
+
+**Telegram (contrato UX, un solo mensaje por evento):**
+
+| Situación | Mensaje |
+|---|---|
+| Canje exitoso | *"Canjee un reset de codex: la cuota semanal quedo liberada. Creditos de reset restantes: N. …"* — reemplaza al `restored` genérico (el notifier suprime el siguiente `onFlagCleared` por 2 min). |
+| Semanal agotada otra vez, crédito ya usado esta semana | *"Codex sin cuota semanal otra vez y el credito de reset ya se uso esta semana. Reset semanal estimado: HH:MM …"* — una vez por agotamiento. |
+| Drenado por reconciliación en vivo | variante de `restored`: *"Cuota codex restaurada antes de lo previsto: la ventana semanal esta al N% segun snapshot en vivo."* |
+| `noCredit` / `nothingToReset` / cap de 5 h | **silencio** (audit log + `pulpo.log`). |
+| App-server sin respuesta ≥ 1 h de barridos consecutivos | **una** alerta: *"No pude consultar el app-server de codex en la ultima hora; el flag de cuota sigue su curso."* |
+
+Nada de la respuesta del app-server (`accountId`, `title`/`description` de créditos, `error.message`) llega a logs ni a Telegram.
+
+**Trazabilidad:** cada decisión deja una línea `♻️ codex: …` en `pulpo.log` (canje, skip por `max_per_week`, skip por cap de 5 h, noop por fallo, flag acortado/drenado) y una entrada en `.pipeline/logs/quota-detector-*.log` (`resets_at_shortened` con `source=codex_app_server:<ventana>`, `reset_credit_redeemed`, `reset_credit_skipped`, `reset_credit_consume_failed`, `codex_app_server_unavailable`). Estado en `.pipeline/state/codex-reset-credit.json` (`last_run_ms`, `attempts` por `detected_at` con `idempotency_key`/`outcome`, `redemptions` con `weekly_resets_at`, racha de fallos).
+
+**Config** (`config.yaml` → `quota_detector.codex_reset_credit`):
+
+```yaml
+codex_reset_credit:
+  enabled: true      # false apaga las DOS ramas (canje y reconciliación en vivo)
+  max_per_week: 1    # canjes por semana de codex
+  notify: true       # Telegram; false = sólo audit + pulpo.log
+```
+
+**Kill-switch operacional:**
+
+```bash
+# config.yaml → quota_detector.codex_reset_credit.enabled: false
+rm .pipeline/state/codex-reset-credit.json
+```
+
+> **Incidente que fija la regla (2026-09-11, 08:42 → 09:42).** Dos spawns escribieron el flag de codex hasta el 15/09 (semanal al 100 %) con un crédito de reset sin usar. El operador lo canjeó a mano minutos después, pero el reconciliador de #7181 sólo lee rollouts y no había rollout nuevo — el flag impedía el spawn que lo generaría. Anthropic en reposo, el resto gateado: codex era la única pata viva y el pipeline quedó parado 1 h por un flag que ya no era cierto. La lectura en vivo cierra ese caso y el canje evita que el crédito se desperdicie.
+
 ### 5.4 Métricas expuestas
 
 | Métrica | Archivo | Cómo verla |
