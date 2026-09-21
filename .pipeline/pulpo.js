@@ -11821,6 +11821,17 @@ async function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, 
     try {
       require('./lib/quota-reset-reconcile').reconcileCodexReset({});
     } catch { /* best-effort */ }
+    // #7185 — reconciliación EN VIVO + canje del crédito de reset de codex.
+    // Habla con `codex app-server` (asíncrono): se dispara fire-and-forget y su
+    // efecto (acortar/drenar el flag, canjear) impacta en el SIGUIENTE spawn.
+    // Throttle propio (5 min) y un solo barrido en vuelo; sin slot de codex es
+    // `noop` sin tocar disco. Best-effort: si falla, el flag manda (fail-closed).
+    try {
+      require('./lib/codex-reset-credit').scheduleCodexLiveSweep({
+        notifier: quotaNotifier,
+        log: (msg) => log('quota', msg),
+      });
+    } catch { /* best-effort */ }
     dispatchResolution = resolveSpawnWithFallback({
       skill,
       issue,
