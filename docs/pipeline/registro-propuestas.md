@@ -97,7 +97,10 @@ que `isoVersionOf` devuelve en modo FS y la que el CAS durable compara.
   `leer → evaluar → escribir` corre entero dentro de `withLockSync(backend.fileFor(KEYS.PROPUESTAS))`,
   y el registro llama `validateRemoteValue` y redacta **antes** de escribir, en ambos modos.
 - **Modo durable:** el CAS por `expectedVersion` excluye entre hosts; el registro reintenta hasta 3
-  veces releyendo y re-evaluando dedup/memoria/cuota/tope.
+  veces releyendo y re-evaluando dedup/memoria/cuota/tope. Registro inexistente ⇒ `leer()` devuelve
+  `version: 0` y la primera `publicar()` lo crea con create-once (`attribute_not_exists`), igual que
+  `partial-pause.js`: `writeKey` remoto rechaza `expectedVersion` null/undefined (CA-A4). Cubierto por
+  la sección "durable" de `propuestas-registry.test.js` con el driver fake de DynamoDB.
 - **Fail-soft:** store ilegible ⇒ `listarPendientes()` devuelve `{ok:false, motivo:'store_degradado'}`
   sin throw y `publicar()` no escribe. La alerta la emite `backend.setDegradationSink` (ya existe); el
   registro no agrega un emisor propio.

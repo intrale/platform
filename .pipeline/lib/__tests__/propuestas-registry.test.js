@@ -2,9 +2,11 @@
 // propuestas-registry.test.js — #7515 (parte 2/3 de #6807): contrato de
 // propuesta y publicación en el registro.
 //
-// Cada test nombra el CA del body / CA-PO-n / SEC-7515-n que cubre. Todos
-// corren en modo filesystem (`PIPELINE_OPSTATE_DURABLE=0`) sobre un tmpdir
-// propio por `PIPELINE_DIR_OVERRIDE`, con el entorno aislado por `withEnv`.
+// Cada test nombra el CA del body / CA-PO-n / SEC-7515-n que cubre. Corren en
+// modo filesystem (`PIPELINE_OPSTATE_DURABLE=0`) sobre un tmpdir propio por
+// `PIPELINE_DIR_OVERRIDE`, con el entorno aislado por `withEnv`; la sección
+// 11-bis monta el driver fake de DynamoDB (`PIPELINE_OPSTATE_DURABLE=1`) para
+// cubrir el camino durable con CAS real (rev-2 de aprobación).
 // =============================================================================
 'use strict';
 
@@ -16,6 +18,7 @@ const path = require('node:path');
 const { fork } = require('node:child_process');
 
 const { withEnv } = require('../test-helpers/with-env');
+const { createFakeSyncDynamoDriver } = require('./fixtures/fake-sync-dynamo-driver');
 
 const REGISTRY_PATH = require.resolve('../propuestas-registry');
 const BACKEND_PATH = require.resolve('../operational-state-backend');
@@ -797,6 +800,148 @@ test('CA-11 · degradación del sustrato en lectura → store_degradado; conflic
         backend.writeKey = origWrite;
     }
     assert.equal(leerArchivo(dir).vivas.length, 1, 'sólo la publicación que ganó quedó escrita');
+}));
+
+// -----------------------------------------------------------------------------
+// 11-bis · Camino durable: CAS real contra el driver fake (rev-2 de aprobación)
+//
+// Con `operational_state.durable: false` el sustrato FS ignora `expectedVersion`
+// y los tests de arriba no ven el bug: `leer()` devolvía `version: null` para
+// el registro inexistente y `writeKey` remoto rechaza null/undefined (CA-A4),
+// así que la primera `publicar()` fallaba SIEMPRE con `escritura_rechazada`
+// y el registro nunca se creaba en modo durable. #7514 habilitó `propuestas`
+// en el store durable justamente para esto y #7516 se apoya en este módulo.
+// -----------------------------------------------------------------------------
+
+const PROJECT_ID_DURABLE = 'intrale-platform';
+const SK_PROPUESTAS = 'coord#propuestas';
+
+/**
+ * Tmpdir + `PIPELINE_OPSTATE_DURABLE=1` + driver fake inyectado en el MISMO
+ * backend que usa el registry (comparten instancia por el require cache). El
+ * driver se desmonta en `finally` para no contaminar los tests en FS.
+ */
+function enDurable(fn) {
+    return enTmp((dir) => {
+        const driver = createFakeSyncDynamoDriver();
+        backend._setDriverForTests({
+            driver,
+            spec: { type: 'dynamodb_table', tableName: 'tabla-fake', keys: [] },
+            projectId: PROJECT_ID_DURABLE,
+            instanceId: PROJECT_ID_DURABLE,
+            atomicUpdate: true,
+        });
+        try {
+            return fn(dir, driver);
+        } finally {
+            backend._setDriverForTests(null);
+        }
+    }, { PIPELINE_OPSTATE_DURABLE: '1' });
+}
+
+test('durable · la primera publicar() sobre un registro inexistente lo CREA (create-once, expectedVersion 0)', () => enDurable((dir, driver) => {
+    const inicial = backend.readKeyWithVersion(backend.KEYS.PROPUESTAS);
+    assert.equal(inicial.remote, true, 'el test corre contra el sustrato remoto');
+    assert.equal(inicial.value, null);
+    assert.equal(inicial.version, null, 'el sustrato reporta ausencia como version null');
+
+    let res;
+    const warns = capturarWarn(() => { res = registry.publicar(base(), ctx()); });
+
+    assert.equal(res.ok, true, JSON.stringify(res));
+    assert.equal(warns.filter((l) => /escritura_rechazada/.test(l)).length, 0, 'sin escritura_rechazada');
+
+    const puts = driver._calls.filter((c) => c.op === 'putItem');
+    assert.equal(puts.length, 1, 'un único put para crear el registro');
+    assert.equal(puts[0].condOpts.conditionExpression, 'attribute_not_exists(#pk)',
+        'el registro se crea con create-once, no con un write ciego');
+    assert.equal(puts[0].version, 1);
+
+    const raw = driver._raw(PROJECT_ID_DURABLE, SK_PROPUESTAS);
+    assert.equal(raw.body.version, 1, 'versión entera del store');
+    assert.equal(raw.body.value.vivas.length, 1);
+    assert.equal(raw.body.value.vivas[0].id, res.id);
+    assert.equal(fs.existsSync(archivo(dir)), false, 'en modo durable no se toca el filesystem');
+}));
+
+test('durable · la segunda publicar() escribe con CAS por versión ENTERA y listarPendientes ve las dos', () => enDurable((dir, driver) => {
+    const r1 = registry.publicar(base(), ctx());
+    assert.equal(r1.ok, true, JSON.stringify(r1));
+    const r2 = registry.publicar(base({ titulo: 'Subir el modelo de review a Opus', accion: 'Subir el modelo del skill review a opus' }), ctx());
+    assert.equal(r2.ok, true, JSON.stringify(r2));
+    assert.notEqual(r1.id, r2.id);
+
+    const puts = driver._calls.filter((c) => c.op === 'putItem');
+    assert.equal(puts.length, 2);
+    assert.equal(puts[0].condOpts.conditionExpression, 'attribute_not_exists(#pk)');
+    assert.equal(puts[1].condOpts.conditionExpression, '#b.#v = :ev', 'la actualización es compare-and-set');
+    assert.equal(puts[1].condOpts.expressionAttributeValues[':ev'], 1, 'CAS contra la versión leída (numérica)');
+    assert.equal(puts[1].version, 2);
+
+    const leido = backend.readKeyWithVersion(backend.KEYS.PROPUESTAS);
+    assert.equal(leido.version, 2);
+    const lista = registry.listarPendientes();
+    assert.equal(lista.ok, true);
+    assert.deepEqual(lista.items.map((i) => i.id).sort(), [r1.id, r2.id].sort());
+    assert.equal(driver._raw(PROJECT_ID_DURABLE, SK_PROPUESTAS).body.value.vivas.length, 2);
+}));
+
+test('durable · dedup se evalúa sobre el registro remoto (misma clave → duplicada:true, sin segundo put)', () => enDurable((dir, driver) => {
+    const a = registry.publicar(base(), ctx());
+    assert.equal(a.ok, true, JSON.stringify(a));
+    const b = registry.publicar(base(), ctx());
+    assert.equal(b.ok, true);
+    assert.equal(b.duplicada, true);
+    assert.equal(b.id, a.id, 'idempotente: mismo id');
+    assert.equal(driver._calls.filter((c) => c.op === 'putItem').length, 1, 'la duplicada no escribe');
+    assert.equal(registry.listarPendientes().items.length, 1);
+}));
+
+test('durable · otro host crea el registro entre la lectura y la escritura → conflict, relee y gana con CAS', () => enDurable((dir, driver) => {
+    // Otro escritor gana la creación justo antes de nuestro primer putItem:
+    // nuestro create-once falla (ConditionalCheckFailed → conflict:true), el
+    // ciclo relee el registro ya creado (versión 1) y reintenta con CAS.
+    const putOriginal = driver.putItem.bind(driver);
+    let inyectado = false;
+    let otroId = null;
+    driver.putItem = (spec, item, opts) => {
+        if (!inyectado) {
+            inyectado = true;
+            const otro = registry.publicar(
+                base({ titulo: 'Propuesta del otro host concurrente', accion: 'accion del otro host' }),
+                ctx(),
+            );
+            assert.equal(otro.ok, true, JSON.stringify(otro));
+            otroId = otro.id;
+        }
+        return putOriginal(spec, item, opts);
+    };
+
+    const res = registry.publicar(base(), ctx());
+    assert.equal(res.ok, true, JSON.stringify(res));
+    assert.notEqual(res.id, otroId);
+
+    const puts = driver._calls.filter((c) => c.op === 'putItem');
+    assert.equal(puts.length, 3, 'create-once del otro host, create-once nuestro (falla), CAS nuestro');
+    assert.equal(puts[0].condOpts.conditionExpression, 'attribute_not_exists(#pk)');
+    assert.equal(puts[1].condOpts.conditionExpression, 'attribute_not_exists(#pk)', 'nuestro primer intento era create-once');
+    assert.equal(puts[2].condOpts.conditionExpression, '#b.#v = :ev', 'el reintento releyó y usó CAS');
+    assert.equal(puts[2].condOpts.expressionAttributeValues[':ev'], 1);
+
+    const raw = driver._raw(PROJECT_ID_DURABLE, SK_PROPUESTAS);
+    assert.equal(raw.body.version, 2);
+    assert.deepEqual(raw.body.value.vivas.map((v) => v.id).sort(), [otroId, res.id].sort(),
+        'ninguna de las dos publicaciones se perdió (sin lost update)');
+}));
+
+test('durable · store caído en lectura → store_degradado sin throw y sin put', () => enDurable((dir, driver) => {
+    driver._setFailure(new Error('dynamo caído'));
+    let res;
+    assert.doesNotThrow(() => { res = registry.publicar(base(), ctx()); });
+    assert.equal(res.ok, false);
+    assert.equal(res.motivo, 'store_degradado');
+    assert.equal(driver._calls.filter((c) => c.op === 'putItem').length, 0);
+    assert.equal(registry.listarPendientes().motivo, 'store_degradado');
 }));
 
 // -----------------------------------------------------------------------------

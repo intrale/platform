@@ -348,10 +348,15 @@ function pipelineDir() {
 
 /**
  * Sección `propuestas` de la config efectiva, con defaults. `ctx.config`
- * (inyección por firma, tests) cortocircuita la lectura. Config ausente o
- * ilegible ⇒ defaults: cuota/tope sanos y allowlist VACÍA (fail-closed para
- * `recomendacion-agente`: nadie entra desde un repo público sin allowlist).
- * `max_vivas` se cota por `MAX_PROPUESTAS_VIVAS` del sustrato (CA-PO-4).
+ * (inyección por firma, tests) cortocircuita la lectura y acepta DOS formas,
+ * a propósito: la config entera (`{ propuestas: {...} }`, lo que devuelve
+ * `config-resolver`) o la sección sola (`{ cuota_diaria_por_productor, ... }`).
+ * Si trae `propuestas`, gana esa clave; si no, el objeto se toma como sección.
+ * Config ausente o ilegible ⇒ defaults: cuota/tope sanos y allowlist VACÍA
+ * (fail-closed para `recomendacion-agente`: nadie entra desde un repo público
+ * sin allowlist). `max_vivas` se cota por `MAX_PROPUESTAS_VIVAS` (CA-PO-4).
+ * Se resuelve UNA vez por `publicar()` (antes del paso 6) y el mismo objeto
+ * alimenta procedencia, cuota y tope en todos los reintentos del ciclo.
  */
 function configPropuestas(ctx) {
     let seccion = null;
@@ -393,7 +398,14 @@ function VACIO() {
  * Lee el registro. Mismo criterio que `partial-pause.js` (D-1 de #5113):
  * `error` degrada IGUAL que `degraded` (en FS el fallo viaja por `error`).
  * `value === null` ⇒ `VACIO()` en memoria; NUNCA se siembra archivo.
- * @returns {{ok:true, value:object, version:any}|{ok:false, motivo:string, error:Error|null}}
+ *
+ * Registro inexistente ⇒ `version: 0` (create-once), igual que
+ * `partial-pause.js`: en modo durable `writeKey` rechaza `expectedVersion`
+ * null/undefined (CA-A4) y `0` es la condición `attribute_not_exists` que da
+ * un único ganador en la creación. Con `null` la primera `publicar()` fallaba
+ * SIEMPRE con `escritura_rechazada` y el registro nunca se creaba (rev-2).
+ * En modo FS el sustrato ignora `expectedVersion`, así que `0` es inocuo.
+ * @returns {{ok:true, value:object, version:number|string|null}|{ok:false, motivo:string, error:Error|null}}
  */
 function leer() {
     let res;
@@ -406,7 +418,7 @@ function leer() {
         return { ok: false, motivo: 'store_degradado', error: (res && res.error) || null };
     }
     const v = res.value;
-    if (v === null || v === undefined) return { ok: true, value: VACIO(), version: null };
+    if (v === null || v === undefined) return { ok: true, value: VACIO(), version: 0 };
     if (typeof v !== 'object' || Array.isArray(v) || !Array.isArray(v.vivas) || !Array.isArray(v.memoria)) {
         return { ok: false, motivo: 'store_degradado', error: new Error('registro con forma inválida') };
     }
@@ -572,8 +584,9 @@ function publicar(payload, ctx) {
     const listo = forzado.payload;
 
     // 6 — procedencia verificable, sólo para el cosechador de comentarios.
+    // La config se resuelve UNA vez acá y la reutiliza el ciclo (cuota/tope).
+    const cfg = configPropuestas(ctx);
     if (productor === 'recomendacion-agente') {
-        const cfg = configPropuestas(ctx);
         const proc = ctx.procedencia && typeof ctx.procedencia === 'object' ? ctx.procedencia : null;
         const autor = proc ? String(proc.author || proc.autor || '').trim() : '';
         const asoc = proc ? String(proc.authorAssociation || '').trim().toUpperCase() : '';
@@ -622,7 +635,6 @@ function publicar(payload, ctx) {
                     ya_decidida: true, id, estado_final: previa.estado_final || null, decidido_en: previa.decidido_en || null };
             }
 
-            const cfg = configPropuestas(ctx);
             if (contarDelDia(value, productor, hoy) >= cfg.cuota_diaria_por_productor) {
                 const clave = `${productor}|${hoy}`;
                 if (!cuotaLogueada.has(clave)) {
