@@ -27199,6 +27199,39 @@ async function mainLoop() {
     log('vault-cut', `No se pudo iniciar el productor de propuesta: ${e.message}`);
   }
 
+  // #7520 — AUDITOR calidad-precio del modelo por agente (parte 4 de #6793).
+  // Lógica en `lib/model-value-audit/cron.js` (tests propios). Timer SIEMPRE
+  // montado; el gate (`model_value_audit.enabled === true`) se relee en cada
+  // tick vía loadConfig() para encender/apagar sin restart (SEC-17). El tick
+  // es horario; la corrida real ocurre cada `cadence_days`. Con el default de
+  // fábrica (`enabled: false`) cuesta un loadConfig() por hora y cero escrituras.
+  try {
+    const mvaCron = require('./lib/model-value-audit/cron');
+    let mvaLastReason = null;
+    const runMvaTick = () => {
+      try {
+        const res = mvaCron.tickIfDue({
+          pipelineDir: PIPELINE(),
+          cfgRoot: loadConfig() || {},
+          logger: (msg) => log('model-value', msg),
+        });
+        // Sólo se loguean transiciones (deshabilitado/no_due son el estado normal).
+        if (res.reason !== mvaLastReason) {
+          log('model-value', res.reason);
+          mvaLastReason = res.reason;
+        }
+      } catch (err) {
+        log('model-value', `Tick excepción no capturada: ${err.message}`);
+      }
+    };
+    runMvaTick();
+    const mvaTimer = setInterval(runMvaTick, 60 * 60 * 1000);
+    if (typeof mvaTimer.unref === 'function') mvaTimer.unref();
+    log('model-value', 'Auditor calidad-precio montado: tick cada 60min');
+  } catch (e) {
+    log('model-value', `No se pudo montar el auditor calidad-precio: ${e.message}`);
+  }
+
   // #5453 — COORDINADOR de la migración por host (rotación → convivencia →
   // corte). La máquina de estados vive en `lib/vault-migration.js` y su cableado
   // productivo en `lib/vault-migration-wiring.js` (ambos con tests propios); acá

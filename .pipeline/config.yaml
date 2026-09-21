@@ -1011,6 +1011,31 @@ model_propagation_rollout:
     # 4 — devs pesados: objetivo final del épico.
     - actors: [backend-dev, pipeline-dev, android-dev, web-dev, dev]
 
+# #7520 — Auditor periódico de calidad-precio del modelo por agente (parte 4 de
+# #6793). El brazo del Pulpo corre `lib/model-value-audit/cron.js` cada
+# `cadence_days` y publica COMO MÁXIMO un mensaje por corrida, sólo si hay algo
+# accionable (un `subir`/`bajar` o un hallazgo de precios). Nunca edita
+# `agent-models.json`: un cambio de modelo sigue siendo un PR.
+#
+# AUTORIDAD (sólo en este archivo, sin override por entorno — SEC-14):
+#   `enabled`, `registrar`, `publish`, `protected_skills`.
+# CALIBRACIÓN: `cadence_days`, `window_days`, `min_sample*`,
+#   `pricing_max_age_days`, `thresholds`.
+# El audio del mensaje se apaga aparte, en `pipeline.config.json`:
+#   `audio_policy.by_event.model_value_audit: false`.
+# Doc: docs/pipeline/model-value-audit.md
+model_value_audit:
+  enabled: false            # fail-closed; sólo `true` exacto enciende el brazo
+  cadence_days: 7
+  window_days: 30           # mínimo 30 (CA-1 de #6145)
+  min_sample: 10
+  min_sample_by_skill: {}
+  pricing_max_age_days: 60
+  protected_skills: [security, review, tester, qa, po]
+  thresholds: { subir_rebound: 0.30, subir_early_death: 0.10, subir_qa_fail: 0.25, bajar_rebound: 0.05, bajar_early_death: 0.02 }
+  registrar: false
+  publish: telegram-plain   # 'telegram-plain' | 'registry' (#6807) | 'none'
+
 # #4870 — Modo reducido: aviso advisory cuando no hay proveedor PAGO disponible.
 #
 # Diseño: receta del Arquitecto en el body del issue #4870. Cuando TODOS los

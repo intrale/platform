@@ -198,6 +198,7 @@ Reparto: **40 kernel · 12 autoridad · 9 producto**.
 | 29 | `pacing` (652) | obj | kernel | Cadencia de dispatch; mecanismo. |
 | 30 | `handoff` (702) | obj | **autoridad** | Tiene `kill_switch`: gobierna el traspaso de contexto entre agentes. |
 | 30b | `model_propagation_rollout` | obj | **autoridad** | Gobierna el encendido y rollback fail-closed de modelos por actor/proveedor. |
+| 30c | `model_value_audit` | obj | kernel | #7520: auditor periódico de calidad-precio del modelo por agente. Split: el mecanismo (`cadence_days`, `window_days`, `min_sample*`, `pricing_max_age_days`, `thresholds`) es kernel; `.enabled`/`.registrar`/`.publish`/`.protected_skills` son **autoridad** (encienden el brazo, eligen canal, escriben audit, protegen skills) y NO admiten override por entorno. Nace `enabled: false`. |
 | 31 | `reduced_mode` (739) | obj | kernel | Modo reducido del motor; mecanismo. |
 | 32 | `firma_operador` (783) | obj | **autoridad** | Auto-aprobación de la firma del operador; núcleo de la autoridad. |
 | 33 | `wave_coherence_gate` (831) | obj | kernel | Coherencia de ola; mecanismo de orquestación. |

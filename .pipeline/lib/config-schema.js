@@ -190,6 +190,13 @@ const AUTHORITY_PREFIXES = Object.freeze([
     'architect.enabled',
     'architect.gate_mode',
     'architect.go_live_date',
+    // #7520 SEC-14 — el brazo del auditor calidad-precio: las claves que lo
+    // encienden, le eligen canal, lo hacen escribir audit o protegen skills son
+    // autoridad; el resto de la sección (cadencia, ventana, umbrales) es calibración.
+    'model_value_audit.enabled',
+    'model_value_audit.registrar',
+    'model_value_audit.publish',
+    'model_value_audit.protected_skills',
 ]);
 
 // Clasificación completa de las secciones top-level de `config.yaml`
@@ -223,6 +230,14 @@ const SIDE_MAP = Object.freeze({
     partial_pause_deps: 'kernel',
     cost_anomaly_alert: 'kernel',
     ghostbusters_cron: 'kernel',
+    // #7520 — auditor calidad-precio del modelo por agente: mecanismo del
+    // pipeline (cadencia, ventana, umbrales). Las cuatro sub-claves de
+    // autoridad ya entran por AUTHORITY_PREFIXES; se listan por legibilidad.
+    model_value_audit: 'kernel',
+    'model_value_audit.enabled': 'autoridad',
+    'model_value_audit.registrar': 'autoridad',
+    'model_value_audit.publish': 'autoridad',
+    'model_value_audit.protected_skills': 'autoridad',
     // #6708 — presupuesto de disco del guardián. Es mecanismo del pipeline
     // (cuánto margen necesita la máquina para operar), no política de producto.
     disk_budget: 'kernel',
@@ -356,6 +371,20 @@ function hasProductoDescendant(segs) {
         e.side === 'producto'
         && e.segs.length > segs.length
         && matchesPrefix(e.segs.slice(0, segs.length), segs));
+}
+
+/**
+ * #7520 — ¿Existe alguna sub-clave de AUTORIDAD estrictamente por debajo de
+ * `segs`? Una sección kernel con sub-claves de autoridad (`architect.enabled`,
+ * `model_value_audit.enabled`) puesta del lado producto debe reportar la
+ * sub-clave con su lado real (`autoridad`), no la sección entera como `kernel`:
+ * de otro modo el operador leería "movela al kernel" cuando lo que hay es un
+ * intento de cambiar una clave de autoridad por el canal de producto.
+ */
+function hasAuthorityDescendant(segs) {
+    return AUTHORITY_PATTERNS.some((pat) =>
+        pat.length > segs.length
+        && matchesPrefix(pat.slice(0, segs.length), segs));
 }
 
 // -----------------------------------------------------------------------------
@@ -975,6 +1004,37 @@ const SCHEMA = {
             },
         },
 
+        // --- model_value_audit: auditor calidad-precio del modelo por agente
+        //     (#7520, parte 4 de #6793). Estricto (CA-23 / SEC-14): un typo en
+        //     `enabled` no puede dejar el brazo apagado en silencio, y
+        //     `window_days` respeta el mínimo de 30 (CA-1 de #6145).
+        model_value_audit: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['enabled'],
+            properties: {
+                enabled: { type: 'boolean' },
+                cadence_days: { type: 'integer', minimum: 1 },
+                window_days: { type: 'integer', minimum: 30 },
+                min_sample: { type: 'integer', minimum: 1 },
+                min_sample_by_skill: { type: 'object', additionalProperties: { type: 'integer', minimum: 1 } },
+                pricing_max_age_days: { type: 'integer', minimum: 1 },
+                protected_skills: { type: 'array', items: { type: 'string', minLength: 1 } },
+                thresholds: {
+                    type: 'object', additionalProperties: false,
+                    properties: {
+                        subir_rebound: { type: 'number', minimum: 0, maximum: 1 },
+                        subir_early_death: { type: 'number', minimum: 0, maximum: 1 },
+                        subir_qa_fail: { type: 'number', minimum: 0, maximum: 1 },
+                        bajar_rebound: { type: 'number', minimum: 0, maximum: 1 },
+                        bajar_early_death: { type: 'number', minimum: 0, maximum: 1 },
+                    },
+                },
+                registrar: { type: 'boolean' },
+                publish: { type: 'string', enum: ['telegram-plain', 'registry', 'none'] },
+            },
+        },
+
         // --- firma_operador: auto-aprobación de firma del operador (#4576) ---
         //     Default seguro = firma humana; el schema NO permite que un valor
         //     corrupto habilite auto-aprobación silenciosamente.
@@ -1405,6 +1465,14 @@ function collectSideViolations(node, segs, out, esperado = 'producto') {
         if (esperado === 'producto' && esMapa && hasProductoDescendant(childSegs)) {
             collectSideViolations(child, childSegs, out, esperado);
             continue;
+        }
+        // #7520 — sección kernel con sub-claves de autoridad (sin split de
+        // producto): se baja para nombrar la sub-clave con su lado real. Si el
+        // mapa viene vacío no hay nada que nombrar y cae al reporte de sección.
+        if (esperado === 'producto' && esMapa && hasAuthorityDescendant(childSegs)) {
+            const antes = out.length;
+            collectSideViolations(child, childSegs, out, esperado);
+            if (out.length > antes) continue;
         }
         out.push({
             path: '/' + childSegs.map(sanitizeKeyName).join('/'),
