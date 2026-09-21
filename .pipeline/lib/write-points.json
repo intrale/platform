@@ -236,6 +236,16 @@
       "via": "writeTarget.writeDir"
     },
     {
+      "modulo": "lib/codex-reset-credit.js",
+      "funcion": "stateFile",
+      "linea": 88,
+      "canal": "estado",
+      "destino": "writeTarget.writeDir",
+      "tier": 3,
+      "estado": "migrado",
+      "via": "writeTarget.writeDir"
+    },
+    {
       "modulo": "lib/commander-deterministic.js",
       "funcion": "current",
       "linea": 64,
@@ -1503,7 +1513,7 @@
     {
       "modulo": "pulpo.js",
       "funcion": "PAUSE_FILE",
-      "linea": 21687,
+      "linea": 21698,
       "canal": "pausa",
       "destino": "writeTarget.writeDir",
       "tier": 1,
