@@ -4409,12 +4409,14 @@ function costosSlice(state, ctx) {
 
 // #4403 (D4 · CA-4 · UX-G3) — slice de telemetría de costo por provider.
 // Lee `.pipeline/state/provider-cost.jsonl` (una línea por ejecución, whitelist
-// de 7 campos) vía el módulo `lib/metrics/provider-cost` y agrega por provider.
+// v2 de #6558: proveedor efectivo + timestamp + resultado) vía el módulo
+// `lib/metrics/provider-cost` y agrega por provider. Sólo las líneas confiables
+// (v2) alimentan `byProvider`; el histórico v1 viaja aparte en `unreliable`.
 // Retorna siempre un objeto estable; degrada a empty-state (`hasData:false`) si
 // el archivo falta o está vacío. Never-throws.
 function providerCostSlice(state, ctx) {
     const PIPELINE = (ctx && ctx.PIPELINE) || path.join(process.cwd(), '.pipeline');
-    const empty = { hasData: false, byProvider: {}, totalSessions: 0 };
+    const empty = { hasData: false, byProvider: {}, totalSessions: 0, hasUnreliable: false, unreliable: { sessions: 0, tokens_in: 0, tokens_out: 0 } };
     try {
         const providerCost = require('./metrics/provider-cost');
         const file = path.join(PIPELINE, 'state', 'provider-cost.jsonl');

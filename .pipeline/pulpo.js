@@ -8624,6 +8624,351 @@ function _humanBlockUnverifiable(issue, motivo, logFn) {
   return { estado: 'NO_VERIFICABLE', error: motivo };
 }
 
+// =============================================================================
+// #7440 (split de #7432) — AUTO-LEVANTAMIENTO DEL BLOQUEO DE DECISIÓN CUANDO LA
+// FIRMA DEL ARQUITECTO LLEGA DESPUÉS DE LA ESCALADA
+//
+// LA CARRERA (#7113). El intake corrió a las 18:44:23 y el arquitecto firmó a
+// las 18:44:25. Al ciclo siguiente el gate reconocía el bloqueo vivo y hacía
+// `continue` seco: el issue quedaba con `needs-human` hasta que un humano lo
+// notara. Ahora, con el label PRESENTE, se re-consulta la firma — pero de forma
+// ACOTADA, porque esto es una acción de autoridad del pipeline sobre un gate
+// humano (RS-4.x de security en #7432/#7440):
+//
+//   · RS-4.1 / RS-4.9 — sólo si TODOS los markers vivos del issue tienen
+//     causa `design-decision`. Un marker pedido por un humano (pregunta del
+//     PO, bloqueo manual) en otra fase ⇒ no se toca nada.
+//   · RS-4.2 — firma FUERTE: `settled` + traza local `architect-tokens.jsonl`
+//     disponible Y corroborada. Es la única evidencia que no escribe un LLM.
+//   · RS-4.7 / RS-4.12 — throttle en memoria + tope de edad desde `blocked_at`
+//     (`max(blocked_at, mtime)`: un `touch` no rejuvenece). Config saneada:
+//     un valor no positivo cae al default, nunca a "siempre vencido".
+//   · RS-4.10 — fail-closed PROPIO: `_evaluateLateSignoff` nunca lanza. Una
+//     excepción del código nuevo no puede alcanzar el `catch` fail-open del
+//     detector (que deja pasar) y meter el issue a definición con el label puesto.
+//   · RS-4.11 — orden fijo de efectos: reconciliar markers PRIMERO; sólo si
+//     ninguno dio `error`/`sin-efecto`, UNA orden `remove-label` con
+//     procedencia (`guardrail_authorized` + `authorized_by`, SEC-B #5690) y UN
+//     comentario de traza; el audit del gate al final con el resultado real.
+//   · RS-4.7 — sin Telegram en ninguna rama. El operador ya tiene el
+//     comentario en GitHub y el contador del dashboard.
+//
+// Son funciones puras con deps inyectables, expuestas bajo
+// `PULPO_NO_AUTOSTART=1` para que los casos negativos se testeen sin levantar
+// el Pulpo (patrón `_verifyHumanBlockLive`).
+// =============================================================================
+const LATE_SIGNOFF_DEFAULTS = Object.freeze({ recheckMin: 10, maxAgeH: 48, maxPerTick: 5 });
+const LATE_SIGNOFF_UNLOCKER = 'architect-signoff:late';
+/** Razones que se resuelven ANTES de tocar la red (UX-F: "sin re-consultar"). */
+const LATE_SIGNOFF_NO_RECHECK_REASONS = Object.freeze(new Set([
+  'sin-marker', 'bloqueo-mixto', 'throttled', 'marker-viejo',
+]));
+/** issue -> lastCheckMs. Se purga al levantar y cuando el issue ya no tiene marker (CA-12). */
+const _lateSignoffState = new Map();
+
+/**
+ * #7440 RS-4.12 / CN-6 — lee `architect.late_signoff_*` saneadas. Ni
+ * `Number(x) || d` (un `"15"` citado en YAML es string válido) ni
+ * `Number.isFinite` a secas (un `-5` dejaría la ventana siempre vencida ⇒ una
+ * llamada `gh` por ciclo por issue bloqueado).
+ *
+ * #7440 rev-2 / RS-4.13 — `maxPerTick` (`late_signoff_max_issues_per_tick`):
+ * tope de issues re-consultados por tick del barrido; no positivo ⇒ default 5.
+ * @returns {{recheckMin: number, maxAgeH: number, maxPerTick: number}}
+ */
+function _resolveLateSignoffConfig(architectCfg) {
+  const pos = (v, d) => { const n = Number(v); return Number.isFinite(n) && n > 0 ? n : d; };
+  const c = architectCfg && typeof architectCfg === 'object' ? architectCfg : {};
+  return {
+    recheckMin: pos(c.late_signoff_recheck_min, LATE_SIGNOFF_DEFAULTS.recheckMin),
+    maxAgeH: pos(c.late_signoff_max_age_h, LATE_SIGNOFF_DEFAULTS.maxAgeH),
+    maxPerTick: pos(c.late_signoff_max_issues_per_tick, LATE_SIGNOFF_DEFAULTS.maxPerTick),
+  };
+}
+
+/**
+ * #7440 RS-4.7 / RS-4.12 — ¿toca re-consultar la firma de este issue?
+ * Edad del bloqueo = por marker `max(edad_blocked_at, edad_mtime)`, y del issue
+ * la MAYOR (conservador: un marker rejuvenecido no rejuvenece al issue). Si el
+ * `stat` falla se toma `now` (edad 0), que no cambia el máximo.
+ * @returns {{due: boolean, reason: 'due'|'marker-viejo'|'throttled', ageH: number}}
+ */
+function _lateSignoffRecheckDue({
+  issue, markers, now = Date.now(), cfg, state = _lateSignoffState,
+  mtimeOf = (f) => fs.statSync(f).mtimeMs,
+}) {
+  const { recheckMin, maxAgeH } = cfg;
+  let ageMs = 0;
+  for (const m of (Array.isArray(markers) ? markers : [])) {
+    const bAt = Date.parse((m && m.blocked_at) || '');
+    let mt;
+    try { mt = mtimeOf(m.file); } catch { mt = now; }
+    const edad = Math.max(
+      Number.isFinite(bAt) ? now - bAt : 0,
+      Number.isFinite(mt) ? now - mt : 0,
+    );
+    if (edad > ageMs) ageMs = edad;
+  }
+  const ageH = ageMs / 3600000;
+  if (ageH > maxAgeH) return { due: false, reason: 'marker-viejo', ageH };
+  const last = state.get(issue);
+  if (Number.isFinite(last) && now - last < recheckMin * 60000) return { due: false, reason: 'throttled', ageH };
+  return { due: true, reason: 'due', ageH };
+}
+
+/**
+ * #7440 UX-C — comentario de traza del auto-levantamiento. Estructura FIJA:
+ * SIN la línea `<!-- architect-signoff … -->` (RS-4.5: el propio comentario no
+ * puede leerse como firma) y con footer `<!-- agent: intake -->` (regla (d) de
+ * `evaluateArchitectSignoff` lo rechaza además por skill ≠ architect).
+ *
+ * `<señales>` = frases de `listaSenales` (las mismas que leyó el operador en el
+ * aviso de bloqueo, UX-E). SIN fallback a las keys crudas (UX-I, rev-2): las
+ * `signals` vienen del marker persistido y sólo alimentan el mapeo por key
+ * conocida — una key que `listaSenales` no reconoce se descarta y, si no queda
+ * ninguna, va `sin señales registradas`. Así el copy coincide con el modelo de
+ * superficie de security (ningún texto externo llega al comentario). Nunca `()`.
+ * `<createdAt ISO>` = `signedAt` sin reformatear (es lo que corrobora
+ * `architect-tokens.jsonl`); fallback a `now` sólo si viene vacío.
+ */
+function _buildLateSignoffComment({ signals = [], signedAt = '', now = Date.now(), designDecision = null } = {}) {
+  const keys = Array.isArray(signals) ? signals : [];
+  let lista = '';
+  try {
+    if (designDecision && typeof designDecision.listaSenales === 'function') lista = designDecision.listaSenales(keys);
+  } catch { lista = ''; }
+  if (!lista) lista = 'sin señales registradas';
+  const fecha = String(signedAt || '').trim() || new Date(now).toISOString();
+  return [
+    '## ♻️ Bloqueo de decisión levantado — firma del arquitecto posterior',
+    '',
+    `El intake había frenado este issue por señales de decisión de arquitectura (${lista}) sin encontrar la firma.`,
+    `La firma del arquitecto se verificó en ${fecha} y la traza local la corrobora, así que el pipeline quitó \`needs-human\` solo y el issue sigue por definición.`,
+    '',
+    'No hace falta que hagas nada.',
+    '',
+    '<!-- agent: intake -->',
+  ].join('\n');
+}
+
+/**
+ * #7440 — evaluador puro del auto-levantamiento. NUNCA LANZA (RS-4.10).
+ *
+ * @param {object} args
+ * @param {number} args.issue
+ * @param {Array}  args.markers   — `humanBlock.listBlockedMarkers(issue)` completo (RS-4.9).
+ * @param {string[]} [args.signals]
+ * @param {number} [args.now]
+ * @param {{recheckMin:number,maxAgeH:number}} args.cfg
+ * @param {Map}    [args.state]
+ * @param {object} args.deps — `{ io, humanBlock, designDecision, encolar, ghQueueDir, skillsPorFase, log, throttle? }`
+ *   `throttle` (rev-2, opcional; `ghThrottle` en producción) se invoca SÓLO
+ *   inmediatamente antes de la re-consulta: nunca en las ramas sin red.
+ * @returns {{lifted: boolean, reason: string, reconciled: Array, orders: string[], error?: string}}
+ */
+function _evaluateLateSignoff({ issue, markers, signals = [], now = Date.now(), cfg, state = _lateSignoffState, deps }) {
+  const orders = [];
+  const d = deps || {};
+  const logFn = typeof d.log === 'function' ? d.log : () => {};
+  try {
+    const { io, humanBlock: hb, designDecision, encolar, ghQueueDir, skillsPorFase } = d;
+    const lista = Array.isArray(markers) ? markers : [];
+    const conf = cfg || _resolveLateSignoffConfig(null);
+
+    // (a) RS-4.1 / RS-4.9 — TODOS los markers vivos con causa del gate, a nivel issue.
+    if (!lista.length) {
+      state.delete(issue);
+      return { lifted: false, reason: 'sin-marker', reconciled: [], orders };
+    }
+    if (!lista.every((m) => m && m.cause === 'design-decision')) {
+      logFn('intake', `#${issue} bloqueo mixto — hay un marker no originado por el gate (#7440 RS-4.9)`);
+      return { lifted: false, reason: 'bloqueo-mixto', reconciled: [], orders };
+    }
+
+    // (b) RS-4.7 / RS-4.12 — throttle y tope de edad ANTES de cualquier red.
+    const due = _lateSignoffRecheckDue({ issue, markers: lista, now, cfg: conf, state });
+    if (!due.due) return { lifted: false, reason: due.reason, reconciled: [], orders };
+    state.set(issue, now);
+
+    // (c) Re-consulta: la ÚNICA llamada de red nueva, ya acotada. `throttle`
+    //     (ghThrottle en producción) se respeta SOLO acá: nunca en las ramas
+    //     sin red (CA-18). Un throttle que lanza no puede impedir el fail-closed.
+    if (typeof d.throttle === 'function') { try { d.throttle(); } catch { /* best-effort */ } }
+    const ctx = io.fetchSignoffContext(issue);
+    const auditoria = io.readSignoffAudit(issue) || {};
+    const firma = ctx && ctx.ok
+      ? designDecision.evaluateArchitectSignoff({
+          issue, comments: ctx.comments, lastEditedAt: ctx.lastEditedAt, audit: auditoria,
+        })
+      : { settled: false, reason: `firma no verificable: ${ctx && ctx.error}`, rejected: [] };
+    const corroboracion = !(ctx && ctx.ok)
+      ? null
+      : (auditoria.available ? auditoria.corroborated : 'traza-no-disponible');
+
+    // (d) RS-4.2 — firma FUERTE: settled + traza local disponible Y corroborada.
+    const levanta = firma.settled === true && auditoria.available === true && auditoria.corroborated === true;
+    if (!levanta) {
+      io.appendGateAudit({
+        issue, signals, signoff_present: firma.settled === true, signoff_reason: firma.reason,
+        signoff_rejected: firma.rejected, signoff_corroboracion: corroboracion, escalated: true,
+        lifted_by: null, error: ctx && ctx.ok ? null : (ctx && ctx.error),
+      });
+      const reason = firma.settled !== true
+        ? 'firma-no-settled'
+        : (auditoria.available ? 'traza-no-corrobora' : 'traza-no-disponible');
+      return { lifted: false, reason, reconciled: [], orders };
+    }
+
+    // (e) RS-4.11 (1) — reconciliar PRIMERO. El marker del gate es sintético
+    //     ⇒ `reconcileBlockedMarkers` lo DESCARTA (`action:'descartado'`), no
+    //     lo destraba: destrabarlo fabricaría un work-file para un skill que
+    //     no existe en la fase.
+    const rec = hb.reconcileBlockedMarkers({ issue, unlocker: LATE_SIGNOFF_UNLOCKER, skillsPorFase });
+    const reconciled = (rec && Array.isArray(rec.reconciled)) ? rec.reconciled : [];
+    const fallo = !reconciled.length || reconciled.some((r) => r.action === 'error' || r.action === 'sin-efecto');
+    if (fallo) {
+      io.appendGateAudit({
+        issue, signals, signoff_present: true, signoff_reason: firma.reason, signoff_rejected: firma.rejected,
+        signoff_corroboracion: corroboracion, escalated: true, lifted_by: null,
+        error: 'reconciliación parcial: marker vivo + label puesto',
+      });
+      logFn('intake', `[WARN] #${issue} firma tardía verificada pero la reconciliación falló — se conserva el bloqueo (#7432)`);
+      return { lifted: false, reason: 'reconcile-fallido', reconciled, orders };
+    }
+
+    // (f) RS-4.11 (2) — UNA orden remove-label CON procedencia + UN comentario.
+    //     Mismo patrón que el auto-recheck del brazo de desbloqueo.
+    const ts = Date.now();
+    orders.push(encolar(path.join(ghQueueDir, `${issue}-late-signoff-remove-needs-human-${ts}.json`), {
+      action: 'remove-label',
+      issue: Number(issue),
+      label: hb.NEEDS_HUMAN_LABEL,
+      // #5690 SEC-B — sin estos dos campos el guardrail descarta la orden en
+      // silencio y el issue queda con el marker borrado y el label puesto.
+      guardrail_authorized: true,
+      authorized_by: 'architect-signoff:late',
+    }));
+    orders.push(encolar(path.join(ghQueueDir, `${issue}-late-signoff-comment-${ts}.json`), {
+      action: 'comment',
+      issue: Number(issue),
+      body: _buildLateSignoffComment({ signals, signedAt: firma.signedAt, now, designDecision }),
+    }));
+
+    // (g) RS-4.11 (3) — audit al final con el resultado real.
+    io.appendGateAudit({
+      issue, signals, signoff_present: true, signoff_reason: firma.reason, signoff_rejected: firma.rejected,
+      signoff_corroboracion: corroboracion, escalated: true, lifted_by: 'late-signoff', error: null,
+    });
+    state.delete(issue);   // CA-12 — sin marker, sin entrada.
+    return { lifted: true, reason: 'levantado', reconciled, orders };
+  } catch (e) {
+    const msg = String((e && e.message) || e);
+    try {
+      d.io.appendGateAudit({ issue, signals, escalated: true, lifted_by: null, error: msg });
+    } catch { /* la traza no puede tumbar el fail-closed */ }
+    logFn('intake', `[WARN] #${issue} re-evaluación de firma tardía falló — se conserva el bloqueo (fail-closed, #7432): ${msg}`);
+    return { lifted: false, reason: 'error', reconciled: [], orders, error: msg.slice(0, 160) };
+  }
+}
+
+/**
+ * #7440 rev-2 — DISPARADOR PRIMARIO del auto-levantamiento. Corre al inicio de
+ * cada tick del intake, ANTES del search: los issues con `needs-human` no
+ * vuelven del search (`buildIntakeSearchQueries()` los excluye en sus dos
+ * pases), así que el único lugar donde el pipeline los ve es en sus markers
+ * locales (`bloqueado-humano/`). Fuente: `humanBlock.listBlockedIssues()`, la
+ * misma que usan los reapers hermanos (`reapStaleHumanBlocks`,
+ * `reapVerifiableHumanBlocks`).
+ *
+ * Sin red propia: la única llamada la hace `_evaluateLateSignoff`, acotada por
+ * throttle (RS-4.7), tope de edad (RS-4.12) y tope por tick (RS-4.13, los que
+ * más esperan primero). Fuera de la ola (pausa parcial) no se toca nada (R-5
+ * de #5113, mismo filtro que `brazoDesbloqueoImpl`). NUNCA LANZA: una
+ * excepción se loguea y se conserva todo bloqueo (fail-closed del
+ * levantamiento); el intake sigue (fail-open del intake).
+ *
+ * El camino secundario (rama `PRESENTE` del gate, durante el lag del índice
+ * de búsqueda) comparte `state`: si el barrido ya consultó, cae en `throttled`.
+ *
+ * UX-H — una sola línea de resumen por tick, que lista los candidatos NO
+ * re-consultados con su motivo (`#N throttled`, `#N marker-viejo`) para que
+ * `grep "#N"` siga funcionando sin una línea por issue cada 5 min.
+ *
+ * @param {object} args
+ * @param {Set<string>|null} [args.allowlistSet] — issues de la ola en pausa parcial; `null` = sin filtro.
+ * @param {object} args.config — config completa del Pulpo (`config.architect` para la calibración).
+ * @param {number} [args.now]
+ * @param {Map} [args.state]
+ * @param {object} args.deps — mismos que `_evaluateLateSignoff` (+ `throttle`).
+ * @returns {{candidates:number, evaluated:number, lifted:number[], deferred:number, error:string|null}}
+ */
+function _sweepLateSignoff({ allowlistSet = null, config, now = Date.now(), state = _lateSignoffState, deps }) {
+  const out = { candidates: 0, evaluated: 0, lifted: [], deferred: 0, error: null };
+  const d = deps || {};
+  const logFn = typeof d.log === 'function' ? d.log : () => {};
+  try {
+    const hb = d.humanBlock;
+    const cfg = _resolveLateSignoffConfig(config && config.architect);
+
+    // (1) Fuente LOCAL: una fila por marker, agrupadas por issue.
+    const porIssue = new Map();
+    for (const r of hb.listBlockedIssues()) {
+      const n = Number(r.issue);
+      if (!Number.isInteger(n) || n <= 0) continue;
+      if (!porIssue.has(n)) porIssue.set(n, []);
+      porIssue.get(n).push(r);
+    }
+
+    // (2) Pre-filtro RS-4.1 / RS-4.9 (barato, sin red): TODOS los markers del
+    //     issue con causa del gate. El evaluador lo re-verifica sobre
+    //     `listBlockedMarkers` — acá sólo se evita trabajo (CN-12).
+    let candidatos = [...porIssue.entries()]
+      .filter(([, ms]) => ms.every((m) => m.cause === 'design-decision'))
+      .map(([n]) => n);
+    // (3) Pausa parcial: fuera de la ola no se mutan labels ni se gasta cuota (CA-14).
+    if (allowlistSet) candidatos = candidatos.filter((n) => allowlistSet.has(String(n)));
+    out.candidates = candidatos.length;
+
+    // (4) Sólo los que están "due" (puro, sin mutar `state`): los throttled y
+    //     los viejos no consumen slot del tope. Se guarda el motivo para el resumen.
+    const due = [];
+    const omitidos = [];
+    for (const n of candidatos) {
+      const markers = hb.listBlockedMarkers(n);
+      if (!markers.length) continue;
+      const chk = _lateSignoffRecheckDue({ issue: n, markers, now, cfg, state });
+      if (chk.due) due.push({ n, markers });
+      else omitidos.push(`#${n} ${chk.reason}`);
+    }
+    // (5) RS-4.13 — tope por tick, los que más esperan primero (blocked_at más viejo).
+    const edad = (ms) => Math.min(...ms.map((m) => Date.parse(m.blocked_at || '') || now));
+    due.sort((a, b) => edad(a.markers) - edad(b.markers));
+    const lote = due.slice(0, cfg.maxPerTick);
+    out.deferred = due.length - lote.length;
+
+    for (const { n, markers } of lote) {
+      const signals = [...new Set(markers.flatMap((m) => (Array.isArray(m.signals) ? m.signals : [])))];
+      const r = _evaluateLateSignoff({ issue: n, markers, signals, now, cfg, state, deps: d });
+      out.evaluated++;
+      if (r.lifted) {
+        out.lifted.push(n);
+        logFn('intake', `♻️ #${n} firma del arquitecto posterior a la escalada — bloqueo levantado solo (#7432)`);
+      } else if (!LATE_SIGNOFF_NO_RECHECK_REASONS.has(r.reason)) {
+        logFn('intake', `#${n} decisión de arquitectura ya escalada — firma re-consultada, sin cambios (${r.reason})`);
+      }
+      // throttled / marker-viejo / bloqueo-mixto: silencio por issue (correría cada 5 min).
+    }
+    if (out.candidates) {
+      const detalle = omitidos.length ? ` (${omitidos.join(', ')})` : '';
+      logFn('intake', `[late-signoff] ${out.candidates} bloqueado(s) del gate${detalle}, ${out.evaluated} re-consultado(s), ${out.lifted.length} levantado(s)${out.deferred ? `, ${out.deferred} diferido(s) al próximo tick` : ''}`);
+    }
+  } catch (e) {
+    out.error = String((e && e.message) || e).slice(0, 160);
+    logFn('intake', `[WARN] barrido de firmas tardías falló — se conserva todo bloqueo (fail-closed, #7440): ${out.error}`);
+  }
+  return out;
+}
+
 /**
  * #5856 CA-3 — Fachada booleana de `_verifyHumanBlockLive()`, simétrica con
  * `_shouldReblockForDependencies()`: `true` = mantener/aplicar el bloqueo.
@@ -12726,8 +13071,12 @@ async function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, 
   const timeoutMs = timeoutMin * 60 * 1000;
   // #2400: log del origen del timeout (override vs default) para debug de DevEx.
   const timeoutOrigin = (skill in timeoutOverrides) ? 'override' : 'default';
+  // #6558 — flag local: el handler de exit lo lee para registrar la corrida
+  // como `abortada` en el libro contable (`provider-cost.jsonl`).
+  let killedByTimeoutWatchdog = false;
   const watchdog = setTimeout(() => {
     if (child.exitCode === null && child.signalCode === null) {
+      killedByTimeoutWatchdog = true;
       log('lanzamiento', `⏱️ ${skill}:#${issue} excedió ${timeoutMin}min (${timeoutOrigin}) — matando (watchdog)`);
       try { child.kill('SIGTERM'); } catch {}
       setTimeout(() => { try { child.kill('SIGKILL'); } catch {} }, 10000);
@@ -13111,32 +13460,55 @@ async function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, 
           log('lanzamiento', `traceability emitSessionEnd falló para ${skill}:#${issue}: ${e.message}`);
         }
 
-        // #4403 (D4 · CA-D · H2 · RS-3) — telemetría de costo por provider.
-        // Bloque INDEPENDIENTE del try de emitSessionEnd (no acoplar fallos):
-        // registra una línea append-only en `.pipeline/state/provider-cost.jsonl`
-        // con la whitelist estricta de 7 campos. `skill`, `issue`, `elapsedSec`
-        // y `code` están en scope acá; el provider se resuelve con
-        // `resolveSkillProvider(skill)` (mismo helper que usa el bloque de
-        // cuota) porque el `skillProvider` local vive dentro del try previo.
-        // `tk` se reparsea acá para no depender del try de emitSessionEnd.
-        // Never-throws (CA-5): best-effort, jamás rompe el lifecycle.
-        try {
-          const providerCost = require('./lib/metrics/provider-cost');
-          let provPc = 'unknown';
-          try { provPc = resolveSkillProvider(skill) || 'unknown'; } catch { /* defensa */ }
-          const logPathPc = path.join(LOG_DIR(), `${issue}-${skill}.log`);
-          const tkPc = parseTokensFromLog(logPathPc);
-          providerCost.recordProviderCost({
-            provider: provPc,
-            skill,
-            issue,
-            tokens_in: tkPc.input,                 // total canónico del adapter
-            tokens_out: tkPc.output,
-            latency_ms: Math.round(elapsedSec * 1000),
-            status: code === 0 ? 'ok' : 'error',
-          });
-        } catch { /* best-effort, no rompe el lifecycle */ }
       }
+
+      // #4403 (D4 · CA-D · H2 · RS-3) — telemetría de costo por provider.
+      // #6558 — esquema v2: libro contable de cuota. Bloque INDEPENDIENTE del
+      // try de emitSessionEnd (no acoplar fallos) y FUERA de `if (traceHandle)`:
+      // las corridas determinísticas también dejan su línea (provider
+      // `deterministic`, tokens 0) para que exista una línea por corrida.
+      //   - `provider`: el EFECTIVO (el que corrió), misma fuente que
+      //     `effective-model.js` y que el detector de cuota (#4541): en fallback
+      //     vale el provider del fallback (p.ej. `openai-codex`). Antes se
+      //     resolvía con `resolveSkillProvider(skill)` (declarado) y las 14.258
+      //     líneas históricas dicen `anthropic` (CA-1).
+      //   - `resultado`: `rebote` si el detector de cuota clasificó la salida
+      //     como `quota_exhausted` (`veredictoDeAutenticacion`, izado al scope
+      //     del handler); `abortada` si lo mató el watchdog de timeout;
+      //     `ganada` con exit 0; `error` en el resto.
+      //   - `cache_read/cache_write` (#7506) salen del mismo parser.
+      // `tk` se reparsea acá para no depender del try de emitSessionEnd.
+      // Never-throws (CA-5): best-effort, jamás rompe el lifecycle.
+      try {
+        const providerCost = require('./lib/metrics/provider-cost');
+        let provPc = 'unknown';
+        try {
+          provPc = (launchResult && launchResult.provider)
+            || (dispatchResolution && dispatchResolution.provider)
+            || resolveSkillProvider(skill)
+            || 'unknown';
+        } catch { /* defensa */ }
+        const logPathPc = path.join(LOG_DIR(), `${issue}-${skill}.log`);
+        let tkPc = { input: 0, output: 0, cache_read: 0, cache_create: 0 };
+        try { tkPc = parseTokensFromLog(logPathPc) || tkPc; } catch { /* tokens 0 */ }
+        const quotaHit = !!(veredictoDeAutenticacion && veredictoDeAutenticacion.errorClass === 'quota_exhausted');
+        let resultadoPc = 'error';
+        if (killedByTimeoutWatchdog) resultadoPc = 'abortada';
+        else if (quotaHit) resultadoPc = 'rebote';
+        else if (code === 0) resultadoPc = 'ganada';
+        providerCost.recordProviderCost({
+          provider: provPc,
+          skill,
+          issue,
+          fase,
+          tokens_in: tkPc.input,                 // total canónico del adapter
+          tokens_out: tkPc.output,
+          cache_read: tkPc.cache_read,
+          cache_write: tkPc.cache_create,
+          duration_ms: Math.round(elapsedSec * 1000),
+          resultado: resultadoPc,
+        });
+      } catch { /* best-effort, no rompe el lifecycle */ }
     }, 500);
 
     // Si murió en menos de 15 segundos con error → fallo de infra + COOLDOWN
@@ -21217,6 +21589,31 @@ function brazoIntake(config) {
     ? new Set(pipelineMode.allowedIssues.map(String))
     : null;
 
+  // #7440 rev-2 — barrido de firmas tardías ANTES del search. Los issues con
+  // `needs-human` no vuelven de `buildIntakeSearchQueries()`; el disparador
+  // sale de los markers locales. `_sweepLateSignoff` no lanza por contrato; el
+  // try de acá cubre el `require` y el armado de deps: el intake NUNCA se
+  // frena por este barrido (fail-open del intake, fail-closed del levantamiento).
+  // Queda detrás de los guards `paused` y `degraded` de arriba, que también
+  // valen para el barrido (no se mutan labels sin saber la ola vigente).
+  try {
+    _sweepLateSignoff({
+      allowlistSet, config,
+      deps: {
+        io: require('./lib/design-decision-gate-io'),
+        humanBlock,
+        designDecision: require('./lib/design-decision-detect'),
+        encolar: encolarOrdenGithub,
+        ghQueueDir: path.join(PIPELINE(), 'servicios', 'github', 'pendiente'),
+        skillsPorFase: config.pipelines,
+        throttle: ghThrottle,
+        log,
+      },
+    });
+  } catch (e) {
+    log('intake', `[WARN] barrido de firmas tardías no pudo armarse — se conserva todo bloqueo (#7440): ${e.message}`);
+  }
+
   const intakeConfig = config.intake || {};
 
   for (const [pipelineName, pipeIntake] of Object.entries(intakeConfig)) {
@@ -21398,7 +21795,58 @@ function brazoIntake(config) {
                   // SIN `continue`: el issue sigue evaluándose por el resto de
                   // los gates, igual que la rama de deps.
                   saltar = true;
+                } else if (live.estado === 'PRESENTE') {
+                  // #7440 rev-2 — camino SECUNDARIO: sólo corre durante el lag
+                  // del índice de búsqueda (el search excluye `needs-human`).
+                  // El primario es `_sweepLateSignoff` al inicio del tick;
+                  // comparten `_lateSignoffState`, así que si el barrido ya
+                  // consultó, acá cae en `throttled` (cero llamadas extra).
+                  // Es el único camino donde el issue sigue en el MISMO tick.
+                  //
+                  // #7432 / #7440 — la firma pudo llegar DESPUÉS de la escalada
+                  // (carrera de #7113: intake 18:44:23, firma 18:44:25). Se
+                  // re-consulta acotado por throttle + tope de edad, y sólo si
+                  // TODOS los markers vivos son del gate. Sin Telegram (RS-4.7).
+                  //
+                  // RS-4.10 — fail-closed PROPIO. `_evaluateLateSignoff` no
+                  // lanza por contrato y el `try` de acá cubre el cableado
+                  // (listado de markers, config): nada del código nuevo puede
+                  // caer en el `catch` fail-open del detector, que dejaría
+                  // pasar el issue con `needs-human` puesto.
+                  let r;
+                  try {
+                    const io = require('./lib/design-decision-gate-io');
+                    r = _evaluateLateSignoff({
+                      issue: nIssue,
+                      markers: humanBlock.listBlockedMarkers(nIssue),   // TODOS, no el primero (RS-4.9)
+                      signals: veredicto.signals,
+                      cfg: _resolveLateSignoffConfig(config.architect),
+                      deps: {
+                        io, humanBlock, designDecision, encolar: encolarOrdenGithub,
+                        ghQueueDir: path.join(PIPELINE(), 'servicios', 'github', 'pendiente'),
+                        skillsPorFase: config.pipelines, log,
+                      },
+                    });
+                  } catch (e) {
+                    r = { lifted: false, reason: 'error', error: String((e && e.message) || e).slice(0, 160) };
+                    log('intake', `[WARN] #${issueNum} cableado del auto-levantamiento falló — se conserva el bloqueo (fail-closed, #7440): ${r.error}`);
+                  }
+                  if (r.lifted) {
+                    log('intake', `♻️ #${issueNum} firma del arquitecto posterior a la escalada — bloqueo levantado solo (#7432)`);
+                    saltar = true;   // sigue por el resto de los gates, igual que la rama AUSENTE
+                  } else if (LATE_SIGNOFF_NO_RECHECK_REASONS.has(r.reason)) {
+                    // UX-F — el operador que hace grep necesita distinguir "no
+                    // miré" (throttle, edad, bloqueo mixto) de "miré y no alcanza".
+                    log('intake', `#${issueNum} decisión de arquitectura ya escalada — sin re-consultar (${r.reason})`);
+                    continue;
+                  } else {
+                    log('intake', `#${issueNum} decisión de arquitectura ya escalada — firma re-consultada, sin cambios (${r.reason})`);
+                    continue;
+                  }
                 } else {
+                  // NO_VERIFICABLE — si `gh` no respondió para leer labels,
+                  // tampoco va a responder para leer la firma: fail-closed sin
+                  // gastar la segunda llamada.
                   log('intake', `#${issueNum} decisión de arquitectura ya escalada — sin re-notificar`);
                   continue;
                 }
@@ -21486,6 +21934,10 @@ function brazoIntake(config) {
                   evidence: final.fragment,
                   // #7439 — ver `causaDD` arriba.
                   cause: causaDD,
+                  // #7440 rev-2 — ÚNICO productor de `signals` (misma regla que
+                  // `cause`): keys del enum del detector, para que el barrido
+                  // arme el comentario de traza sin el veredicto en mano.
+                  signals: final.signals,
                   signoff_verifiable: firmaVerificableDD,
                   moveFromActive: false,
                 });
@@ -27651,6 +28103,16 @@ if (process.env.PULPO_NO_AUTOSTART === '1') {
     _readLiveLabelsOrThrow,
     _verifyHumanBlockLive,
     _shouldReblockForHuman,
+    // #7440 — auto-levantamiento del bloqueo de decisión por firma tardía
+    // del arquitecto: evaluador puro + throttle + config saneada (testing).
+    _resolveLateSignoffConfig,
+    _lateSignoffRecheckDue,
+    _evaluateLateSignoff,
+    _sweepLateSignoff,
+    _buildLateSignoffComment,
+    _lateSignoffState,
+    LATE_SIGNOFF_DEFAULTS,
+    LATE_SIGNOFF_NO_RECHECK_REASONS,
     HUMAN_BLOCK_LABELS,
     // #7459 — handler de /unblock del Commander, expuesto para el test de
     // regresión (retiro de needs-human por la cola auditada, sin gh en proceso).

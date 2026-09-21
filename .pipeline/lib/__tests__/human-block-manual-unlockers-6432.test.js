@@ -95,6 +95,7 @@ const NO_LIMPIAN = [
     'brazo-desbloqueo:merge-race',    // automático (D11)
     'brazo-desbloqueo:precondicion',  // automático (D11)
     'auto-recheck',                   // automático (D11)
+    'architect-signoff:late',         // #7440 — automático (RS-4.4)
     'unlocker-inventado',             // fuera del enum ⇒ jamás limpia
 ];
 
@@ -142,9 +143,17 @@ test('#6432 T-A6: la whitelist y el enum de unlockers no se desincronizan', () =
     assert.deepEqual([...hb.MANUAL_UNLOCKERS].sort(), [...LIMPIAN].sort());
     // Ninguna vía automática se coló en la whitelist (D11).
     for (const u of ['github:label-removed', 'human-block-action:devolver',
-        'brazo-desbloqueo:merge-race', 'brazo-desbloqueo:precondicion', 'auto-recheck']) {
+        'brazo-desbloqueo:merge-race', 'brazo-desbloqueo:precondicion', 'auto-recheck',
+        'architect-signoff:late']) {
         assert.equal(hb.MANUAL_UNLOCKERS.has(u), false, `${u} no puede limpiar el ledger`);
     }
+});
+
+test('#7440 CA-9: architect-signoff:late está en el enum, NO en MANUAL_UNLOCKERS, y normaliza sin rechazo (RS-4.3 / RS-4.4)', () => {
+    assert.equal(hb.UNLOCKER_ENUM.includes('architect-signoff:late'), true);
+    assert.equal(hb.MANUAL_UNLOCKERS.has('architect-signoff:late'), false, 'vía automática: no rompe la degradación pegajosa (D11)');
+    assert.deepEqual(hb.normalizeUnlocker('architect-signoff:late'), { unlocker: 'architect-signoff:late' },
+        'sin unlocker_rejected_reason: no se normaliza a unknown');
 });
 
 test('#6432 T-A6: un destrabe FALLIDO no limpia aunque el unlocker sea manual', () => {

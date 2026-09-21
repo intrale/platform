@@ -2662,77 +2662,135 @@ hash-chain).
 
 El writer de telemetría de costo por provider es
 [`.pipeline/lib/metrics/provider-cost.js`](../../.pipeline/lib/metrics/provider-cost.js)
-(#4403 · D4). El pulpo escribe **una línea JSON por ejecución de agente** al cerrar
-su lifecycle ([`.pipeline/pulpo.js`](../../.pipeline/pulpo.js), bloque on-exit
-independiente y *never-throws*).
+(#4403 · D4; esquema v2 en #6558). El pulpo escribe **una línea JSON por ejecución
+de agente** al cerrar su lifecycle ([`.pipeline/pulpo.js`](../../.pipeline/pulpo.js),
+bloque on-exit independiente y *never-throws*). Desde #6558 también se anotan las
+corridas determinísticas (`provider: "deterministic"`, tokens 0), así el archivo
+tiene exactamente una línea por corrida.
 
-**Ruta (fuente de verdad):** `.pipeline/state/provider-cost.jsonl`.
+**Ruta (fuente de verdad):** `.pipeline/state/provider-cost.jsonl` (resuelta por
+`write-target.writePath(...)`, #7112 — no hardcodear).
 
 > Es un **artefacto de runtime, no versionado**: no existe hasta que el pipeline
 > (o el smoke) corre al menos un agente. Su ausencia con `ls` **no es un bug** —
 > es el estado inicial en un checkout limpio.
 
-**Esquema — whitelist estricta de 7 campos** (asignación literal, sin spread; los
-numéricos coercionados con `Number()`; `status` sanitizado para redactar secretos
-y stripear CR/LF anti log-injection):
+#### Esquema v2 (#6558) — libro contable de cuota por proveedor
+
+Whitelist estricta de 12 campos (asignación literal, sin spread; los numéricos
+coercionados con `Number()`; los de texto sanitizados para redactar secretos y
+stripear CR/LF anti log-injection):
 
 | Campo | Tipo | Significado |
 |---|---|---|
-| `provider` | string | provider resuelto (`anthropic`, `openai-codex`, `antigravity`, …) |
+| `schema` | number | **`2`**. Versión de esquema visible; las líneas sin este campo son v1 (histórico) |
+| `timestamp` | string | ISO 8601 **en UTC con sufijo `Z`**, momento de finalización de la corrida. La conversión a hora local es de quien lo muestra |
+| `provider` | string | clave canónica del proveedor que **ejecutó de verdad** (`anthropic`, `openai-codex`, `antigravity`, `deterministic`) — en fallback vale el del fallback, no el declarado en el perfil del skill |
 | `skill` | string | skill del agente (`backend-dev`, `guru`, …) |
 | `issue` | number\|null | número de issue procesado |
-| `tokens_in` | number | tokens de entrada (total canónico del adapter) |
+| `fase` | string | fase del pipeline (`dev`, `validacion`, `verificacion`, …) |
+| `tokens_in` | number | tokens de entrada (total canónico del adapter, no cacheados) |
 | `tokens_out` | number | tokens de salida |
-| `latency_ms` | number | latencia de la ejecución en ms |
-| `status` | string | `ok` \| `error…` (sanitizado — nunca ecoa la key en un 401) |
+| `cache_read` | number | tokens leídos de cache (#7506); 0 si el adapter no lo informa |
+| `cache_write` | number | tokens escritos a cache (#7506); 0 si el adapter no lo informa |
+| `duration_ms` | number | duración de la ejecución en ms (canónico; reemplaza a `latency_ms` de v1) |
+| `resultado` | string | **enum cerrado** `ganada` \| `error` \| `rebote` \| `abortada` (ver mapeo abajo) |
 
-**Ejemplo de línea real** (generada por el writer de producción; JSON válido —
-verificado con `JSON.parse`):
+**Cómo se decide `resultado`** (en el handler de exit del pulpo, en este orden):
+
+| Valor | Señal |
+|---|---|
+| `abortada` | el watchdog de timeout por skill mató al hijo |
+| `rebote` | el detector de cuota clasificó la salida como `quota_exhausted` (el proveedor "dijo basta") — conserva el proveedor que rebotó y el timestamp |
+| `ganada` | exit code 0 |
+| `error` | cualquier otro exit ≠ 0 |
+
+**Ejemplo de línea v2** (JSON válido — verificado con `JSON.parse`):
 
 ```json
-{"provider":"anthropic","skill":"backend-dev","issue":4405,"tokens_in":18234,"tokens_out":2871,"latency_ms":41230,"status":"ok"}
+{"schema":2,"timestamp":"2026-09-21T12:45:00.000Z","provider":"openai-codex","skill":"backend-dev","issue":6558,"fase":"dev","tokens_in":1234,"tokens_out":567,"cache_read":0,"cache_write":0,"duration_ms":390752,"resultado":"ganada"}
 ```
 
-**Nota de seguridad:** el archivo contiene **solo métricas** (provider, skill,
-tokens, latencia, estado). **No** guarda credenciales ni raw output del provider.
-Si alguna vez apareciera material sensible en `status`, es un bug del sanitizador
-— reportar como hallazgo aparte.
+#### Esquema v1 (#4403, histórico) y compatibilidad
 
-**Lectura / agregación por provider.** El entorno del pipeline es **Node puro (no
-hay `jq` instalado)**; el reader canónico es el mismo módulo que consume el
-dashboard, `readProviderCostBreakdown`:
+Hasta #6558 el writer emitía 7 campos:
+`{ provider, skill, issue, tokens_in, tokens_out, latency_ms, status }`, **sin
+timestamp** y con `provider` = el **declarado** para el skill (por eso las ~14.250
+líneas históricas dicen `anthropic` aunque muchas corrieron en Codex/Gemini).
+
+- El archivo es **append-only**: el histórico v1 **no se reescribe** ni se
+  reinterpreta. Queda distinguible por la ausencia de `schema`.
+- Los lectores (`readProviderCostRecords`, `readProviderCostBreakdown`,
+  `readProviderCostByPeriod`) normalizan v1 → vocabulario v2 sólo en memoria
+  (`latency_ms → duration_ms`; `status: ok → resultado: ganada`, `error… → error`;
+  `timestamp: null`) y marcan cada registro con `reliable: false`.
+- **Las líneas v1 NO se suman al bucket de ningún proveedor**: `byProvider` sólo
+  agrega líneas confiables (v2). El histórico viaja aparte en
+  `unreliable: { sessions, tokens_in, tokens_out }` / `hasUnreliable`, y el panel
+  Costos lo muestra como "N corridas anteriores sin proveedor confiable".
+- El writer sigue aceptando `latency_ms` / `status` como *input* (alias v1) y
+  los persiste ya traducidos a v2; nunca emite `status` ni `latency_ms`.
+
+**Nota de seguridad:** el archivo contiene **solo métricas** (proveedor, skill,
+fase, tokens, duración, resultado). **No** guarda credenciales ni raw output del
+provider. Si alguna vez apareciera material sensible en un campo de texto, es un
+bug del sanitizador — reportar como hallazgo aparte.
+
+#### Consultas (CA-4 de #6558): por proveedor y por día/semana
+
+El entorno del pipeline es **Node puro (no hay `jq` instalado)**; el reader
+canónico es el mismo módulo que consume el dashboard.
 
 ```bash
-# Agregación oficial (la misma que alimenta la pantalla Costos del dashboard)
+# 1) Agregación oficial por proveedor (la misma que alimenta la pantalla Costos)
 node -e "const {readProviderCostBreakdown}=require('./.pipeline/lib/metrics/provider-cost'); \
   console.log(JSON.stringify(readProviderCostBreakdown({file:'.pipeline/state/provider-cost.jsonl'}),null,2));"
 ```
 
-Salida real sobre las dos líneas de ejemplo:
+Salida (forma):
 
 ```json
 {
   "hasData": true,
   "byProvider": {
-    "anthropic":    { "tokens_in": 18234, "tokens_out": 2871, "sessions": 1, "errors": 0 },
-    "openai-codex": { "tokens_in": 9120,  "tokens_out": 1440, "sessions": 1, "errors": 1 }
+    "anthropic":    { "tokens_in": 18234, "tokens_out": 2871, "cache_read": 0, "cache_write": 0, "sessions": 1, "errors": 0, "rebotes": 0, "abortadas": 0 },
+    "openai-codex": { "tokens_in": 9120,  "tokens_out": 1440, "cache_read": 0, "cache_write": 0, "sessions": 2, "errors": 0, "rebotes": 1, "abortadas": 0 }
   },
-  "totalSessions": 2
+  "totalSessions": 3,
+  "hasUnreliable": true,
+  "unreliable": { "sessions": 14262, "tokens_in": 1763977441, "tokens_out": 15818692 }
 }
 ```
 
-Alternativa sin el módulo (one-liner Node, sin deps), útil para inspección ad-hoc:
+```bash
+# 2) Serie por DÍA (UTC) y proveedor
+node -e "const {readProviderCostByPeriod}=require('./.pipeline/lib/metrics/provider-cost'); \
+  console.log(JSON.stringify(readProviderCostByPeriod({period:'day'},{file:'.pipeline/state/provider-cost.jsonl'}),null,2));"
+
+# 3) Serie por SEMANA ISO (lunes a domingo, UTC) y proveedor — "¿por cuánto nos pasamos esta semana?"
+node -e "const {readProviderCostByPeriod}=require('./.pipeline/lib/metrics/provider-cost'); \
+  console.log(JSON.stringify(readProviderCostByPeriod({period:'week'},{file:'.pipeline/state/provider-cost.jsonl'}),null,2));"
+```
+
+Salida (forma): `{ period: 'week', series: { '2026-W38': { anthropic: {…}, 'openai-codex': {…} }, '2026-W39': {…} }, unreliableSessions: 14262 }`
+— las claves de `series` vienen ordenadas y cada bucket tiene la misma forma que
+en `byProvider`.
 
 ```bash
+# 4) Sin el módulo (one-liner Node, sin deps): rebotes por cuota por proveedor y día
 node -e 'const fs=require("fs"); \
-  const rows=fs.readFileSync(".pipeline/state/provider-cost.jsonl","utf8").split("\n").filter(Boolean).map(JSON.parse); \
-  const by={}; for(const r of rows){const b=by[r.provider]??={sessions:0,tokens_in:0,tokens_out:0,errors:0}; \
-  b.sessions++; b.tokens_in+=r.tokens_in; b.tokens_out+=r.tokens_out; if(String(r.status).startsWith("error"))b.errors++;} \
+  const rows=fs.readFileSync(".pipeline/state/provider-cost.jsonl","utf8").split("\n").filter(Boolean).map(JSON.parse) \
+    .filter(r=>r.schema>=2); \
+  const by={}; for(const r of rows){const k=r.timestamp.slice(0,10)+" "+r.provider; const b=by[k]??={corridas:0,rebotes:0,tokens:0}; \
+  b.corridas++; b.tokens+=r.tokens_in+r.tokens_out; if(r.resultado==="rebote")b.rebotes++;} \
   console.log(JSON.stringify(by,null,2));'
 ```
 
-Degrada a `{ hasData:false, byProvider:{}, totalSessions:0 }` si el archivo falta
-o está vacío (never-throws).
+El filtro `r.schema>=2` es obligatorio en consultas ad-hoc: las líneas v1 no
+tienen `timestamp` ni proveedor confiable.
+
+Degrada a `{ hasData:false, byProvider:{}, totalSessions:0, hasUnreliable:false, … }`
+si el archivo falta o está vacío (never-throws).
 
 ### 14.3 Health check en tiempo real
 
@@ -2962,6 +3020,7 @@ comportamiento histórico (columna *pre*); **no** hay stubs vigentes en dispatch
 | Adapters de dispatch (Codex, Gemini) | stubs que tiraban `_notImplemented` | adapters reales que hacen spawn del CLI | `.pipeline/lib/agent-launcher/providers/*.js` (comentarios "previo que tiraba `_notImplemented`") |
 | Smoke test | sin harness CLI reproducible | `multi-provider-smoke-test.js` fail-closed + coverage + audit | §14.1 (output real) |
 | Telemetría de costo | inexistente (`provider-cost.jsonl` no se escribía) | writer de 7 campos on-exit + slice de dashboard | §14.2 (línea real + agregación) |
+| Libro contable de cuota (#6558) | 7 campos, proveedor **declarado**, sin timestamp | esquema v2: proveedor **efectivo**, `timestamp` UTC, `fase`, `resultado` (`ganada\|error\|rebote\|abortada`), `cache_read/write`; histórico v1 marcado no confiable | §14.2 (esquema v2 + consultas por día/semana) |
 | Health por provider | presencia de key = "ok" (engañoso) | probe OAuth real + snapshot `state/` + pantalla en vivo | §14.3 (`multi-provider-health.json`, `reason_code: cli_oauth_ok`) |
 | Failover | opaco (sin traza de por qué cayó) | `skipReasons` observables + log redactado + retry a `pendiente/` | §14.4 (bloques de `formatProviderResolutionLog`) |
 | Diagnóstico de operador | leer código fuente | esta sección §14 (comandos copy-paste reproducibles) | #4405 |

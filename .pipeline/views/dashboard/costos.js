@@ -864,11 +864,22 @@ const TIER_CHIP = {
     unknown: { cls: 'cz-ptier-pay', label: '—' },
 };
 
+// #6558 (UX-1) — el histórico v1 de `provider-cost.jsonl` (proveedor declarado,
+// sin timestamp) no se suma a ningún proveedor: se informa aparte con el copy
+// fijado por UX en la validación. Un número engañoso es peor que uno ausente.
+function renderUnreliableNote(log) {
+    const n = Number(log && log.unreliable && log.unreliable.sessions) || 0;
+    if (!(log && log.hasUnreliable) || n <= 0) return '';
+    const fmt = (v) => Number(v || 0).toLocaleString('es-AR');
+    const label = n === 1 ? 'corrida anterior' : 'corridas anteriores';
+    return `<div class="cz-foot">ℹ️ <b>${escapeHtmlText(fmt(n))}</b> ${label} sin proveedor confiable (esquema v1, previo a #6558): no se suman al desglose.</div>`;
+}
+
 function renderProviderCostBreakdown(slice) {
     const log = (slice && slice.providerCostLog) || null;
     // UX-G3: empty-state explícito, nunca una grilla de ceros.
     if (!log || !log.hasData || !log.byProvider || !Object.keys(log.byProvider).length) {
-        return `<div class="cz-empty">Sin registros de costo por proveedor todavía</div>`;
+        return `<div class="cz-empty">Sin registros de costo por proveedor todavía</div>${renderUnreliableNote(log)}`;
     }
     const rows = Object.keys(log.byProvider).map((prov) => {
         const b = log.byProvider[prov] || {};
@@ -906,7 +917,7 @@ function renderProviderCostBreakdown(slice) {
       ${errTag}
     </div>`;
     }).join('');
-    return `<div class="cz-skilltable">${body}</div>`;
+    return `<div class="cz-skilltable">${body}</div>${renderUnreliableNote(log)}`;
 }
 
 // Devuelve el bloque HTML completo del rediseño MIZPÁ. Se inyecta como CONTENIDO

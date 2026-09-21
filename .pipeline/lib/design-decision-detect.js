@@ -419,13 +419,18 @@ const ARCHITECT_SKILL_ID = 'architect';
  * explotación es "un `guru`/`po`/`doc` inyectado emite el marcador", y esos
  * comentarios se autodeclaran con SU skill, así que siguen descartados.
  *
- * Dos formas, verificadas contra comentarios reales:
+ * Tres formas, verificadas contra comentarios reales:
  *   🤖 `architect` · fase `criterios` · pipeline `definicion`  → architect
  *   > Producido por el agente `ux` en la fase `criterios`.     → ux
+ *   <!-- agent: intake -->                                      → intake
+ *
+ * La tercera (#7440 RS-4.5) es el footer HTML que llevan los comentarios
+ * automáticos del pipeline — entre ellos el de traza del auto-levantamiento,
+ * que NO puede leerse como firma ni aunque alguien le pegara el marcador.
  *
  * `u` por el emoji; `g` porque puede haber más de una marca en el mismo body.
  */
-const AGENT_FOOTER_RE = /(?:\u{1F916}\s*`?([a-z][a-z0-9_-]*)`?\s*[·.]\s*fase|producido por el agente\s+`?([a-z][a-z0-9_-]*)`?)/giu;
+const AGENT_FOOTER_RE = /(?:\u{1F916}\s*`?([a-z][a-z0-9_-]*)`?\s*[·.]\s*fase|producido por el agente\s+`?([a-z][a-z0-9_-]*)`?|<!--\s*agent:\s*([a-z][a-z0-9_-]*)\s*-->)/giu;
 
 /** Motivos de descarte, enumerados para que la traza (CA-28) sea agregable. */
 const SIGNOFF_REJECT = Object.freeze({
@@ -452,7 +457,7 @@ function skillsDeclarados(body) {
     const out = new Set();
     const re = new RegExp(AGENT_FOOTER_RE.source, AGENT_FOOTER_RE.flags);
     for (const m of String(body == null ? '' : body).matchAll(re)) {
-        const skill = (m[1] || m[2] || '').toLowerCase();
+        const skill = (m[1] || m[2] || m[3] || '').toLowerCase();
         if (skill) out.add(skill);
     }
     return out;
@@ -541,10 +546,14 @@ function evalComentarioFirma(comment, issue, lastEditedMs, audit) {
  * @param {Array}    args.comments      — `{ createdAt, body, authorAssociation, isMinimized }`
  * @param {string?}  args.lastEditedAt  — ISO o `null` (body nunca editado)
  * @param {object}   [args.audit]       — `{ available, corroborated }` de `readSignoffAudit()`
- * @returns {{settled: boolean, reason: string, rejected: Array<{createdAt: string, motivo: string}>}}
+ * @returns {{settled: boolean, reason: string, rejected: Array<{createdAt: string, motivo: string}>, signedAt?: string}}
+ *   `signedAt` (#7440) sólo en el retorno positivo: `createdAt` tal cual del
+ *   comentario aceptado, sin reformatear (es la cadena que corrobora
+ *   `architect-tokens.jsonl` y la que el operador pega en un `grep`).
  */
 function evaluateArchitectSignoff({ issue, comments, lastEditedAt, audit = null } = {}) {
     const rechazados = [];
+    let firmadoEn = '';
     try {
         const n = Number(issue);
         if (!Number.isInteger(n) || n <= 0) {
@@ -566,6 +575,7 @@ function evaluateArchitectSignoff({ issue, comments, lastEditedAt, audit = null 
             const r = evalComentarioFirma(c, n, lastEditedMs, audit);
             if (r.ok) {
                 hubo = true;
+                firmadoEn = String((c && c.createdAt) || '');
                 break;
             }
             // Sólo se registra el descarte de comentarios que AL MENOS traían el
@@ -583,7 +593,7 @@ function evaluateArchitectSignoff({ issue, comments, lastEditedAt, audit = null 
             const corroboracion = audit && audit.available === true
                 ? 'corroborada en la traza local'
                 : 'traza local no disponible';
-            return { settled: true, reason: `firma de arquitecto vigente (${corroboracion})`, rejected: rechazados };
+            return { settled: true, reason: `firma de arquitecto vigente (${corroboracion})`, rejected: rechazados, signedAt: firmadoEn };
         }
         return {
             settled: false,
@@ -822,4 +832,7 @@ module.exports = {
     // #7439 — copy fijo cuando la firma no pudo comprobarse (RS-3.1).
     buildOperatorReasonUnverifiable,
     buildOperatorQuestionUnverifiable,
+    // #7440 UX-E — el comentario de traza del auto-levantamiento enumera las
+    // mismas frases que leyó el operador en el aviso de bloqueo.
+    listaSenales,
 };

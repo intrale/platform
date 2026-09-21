@@ -98,6 +98,45 @@ test('listBlockedMarkers devuelve TODOS los markers, no el primero', () => {
     assert.ok(hb.findBlockedMarker(6431));
 });
 
+test('#7440 CA-11: listBlockedMarkers expone blocked_at (ISO del .reason.json) y synthetic; null/false si faltan o no parsean', () => {
+    resetFs();
+    ponerMarker({ pipeline: 'definicion', phase: 'analisis', issue: 7440, skill: 'definicion', reason: { synthetic: true, cause: 'design-decision' } });
+    const f2 = ponerMarker({ pipeline: 'definicion', phase: 'sizing', issue: 7440, skill: 'po' });
+    fs.writeFileSync(`${f2}.reason.json`, '{ roto', 'utf8');
+    ponerMarker({ pipeline: 'desarrollo', phase: 'dev', issue: 7440, skill: 'pipeline-dev', reason: { blocked_at: 12345, synthetic: 'true' } });
+
+    const porFase = Object.fromEntries(hb.listBlockedMarkers(7440).map((m) => [m.phase, m]));
+    assert.equal(porFase.analisis.blocked_at, '2026-08-24T13:29:23Z');
+    assert.equal(porFase.analisis.synthetic, true);
+    assert.equal(porFase.analisis.cause, 'design-decision');
+    assert.equal(porFase.sizing.blocked_at, null, 'sidecar ilegible ⇒ null, no lanza');
+    assert.equal(porFase.sizing.synthetic, false);
+    assert.equal(porFase.sizing.cause, null);
+    assert.equal(porFase.dev.blocked_at, null, 'blocked_at no-string ⇒ null');
+    assert.equal(porFase.dev.synthetic, false, 'synthetic sólo con `true` literal');
+    // Las claves históricas siguen (los call-sites destructuran por nombre).
+    for (const m of Object.values(porFase)) {
+        // #7440 rev-2 suma `signals` (ver tests al final).
+        assert.deepEqual(Object.keys(m).sort(), ['blocked_at', 'cause', 'file', 'phase', 'pipeline', 'signals', 'skill', 'synthetic']);
+    }
+});
+
+test('#7440 CA-9 bis: reconcileBlockedMarkers({ unlocker: architect-signoff:late }) audita origin sin normalizar a unknown', () => {
+    resetFs();
+    ponerMarker({ pipeline: 'definicion', phase: 'criterios', issue: 7441, skill: 'definicion', reason: { synthetic: true, cause: 'design-decision' } });
+    const trazas = [];
+    const rec = hb.reconcileBlockedMarkers({
+        issue: 7441, unlocker: 'architect-signoff:late', skillsPorFase: SKILLS_POR_FASE,
+        io: { appendUnblockAudit: (r) => { trazas.push(r); } },
+    });
+    assert.deepEqual(rec.reconciled.map((r) => r.action), ['descartado'], 'marker sintético del gate ⇒ descartado, no destrabado');
+    assert.equal(trazas.length, 1);
+    assert.equal(trazas[0].origin, 'architect-signoff:late');
+    assert.equal(trazas[0].action, 'descartado');
+    assert.deepEqual(fs.readdirSync(dir('definicion', 'criterios', 'pendiente')), [], 'no fabrica work-file');
+    resetFs();
+});
+
 test('listBlockedMarkers ignora artefactos (.reason.json, .guidance.txt)', () => {
     resetFs();
     const f = ponerMarker({ pipeline: 'definicion', phase: 'analisis', issue: 6431, skill: 'definicion' });
@@ -396,5 +435,77 @@ test('#6191 SEC-F un `evidence` de tamano normal se persiste tal cual', () => {
     });
     const meta = JSON.parse(fs.readFileSync(`${r.marker_path}.reason.json`, 'utf8'));
     assert.equal(meta.evidence, cita);
+    resetFs();
+});
+
+// =============================================================================
+// #7440 rev-2 — `signals` persistidas en el marker (misma familia que `cause`)
+// =============================================================================
+
+test('#7440 rev-2 — normalizeBlockSignals: cerrado por forma y tope, dedup, no-array ⇒ []', () => {
+    const { normalizeBlockSignals, MAX_SIGNALS } = require('../block-cause');
+    assert.equal(hb.normalizeBlockSignals, normalizeBlockSignals, 're-export desde human-block');
+    // Del issue: texto con espacios, no-strings y > 40 chars se descartan; queda la key válida.
+    assert.deepEqual(normalizeBlockSignals(['x y', 'ok', 42, 'a'.repeat(50)]), ['ok']);
+    // No-array ⇒ [].
+    for (const malo of [undefined, null, 'dato-critico', 7, { 0: 'ok' }]) {
+        assert.deepEqual(normalizeBlockSignals(malo), []);
+    }
+    // Forma: minúscula/dígito al inicio, guiones permitidos, sin mayúsculas ni prosa ni vacío.
+    assert.deepEqual(normalizeBlockSignals(['Dato-Critico', '-x', '', 'a'.repeat(40), 'a'.repeat(41), '9ok']),
+        ['a'.repeat(40), '9ok']);
+    // Dedup preservando orden + tope 8.
+    const muchas = Array.from({ length: 12 }, (_, i) => `s${i}`);
+    assert.deepEqual(normalizeBlockSignals([...muchas, 's0', 's1']), muchas.slice(0, MAX_SIGNALS));
+    assert.equal(MAX_SIGNALS, 8);
+    assert.deepEqual(normalizeBlockSignals(['ok', 'ok', 'otra', 'ok']), ['ok', 'otra']);
+    // Las 4 keys reales del detector pasan la forma.
+    const { DESIGN_DECISION_SIGNALS } = require('../design-decision-detect');
+    const keys = DESIGN_DECISION_SIGNALS.map((s) => s.key);
+    assert.deepEqual(normalizeBlockSignals(keys), keys);
+});
+
+test('#7440 rev-2 — reportHumanBlock persiste `signals` normalizadas y las devuelve; vacías ⇒ la clave no existe', () => {
+    resetFs();
+    const r = hb.reportHumanBlock({
+        issue: 7440, skill: 'definicion', phase: 'criterios', pipeline: 'definicion',
+        reason: 'motivo', question: '¿pregunta?', skipGithubLabel: true, moveFromActive: false,
+        cause: 'design-decision', signals: ['dato-critico', 'texto libre con espacios', 'dato-critico', 'servicio-externo'],
+    });
+    assert.deepEqual(r.signals, ['dato-critico', 'servicio-externo']);
+    const meta = JSON.parse(fs.readFileSync(`${r.marker_path}.reason.json`, 'utf8'));
+    assert.deepEqual(meta.signals, ['dato-critico', 'servicio-externo']);
+    assert.equal(meta.cause, 'design-decision');
+
+    const sin = hb.reportHumanBlock({
+        issue: 7441, skill: 'definicion', phase: 'criterios', pipeline: 'definicion',
+        reason: 'motivo', question: '¿pregunta?', skipGithubLabel: true, moveFromActive: false,
+        cause: 'design-decision', signals: 'no-es-array',
+    });
+    assert.deepEqual(sin.signals, []);
+    const metaSin = JSON.parse(fs.readFileSync(`${sin.marker_path}.reason.json`, 'utf8'));
+    assert.ok(!('signals' in metaSin), 'sin señales válidas la clave no se persiste');
+    resetFs();
+});
+
+test('#7440 rev-2 — listBlockedMarkers expone `signals` normalizadas en lectura; legacy sin clave o .reason.json ilegible ⇒ []', () => {
+    resetFs();
+    // Marker escrito por el gate con signals válidas + basura editada a mano.
+    ponerMarker({ pipeline: 'definicion', phase: 'criterios', issue: 7442, skill: 'definicion',
+        reason: { cause: 'design-decision', signals: ['x y', 'ok', 42, 'a'.repeat(50)] } });
+    // Legacy (anterior al deploy): sin `signals`.
+    ponerMarker({ pipeline: 'definicion', phase: 'sizing', issue: 7443, skill: 'po', reason: { cause: 'design-decision' } });
+    // .reason.json ilegible.
+    const roto = ponerMarker({ pipeline: 'desarrollo', phase: 'dev', issue: 7444, skill: 'pipeline-dev' });
+    fs.writeFileSync(`${roto}.reason.json`, '{ esto no es json');
+
+    assert.deepEqual(hb.listBlockedMarkers(7442).map((m) => m.signals), [['ok']]);
+    assert.deepEqual(hb.listBlockedMarkers(7443).map((m) => m.signals), [[]]);
+    const [m] = hb.listBlockedMarkers(7444);
+    assert.deepEqual(m.signals, []);
+    assert.equal(m.cause, null);
+    // Las claves históricas siguen intactas.
+    assert.deepEqual(Object.keys(hb.listBlockedMarkers(7442)[0]).sort(),
+        ['blocked_at', 'cause', 'file', 'phase', 'pipeline', 'signals', 'skill', 'synthetic']);
     resetFs();
 });

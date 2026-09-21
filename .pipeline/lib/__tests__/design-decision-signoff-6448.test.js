@@ -698,6 +698,64 @@ test('CA-27/CA-28: la traza registra señales, fragmento, firma y los DESCARTES'
     fs.rmSync(tmp, { recursive: true, force: true });
 });
 
+test('#7440 CA-10: appendGateAudit persiste lifted_by (y null cuando falta); los registros previos siguen leyéndose', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'dd-gate-7440-'));
+    io.appendGateAudit({ issue: 7440, signals: [], escalated: true, lifted_by: 'late-signoff' }, { pipelineRoot: tmp });
+    io.appendGateAudit({ issue: 7440, signals: [], escalated: true }, { pipelineRoot: tmp });
+    io.appendGateAudit({ issue: 7440, signals: [], escalated: true, lifted_by: 'x'.repeat(100) }, { pipelineRoot: tmp });
+    const lineas = fs.readFileSync(path.join(tmp, 'audit', io.GATE_AUDIT_FILE), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+    assert.equal(lineas[0].lifted_by, 'late-signoff');
+    assert.equal(lineas[1].lifted_by, null, 'ausente ⇒ null explícito');
+    assert.ok(lineas[2].lifted_by.length <= 40, 'techo de textoTraza');
+    assert.ok(Object.prototype.hasOwnProperty.call(lineas[1], 'lifted_by'));
+    fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+test('#7440: el retorno positivo de evaluateArchitectSignoff trae signedAt = createdAt del comentario aceptado', () => {
+    const r = firmaDe(FIXTURE_6448, 6448, AUDIT_OK);
+    assert.equal(r.settled, true);
+    assert.equal(r.signedAt, '2026-08-24T15:42:18Z');
+    // Dos comentarios: uno rechazado y uno aceptado ⇒ signedAt es el del ACEPTADO.
+    const r2 = design.evaluateArchitectSignoff({
+        issue: 6448, lastEditedAt: null, audit: AUDIT_OK,
+        comments: [comentarioFirma({ authorAssociation: 'NONE', createdAt: '2026-08-24T10:00:00Z' }), comentarioFirma({ createdAt: '2026-08-24T16:00:00Z' })],
+    });
+    assert.equal(r2.settled, true);
+    assert.equal(r2.signedAt, '2026-08-24T16:00:00Z');
+    // Negativo: sin la clave.
+    const r3 = design.evaluateArchitectSignoff({ issue: 6448, comments: [], lastEditedAt: null, audit: AUDIT_OK });
+    assert.equal(r3.settled, false);
+    assert.equal('signedAt' in r3, false);
+});
+
+test('#7440 CN-8 / RS-4.5: el comentario de traza del auto-levantamiento (copy UX-C renderizado) NO cuenta como firma', () => {
+    const body = [
+        '## ♻️ Bloqueo de decisión levantado — firma del arquitecto posterior',
+        '',
+        'El intake había frenado este issue por señales de decisión de arquitectura (plantea opciones excluyentes y no elige una; define dónde va a vivir un dato crítico) sin encontrar la firma.',
+        'La firma del arquitecto se verificó en 2026-09-18T18:44:25Z y la traza local la corrobora, así que el pipeline quitó `needs-human` solo y el issue sigue por definición.',
+        '',
+        'No hace falta que hagas nada.',
+        '',
+        '<!-- agent: intake -->',
+    ].join('\n');
+    const r = design.evaluateArchitectSignoff({
+        issue: 6448, lastEditedAt: null, audit: AUDIT_OK,
+        comments: [comentarioFirma({ body, authorAssociation: 'OWNER' })],
+    });
+    assert.equal(r.settled, false);
+    assert.deepEqual(r.rejected, [], 'sin marcador: ni siquiera se registra como descarte (regla a)');
+    // Y aunque alguien le pegara el marcador, el footer `intake` lo rechaza (regla d).
+    const conMarcador = `<!-- architect-signoff issue=6448 -->\n${body}`;
+    const r2 = design.evaluateArchitectSignoff({
+        issue: 6448, lastEditedAt: null, audit: AUDIT_OK,
+        comments: [comentarioFirma({ body: conMarcador, authorAssociation: 'OWNER' })],
+    });
+    assert.equal(r2.settled, false);
+    assert.equal(r2.rejected[0].motivo, `${design.SIGNOFF_REJECT.FOOTER}:intake`);
+    assert.equal(typeof design.listaSenales, 'function', 'UX-E: listaSenales exportada');
+});
+
 test('CA-30 / R1: la traza es APPEND-ONLY y nunca trunca el histórico', () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'dd-gate-6448-'));
     for (let i = 0; i < 3; i += 1) {
@@ -1012,9 +1070,15 @@ test('#7439 CA-1 ter: con varias señales a la vez el copy "no verificable" enum
 
 test('#7439 CA-6 / RS-C.2: `cause` la produce SÓLO el gate de decisión de arquitectura en pulpo.js', () => {
     const src = fs.readFileSync(path.join(__dirname, '..', '..', 'pulpo.js'), 'utf8');
-    // El literal aparece UNA sola vez en todo el archivo…
+    // El literal aparece UNA sola vez como PRODUCTOR en todo el archivo. Los
+    // filtros del auto-levantamiento (#7440 RS-4.1/4.9) lo LEEN con `===` —
+    // consumidores, no productores — y se descuentan explícitamente: el del
+    // evaluador `_evaluateLateSignoff` y el pre-filtro del barrido
+    // `_sweepLateSignoff` (rev-2, CN-12).
     const literales = src.split("'design-decision'").length - 1;
-    assert.equal(literales, 1, `el literal 'design-decision' aparece ${literales} veces en pulpo.js`);
+    const lecturas = (src.match(/=== 'design-decision'/g) || []).length;
+    assert.equal(lecturas, 2, 'los únicos consumidores son el filtro de _evaluateLateSignoff y el pre-filtro de _sweepLateSignoff (#7440)');
+    assert.equal(literales - lecturas, 1, `el literal 'design-decision' aparece ${literales - lecturas} veces como productor en pulpo.js`);
     // …y dentro del bloque "FRENA en definición — decisión de arquitectura".
     const ini = src.indexOf('FRENA en definición — decisión de arquitectura');
     assert.ok(ini > 0, 'precondición: el bloque del gate existe');

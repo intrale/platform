@@ -1358,6 +1358,7 @@ test('#6611 - todos los call sites vigentes estan en el enum de unlocker', () =>
         'brazo-desbloqueo:precondicion',
         'auto-recheck',
         'brazo-desbloqueo:merge-race',
+        'architect-signoff:late',         // #7440 — firma tardía del arquitecto (pulpo.js _evaluateLateSignoff)
     ];
     for (const v of vigentes) {
         assert.equal(hb.normalizeUnlocker(v).unlocker, v, v + ' debe estar en el enum');
