@@ -96,6 +96,13 @@ try { pacingBucket = require('./pacing-bucket'); } catch { /* opcional */ }
 // módulo: si no carga, el slice degrada al shape previo sin romper.
 let providerQuotaAgg = null;
 try { providerQuotaAgg = require('./provider-quota'); } catch { /* opcional */ }
+// #6560 — libro contable de cuota (ledger de muestras + balance + series).
+let quotaLedger = null;
+try { quotaLedger = require('./multi-provider/quota-ledger'); } catch { /* opcional */ }
+let quotaBalance = null;
+try { quotaBalance = require('./multi-provider/quota-balance'); } catch { /* opcional */ }
+let quotaSeries = null;
+try { quotaSeries = require('./multi-provider/quota-series'); } catch { /* opcional */ }
 
 // #2976 — Skills determinísticos: corren en Node puro sin tokens LLM y por
 // eso siguen ejecutándose aún con `quota-exhausted.json` activo. Mantener
@@ -2741,6 +2748,18 @@ function quotaSlice(state, ctx) {
     }
     out.providers = providersClient;
 
+    // #6560 — Ingesta del libro contable de cuota: cada poll real de
+    // `/api/dash/quota` deja una muestra por proveedor × bucket en
+    // `state/quota-ledger.jsonl` (debounceada: sólo si cambió el valor, pasó el
+    // intervalo mínimo o hubo reinicio de ventana). Misma cadencia que el guard
+    // #4282 y el pacing #4289, y misma regla: NUNCA con `skipSideEffects` (el
+    // compositor de `/api/state` no debe duplicar muestras) y NUNCA rompe el
+    // slice. Es la única fuente de la serie que consume `computeQuotaBalance`.
+    if (!skipSideEffects && quotaLedger && typeof quotaLedger.recordSamplesFromSlice === 'function') {
+        try { quotaLedger.recordSamplesFromSlice(providersClient, { pipelineDir: PIPELINE, now: nowMs }); }
+        catch { /* fail-safe: la contabilidad nunca tumba el slice de cuota */ }
+    }
+
     // #4282 — Evaluación anticipatoria en vivo. quotaSlice es el path que el
     // dashboard poll-ea periódicamente (/api/dash/quota): aprovechamos ESE ciclo
     // para correr el guard, reusando el slice ya normalizado (CA-11, sin
@@ -4426,6 +4445,72 @@ function providerCostSlice(state, ctx) {
     }
 }
 
+// #6560 — quotaBalanceSlice: saldo, ritmo y proyección de agotamiento de cuota
+// por proveedor y período, más las cuatro series derivadas para el auditor
+// (#6809). Es el ÚNICO punto de exposición de la fórmula (CA-5): el ruteo
+// (#6561) llama a `computeQuotaBalance` directo y el dashboard (#6565) lee
+// este slice vía `/api/dash/quota-balance`; nadie re-deriva umbrales.
+//
+//   - `balance`: `computeQuotaBalance(config, muestras del ledger, now)`.
+//   - `series`: `computeSeries` sobre las últimas `opts.horas` (default 24 h,
+//     tope 7 d) a partir del audit del detector, health, schedule, provider-cost
+//     y el ledger. Se PERSISTE append-only en `state/quota-series.jsonl`
+//     (debounce 1 h) — es el efecto secundario del slice, best-effort, y se
+//     salta con `ctx.skipSideEffects`.
+//
+// Degradación: si el config no resuelve o falta un módulo, devuelve
+// `{ ok:false, motivo }` con `balance.providers = {}` — nunca un saldo
+// inventado (fail-closed, misma regla que el guard #4282).
+function quotaBalanceSlice(state, ctx, opts) {
+    const PIPELINE = (ctx && ctx.PIPELINE) || path.join(process.cwd(), '.pipeline');
+    const skipSideEffects = !!(ctx && ctx.skipSideEffects);
+    const o = opts || {};
+    const now = Number.isFinite(o.now) ? o.now : Date.now();
+    const HOUR = 3600 * 1000;
+    const horas = Math.min(7 * 24, Math.max(1, Number(o.horas) || 24));
+    const empty = { ok: false, motivo: null, computed_at: new Date(now).toISOString(), horas, balance: { providers: {} }, series: null };
+
+    if (!quotaLedger || !quotaBalance || !quotaSeries) {
+        return { ...empty, motivo: 'módulos de contabilidad de cuota no disponibles' };
+    }
+    let config;
+    try { config = _loadGuardRawConfig(PIPELINE); }
+    catch (e) { return { ...empty, motivo: `config inválida: ${e && e.name ? e.name : 'error'}` }; }
+
+    const out = { ...empty, ok: true };
+    try {
+        const ceilings = require('./multi-provider/validate-quota-ceilings').listQuotaCeilings(config);
+        const providers = Object.keys(ceilings);
+        // Ventana de lectura del ledger: el período más largo declarado (7 d) + 1 d
+        // (para resets rolling que corren el inicio hacia atrás).
+        const samples = quotaLedger.readSamples({ pipelineDir: PIPELINE, sinceMs: now - 8 * 24 * HOUR });
+        const creditRedemptions = quotaLedger.readCreditRedemptions({ pipelineDir: PIPELINE });
+        const costRecords = quotaLedger.readCostRecords({ pipelineDir: PIPELINE });
+        out.balance = quotaBalance.computeQuotaBalance(config, samples, { now, creditRedemptions, costRecords });
+
+        const desde = now - horas * HOUR;
+        out.series = quotaSeries.computeSeries({
+            providers,
+            desde,
+            hasta: now,
+            detectorEvents: quotaLedger.readDetectorEvents({ pipelineDir: PIPELINE, desde, hasta: now }),
+            healthEvents: quotaLedger.readHealthEvents({ pipelineDir: PIPELINE, desde, hasta: now }),
+            scheduleEntries: quotaLedger.readScheduleEntries({ pipelineDir: PIPELINE }),
+            costRecords,
+            samples,
+            creditRedemptions,
+        });
+        if (!skipSideEffects) {
+            try { quotaLedger.recordSeriesSnapshot(out.series, { pipelineDir: PIPELINE, now }); }
+            catch { /* best-effort */ }
+        }
+    } catch (e) {
+        out.ok = false;
+        out.motivo = `no se pudo calcular el balance: ${e && e.message ? String(e.message).slice(0, 120) : 'error'}`;
+    }
+    return out;
+}
+
 // #4460 — Slice del banner "Reiniciar modelo operativo". Cruza el trust anchor
 // del SHA vivo (runtime-boot.json) con la detección de drift (operativo-drift)
 // para exponer los issues entregados a `main` que tocaron el modelo operativo
@@ -4559,6 +4644,8 @@ module.exports = {
     costosSlice,
     // #4403 (D4) — desglose de costo por provider (lee provider-cost.jsonl)
     providerCostSlice,
+    // #6560 — saldo, ritmo y proyección de cuota por proveedor + series derivadas
+    quotaBalanceSlice,
     reconcilerStaleOrdersSlice,
     // #4460 — banner "Reiniciar modelo operativo" (drift bootSHA↔origin/main)
     restartPendienteSlice,
