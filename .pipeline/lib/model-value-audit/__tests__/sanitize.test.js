@@ -175,12 +175,51 @@ test('death_kind fuera del enum, rechazado_en_fase fuera de las fases y codepath
     assert.deepStrictEqual([...sz.CODEPATHS], ['generalized', 'legacy', 'premature-death']);
 });
 
-test('exit_code no numerico ⇒ fila descartada; numericos en string se coaccionan con Number()', () => {
+test('exit_code no numerico ⇒ fila descartada; strings estrictamente numericos se aceptan', () => {
     const res = sz.sanitizeRows([fila({ exit_code: 'abc' }), fila({ duration_ms: '1500', exit_code: '1' }), fila({ tokens_in: NaN })], whitelists());
     assert.strictEqual(res.desconocidos.numericos, 2);
     assert.strictEqual(res.rows.length, 1);
     assert.strictEqual(res.rows[0].duration_ms, 1500);
     assert.strictEqual(res.rows[0].exit_code, 1);
+});
+
+test('exit_code null (muerte por senal del writer) ⇒ fila conservada con exit_code null, nunca 0 (CA-12 / SEC-3b)', () => {
+    const res = sz.sanitizeRows([fila({ exit_code: null, duration_ms: 1884243, death_kind: 'agent-death' }), fila({ exit_code: undefined })], whitelists());
+    assert.strictEqual(res.desconocidos.numericos, 0);
+    assert.strictEqual(res.rows.length, 2);
+    assert.strictEqual(res.rows[0].exit_code, null);
+    assert.strictEqual(res.rows[0].duration_ms, 1884243);
+    assert.strictEqual(res.rows[1].exit_code, null);
+    assert.ok(res.rows.every((r) => r.exit_code !== 0), 'null no se coacciona a 0');
+    // Mismo criterio para el resto de los numericos.
+    const costo = sz.sanitizeRows([fila({ tokens_in: null, tokens_out: null })], whitelists());
+    assert.deepStrictEqual([costo.rows[0].tokens_in, costo.rows[0].tokens_out], [null, null]);
+});
+
+test('exit_code "", " ", [], {}, true, false, Infinity ⇒ desconocidos.numericos y fila descartada (no se coacciona con Number())', () => {
+    const malos = ['', ' ', [], {}, true, false, Infinity, -Infinity, '0x10', '1e3', ' 1', '1 '];
+    const res = sz.sanitizeRows(malos.map((v) => fila({ exit_code: v })), whitelists());
+    assert.strictEqual(res.desconocidos.numericos, malos.length);
+    assert.strictEqual(res.rows.length, 0);
+    for (const v of ['', ' ', [], true]) assert.strictEqual(sz.safeNumber(v), undefined, `safeNumber(${JSON.stringify(v)})`);
+    assert.strictEqual(sz.safeNumber(null), null);
+    assert.strictEqual(sz.safeNumber(undefined), null);
+    assert.strictEqual(sz.safeNumber(137), 137);
+    assert.strictEqual(sz.safeNumber('-1'), -1);
+    assert.strictEqual(sz.safeNumber('2.5'), 2.5);
+});
+
+test('passthrough acotado: solo ts/source/label/action/cache se copian; cualquier otra clave se ignora', () => {
+    assert.deepStrictEqual([...sz.PASSTHROUGH_FIELDS], ['ts', 'source', 'label', 'action', 'cache']);
+    const res = sz.sanitizeRows([fila({
+        source: 'observed', label: 'qa:failed', action: 'label', cache: 'no_medido',
+        __proto__polluted: 'x', extra: 'ignorado', constructor: 'y', 'ignore previous': 'z',
+    })], whitelists());
+    assert.strictEqual(res.rows.length, 1);
+    const r = res.rows[0];
+    assert.deepStrictEqual(Object.keys(r).sort(), ['action', 'cache', 'codepath', 'death_kind', 'duration_ms', 'exit_code', 'issue', 'label', 'provider', 'skill', 'source', 'ts']);
+    assert.strictEqual(r.extra, undefined);
+    assert.strictEqual(r['ignore previous'], undefined);
 });
 
 test('issue ../x y 12345678 ⇒ desconocidos.issues; null se conserva; numero valido se devuelve como string (A3)', () => {

@@ -17,7 +17,10 @@
 //   - `death_kind`       ∈ DEATH_KINDS (+ null)
 //   - `codepath`         ∈ CODEPATHS (+ null)
 //   - `issue`            `/^\d{1,7}$/` tras `String` (+ null)
-//   - `exit_code`, `duration_ms`, `tokens_in`, `tokens_out` ⇒ `Number()` finito
+//   - `exit_code`, `duration_ms`, `tokens_in`, `tokens_out` ⇒ número finito o
+//                          string estrictamente numérico (+ null, que se
+//                          PRESERVA: el writer emite `exit_code: null` cuando
+//                          el proceso muere por señal y no hay código)
 //
 // Lo que no matchea se CUENTA en `desconocidos.<categoria>` y la fila se
 // descarta entera: los valores desconocidos nunca se devuelven ni se imprimen
@@ -38,8 +41,18 @@ const OUTPUT_MAX_CHARS = 120;
 const DEATH_KINDS = Object.freeze(['normal', 'agent-death', 'provider-death', 'credential-death']);
 const CODEPATHS = Object.freeze(['generalized', 'legacy', 'premature-death']);
 
-// Campos numéricos coaccionados con `Number()`; no finito ⇒ fila descartada.
+// Campos numéricos. `null`/`undefined` se preservan como `null` (igual que
+// `death_kind`/`codepath`); un `number` finito o un string estrictamente
+// numérico se aceptan; cualquier otra cosa (booleanos, `""`, `" "`, arrays,
+// objetos, NaN, ±Infinity) ⇒ `desconocidos.numericos++` y fila descartada.
+// NUNCA `Number(x)` a ciegas: `Number(null) === 0` convertía una muerte por
+// señal en un exit limpio (CA-12 / SEC-3b).
 const NUMERIC_FIELDS = Object.freeze(['exit_code', 'duration_ms', 'tokens_in', 'tokens_out']);
+const NUMERIC_STRING_RE = /^-?\d+(\.\d+)?$/;
+
+// Campos que `read-sources` ya acotó y que se copian tal cual (whitelist
+// cerrada; cualquier otra clave de la fila se ignora, no se propaga).
+const PASSTHROUGH_FIELDS = Object.freeze(['ts', 'source', 'label', 'action', 'cache']);
 
 // Rango de control completo (C0, DEL, C1, LS, PS) e invisibles bidi / zero-width
 // (A2). Nunca `[\r\n\t-^_]`: en JS `\t-^` es el rango 0x09–0x5E y destruye ids.
@@ -143,6 +156,22 @@ function enEnum(value, lista) {
 }
 
 /**
+ * Regla numérica estricta. Devuelve `null` para `null`/`undefined`, el número
+ * para un `number` finito o un string `/^-?\d+(\.\d+)?$/`, y `undefined` si
+ * el valor es inválido (booleanos, strings vacíos/no numéricos, arrays,
+ * objetos, NaN, ±Infinity).
+ */
+function safeNumber(value) {
+    if (value == null) return null;
+    if (typeof value === 'number') return Number.isFinite(value) ? value : undefined;
+    if (typeof value === 'string' && NUMERIC_STRING_RE.test(value)) {
+        const n = Number(value);
+        return Number.isFinite(n) ? n : undefined;
+    }
+    return undefined;
+}
+
+/**
  * Sanitiza una fila proyectada contra las whitelists. Devuelve `{ ok, row }`
  * con `categoria` cuando falla; no "limpia" parcialmente (la primera falla
  * descarta la fila).
@@ -191,15 +220,16 @@ function sanitizeRow(row, whitelists) {
     }
     for (const f of NUMERIC_FIELDS) {
         if (!has(row, f)) continue;
-        const n = Number(row[f]);
-        if (!Number.isFinite(n)) return { ok: false, categoria: 'numericos' };
+        const n = safeNumber(row[f]);
+        if (n === undefined) return { ok: false, categoria: 'numericos' };
         out[f] = n;
     }
 
-    // El resto de los campos proyectados se copia tal cual: son los que el
-    // lector ya acotó (`ts` numérico, `source`, `label`, `action`, `cache`).
-    for (const k of Object.keys(row)) {
-        if (!has(out, k)) out[k] = row[k];
+    // Passthrough acotado: sólo los campos que el lector ya acotó (`ts`
+    // numérico, `source`, `label`, `action`, `cache`). Ninguna otra clave de
+    // la fila llega a la salida.
+    for (const k of PASSTHROUGH_FIELDS) {
+        if (has(row, k) && !has(out, k)) out[k] = row[k];
     }
     return { ok: true, row: out };
 }
@@ -227,6 +257,8 @@ module.exports = {
     DEATH_KINDS,
     CODEPATHS,
     NUMERIC_FIELDS,
+    NUMERIC_STRING_RE,
+    PASSTHROUGH_FIELDS,
     ISSUE_RE,
     OUTPUT_MAX_CHARS,
     allowedSkills,
@@ -235,6 +267,7 @@ module.exports = {
     resolveWhitelists,
     safeModel,
     safeIssue,
+    safeNumber,
     stripForOutput,
     sanitizeRow,
     sanitizeRows,
