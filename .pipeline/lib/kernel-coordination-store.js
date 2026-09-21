@@ -69,7 +69,7 @@ const DEFAULT_INMEMORY_TABLE = 'kernel-coordination-local';
 // `.paused` NO está ni estará acá (D-3 / SEC-7): es el halt de último recurso y
 // el mecanismo de aborto del propio cutover. Si viviera en DynamoDB, una
 // degradación del store dejaría al operador sin freno justo en el peor momento.
-const DEFAULT_KNOWN_KEYS = Object.freeze(['waves', 'blocked', 'health', 'partial-pause']);
+const DEFAULT_KNOWN_KEYS = Object.freeze(['waves', 'blocked', 'health', 'partial-pause', 'propuestas']);
 
 function skFor(key) {
   return `coord#${key}`;

@@ -487,3 +487,195 @@ test('CA-B5: el aislamiento vale tambien para el registro de olas', () => enTmp(
     assert.equal(res.version, 1,
         'el contador de version no puede ser global: seria un canal entre proyectos');
 }));
+
+// -----------------------------------------------------------------------------
+// #7514 · clave `propuestas` en el sustrato (parte 1/3 de #6807)
+//
+// El registro de propuestas al operador todavia NO existe (#7515/#7516): esta
+// parte solo deja al store sabiendo guardar la clave con la misma garantia que
+// `waves` y `partial-pause`. Los tests de abajo cubren CA-1..CA-9 del issue.
+//
+// Los imports del store async van aca y no arriba porque solo los usa CA-5:
+// `createInMemoryDynamoDriver` vive en `provisioner-infra.js` (el store solo
+// lo importa), como ya lo hace `kernel-coordination-store.test.js:17`.
+// -----------------------------------------------------------------------------
+
+const { createInMemoryDynamoDriver } = require('../provisioner-infra');
+const { createCoordinationStore, DEFAULT_KNOWN_KEYS } = require('../kernel-coordination-store');
+
+/**
+ * Forma minima VALIDA del registro (D4 del PO): `vivas`, `memoria` y
+ * `meta.updated_at` son obligatorios — `{}` no es un registro vacio valido.
+ */
+function propuestasVacio(iso = '2026-09-21T00:00:00.000Z') {
+    return { vivas: [], memoria: [], meta: { schema_version: 1, updated_at: iso } };
+}
+
+test('#7514 CA-1: `propuestas` esta en el vocabulario cerrado del backend', () => enTmp({ PIPELINE_OPSTATE_DURABLE: '0' }, (dir) => {
+    const backend = freshBackend();
+    assert.equal(backend.KEYS.PROPUESTAS, 'propuestas');
+    assert.equal(backend.FILE_FOR_KEY.propuestas, '.propuestas.json');
+    assert.equal(backend.MAX_BYTES_FOR_KEY.propuestas, 256 * 1024);
+    assert.equal(backend.MAX_PROPUESTAS_VIVAS, 500, 'la cota se exporta para que el registro (#7515) la reuse');
+    assert.doesNotThrow(() => backend.assertKnownKey('propuestas'));
+    const file = backend.fileFor('propuestas');
+    assert.ok(file.endsWith('.propuestas.json'), `fileFor resuelve al archivo con punto inicial: ${file}`);
+    assert.equal(path.dirname(file), dir, 'layout plano: vive directo en el dir de estado');
+}));
+
+test('#7514 CA-2: validateRemoteValue acepta la forma minima', () => {
+    const backend = freshBackend();
+    assert.deepEqual(backend.validateRemoteValue('propuestas', propuestasVacio()), { ok: true });
+    // Con 500 vivas exactas sigue siendo valido: la cota es inclusiva.
+    const tope = propuestasVacio();
+    tope.vivas = new Array(500).fill({ id: 'p' });
+    assert.equal(backend.validateRemoteValue('propuestas', tope).ok, true);
+});
+
+// Cada `return { ok:false }` de la rama tiene su caso propio (cobertura 100 %).
+const CASOS_INVALIDOS = [
+    ['sin vivas', () => { const v = propuestasVacio(); delete v.vivas; return v; }, /vivas no es un array/],
+    ['vivas no-array', () => ({ ...propuestasVacio(), vivas: {} }), /vivas no es un array/],
+    ['vivas.length === 501', () => ({ ...propuestasVacio(), vivas: new Array(501).fill({}) }), /vivas con 501 entradas supera la cota de 500/],
+    ['sin memoria', () => { const v = propuestasVacio(); delete v.memoria; return v; }, /memoria no es un array/],
+    ['memoria no-array', () => ({ ...propuestasVacio(), memoria: 'x' }), /memoria no es un array/],
+    ['sin meta', () => { const v = propuestasVacio(); delete v.meta; return v; }, /meta\.updated_at ausente/],
+    ['sin meta.updated_at', () => ({ ...propuestasVacio(), meta: { schema_version: 1 } }), /meta\.updated_at ausente/],
+    ['meta.updated_at no-string', () => ({ ...propuestasVacio(), meta: { updated_at: Date.now() } }), /meta\.updated_at ausente o no es string/],
+    ['payload > 256 KB', () => ({ ...propuestasVacio(), memoria: ['x'.repeat(256 * 1024)] }), /supera la cota de 262144 para `propuestas`/],
+];
+
+for (const [nombre, build, esperado] of CASOS_INVALIDOS) {
+    test(`#7514 CA-2: validateRemoteValue rechaza — ${nombre}`, () => {
+        const backend = freshBackend();
+        const res = backend.validateRemoteValue('propuestas', build());
+        assert.equal(res.ok, false);
+        assert.ok(typeof res.reason === 'string' && res.reason.length > 0, 'el reason no puede quedar vacio');
+        assert.match(res.reason, esperado);
+    });
+}
+
+test('#7514 CA-3 (Gherkin 1): round-trip en modo FS con escritura atomica y version ISO', () => enTmp({ PIPELINE_OPSTATE_DURABLE: '0' }, (dir) => {
+    const backend = freshBackend();
+    const iso = '2026-09-21T10:00:00.000Z';
+    const valor = propuestasVacio(iso);
+
+    const res = backend.writeKey(backend.KEYS.PROPUESTAS, valor, null);
+    assert.equal(res.ok, true);
+    assert.equal(res.version, iso, 'en FS la version es el ISO de meta.updated_at');
+
+    const leido = backend.readKeyWithVersion(backend.KEYS.PROPUESTAS);
+    assert.deepEqual(leido.value, valor);
+    assert.equal(leido.version, iso);
+    assert.equal(leido.degraded, false);
+    assert.equal(leido.error, null);
+
+    const file = path.join(dir, '.propuestas.json');
+    assert.ok(fs.existsSync(file), 'el archivo existe fisicamente');
+    assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')), valor);
+    assert.equal(backend.existsKey(backend.KEYS.PROPUESTAS), true);
+}));
+
+test('#7514 CA-4 (Gherkin 2): el sustrato durable acepta la clave y la lee sin degradar', () => enTmp({ PIPELINE_OPSTATE_DURABLE: '1' }, (dir) => {
+    const { backend, driver } = remoteBackend();
+    const valor = propuestasVacio('2026-09-21T11:00:00.000Z');
+
+    const res = backend.writeKey(backend.KEYS.PROPUESTAS, valor, backend.UNCONDITIONAL_WRITE);
+    assert.equal(res.ok, true, `el write remoto no se rechaza: ${res.error && res.error.message}`);
+    assert.equal(res.version, 1);
+
+    const leido = backend.readKeyWithVersion(backend.KEYS.PROPUESTAS);
+    assert.equal(leido.degraded, false, 'la forma minima pasa la validacion de lectura (D4)');
+    assert.equal(leido.remote, true);
+    assert.deepEqual(leido.value, valor);
+    assert.equal(leido.version, 1);
+
+    assert.ok(driver._raw(PROJECT_ID, 'coord#propuestas'), 'SK canonico coord#propuestas');
+    assert.equal(fs.existsSync(path.join(dir, '.propuestas.json')), false, 'en durable no se toca el FS');
+
+    // Y la contracara de D4: un item durable SIN la forma minima se rechaza al
+    // escribir (fail-closed), no se persiste. Es lo que #7515 hereda si no
+    // respeta la forma.
+    assert.equal(backend.writeKey(backend.KEYS.PROPUESTAS, { vivas: [] }, backend.UNCONDITIONAL_WRITE).ok, false,
+        'el write remoto rechaza un registro sin memoria/meta.updated_at');
+}));
+
+test('#7514 CA-5 (D1): paridad de vocabularios sync/async — Object.values(KEYS) ⊆ DEFAULT_KNOWN_KEYS', () => {
+    const backend = freshBackend();
+    for (const k of Object.values(backend.KEYS)) {
+        assert.ok(DEFAULT_KNOWN_KEYS.includes(k),
+            `\`${k}\` esta en KEYS del backend pero no en DEFAULT_KNOWN_KEYS del store async`);
+    }
+    assert.ok(DEFAULT_KNOWN_KEYS.includes('propuestas'));
+});
+
+test('#7514 CA-5 (D1 / S2 / S9): la allowlist async reserva la clave — claim de `propuestas` se rechaza', async () => {
+    const driver = createInMemoryDynamoDriver();
+    // `isSafeId` exige un id con la forma de un projectId real (min. 3 chars,
+    // como `acme-store` en kernel-coordination-store.test.js); `'p'` no pasa.
+    const store = createCoordinationStore({ driver, contextProjectId: PROJECT_ID });
+    await assert.rejects(
+        store.claim('propuestas', { owner: 'x-1', leaseMs: 1000 }),
+        /reservada/,
+        'sin la allowlist un claim pisaria el SK coord#propuestas con {claimed, owner, expiresAt}',
+    );
+    // Y el SK reservado sigue vacio: el rechazo fue ANTES de tocar el store.
+    assert.equal(await store.getState('propuestas'), null, 'el claim rechazado no escribio nada');
+    // Y como clave RESERVADA, el consumidor async si puede usarla como estado.
+    const init = await store.initState('propuestas', propuestasVacio());
+    assert.equal(init.ok, true, 'la allowlist async acepta la clave como estado de coordinacion');
+    assert.deepEqual((await store.getState('propuestas')).value, propuestasVacio());
+});
+
+test('#7514 CA-6 (§13.1): sin siembra — un tmpdir limpio lee null y NO crea .propuestas.json', () => enTmp({ PIPELINE_OPSTATE_DURABLE: '0' }, (dir) => {
+    const backend = freshBackend();
+    const file = path.join(dir, '.propuestas.json');
+    assert.equal(fs.existsSync(file), false, 'precondicion: tmpdir limpio');
+
+    const leido = backend.readKeyWithVersion(backend.KEYS.PROPUESTAS);
+    assert.equal(leido.value, null);
+    assert.equal(leido.version, null);
+    assert.equal(leido.error, null, 'ENOENT no es error: es "sin registro"');
+    assert.equal(leido.degraded, false);
+    assert.equal(backend.existsKey(backend.KEYS.PROPUESTAS), false);
+    assert.equal(fs.existsSync(file), false, 'leer NO siembra el archivo (ningun ensure*)');
+}));
+
+test('#7514 CA-8 (SEC-J): CONSTANCIA — en modo FS el sustrato NO valida; la guarda vive en el registro (#7515)', () => enTmp({ PIPELINE_OPSTATE_DURABLE: '0' }, (dir) => {
+    // Este test documenta una asimetria, no la celebra. Produccion corre
+    // `operational_state.durable: false`: `writeKey` FS escribe con
+    // `atomicWriteFile` directo, sin `validateRemoteValue`, sin redaccion y sin
+    // CAS. Por eso #7515 DEBE llamar `validateRemoteValue(KEYS.PROPUESTAS, v)`
+    // + redactar + `withLockSync` antes de `writeKey`, en ambos modos. Si este
+    // test se pone rojo, alguien cambio el camino FS (fuera de alcance: rompe
+    // `waves` > 300 KB) o hay que revisar que #7515 no dependa de la guarda.
+    const backend = freshBackend();
+    const excedido = { vivas: new Array(501).fill({}), memoria: [], meta: { updated_at: '2026-09-21T12:00:00.000Z' } };
+    assert.equal(backend.validateRemoteValue('propuestas', excedido).ok, false,
+        'como funcion pura, la cota SI rechaza 501 vivas');
+
+    const res = backend.writeKey(backend.KEYS.PROPUESTAS, excedido, null);
+    assert.equal(res.ok, true, 'SEC-J: el camino FS persiste sin objecion (documentado, no deseado)');
+    assert.equal(JSON.parse(fs.readFileSync(path.join(dir, '.propuestas.json'), 'utf8')).vivas.length, 501);
+    assert.equal(backend.readKeyWithVersion(backend.KEYS.PROPUESTAS).value.vivas.length, 501,
+        'SEC-J: la lectura FS tampoco valida la forma');
+}));
+
+test('#7514 CA-9 (D6): la redaccion del sustrato sigue siendo exactamente justification/source/note/reason/detail', () => {
+    const backend = freshBackend();
+    const token = 'ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'; // secret-scan:ignore — literal sintetico para probar la redaccion
+    const conSecreto = (campo) => `${campo} con ${token} adentro`;
+    const out = backend.redactBeforeWrite({
+        justification: conSecreto('justification'),
+        source: conSecreto('source'),
+        note: conSecreto('note'),
+        reason: conSecreto('reason'),
+        detail: conSecreto('detail'),
+        titulo: conSecreto('titulo'),
+    });
+    for (const campo of ['justification', 'source', 'note', 'reason', 'detail']) {
+        assert.equal(out[campo].includes(token), false, `\`${campo}\` se redacta`);
+    }
+    assert.equal(out.titulo, conSecreto('titulo'),
+        'la sexta clave queda intacta: el sustrato NO redacta los campos del registro (eso es SEC-K, #7515)');
+});
