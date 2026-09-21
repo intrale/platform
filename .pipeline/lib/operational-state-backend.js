@@ -80,11 +80,13 @@ function coord() {
 const KEYS = Object.freeze({
     WAVES: 'waves',
     PARTIAL_PAUSE: 'partial-pause',
+    PROPUESTAS: 'propuestas',
 });
 
 const FILE_FOR_KEY = Object.freeze({
     [KEYS.WAVES]: 'waves.json',
     [KEYS.PARTIAL_PAUSE]: '.partial-pause.json',
+    [KEYS.PROPUESTAS]: '.propuestas.json',
 });
 
 // ─── Cotas del payload remoto (CA-A5) ───────────────────────────────────────
@@ -105,6 +107,9 @@ const FILE_FOR_KEY = Object.freeze({
 const MAX_BYTES_FOR_KEY = Object.freeze({
     [KEYS.WAVES]: 300 * 1024,
     [KEYS.PARTIAL_PAUSE]: 64 * 1024,
+    // Registro de propuestas (#7514): por debajo de los 400 KB por ítem de
+    // DynamoDB y por encima de la allowlist, porque acumula ítems con texto.
+    [KEYS.PROPUESTAS]: 256 * 1024,
 });
 
 // Sobre el envelope completo devuelto por la CLI (ítem + metadata del store).
@@ -117,6 +122,26 @@ const MAX_ALLOWED_SKILLS = 100;
 
 // Cotas del registro de olas (mismo criterio, aplicado a sus colecciones).
 const MAX_WAVES_PER_BUCKET = 500;
+
+/**
+ * Cota de cardinalidad del registro de propuestas (#7514, parte 1/3 de #6807):
+ * máximo de entradas en `vivas`. Análoga a `MAX_ALLOWED_ISSUES`.
+ *
+ * SEC-J — ASIMETRÍA DEL SUSTRATO: en modo FS (`operational_state.durable:
+ * false`, el vigente en producción) `writeKey` NO invoca `validateRemoteValue`
+ * ni `redactBeforeWrite` ni hace CAS (escribe con `atomicWriteFile` directo y
+ * el `expectedVersion` se ignora), y `readKeyWithVersion` FS tampoco valida la
+ * forma. Esta cota y la rama `PROPUESTAS` de `validateRemoteValue` sólo rigen
+ * en modo durable (write y read remotos). El registro (#7515) DEBE llamar
+ * `validateRemoteValue(KEYS.PROPUESTAS, v)`, redactar sus campos
+ * (`titulo`/`accion`/`evidencia`, que no forman parte de la redacción del sustrato) y
+ * envolver el read-modify-write en `withLockSync` ANTES de `writeKey`, en
+ * AMBOS modos. Forma mínima válida que hereda #7515:
+ * `{ vivas: [], memoria: [], meta: { updated_at: '<ISO>' } }` — sin
+ * `meta.updated_at` el read durable degrada a `null` y `isoVersionOf` no
+ * tiene versión para el CAS en FS.
+ */
+const MAX_PROPUESTAS_VIVAS = 500;
 
 // ─── Flag ÚNICO de cutover (CA-C1) ──────────────────────────────────────────
 //
@@ -712,6 +737,29 @@ function validateRemoteValue(key, value) {
             }
         }
     }
+    // Registro de propuestas (#7514). A diferencia de `PARTIAL_PAUSE`, acá
+    // `vivas`, `memoria` y `meta.updated_at` son OBLIGATORIOS: la forma vacía
+    // válida es `{ vivas: [], memoria: [], meta: { updated_at } }`, no `{}`. Un
+    // ítem durable sin esa forma se lee como `degraded:true` (fail-closed).
+    //
+    // SEC-J: esta rama sólo corre en modo durable. En modo FS el sustrato NO
+    // valida, NO redacta y NO hace CAS; el registro (#7515) DEBE invocar
+    // `validateRemoteValue(KEYS.PROPUESTAS, v)` + redactar + `withLockSync`
+    // antes de `writeKey`, en ambos modos (ver JSDoc de `MAX_PROPUESTAS_VIVAS`).
+    if (key === KEYS.PROPUESTAS) {
+        if (!Array.isArray(value.vivas)) {
+            return { ok: false, reason: 'vivas no es un array' };
+        }
+        if (value.vivas.length > MAX_PROPUESTAS_VIVAS) {
+            return { ok: false, reason: `vivas con ${value.vivas.length} entradas supera la cota de ${MAX_PROPUESTAS_VIVAS}` };
+        }
+        if (!Array.isArray(value.memoria)) {
+            return { ok: false, reason: 'memoria no es un array' };
+        }
+        if (!value.meta || typeof value.meta.updated_at !== 'string') {
+            return { ok: false, reason: 'meta.updated_at ausente o no es string' };
+        }
+    }
     return { ok: true };
 }
 
@@ -1207,6 +1255,7 @@ module.exports = {
     MAX_BYTES_FOR_KEY,
     MAX_ALLOWED_ISSUES,
     MAX_ALLOWED_SKILLS,
+    MAX_PROPUESTAS_VIVAS,
     isRemote,
     describeMode,
     fileFor,
