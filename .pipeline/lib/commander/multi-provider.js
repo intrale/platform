@@ -365,6 +365,11 @@ function _normalizeBalancerMeta(res) {
     // #4870 — default fail-safe para el shape simétrico: cualquier resolución que
     // no traiga `providerBilling` (paths legacy sin quotaModule) queda 'free'.
     if (!('providerBilling' in res)) res.providerBilling = 'free';
+    // #6561 — `balance` (motivo del balanceo por saldo del dispatcher) viaja en
+    // el shape de `resolveSpawnWithFallback`; el Commander no pasa `config`, así
+    // que llega null por la cadena estricta y no existe en la ruta balanceada.
+    // Se iguala a null para conservar la paridad de claves OFF vs ON (#4412 CA-1).
+    if (!('balance' in res)) res.balance = null;
     return res;
 }
 
@@ -696,6 +701,10 @@ function _buildBalancedResolution(args = {}) {
         quotaPct: Number.isFinite(picked.quotaPct) ? picked.quotaPct : null,
         selectionReason: picked.reason ? String(picked.reason) : null,
         providerBilling: (_pickedBillingDef && _pickedBillingDef.billing === 'paid') ? 'paid' : 'free',
+        // #6561 — el camino estricto expone `balance` (motivo del balanceo por
+        // saldo del dispatcher; null cuando no participa, como acá: el Commander
+        // no pasa `config`). Se espeja para conservar la paridad OFF/ON (CA-1).
+        balance: null,
     };
 
     // #6271 — el camino estricto expone `models_by_provider` (mapa

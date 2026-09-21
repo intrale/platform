@@ -118,6 +118,9 @@ const providerScheduleModule = require('../provider-schedule');
 // chain ni pausa: si no hay fallback resoluble, se usa el primary igual
 // (REQ-SEC-3). Inyectable en tests vía opts.softGateModule.
 const providerQuotaGuardModule = require('../provider-quota-guard');
+// #6561 — balanceo por saldo de cuota y ritmo (módulo puro; sólo lee el ledger
+// vía `readQuotaBalanceForDispatch` cuando el llamador pasa `config`).
+const quotaBalancerModule = require('./quota-balancer');
 
 // #4289 — Presupuesto de ritmo (pacing budget) por proveedor. Estado 🔴 (saldo
 // agotado) → candidato no disponible (mismo trato que kill-switch/cuota). Estado
@@ -1076,6 +1079,8 @@ const SKIP_REASON_CODES = Object.freeze({
     PREVENTIVE_SOFT_GATE: 'preventive_soft_gate', // degradación preventiva por cuota (#4282)
     PACING_BUDGET_YELLOW: 'pacing_budget_yellow', // adelantado en su ritmo semanal → de-prioriza (#4289)
     PACING_BUDGET_RED: 'pacing_budget_red',       // crédito de ritmo agotado → desactivado (#4289)
+    QUOTA_BALANCE_PREFER_OTHER: 'quota_balance_prefer_other', // otro candidato con mayor saldo relativo (#6561, soft)
+    QUOTA_RESERVE_CRITICAL: 'quota_reserve_critical',         // saldo bajo el margen: reservado para fases críticas (#6561, soft)
 });
 
 // Etiquetas legibles (español) para el log textual. NO se escriben en el JSON
@@ -1093,6 +1098,8 @@ const SKIP_REASON_LABELS = Object.freeze({
     preventive_soft_gate: 'degradación preventiva por cuota',
     pacing_budget_yellow: 'adelantado en su ritmo semanal',
     pacing_budget_red: 'crédito de ritmo agotado',
+    quota_balance_prefer_other: 'saldo relativo menor (balanceo)',
+    quota_reserve_critical: 'reservado para fases críticas',
 });
 
 // -----------------------------------------------------------------------------
@@ -1111,9 +1118,16 @@ function formatProviderResolutionLog(resolution = {}, ctx = {}) {
         const skips = Array.isArray(r.skipReasons) ? r.skipReasons : [];
         const chain = Array.isArray(r.chainTried) ? r.chainTried : [];
 
+        // #6561 — sufijo corto del balanceo (UX §2): si el balanceo confirmó al
+        // primario (delta < umbral, mayor saldo o degradado) NO se expande el
+        // bloque; el resumen va al final de la línea `✓`. El modo degradado
+        // nunca es silencioso (UX §4).
+        const balanceSuffix = (r.balance && typeof r.balance === 'object' && r.balance.resumen)
+            ? ` (balanceo: ${r.balance.resumen})` : '';
+
         // Happy path: primary elegido sin descartes → una sola línea.
         if (!r.gated && skips.length === 0) {
-            return `✓ ${skill}:#${issue} provider=${r.provider} (${r.source || 'primary'}, sin fallback necesario)`;
+            return `✓ ${skill}:#${issue} provider=${r.provider} (${r.source || 'primary'}, sin fallback necesario)${balanceSuffix}`;
         }
 
         const lines = [];
@@ -1142,6 +1156,13 @@ function formatProviderResolutionLog(resolution = {}, ctx = {}) {
         if (chain.length) {
             const total = chain.length;
             lines.push(`  Chain evaluada: ${chain.join(' → ')} (${total} eslabón${total === 1 ? '' : 'es'} evaluado${total === 1 ? '' : 's'})`);
+        }
+
+        // #6561 — cuando el saldo participó de la decisión, el operador lee la
+        // regla aplicada en una línea final (UX §3), sin abrir el jsonl.
+        if (r.balance && typeof r.balance === 'object' && r.balance.regla) {
+            const ruleLine = quotaBalancerModule.formatRuleLine(r.balance);
+            if (ruleLine) lines.push(`  ${ruleLine}`);
         }
 
         return lines.join('\n');
@@ -1637,7 +1658,113 @@ function resolveSpawnWithFallback(opts = {}) {
         }
     }
 
-    if (!primaryGated && !primarySoftGated) {
+    // -------------------------------------------------------------------------
+    // #6561 — balanceo por saldo de cuota y ritmo de consumo.
+    //
+    // Tercer criterio BLANDO, subordinado a los hard gates (cuota agotada,
+    // kill-switch, horario, pacing rojo, health, credencial) y a los soft gates
+    // previos (#4282 preventivo, #4289 amarillo). Sólo participa cuando el
+    // llamador pasa `config` (el pulpo lo hace; las sondas read-only del
+    // Commander no) y el ledger de #6560 tiene dato FRESCO para ≥ 2 candidatos.
+    // Cualquier otra situación (sin ledger, sin datos, stale, error) degrada al
+    // comportamiento previo — orden declarado — sin frenar el spawn (CA-5).
+    //
+    // El plan NO expande la cadena: reordena primario + fallbacks[] declarados
+    // (capacidad por fase y orden por agente quedan como conjunto y desempate,
+    // CA-3). Efectos:
+    //   1. Si el mejor candidato NO es el primario ⇒ `primaryBalanceDeferred`:
+    //      se entra al recorrido de fallbacks igual que un soft-gate, y si
+    //      ningún fallback resuelve se usa el primario (nunca vacía la chain).
+    //   2. El recorrido de fallbacks sigue el orden del plan (los hard gates se
+    //      evalúan por candidato como siempre).
+    //   3. Si en el recorrido el siguiente candidato rankea PEOR que el
+    //      primario (sólo diferido por balanceo), se corta y se usa el primario.
+    // Trazabilidad (CA-4): un audit `balance_by_quota` por decisión + skipReason
+    // `quota_balance_prefer_other` / `quota_reserve_critical` + línea `Balanceo:`
+    // en `formatProviderResolutionLog`.
+    // -------------------------------------------------------------------------
+    let balancePlan = null;
+    let primaryBalanceDeferred = false;
+    try {
+        const _balancer = opts.quotaBalancerModule || quotaBalancerModule;
+        const _balanceConfig = opts.config && typeof opts.config === 'object' ? opts.config : null;
+        if (_balanceConfig && _balancer) {
+            const _policy = _balancer.readBalanceoConfig(_balanceConfig);
+            const _declaredChain = [primaryProvider].concat(
+                ((_billingModels && _billingModels.skills && _billingModels.skills[skill]
+                    && Array.isArray(_billingModels.skills[skill].fallbacks)) ? _billingModels.skills[skill].fallbacks : [])
+                    .map((fb) => (typeof fb === 'string' ? fb : (fb && typeof fb === 'object' && typeof fb.provider === 'string' ? fb.provider : null)))
+                    .filter((p) => typeof p === 'string' && p && p !== primaryProvider),
+            ).filter((p, i, arr) => arr.indexOf(p) === i);
+            const _readBalance = typeof opts.quotaBalanceReader === 'function'
+                ? opts.quotaBalanceReader
+                : _balancer.readQuotaBalanceForDispatch;
+            const _balance = _policy.enabled && _declaredChain.length >= 2
+                ? _readBalance({ config: _balanceConfig, pipelineDir, now: _now, providers: _declaredChain, policy: _policy })
+                : null;
+            balancePlan = _balancer.planQuotaBalance({ chain: _declaredChain, balance: _balance, policy: _policy, fase: opts.fase });
+            primaryBalanceDeferred = !primaryGated && !primarySoftGated
+                && !!balancePlan && balancePlan.elegido != null && balancePlan.elegido !== primaryProvider;
+
+            // Un evento por decisión, con los candidatos completos (UX §6).
+            auditAppend({
+                pipelineDir, fsImpl, sanitize: (s) => String(s || ''),
+                auditLog, now: _now,
+                entry: {
+                    event: 'balance_by_quota',
+                    skill,
+                    issue: issue || null,
+                    primary_provider: primaryProvider,
+                    primary_hard_gated: !!primaryGated,
+                    primary_soft_gated: !!primarySoftGated,
+                    primary_deferred_by_balance: primaryBalanceDeferred,
+                    ..._balancer.toAuditEntry(balancePlan),
+                    raw_excerpt: `balanceo regla=${balancePlan.regla} elegido=${balancePlan.elegido} orden=${balancePlan.orden.join('->')}`,
+                },
+            });
+            if (_policy.warnings.length) {
+                log('lanzamiento', `⚠️ ${skill}:#${issue || '?'} multi_provider.balanceo con valores inválidos (se usan defaults): ${_policy.warnings.join('; ')}`);
+            }
+            if (primaryBalanceDeferred) {
+                const _primaryCand = balancePlan.candidatos.find((c) => c.provider === primaryProvider) || {};
+                // La atribución sigue la REGLA del plan: `reserva` sólo si la
+                // reserva cambió el resultado; si el saldo solo ya lo decidía,
+                // se atribuye al saldo aunque el primario esté bajo el margen.
+                const _reserved = balancePlan.regla === 'reserva';
+                log('lanzamiento', `⚖️ ${skill}:#${issue || '?'} balanceo por saldo: primario "${primaryProvider}" ${_reserved ? 'reservado para fases críticas' : 'con menor saldo relativo'} — prefiriendo "${balancePlan.elegido}" (${balancePlan.resumen}; no vacía la chain).`);
+                pushSkip(
+                    primaryProvider,
+                    _reserved ? SKIP_REASON_CODES.QUOTA_RESERVE_CRITICAL : SKIP_REASON_CODES.QUOTA_BALANCE_PREFER_OTHER,
+                    _reserved
+                        ? `fase=${balancePlan.fase || '?'} · saldo=${_primaryCand.saldo_relativo} % · margen=${balancePlan.margen_reserva_pct} %`
+                        : `saldo ${_primaryCand.saldo_relativo} %${_primaryCand.ritmo_pts_por_hora != null ? ` · ritmo ${_primaryCand.ritmo_pts_por_hora} pts/h` : ''}${_primaryCand.agota_at ? ` · se agota ~${_primaryCand.agota_at}` : ''} — mejor: ${balancePlan.elegido}`,
+                );
+            } else if (balancePlan.regla === 'degradado') {
+                log('lanzamiento', `⚖️ ${skill}:#${issue || '?'} balanceo: ${balancePlan.resumen}.`);
+            }
+        }
+    } catch (e) {
+        // Fail-open absoluto (CA-5): el balanceo nunca frena ni demora el spawn.
+        balancePlan = null;
+        primaryBalanceDeferred = false;
+        log('lanzamiento', `⚠️ ${skill}:#${issue || '?'} balanceo por cuota no disponible (best-effort): ${e && e.message}`);
+    }
+    const _balanceSummary = balancePlan ? {
+        regla: balancePlan.regla,
+        elegido: balancePlan.elegido,
+        orden: balancePlan.orden.slice(),
+        fuente: balancePlan.fuente,
+        degradado_motivo: balancePlan.degradado_motivo,
+        umbral: balancePlan.umbral,
+        fase: balancePlan.fase,
+        resumen: balancePlan.resumen,
+        candidatos: balancePlan.candidatos.map((c) => ({
+            provider: c.provider, saldo_relativo: c.saldo_relativo, ritmo_pts_por_hora: c.ritmo_pts_por_hora,
+            estado: c.estado, confidence: c.confidence, participa: c.participa, reservado: c.reservado, motivo: c.motivo,
+        })),
+    } : null;
+
+    if (!primaryGated && !primarySoftGated && !primaryBalanceDeferred) {
         // Happy path: primary disponible.
         // #6179 — cierra el episodio si veníamos degradados. Es la única forma
         // de que salga el aviso de "vuelta al motor principal" (CA-2): si sólo
@@ -1661,6 +1788,7 @@ function resolveSpawnWithFallback(opts = {}) {
             crossProvider: false,
             depthExceeded: false,
             skipReasons,
+            balance: _balanceSummary, // #6561 — motivo de la decisión (null si no participó)
         };
     }
 
@@ -1671,8 +1799,22 @@ function resolveSpawnWithFallback(opts = {}) {
             // #4289 CA-6 — pacing cede ante la matriz de permisos: el primario en
             // rojo de ritmo era el único candidato resoluble, se usa igual.
             log('lanzamiento', `🔴↩️ ${skill}:#${issue || '?'} pacing rojo sin fallback resoluble — uso el primary "${primaryProvider}" (pacing cede ante permisos, chain no se vacía).`);
+        } else if (opts2.balance) {
+            // #6561 — el balanceo por saldo es una preferencia, no un veto: si el
+            // candidato mejor rankeado no resolvió (o los restantes rankean peor
+            // que el primario), se usa el primario.
+            log('lanzamiento', `⚖️↩️ ${skill}:#${issue || '?'} balanceo por saldo sin mejor candidato resoluble — uso el primary "${primaryProvider}" (chain no se vacía).`);
         } else {
             log('lanzamiento', `🟡 ${skill}:#${issue || '?'} degradación preventiva sin fallback resoluble — uso el primary "${primaryProvider}" (chain no se vacía).`);
+        }
+        // #6179 — el primario sigue siendo el motor: cierra el episodio si lo hubiera.
+        if (opts2.balance) {
+            _recordEpisode({
+                provider: primaryProvider,
+                crossProvider: false,
+                chainTried: Array.isArray(chainSoFar) && chainSoFar.length ? chainSoFar : [primaryProvider],
+                models: _billingModels,
+            });
         }
         return {
             ...primary,
@@ -1681,12 +1823,14 @@ function resolveSpawnWithFallback(opts = {}) {
             providerBilling: billingOf(primaryProvider, _billingModels),
             softGatedPrimaryUsed: true,
             pacingCede: !!opts2.pacingCede,
+            balanceCede: !!opts2.balance, // #6561 — el balanceo cedió al primario
             fallbackUsed: null,
             primaryProvider,
             chainTried: Array.isArray(chainSoFar) && chainSoFar.length ? chainSoFar : [primaryProvider],
             crossProvider: false,
             depthExceeded: false,
             skipReasons,
+            balance: _balanceSummary,
         };
     };
 
@@ -1712,6 +1856,11 @@ function resolveSpawnWithFallback(opts = {}) {
         // se pausa (el soft NUNCA vacía la chain). Solo aplica si NO hubo hard gate.
         if (primarySoftGated) {
             return _returnPrimarySoftFallthrough([primaryProvider]);
+        }
+        // #6561 — defensa en profundidad: con un solo candidato el plan nunca
+        // difiere al primario, pero si pasara se usa el primario igual.
+        if (primaryBalanceDeferred) {
+            return _returnPrimarySoftFallthrough([primaryProvider], { balance: true });
         }
         // #4289 CA-6 — pacing rojo sin fallbacks declarados: el pacing cede ante
         // la matriz (el primario es el único candidato), se usa el primary.
@@ -1770,7 +1919,35 @@ function resolveSpawnWithFallback(opts = {}) {
     const tried = new Set([primaryProvider]);
     let depthExceeded = false;
 
-    for (let i = 0; i < fallbacks.length; i++) {
+    // #6561 — orden de recorrido. Sin plan (o plan degradado/sin reorden) es el
+    // declarado, índice por índice, exactamente como antes. Con plan que
+    // reordena, los índices < MAX_FALLBACK_DEPTH se visitan según el ranking y
+    // los que exceden la profundidad quedan al final en orden declarado, así el
+    // corte por `depth_exceeded` conserva su semántica (una vez, al llegar).
+    const _iterationOrder = (() => {
+        const declared = fallbacks.map((_, i) => i);
+        if (!balancePlan || !balancePlan.reordeno) return declared;
+        try {
+            const rank = balancePlan.rank || {};
+            const nameOf = (fb) => (typeof fb === 'string' ? fb
+                : (fb && typeof fb === 'object' && typeof fb.provider === 'string' ? fb.provider : null));
+            const within = declared.filter((i) => i < MAX_FALLBACK_DEPTH);
+            const beyond = declared.filter((i) => i >= MAX_FALLBACK_DEPTH);
+            within.sort((a, b) => {
+                const ra = rank[nameOf(fallbacks[a])]; const rb = rank[nameOf(fallbacks[b])];
+                const va = Number.isFinite(ra) ? ra : Number.MAX_SAFE_INTEGER;
+                const vb = Number.isFinite(rb) ? rb : Number.MAX_SAFE_INTEGER;
+                return va !== vb ? va - vb : a - b;
+            });
+            return within.concat(beyond);
+        } catch {
+            return declared; // fail-open al orden declarado
+        }
+    })();
+    const _primaryRank = balancePlan && balancePlan.rank && Number.isFinite(balancePlan.rank[primaryProvider])
+        ? balancePlan.rank[primaryProvider] : null;
+
+    for (const i of _iterationOrder) {
         if (i >= MAX_FALLBACK_DEPTH) {
             depthExceeded = true;
             auditAppend({
@@ -1818,6 +1995,16 @@ function resolveSpawnWithFallback(opts = {}) {
             });
             pushSkip(null, SKIP_REASON_CODES.INVALID_HANDLER, `shape inválido (entry_type=${typeof fbEntry}) en índice ${i}`);
             continue;
+        }
+
+        // #6561 — si el primario sólo fue diferido por balanceo y este candidato
+        // rankea PEOR que él, los que faltan también (orden del plan): se corta y
+        // se usa el primario. El balanceo prefiere, no veta.
+        if (primaryBalanceDeferred && _primaryRank != null) {
+            const _fbRank = balancePlan.rank[fbName];
+            if (!Number.isFinite(_fbRank) || _fbRank > _primaryRank) {
+                return _returnPrimarySoftFallthrough(chainTried, { balance: true });
+            }
         }
 
         // 3.a — cycle/anti-duplicate
@@ -2126,6 +2313,7 @@ function resolveSpawnWithFallback(opts = {}) {
             // #4313 (CA-2) — motivo estático del salto (literal/enum, SEC-1).
             disqualifyReason: primaryDisqualifyReason,
             skipReasons,
+            balance: _balanceSummary, // #6561
         };
     }
 
@@ -2138,6 +2326,11 @@ function resolveSpawnWithFallback(opts = {}) {
     // todavía tiene cuota — solo preferíamos un fallback que no apareció.
     if (primarySoftGated) {
         return _returnPrimarySoftFallthrough(chainTried);
+    }
+    // #6561 — el primario sólo estaba diferido por balanceo y ningún candidato
+    // mejor rankeado resolvió: se usa el primario (nunca vacía la chain).
+    if (primaryBalanceDeferred) {
+        return _returnPrimarySoftFallthrough(chainTried, { balance: true });
     }
     // #4289 CA-6 — chain agotada y el único motivo del gate del primario era el
     // rojo de pacing: se cede el pacing y se usa el primary (nunca se deja al
@@ -2199,6 +2392,7 @@ function resolveSpawnWithFallback(opts = {}) {
         crossProvider: false,
         depthExceeded,
         skipReasons,
+        balance: _balanceSummary, // #6561
     };
 }
 
