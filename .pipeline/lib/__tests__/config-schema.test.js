@@ -220,6 +220,114 @@ test('multi_provider.order con providers válidos pasa', () => {
     assert.strictEqual(valid, true);
 });
 
+// -----------------------------------------------------------------------------
+// #6559 — multi_provider.quota: techo de cuota contratada por proveedor
+// -----------------------------------------------------------------------------
+
+function quotaOk() {
+    return {
+        anthropic: { plan: 'Claude Max', periodo: 'semanal', techo: 100, unidad: 'porcentaje', reposicion: 'dom 21:00' },
+        'openai-codex': { plan: 'ChatGPT Plus', periodo: 'semanal', techo: 100, unidad: 'porcentaje', reposicion: 'rolling' },
+        antigravity: { plan: 'Google One', periodo: 'diario', techo: 100, unidad: 'porcentaje', reposicion: 'rolling' },
+    };
+}
+
+test('#6559 multi_provider.quota con los 3 proveedores bien declarados pasa', () => {
+    const cfg = validConfig();
+    cfg.multi_provider = { quota: quotaOk() };
+    const { valid, errors } = validateConfig(cfg);
+    assert.strictEqual(valid, true, formatErrors(errors));
+});
+
+test('#6559 periodo fuera del enum (mensual) es rechazado con enum', () => {
+    const cfg = validConfig();
+    cfg.multi_provider = { quota: quotaOk() };
+    cfg.multi_provider.quota.anthropic.periodo = 'mensual';
+    const { valid, errors } = validateConfig(cfg);
+    assert.strictEqual(valid, false);
+    const e = errors.find((x) => x.keyword === 'enum');
+    assert.ok(e, formatErrors(errors));
+    assert.ok(e.path.includes("quota") && e.path.includes("anthropic") && e.path.includes("periodo"), e.path);
+    assert.ok(/horario, diario, semanal/.test(e.detail), e.detail);
+});
+
+test('#6559 unidad fuera del enum es rechazada', () => {
+    const cfg = validConfig();
+    cfg.multi_provider = { quota: quotaOk() };
+    cfg.multi_provider.quota['openai-codex'].unidad = 'dolares';
+    const { valid, errors } = validateConfig(cfg);
+    assert.strictEqual(valid, false);
+    assert.ok(errors.some((e) => e.keyword === 'enum' && /unidad/.test(e.path)), formatErrors(errors));
+});
+
+test('#6559 techo negativo es rechazado con minimum', () => {
+    const cfg = validConfig();
+    cfg.multi_provider = { quota: quotaOk() };
+    cfg.multi_provider.quota.antigravity.techo = -1;
+    const { valid, errors } = validateConfig(cfg);
+    assert.strictEqual(valid, false);
+    assert.ok(errors.some((e) => e.keyword === 'minimum' && /techo/.test(e.path)), formatErrors(errors));
+});
+
+test('#6559 falta una de las 5 claves requeridas ⇒ required nombrando la clave', () => {
+    const cfg = validConfig();
+    cfg.multi_provider = { quota: quotaOk() };
+    delete cfg.multi_provider.quota.anthropic.reposicion;
+    const { valid, errors } = validateConfig(cfg);
+    assert.strictEqual(valid, false);
+    const e = errors.find((x) => x.keyword === 'required');
+    assert.ok(e, formatErrors(errors));
+    assert.ok(/reposicion/.test(e.detail), e.detail);
+});
+
+test('#6559 reposicion con formato inválido (sin TZ ni patrón) es rechazada', () => {
+    const cfg = validConfig();
+    cfg.multi_provider = { quota: quotaOk() };
+    cfg.multi_provider.quota.anthropic.reposicion = 'domingo a la noche';
+    const { valid, errors } = validateConfig(cfg);
+    assert.strictEqual(valid, false);
+    assert.ok(errors.some((e) => e.keyword === 'pattern' && /reposicion/.test(e.path)), formatErrors(errors));
+});
+
+test('#6559 id de proveedor con typo en quota es rechazado con sugerencia (sección cerrada)', () => {
+    const cfg = validConfig();
+    cfg.multi_provider = { quota: quotaOk() };
+    cfg.multi_provider.quota.anthropc = cfg.multi_provider.quota.anthropic;
+    delete cfg.multi_provider.quota.anthropic;
+    const { valid, errors } = validateConfig(cfg);
+    assert.strictEqual(valid, false);
+    const e = errors.find((x) => x.keyword === 'additionalProperties');
+    assert.ok(e, formatErrors(errors));
+    assert.ok(/anthropc/.test(e.detail), e.detail);
+    assert.ok(/quisiste decir 'anthropic'/.test(e.detail), e.detail);
+});
+
+test('#6559 clave desconocida dentro de un proveedor (tope) es rechazada', () => {
+    const cfg = validConfig();
+    cfg.multi_provider = { quota: quotaOk() };
+    cfg.multi_provider.quota.anthropic.tope = 100;
+    const { valid, errors } = validateConfig(cfg);
+    assert.strictEqual(valid, false);
+    assert.ok(errors.some((e) => e.keyword === 'additionalProperties' && /tope/.test(e.detail)), formatErrors(errors));
+});
+
+test('#6559 la sección quota es lado kernel (hereda de multi_provider)', () => {
+    assert.strictEqual(resolveSide('multi_provider.quota'), 'kernel');
+    assert.strictEqual(resolveSide('multi_provider.quota.anthropic.techo'), 'kernel');
+});
+
+test('#6559 el config.yaml real declara techo para anthropic, openai-codex y antigravity', () => {
+    const cfg = configReal();
+    const quota = cfg.multi_provider && cfg.multi_provider.quota;
+    assert.ok(quota, 'falta multi_provider.quota en config.yaml');
+    for (const id of ['anthropic', 'openai-codex', 'antigravity']) {
+        const b = quota[id];
+        assert.ok(b, `falta multi_provider.quota.${id}`);
+        for (const campo of ['plan', 'periodo', 'techo', 'unidad', 'reposicion']) {
+            assert.ok(b[campo] !== undefined && b[campo] !== null && b[campo] !== '', `falta ${campo} en quota.${id}`);
+        }
+    }
+});
 test('config no-objeto (string) es rechazado como corrupción de raíz', () => {
     const { valid } = validateConfig('no soy un objeto');
     assert.strictEqual(valid, false);

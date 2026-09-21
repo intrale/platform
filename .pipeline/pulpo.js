@@ -28280,6 +28280,38 @@ if (process.env.PULPO_SKIP_AGENT_MODELS_VALIDATE !== '1') {
       process.exit(2); // fail-fast, coherente con validateOrExit
     }
     process.stderr.write(`[validate-chains] Cadenas validadas: ${chainsResult.skillCount} skills — ${new Date().toISOString()}\n`);
+
+    // #6559 — Techo de cuota contratada por proveedor ACTIVO (CA-2, fail-closed).
+    // Cross-check entre las dos fuentes que ya están acá: `config.yaml`
+    // (`multi_provider.quota.<id>`) y las cadenas efectivas de agent-models.json.
+    // Un proveedor activo sin techo declarado aborta el boot con exit 2 y un
+    // error POR PROVEEDOR que lo nombra y dice cómo arreglarlo; nunca se asume
+    // infinito. `deterministic` (sin LLM) está exento y los alias de
+    // `multi_provider.order` se normalizan (ver validate-quota-ceilings.js).
+    //
+    // Si `config.yaml` NO valida (schema/parse), este chequeo se saltea: la
+    // violación ya la maneja `loadConfig()` por su camino fail-closed propio
+    // (`.paused` + Telegram, #5172/#4832) y correr el cross-check sobre un
+    // documento inválido sólo duplicaría el ruido. Cualquier otra excepción
+    // cae al catch de abajo (exit 1), como el resto del bloque.
+    const { validateQuotaCeilings, formatError: formatQuotaError } = require('./lib/multi-provider/validate-quota-ceilings');
+    let quotaCfg = null;
+    try {
+      quotaCfg = configResolver.resolve({ pipelineDir: PIPELINE(), reload: true });
+    } catch (cfgErr) {
+      if (!esViolacionDeConfig(cfgErr)) throw cfgErr;
+      process.stderr.write(`[validate-quota] config.yaml no validó (${cfgErr.name}) — el techo por proveedor se verifica cuando el config vuelva a ser válido (fail-closed vía loadConfig)\n`);
+    }
+    if (quotaCfg) {
+      const quotaResult = validateQuotaCeilings(quotaCfg, chainsConfig);
+      if (!quotaResult.ok) {
+        for (const e of quotaResult.errors) {
+          process.stderr.write(`[validate-quota] ${formatQuotaError(e)}\n`);
+        }
+        process.exit(2); // fail-fast, coherente con validate-chains
+      }
+      process.stderr.write(`[validate-quota] Techos validados: ${quotaResult.providers.length} proveedores activos (${quotaResult.providers.join(', ')}) — ${new Date().toISOString()}\n`);
+    }
   } catch (err) {
     // Si el módulo de validación mismo crasha (no debería: ajv/loadSchema están
     // todos try/catch internos), abortar con exit 1 (excepción no controlada)
