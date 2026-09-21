@@ -2363,6 +2363,33 @@ architect:
   go_live_date: '2026-05-29T00:00:00Z'
   # architect.bot_login: movida al lado PRODUCTO (#5174) → pipeline.config.json · productConfig.architect.bot_login
 
+  # ===========================================================================
+  # #7440 (split de #7432) — Auto-levantamiento del trigger 6 (decisión de
+  # arquitectura) cuando la firma del arquitecto llega DESPUÉS de la escalada.
+  # ===========================================================================
+  # Son claves de CALIBRACIÓN, no de autoridad: acotan cuánto y hasta cuándo el
+  # intake re-consulta la firma de un issue ya escalado a `needs-human`.
+  #
+  # OJO: NO dependen de `architect.enabled` (que gobierna el GATE 1 de
+  # pre-admisión). El trigger 6 corre siempre en `definicion`; estas claves
+  # calibran sólo su auto-levantamiento.
+  #
+  #   - `late_signoff_recheck_min`: minutos mínimos entre dos re-consultas de la
+  #     firma para el mismo issue (throttle en memoria, RS-4.7).
+  #   - `late_signoff_max_age_h`: edad máxima del bloqueo (desde `blocked_at`,
+  #     RS-4.12) hasta la que se sigue re-consultando. Pasada, el bloqueo queda
+  #     para el operador.
+  #   - `late_signoff_max_issues_per_tick` (rev-2, RS-4.13): tope de issues que
+  #     el barrido de markers locales re-consulta por tick del intake, los que
+  #     más esperan primero; el resto se difiere al tick siguiente. Techo de
+  #     red del barrido: `tope / intake_interval` (5 cada 5 min = 60/h).
+  #
+  # Valores no positivos o no numéricos caen al default (10 / 48 / 5), nunca a
+  # "siempre vencido". Si las claves faltan, el Pulpo arranca igual (CA-7).
+  late_signoff_recheck_min: 10
+  late_signoff_max_age_h: 48
+  late_signoff_max_issues_per_tick: 5
+
 # =============================================================================
 # #4574 — GATE 1 · Firma de Definición del operador (épico #4570)
 # =============================================================================
