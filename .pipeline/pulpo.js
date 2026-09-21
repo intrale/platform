@@ -12715,8 +12715,12 @@ async function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, 
   const timeoutMs = timeoutMin * 60 * 1000;
   // #2400: log del origen del timeout (override vs default) para debug de DevEx.
   const timeoutOrigin = (skill in timeoutOverrides) ? 'override' : 'default';
+  // #6558 — flag local: el handler de exit lo lee para registrar la corrida
+  // como `abortada` en el libro contable (`provider-cost.jsonl`).
+  let killedByTimeoutWatchdog = false;
   const watchdog = setTimeout(() => {
     if (child.exitCode === null && child.signalCode === null) {
+      killedByTimeoutWatchdog = true;
       log('lanzamiento', `⏱️ ${skill}:#${issue} excedió ${timeoutMin}min (${timeoutOrigin}) — matando (watchdog)`);
       try { child.kill('SIGTERM'); } catch {}
       setTimeout(() => { try { child.kill('SIGKILL'); } catch {} }, 10000);
@@ -13100,32 +13104,55 @@ async function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, 
           log('lanzamiento', `traceability emitSessionEnd falló para ${skill}:#${issue}: ${e.message}`);
         }
 
-        // #4403 (D4 · CA-D · H2 · RS-3) — telemetría de costo por provider.
-        // Bloque INDEPENDIENTE del try de emitSessionEnd (no acoplar fallos):
-        // registra una línea append-only en `.pipeline/state/provider-cost.jsonl`
-        // con la whitelist estricta de 7 campos. `skill`, `issue`, `elapsedSec`
-        // y `code` están en scope acá; el provider se resuelve con
-        // `resolveSkillProvider(skill)` (mismo helper que usa el bloque de
-        // cuota) porque el `skillProvider` local vive dentro del try previo.
-        // `tk` se reparsea acá para no depender del try de emitSessionEnd.
-        // Never-throws (CA-5): best-effort, jamás rompe el lifecycle.
-        try {
-          const providerCost = require('./lib/metrics/provider-cost');
-          let provPc = 'unknown';
-          try { provPc = resolveSkillProvider(skill) || 'unknown'; } catch { /* defensa */ }
-          const logPathPc = path.join(LOG_DIR(), `${issue}-${skill}.log`);
-          const tkPc = parseTokensFromLog(logPathPc);
-          providerCost.recordProviderCost({
-            provider: provPc,
-            skill,
-            issue,
-            tokens_in: tkPc.input,                 // total canónico del adapter
-            tokens_out: tkPc.output,
-            latency_ms: Math.round(elapsedSec * 1000),
-            status: code === 0 ? 'ok' : 'error',
-          });
-        } catch { /* best-effort, no rompe el lifecycle */ }
       }
+
+      // #4403 (D4 · CA-D · H2 · RS-3) — telemetría de costo por provider.
+      // #6558 — esquema v2: libro contable de cuota. Bloque INDEPENDIENTE del
+      // try de emitSessionEnd (no acoplar fallos) y FUERA de `if (traceHandle)`:
+      // las corridas determinísticas también dejan su línea (provider
+      // `deterministic`, tokens 0) para que exista una línea por corrida.
+      //   - `provider`: el EFECTIVO (el que corrió), misma fuente que
+      //     `effective-model.js` y que el detector de cuota (#4541): en fallback
+      //     vale el provider del fallback (p.ej. `openai-codex`). Antes se
+      //     resolvía con `resolveSkillProvider(skill)` (declarado) y las 14.258
+      //     líneas históricas dicen `anthropic` (CA-1).
+      //   - `resultado`: `rebote` si el detector de cuota clasificó la salida
+      //     como `quota_exhausted` (`veredictoDeAutenticacion`, izado al scope
+      //     del handler); `abortada` si lo mató el watchdog de timeout;
+      //     `ganada` con exit 0; `error` en el resto.
+      //   - `cache_read/cache_write` (#7506) salen del mismo parser.
+      // `tk` se reparsea acá para no depender del try de emitSessionEnd.
+      // Never-throws (CA-5): best-effort, jamás rompe el lifecycle.
+      try {
+        const providerCost = require('./lib/metrics/provider-cost');
+        let provPc = 'unknown';
+        try {
+          provPc = (launchResult && launchResult.provider)
+            || (dispatchResolution && dispatchResolution.provider)
+            || resolveSkillProvider(skill)
+            || 'unknown';
+        } catch { /* defensa */ }
+        const logPathPc = path.join(LOG_DIR(), `${issue}-${skill}.log`);
+        let tkPc = { input: 0, output: 0, cache_read: 0, cache_create: 0 };
+        try { tkPc = parseTokensFromLog(logPathPc) || tkPc; } catch { /* tokens 0 */ }
+        const quotaHit = !!(veredictoDeAutenticacion && veredictoDeAutenticacion.errorClass === 'quota_exhausted');
+        let resultadoPc = 'error';
+        if (killedByTimeoutWatchdog) resultadoPc = 'abortada';
+        else if (quotaHit) resultadoPc = 'rebote';
+        else if (code === 0) resultadoPc = 'ganada';
+        providerCost.recordProviderCost({
+          provider: provPc,
+          skill,
+          issue,
+          fase,
+          tokens_in: tkPc.input,                 // total canónico del adapter
+          tokens_out: tkPc.output,
+          cache_read: tkPc.cache_read,
+          cache_write: tkPc.cache_create,
+          duration_ms: Math.round(elapsedSec * 1000),
+          resultado: resultadoPc,
+        });
+      } catch { /* best-effort, no rompe el lifecycle */ }
     }, 500);
 
     // Si murió en menos de 15 segundos con error → fallo de infra + COOLDOWN
