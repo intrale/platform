@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<!--
+  Mockup UX #6565 — Panel de saldo y ritmo de cuota por proveedor (dashboard home MIZPÁ).
+  Estado ESPERADO. Se monta SOBRE la sección existente "CUOTA POR PROVEEDOR" (#4533):
+  la columna "Ventana larga" pasa a ser "Período · saldo" (alimentada por
+  /api/dash/quota-balance, #6560) y se agrega "Ritmo · proyección". Cada proveedor ocupa
+  dos líneas: valores arriba, veredicto + lectura abajo. Una sola sección (CA-4).
+  Tokens: sólo variables --in-* del theme.css real del dashboard. Sin hex nuevos.
+  Self-contained: sin fetch, sin scripts.
+-->
+<html lang="es" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<title>Mockup #6565 · Cuota por proveedor — saldo y ritmo</title>
+<style>
+:root {
+  --in-bg: #0d1117; --in-bg-2: #161b22; --in-bg-3: #1f2937;
+  --in-fg: #e6edf3; --in-fg-dim: #8b949e; --in-fg-soft: #6e7681;
+  --in-border: #30363d; --in-border-soft: rgba(255,255,255,0.06);
+  --in-ok: #3fb950; --in-ok-soft: rgba(63,185,80,0.18);
+  --in-warn: #d29922; --in-warn-soft: rgba(210,153,34,0.18);
+  --in-bad: #f85149; --in-bad-soft: rgba(248,81,73,0.18);
+  --in-info: #58a6ff; --in-info-soft: rgba(88,166,255,0.18);
+  --provider-antigravity: #8AB4F8;
+  --in-font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+html, body { margin: 0; background: var(--in-bg); color: var(--in-fg); font-family: var(--in-font); }
+body { padding: 24px; width: 1036px; box-sizing: content-box; }
+.mk-title { font-size: 11px; font-weight: 800; letter-spacing: .8px; color: var(--in-fg-dim); text-transform: uppercase; margin: 0 0 8px; }
+.mk-sub { font-size: 10.5px; color: var(--in-fg-soft); margin: 0 0 12px; line-height: 1.45; }
+.mk-block { margin-bottom: 28px; }
+code { font-family: ui-monospace, Consolas, monospace; font-size: 10px; }
+
+/* ===== Panel real (#4533) — CSS copiado de home.js, sin cambios ===== */
+.mz-sysquota { display: grid; grid-template-columns: 0.9fr 2.3fr; overflow: hidden;
+    background: linear-gradient(180deg, var(--in-bg-2), var(--in-bg-3));
+    border: 1px solid var(--in-border); border-radius: 16px; }
+.mz-sq-side { padding: 13px 16px; border-right: 1px solid var(--in-border); display: flex; flex-direction: column; gap: 10px; }
+.mz-sq-head { font-size: 10px; color: var(--in-fg-dim); font-weight: 800; letter-spacing: 1px; }
+.mz-status-line { display: flex; align-items: center; gap: 8px; }
+.mz-status-dot { width: 11px; height: 11px; border-radius: 50%; flex: none; background: var(--in-warn); }
+.mz-status-lbl { font-size: 15px; font-weight: 800; color: var(--in-warn); }
+.mz-sq-signals { display: flex; flex-direction: column; gap: 6px; margin-top: 2px; }
+.mz-sig { display: flex; align-items: center; gap: 6px; font-size: 10.5px; font-weight: 700; color: var(--in-fg-dim);
+    background: rgba(255,255,255,.04); border: 1px solid var(--in-border); border-radius: 8px; padding: 5px 9px; }
+.mz-sig b { font-variant-numeric: tabular-nums; color: #6ee7b7; margin-left: auto; }
+.mz-sig[data-on="1"] { border-color: rgba(248,81,73,.4); background: rgba(248,81,73,.09); color: var(--in-bad); }
+.mz-sq-matrix { padding: 13px 16px; min-width: 0; }
+.mz-qm-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; gap: 8px; }
+.mz-qm-h-l { font-size: 10px; font-weight: 800; letter-spacing: .7px; color: var(--in-fg-dim); white-space: nowrap; }
+.mz-qm-h-note { font-size: 8.5px; color: var(--in-fg-soft); font-weight: 600; text-align: right; }
+.mz-qm-gh { font-size: 8.5px; font-weight: 800; letter-spacing: .4px; color: var(--in-fg-soft); text-transform: uppercase; padding-bottom: 4px; white-space: nowrap; }
+.mz-qm-prov { gap: 7px; white-space: nowrap; }
+.mz-pdot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+.mz-qm-pn { font-size: 12px; font-weight: 800; }
+.mz-qm-src { font-size: 8.5px; color: var(--in-fg-soft); font-weight: 700; }
+.mz-qm-cell { gap: 7px; font-size: 11px; white-space: nowrap; }
+.mz-qm-wtag { font-size: 8px; font-weight: 800; letter-spacing: .3px; color: var(--in-fg-soft); text-transform: uppercase; min-width: 26px; }
+.mz-qm-mini { width: 52px; height: 5px; border-radius: 3px; background: rgba(255,255,255,.09); overflow: hidden; flex: none; }
+.mz-qm-mini i { display: block; height: 100%; border-radius: 3px; background: var(--in-fg-dim); }
+.mz-qm-pct { font-weight: 800; font-variant-numeric: tabular-nums; min-width: 34px; color: var(--in-fg-dim); }
+.mz-qm-rst { font-size: 9px; color: var(--in-fg-dim); font-weight: 700; font-variant-numeric: tabular-nums; margin-left: auto; white-space: nowrap; }
+.mz-qm-cell.ok .mz-qm-pct { color: var(--in-ok); } .mz-qm-cell.ok .mz-qm-mini i { background: var(--in-ok); }
+.mz-qm-cell.bad .mz-qm-pct { color: var(--in-bad); } .mz-qm-cell.bad .mz-qm-mini i { background: var(--in-bad); }
+.mz-qm-cell.mz-qm-nodata .mz-qm-mini, .mz-qm-cell.mz-qm-nodata .mz-qm-rst { display: none; }
+.mz-qm-cell.mz-qm-nodata .mz-qm-pct { color: var(--in-fg-soft); font-weight: 600; font-size: 10px; min-width: 0; }
+
+/* ===== NUEVO #6565 — 4 columnas × 2 líneas por proveedor ===== */
+.mz-qm-cols { display: grid; grid-template-columns: 0.8fr 0.95fr 1.35fr 1.2fr; column-gap: 12px; align-items: center; }
+.mz-qm-row  { display: grid; grid-template-columns: 0.8fr 0.95fr 1.35fr 1.2fr; grid-template-rows: auto auto; column-gap: 12px; align-items: center;
+    border-top: 1px solid var(--in-border); padding: 5px 0 6px; }
+.mz-qm-row > * { display: flex; align-items: center; min-height: 26px; }
+.mz-qm-prov, .mz-qm-cell { grid-row: 1 / span 2; }
+
+/* Línea 1 — saldo: tag del período + barra techo/consumo + saldo en pts. */
+.mz-qb { grid-column: 3; grid-row: 1; gap: 7px; font-size: 11px; }
+.mz-qb-bar { position: relative; flex: 1; height: 6px; border-radius: 3px; background: rgba(255,255,255,.09); min-width: 60px; }
+.mz-qb-bar i { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 3px; background: var(--in-fg-dim); }
+.mz-qb-bar em { position: absolute; top: -3px; bottom: -3px; width: 2px; background: var(--in-fg); opacity: .5; }   /* marca: saldo proyectado al cierre */
+.mz-qb-bar .over { position: absolute; left: 100%; top: 0; bottom: 0; border-radius: 0 3px 3px 0;
+    background: repeating-linear-gradient(135deg, var(--in-bad) 0 3px, transparent 3px 6px); }
+.mz-qb-saldo { font-weight: 800; font-variant-numeric: tabular-nums; min-width: 46px; text-align: right; color: var(--in-fg); white-space: nowrap; }
+.mz-qb.ok   .mz-qb-bar i { background: var(--in-ok); }   .mz-qb.ok   .mz-qb-saldo { color: var(--in-ok); }
+.mz-qb.warn .mz-qb-bar i { background: var(--in-warn); } .mz-qb.warn .mz-qb-saldo { color: var(--in-warn); }
+.mz-qb.bad  .mz-qb-bar i { background: var(--in-bad); }  .mz-qb.bad  .mz-qb-saldo { color: var(--in-bad); }
+.mz-qb.dim  .mz-qb-saldo { color: var(--in-fg-dim); }
+
+/* Línea 1 — ritmo: pts/h + "agota en". */
+.mz-qr { grid-column: 4; grid-row: 1; gap: 5px; font-size: 11px; white-space: nowrap; }
+.mz-qr-rate { font-weight: 800; font-variant-numeric: tabular-nums; color: var(--in-fg); }
+.mz-qr-unit { font-size: 9px; font-weight: 700; color: var(--in-fg-soft); }
+.mz-qr-eta { margin-left: auto; font-size: 9.5px; font-weight: 700; color: var(--in-fg-dim); font-variant-numeric: tabular-nums; }
+.mz-qr.dim .mz-qr-rate { color: var(--in-fg-soft); }
+.mz-qr.warn .mz-qr-eta { color: var(--in-warn); } .mz-qr.bad .mz-qr-eta { color: var(--in-bad); }
+
+/* Línea 2 — veredicto (chip con ícono + texto) y lectura del período. */
+.mz-ql2 { grid-column: 3 / span 2; grid-row: 2; gap: 10px; min-height: 22px; font-size: 9px; font-weight: 700; color: var(--in-fg-dim); white-space: nowrap; }
+.mz-ql2 .rd { display: flex; gap: 6px; align-items: center; margin-left: auto; font-variant-numeric: tabular-nums; }
+.mz-ql2 .rd .rst { margin-left: 4px; }
+.mz-qv { display: inline-flex; align-items: center; gap: 5px; font-size: 9px; font-weight: 800; letter-spacing: .2px;
+    padding: 2px 7px; border-radius: 999px; border: 1px solid var(--in-border); color: var(--in-fg-dim); }
+.mz-qv .ic { font-size: 10px; line-height: 1; }
+.mz-qv.ok   { color: var(--in-ok);   border-color: var(--in-ok);   background: var(--in-ok-soft); }
+.mz-qv.warn { color: var(--in-warn); border-color: var(--in-warn); background: var(--in-warn-soft); }
+.mz-qv.bad  { color: var(--in-bad);  border-color: var(--in-bad);  background: var(--in-bad-soft); }
+.mz-qv.dim  { color: var(--in-fg-soft); background: transparent; }
+
+/* ===== Catálogo de estados (bloque 2): mismas celdas, aisladas ===== */
+.cat { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
+.cat-item { background: var(--in-bg-2); border: 1px solid var(--in-border); border-radius: 12px; padding: 10px 14px; }
+.cat-h { display: flex; align-items: flex-start; gap: 8px; margin-bottom: 4px; }
+.cat-code { font-family: ui-monospace, Consolas, monospace; font-size: 10.5px; font-weight: 700; color: var(--in-fg); background: rgba(255,255,255,.06); padding: 1px 6px; border-radius: 4px; white-space: nowrap; }
+.cat-rule { font-size: 9.5px; color: var(--in-fg-dim); line-height: 1.4; }
+.cat-cells { display: grid; grid-template-columns: 1.35fr 1.2fr; grid-template-rows: auto auto; column-gap: 12px; align-items: center; }
+.cat-cells > * { display: flex; align-items: center; min-height: 26px; }
+.cat-cells .mz-qb { grid-column: 1; } .cat-cells .mz-qr { grid-column: 2; } .cat-cells .mz-ql2 { grid-column: 1 / span 2; }
+</style>
+</head>
+<body>
+
+<div class="mk-block">
+  <p class="mk-title">① Home MIZPÁ · panel "Estado + Cuota por proveedor" — estado esperado</p>
+  <p class="mk-sub">Misma sección de siempre (#4533). "Ventana corta" queda igual (% leído del proveedor). "Ventana larga" se convierte en <b>Período · saldo</b> y se suma <b>Ritmo · proyección</b>, ambas hidratadas desde <code>/api/dash/quota-balance</code> (#6560). Cada proveedor ocupa dos líneas: valores arriba, veredicto + lectura del período abajo. Tres proveedores = tres escenarios: se agota antes · recién repuesto · excedido.</p>
+
+  <section class="mz-sysquota" aria-label="Estado del sistema y cuotas">
+    <div class="mz-sq-side">
+      <div class="mz-sq-head">📟 ESTADO</div>
+      <div class="mz-status-line"><span class="mz-status-dot"></span><span class="mz-status-lbl">DEGRADADO</span></div>
+      <div class="mz-sq-signals">
+        <span class="mz-sig" data-on="1">⚠ <span>Anomalía consumo</span></span>
+        <span class="mz-sig">↩ Rebote ola <b>0.0%</b></span>
+        <span class="mz-sig">✓ Proveedores <b>1/3</b></span>
+      </div>
+    </div>
+    <div class="mz-sq-matrix">
+      <div class="mz-qm-head">
+        <span class="mz-qm-h-l">🔌 CUOTA POR PROVEEDOR</span>
+        <span class="mz-qm-h-note">corta: % leído del proveedor · período: saldo y ritmo del libro contable (#6560) · muestra hace 2m</span>
+      </div>
+      <div class="mz-qm-cols">
+        <span class="mz-qm-gh">Proveedor</span>
+        <span class="mz-qm-gh">Ventana corta</span>
+        <span class="mz-qm-gh">Período · saldo</span>
+        <span class="mz-qm-gh">Ritmo · proyección</span>
+      </div>
+      <div class="mz-qm-body">
+
+        <!-- Anthropic — estado: se_agota_antes -->
+        <div class="mz-qm-row" data-estado="se_agota_antes">
+          <div class="mz-qm-prov"><span class="mz-pdot" style="background:var(--in-warn)"></span><span class="mz-qm-pn">Anthropic</span><span class="mz-qm-src">· CLI</span></div>
+          <div class="mz-qm-cell bad"><span class="mz-qm-wtag">5H</span><span class="mz-qm-mini"><i style="width:83%"></i></span><span class="mz-qm-pct">83%</span><span class="mz-qm-rst">↻21m</span></div>
+          <div class="mz-qb warn" title="Semanal · techo 100 pts · consumo 23 (23 %) · saldo 77 · proyectado al cierre −16 pts · reposición dom 21:00 (en 6d 5h) · muestra 15:24 (fresca)">
+            <span class="mz-qm-wtag">SEM</span><span class="mz-qb-bar"><i style="width:23%"></i><em style="left:100%"></em></span><span class="mz-qb-saldo">77 pts</span>
+          </div>
+          <div class="mz-qr warn" title="Ritmo 0,62 pts/h (ventana móvil 60 min · 4 muestras) · agota 27/09 16:40 · cierre 27/09 21:00 → se agota 1d 1h antes">
+            <span class="mz-qr-rate">0,62</span><span class="mz-qr-unit">pts/h</span><span class="mz-qr-eta">agota en 5d 4h</span>
+          </div>
+          <div class="mz-ql2">
+            <span class="mz-qv warn"><span class="ic">⚠</span>Se agota 1d 1h antes del cierre · −16 pts</span>
+            <span class="rd">techo 100 · consumido 23 <span class="rst">↻ cierra en 6d 5h</span></span>
+          </div>
+        </div>
+
+        <!-- Codex — estado: sin_proyeccion (recién repuesto, 1/3 muestras) -->
+        <div class="mz-qm-row" data-estado="sin_proyeccion">
+          <div class="mz-qm-prov"><span class="mz-pdot" style="background:var(--in-ok)"></span><span class="mz-qm-pn">Codex</span><span class="mz-qm-src">· CLI</span></div>
+          <div class="mz-qm-cell mz-qm-nodata"><span class="mz-qm-wtag">ROLL</span><span class="mz-qm-mini"><i></i></span><span class="mz-qm-pct">sin dato</span><span class="mz-qm-rst"></span></div>
+          <div class="mz-qb ok" title="Semanal rolling · techo 100 pts · consumo 0 · saldo 100 · reposición hace 12 m · cierre 28/09 15:12 · muestra 15:24 (fresca)">
+            <span class="mz-qm-wtag">SEM</span><span class="mz-qb-bar"><i style="width:0%"></i></span><span class="mz-qb-saldo">100 pts</span>
+          </div>
+          <div class="mz-qr dim" title="Sin ritmo todavía: 1 de 3 muestras mínimas en la ventana móvil de 60 min. Se proyecta cuando haya 3.">
+            <span class="mz-qr-rate">—</span><span class="mz-qr-unit">pts/h</span><span class="mz-qr-eta">sin proyección</span>
+          </div>
+          <div class="mz-ql2">
+            <span class="mz-qv dim"><span class="ic">◌</span>Ritmo en cálculo · 1/3 muestras</span>
+            <span class="rd">saldo completo · repuesto hace 12m <span class="rst">↻ cierra en 7d</span></span>
+          </div>
+        </div>
+
+        <!-- Antigravity — estado: excedido -->
+        <div class="mz-qm-row" data-estado="excedido">
+          <div class="mz-qm-prov"><span class="mz-pdot" style="background:var(--provider-antigravity)"></span><span class="mz-qm-pn">Antigravity</span><span class="mz-qm-src">· CLI</span></div>
+          <div class="mz-qm-cell mz-qm-nodata"><span class="mz-qm-wtag">MIN</span><span class="mz-qm-mini"><i></i></span><span class="mz-qm-pct">sin dato</span><span class="mz-qm-rst"></span></div>
+          <div class="mz-qb bad" title="Diario rolling · techo 100 pts · consumo 112 (112 %) · saldo 0 · EXCEDENTE 12 pts · cierre en 3h 20m · muestra 15:23 (fresca)">
+            <span class="mz-qm-wtag">DÍA</span><span class="mz-qb-bar" style="margin-right:12px"><i style="width:100%"></i><span class="over" style="width:12%"></span></span><span class="mz-qb-saldo">0 pts</span>
+          </div>
+          <div class="mz-qr bad" title="Excedido: consumo 112 sobre techo 100. Ritmo 1,80 pts/h · al cierre −18 pts. El proveedor repone en 3h 20m.">
+            <span class="mz-qr-rate">1,80</span><span class="mz-qr-unit">pts/h</span><span class="mz-qr-eta">agotado</span>
+          </div>
+          <div class="mz-ql2">
+            <span class="mz-qv bad"><span class="ic">✕</span>Excedido +12 pts sobre el techo</span>
+            <span class="rd">techo 100 · consumido 112 <span class="rst">↻ repone en 3h 20m</span></span>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </section>
+</div>
+
+<div class="mk-block">
+  <p class="mk-title">② Catálogo de estados — contrato visual de las celdas nuevas (un estado = un render)</p>
+  <p class="mk-sub">El <code>estado</code> lo decide <code>quota-balance.js</code>; la vista sólo mapea. Color + ícono + texto siempre juntos (nunca información sólo por color). Los seis valores del enum <code>ESTADOS</code>. La marca vertical sobre la barra es el saldo proyectado al cierre (<code>al_cierre_pts</code>); sólo se dibuja cuando hay proyección.</p>
+  <div class="cat">
+
+    <div class="cat-item">
+      <div class="cat-h"><span class="cat-code">alcanza</span><span class="cat-rule">proyección ≥ cierre del período (o ritmo 0) → verde; la marca de cierre cae dentro del saldo</span></div>
+      <div class="cat-cells">
+        <div class="mz-qb ok"><span class="mz-qm-wtag">SEM</span><span class="mz-qb-bar"><i style="width:41%"></i><em style="left:63%"></em></span><span class="mz-qb-saldo">59 pts</span></div>
+        <div class="mz-qr ok"><span class="mz-qr-rate">0,38</span><span class="mz-qr-unit">pts/h</span><span class="mz-qr-eta">agota en 6d 11h</span></div>
+        <div class="mz-ql2"><span class="mz-qv ok"><span class="ic">✓</span>Alcanza · +37 pts al cierre</span><span class="rd">techo 100 · consumido 41 <span class="rst">↻ cierra en 2d 9h</span></span></div>
+      </div>
+    </div>
+
+    <div class="cat-item">
+      <div class="cat-h"><span class="cat-code">se_agota_antes</span><span class="cat-rule">proyección &lt; cierre → ámbar; la marca de cierre supera el techo; chip con cuánto antes y el faltante</span></div>
+      <div class="cat-cells">
+        <div class="mz-qb warn"><span class="mz-qm-wtag">SEM</span><span class="mz-qb-bar"><i style="width:23%"></i><em style="left:100%"></em></span><span class="mz-qb-saldo">77 pts</span></div>
+        <div class="mz-qr warn"><span class="mz-qr-rate">0,62</span><span class="mz-qr-unit">pts/h</span><span class="mz-qr-eta">agota en 5d 4h</span></div>
+        <div class="mz-ql2"><span class="mz-qv warn"><span class="ic">⚠</span>Se agota 1d 1h antes del cierre · −16 pts</span><span class="rd">techo 100 · consumido 23 <span class="rst">↻ cierra en 6d 5h</span></span></div>
+      </div>
+    </div>
+
+    <div class="cat-item">
+      <div class="cat-h"><span class="cat-code">excedido</span><span class="cat-rule">consumo &gt; techo → rojo; barra llena + tramo rayado del excedente; saldo 0 y excedente explícito (campo propio ≥ 0)</span></div>
+      <div class="cat-cells">
+        <div class="mz-qb bad"><span class="mz-qm-wtag">DÍA</span><span class="mz-qb-bar" style="margin-right:12px"><i style="width:100%"></i><span class="over" style="width:12%"></span></span><span class="mz-qb-saldo">0 pts</span></div>
+        <div class="mz-qr bad"><span class="mz-qr-rate">1,80</span><span class="mz-qr-unit">pts/h</span><span class="mz-qr-eta">agotado</span></div>
+        <div class="mz-ql2"><span class="mz-qv bad"><span class="ic">✕</span>Excedido +12 pts sobre el techo</span><span class="rd">techo 100 · consumido 112 <span class="rst">↻ repone en 3h 20m</span></span></div>
+      </div>
+    </div>
+
+    <div class="cat-item">
+      <div class="cat-h"><span class="cat-code">sin_datos</span><span class="cat-rule">sin muestras del período → saldo completo en gris (no verde: no es "100 % libre real"); nunca error</span></div>
+      <div class="cat-cells">
+        <div class="mz-qb dim"><span class="mz-qm-wtag">DÍA</span><span class="mz-qb-bar"><i style="width:0%"></i></span><span class="mz-qb-saldo">100 pts</span></div>
+        <div class="mz-qr dim"><span class="mz-qr-rate">—</span><span class="mz-qr-unit">pts/h</span><span class="mz-qr-eta">sin proyección</span></div>
+        <div class="mz-ql2"><span class="mz-qv dim"><span class="ic">○</span>Sin datos del período</span><span class="rd">saldo completo · sin muestras <span class="rst">↻ cierra en 18h</span></span></div>
+      </div>
+    </div>
+
+    <div class="cat-item">
+      <div class="cat-h"><span class="cat-code">desactualizado</span><span class="cat-rule">última muestra stale (&gt; 30 min) → ámbar con antigüedad; sin ritmo ni proyección (no se proyecta sobre dato viejo)</span></div>
+      <div class="cat-cells">
+        <div class="mz-qb warn"><span class="mz-qm-wtag">SEM</span><span class="mz-qb-bar"><i style="width:56%"></i></span><span class="mz-qb-saldo">44 pts</span></div>
+        <div class="mz-qr warn"><span class="mz-qr-rate">—</span><span class="mz-qr-unit">pts/h</span><span class="mz-qr-eta">sin proyección</span></div>
+        <div class="mz-ql2"><span class="mz-qv warn"><span class="ic">⏱</span>Dato viejo · muestra de hace 47m</span><span class="rd">techo 100 · consumido 56 <span class="rst">↻ cierra en 3d 2h</span></span></div>
+      </div>
+    </div>
+
+    <div class="cat-item">
+      <div class="cat-h"><span class="cat-code">sin_proyeccion</span><span class="cat-rule">muestra fresca pero &lt; 3 muestras en la ventana móvil → saldo con su color normal; ritmo "en cálculo" con contador</span></div>
+      <div class="cat-cells">
+        <div class="mz-qb ok"><span class="mz-qm-wtag">SEM</span><span class="mz-qb-bar"><i style="width:0%"></i></span><span class="mz-qb-saldo">100 pts</span></div>
+        <div class="mz-qr dim"><span class="mz-qr-rate">—</span><span class="mz-qr-unit">pts/h</span><span class="mz-qr-eta">sin proyección</span></div>
+        <div class="mz-ql2"><span class="mz-qv dim"><span class="ic">◌</span>Ritmo en cálculo · 1/3 muestras</span><span class="rd">saldo completo · repuesto hace 12m <span class="rst">↻ cierra en 7d</span></span></div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+</body>
+</html>
