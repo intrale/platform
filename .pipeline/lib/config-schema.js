@@ -135,6 +135,27 @@ const PROVIDER_ENUM = Object.freeze([
 ]);
 
 // -----------------------------------------------------------------------------
+// #6559 — Techo de cuota contratada por proveedor (`multi_provider.quota.<id>`).
+// Los enums y el patrón de `reposicion` salen del módulo dueño del contrato
+// (`lib/multi-provider/validate-quota-ceilings.js`) para que schema y validador
+// de boot no se desincronicen.
+// -----------------------------------------------------------------------------
+const quotaCeilings = require('./multi-provider/validate-quota-ceilings');
+
+const QUOTA_CEILING_SCHEMA = Object.freeze({
+    type: 'object',
+    additionalProperties: false,
+    required: [...quotaCeilings.CAMPOS_REQUERIDOS],
+    properties: {
+        plan: { type: 'string', minLength: 1 },
+        periodo: { type: 'string', enum: [...quotaCeilings.PERIODOS] },
+        techo: { type: 'number', minimum: 0 },
+        unidad: { type: 'string', enum: [...quotaCeilings.UNIDADES] },
+        reposicion: { type: 'string', pattern: quotaCeilings.REPOSICION_PATTERN },
+    },
+});
+
+// -----------------------------------------------------------------------------
 // #5173 — Lados: kernel · producto · autoridad
 // -----------------------------------------------------------------------------
 //
@@ -519,6 +540,25 @@ const SCHEMA = {
                         max_days_without_win: { type: 'number', minimum: 0 },
                         min_survivors: { type: 'number', minimum: 1 },
                     },
+                },
+                // --- #6559 — techo de cuota contratada por proveedor (el HABER
+                //     del libro contable de #6558). Indexado por id CANÓNICO
+                //     (los mismos de `quota_alert` y agent-models.json). CERRADO
+                //     a propósito, a diferencia del resto de multi_provider: un
+                //     typo en el id (`anthropc`) o en una clave (`tope`) tiene
+                //     que salir como error con sugerencia (`suggestKey`) y no
+                //     como "infinito silencioso". Enums cerrados para `periodo`
+                //     y `unidad`; las 5 claves son requeridas por proveedor
+                //     declarado. Los invariantes cruzados (activo ⇒ declarado,
+                //     porcentaje ⇒ techo 100, formato de `reposicion` según
+                //     `periodo`) viven en `lib/multi-provider/validate-quota-
+                //     ceilings.js`, que corre en el boot junto a validate-chains.
+                quota: {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: Object.fromEntries(
+                        quotaCeilings.QUOTA_PROVIDER_IDS.map((id) => [id, QUOTA_CEILING_SCHEMA]),
+                    ),
                 },
             },
         },
@@ -1818,6 +1858,7 @@ module.exports = {
     ConfigSchemaViolation,
     ConfigParseViolation,
     PROVIDER_ENUM,
+    QUOTA_CEILING_SCHEMA,
     SIDE_MAP,
     AUTHORITY_PREFIXES,
     SCHEMA,
