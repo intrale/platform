@@ -24,6 +24,8 @@
 14. [Documentación operativa multi-provider (post-ola N+1)](#14-documentación-operativa-multi-provider-post-ola-n1) — smoke test reproducible, telemetría, health en vivo, failover con evidencia y comparación pre/post ola N+1 (#4405).
 15. [Criterio de permanencia de proveedores (#6145)](#15-criterio-de-permanencia-de-proveedores-6145) — quién se queda: marca candidatos a baja, nunca da de baja.
 16. [Criterio de admisión de proveedores (#6562)](#16-criterio-de-admisión-de-proveedores-6562) — quién entra: CLI que edita archivos + consumo verificable + términos sin entrenamiento, guardrail fail-closed en el boot y en el dashboard.
+17. [Plan de rollback — re-alta de un proveedor dado de baja (#6563)](#17-plan-de-rollback--re-alta-de-un-proveedor-dado-de-baja-6563) — cómo volver a habilitar un proveedor retirado con excepción temporal, nunca "para siempre".
+18. [Techo de cuota contratada por proveedor (#6559)](#18-techo-de-cuota-contratada-por-proveedor-6559) — el haber del libro contable: `plan`/`periodo`/`techo`/`unidad`/`reposicion` por proveedor activo, guardrail fail-closed en el boot y lectura programática para saldo y ritmo (#6560).
 
 > **Convención:** todos los paths `.pipeline/...` son relativos a la raíz del repo (`C:\Workspaces\Intrale\platform\`). Todos los comandos asumen Node.js 21 disponible en PATH.
 
@@ -3575,9 +3577,202 @@ bash .pipeline/smoke-test.sh
 
 ---
 
+## 18. Techo de cuota contratada por proveedor (#6559)
+
+Es **el haber** del libro contable de cuota. [§14.2](#142-telemetría-y-diagnóstico) (esquema v2,
+#6558) registra el **consumo** real por ejecución; esta sección declara **cuánta cuota existe**
+por proveedor y por período, para que saldo, ritmo y proyección (#6560) tengan contra qué
+comparar. Hasta acá el pipeline no llevaba contabilidad sino **alarmas**: sólo registraba el
+evento "este proveedor dijo basta" y lo sacaba de circulación hasta la reposición. Dato que lo
+motiva: el 25/08/2026 Codex estaba al 100 % agotado desde las 03:22 mientras a Claude le
+sobraba el 70 %.
+
+Programa *Contabilidad y balanceo de cuota por proveedor*: #6558 (consumo) → **#6559 (techo)** →
+#6560 (saldo y ritmo) → #6561, #6565, #6809.
+
+### 18.1 Dónde vive
+
+`.pipeline/config.yaml` → `multi_provider.quota.<proveedor>`, hermana de `quota_alert` (que ya
+indexa por proveedor con los mismos ids). Lado **kernel** (#5173): hereda de `multi_provider`
+sin declaración extra en `pipeline.config.json`.
+
+Los ids son los **canónicos** de `agent-models.json`: `anthropic`, `openai-codex`,
+`antigravity`. Los alias `claude`/`codex` que acepta `multi_provider.order` **no** valen como
+clave acá (se normalizan sólo al comparar contra el ruteo, ver §18.3).
+
+### 18.2 Los cinco campos
+
+Todos obligatorios por proveedor declarado. El schema (`lib/config-schema.js`) los tipa y cierra
+los enums; los invariantes que cruzan dos campos los aplica el validador de boot (§18.3).
+
+| Campo | Tipo | Valores válidos | Ejemplo |
+|---|---|---|---|
+| `plan` | texto | libre, no vacío | `"Claude Max"` |
+| `periodo` | enum | `horario` · `diario` · `semanal` | `semanal` |
+| `techo` | número ≥ 0 | cuota del período en la `unidad` declarada; si `unidad: porcentaje` **siempre `100`** | `100` |
+| `unidad` | enum | `tokens` · `mensajes` · `creditos` · `porcentaje` | `porcentaje` |
+| `reposicion` | texto con formato | según `periodo` (tabla siguiente) o `rolling` | `"dom 21:00"` |
+
+**Formato de `reposicion`.** Es el campo más ambiguo de los cinco ("domingo 21:00" sin zona
+horaria es una trampa), así que el formato es fijo y la TZ es **una sola** para todo el
+pipeline: la hora local de `QUOTA_TZ_OFFSET_MIN` (default `-180`, ART, UTC-3), la misma ancla
+que usa `lib/weekly-quota.js` para el reset semanal de Anthropic. No hay una segunda clave `tz`
+en `config.yaml` a propósito: dos fuentes de verdad de TZ se desincronizan en silencio.
+
+| `periodo` | Formato | Ejemplo | Significado |
+|---|---|---|---|
+| `semanal` | `<dia> HH:MM` con `dia ∈ lun,mar,mie,jue,vie,sab,dom` | `"dom 21:00"` | corte fijo semanal |
+| `diario` | `HH:MM` | `"03:00"` | corte fijo diario |
+| `horario` | `:MM` | `":00"` | minuto de corte dentro de cada hora |
+| cualquiera | `rolling` | `rolling` | ventana **móvil** desde el primer uso; el corte lo informa el proveedor en `resets_at` y no hay hora fija |
+
+**Modelo de ventana (decisión de diseño).** Los proveedores exponen **dos** ventanas (Anthropic
+`five_hour` + `seven_day`; Codex rolling de horas + semanal; el panel MIZPÁ las modela como
+`kind: 'short' | 'long'` en `lib/provider-quota.js`). Acá se declara **un** período por
+proveedor: la **ventana larga**, que es la que agrega el libro contable por día/semana
+(§14.2) y la que el panel muestra como `Sem`/`Día`. Así `periodo`/`reposicion` son
+consistentes con el `resetAt` de la ventana larga del panel y el saldo de #6560 no tiene que
+reconciliar dos nociones de "período". La ventana corta la sigue informando el proveedor en
+`resets_at` (cap `quota_detector.resets_at_cap_max_days`). Si #6560 necesita declararla, el
+bloque puede crecer a una lista sin romper el modelo plano.
+
+**Bloque vigente** (copiable; es el que está en `config.yaml`):
+
+```yaml
+multi_provider:
+  quota:
+    # Claude Max: la cuota semanal se expone como % de utilización (`seven_day`);
+    # reset domingo 21:00 hora local (weekly-quota.js).
+    anthropic:
+      plan: "Claude Max"
+      periodo: semanal
+      techo: 100
+      unidad: porcentaje
+      reposicion: "dom 21:00"
+    # ChatGPT Plus: Codex expone `used_percent` de la ventana semanal
+    # (`window_minutes: 10080`) con `resets_at` móvil desde el primer uso.
+    openai-codex:
+      plan: "ChatGPT Plus"
+      periodo: semanal
+      techo: 100
+      unidad: porcentaje
+      reposicion: rolling
+    # Google One (Antigravity): ventana larga diaria (panel: long = Día). El CLI
+    # `agy` todavía no reporta consumo verificable; plan y techo se confirman en #6564.
+    antigravity:
+      plan: "Google One"
+      periodo: diario
+      techo: 100
+      unidad: porcentaje
+      reposicion: rolling
+```
+
+### 18.3 Guardrail de arranque (fail-closed)
+
+Un proveedor **activo** sin techo declarado **no se asume infinito**: el pulpo no arranca. El
+chequeo vive en `lib/multi-provider/validate-quota-ceilings.js` (`validateQuotaCeilings(config,
+agentModels)`, puro, sin I/O) y corre en el boot de `pulpo.js` junto a `validate-chains`
+(#4407), después de que `agent-models.json` pasó schema + cross-refs. Es el lugar natural: ahí
+están las dos fuentes (config validada y cadenas efectivas) y ya es fail-closed (`exit 2`).
+
+- **"Activo"** = `default_provider` ∪ `skills.*.provider` ∪ `skills.*.fallbacks[].provider` de
+  `agent-models.json` ∪ `multi_provider.order` (si existe), con alias normalizados
+  (`claude → anthropic`, `codex → openai-codex`). **Excluye** a los proveedores sin LLM
+  (`admission.non_llm: true`, hoy sólo `deterministic`): no consumen cuota y exigirles techo
+  obligaría a declarar uno fantasma para que el pulpo arranque. Un proveedor dado de baja
+  (#6563, §17) **no** necesita techo; si lo conserva, el bloque se valida igual para que un
+  error no quede latente hasta la re-alta.
+- **Un error por proveedor** (nunca un "faltan techos" genérico), con `path`, mensaje que
+  **nombra al proveedor** y `fix`. Texto exacto que ve el operador en `stderr`/`pulpo.log`:
+
+  ```
+  [validate-quota] multi_provider.quota.openai-codex: proveedor activo sin techo declarado — fix: agregá plan/periodo/techo/unidad/reposicion bajo multi_provider.quota.openai-codex en .pipeline/config.yaml (ver docs/pipeline/multi-provider.md §18)
+  ```
+
+  y, con todo declarado:
+
+  ```
+  [validate-quota] Techos validados: 3 proveedores activos (anthropic, openai-codex, antigravity) — <ISO>
+  ```
+
+- **Invariantes cruzados** que también abortan: `unidad: porcentaje` con `techo ≠ 100`;
+  `reposicion` que no respeta el formato del `periodo`; alguno de los 5 campos vacío.
+- **Typos.** La sección es **cerrada** (a diferencia del resto de `multi_provider`): un id mal
+  escrito (`anthropc`) o una clave desconocida (`tope`) salen por el camino habitual de
+  `config-schema.js` (`.paused` + Telegram con sugerencia `¿quisiste decir 'anthropic'?`), no como
+  "infinito silencioso". Un `periodo: mensual` o `unidad: dolares` también.
+- **Si `config.yaml` no valida** (schema/parse), el cross-check se saltea con un aviso: la
+  violación ya la maneja `loadConfig()` por su camino fail-closed propio (#5172/#4832) y correr
+  el chequeo sobre un documento inválido sólo duplicaría el ruido.
+- **Seguridad** (CA-6 de #4407): los mensajes sólo interpolan ids de proveedor, paths y fixes.
+  Nunca `JSON.stringify` de un provider de `agent-models.json` (arrastra `credentials_env`).
+
+Corrida standalone, sin arrancar el pulpo:
+
+```bash
+node .pipeline/lib/multi-provider/validate-quota-ceilings.js
+# exit 0 → "[validate-quota] Techos validados: …" · exit 2 → un error por proveedor
+```
+
+### 18.4 Lectura programática (para #6560)
+
+```js
+const q = require('.pipeline/lib/multi-provider/validate-quota-ceilings');
+q.getQuotaCeiling(config, 'openai-codex');
+// → { provider: 'openai-codex', plan: 'ChatGPT Plus', periodo: 'semanal', techo: 100,
+//     unidad: 'porcentaje', reposicion: 'rolling', rolling: true, tz_offset_min: -180 }
+q.getQuotaCeiling(config, 'claude');     // alias → mismo bloque que 'anthropic'
+q.getQuotaCeiling(config, 'deterministic'); // → null (sin techo: NO es infinito, es "sin dato")
+q.listQuotaCeilings(config);             // { anthropic: {…}, 'openai-codex': {…}, antigravity: {…} }
+q.activeProviders(agentModels, config);  // ['anthropic', 'openai-codex', 'antigravity']
+```
+
+`config` es el objeto que devuelve `loadConfig()` / `config-resolver.resolve()`. El módulo no
+lee archivos: el llamador decide de dónde sale el config (hot-reload cada ~30 s en el pulpo).
+
+### 18.5 Qué hacer cuando cambio de plan
+
+1. Editar `plan` y, si cambia el cupo o su unidad, `techo`/`unidad` (si el proveedor pasa a
+   exponer un cupo absoluto, cambiar `unidad` a `tokens`/`mensajes`/`creditos` y poner el número
+   real; con `porcentaje` el techo es siempre `100`). Si cambia la ventana, `periodo` y
+   `reposicion` en el mismo commit.
+2. Correr `node .pipeline/lib/multi-provider/validate-quota-ceilings.js` y la suite
+   (`node --test .pipeline/lib/multi-provider/__tests__/validate-quota-ceilings.test.js`
+   y `.pipeline/lib/__tests__/config-schema.test.js`).
+3. PR de configuración trazable (la declaración es versionada a propósito: el "cuánto tengo"
+   cambia con el contrato, no con el día).
+4. **Reiniciar el pulpo** al mergear: el motor corre desde el repo principal y sólo relee
+   `config-schema.js` al respawn (memoria operativa: motor viejo vs config nuevo = rechazo
+   falso o dashboard fail-closed).
+
+### 18.6 Relación con la configuración que ya existía
+
+| Ya existía | Dónde | Relación |
+|---|---|---|
+| `pacing.weekly_quota_pct_per_provider: 100` | `config.yaml` (pacing, `enabled: false`) | Techo implícito en % semanal **para todos**. `multi_provider.quota.<id>.techo` + `unidad` lo **supersede** por proveedor; no se borra porque `pacing` sigue apagado y conserva su propio kill-switch. |
+| `quota_detector.resets_at_cap_max_days.<id>` | `config.yaml` | Cap de cuánto se cree un `resets_at` del proveedor. No es `reposicion`, pero deben ser coherentes: `periodo: semanal` ⇒ cap ≥ 7. |
+| `QUOTA_TZ_OFFSET_MIN` / `lib/weekly-quota.js` | env | **Única** ancla de TZ; `reposicion` se expresa en esa hora local y `getQuotaCeiling` la devuelve como `tz_offset_min`. |
+| `multi_provider.quota_alert.<id>` | `config.yaml` | Sección hermana, misma indexación por id canónico. Los umbrales `warn`/`crit` se leen en % del techo. |
+| Panel de cuotas MIZPÁ (`lib/provider-quota.js`) | dashboard | `periodo` declarado = ventana `long` del panel (`Sem`/`Día`); `reposicion` = su `resetAt`. |
+
+### 18.7 Tests
+
+- `.pipeline/lib/multi-provider/__tests__/validate-quota-ceilings.test.js` — los dos escenarios
+  Gherkin del issue (declarado ⇒ ok y legible; activo sin techo ⇒ falla nombrando al
+  proveedor), exención de `deterministic`, alias `claude`/`codex`, porcentaje ⇒ 100, formato de
+  `reposicion` por período, un error por campo faltante, no-fuga de `credentials_env`, y el
+  `config.yaml` + `agent-models.json` reales del repo.
+- `.pipeline/lib/__tests__/config-schema.test.js` — enum inválido (`periodo: mensual`,
+  `unidad: dolares`), `techo` negativo, clave requerida faltante, `reposicion` con formato
+  inválido, id con typo con sugerencia, clave desconocida, lado kernel, y la sección real del
+  repo con los 3 proveedores.
+
+---
+
 ## Apéndice — links rápidos
 
 - **Código:** [`.pipeline/agent-models.json`](../../.pipeline/agent-models.json), [`.pipeline/agent-models.schema.json`](../../.pipeline/agent-models.schema.json), [`.pipeline/lib/agent-models-validate.js`](../../.pipeline/lib/agent-models-validate.js), [`.pipeline/validate-agent-models.js`](../../.pipeline/validate-agent-models.js), [`.pipeline/lib/multi-provider/`](../../.pipeline/lib/multi-provider/), [`.pipeline/lib/quota-adapters/`](../../.pipeline/lib/quota-adapters/), [`.pipeline/lib/agent-launcher/`](../../.pipeline/lib/agent-launcher/).
+- **Techo de cuota por proveedor (#6559):** [`.pipeline/lib/multi-provider/validate-quota-ceilings.js`](../../.pipeline/lib/multi-provider/validate-quota-ceilings.js) (validador puro + CLI + `getQuotaCeiling`), sección `multi_provider.quota` de [`.pipeline/config.yaml`](../../.pipeline/config.yaml), schema en [`.pipeline/lib/config-schema.js`](../../.pipeline/lib/config-schema.js) — ver §18.
 - **Diseño y decisiones:** [`docs/pipeline-multi-provider.md`](../pipeline-multi-provider.md) (1140 líneas, design doc v2).
 - **Permission mapping (capabilities cross-provider):** [`docs/pipeline-multi-provider/permission-mapping.md`](../pipeline-multi-provider/permission-mapping.md).
 - **Data residency / exclusiones:** [`docs/pipeline-multi-provider/data-residency.md`](../pipeline-multi-provider/data-residency.md).
