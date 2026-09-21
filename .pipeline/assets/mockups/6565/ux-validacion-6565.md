@@ -181,7 +181,7 @@ ensanchan 20 %), signo tipográfico `−` para negativos, `·` como separador, s
     $ grep -n "mz-qm-anthropic-long-bar" views/dashboard/__tests__/home.test.js
     267: assert.ok(html.includes('id="mz-qm-anthropic-long-bar"') …   ← el dev lo ajusta (UX-2)
 
-Comentario publicado en el issue con el mockup y este contrato.
+Comentario publicado en el issue: https://github.com/intrale/platform/issues/6565#issuecomment-5765603434
 
 Sin recomendaciones como issues independientes: la serie histórica de saldo por proveedor ya la
 cubren #4948/#4543/#5018 (notado por UX en #6560), y la alerta anticipada por Telegram es #4282.
