@@ -708,6 +708,18 @@ quota_detector:
   # demasiado spamea (memoria `feedback_telegram-messages-natural`). El rango
   # razonable está documentado en #2979 — validación pendiente como hardening.
   reminder_interval_minutes: 120
+  # (#7185) Canje automático del "reset de límite de uso" de codex + reconciliación
+  # EN VIVO del flag contra `codex app-server` (`account/rateLimits/read`).
+  # Regla de negocio: se canjea SÓLO cuando lo agotado es la ventana semanal
+  # (el cap rolling de 5h se libera solo), un crédito por agotamiento y como
+  # mucho `max_per_week` por semana de codex. `enabled: false` apaga las dos
+  # ramas (canje y reconciliación en vivo) sin efectos colaterales.
+  # Kill-switch operacional: `enabled: false` + `rm .pipeline/state/codex-reset-credit.json`.
+  # Doc: docs/pipeline/multi-provider.md §5.3.3.
+  codex_reset_credit:
+    enabled: true
+    max_per_week: 1
+    notify: true
 
 # =============================================================================
 # Alerta y switch preventivo por cuota de proveedor (#4282)
