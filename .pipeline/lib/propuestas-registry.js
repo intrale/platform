@@ -110,6 +110,19 @@ const ID_HEX_LEN = 24;
 
 // Caps (SEC-B / SEC-7515-4). El crudo se mide ANTES de cualquier regex.
 const MAX_BYTES_CRUDO = 64 * 1024;
+// SEC-7515-V1: claves que jamás se aceptan en ningún nivel del payload. Una
+// clave PROPIA `__proto__` (lo que produce `JSON.parse('{"__proto__":{…}}')`)
+// convertiría la copia canónica en un objeto con prototipo controlado por el
+// productor, y Ajv (`for…in`) daría por cumplidos `required` y
+// `additionalProperties` leyendo campos HEREDADOS que `Object.keys` no ve.
+const CLAVES_PROHIBIDAS = new Set(['__proto__', 'constructor', 'prototype']);
+// SEC-7515-V2: forma admitida para que un NOMBRE de clave del payload aparezca
+// en un log o en `detalle`. Fuera de esta forma se reemplaza por un marcador:
+// los nombres de clave son contenido no confiable (no pasan por textosDe, no
+// se redactan, no tienen tope propio) y no pueden salir crudos por `console`.
+const RE_CLAVE_LOGUEABLE = /^[a-z0-9_.-]{1,64}$/;
+const CLAVE_NO_ADMITIDA = '(clave no admitida)';
+const MAX_CHARS_DETALLE = 256;
 const MAX_BYTES_POR_STRING = 2048;
 const MAX_BYTES_PAYLOAD = 8192;
 
@@ -134,7 +147,9 @@ function validadorSchema() {
     // eslint-disable-next-line global-require
     const Ajv = require('ajv');
     // SEC-7515-3: sin `verbose` (los errores no llevan `data`), `strict:true`.
-    const ajv = new Ajv({ allErrors: true, verbose: false, strict: true });
+    // SEC-7515-V1 (c): `ownProperties` para que `required` y
+    // `additionalProperties` sólo consideren propiedades PROPIAS del dato.
+    const ajv = new Ajv({ allErrors: true, verbose: false, strict: true, ownProperties: true });
     // eslint-disable-next-line global-require
     const schema = require(SCHEMA_FILE);
     validador = ajv.compile(schema);
@@ -149,13 +164,59 @@ function validadorSchema() {
  */
 function formatearErroresAjv(errors) {
     if (!Array.isArray(errors) || errors.length === 0) return 'schema inválido';
-    return errors.map((e) => {
+    const texto = errors.map((e) => {
         const donde = e.instancePath ? `data${e.instancePath}` : 'data';
-        const extra = (e.params && typeof e.params.additionalProperty === 'string')
-            ? ` (${e.params.additionalProperty})`
-            : '';
+        // SEC-7515-V2: el nombre de la propiedad sobrante viene del payload y
+        // no está canonicalizado ni redactado ni acotado: sólo se muestra si
+        // tiene forma de identificador; si no, un marcador fijo.
+        let extra = '';
+        if (e.params && typeof e.params.additionalProperty === 'string') {
+            const clave = claveLogueable(e.params.additionalProperty);
+            extra = clave === CLAVE_NO_ADMITIDA ? ` ${clave}` : ` (${clave})`;
+        }
         return `${donde} ${e.message}${extra}`;
     }).join('; ');
+    return acotarDetalle(texto);
+}
+
+/**
+ * Nombre de clave apto para log/`detalle` (SEC-7515-V2): se devuelve tal cual
+ * sólo si cumple `RE_CLAVE_LOGUEABLE`; en cualquier otro caso, el marcador.
+ * @param {any} k
+ * @returns {string}
+ */
+function claveLogueable(k) {
+    return (typeof k === 'string' && RE_CLAVE_LOGUEABLE.test(k)) ? k : CLAVE_NO_ADMITIDA;
+}
+
+/**
+ * Tope duro para cualquier `detalle` que salga por `console.warn` o por el
+ * resultado (SEC-7515-V2): nunca más de `MAX_CHARS_DETALLE` chars.
+ * @param {string} texto
+ * @returns {string}
+ */
+function acotarDetalle(texto) {
+    const t = String(texto);
+    return t.length > MAX_CHARS_DETALLE ? `${t.slice(0, MAX_CHARS_DETALLE - 1)}…` : t;
+}
+
+/**
+ * Busca alguna clave prohibida (`CLAVES_PROHIBIDAS`) en cualquier nivel del
+ * valor (SEC-7515-V1 (a)). PURA. Se recorre con `Object.keys`, que SÍ ve la
+ * propiedad propia `__proto__` que produce `JSON.parse`. Se llama después del
+ * pre-cap de 64 KB, así que el recorrido está acotado; y como el payload ya
+ * pasó `JSON.stringify`, no hay ciclos.
+ * @param {any} valor
+ * @returns {boolean} true si hay alguna clave prohibida
+ */
+function tieneClaveProhibida(valor) {
+    if (Array.isArray(valor)) return valor.some(tieneClaveProhibida);
+    if (!valor || typeof valor !== 'object') return false;
+    for (const k of Object.keys(valor)) {
+        if (CLAVES_PROHIBIDAS.has(k)) return true;
+        if (tieneClaveProhibida(valor[k])) return true;
+    }
+    return false;
 }
 
 // ─── Puras: canonicalización, textos, sensible, hash ────────────────────────
@@ -201,7 +262,13 @@ function canonicalizar(valor, opts) {
     if (Array.isArray(valor)) return valor.map((v) => canonicalizar(v, opts));
     if (valor && typeof valor === 'object') {
         const out = {};
-        for (const k of Object.keys(valor)) out[k] = canonicalizar(valor[k], opts);
+        for (const k of Object.keys(valor)) {
+            // SEC-7515-V1 (b): `out['__proto__'] = x` cambiaría el PROTOTIPO de la
+            // copia, no una propiedad propia. Se salta acá aunque el paso 0 de
+            // `publicar` ya rechace estas claves: la copia jamás cambia de prototipo.
+            if (CLAVES_PROHIBIDAS.has(k)) continue;
+            out[k] = canonicalizar(valor[k], opts);
+        }
         return out;
     }
     return valor;
@@ -218,7 +285,12 @@ function textosDe(valor) {
         if (typeof v === 'string') { out.push({ path: p, texto: v }); return; }
         if (Array.isArray(v)) { v.forEach((x, i) => visitar(x, `${p}[${i}]`)); return; }
         if (v && typeof v === 'object') {
-            for (const k of Object.keys(v)) visitar(v[k], p ? `${p}.${k}` : k);
+            // SEC-7515-V2: el `path` sale por log (`campo=`) y por `detalle`,
+            // así que cada segmento pasa por `claveLogueable`.
+            for (const k of Object.keys(v)) {
+                const seg = claveLogueable(k);
+                visitar(v[k], p ? `${p}.${seg}` : seg);
+            }
         }
     };
     visitar(valor, '');
@@ -401,7 +473,8 @@ function copiar(o) { return JSON.parse(JSON.stringify(o)); }
 /**
  * Publica una propuesta. Cada paso corta con `{ ok:false, motivo, detalle }`
  * y NO escribe. Orden (ver cabecera del archivo y body de #7515):
- *   0. forma básica + pre-cap de 64 KB crudo (SEC-7515-4)
+ *   0. forma básica + pre-cap de 64 KB crudo (SEC-7515-4) + clave_prohibida
+ *      (`__proto__`|`constructor`|`prototype` en cualquier nivel, SEC-7515-V1)
  *   1. productor desde ctx / PIPELINE_SKILL (enum cerrado); `payload.productor`
  *      distinto ⇒ productor_no_coincide. `payload.procedencia` ⇒ procedencia_invalida
  *   2. canonicalizar + detectInjection ⇒ inyeccion_detectada
@@ -431,6 +504,12 @@ function publicar(payload, ctx) {
     }
     if (typeof crudo !== 'string' || bytesDe(crudo) > MAX_BYTES_CRUDO) {
         return rechazo('schema_invalido', 'payload_excesivo');
+    }
+    // SEC-7515-V1 (a): `__proto__` / `constructor` / `prototype` en cualquier
+    // nivel del payload crudo cortan acá, antes de copiar o validar nada.
+    if (tieneClaveProhibida(payload)) {
+        console.warn(`[${MODULO}] schema_invalido: clave_prohibida`);
+        return rechazo('schema_invalido', 'clave_prohibida');
     }
 
     // 1 — identidad del productor (S2) y procedencia NO autodeclarable (SEC-7515-1).

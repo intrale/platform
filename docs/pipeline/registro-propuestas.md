@@ -55,10 +55,10 @@ hash**), `tipo` (`mejora-de-proceso | cambio-de-configuracion | correccion | rie
 
 | # | Paso | Motivo de rechazo |
 |---|---|---|
-| 0 | Payload es objeto; crudo ≤ 64 KB **antes de cualquier regex** (SEC-7515-4) | `schema_invalido` (`payload_excesivo`) |
+| 0 | Payload es objeto; crudo ≤ 64 KB **antes de cualquier regex** (SEC-7515-4); ninguna clave `__proto__` / `constructor` / `prototype` en ningún nivel (SEC-7515-V1: una clave propia `__proto__` cambiaría el prototipo de la copia canónica y Ajv daría `required` por cumplido con campos heredados) | `schema_invalido` (`payload_excesivo` · `clave_prohibida`) |
 | 1 | `productor` desde `ctx`/`PIPELINE_SKILL` ∈ `PRODUCTORES`; `payload.productor` distinto; `payload.procedencia` presente | `productor_desconocido` · `productor_no_coincide` · `procedencia_invalida` |
 | 2 | `canonicalizar()` (NFKC, strip `\p{Cf}`/controles, espacios colapsados) y `detectInjection` sobre todos los strings (dos variantes de Cf: eliminado y como espacio) | `inyeccion_detectada` (se loguea sólo el patrón) |
-| 3 | `evidencia` ausente o string; Ajv (`allErrors`, `strict:true`, sin `verbose`) | `evidencia_requerida` · `schema_invalido` (campo + regla) |
+| 3 | `evidencia` ausente o string; Ajv (`allErrors`, `strict:true`, `ownProperties:true`, sin `verbose`) | `evidencia_requerida` · `schema_invalido` (campo + regla; un **nombre de clave** del payload sólo se cita si cumple `^[a-z0-9_.-]{1,64}$`, si no sale `(clave no admitida)`; el `detalle` se acota a 256 chars — SEC-7515-V2) |
 | 4 | `redactObject` (secretos, emails, URLs) y **recién después** caps: ≤2048 bytes por string, ≤8192 el payload | `schema_invalido` |
 | 5 | `forzarSensible()`: `tipo=riesgo` o (`recomendacion-agente` ∧ `agente=security`) ⇒ `sensible=true`; corrige y loguea | — |
 | 6 | Sólo `recomendacion-agente`: `ctx.procedencia.authorAssociation ∈ {OWNER, MEMBER}` y autor ∈ `propuestas.autores_permitidos` | `procedencia_invalida` |
