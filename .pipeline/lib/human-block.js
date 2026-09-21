@@ -37,7 +37,7 @@ const mergeRaceLedger = require('./merge-race-reclaim-ledger');
 // #7439 — causa estructurada del bloqueo. Módulo HOJA (0 requires): este
 // archivo ya requiere `decision-card` arriba, y `decision-card` necesita el
 // mismo enum; importarlo desde acá sería un ciclo que entrega `{}`.
-const { BLOCK_CAUSE_ENUM, normalizeBlockCause } = require('./block-cause');
+const { BLOCK_CAUSE_ENUM, normalizeBlockCause, normalizeBlockSignals } = require('./block-cause');
 
 // #7456 / SEC-10 · V4 de #7112 — resolución POR LLAMADA del directorio de
 // escritura. PROHIBIDO guardar el resultado en una const de módulo o en una
@@ -382,7 +382,12 @@ function findBlockedMarker(issue) {
  * `blocked_at`, no desde el `mtime`: un `touch` o una copia no rejuvenecen el
  * marker.
  *
- * @returns {Array<{pipeline: string, phase: string, skill: string, file: string, cause: string|null, blocked_at: string|null, synthetic: boolean}>}
+ * #7440 rev-2 — expone `signals` (keys del detector persistidas por el gate,
+ * normalizadas por forma y tope con `normalizeBlockSignals`): `[]` si faltan
+ * (marker anterior al deploy) o si el `.reason.json` es ilegible. Alimentan el
+ * `<señales>` del comentario de traza del auto-levantamiento (UX-C).
+ *
+ * @returns {Array<{pipeline: string, phase: string, skill: string, file: string, cause: string|null, blocked_at: string|null, synthetic: boolean, signals: string[]}>}
  */
 function listBlockedMarkers(issue) {
     const prefix = String(issue) + '.';
@@ -409,6 +414,7 @@ function listBlockedMarkers(issue) {
                         cause: normalizeBlockCause(meta && meta.cause),
                         blocked_at: meta && typeof meta.blocked_at === 'string' ? meta.blocked_at : null,
                         synthetic: !!(meta && meta.synthetic === true),
+                        signals: normalizeBlockSignals(meta && meta.signals),
                     });
                 }
             }
@@ -750,11 +756,18 @@ function reportHumanBlock(opts) {
     // `false` EXPLÍCITO se persiste; la ficha elige con eso el "Por qué"
     // ("no pude comprobar" vs "no encontré la firma"). Nunca se infiere.
     const signoffVerifiable = opts.signoff_verifiable === false ? false : null;
+    // #7440 rev-2 — keys de señal del detector (enum cerrado
+    // `DESIGN_DECISION_SIGNALS`), normalizadas por forma + tope. Sólo el gate
+    // de decisión las pasa (misma regla que `cause`, RS-C.2); el comentario de
+    // traza del auto-levantamiento las lee del marker porque el barrido corre
+    // sin el veredicto del detector. Vacías ⇒ la clave no se persiste.
+    const signals = normalizeBlockSignals(opts.signals);
 
     fs.writeFileSync(reasonFilePath(targetFile), JSON.stringify({
         issue, skill, phase, pipeline, reason, question,
         precondition,
         ...(cause ? { cause } : {}),
+        ...(signals.length ? { signals } : {}),
         ...(signoffVerifiable === false ? { signoff_verifiable: false } : {}),
         // #6448 UX-1 / CA-17 — la cita del issue que disparó el freno viaja en
         // CAMPO PROPIO, nunca concatenada dentro de `reason`. Se persiste para
@@ -777,7 +790,7 @@ function reportHumanBlock(opts) {
 
     return {
         issue, skill, phase, pipeline, precondition, marker_path: targetFile,
-        cause, signoff_verifiable: signoffVerifiable,
+        cause, signoff_verifiable: signoffVerifiable, signals,
     };
 }
 
@@ -2190,6 +2203,8 @@ module.exports = {
     // #7439 — re-export del módulo hoja `block-cause.js` (causa estructurada).
     BLOCK_CAUSE_ENUM,
     normalizeBlockCause,
+    // #7440 rev-2 — señales del detector persistidas en el marker (misma familia).
+    normalizeBlockSignals,
     // #6611 — auto-destrabe de bloqueos verificables.
     emitAutoReleased,
     normalizeUnlocker,

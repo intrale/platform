@@ -22,7 +22,7 @@
 
 'use strict';
 
-const test = require('node:test');
+const nodeTest = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const os = require('os');
@@ -44,11 +44,25 @@ const GH_QUEUE = path.join(PIPELINE_DIR, 'servicios', 'github', 'pendiente');
 fs.mkdirSync(GH_QUEUE, { recursive: true });
 fs.mkdirSync(path.join(TMP_DIR, '.claude'), { recursive: true });
 
+// #7489 / #7456 (D-4) — `human-block.js` resuelve `markersRoot()` EN CADA
+// LLAMADA vía `write-target` (SEC-9): el override tiene que estar vivo durante
+// cada test, no sólo durante la carga. El runner hereda `PIPELINE_REPO_ROOT`
+// del productivo (contexto heredado, no dir de pruebas): se borra. Las
+// escrituras de env van SIEMPRE por `withEnv` (helper único, #6258/#6260):
+// `test` de este archivo envuelve cada cuerpo con el entorno de la corrida y
+// lo restaura al salir. Mismo patrón que `human-block-env-isolation.test.js`.
+const ENV_CORRIDA = Object.freeze({
+    CLAUDE_PROJECT_DIR: TMP_DIR,
+    PIPELINE_REPO_ROOT: undefined,
+    PIPELINE_DIR_OVERRIDE: PIPELINE_DIR,
+});
+const test = (name, fn) => nodeTest(name, (...args) => withEnv(ENV_CORRIDA, () => fn(...args)));
+test.after = nodeTest.after;
+
 let trace, hb, pulpo;
 withEnv(
     {
         CLAUDE_PROJECT_DIR: TMP_DIR,
-        PIPELINE_REPO_ROOT: TMP_DIR,
         PULPO_NO_AUTOSTART: '1',
         PIPELINE_DIR_OVERRIDE: PIPELINE_DIR,
     },
@@ -68,6 +82,7 @@ const designDecision = require('../design-decision-detect');
 
 const {
     _evaluateLateSignoff,
+    _sweepLateSignoff,
     _lateSignoffRecheckDue,
     _resolveLateSignoffConfig,
     _buildLateSignoffComment,
@@ -75,6 +90,7 @@ const {
     LATE_SIGNOFF_DEFAULTS,
     LATE_SIGNOFF_NO_RECHECK_REASONS,
     encolarOrdenGithub,
+    buildIntakeSearchQueries,
 } = pulpo;
 
 const SKILLS_POR_FASE = {
@@ -440,12 +456,12 @@ test('CN-5 bis: _lateSignoffRecheckDue toma la MAYOR edad (blocked_at vs mtime, 
 test('CN-6: config no positiva (-5, 0, "abc", null, undefined) cae al default 10/48; "15" citado en YAML se acepta (RS-4.12)', () => {
     for (const v of [-5, 0, 'abc', null, undefined, NaN, Infinity, -Infinity, '']) {
         const c = _resolveLateSignoffConfig({ late_signoff_recheck_min: v, late_signoff_max_age_h: v });
-        assert.deepEqual(c, { recheckMin: 10, maxAgeH: 48 }, `valor ${String(v)}`);
+        assert.deepEqual(c, { recheckMin: 10, maxAgeH: 48, maxPerTick: 5 }, `valor ${String(v)}`);
     }
-    assert.deepEqual(_resolveLateSignoffConfig({ late_signoff_recheck_min: '15', late_signoff_max_age_h: '72' }), { recheckMin: 15, maxAgeH: 72 });
-    assert.deepEqual(_resolveLateSignoffConfig(undefined), { recheckMin: 10, maxAgeH: 48 });
-    assert.deepEqual(_resolveLateSignoffConfig('basura'), { recheckMin: 10, maxAgeH: 48 });
-    assert.deepEqual(LATE_SIGNOFF_DEFAULTS, { recheckMin: 10, maxAgeH: 48 });
+    assert.deepEqual(_resolveLateSignoffConfig({ late_signoff_recheck_min: '15', late_signoff_max_age_h: '72' }), { recheckMin: 15, maxAgeH: 72, maxPerTick: 5 });
+    assert.deepEqual(_resolveLateSignoffConfig(undefined), { recheckMin: 10, maxAgeH: 48, maxPerTick: 5 });
+    assert.deepEqual(_resolveLateSignoffConfig('basura'), { recheckMin: 10, maxAgeH: 48, maxPerTick: 5 });
+    assert.deepEqual(LATE_SIGNOFF_DEFAULTS, { recheckMin: 10, maxAgeH: 48, maxPerTick: 5 });
 
     // Con `-5` la ventana NO queda "siempre vencida": la segunda corrida dentro de 10 min no consulta.
     resetFs();
@@ -591,13 +607,21 @@ test('UX-F: las razones "sin re-consultar" son exactamente las que se resuelven 
     }
 });
 
-test('UX-C/UX-E: builder del comentario — frases de SIGNAL_COPY, fallback a keys, "sin señales registradas", fecha fallback a now', () => {
+test('UX-C/UX-E/UX-I: builder del comentario — frases de SIGNAL_COPY, SIN fallback a keys crudas, "sin señales registradas", fecha fallback a now', () => {
     const conFrases = _buildLateSignoffComment({ signals: SIGNALS, signedAt: FIRMA_AT, designDecision });
     assert.ok(conFrases.includes('(plantea opciones excluyentes y no elige una; define dónde va a vivir un dato crítico)'));
+    // UX-I (rev-2): una key que `listaSenales` no reconoce se DESCARTA; nunca
+    // se renderiza cruda. Sin módulo tampoco hay fallback a keys.
+    const desconocidas = _buildLateSignoffComment({ signals: ['clave-x', 'clave-y'], signedAt: FIRMA_AT, designDecision });
+    assert.ok(desconocidas.includes('(sin señales registradas)'), desconocidas);
+    assert.ok(!desconocidas.includes('clave-x'), 'UX-I: ninguna key cruda llega al comentario');
+    const mixto = _buildLateSignoffComment({ signals: ['clave-x', 'dato-critico'], signedAt: FIRMA_AT, designDecision });
+    assert.ok(mixto.includes('(define dónde va a vivir un dato crítico)'), mixto);
     const sinModulo = _buildLateSignoffComment({ signals: ['clave-x', 'clave-y'], signedAt: FIRMA_AT });
-    assert.ok(sinModulo.includes('(clave-x, clave-y)'));
+    assert.ok(sinModulo.includes('(sin señales registradas)'));
     const vacio = _buildLateSignoffComment({ signals: [], signedAt: FIRMA_AT, designDecision });
     assert.ok(vacio.includes('(sin señales registradas)'));
+    assert.ok(!/\(\)/.test(vacio), 'nunca paréntesis vacíos');
     const sinFecha = _buildLateSignoffComment({ signals: SIGNALS, signedAt: '', now: T0, designDecision });
     assert.ok(sinFecha.includes(`se verificó en ${new Date(T0).toISOString()} `));
 });
@@ -652,9 +676,320 @@ test('cableado: config.yaml trae las claves con defaults 10/48 y config-schema.j
     assert.equal(cfg.architect.late_signoff_recheck_min, 10);
     assert.equal(cfg.architect.late_signoff_max_age_h, 48);
     const { architect: sinClaves } = { architect: { enabled: false, gate_mode: 'dry-run' } };
-    assert.deepEqual(_resolveLateSignoffConfig(sinClaves), { recheckMin: 10, maxAgeH: 48 }, 'sin las claves, arranca con defaults');
+    assert.deepEqual(_resolveLateSignoffConfig(sinClaves), { recheckMin: 10, maxAgeH: 48, maxPerTick: 5 }, 'sin las claves, arranca con defaults');
     const schema = fs.readFileSync(path.join(__dirname, '..', 'config-schema.js'), 'utf8');
     assert.ok(!schema.includes('late_signoff'), 'config-schema.js no esquematiza las claves nuevas (additionalProperties:true)');
+});
+
+
+// =============================================================================
+// rev-2 — `_sweepLateSignoff`: DISPARADOR PRIMARIO desde los markers locales
+// (el search excluye `needs-human`; el rechazo de review sobre 9bf4af4b0)
+// =============================================================================
+
+/** Config del Pulpo mínima para el barrido (sólo lee `architect`). */
+function configPulpo(architect = {}) {
+    return { architect: { late_signoff_recheck_min: 10, late_signoff_max_age_h: 48, ...architect } };
+}
+
+/** Barrido con deps espiadas; `throttle` contado (CA-18). */
+function barrer({ allowlistSet = null, architect = {}, now = T0 + 15 * 60000, state = _lateSignoffState, ...rest } = {}) {
+    const { deps, spies } = fakeDeps(rest);
+    spies.throttle = 0;
+    deps.throttle = () => { spies.throttle += 1; };
+    const out = _sweepLateSignoff({ allowlistSet, config: configPulpo(architect), now, state, deps });
+    return { out, spies, deps };
+}
+
+function setBlockedAt(issue, iso) {
+    for (const m of hb.listBlockedMarkers(issue)) {
+        const meta = JSON.parse(fs.readFileSync(m.file + '.reason.json', 'utf8'));
+        meta.blocked_at = iso;
+        fs.writeFileSync(m.file + '.reason.json', JSON.stringify(meta));
+    }
+}
+
+test('invariante documentado: buildIntakeSearchQueries() excluye needs-human en TODOS sus pases — la razón de existir del barrido', () => {
+    const qs = buildIntakeSearchQueries();
+    assert.ok(Array.isArray(qs) && qs.length >= 2, JSON.stringify(qs));
+    assert.ok(qs.every((q) => q.includes('-label:needs-human')),
+        `si alguien relaja esto, el camino secundario (rama PRESENTE) vuelve a alcanzar producción: ${JSON.stringify(qs)}`);
+});
+
+test('CA-13 (el escenario del review): sin ningún issue del search, el barrido levanta solo desde el marker local — payload con procedencia, UN comentario con las señales persistidas, lifted_by, state purgado, cero Telegram', () => {
+    resetFs();
+    const issue = 7113;
+    // El gate persistió las señales en el marker (único productor, RS-C.2).
+    const rep = bloquearGate(issue, { signals: ['alternativas-enumeradas', 'dato-critico'] });
+    assert.deepEqual(rep.signals, ['alternativas-enumeradas', 'dato-critico']);
+
+    const { out, spies } = barrer({
+        ctx: { ok: true, comments: [firmaValida(issue)], lastEditedAt: null },
+        audit: { available: true, corroborated: true },
+    });
+
+    assert.deepEqual(out, { candidates: 1, evaluated: 1, lifted: [issue], deferred: 0, error: null });
+    assert.equal(spies.fetch, 1);
+    assert.equal(hb.findBlockedMarker(issue), null, 'marker descartado');
+    assert.equal(hb.listBlockedMarkers(issue).length, 0);
+
+    const ordenes = ordenesEncoladas();
+    const remove = ordenes.filter((o) => o.payload.action === 'remove-label');
+    const comments = ordenes.filter((o) => o.payload.action === 'comment');
+    assert.equal(remove.length, 1);
+    assert.deepEqual(remove[0].payload, {
+        action: 'remove-label', issue, label: hb.NEEDS_HUMAN_LABEL,
+        guardrail_authorized: true, authorized_by: 'architect-signoff:late',
+    });
+    assert.equal(comments.length, 1, 'UN comentario');
+    const body = comments[0].payload.body;
+    assert.ok(body.includes('(plantea opciones excluyentes y no elige una; define dónde va a vivir un dato crítico)'),
+        'CA-17: las frases de SIGNAL_COPY de las signals PERSISTIDAS (el barrido no tiene el veredicto):\n' + body);
+    assert.ok(body.endsWith('<!-- agent: intake -->'));
+
+    assert.equal(spies.audits.length, 1);
+    assert.equal(spies.audits[0].lifted_by, 'late-signoff');
+    assert.deepEqual(spies.audits[0].signals, ['alternativas-enumeradas', 'dato-critico']);
+    assert.equal(_lateSignoffState.has(issue), false, 'state purgado');
+    assert.equal(spies.telegram, 0, 'RS-4.7');
+    assert.ok(spies.logs.some((l) => l.includes(`♻️ #${issue} firma del arquitecto posterior a la escalada — bloqueo levantado solo (#7432)`)));
+    assert.ok(spies.logs.some((l) => l.includes('[late-signoff] 1 bloqueado(s) del gate, 1 re-consultado(s), 1 levantado(s)')), spies.logs.join('\n'));
+    resetFs();
+});
+
+test('CA-14: allowlistSet (pausa parcial) que NO contiene el issue ⇒ candidates:0 y fetchSignoffContext no invocado', () => {
+    resetFs();
+    bloquearGate(7113, { signals: ['dato-critico'] });
+    const { out, spies } = barrer({
+        allowlistSet: new Set(['7200', '7300']),
+        ctx: { ok: true, comments: [firmaValida(7113)], lastEditedAt: null },
+    });
+    assert.deepEqual(out, { candidates: 0, evaluated: 0, lifted: [], deferred: 0, error: null });
+    assert.equal(spies.fetch, 0);
+    assert.equal(spies.throttle, 0);
+    assert.equal(ordenesEncoladas().length, 0);
+    assert.equal(hb.listBlockedMarkers(7113).length, 1, 'marker intacto');
+    assert.ok(!spies.logs.some((l) => l.includes('[late-signoff]')), 'sin candidatos no hay resumen');
+
+    // Con el issue en la ola sí es candidato (mismo R-5 de #5113 que brazoDesbloqueoImpl).
+    const dentro = barrer({ allowlistSet: new Set(['7113']), ctx: { ok: true, comments: [firmaValida(7113)], lastEditedAt: null } });
+    assert.equal(dentro.out.candidates, 1);
+    assert.deepEqual(dentro.out.lifted, [7113]);
+    resetFs();
+});
+
+test('CA-15 (RS-4.13): 7 issues due con tope 5 ⇒ 5 evaluados (los más viejos primero), 2 diferidos; el segundo barrido evalúa exactamente los 2 restantes', () => {
+    resetFs();
+    const issues = [7301, 7302, 7303, 7304, 7305, 7306, 7307];
+    // blocked_at distintos: 7307 es el MÁS viejo, 7301 el más nuevo.
+    issues.forEach((n, i) => {
+        bloquearGate(n, { signals: ['dato-critico'] });
+        setBlockedAt(n, new Date(T0 - (i + 1) * 60000).toISOString());
+    });
+    const evaluados = [];
+    const ctx = (n) => { evaluados.push(n); return { ok: true, comments: [], lastEditedAt: null }; };   // sin firma: no levanta
+
+    const primero = barrer({ ctx, architect: { late_signoff_max_issues_per_tick: 5 } });
+    assert.equal(primero.out.candidates, 7);
+    assert.equal(primero.out.evaluated, 5);
+    assert.equal(primero.out.deferred, 2);
+    assert.deepEqual(evaluados, [7307, 7306, 7305, 7304, 7303], 'orden determinístico: blocked_at más viejo primero');
+    assert.equal(primero.spies.fetch, 5);
+    assert.equal(primero.spies.throttle, 5, 'CA-18: un throttle por re-consulta');
+    assert.ok(primero.spies.logs.some((l) => l.includes('7 bloqueado(s) del gate, 5 re-consultado(s), 0 levantado(s), 2 diferido(s) al próximo tick')),
+        primero.spies.logs.join('\n'));
+
+    // Segundo barrido inmediato: los 5 ya consultados están throttled ⇒ sólo los 2 restantes.
+    evaluados.length = 0;
+    const segundo = barrer({ ctx, architect: { late_signoff_max_issues_per_tick: 5 } });
+    assert.equal(segundo.out.candidates, 7);
+    assert.equal(segundo.out.evaluated, 2);
+    assert.equal(segundo.out.deferred, 0);
+    assert.deepEqual(evaluados, [7302, 7301]);
+    // UX-H: el resumen lista los no re-consultados con su motivo, así `grep "#N"` funciona.
+    const resumen = segundo.spies.logs.find((l) => l.includes('[late-signoff]'));
+    assert.ok(resumen, segundo.spies.logs.join('\n'));
+    for (const n of [7307, 7306, 7305, 7304, 7303]) assert.ok(resumen.includes(`#${n} throttled`), resumen);
+    assert.ok(!resumen.includes('#7302') && !resumen.includes('#7301'), 'los re-consultados no van entre paréntesis');
+    assert.ok(resumen.includes('2 re-consultado(s), 0 levantado(s)'));
+    assert.ok(!segundo.spies.logs.some((l) => /#\d+ decisión de arquitectura ya escalada — sin re-consultar/.test(l)),
+        'silencio por issue en throttled: sólo el resumen');
+
+    // Config no positiva / no numérica ⇒ default 5.
+    for (const v of [0, -1, 'abc', null, undefined]) {
+        assert.equal(_resolveLateSignoffConfig({ late_signoff_max_issues_per_tick: v }).maxPerTick, 5, String(v));
+    }
+    assert.equal(_resolveLateSignoffConfig({ late_signoff_max_issues_per_tick: '3' }).maxPerTick, 3);
+    assert.deepEqual(LATE_SIGNOFF_DEFAULTS, { recheckMin: 10, maxAgeH: 48, maxPerTick: 5 });
+    resetFs();
+});
+
+test('CA-15 bis: marker-viejo figura en el resumen con su motivo y no consume slot ni red', () => {
+    resetFs();
+    bloquearGate(7308, { signals: ['dato-critico'] });
+    setBlockedAt(7308, new Date(T0 - 72 * 3600000).toISOString());
+    bloquearGate(7309, { signals: ['dato-critico'] });
+    const { out, spies } = barrer({ now: T0 + 60000, ctx: { ok: true, comments: [], lastEditedAt: null } });
+    assert.equal(out.candidates, 2);
+    assert.equal(out.evaluated, 1);
+    assert.equal(spies.fetch, 1);
+    const resumen = spies.logs.find((l) => l.includes('[late-signoff]'));
+    assert.ok(resumen.includes('2 bloqueado(s) del gate (#7308 marker-viejo), 1 re-consultado(s), 0 levantado(s)'), resumen);
+    assert.ok(spies.logs.some((l) => l.includes('#7309 decisión de arquitectura ya escalada — firma re-consultada, sin cambios (firma-no-settled)')));
+    resetFs();
+});
+
+test('CA-16 (fail-closed del levantamiento / fail-open del intake): listBlockedIssues que lanza ⇒ error poblado, no lanza, cero órdenes; deps ausentes ⇒ ídem', () => {
+    resetFs();
+    bloquearGate(7113, { signals: ['dato-critico'] });
+    const roto = Object.assign(Object.create(hb), { listBlockedIssues: () => { throw new Error('disco roto'); } });
+    const { out, spies } = barrer({ humanBlock: roto, ctx: { ok: true, comments: [firmaValida(7113)], lastEditedAt: null } });
+    assert.equal(out.error, 'disco roto');
+    assert.deepEqual({ ...out, error: null }, { candidates: 0, evaluated: 0, lifted: [], deferred: 0, error: null });
+    assert.equal(spies.fetch, 0);
+    assert.equal(ordenesEncoladas().length, 0);
+    assert.equal(hb.listBlockedMarkers(7113).length, 1, 'se conserva todo bloqueo');
+    assert.ok(spies.logs.some((l) => l.includes('[WARN] barrido de firmas tardías falló — se conserva todo bloqueo (fail-closed, #7440): disco roto')));
+
+    // Sin deps: tampoco lanza.
+    const sinDeps = _sweepLateSignoff({ config: configPulpo() });
+    assert.equal(typeof sinDeps.error, 'string');
+    assert.deepEqual(sinDeps.lifted, []);
+    resetFs();
+});
+
+test('CA-16 estático: en brazoIntake, _sweepLateSignoff( va ANTES de buildIntakeSearchQueries() y dentro de un try, con ghThrottle como throttle y detrás de los guards paused/degraded', () => {
+    const ini = PULPO.indexOf('function brazoIntake(');
+    assert.ok(ini > 0);
+    const fin = PULPO.indexOf('\nfunction ', ini + 10);
+    const cuerpo = PULPO.slice(ini, fin);
+    const sweep = cuerpo.indexOf('_sweepLateSignoff(');
+    const search = cuerpo.indexOf('for (const search of buildIntakeSearchQueries())');   // la invocación real, no el comentario
+    assert.ok(sweep > 0 && search > 0 && sweep < search, 'el barrido va ANTES del search');
+    const tryPos = cuerpo.lastIndexOf('try {', sweep);
+    assert.ok(tryPos > 0 && cuerpo.slice(tryPos, sweep).trim() === 'try {', 'envuelto en try {');
+    assert.ok(cuerpo.indexOf("pipelineMode.mode === 'paused'") < sweep, 'detrás del guard paused');
+    assert.ok(cuerpo.indexOf('pipelineMode.degraded === true') < sweep, 'detrás del guard degraded');
+    assert.ok(cuerpo.indexOf('const allowlistSet') < sweep, 'después de calcular allowlistSet');
+    const llamada = cuerpo.slice(sweep, cuerpo.indexOf('} catch', sweep));
+    assert.ok(llamada.includes('throttle: ghThrottle'), 'ghThrottle inyectado');
+    assert.ok(llamada.includes('allowlistSet, config'));
+    assert.ok(llamada.includes('encolar: encolarOrdenGithub'));
+    // El productor único de `signals` es el reportHumanBlock del gate (junto a `cause: causaDD`).
+    const llamadas = [];
+    for (let i = PULPO.indexOf('reportHumanBlock({'); i >= 0; i = PULPO.indexOf('reportHumanBlock({', i + 1)) {
+        llamadas.push(PULPO.slice(i, PULPO.indexOf('});', i)));
+    }
+    const conSignals = llamadas.filter((c) => c.includes(' signals:'));
+    assert.equal(conSignals.length, 1, `un solo productor de signals entre ${llamadas.length} llamadas a reportHumanBlock`);
+    assert.ok(conSignals[0].includes('cause: causaDD') && conSignals[0].includes('signals: final.signals'));
+});
+
+test('CA-17: marker legacy sin `signals` ⇒ comentario "sin señales registradas"; con signals:[dato-critico] ⇒ la frase de SIGNAL_COPY', () => {
+    resetFs();
+    bloquearGate(7310);   // legacy: sin signals
+    const legacy = barrer({ ctx: { ok: true, comments: [firmaValida(7310)], lastEditedAt: null } });
+    assert.deepEqual(legacy.out.lifted, [7310]);
+    const c1 = ordenesEncoladas().find((o) => o.payload.action === 'comment');
+    assert.ok(c1.payload.body.includes('(sin señales registradas)'), c1.payload.body);
+    resetFs();
+
+    bloquearGate(7311, { signals: ['dato-critico'] });
+    const nuevo = barrer({ ctx: { ok: true, comments: [firmaValida(7311)], lastEditedAt: null } });
+    assert.deepEqual(nuevo.out.lifted, [7311]);
+    const c2 = ordenesEncoladas().find((o) => o.payload.action === 'comment');
+    assert.ok(c2.payload.body.includes('(define dónde va a vivir un dato crítico)'), c2.payload.body);
+    resetFs();
+});
+
+test('CA-18: deps.throttle se invoca exactamente 1 vez por re-consulta y 0 veces cuando la razón está en LATE_SIGNOFF_NO_RECHECK_REASONS', () => {
+    resetFs();
+    bloquearGate(7312, { signals: ['dato-critico'] });
+    const uno = barrer({ ctx: { ok: true, comments: [], lastEditedAt: null } });
+    assert.equal(uno.out.evaluated, 1);
+    assert.equal(uno.spies.throttle, 1);
+    assert.equal(uno.spies.fetch, 1);
+    // Throttled: ni throttle ni fetch.
+    const dos = barrer({ ctx: { ok: true, comments: [], lastEditedAt: null } });
+    assert.equal(dos.out.evaluated, 0);
+    assert.equal(dos.spies.throttle, 0);
+    assert.equal(dos.spies.fetch, 0);
+    // Directo al evaluador con bloqueo mixto: tampoco.
+    bloquearHumano(7312);
+    const { deps, spies } = fakeDeps({ ctx: { ok: true, comments: [], lastEditedAt: null } });
+    spies.throttle = 0; deps.throttle = () => { spies.throttle += 1; };
+    _lateSignoffState.clear();
+    const r = _evaluateLateSignoff({ issue: 7312, markers: hb.listBlockedMarkers(7312), signals: [], now: T0 + 3600000, cfg: CFG, deps });
+    assert.equal(r.reason, 'bloqueo-mixto');
+    assert.equal(spies.throttle, 0);
+    // Un throttle que lanza no impide el fail-closed ni la re-consulta.
+    resetFs();
+    bloquearGate(7313, { signals: ['dato-critico'] });
+    const d3 = fakeDeps({ ctx: { ok: true, comments: [firmaValida(7313)], lastEditedAt: null } });
+    d3.deps.throttle = () => { throw new Error('throttle roto'); };
+    const r3 = _evaluateLateSignoff({ issue: 7313, markers: hb.listBlockedMarkers(7313), signals: [], now: T0, cfg: CFG, deps: d3.deps });
+    assert.equal(r3.lifted, true, JSON.stringify(r3));
+    resetFs();
+});
+
+test('CN-12: issue con marker del gate + marker con otra causa ⇒ ni candidato (candidates:0) y listBlockedMarkers de ese issue no se consulta', () => {
+    resetFs();
+    bloquearGate(7314, { signals: ['dato-critico'] });
+    bloquearHumano(7314);
+    const consultados = [];
+    const espiado = Object.assign(Object.create(hb), {
+        listBlockedMarkers: (n) => { consultados.push(Number(n)); return hb.listBlockedMarkers(n); },
+    });
+    const { out, spies } = barrer({ humanBlock: espiado, ctx: { ok: true, comments: [firmaValida(7314)], lastEditedAt: null } });
+    assert.deepEqual(out, { candidates: 0, evaluated: 0, lifted: [], deferred: 0, error: null });
+    assert.deepEqual(consultados, [], 'el pre-filtro sale de listBlockedIssues, sin abrir los markers');
+    assert.equal(spies.fetch, 0);
+    assert.equal(hb.listBlockedMarkers(7314).length, 2, 'los dos markers intactos');
+    assert.equal(ordenesEncoladas().length, 0);
+    // Legacy sin cause tampoco es candidato (RS-4.1).
+    resetFs();
+    bloquearGate(7315, { cause: undefined });
+    assert.equal(hb.listBlockedMarkers(7315)[0].cause, null);
+    assert.equal(barrer({ ctx: { ok: true, comments: [firmaValida(7315)], lastEditedAt: null } }).out.candidates, 0);
+    resetFs();
+});
+
+test('CN-13 (doble camino): barrido y luego _evaluateLateSignoff directo (rama PRESENTE) con el MISMO state ⇒ fetchSignoffContext invocado 1 sola vez', () => {
+    resetFs();
+    bloquearGate(7316, { signals: ['dato-critico'] });
+    const ctx = { ok: true, comments: [], lastEditedAt: null };   // sin firma: el marker sigue vivo para el segundo camino
+    const { spies } = barrer({ ctx });
+    assert.equal(spies.fetch, 1);
+    // La rama PRESENTE del mismo tick usa el mismo `_lateSignoffState` ⇒ throttled.
+    const { deps, spies: s2 } = fakeDeps({ ctx });
+    const r = _evaluateLateSignoff({ issue: 7316, markers: hb.listBlockedMarkers(7316), signals: ['dato-critico'], now: T0 + 15 * 60000 + 5000, cfg: CFG, deps });
+    assert.equal(r.reason, 'throttled');
+    assert.equal(s2.fetch, 0, 'cero llamadas extra dentro de la ventana');
+    resetFs();
+});
+
+test('CN-14: marker sintético del gate descartado por el barrido no fabrica work-file ni reactiva skill (CN-11 vía el camino primario)', () => {
+    resetFs();
+    bloquearGate(7317, { signals: ['servicio-externo'] });
+    const { out } = barrer({ ctx: { ok: true, comments: [firmaValida(7317)], lastEditedAt: null } });
+    assert.deepEqual(out.lifted, [7317]);
+    for (const [pipe, fases] of Object.entries(FASES)) {
+        for (const fase of fases) {
+            assert.deepEqual(fs.readdirSync(dir(pipe, fase, 'pendiente')), [], `${pipe}/${fase}/pendiente`);
+            assert.deepEqual(fs.readdirSync(dir(pipe, fase, 'trabajando')), [], `${pipe}/${fase}/trabajando`);
+        }
+    }
+    resetFs();
+});
+
+test('cableado: config.yaml trae late_signoff_max_issues_per_tick: 5 y config-schema.js sigue sin esquematizar las claves', () => {
+    const yaml = require('js-yaml');
+    const cfg = yaml.load(fs.readFileSync(path.join(__dirname, '..', '..', 'config.yaml'), 'utf8'));
+    assert.equal(cfg.architect.late_signoff_max_issues_per_tick, 5);
+    assert.deepEqual(_resolveLateSignoffConfig(cfg.architect), { recheckMin: 10, maxAgeH: 48, maxPerTick: 5 });
+    assert.deepEqual(_resolveLateSignoffConfig({}), { recheckMin: 10, maxAgeH: 48, maxPerTick: 5 }, 'CA-7: sin claves, defaults');
+    const schema = fs.readFileSync(path.join(__dirname, '..', 'config-schema.js'), 'utf8');
+    assert.ok(!schema.includes('late_signoff'));
 });
 
 test.after(() => {

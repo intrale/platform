@@ -332,14 +332,23 @@ no tiene nada que decidir. De ahí que sea deliberadamente estrecho:
 el intake evaluó el issue a las 18:44:23 y el arquitecto firmó a las 18:44:25.
 Antes, el gate reconocía el bloqueo vivo en el ciclo siguiente y no volvía a
 mirar: el issue quedaba en `needs-human` hasta que un humano lo notara. Desde
-#7440 el intake **re-consulta la firma** de un issue ya escalado y, si aparece,
-**levanta el bloqueo solo** — pero como es una acción del pipeline sobre un
-freno humano, sólo lo hace cuando se cumplen **las tres condiciones** a la vez:
+#7440, **en cada tick, antes de consultar GitHub, el intake recorre los bloqueos
+vivos en disco (`bloqueado-humano/`) y, para los que originó este gate,
+re-consulta la firma**; si aparece, **levanta el bloqueo solo**. El disparador
+sale de los markers locales y no del resultado del search a propósito: el
+search del intake excluye `-label:needs-human` en sus dos pases, así que un
+issue ya escalado nunca vuelve de GitHub (la rama del gate que lo re-evalúa
+sobre el search sólo corre durante el lag del índice y es un camino secundario).
+
+Como es una acción del pipeline sobre un freno humano, sólo levanta cuando se
+cumplen **las cuatro condiciones** a la vez:
 
 1. **Todos** los markers vivos del issue tienen causa `design-decision` (los
    escribió este gate). Si hay además un marker pedido por un humano —una
-   pregunta del PO, un bloqueo manual—, no se toca nada y el log dice
-   `bloqueo mixto — hay un marker no originado por el gate`.
+   pregunta del PO, un bloqueo manual—, el issue **ni siquiera es candidato**
+   del barrido (se ve en `bloqueado-humano/`: dos markers del issue y uno sin
+   `cause: design-decision`). En pausa parcial, además, sólo entran los issues
+   de la ola.
 2. La firma es **fuerte**: el comentario `<!-- architect-signoff issue=N -->`
    pasa todas las reglas de siempre **y** la traza local
    `architect-tokens.jsonl` la corrobora. Si la traza no está (respawn, disco
@@ -349,27 +358,59 @@ freno humano, sólo lo hace cuando se cumplen **las tres condiciones** a la vez:
    (`architect.late_signoff_max_age_h`, default 48 h desde `blocked_at`). Un
    bloqueo más viejo queda para el operador. Estas claves **no dependen de
    `architect.enabled`** (ese gobierna el GATE 1 de pre-admisión, no este gate).
+4. Entra en el **tope por tick** (`architect.late_signoff_max_issues_per_tick`,
+   default 5): el barrido re-consulta como máximo esa cantidad de issues por
+   tick, los que más esperan primero, y difiere el resto al tick siguiente.
+   Techo de red: 0 llamadas propias del barrido (sólo lee disco) + 1 `gh api`
+   por issue re-consultado.
 
 Cuando levanta: descarta el marker con unlocker `architect-signoff:late`, quita
 `needs-human` con procedencia declarada (`guardrail_authorized` +
 `authorized_by`, o el guardrail SEC-B la descartaría), deja un comentario de
 traza en el issue ("♻️ Bloqueo de decisión levantado — firma del arquitecto
-posterior") y registra `lifted_by: late-signoff` en el audit del gate. **No
-avisa por Telegram**: el operador ya tiene el comentario en GitHub y el
-dashboard lo cuenta como resuelto sin tocar el SLA humano. El botón de la
-alerta original queda como no-op benigno.
+posterior", con las señales que el gate persistió en el marker; para bloqueos
+anteriores a este cambio dice `sin señales registradas`) y registra
+`lifted_by: late-signoff` en el audit del gate. **No avisa por Telegram**: el
+operador ya tiene el comentario en GitHub y el dashboard lo cuenta como
+resuelto sin tocar el SLA humano. El botón de la alerta original queda como
+no-op benigno.
 
-**Si no se levantó solo, el log dice por qué** (`grep "#N" logs/pulpo.log`):
+**Latencia: ≤ 2 ticks del intake, sin intervención humana.** El levantamiento
+ocurre en el tick T (marker descartado, `remove-label` encolado, comentario,
+audit); `servicio-github` aplica el `remove-label`; en el tick T+1 el search ya
+devuelve el issue, el detector vuelve a correr, encuentra la firma y lo deja
+pasar a `definicion`. Con `intake_interval_seconds: 300` son ≤ 10 min. El
+comentario dice "el issue sigue por definición" sin prometer instante por eso.
+El efecto en producción requiere reinicio del Pulpo (corre el código cargado
+en memoria hasta el próximo respawn).
 
-- `decisión de arquitectura ya escalada — sin re-consultar (<motivo>)`: no se
-  miró GitHub. `throttled` (todavía no pasó la ventana), `marker-viejo` (más de
-  48 h), `bloqueo-mixto` (hay un marker humano).
-- `decisión de arquitectura ya escalada — firma re-consultada, sin cambios
+**Si no se levantó solo, el log dice por qué.** El barrido deja **una sola
+línea de resumen por tick** cuando hay candidatos:
+
+```
+[intake] [late-signoff] 2 bloqueado(s) del gate (#7200 marker-viejo, #7300 throttled), 0 re-consultado(s), 0 levantado(s)
+```
+
+- Los candidatos **no re-consultados** aparecen entre paréntesis con su motivo,
+  así `grep "#N" logs/pulpo.log` sigue funcionando: `throttled` (todavía no
+  pasó la ventana) o `marker-viejo` (más de 48 h — comparar `blocked_at` del
+  `.reason.json` con el tope). `diferido(s) al próximo tick` = superó el tope
+  por tick. El `bloqueo-mixto` no figura: no es candidato (ver condición 1).
+- `#N decisión de arquitectura ya escalada — firma re-consultada, sin cambios
   (<motivo>)`: se miró y no alcanza. `firma-no-settled` (no hay firma válida),
   `traza-no-disponible` (hay firma pero la traza local no está: es el mismo
   caso "no pude comprobarlo" de #7439 — destrabar a mano con el botón),
   `traza-no-corrobora`, `reconcile-fallido` o `error` (fail-closed: el
-  bloqueo se conserva).
+  bloqueo se conserva). Esta línea sale como máximo una vez cada
+  `late_signoff_recheck_min` por issue.
+- `#N decisión de arquitectura ya escalada — sin re-consultar (<motivo>)` sólo
+  la emite el **camino secundario** (la rama del gate sobre el search, durante
+  el lag del índice); en el primario esos casos van en el resumen de arriba.
+- `♻️ #N firma del arquitecto posterior a la escalada — bloqueo levantado solo
+  (#7432)`: levantó.
+- `[WARN] barrido de firmas tardías falló — se conserva todo bloqueo`: el
+  barrido no pudo leer los markers; el intake siguió igual (fail-open del
+  intake, fail-closed del levantamiento).
 
 > **Por qué la proximidad no es un detalle.** La primera versión evaluaba el tema
 > y el calificador sueltos sobre `title + body` concatenado. En bodies reales de

@@ -29,4 +29,31 @@ function normalizeBlockCause(v) {
     return (typeof v === 'string' && BLOCK_CAUSE_ENUM.includes(v)) ? v : null;
 }
 
-module.exports = { BLOCK_CAUSE_ENUM, normalizeBlockCause };
+/**
+ * #7440 rev-2 — keys de señal del detector persistidas en el marker (`signals`
+ * del `.reason.json`). Misma familia que `cause`: campo estructurado que sólo
+ * escribe el gate de decisión y que se normaliza en escritura Y en lectura.
+ *
+ * Cerrado por FORMA (identificador corto: `/^[a-z0-9][a-z0-9-]{0,39}$/`) y por
+ * TOPE (8), nunca texto libre: un `.reason.json` editado a mano no puede meter
+ * prosa en el comentario de traza de GitHub (UX-C). Lo que no cumple la forma
+ * se descarta en silencio; no-array ⇒ `[]`. Dedup preservando el orden.
+ */
+const SIGNAL_KEY_RE = /^[a-z0-9][a-z0-9-]{0,39}$/;
+const MAX_SIGNALS = 8;
+
+/**
+ * @param {*} v
+ * @returns {string[]}
+ */
+function normalizeBlockSignals(v) {
+    if (!Array.isArray(v)) return [];
+    const out = [];
+    for (const s of v) {
+        if (out.length >= MAX_SIGNALS) break;
+        if (typeof s === 'string' && SIGNAL_KEY_RE.test(s) && !out.includes(s)) out.push(s);
+    }
+    return out;
+}
+
+module.exports = { BLOCK_CAUSE_ENUM, normalizeBlockCause, normalizeBlockSignals, MAX_SIGNALS };

@@ -1070,12 +1070,14 @@ test('#7439 CA-1 ter: con varias señales a la vez el copy "no verificable" enum
 
 test('#7439 CA-6 / RS-C.2: `cause` la produce SÓLO el gate de decisión de arquitectura en pulpo.js', () => {
     const src = fs.readFileSync(path.join(__dirname, '..', '..', 'pulpo.js'), 'utf8');
-    // El literal aparece UNA sola vez como PRODUCTOR en todo el archivo. El
-    // filtro del auto-levantamiento (#7440 RS-4.1/4.9) lo LEE con `===` — es
-    // consumidor, no productor — y se descuenta explícitamente.
+    // El literal aparece UNA sola vez como PRODUCTOR en todo el archivo. Los
+    // filtros del auto-levantamiento (#7440 RS-4.1/4.9) lo LEEN con `===` —
+    // consumidores, no productores — y se descuentan explícitamente: el del
+    // evaluador `_evaluateLateSignoff` y el pre-filtro del barrido
+    // `_sweepLateSignoff` (rev-2, CN-12).
     const literales = src.split("'design-decision'").length - 1;
     const lecturas = (src.match(/=== 'design-decision'/g) || []).length;
-    assert.equal(lecturas, 1, 'el único consumidor es el filtro de _evaluateLateSignoff (#7440)');
+    assert.equal(lecturas, 2, 'los únicos consumidores son el filtro de _evaluateLateSignoff y el pre-filtro de _sweepLateSignoff (#7440)');
     assert.equal(literales - lecturas, 1, `el literal 'design-decision' aparece ${literales - lecturas} veces como productor en pulpo.js`);
     // …y dentro del bloque "FRENA en definición — decisión de arquitectura".
     const ini = src.indexOf('FRENA en definición — decisión de arquitectura');

@@ -8657,7 +8657,7 @@ function _humanBlockUnverifiable(issue, motivo, logFn) {
 // `PULPO_NO_AUTOSTART=1` para que los casos negativos se testeen sin levantar
 // el Pulpo (patrón `_verifyHumanBlockLive`).
 // =============================================================================
-const LATE_SIGNOFF_DEFAULTS = Object.freeze({ recheckMin: 10, maxAgeH: 48 });
+const LATE_SIGNOFF_DEFAULTS = Object.freeze({ recheckMin: 10, maxAgeH: 48, maxPerTick: 5 });
 const LATE_SIGNOFF_UNLOCKER = 'architect-signoff:late';
 /** Razones que se resuelven ANTES de tocar la red (UX-F: "sin re-consultar"). */
 const LATE_SIGNOFF_NO_RECHECK_REASONS = Object.freeze(new Set([
@@ -8671,7 +8671,10 @@ const _lateSignoffState = new Map();
  * `Number(x) || d` (un `"15"` citado en YAML es string válido) ni
  * `Number.isFinite` a secas (un `-5` dejaría la ventana siempre vencida ⇒ una
  * llamada `gh` por ciclo por issue bloqueado).
- * @returns {{recheckMin: number, maxAgeH: number}}
+ *
+ * #7440 rev-2 / RS-4.13 — `maxPerTick` (`late_signoff_max_issues_per_tick`):
+ * tope de issues re-consultados por tick del barrido; no positivo ⇒ default 5.
+ * @returns {{recheckMin: number, maxAgeH: number, maxPerTick: number}}
  */
 function _resolveLateSignoffConfig(architectCfg) {
   const pos = (v, d) => { const n = Number(v); return Number.isFinite(n) && n > 0 ? n : d; };
@@ -8679,6 +8682,7 @@ function _resolveLateSignoffConfig(architectCfg) {
   return {
     recheckMin: pos(c.late_signoff_recheck_min, LATE_SIGNOFF_DEFAULTS.recheckMin),
     maxAgeH: pos(c.late_signoff_max_age_h, LATE_SIGNOFF_DEFAULTS.maxAgeH),
+    maxPerTick: pos(c.late_signoff_max_issues_per_tick, LATE_SIGNOFF_DEFAULTS.maxPerTick),
   };
 }
 
@@ -8719,7 +8723,11 @@ function _lateSignoffRecheckDue({
  * `evaluateArchitectSignoff` lo rechaza además por skill ≠ architect).
  *
  * `<señales>` = frases de `listaSenales` (las mismas que leyó el operador en el
- * aviso de bloqueo, UX-E); fallback a las keys sanitizadas; nunca `()` vacío.
+ * aviso de bloqueo, UX-E). SIN fallback a las keys crudas (UX-I, rev-2): las
+ * `signals` vienen del marker persistido y sólo alimentan el mapeo por key
+ * conocida — una key que `listaSenales` no reconoce se descarta y, si no queda
+ * ninguna, va `sin señales registradas`. Así el copy coincide con el modelo de
+ * superficie de security (ningún texto externo llega al comentario). Nunca `()`.
  * `<createdAt ISO>` = `signedAt` sin reformatear (es lo que corrobora
  * `architect-tokens.jsonl`); fallback a `now` sólo si viene vacío.
  */
@@ -8729,7 +8737,6 @@ function _buildLateSignoffComment({ signals = [], signedAt = '', now = Date.now(
   try {
     if (designDecision && typeof designDecision.listaSenales === 'function') lista = designDecision.listaSenales(keys);
   } catch { lista = ''; }
-  if (!lista) lista = keys.map((s) => sanitizePipelineText(String(s))).filter(Boolean).join(', ');
   if (!lista) lista = 'sin señales registradas';
   const fecha = String(signedAt || '').trim() || new Date(now).toISOString();
   return [
@@ -8754,7 +8761,9 @@ function _buildLateSignoffComment({ signals = [], signedAt = '', now = Date.now(
  * @param {number} [args.now]
  * @param {{recheckMin:number,maxAgeH:number}} args.cfg
  * @param {Map}    [args.state]
- * @param {object} args.deps — `{ io, humanBlock, designDecision, encolar, ghQueueDir, skillsPorFase, log }`
+ * @param {object} args.deps — `{ io, humanBlock, designDecision, encolar, ghQueueDir, skillsPorFase, log, throttle? }`
+ *   `throttle` (rev-2, opcional; `ghThrottle` en producción) se invoca SÓLO
+ *   inmediatamente antes de la re-consulta: nunca en las ramas sin red.
  * @returns {{lifted: boolean, reason: string, reconciled: Array, orders: string[], error?: string}}
  */
 function _evaluateLateSignoff({ issue, markers, signals = [], now = Date.now(), cfg, state = _lateSignoffState, deps }) {
@@ -8781,7 +8790,10 @@ function _evaluateLateSignoff({ issue, markers, signals = [], now = Date.now(), 
     if (!due.due) return { lifted: false, reason: due.reason, reconciled: [], orders };
     state.set(issue, now);
 
-    // (c) Re-consulta: la ÚNICA llamada de red nueva, ya acotada.
+    // (c) Re-consulta: la ÚNICA llamada de red nueva, ya acotada. `throttle`
+    //     (ghThrottle en producción) se respeta SOLO acá: nunca en las ramas
+    //     sin red (CA-18). Un throttle que lanza no puede impedir el fail-closed.
+    if (typeof d.throttle === 'function') { try { d.throttle(); } catch { /* best-effort */ } }
     const ctx = io.fetchSignoffContext(issue);
     const auditoria = io.readSignoffAudit(issue) || {};
     const firma = ctx && ctx.ok
@@ -8857,6 +8869,104 @@ function _evaluateLateSignoff({ issue, markers, signals = [], now = Date.now(), 
     logFn('intake', `[WARN] #${issue} re-evaluación de firma tardía falló — se conserva el bloqueo (fail-closed, #7432): ${msg}`);
     return { lifted: false, reason: 'error', reconciled: [], orders, error: msg.slice(0, 160) };
   }
+}
+
+/**
+ * #7440 rev-2 — DISPARADOR PRIMARIO del auto-levantamiento. Corre al inicio de
+ * cada tick del intake, ANTES del search: los issues con `needs-human` no
+ * vuelven del search (`buildIntakeSearchQueries()` los excluye en sus dos
+ * pases), así que el único lugar donde el pipeline los ve es en sus markers
+ * locales (`bloqueado-humano/`). Fuente: `humanBlock.listBlockedIssues()`, la
+ * misma que usan los reapers hermanos (`reapStaleHumanBlocks`,
+ * `reapVerifiableHumanBlocks`).
+ *
+ * Sin red propia: la única llamada la hace `_evaluateLateSignoff`, acotada por
+ * throttle (RS-4.7), tope de edad (RS-4.12) y tope por tick (RS-4.13, los que
+ * más esperan primero). Fuera de la ola (pausa parcial) no se toca nada (R-5
+ * de #5113, mismo filtro que `brazoDesbloqueoImpl`). NUNCA LANZA: una
+ * excepción se loguea y se conserva todo bloqueo (fail-closed del
+ * levantamiento); el intake sigue (fail-open del intake).
+ *
+ * El camino secundario (rama `PRESENTE` del gate, durante el lag del índice
+ * de búsqueda) comparte `state`: si el barrido ya consultó, cae en `throttled`.
+ *
+ * UX-H — una sola línea de resumen por tick, que lista los candidatos NO
+ * re-consultados con su motivo (`#N throttled`, `#N marker-viejo`) para que
+ * `grep "#N"` siga funcionando sin una línea por issue cada 5 min.
+ *
+ * @param {object} args
+ * @param {Set<string>|null} [args.allowlistSet] — issues de la ola en pausa parcial; `null` = sin filtro.
+ * @param {object} args.config — config completa del Pulpo (`config.architect` para la calibración).
+ * @param {number} [args.now]
+ * @param {Map} [args.state]
+ * @param {object} args.deps — mismos que `_evaluateLateSignoff` (+ `throttle`).
+ * @returns {{candidates:number, evaluated:number, lifted:number[], deferred:number, error:string|null}}
+ */
+function _sweepLateSignoff({ allowlistSet = null, config, now = Date.now(), state = _lateSignoffState, deps }) {
+  const out = { candidates: 0, evaluated: 0, lifted: [], deferred: 0, error: null };
+  const d = deps || {};
+  const logFn = typeof d.log === 'function' ? d.log : () => {};
+  try {
+    const hb = d.humanBlock;
+    const cfg = _resolveLateSignoffConfig(config && config.architect);
+
+    // (1) Fuente LOCAL: una fila por marker, agrupadas por issue.
+    const porIssue = new Map();
+    for (const r of hb.listBlockedIssues()) {
+      const n = Number(r.issue);
+      if (!Number.isInteger(n) || n <= 0) continue;
+      if (!porIssue.has(n)) porIssue.set(n, []);
+      porIssue.get(n).push(r);
+    }
+
+    // (2) Pre-filtro RS-4.1 / RS-4.9 (barato, sin red): TODOS los markers del
+    //     issue con causa del gate. El evaluador lo re-verifica sobre
+    //     `listBlockedMarkers` — acá sólo se evita trabajo (CN-12).
+    let candidatos = [...porIssue.entries()]
+      .filter(([, ms]) => ms.every((m) => m.cause === 'design-decision'))
+      .map(([n]) => n);
+    // (3) Pausa parcial: fuera de la ola no se mutan labels ni se gasta cuota (CA-14).
+    if (allowlistSet) candidatos = candidatos.filter((n) => allowlistSet.has(String(n)));
+    out.candidates = candidatos.length;
+
+    // (4) Sólo los que están "due" (puro, sin mutar `state`): los throttled y
+    //     los viejos no consumen slot del tope. Se guarda el motivo para el resumen.
+    const due = [];
+    const omitidos = [];
+    for (const n of candidatos) {
+      const markers = hb.listBlockedMarkers(n);
+      if (!markers.length) continue;
+      const chk = _lateSignoffRecheckDue({ issue: n, markers, now, cfg, state });
+      if (chk.due) due.push({ n, markers });
+      else omitidos.push(`#${n} ${chk.reason}`);
+    }
+    // (5) RS-4.13 — tope por tick, los que más esperan primero (blocked_at más viejo).
+    const edad = (ms) => Math.min(...ms.map((m) => Date.parse(m.blocked_at || '') || now));
+    due.sort((a, b) => edad(a.markers) - edad(b.markers));
+    const lote = due.slice(0, cfg.maxPerTick);
+    out.deferred = due.length - lote.length;
+
+    for (const { n, markers } of lote) {
+      const signals = [...new Set(markers.flatMap((m) => (Array.isArray(m.signals) ? m.signals : [])))];
+      const r = _evaluateLateSignoff({ issue: n, markers, signals, now, cfg, state, deps: d });
+      out.evaluated++;
+      if (r.lifted) {
+        out.lifted.push(n);
+        logFn('intake', `♻️ #${n} firma del arquitecto posterior a la escalada — bloqueo levantado solo (#7432)`);
+      } else if (!LATE_SIGNOFF_NO_RECHECK_REASONS.has(r.reason)) {
+        logFn('intake', `#${n} decisión de arquitectura ya escalada — firma re-consultada, sin cambios (${r.reason})`);
+      }
+      // throttled / marker-viejo / bloqueo-mixto: silencio por issue (correría cada 5 min).
+    }
+    if (out.candidates) {
+      const detalle = omitidos.length ? ` (${omitidos.join(', ')})` : '';
+      logFn('intake', `[late-signoff] ${out.candidates} bloqueado(s) del gate${detalle}, ${out.evaluated} re-consultado(s), ${out.lifted.length} levantado(s)${out.deferred ? `, ${out.deferred} diferido(s) al próximo tick` : ''}`);
+    }
+  } catch (e) {
+    out.error = String((e && e.message) || e).slice(0, 160);
+    logFn('intake', `[WARN] barrido de firmas tardías falló — se conserva todo bloqueo (fail-closed, #7440): ${out.error}`);
+  }
+  return out;
 }
 
 /**
@@ -21441,6 +21551,31 @@ function brazoIntake(config) {
     ? new Set(pipelineMode.allowedIssues.map(String))
     : null;
 
+  // #7440 rev-2 — barrido de firmas tardías ANTES del search. Los issues con
+  // `needs-human` no vuelven de `buildIntakeSearchQueries()`; el disparador
+  // sale de los markers locales. `_sweepLateSignoff` no lanza por contrato; el
+  // try de acá cubre el `require` y el armado de deps: el intake NUNCA se
+  // frena por este barrido (fail-open del intake, fail-closed del levantamiento).
+  // Queda detrás de los guards `paused` y `degraded` de arriba, que también
+  // valen para el barrido (no se mutan labels sin saber la ola vigente).
+  try {
+    _sweepLateSignoff({
+      allowlistSet, config,
+      deps: {
+        io: require('./lib/design-decision-gate-io'),
+        humanBlock,
+        designDecision: require('./lib/design-decision-detect'),
+        encolar: encolarOrdenGithub,
+        ghQueueDir: path.join(PIPELINE(), 'servicios', 'github', 'pendiente'),
+        skillsPorFase: config.pipelines,
+        throttle: ghThrottle,
+        log,
+      },
+    });
+  } catch (e) {
+    log('intake', `[WARN] barrido de firmas tardías no pudo armarse — se conserva todo bloqueo (#7440): ${e.message}`);
+  }
+
   const intakeConfig = config.intake || {};
 
   for (const [pipelineName, pipeIntake] of Object.entries(intakeConfig)) {
@@ -21623,6 +21758,13 @@ function brazoIntake(config) {
                   // los gates, igual que la rama de deps.
                   saltar = true;
                 } else if (live.estado === 'PRESENTE') {
+                  // #7440 rev-2 — camino SECUNDARIO: sólo corre durante el lag
+                  // del índice de búsqueda (el search excluye `needs-human`).
+                  // El primario es `_sweepLateSignoff` al inicio del tick;
+                  // comparten `_lateSignoffState`, así que si el barrido ya
+                  // consultó, acá cae en `throttled` (cero llamadas extra).
+                  // Es el único camino donde el issue sigue en el MISMO tick.
+                  //
                   // #7432 / #7440 — la firma pudo llegar DESPUÉS de la escalada
                   // (carrera de #7113: intake 18:44:23, firma 18:44:25). Se
                   // re-consulta acotado por throttle + tope de edad, y sólo si
@@ -21754,6 +21896,10 @@ function brazoIntake(config) {
                   evidence: final.fragment,
                   // #7439 — ver `causaDD` arriba.
                   cause: causaDD,
+                  // #7440 rev-2 — ÚNICO productor de `signals` (misma regla que
+                  // `cause`): keys del enum del detector, para que el barrido
+                  // arme el comentario de traza sin el veredicto en mano.
+                  signals: final.signals,
                   signoff_verifiable: firmaVerificableDD,
                   moveFromActive: false,
                 });
@@ -27924,6 +28070,7 @@ if (process.env.PULPO_NO_AUTOSTART === '1') {
     _resolveLateSignoffConfig,
     _lateSignoffRecheckDue,
     _evaluateLateSignoff,
+    _sweepLateSignoff,
     _buildLateSignoffComment,
     _lateSignoffState,
     LATE_SIGNOFF_DEFAULTS,

@@ -2379,11 +2379,16 @@ architect:
   #   - `late_signoff_max_age_h`: edad máxima del bloqueo (desde `blocked_at`,
   #     RS-4.12) hasta la que se sigue re-consultando. Pasada, el bloqueo queda
   #     para el operador.
+  #   - `late_signoff_max_issues_per_tick` (rev-2, RS-4.13): tope de issues que
+  #     el barrido de markers locales re-consulta por tick del intake, los que
+  #     más esperan primero; el resto se difiere al tick siguiente. Techo de
+  #     red del barrido: `tope / intake_interval` (5 cada 5 min = 60/h).
   #
-  # Valores no positivos o no numéricos caen al default (10 / 48), nunca a
+  # Valores no positivos o no numéricos caen al default (10 / 48 / 5), nunca a
   # "siempre vencido". Si las claves faltan, el Pulpo arranca igual (CA-7).
   late_signoff_recheck_min: 10
   late_signoff_max_age_h: 48
+  late_signoff_max_issues_per_tick: 5
 
 # =============================================================================
 # #4574 — GATE 1 · Firma de Definición del operador (épico #4570)
