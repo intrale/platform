@@ -20,10 +20,26 @@
 //   ① panel completo con los 3 proveedores reales (se_agota_antes · sin_proyeccion · excedido)
 //   ② catálogo de los 6 estados (una fila por estado, mismas celdas)
 //   ③ fail-closed: slice con ok:false (UX-7)
+//   ④ panel con las lecturas MÁS LARGAS observadas en el home vivo (saldo proyectado
+//      de 3 y 4 dígitos: "−152 pts", "−1.841 pts") — el escenario del rebote QA rev-2.
+//
+// Ancho real (rebote QA rev-2): el harness rinde el panel al MISMO ancho que el
+// home vivo — el `.kiosk-frame` mide 1080 px fijos y `.kiosk-body` tiene 22 px de
+// padding lateral, así que el panel ocupa 1036 px y la matriz ≈ 743 px, sin
+// importar el viewport (1440/1600/1920 dan lo mismo). Antes el body medía 1384 px
+// (matriz ≈ 993 px) y el recorte de la línea 2 no se veía. El ancho se DERIVA del
+// CSS real (`harnessBodyWidth()`), no se hardcodea.
+//
+// Clip guard: la página mide, tras hidratar, cada pieza de la matriz (chip,
+// lectura, celdas) contra su caja y contra el borde de `.mz-sysquota`
+// (overflow:hidden) y publica el resultado en `<pre id="harness-clip">`. Con
+// puppeteer disponible el tool lo lee, lo persiste en `clip-guard.json` y sale
+// con código 5 si algo quedó recortado (UX-11: "nada recortado · no se oculta").
 //
 // Uso:
-//   node .pipeline/tools/render-quota-balance-evidence-6565.js            # HTML + PNG
+//   node .pipeline/tools/render-quota-balance-evidence-6565.js            # HTML + PNG + clip guard
 //   node .pipeline/tools/render-quota-balance-evidence-6565.js --no-shot  # sólo HTML
+//   (puppeteer global: NODE_PATH=$(npm root -g) node .pipeline/tools/render-quota-balance-evidence-6565.js)
 // =============================================================================
 
 const fs = require('fs');
@@ -37,6 +53,8 @@ const HARNESS_PNG = path.join(OUT_DIR, 'render-real-quota-balance.png');
 const MOCKUP_PNG = path.resolve(__dirname, '..', 'assets', 'mockups', '6565', 'panel-esperado-cuota.png');
 const COMPARE_HTML = path.join(OUT_DIR, 'compare-render-vs-mockup.html');
 const COMPARE_PNG = path.join(OUT_DIR, 'compare-render-vs-mockup.png');
+const CLIP_JSON = path.join(OUT_DIR, 'clip-guard.json');
+const EXIT_CLIPPED = 5;
 
 const HOUR = 3600 * 1000;
 const NOW = Date.parse('2026-09-21T15:26:00Z');
@@ -95,6 +113,30 @@ const PANEL_SHORT = {
     'openai-codex': { win: 'ROLL', mode: 'event', eventState: 'nodata' },
     'antigravity': { win: 'MIN', mode: 'gauge', pct: null, available: null },
 };
+// ④ Lecturas largas del home vivo (rebote QA rev-2): con estado se_agota_antes y
+// saldo proyectado de 3 dígitos (−152 pts = 1,5 pts/h sostenidos sobre techo 100)
+// la línea 2 superaba los ≈ 400 px de su celda y .mz-sysquota{overflow:hidden}
+// dejaba "cierra en 5d 1" en vez de "cierra en 5d 13h". El 2.º proveedor lleva
+// el peor caso medido por QA (−1.841 pts, ritmo 14,32 pts/h).
+const LONG_CLOSE_MS = (5 * 24 + 13) * HOUR + 30 * 60000;
+const PANEL_REALISTA = {
+    ok: true, motivo: null, computed_at: iso(NOW), horas: 24,
+    balance: {
+        schema: 1, computed_at: iso(NOW), ventana_movil_min: 60, min_muestras: 3,
+        providers: {
+            'anthropic': fx({ provider: 'anthropic', consumo: 28, consumo_pct: 28, saldo_pts: 72, balance_pts: 72, ritmo_pts_por_hora: 1.5,
+                agota_at: iso(NOW + 48 * HOUR), agota_en_ms: 48 * HOUR,
+                cierre_en_ms: LONG_CLOSE_MS, cierre_periodo_at: iso(NOW + LONG_CLOSE_MS),
+                al_cierre_pts: -152, estado: 'se_agota_antes', confidence: 'fresh', muestra_at: iso(NOW - 2 * 60000), muestras: 5 }),
+            'openai-codex': fx({ provider: 'openai-codex', plan: 'Pro', consumo: 28, consumo_pct: 28, saldo_pts: 72, balance_pts: 72, ritmo_pts_por_hora: 14.32,
+                agota_at: iso(NOW + 5 * HOUR + 60000), agota_en_ms: 5 * HOUR + 60000,
+                cierre_en_ms: LONG_CLOSE_MS, cierre_periodo_at: iso(NOW + LONG_CLOSE_MS),
+                al_cierre_pts: -1841, estado: 'se_agota_antes', confidence: 'fresh', muestra_at: iso(NOW - 2 * 60000), muestras: 5 }),
+            'antigravity': Object.assign({}, STATE_FIXTURES.excedido, { provider: 'antigravity', plan: 'Licencia' }),
+        },
+    },
+    series: null,
+};
 const FAIL_CLOSED = { ok: false, motivo: 'config inválida: QuotaCeilingError', computed_at: iso(NOW), horas: 24, balance: { providers: {} }, series: null };
 
 const CATALOG_RULES = {
@@ -106,10 +148,52 @@ const CATALOG_RULES = {
     sin_proyeccion: 'muestra fresca pero < 3 muestras → saldo con su color normal; ritmo "en cálculo"',
 };
 
+// Ancho útil del home vivo, derivado del CSS real: `.kiosk-frame{width}` menos el
+// padding lateral de `.kiosk-body`. Si el CSS cambia de forma y no se puede
+// leer, cae a 1036 px (1080 − 2×22), el valor vigente al cerrar #6565.
+const HARNESS_BODY_WIDTH_FALLBACK = 1036;
+function harnessBodyWidth(css) {
+    const src = typeof css === 'string' ? css : home.homeStyles();
+    const frame = /\.kiosk-frame\s*\{[^}]*?width:\s*(\d+(?:\.\d+)?)px/.exec(src);
+    const body = /\.kiosk-body\s*\{[^}]*?padding:\s*[\d.]+px\s+(\d+(?:\.\d+)?)px/.exec(src);
+    if (!frame || !body) return HARNESS_BODY_WIDTH_FALLBACK;
+    const w = Math.round(Number(frame[1]) - 2 * Number(body[1]));
+    return Number.isFinite(w) && w > 0 ? w : HARNESS_BODY_WIDTH_FALLBACK;
+}
+
+// Script que corre DENTRO de la página tras hidratar: mide cada pieza de la
+// matriz contra su propia caja (scrollWidth > clientWidth) y contra el borde
+// derecho del panel (.mz-sysquota, overflow:hidden). Publica JSON en
+// #harness-clip y data-clipped en <html>. Sin dependencias del harness.
+const CLIP_GUARD_SCRIPT = String.raw`
+  (function(){
+    var SEL = '.mz-qv,.mz-ql2,.mz-ql2-rd,.mz-qm-h-note,.mz-qm-prov,.mz-qm-cell,.mz-qb,.mz-qr';
+    var out = { body_width: document.body.clientWidth, panels: [], clipped: [] };
+    document.querySelectorAll('.mz-sysquota').forEach(function(panel){
+      var pr = panel.getBoundingClientRect();
+      var mx = panel.querySelector('.mz-sq-matrix');
+      var wrap = (panel.parentElement && panel.parentElement.id) || '';
+      out.panels.push({ wrap: wrap, panel_w: Math.round(pr.width), matrix_w: mx ? mx.clientWidth : null });
+      panel.querySelectorAll(SEL).forEach(function(el){
+        var r = el.getBoundingClientRect();
+        var overSelf = Math.max(0, el.scrollWidth - el.clientWidth);
+        var overPanel = Math.max(0, Math.round(r.right - pr.right));
+        if (overSelf > 1 || overPanel > 0) {
+          out.clipped.push({ wrap: wrap, id: el.id || null, cls: String(el.className), text: (el.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 90),
+            scroll_w: el.scrollWidth, client_w: el.clientWidth, over_self_px: overSelf, over_panel_px: overPanel });
+        }
+      });
+    });
+    var pre = document.getElementById('harness-clip');
+    if (pre) pre.textContent = JSON.stringify(out);
+    document.documentElement.setAttribute('data-clipped', String(out.clipped.length));
+  })();`;
+
 // Construye el HTML del harness usando EXCLUSIVAMENTE código real de home.js.
 // Exportada para el test de anti-regresión (cero drift).
 function buildHarnessHtml() {
     const realCss = home.homeStyles();
+    const bodyWidth = harnessBodyWidth(realCss);
     const clientScript = home.renderClientScript();
     const panel = home.renderSystemQuotaPanel({ semaforo: { level: 'warn', label: 'DEGRADADO' } });
     const catalog = Object.keys(STATE_FIXTURES).map((estado) => `
@@ -120,7 +204,9 @@ function buildHarnessHtml() {
       </div>`).join('');
     const failPanel = home.renderSystemQuotaPanel({ semaforo: { level: 'ok', label: 'SALUDABLE' } })
         .replace(/id="([a-z0-9-]+)"/g, (m, id) => 'id="fc-' + id + '"');
-    const fixtures = JSON.stringify({ panel: PANEL_BALANCE, short: PANEL_SHORT, catalog: STATE_FIXTURES, fail: FAIL_CLOSED, now: NOW });
+    const longPanel = home.renderSystemQuotaPanel({ semaforo: { level: 'warn', label: 'DEGRADADO' } })
+        .replace(/id="([a-z0-9-]+)"/g, (m, id) => 'id="lg-' + id + '"');
+    const fixtures = JSON.stringify({ panel: PANEL_BALANCE, short: PANEL_SHORT, catalog: STATE_FIXTURES, fail: FAIL_CLOSED, long: PANEL_REALISTA, now: NOW });
 
     return `<!doctype html><html lang="es" data-theme="dark"><head><meta charset="utf-8">
 <title>#6565 — Render real panel de saldo y ritmo (fuente: home.js HEAD)</title>
@@ -128,7 +214,8 @@ function buildHarnessHtml() {
 <style>
 /* Estilos SÓLO del harness (no tocan .mz-*). */
 :root { color-scheme: dark; }
-body { background:#0d1117; color:#e6edf3; font-family:-apple-system,'Segoe UI',system-ui,sans-serif; margin:0; padding:24px 28px; width:1384px; }
+/* Ancho = contenido útil del home vivo (kiosk-frame 1080 px − 2×22 px de padding), derivado del CSS real. */
+body { background:#0d1117; color:#e6edf3; font-family:-apple-system,'Segoe UI',system-ui,sans-serif; margin:0; padding:24px 28px; width:${bodyWidth}px; }
 h1 { font-size:16px; font-weight:750; margin:0 0 4px; }
 h2 { font-size:11px; font-weight:800; letter-spacing:.8px; color:#8b949e; text-transform:uppercase; margin:26px 0 8px; }
 .sub { color:#6e7681; font-size:10.5px; margin:0 0 12px; line-height:1.45; }
@@ -140,6 +227,7 @@ h2 { font-size:11px; font-weight:800; letter-spacing:.8px; color:#8b949e; text-t
 .scn .cat-row { grid-template-columns:1.35fr 1.2fr; border-top:0; padding:0; }
 .scn .cat-row .mz-qb { grid-column:1; } .scn .cat-row .mz-qr { grid-column:2; } .scn .cat-row .mz-ql2 { grid-column:1 / span 2; }
 #harness-err { color:#f85149; font-family:Consolas,monospace; font-size:12px; white-space:pre-wrap; }
+#harness-clip { display:none; }
 </style></head><body>
 <h1>#6565 · Panel de saldo y ritmo de cuota por proveedor — render real del código en HEAD</h1>
 <p class="sub">CSS, markup SSR y lógica de hidratación importados de <code>views/dashboard/home.js</code> (sin copias). Las celdas del período se hidratan con <code>renderQuotaBalanceMatrix</code> / <code>_mzHydrateBalanceRow</code>, las mismas funciones del dashboard en producción, con fixtures que respetan el shape de <code>balanceForProvider()</code>.</p>
@@ -149,7 +237,11 @@ h2 { font-size:11px; font-weight:800; letter-spacing:.8px; color:#8b949e; text-t
 <div class="grid">${catalog}</div>
 <h2>③ Fail-closed — slice con ok:false (UX-7)</h2>
 <div id="panel-fail">${failPanel}</div>
+<h2>④ Ancho real (matriz ≈ 743 px) — lecturas largas del home vivo: −152 pts · −1.841 pts (rebote QA rev-2)</h2>
+<p class="sub">La línea 2 (chip de veredicto + "techo · consumido · ↻ cierra en") envuelve cuando no entra en su celda: nada queda recortado por <code>.mz-sysquota{overflow:hidden}</code> (UX-11).</p>
+<div id="panel-long">${longPanel}</div>
 <pre id="harness-err"></pre>
+<pre id="harness-clip"></pre>
 <script>${clientScript}</script>
 <script>
 try {
@@ -166,7 +258,14 @@ try {
   var realGet = document.getElementById.bind(document);
   document.getElementById = function(id){ return realGet('fc-' + id) || null; };
   try { renderQuotaBalanceMatrix(FX.fail, FX.now, FX.now); } finally { document.getElementById = realGet; }
+  // ④ lecturas largas: tercer panel (ids con prefijo lg-), misma función real.
+  document.getElementById = function(id){ return realGet('lg-' + id) || null; };
+  try {
+    Object.keys(FX.short).forEach(function(k){ _mzHydrateWinCell(k, 'short', FX.short[k]); });
+    renderQuotaBalanceMatrix(FX.long, FX.now, FX.now);
+  } finally { document.getElementById = realGet; }
   document.documentElement.setAttribute('data-hydrated','1');
+  ${CLIP_GUARD_SCRIPT}
 } catch (e) {
   document.getElementById('harness-err').textContent = 'HARNESS ERROR: ' + (e && (e.stack || e.message));
 }
@@ -229,7 +328,36 @@ function screenshot(chrome, htmlPath, pngPath, size) {
     ], { stdio: 'ignore' });
 }
 
-function main() {
+// puppeteer no es dependencia del pipeline: se busca local y luego en el root
+// global de npm (misma convención que assets/mockups/6565/render-mockup.js).
+function tryRequirePuppeteer() {
+    try { return require('puppeteer'); } catch { /* no local */ }
+    try {
+        const root = execFileSync(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['root', '-g'],
+            { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], shell: process.platform === 'win32' }).trim();
+        return require(path.join(root, 'puppeteer'));
+    } catch { return null; }
+}
+
+// Lee #harness-clip del harness ya escrito. Devuelve el JSON o null si no hay
+// puppeteer (el caller lo reporta como "clip guard no ejecutado", no como OK).
+async function measureClipping(chrome, htmlPath, viewportWidth) {
+    const puppeteer = tryRequirePuppeteer();
+    if (!puppeteer) return null;
+    const browser = await puppeteer.launch({ headless: true, executablePath: chrome, args: ['--no-sandbox', '--disable-gpu'] });
+    try {
+        const page = await browser.newPage();
+        await page.setViewport({ width: viewportWidth, height: 1500 });
+        await page.goto('file:///' + path.resolve(htmlPath).replace(/\\/g, '/'), { waitUntil: 'load' });
+        await page.waitForSelector('html[data-clipped]', { timeout: 10000 });
+        const raw = await page.$eval('#harness-clip', (el) => el.textContent);
+        return JSON.parse(raw);
+    } finally {
+        await browser.close();
+    }
+}
+
+async function main() {
     const noShot = process.argv.includes('--no-shot');
     fs.mkdirSync(OUT_DIR, { recursive: true });
 
@@ -260,8 +388,26 @@ function main() {
         }
         console.log('[6565] compare PNG    -> ' + COMPARE_PNG);
     }
+
+    // Clip guard (rebote QA rev-2): el PNG solo no alcanza — hay que MEDIR.
+    let clip = null;
+    try {
+        clip = await measureClipping(chrome, HARNESS_HTML, 1440);
+    } catch (e) {
+        console.error('[6565] clip guard falló: ' + ((e && e.message) || e));
+    }
+    if (!clip) {
+        console.error('[6565] clip guard NO ejecutado (puppeteer no disponible: NODE_PATH=$(npm root -g)). El render no certifica UX-11.');
+        return;
+    }
+    fs.writeFileSync(CLIP_JSON, JSON.stringify(clip, null, 2), 'utf8');
+    console.log('[6565] clip guard     -> ' + CLIP_JSON + ' · body ' + clip.body_width + ' px · matriz ' + (clip.panels[0] && clip.panels[0].matrix_w) + ' px · recortados: ' + clip.clipped.length);
+    if (clip.clipped.length) {
+        for (const c of clip.clipped) console.error('[6565]   RECORTADO ' + (c.wrap || '?') + ' ' + (c.id || c.cls) + ' +' + c.over_self_px + 'px/celda +' + c.over_panel_px + 'px/panel · "' + c.text + '"');
+        process.exit(EXIT_CLIPPED);
+    }
 }
 
-if (require.main === module) main();
+if (require.main === module) main().catch((e) => { console.error('[6565] ' + ((e && e.stack) || e)); process.exit(1); });
 
-module.exports = { buildHarnessHtml, buildCompareHtml, STATE_FIXTURES, PANEL_BALANCE, PANEL_SHORT, FAIL_CLOSED, NOW };
+module.exports = { buildHarnessHtml, buildCompareHtml, harnessBodyWidth, measureClipping, CLIP_GUARD_SCRIPT, STATE_FIXTURES, PANEL_BALANCE, PANEL_REALISTA, PANEL_SHORT, FAIL_CLOSED, NOW, EXIT_CLIPPED };

@@ -1932,8 +1932,18 @@ ${(() => { try { return _commanderActivity ? _commanderActivity.commanderActivit
 /* Fail-closed (UX-7) y pendiente de primer tick: "sin dato" / "…" atenuados, sin barra ni ritmo. */
 .mz-qb.mz-qm-nodata .mz-qb-bar, .mz-qr.mz-qm-nodata .mz-qr-unit, .mz-qr.mz-qm-nodata .mz-qr-eta { display: none; }
 .mz-qb.mz-qm-nodata .mz-qb-saldo, .mz-qr.mz-qm-nodata .mz-qr-rate { color: var(--in-fg-soft,#6e7681); font-weight: 600; font-size: 10px; min-width: 0; text-align: left; }
-.mz-ql2 { grid-column: 3 / span 2; grid-row: 2; gap: 10px; min-height: 22px; font-size: 9px; font-weight: 700; color: var(--in-fg-dim,#8b949e); white-space: nowrap; }
-.mz-ql2 .mz-ql2-rd { display: flex; gap: 6px; align-items: center; margin-left: auto; font-variant-numeric: tabular-nums; }
+/* Línea 2 = chip de veredicto + lectura del período. Las dos piezas son
+   unidades (nowrap cada una) pero la línea ENVUELVE cuando no entran juntas:
+   en el ancho real del home (kiosk-frame 1080 px → matriz 743 px, celda
+   ≈ 400 px) un veredicto largo ("Se agota 4d 20h antes del cierre · −152 pts")
+   más la lectura ("techo 100 · consumido 28 ↻ cierra en 5d 13h") suman
+   > 410 px y .mz-sysquota{overflow:hidden} recortaba la cola ("cierra en 5d 1").
+   Con flex-wrap la lectura baja a una segunda línea alineada a la derecha y
+   nada queda oculto (UX-11: "nada recortado a 1440 px · no se oculta";
+   #6565 rebote QA rev-2). */
+.mz-ql2 { grid-column: 3 / span 2; grid-row: 2; flex-wrap: wrap; row-gap: 3px; column-gap: 10px; min-width: 0; min-height: 22px; font-size: 9px; font-weight: 700; color: var(--in-fg-dim,#8b949e); white-space: nowrap; }
+.mz-ql2 .mz-qv { flex: none; }
+.mz-ql2 .mz-ql2-rd { display: flex; flex: none; gap: 6px; align-items: center; margin-left: auto; font-variant-numeric: tabular-nums; }
 .mz-ql2 .mz-ql2-rst { margin-left: 4px; }
 .mz-qv { display: inline-flex; align-items: center; gap: 5px; font-size: 9px; font-weight: 800; letter-spacing: .2px;
     padding: 2px 7px; border-radius: 999px; border: 1px solid var(--in-border,rgba(255,255,255,.10)); color: var(--in-fg-dim,#8b949e); }
@@ -1942,7 +1952,6 @@ ${(() => { try { return _commanderActivity ? _commanderActivity.commanderActivit
 .mz-qv.warn { color: var(--in-warn,#d29922); border-color: var(--in-warn,#d29922); background: var(--in-warn-soft); }
 .mz-qv.bad  { color: var(--in-bad,#f85149);  border-color: var(--in-bad,#f85149);  background: var(--in-bad-soft); }
 .mz-qv.dim  { color: var(--in-fg-soft,#6e7681); background: transparent; }
-@media (max-width: 1200px) { .mz-ql2 { white-space: normal; flex-wrap: wrap; } }
 
 /* --- Grilla 2-col + paneles --- */
 .mz-grid { display: grid; grid-template-columns: 1fr 1.62fr; gap: 16px; align-items: start; }

@@ -376,3 +376,88 @@ test('el harness de evidencia incrusta CSS, SSR y script REALES de home.js y cub
     assert.ok(html.includes('id="fc-mz-qb-anthropic"'), 'bloque fail-closed');
     assert.ok(html.includes('renderQuotaBalanceMatrix(FX.panel'), 'hidrata con la función real');
 });
+
+// =============================================================================
+// UX-11 — "nada recortado a 1440 px · no se oculta" (rebote QA rev-2)
+// La línea 2 (chip de veredicto + lectura del período) desbordaba su celda en el
+// ancho real de la matriz (743 px) con un saldo proyectado de 3 dígitos y
+// .mz-sysquota{overflow:hidden} escondía la cola ("cierra en 5d 1"). El harness
+// rendía a 1384 px y no lo veía.
+// =============================================================================
+// Extrae el cuerpo de una regla CSS de home.js buscando el selector literal a
+// principio de línea (los selectores del panel #6565 se escriben en una línea).
+function cssRule(selector) {
+    const start = HOME_SRC.indexOf('\n' + selector + ' {');
+    assert.ok(start > 0, 'regla CSS "' + selector + '" presente en home.js');
+    const from = start + selector.length + 3;
+    const end = HOME_SRC.indexOf('}', from);
+    assert.ok(end > from, 'regla CSS "' + selector + '" cerrada');
+    return HOME_SRC.slice(from, end);
+}
+
+test('UX-11 — .mz-ql2 envuelve SIEMPRE (flex-wrap sin media query): chip y lectura son unidades nowrap', () => {
+    const ql2 = cssRule('.mz-ql2');
+    assert.match(ql2, /flex-wrap:\s*wrap/, 'la línea 2 envuelve cuando no entra en su celda');
+    assert.match(ql2, /min-width:\s*0/, 'la celda de grilla puede encoger (no fuerza el ancho del contenido)');
+    assert.match(ql2, /white-space:\s*nowrap/, 'cada pieza sigue siendo una unidad (no parte "cierra en 5d 13h" por la mitad)');
+    assert.match(cssRule('.mz-ql2 .mz-ql2-rd'), /margin-left:\s*auto/, 'la lectura queda a la derecha también en la 2.ª línea');
+    assert.ok(!/@media \(max-width: 1200px\) \{ \.mz-ql2/.test(HOME_SRC), 'el wrap ya no depende de un breakpoint que nunca aplica al kiosk-frame fijo');
+});
+
+test('UX-11 — el harness rinde al ancho real del home (kiosk-frame − padding = 1036 px), derivado del CSS', () => {
+    const w = evidence.harnessBodyWidth();
+    const frame = /\.kiosk-frame\s*\{[^}]*?width:\s*(\d+)px/.exec(home.homeStyles());
+    const pad = /\.kiosk-body\s*\{[^}]*?padding:\s*\d+px\s+(\d+)px/.exec(home.homeStyles());
+    assert.ok(frame && pad, 'el CSS real declara ancho fijo del frame y padding lateral del body');
+    assert.equal(w, Number(frame[1]) - 2 * Number(pad[1]));
+    assert.equal(w, 1036, 'valor vigente: 1080 − 2×22 (matriz ≈ 743 px como midió QA)');
+    assert.equal(evidence.harnessBodyWidth('css sin kiosk'), 1036, 'fallback al valor vigente si el CSS cambia de forma');
+    const html = evidence.buildHarnessHtml();
+    assert.ok(html.includes('width:' + w + 'px;'), 'el body del harness usa ese ancho');
+    assert.ok(!html.includes('width:1384px'), 'ya no rinde al ancho irreal que escondía el recorte');
+});
+
+test('UX-11 — el harness incluye el bloque ④ (lecturas largas −152 / −1.841 pts) y el clip guard', () => {
+    const html = evidence.buildHarnessHtml();
+    assert.ok(html.includes('id="lg-mz-ql2-anthropic"') && html.includes('id="lg-mz-ql2-openai-codex"'), 'panel ④ con ids prefijados lg-');
+    assert.ok(html.includes('renderQuotaBalanceMatrix(FX.long'), 'se hidrata con la función real');
+    assert.ok(html.includes('id="harness-clip"') && html.includes("setAttribute('data-clipped'"), 'clip guard embebido en la página');
+    assert.ok(html.includes(evidence.CLIP_GUARD_SCRIPT), 'script del guard verbatim');
+    assert.equal(evidence.PANEL_REALISTA.balance.providers.anthropic.al_cierre_pts, -152, 'escenario del rechazo: −152 pts');
+    assert.equal(evidence.PANEL_REALISTA.balance.providers['openai-codex'].al_cierre_pts, -1841, 'peor caso medido por QA en el home vivo');
+    assert.equal(evidence.EXIT_CLIPPED, 5);
+});
+
+test('UX-11 — las lecturas largas se emiten completas (chip + "cierra en 5d 13h"), nunca truncadas por la lógica', () => {
+    const els = {};
+    for (const k of home.MZ_ACTIVE_PROVIDERS) installRow(els, k);
+    els['mz-qb-note'] = mkEl(); els['mz-qm-h-note'] = mkEl(); els['mz-sig-healthy'] = mkEl();
+    const h = loadHydrator(els);
+    h.renderQuotaBalanceMatrix(JSON.parse(JSON.stringify(evidence.PANEL_REALISTA)), NOW, NOW);
+    assert.equal(txt(els, 'mz-qv-anthropic-tx'), 'Se agota 3d 13h antes del cierre · −152 pts');
+    assert.equal(txt(els, 'mz-ql2-anthropic-rd'), 'techo 100 · consumido 28 ↻ cierra en 5d 13h');
+    assert.equal(txt(els, 'mz-qv-openai-codex-tx'), 'Se agota 5d 8h antes del cierre · −1.841 pts');
+    assert.equal(txt(els, 'mz-ql2-openai-codex-rd'), 'techo 100 · consumido 28 ↻ cierra en 5d 13h');
+});
+
+// Medición REAL en navegador (la única que prueba el recorte). Se salta sin
+// puppeteer (no es dependencia del pipeline): el tool la ejecuta en el QA.
+test('UX-11 — en Chrome, al ancho real, ninguna pieza de la matriz queda recortada (clip guard = 0)', async (t) => {
+    const chrome = ['C:/Program Files/Google/Chrome/Application/chrome.exe', 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe',
+        'C:/Program Files/Microsoft/Edge/Application/msedge.exe', '/usr/bin/google-chrome', '/usr/bin/chromium'].find((c) => fs.existsSync(c));
+    if (!chrome) return t.skip('sin Chrome/Edge');
+    const os = require('node:os');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'qb6565-'));
+    const htmlPath = path.join(dir, 'harness.html');
+    fs.writeFileSync(htmlPath, evidence.buildHarnessHtml(), 'utf8');
+    let clip;
+    try {
+        clip = await evidence.measureClipping(chrome, htmlPath, 1440);
+    } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+    }
+    if (!clip) return t.skip('sin puppeteer (NODE_PATH=$(npm root -g))');
+    assert.equal(clip.panels.length, 3, 'tres paneles medidos (①, ③, ④)');
+    for (const p of clip.panels) assert.equal(p.matrix_w, 743, 'matriz al ancho real que midió QA');
+    assert.deepEqual(clip.clipped, [], 'nada recortado: ' + JSON.stringify(clip.clipped));
+});
