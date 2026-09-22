@@ -55,8 +55,28 @@ const RAW_EXCERPT_MAX = 200;
 // Paths
 // -----------------------------------------------------------------------------
 
+// #6565 — SEC (OWASP A05 / CWE-538): un `pipelineDir` RELATIVO se resuelve contra
+// el CWD, que en el pipeline es el working tree del repo. El estado runtime
+// aterriza entonces DENTRO del repo, en una carpeta cuyo nombre la regla
+// `.pipeline/state/` de .gitignore ya no reconoce, y entra al índice de un repo
+// público. Caso real: `PIPELINE_DIR_OVERRIDE` con backslashes de Windows
+// consumidos como escapes por el shell POSIX -> ruta colapsada y relativa.
+// Fail-closed: sin ruta absoluta no se escribe nada.
+function assertPipelineDirAbsoluto(dir) {
+  const d = typeof dir === 'string' ? dir.trim() : '';
+  if (!d || !path.isAbsolute(d)) {
+    throw new TypeError(
+      `[quota-ledger] pipelineDir debe ser una ruta ABSOLUTA; recibido ${JSON.stringify(dir)}. ` +
+      'Un dir relativo se resuelve contra el CWD (el working tree del repo) y versiona estado runtime. ' +
+      'Si viene de PIPELINE_DIR_OVERRIDE en un shell POSIX, pasalo en formato POSIX (/c/Users/...): ' +
+      'los backslashes de Windows se consumen como escapes y dejan un path relativo.'
+    );
+  }
+  return d;
+}
+
 function resolvePipelineDir(opts) {
-  if (opts && opts.pipelineDir) return opts.pipelineDir;
+  if (opts && opts.pipelineDir) return assertPipelineDirAbsoluto(opts.pipelineDir);
   // #7112 — resolución POR LLAMADA vía el envoltorio (SEC-13): sin ambiente
   // declarado ni dir de pruebas avisa por stderr y LANZA (CA-3), nunca `__dirname`.
   return require('../write-target').writeDir(process.env, { canal: 'estado', destino: 'state/quota-ledger.jsonl' });
@@ -434,6 +454,7 @@ module.exports = {
   BUCKETS,
   DEFAULT_MIN_INTERVAL_MS,
   DEFAULT_SERIES_INTERVAL_MS,
+  assertPipelineDirAbsoluto,
   ledgerPath,
   seriesPath,
   readTailLines,
