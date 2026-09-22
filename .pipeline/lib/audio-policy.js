@@ -38,6 +38,8 @@ const EVENT = Object.freeze({
     GATE_SIGNATURE:    'gate_signature',
     AGENT_DELIVERABLE: 'agent_deliverable',
     CUA_STAGE:         'cua_stage',
+    // #7520 — mensaje semanal del auditor calidad-precio de modelos (CA-UX-4).
+    MODEL_VALUE_AUDIT: 'model_value_audit',
 });
 
 /**
@@ -53,6 +55,8 @@ const DEFAULT_BY_EVENT = Object.freeze({
     gate_signature:    true,
     agent_deliverable: false,
     cua_stage:         false,
+    // #7520 — pide atención del operador (una propuesta por semana, como máximo).
+    model_value_audit: true,
 });
 
 /**

@@ -1137,3 +1137,90 @@ test('#5801 el TTL de la caché del vault sigue topado en 300 y el config real l
     assert.ok(!validateConfig({ vault: { cache_ttl_seconds: 301 } }).valid);
     assert.ok(validateConfig({ vault: { cache_ttl_seconds: 300 } }).valid);
 });
+
+// --- #7520 · model_value_audit: sección estricta + lados (CA-23 / SEC-14) ---
+
+/** Sección válida, tal cual el body del issue (ítem 3). */
+function modelValueAuditValida() {
+    return {
+        enabled: false,
+        cadence_days: 7,
+        window_days: 30,
+        min_sample: 10,
+        min_sample_by_skill: {},
+        pricing_max_age_days: 60,
+        protected_skills: ['security', 'review', 'tester', 'qa', 'po'],
+        thresholds: { subir_rebound: 0.30, subir_early_death: 0.10, subir_qa_fail: 0.25, bajar_rebound: 0.05, bajar_early_death: 0.02 },
+        registrar: false,
+        publish: 'telegram-plain',
+    };
+}
+
+test('#7520 CA-23 · la sección model_value_audit válida pasa el schema y la config REAL la trae con enabled=false', () => {
+    const cfg = validConfig();
+    cfg.model_value_audit = modelValueAuditValida();
+    const r = validateConfig(cfg);
+    assert.strictEqual(r.valid, true, formatErrors(r.errors));
+    const real = configReal();
+    assert.ok(real.model_value_audit, 'config.yaml trae la sección');
+    assert.strictEqual(real.model_value_audit.enabled, false, 'default de fábrica apagado');
+    assert.strictEqual(real.model_value_audit.publish, 'telegram-plain');
+    assert.strictEqual(real.model_value_audit.registrar, false);
+    assert.strictEqual(real.model_value_audit.window_days, 30);
+    // La config EFECTIVA (kernel + producto, lo que valida el Pulpo) sigue verde con la sección.
+    assert.strictEqual(validateConfig(real).valid, true);
+    // Mínima: sólo `enabled` es obligatoria.
+    const min = validConfig();
+    min.model_value_audit = { enabled: true };
+    assert.strictEqual(validateConfig(min).valid, true);
+});
+
+test('#7520 CA-23 · cada valor inválido de model_value_audit es rechazado (ConfigSchemaViolation vía resolve)', () => {
+    const casos = {
+        'window_days: 29': { window_days: 29 },
+        'min_sample: 0': { min_sample: 0 },
+        'thresholds.subir_rebound: 1.5': { thresholds: { subir_rebound: 1.5 } },
+        'thresholds.bajar_rebound: -0.1': { thresholds: { bajar_rebound: -0.1 } },
+        'thresholds con clave extra': { thresholds: { otro: 0.5 } },
+        "publish: 'digest'": { publish: 'digest' },
+        "enabled: 'true'": { enabled: 'true' },
+        'enabled: 1': { enabled: 1 },
+        'clave extra enabeld': { enabeld: true },
+        "protected_skills: 'security'": { protected_skills: 'security' },
+        "protected_skills: ['']": { protected_skills: [''] },
+        'cadence_days: 0': { cadence_days: 0 },
+        'cadence_days: 1.5': { cadence_days: 1.5 },
+        'pricing_max_age_days: 0': { pricing_max_age_days: 0 },
+        'min_sample_by_skill con 0': { min_sample_by_skill: { guru: 0 } },
+        "registrar: 'false'": { registrar: 'false' },
+    };
+    for (const [nombre, over] of Object.entries(casos)) {
+        const cfg = validConfig();
+        cfg.model_value_audit = { ...modelValueAuditValida(), ...over };
+        assert.strictEqual(validateConfig(cfg).valid, false, `debería rechazar: ${nombre}`);
+    }
+    // Sin `enabled` ⇒ rechazo (required).
+    const sinEnabled = validConfig();
+    sinEnabled.model_value_audit = { cadence_days: 7 };
+    assert.strictEqual(validateConfig(sinEnabled).valid, false);
+    // Y un rechazo de schema termina en ConfigSchemaViolation con el error tipado.
+    const errs = validateConfig({ ...validConfig(), model_value_audit: { ...modelValueAuditValida(), window_days: 29 } }).errors;
+    const e = new ConfigSchemaViolation(formatErrors(errs), errs);
+    assert.strictEqual(e.name, 'ConfigSchemaViolation');
+    assert.ok(errs.some((x) => /model_value_audit\/window_days/.test(x.path)), JSON.stringify(errs));
+});
+
+test('#7520 SEC-14 · enabled/registrar/publish/protected_skills son autoridad; el resto de la sección es kernel', () => {
+    for (const k of ['enabled', 'registrar', 'publish', 'protected_skills']) {
+        assert.strictEqual(resolveSide(`model_value_audit.${k}`), 'autoridad', k);
+        assert.ok(AUTHORITY_PREFIXES.includes(`model_value_audit.${k}`), `${k} en AUTHORITY_PREFIXES`);
+        assert.strictEqual(SIDE_MAP[`model_value_audit.${k}`], 'autoridad');
+    }
+    for (const k of ['cadence_days', 'window_days', 'min_sample', 'min_sample_by_skill', 'pricing_max_age_days', 'thresholds', 'thresholds.subir_rebound']) {
+        assert.strictEqual(resolveSide(`model_value_audit.${k}`), 'kernel', k);
+    }
+    assert.strictEqual(SIDE_MAP.model_value_audit, 'kernel');
+    assert.strictEqual(SCHEMA.properties.model_value_audit.additionalProperties, false);
+    assert.deepStrictEqual(SCHEMA.properties.model_value_audit.required, ['enabled']);
+    assert.deepStrictEqual(SCHEMA.properties.model_value_audit.properties.publish.enum, ['telegram-plain', 'registry', 'none']);
+});
