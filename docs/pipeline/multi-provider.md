@@ -4057,8 +4057,30 @@ Valores fuera de tipo/rango caen al default y se avisan en el log de lanzamiento
 - **Rollout:** requiere reinicio del pulpo (el repo principal sólo se actualiza al respawn).
   Hasta que el ledger acumule ≥ 3 muestras frescas por proveedor (§19.3) el selector opera en
   modo degradado y lo dice en cada línea `✓`.
-- **Sin Telegram por decisión** (UX §8): cada spawn no dispara aviso; el episodio de fallback
-  (#6179) sigue gobernando los avisos de "entré/salí de respaldo".
+- **Sin Telegram por decisión** (UX §8): elegir un fallback por saldo **no es una degradación**
+  — el primario tiene cuota, está en horario, con credencial y sin kill-switch — y por eso el
+  dispatcher lo registra en el episodio de #6179 como `crossProvider: false` (modo `primario`).
+  Consecuencias verificadas con el módulo real de episodio (`fallback-episode-state`) y
+  `notify` capturado (tests de regresión de §20.7):
+  - dos o más spawns balanceados seguidos ⇒ **0 avisos** y el archivo
+    `state/fallback-episode.json` queda en modo `primario` (nunca `respaldo`);
+  - si había un episodio **real** abierto (un spawn anterior con el primario hard-gateado), el
+    primer spawn balanceado con el primario ya sano lo **cierra una sola vez** ("✅ volvió al
+    motor principal") — coherente: el pipeline dejó de estar degradado, está balanceando — y los
+    siguientes no vuelven a abrirlo (sin flapping);
+  - el salto por gate real (cuota agotada, horario, kill-switch, pacing rojo, soft-gate
+    preventivo) conserva su semántica: `crossProvider: true` en el episodio y aviso de
+    "entra en respaldo" según la política de #6179.
+- **Trazabilidad del salto por balanceo (CA-4):** cuando el primario está sano y sólo fue
+  diferido por saldo, la línea de salto es `⚖️↪️ <skill>:#<issue> primary=<P> diferido por
+  balanceo (sano, con menor saldo relativo), usando fallback="<F>"` (no `primary=<P> gated`), el
+  audit `fallback_selected` lleva `primary_deferred_by_balance: true` y `raw_excerpt:
+  "primary=<P> diferido por balanceo, fallback=<F> preferido por saldo"`, y el resultado expone
+  `disqualifyReason: 'primary_quota_balance_deferred'` (literal estático, mismo criterio que
+  `balancer_selected` del Commander) más `primaryBalanceDeferred: true`, así
+  `_trace.resolution.reason` del pulpo no queda vacío. El `crossProvider: true` del **resultado**
+  se conserva (el pulpo lo usa para args/billing del provider efectivo); sólo el avisador deja de
+  leerlo como degradación.
 - **Apagar de urgencia:** `multi_provider.balanceo.enabled: false` + reinicio. No hay
   kill-switch en caliente porque el balanceo nunca es causa de que un agente no se lance.
 
@@ -4069,7 +4091,12 @@ Valores fuera de tipo/rango caen al default y se avisan en el log de lanzamiento
   precedencia de hard y soft gates, preempción del primario, orden del plan en el recorrido,
   audit `balance_by_quota` sin secretos, degradaciones (sin config, sin ledger, stale, lector
   que tira, deshabilitado, config inválida) e integración real con `quota-ledger` +
-  `quota-balance` (caso medido 25/08, caché, muestras viejas).
+  `quota-balance` (caso medido 25/08, caché, muestras viejas). Sección "regresión (review
+  rev-1)": con `recordEpisode` activo (módulo real sobre el `pipelineDir` temporal) y `notify`
+  capturado — dos spawns balanceados ⇒ 0 avisos y sin episodio en modo `respaldo`;
+  trazabilidad "diferido por balanceo" + `primary_quota_balance_deferred`; el gate real sigue
+  diciendo "gated" y abre episodio; episodio real abierto + spawns balanceados ⇒ se cierra una
+  vez y no flapea.
 - `.pipeline/tests/dispatch-skip-reasons-3823.test.js` — cobertura de los códigos nuevos
   `quota_balance_prefer_other` y `quota_reserve_critical`.
 

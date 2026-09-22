@@ -537,6 +537,132 @@ test('CA-5 · valores inválidos en la config caen a defaults y se avisan por lo
 });
 
 // =============================================================================
+// Regresión (review rev-1) — el balanceo NO es un episodio de respaldo (#6179)
+//
+// El camino feliz (primario sano con menor saldo ⇒ se elige el otro) entraba por
+// el loop de fallbacks y registraba `crossProvider: true` en el episodio: cada
+// spawn balanceado abría un "pasó a motor de respaldo" en Telegram y el
+// siguiente con primario sano lo cerraba — flapping en operación NORMAL. Estos
+// tests corren con `recordEpisode` ACTIVO (módulo real sobre el `pipelineDir`
+// temporal) y `notify` capturado, que es exactamente lo que el harness de
+// arriba (`recordEpisode: false`) no veía.
+// =============================================================================
+const episodeState = require('../lib/fallback-episode-state');
+
+function episodeFileOf(dir) { return path.join(dir, 'state', episodeState.EPISODE_FILENAME); }
+function readEpisodeFile(dir) {
+    try { return JSON.parse(fs.readFileSync(episodeFileOf(dir), 'utf8')); } catch { return null; }
+}
+/** Harness con episodio REAL: `recordEpisode` activo, `notify` y `onLog` capturados. */
+function runWithEpisode(dir, captured, extra = {}) {
+    return run(dir, {
+        recordEpisode: true,
+        notify: (n) => { captured.notices.push(n); },
+        onLog: (_c, line) => { captured.logs.push(String(line)); },
+        ...extra,
+    });
+}
+
+test('regresión · dos spawns balanceados seguidos con episodio activo ⇒ 0 avisos y ningún episodio en modo respaldo', () => {
+    const dir = mkPipelineDir();
+    try {
+        const captured = { notices: [], logs: [] };
+        const audit = fakeAuditLog();
+        const reader = balanceReader({ 'openai-codex': 10, anthropic: 70 });
+
+        const r1 = runWithEpisode(dir, captured, { skill: 'codex-first', auditLog: audit, quotaBalanceReader: reader });
+        const r2 = runWithEpisode(dir, captured, { skill: 'codex-first', auditLog: audit, quotaBalanceReader: reader, now: NOW + 60000 });
+
+        for (const r of [r1, r2]) {
+            assert.equal(r.provider, 'anthropic', 'el balanceo prefirió el de mayor saldo');
+            assert.equal(r.source, 'fallback');
+            assert.equal(r.balance.regla, 'saldo');
+            assert.equal(r.primaryBalanceDeferred, true);
+        }
+        assert.equal(captured.notices.length, 0, `el balanceo no dispara avisos de respaldo: ${JSON.stringify(captured.notices.map((n) => n.meta))}`);
+        const ep = readEpisodeFile(dir);
+        assert.ok(ep === null || ep.mode === episodeState.MODE_PRIMARIO, `sin episodio en modo respaldo: ${JSON.stringify(ep)}`);
+    } finally { cleanup(dir); }
+});
+
+test('regresión · trazabilidad coherente (CA-4): log/audit dicen "diferido por balanceo" y disqualifyReason es un literal estático', () => {
+    const dir = mkPipelineDir();
+    try {
+        const captured = { notices: [], logs: [] };
+        const audit = fakeAuditLog();
+        const r = runWithEpisode(dir, captured, {
+            skill: 'codex-first', auditLog: audit,
+            quotaBalanceReader: balanceReader({ 'openai-codex': 10, anthropic: 70 }),
+        });
+        assert.equal(r.provider, 'anthropic');
+        assert.equal(r.disqualifyReason, 'primary_quota_balance_deferred', 'motivo estático para _trace.resolution.reason');
+
+        const sel = audit.entries.find((e) => e.event === 'fallback_selected');
+        assert.ok(sel, 'audit fallback_selected emitido');
+        assert.equal(sel.primary_deferred_by_balance, true);
+        assert.match(sel.raw_excerpt, /primary=openai-codex diferido por balanceo/);
+        assert.doesNotMatch(sel.raw_excerpt, /gated/);
+
+        const jump = captured.logs.find((l) => /usando fallback="anthropic"/.test(l));
+        assert.ok(jump, 'línea de salto al fallback logueada');
+        assert.match(jump, /diferido por balanceo/);
+        assert.doesNotMatch(jump, /gated/);
+    } finally { cleanup(dir); }
+});
+
+test('regresión · el salto por gate REAL conserva su trazabilidad ("gated") y sí abre episodio de respaldo', () => {
+    const dir = mkPipelineDir();
+    try {
+        const captured = { notices: [], logs: [] };
+        const audit = fakeAuditLog();
+        const r = runWithEpisode(dir, captured, {
+            skill: 'codex-first', auditLog: audit,
+            quotaModule: quotaModule(['openai-codex']), // primario hard-gateado por cuota
+            quotaBalanceReader: balanceReader({ 'openai-codex': 10, anthropic: 70 }),
+        });
+        assert.equal(r.provider, 'anthropic');
+        assert.equal(r.disqualifyReason, 'primary_quota_exhausted');
+        assert.equal(r.primaryBalanceDeferred, false);
+        const sel = audit.entries.find((e) => e.event === 'fallback_selected');
+        assert.equal(sel.primary_deferred_by_balance, false);
+        assert.match(sel.raw_excerpt, /primary=openai-codex gated/);
+        assert.equal(captured.notices.length, 1, 'la degradación real sí avisa (entra en respaldo)');
+        assert.equal(captured.notices[0].meta.event, 'fallback_episode');
+        assert.equal(captured.notices[0].meta.episode_mode, episodeState.MODE_RESPALDO);
+        assert.equal(readEpisodeFile(dir).mode, episodeState.MODE_RESPALDO);
+    } finally { cleanup(dir); }
+});
+
+test('regresión · episodio real abierto (primario hard-gateado) y luego spawns balanceados ⇒ se cierra una vez y no flapea', () => {
+    const dir = mkPipelineDir();
+    try {
+        const captured = { notices: [], logs: [] };
+        const reader = balanceReader({ 'openai-codex': 10, anthropic: 70 });
+
+        // 1) Degradación REAL: el primario está sin cuota ⇒ abre episodio de respaldo (1 aviso).
+        runWithEpisode(dir, captured, { skill: 'codex-first', quotaModule: quotaModule(['openai-codex']), quotaBalanceReader: reader });
+        assert.equal(captured.notices.length, 1);
+        assert.equal(captured.notices[0].meta.episode_mode, episodeState.MODE_RESPALDO);
+
+        // 2) El primario vuelve a estar sano pero el balanceo prefiere el otro ⇒
+        //    el pipeline ya no está degradado: cierra el episodio (1 aviso de vuelta).
+        const r2 = runWithEpisode(dir, captured, { skill: 'codex-first', quotaBalanceReader: reader, now: NOW + 60000 });
+        assert.equal(r2.provider, 'anthropic');
+        assert.equal(r2.primaryBalanceDeferred, true);
+        assert.equal(captured.notices.length, 2);
+        assert.equal(captured.notices[1].meta.episode_reason, 'vuelve_principal');
+        assert.equal(readEpisodeFile(dir).mode, episodeState.MODE_PRIMARIO);
+
+        // 3) y 4) Más spawns balanceados (fallback y primario) ⇒ sin flapping: 0 avisos nuevos.
+        runWithEpisode(dir, captured, { skill: 'codex-first', quotaBalanceReader: reader, now: NOW + 120000 });
+        runWithEpisode(dir, captured, { skill: 'guru', quotaBalanceReader: reader, now: NOW + 180000 }); // primario anthropic sano
+        runWithEpisode(dir, captured, { skill: 'codex-first', quotaBalanceReader: reader, now: NOW + 240000 });
+        assert.equal(captured.notices.length, 2, `sin avisos nuevos: ${JSON.stringify(captured.notices.slice(2).map((n) => n.meta))}`);
+        assert.equal(readEpisodeFile(dir).mode, episodeState.MODE_PRIMARIO);
+    } finally { cleanup(dir); }
+});
+
+// =============================================================================
 // Integración real con el ledger de #6560 (readQuotaBalanceForDispatch)
 // =============================================================================
 const REAL_CONFIG = {

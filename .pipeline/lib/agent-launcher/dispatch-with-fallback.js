@@ -2250,6 +2250,19 @@ function resolveSpawnWithFallback(opts = {}) {
         const fbModel = fbModelOverride
             || resolveModelForSkillProvider(models, skill, fbName, { fallbackModel: null });
 
+        // #6561 — ¿el primario está SANO y sólo fue diferido por balanceo?
+        // `primaryBalanceDeferred` ya exige `!primaryGated && !primarySoftGated`
+        // (se calcula así arriba); la conjunción explícita es defensa en
+        // profundidad para que este camino nunca absorba un gate real.
+        //
+        // Elegir un fallback por saldo NO es una degradación: el primario tiene
+        // cuota, está en horario, con credencial y sin kill-switch. Es la
+        // operación NORMAL del balanceo, y por eso:
+        //   - el episodio de #6179 NO se abre (ver `_recordEpisode` de abajo);
+        //   - el audit/log/`disqualifyReason` dicen "diferido por balanceo",
+        //     no "gated" (CA-4: trazabilidad coherente con la decisión real).
+        const balanceOnlyDeferral = primaryBalanceDeferred && !primaryGated && !primarySoftGated;
+
         // Audit + notify (S-6 / S-9).
         auditAppend({
             pipelineDir, fsImpl, sanitize, auditLog, now: _now,
@@ -2263,8 +2276,13 @@ function resolveSpawnWithFallback(opts = {}) {
                 primary_provider: primaryProvider,
                 primary_model: primary.model || null,
                 cross_provider: true,
+                // #6561 — distingue el salto por preferencia de saldo (primario
+                // sano) del salto por gate (primario descartado).
+                primary_deferred_by_balance: balanceOnlyDeferral,
                 chain_tried: chainTried,
-                raw_excerpt: `primary=${primaryProvider} gated, fallback=${fbName} libre`,
+                raw_excerpt: balanceOnlyDeferral
+                    ? `primary=${primaryProvider} diferido por balanceo, fallback=${fbName} preferido por saldo`
+                    : `primary=${primaryProvider} gated, fallback=${fbName} libre`,
             },
         });
 
@@ -2276,14 +2294,31 @@ function resolveSpawnWithFallback(opts = {}) {
         // El `auditAppend({event:'fallback_selected'})` de arriba NO se toca
         // (CA-16 / SEC-8): sólo cambia el canal de SALIDA, no la auditoría.
         // Cambiar ruido por ceguera no sería una mejora.
+        //
+        // #6561 — el balanceo por saldo se registra como `crossProvider: false`
+        // (modo `primario` del episodio): el motor principal está sano y elegir
+        // otro por saldo no es "pasar a respaldo". Registrarlo como respaldo
+        // abría un episodio en cada spawn balanceado y el siguiente spawn con
+        // primario sano lo cerraba — el flapping que #6179 eliminó, reaparecido
+        // en operación normal. Con `crossProvider: false` el avisador no emite
+        // nada si ya estábamos en el primario, y si había un episodio REAL
+        // abierto (un primario hard-gateado en un spawn anterior) lo cierra con
+        // "volvió al motor principal", que es coherente: el pipeline ya no está
+        // degradado, está balanceando. El `crossProvider: true` del RESULTADO se
+        // conserva (el resto del pulpo lo usa para args/billing del provider
+        // efectivo); sólo el avisador deja de leerlo como degradación.
         _recordEpisode({
             provider: fbName,
-            crossProvider: true,
+            crossProvider: !balanceOnlyDeferral,
             chainTried,
             models,
         });
 
-        log('lanzamiento', `↪️ ${skill}:#${issue} primary=${primaryProvider} gated, usando fallback="${fbName}" (índice ${i})`);
+        if (balanceOnlyDeferral) {
+            log('lanzamiento', `⚖️↪️ ${skill}:#${issue} primary=${primaryProvider} diferido por balanceo (sano, con menor saldo relativo), usando fallback="${fbName}" (índice ${i})`);
+        } else {
+            log('lanzamiento', `↪️ ${skill}:#${issue} primary=${primaryProvider} gated, usando fallback="${fbName}" (índice ${i})`);
+        }
 
         // #4274 (CA-2 / causa raíz) — resolver el `permission mode` canónico del
         // provider de DESTINO. Antes el return omitía `mode`, el launcher lo
@@ -2311,7 +2346,14 @@ function resolveSpawnWithFallback(opts = {}) {
             crossProvider: true,
             depthExceeded: false,
             // #4313 (CA-2) — motivo estático del salto (literal/enum, SEC-1).
-            disqualifyReason: primaryDisqualifyReason,
+            // #6561 — cuando el primario está sano y sólo fue diferido por
+            // balanceo, el motivo es el literal `primary_quota_balance_deferred`
+            // (mismo criterio que `balancer_selected` en commander/multi-provider.js)
+            // para que `_trace.resolution.reason` del pulpo no quede vacío.
+            disqualifyReason: balanceOnlyDeferral ? 'primary_quota_balance_deferred' : primaryDisqualifyReason,
+            // #6561 — bandera explícita para consumidores: el salto fue por
+            // preferencia de saldo, no por descarte del primario.
+            primaryBalanceDeferred: balanceOnlyDeferral,
             skipReasons,
             balance: _balanceSummary, // #6561
         };
