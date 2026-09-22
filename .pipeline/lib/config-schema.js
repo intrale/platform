@@ -197,6 +197,11 @@ const AUTHORITY_PREFIXES = Object.freeze([
     'model_value_audit.registrar',
     'model_value_audit.publish',
     'model_value_audit.protected_skills',
+    // #7515 (SEC-7515-6) — allowlist de cuentas que pueden meter texto en el
+    // registro de propuestas desde un repo público (`recomendacion-agente`).
+    // `propuestas` entera es kernel (cuota/tope = mecanismo); la allowlist es
+    // autoridad y no puede venir por entorno ni por el manifiesto de producto.
+    'propuestas.autores_permitidos',
 ]);
 
 // Clasificación completa de las secciones top-level de `config.yaml`
@@ -273,6 +278,11 @@ const SIDE_MAP = Object.freeze({
     deliverable_notifications: 'kernel',
     'deliverable_notifications.skills': 'producto',       // whitelist de skills del producto
     'deliverable_notifications.attachments_per_skill': 'producto',
+    // #7515 — registro de propuestas al operador: cuota diaria y tope de vivas
+    // son mecanismo del pipeline; la allowlist de autores es autoridad
+    // (también en AUTHORITY_PREFIXES, que gana en `resolveSide`).
+    propuestas: 'kernel',
+    'propuestas.autores_permitidos': 'autoridad',
     cua: 'kernel',
     kernel: 'kernel',
     // #5352 — el vault direcciona secretos de INFRAESTRUCTURA por host: es
@@ -374,9 +384,10 @@ function hasProductoDescendant(segs) {
 }
 
 /**
- * #7520 — ¿Existe alguna sub-clave de AUTORIDAD estrictamente por debajo de
- * `segs`? Una sección kernel con sub-claves de autoridad (`architect.enabled`,
- * `model_value_audit.enabled`) puesta del lado producto debe reportar la
+ * #7520 / #7515 — ¿Existe alguna sub-clave de AUTORIDAD estrictamente por
+ * debajo de `segs`? Una sección kernel con sub-claves de autoridad
+ * (`architect.enabled`, `model_value_audit.enabled`,
+ * `propuestas.autores_permitidos`) puesta del lado producto debe reportar la
  * sub-clave con su lado real (`autoridad`), no la sección entera como `kernel`:
  * de otro modo el operador leería "movela al kernel" cuando lo que hay es un
  * intento de cambiar una clave de autoridad por el canal de producto.
@@ -622,6 +633,25 @@ const SCHEMA = {
         // ConfigSchemaViolation. Va en el MISMO commit que la sección nueva.
         telegram_voice_outbound: OBJ(),
         deliverable_notifications: OBJ(),
+        // #7515 — registro único de propuestas al operador (parte 2/3 de #6807).
+        // Sección ESTRICTA: la raíz está cerrada y esta declaración va en el
+        // MISMO commit que la sección `propuestas:` de config.yaml — si una
+        // está y la otra no, config.yaml no valida y el Pulpo no arranca.
+        // `max_vivas` se cota a `MAX_PROPUESTAS_VIVAS` (500) del sustrato
+        // (CA-PO-4): un valor mayor persistiría en FS una forma que el modo
+        // durable lee como `degraded`.
+        propuestas: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+                cuota_diaria_por_productor: { type: 'integer', minimum: 1 },
+                max_vivas: { type: 'integer', minimum: 1, maximum: 500 },
+                autores_permitidos: {
+                    type: 'array',
+                    items: { type: 'string', minLength: 1 },
+                },
+            },
+        },
         cua: OBJ(),
         kernel: OBJ(),
 
@@ -1466,10 +1496,12 @@ function collectSideViolations(node, segs, out, esperado = 'producto') {
             collectSideViolations(child, childSegs, out, esperado);
             continue;
         }
-        // #7520 — sección kernel con sub-claves de autoridad (sin split de
-        // producto): se baja para nombrar la sub-clave con su lado real. Si el
-        // mapa viene vacío no hay nada que nombrar y cae al reporte de sección.
-        if (esperado === 'producto' && esMapa && hasAuthorityDescendant(childSegs)) {
+        // #7520 / #7515 — sección NO admitida que esconde una sub-clave de
+        // autoridad (`model_value_audit.enabled`, `propuestas.autores_permitidos`):
+        // se baja para nombrar la sub-clave con su lado real. Las secciones que
+        // YA son de autoridad enteras no bajan (el padre ya nombra el lado
+        // correcto), y si el subárbol no emite nada cae al reporte de sección.
+        if (esperado === 'producto' && esMapa && side !== 'autoridad' && hasAuthorityDescendant(childSegs)) {
             const antes = out.length;
             collectSideViolations(child, childSegs, out, esperado);
             if (out.length > antes) continue;
