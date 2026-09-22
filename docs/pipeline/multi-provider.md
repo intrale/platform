@@ -26,6 +26,7 @@
 16. [Criterio de admisión de proveedores (#6562)](#16-criterio-de-admisión-de-proveedores-6562) — quién entra: CLI que edita archivos + consumo verificable + términos sin entrenamiento, guardrail fail-closed en el boot y en el dashboard.
 17. [Plan de rollback — re-alta de un proveedor dado de baja (#6563)](#17-plan-de-rollback--re-alta-de-un-proveedor-dado-de-baja-6563) — cómo volver a habilitar un proveedor retirado con excepción temporal, nunca "para siempre".
 18. [Techo de cuota contratada por proveedor (#6559)](#18-techo-de-cuota-contratada-por-proveedor-6559) — el haber del libro contable: `plan`/`periodo`/`techo`/`unidad`/`reposicion` por proveedor activo, guardrail fail-closed en el boot y lectura programática para saldo y ritmo (#6560).
+19. [Saldo, ritmo y proyección de agotamiento de cuota (#6560)](#19-saldo-ritmo-y-proyección-de-agotamiento-de-cuota-6560) — el balance del libro contable: ledger de muestras, fórmula única (`computeQuotaBalance`), `/api/dash/quota-balance` y las cuatro series derivadas para el auditor (#6809).
 
 > **Convención:** todos los paths `.pipeline/...` son relativos a la raíz del repo (`C:\Workspaces\Intrale\platform\`). Todos los comandos asumen Node.js 21 disponible en PATH.
 
@@ -3769,10 +3770,159 @@ lee archivos: el llamador decide de dónde sale el config (hot-reload cada ~30 s
 
 ---
 
+## 19. Saldo, ritmo y proyección de agotamiento de cuota (#6560)
+
+Es **el balance** del libro contable de cuota. [§14.2](#142-telemetría-y-diagnóstico) registra
+el **consumo** por ejecución (#6558) y [§18](#18-techo-de-cuota-contratada-por-proveedor-6559)
+declara el **techo** (#6559); esta sección cruza ambos y responde, por proveedor y período
+vigente, *cuánto llevamos*, *cuánto falta*, *por cuánto nos pasamos*, *a qué ritmo* y *cuándo
+se agota* — y deja persistidas las series que el auditor del modelo operativo (#6809) necesita
+para concluir sobre plan/schedule/cadena sin cruzar logs a mano.
+
+Programa *Contabilidad y balanceo de cuota por proveedor*: #6558 (consumo) → #6559 (techo) →
+**#6560 (saldo y ritmo)** → #6561 (ruteo), #6565 (panel), #6809 (auditor).
+
+### 19.1 Unidad de medida: el % que reporta el proveedor
+
+Los tres techos declarados son `unidad: porcentaje` y #6558 registra **tokens**. No hay
+conversión posible (Claude Max y ChatGPT Plus no publican el cupo en tokens), así que **el
+consumo acumulado del período es el % que reporta el propio proveedor**:
+
+| Proveedor | Fuente del % de la ventana larga | Cómo llega |
+|---|---|---|
+| `anthropic` | `claude -p /usage` → `metrics/anthropic-usage.json` (`weeklyPct`, `weeklyResetsAt`) | `quotaSlice` → `providers.anthropic.weekly.{pct, resetAt}` |
+| `openai-codex` | rollouts `~/.codex/sessions` (`rate_limits.secondary.used_percent`, `resets_at`) | `quotaSlice` → `providers['openai-codex'].weekly.{pct, resetAt}` |
+| `antigravity` | adapter `not_implemented` | `pct: null` ⇒ `confidence: missing` |
+
+Cada muestra del ledger es "consumo acumulado reportado por el proveedor en la unidad del
+techo". Con unidades absolutas (`tokens`, `mensajes`, `creditos`) la muestra es el acumulado
+absoluto y, si no hay muestras, `computeQuotaBalance` cae a la suma de `provider-cost.jsonl`
+v2 (sólo líneas `reliable`). Los tokens de #6558 sí son la base de la serie *trabajo ganado por
+unidad de cuota* (§19.4).
+
+### 19.2 El ledger: `state/quota-ledger.jsonl`
+
+Antes de #6560 **no existía ninguna serie temporal de %**: todas las fuentes eran "último
+valor sobreescrito". Sin serie no hay ritmo ni proyección. El ledger es append-only, una línea
+por muestra, escrito por `quotaSlice` en cada poll real de `/api/dash/quota` (misma cadencia y
+misma regla que el guard #4282 y el pacing #4289: nunca con `skipSideEffects`, nunca rompe el
+slice):
+
+```json
+{"ts":"2026-09-21T16:20:38.335Z","provider":"anthropic","bucket":"weekly","pct":19,"reset_at":"2026-09-28T00:00:00.000Z","confidence":"fresh","source":"quota-slice","window_reset":false,"reset_motivo":null}
+```
+
+- `bucket`: `weekly` (ventana larga = `periodo` declarado en §18) o `session` (ventana corta).
+- **Debounce:** se escribe si cambió el valor, si pasó el intervalo mínimo (15 min) o si hubo
+  reinicio de ventana. Volumen esperado: cientos de líneas por día, no miles.
+- **`window_reset: true`** marca la muestra **posterior** a un reinicio de ventana: cambio de
+  `reset_at` hacia adelante o caída del acumulado ≥ 2 pts. `reset_motivo` es `credito` si hay
+  un canje de #7185 (`state/codex-reset-credit.json → redemptions[].redeemed_at`) a ±15 min,
+  y `reposicion` en cualquier otro caso. **La caída del % no es consumo negativo** (CA-7).
+- Lectura por la **cola** del archivo (4 MB por default): un ledger que creció un año no se
+  carga entero en cada poll.
+- El ledger arranca vacío en cada checkout nuevo (vive en `state/`, ignorado por git). No es
+  un bug: las primeras proyecciones aparecen cuando hay ≥ 3 muestras frescas en la ventana.
+
+### 19.3 La fórmula: `computeQuotaBalance(config, samples, { now })`
+
+`.pipeline/lib/multi-provider/quota-balance.js` es **puro** (sin I/O, `now` inyectado) y es el
+**único** lugar donde vive la fórmula (CA-5): el ruteo (#6561) lo llama directo y el dashboard
+(#6565) lee el slice; nadie re-deriva umbrales ni semáforos.
+
+```js
+const qb = require('.pipeline/lib/multi-provider/quota-balance');
+const ledger = require('.pipeline/lib/multi-provider/quota-ledger');
+const r = qb.computeQuotaBalance(config, ledger.readSamples({ pipelineDir }), { now: Date.now() });
+r.providers.anthropic
+// → { techo: 100, consumo: 60, saldo_pts: 40, excedente_pts: 0, balance_pts: 40,
+//     ritmo_pts_por_hora: 2, agota_at: '…', agota_en_ms: 72000000,
+//     cierre_periodo_at: '2026-09-28T00:00:00.000Z', cierre_en_ms: …, al_cierre_pts: -264,
+//     estado: 'se_agota_antes', confidence: 'fresh', muestra_at: '…', muestras: 7,
+//     ventana_movil_min: 60, min_muestras: 3, ultimo_reset: null, … }
+```
+
+| Campo | Qué es |
+|---|---|
+| `periodo_inicio_at` / `cierre_periodo_at` / `cierre_en_ms` | Período vigente. Reposición **fija** (`dom 21:00`, `03:00`, `:00`): último corte en hora local de `tz_offset_min` (misma aritmética que `weekly-quota.js`) y cierre = inicio + longitud. **Rolling**: el cierre es el `reset_at` que reporta el proveedor; sin `reset_at`, `cierre_periodo_at: null` (`cierre_fuente: rolling_sin_reset`). |
+| `consumo` / `consumo_pct` | Acumulado del período (la muestra más reciente dentro del período; un `window_reset` observado corre el inicio efectivo). |
+| `saldo_pts` / `excedente_pts` | `max(0, techo − consumo)` y `max(0, consumo − techo)`. **Puntos** del techo, no "% del %". El saldo nunca es negativo; el excedente va en campo propio (UX §3). |
+| `balance_pts` | `techo − consumo` con signo: "si el período cerrara ahora, cuánto sobra o falta". |
+| `ritmo_pts_por_hora` | Pendiente por mínimos cuadrados de las muestras de la **ventana móvil** (60 min) que terminan en la última muestra. `null` si `confidence ≠ fresh` o hay menos de `min_muestras` (3). Pendientes negativas o ínfimas ⇒ 0. |
+| `agota_at` / `agota_en_ms` | `muestra_at + saldo / ritmo`. `null` sin ritmo, con ritmo 0 o ya excedido. |
+| `al_cierre_pts` | Saldo proyectado al cierre con signo (positivo sobra, negativo falta). `null` si no hay ritmo ni cierre. |
+| `confidence` | `fresh` / `stale` (última muestra > 30 min) / `missing` (sin muestras en el período). |
+| `estado` | Veredicto único (UX §1): `alcanza`, `se_agota_antes`, `excedido`, `sin_datos`, `desactualizado`, `sin_proyeccion` (fresco pero sin ritmo: muestras insuficientes). |
+| `ultimo_reset` | `{ at, motivo: reposicion \| credito }` del último reinicio de ventana dentro del período, o `null`. |
+
+Reglas de honestidad (guru §6, UX §4): **nunca se proyecta sobre dato viejo**; un proveedor
+sin muestras devuelve **saldo completo con `estado: sin_datos`** (CA-4) — que el ruteo debe
+distinguir de "100 % libre real"; un proveedor sin techo declarado **no aparece** (no se asume
+infinito). Parámetros (`ventanaMovilMin`, `minMuestras`, `staleAfterMs`, `resetDropPts`) son
+opciones de la función con defaults en `quota-balance.DEFAULTS`.
+
+### 19.4 Series derivadas: `state/quota-series.jsonl`
+
+`.pipeline/lib/multi-provider/quota-series.js` (puro) calcula las cuatro series de CA-6 sobre
+un rango; el slice las persiste **append-only con timestamp** (debounce 1 h) para que #6809
+pueda leerlas sin cruzar logs:
+
+| Serie | Fuentes | Qué devuelve |
+|---|---|---|
+| `gateado[provider]` — horas gateado por motivo | `logs/quota-detector-*.log` (`flag_set` → `drained_post_reset`/`cleared`/`manual_clear`/`reset_credit_redeemed`), `audit/multi-provider-health.jsonl` (`health_state_transition` a `red`), `provider-schedule.json` (ventanas OFF, vía `provider-schedule.isProviderActiveNow`) | `horas.{quota_exhausted_sesion, quota_exhausted_semanal, health, schedule, credencial, total}` + `intervalos[]`. La ventana sesión/semanal sale del `error_type` (`usage_limit_reached`/`usage_limit_error` ⇒ sesión; `insufficient_quota`/`weekly_limit_content_channel` ⇒ semanal; desconocido ⇒ por duración) hasta que #7550 la promueva a campo estructurado. `total` es la unión (sin doble conteo). |
+| `cadena_agotada` — cadena agotada con trabajo elegible | `gate_blocked_spawn` (ya existía, con `issue=… fase=…` en `raw_excerpt`) → **`dispatch_resumed`** (nuevo en `pulpo.js`: se emite al limpiar un backoff de cadena agotada, mismo formato) | `horas_total`, `horas_union`, `por_fase`, `intervalos[{skill, issue, fase, desde, hasta, horas, intentos, abierto}]`. Antes el intervalo sólo vivía en `pulpo.log` y `dispatch-backoff.json` (volátil). |
+| `unica_pata` — única pata viva | derivada de `gateado`: "viva" = no gateada por `schedule`/`health`/`credencial` | `horas_unica_pata`, `horas_unica_pata_gateada` (esa pata gateada por cuota), `horas_sin_patas`, `por_pata`. El caso 2026-09-11 (codex única pata, gateado ≈15 h de 26 h) sale de acá. |
+| `trabajo_por_cuota[provider]` — trabajo ganado por unidad de cuota | `provider-cost.jsonl` v2 (`resultado: ganada`, `fase`) ÷ puntos consumidos del ledger en el mismo rango (deltas positivos; los `window_reset` no cuentan) | `ganadas`, `totales`, `pct_consumido`, `ganadas_por_pct`, `por_fase`. |
+
+El schedule que se aplica es el **vigente** para todo el rango (los cambios de schedule no
+quedan versionados): por eso el snapshot horario persistido es la fuente del auditor, no un
+recálculo tardío.
+
+### 19.5 Exposición: `GET /api/dash/quota-balance`
+
+```
+GET /api/dash/quota-balance?horas=24      (default 24, tope 168)
+→ { ok, computed_at, horas,
+    balance: { schema, computed_at, ventana_movil_min, min_muestras, providers: { anthropic: {…}, 'openai-codex': {…}, antigravity: {…} } },
+    series:  { schema, ventana, gateado, cadena_agotada, unica_pata, trabajo_por_cuota } }
+```
+
+Slice `quotaBalanceSlice(state, ctx, { horas, now })` en `dashboard-slices.js`. Fail-closed:
+si el config no resuelve o falta un módulo devuelve `{ ok: false, motivo, balance: { providers: {} } }`,
+nunca un saldo inventado. Con `ctx.skipSideEffects` no persiste el snapshot de series. Los
+tiempos van en UTC (`*_at`) y como delta (`*_en_ms`); la presentación (#6565) formatea con
+`tz_offset_min`, no calcula.
+
+### 19.6 Operación
+
+- **Reiniciar el pulpo/dashboard al mergear** (memoria operativa #7438): el motor corre desde
+  el repo principal. El ledger empieza vacío; las proyecciones aparecen tras ~15 min de polls.
+- **Diagnóstico rápido:** `tail state/quota-ledger.jsonl` (¿llegan muestras?), `curl
+  localhost:<dash>/api/dash/quota-balance | jq .balance.providers.anthropic.estado`.
+- **Relación con lo que ya existía:** el guard #4282 y el pacing #4289 siguen leyendo el
+  `pct`/`confidence` del mismo `quotaSlice`; #6560 no los reemplaza, agrega la serie y el
+  balance. `provider-quota.recordSample` (seam de #4533, sin callers) sigue intacto — lo cubren
+  #4948/#4543/#5018.
+
+### 19.7 Tests
+
+- `.pipeline/lib/multi-provider/__tests__/quota-balance.test.js` — los dos escenarios Gherkin
+  del issue, CA-1..CA-4 y CA-7, reset fijo por período (semanal/diario/horario) y rolling,
+  stale ⇒ sin proyección, mínimo de muestras, ventana móvil, crédito de codex, techo en tokens.
+- `.pipeline/lib/multi-provider/__tests__/quota-series.test.js` — las cuatro series con
+  fixtures del shape real de los logs, incluido el caso 2026-09-11.
+- `.pipeline/lib/multi-provider/__tests__/quota-ledger.test.js` — whitelist, debounce,
+  reinicio de ventana, ingesta desde el slice, snapshot horario, lectores.
+- `.pipeline/tests/quota-balance-wiring-6560.test.js` — ruta, slice fail-closed, ingesta en
+  `quotaSlice` y evento `dispatch_resumed` en `pulpo.js`.
+
+---
+
 ## Apéndice — links rápidos
 
 - **Código:** [`.pipeline/agent-models.json`](../../.pipeline/agent-models.json), [`.pipeline/agent-models.schema.json`](../../.pipeline/agent-models.schema.json), [`.pipeline/lib/agent-models-validate.js`](../../.pipeline/lib/agent-models-validate.js), [`.pipeline/validate-agent-models.js`](../../.pipeline/validate-agent-models.js), [`.pipeline/lib/multi-provider/`](../../.pipeline/lib/multi-provider/), [`.pipeline/lib/quota-adapters/`](../../.pipeline/lib/quota-adapters/), [`.pipeline/lib/agent-launcher/`](../../.pipeline/lib/agent-launcher/).
 - **Techo de cuota por proveedor (#6559):** [`.pipeline/lib/multi-provider/validate-quota-ceilings.js`](../../.pipeline/lib/multi-provider/validate-quota-ceilings.js) (validador puro + CLI + `getQuotaCeiling`), sección `multi_provider.quota` de [`.pipeline/config.yaml`](../../.pipeline/config.yaml), schema en [`.pipeline/lib/config-schema.js`](../../.pipeline/lib/config-schema.js) — ver §18.
+- **Saldo, ritmo y proyección (#6560):** [`.pipeline/lib/multi-provider/quota-balance.js`](../../.pipeline/lib/multi-provider/quota-balance.js) (fórmula pura), [`quota-ledger.js`](../../.pipeline/lib/multi-provider/quota-ledger.js) (serie persistida + lectores), [`quota-series.js`](../../.pipeline/lib/multi-provider/quota-series.js) (series derivadas), slice `quotaBalanceSlice` en [`dashboard-slices.js`](../../.pipeline/lib/dashboard-slices.js) → `GET /api/dash/quota-balance` — ver §19.
 - **Diseño y decisiones:** [`docs/pipeline-multi-provider.md`](../pipeline-multi-provider.md) (1140 líneas, design doc v2).
 - **Permission mapping (capabilities cross-provider):** [`docs/pipeline-multi-provider/permission-mapping.md`](../pipeline-multi-provider/permission-mapping.md).
 - **Data residency / exclusiones:** [`docs/pipeline-multi-provider/data-residency.md`](../pipeline-multi-provider/data-residency.md).

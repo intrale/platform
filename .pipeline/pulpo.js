@@ -11914,7 +11914,27 @@ async function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, 
     // Da trazabilidad en tiempo real de qué provider arrancó y por qué.
     // Hubo ruta de despacho: la cuenta de agotamientos vuelve a cero para que el
     // próximo backoff arranque en 1 minuto y no herede el techo de la noche.
-    try { dispatchBackoff.limpiar(PIPELINE(), skill, issue); } catch { /* best-effort */ }
+    // #6560 — si venía de una cadena agotada (había backoff), dejamos el cierre
+    // del intervalo en el audit del detector: `gate_blocked_spawn` (apertura,
+    // con issue+fase) → `dispatch_resumed` (cierre). Antes ese intervalo sólo
+    // vivía en `pulpo.log` y `dispatch-backoff.json` (volátil); ahora la serie
+    // "cadena agotada con trabajo elegible" (quota-series.js) se deriva de acá.
+    try {
+      const veniaAgotada = dispatchBackoff.limpiar(PIPELINE(), skill, issue);
+      if (veniaAgotada === true) {
+        try {
+          quotaExhausted.appendAudit({
+            event: 'dispatch_resumed',
+            agent: skill,
+            provider: (dispatchResolution.fallbackUsed && dispatchResolution.fallbackUsed.provider) || dispatchResolution.primaryProvider || null,
+            model: dispatchResolution.model || null,
+            error_type: null,
+            raw_excerpt: `issue=${issue} fase=${fase} pipeline=${pipeline} source=${dispatchResolution.source || 'primary'}`,
+            flag_set: false,
+          });
+        } catch { /* best-effort */ }
+      }
+    } catch { /* best-effort */ }
 
     if (providerResolutionLog) {
       log('lanzamiento', providerResolutionLog);

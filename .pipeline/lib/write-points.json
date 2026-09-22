@@ -600,7 +600,7 @@
     {
       "modulo": "lib/metrics/provider-cost.js",
       "funcion": "defaultFile",
-      "linea": 57,
+      "linea": 121,
       "canal": "logs",
       "destino": "__dirname",
       "tier": 3,
@@ -688,6 +688,16 @@
       "via": "writeTarget.writeDir"
     },
     {
+      "modulo": "lib/multi-provider/quota-ledger.js",
+      "funcion": "resolvePipelineDir",
+      "linea": 62,
+      "canal": "estado",
+      "destino": "writeTarget.writeDir",
+      "tier": 3,
+      "estado": "migrado",
+      "via": "writeTarget.writeDir"
+    },
+    {
       "modulo": "lib/notify-telegram.js",
       "funcion": "pipelineDir",
       "linea": 91,
@@ -700,7 +710,7 @@
     {
       "modulo": "lib/operational-state-backend.js",
       "funcion": "pipelineDir",
-      "linea": 230,
+      "linea": 255,
       "canal": "estado",
       "destino": "process.env.PIPELINE_*",
       "tier": 1,
@@ -711,7 +721,7 @@
     {
       "modulo": "lib/operational-state-backend.js",
       "funcion": "halt",
-      "linea": 431,
+      "linea": 456,
       "canal": "estado",
       "destino": "writeTarget.writeDir",
       "tier": 1,
@@ -1513,7 +1523,7 @@
     {
       "modulo": "pulpo.js",
       "funcion": "PAUSE_FILE",
-      "linea": 21698,
+      "linea": 22170,
       "canal": "pausa",
       "destino": "writeTarget.writeDir",
       "tier": 1,
