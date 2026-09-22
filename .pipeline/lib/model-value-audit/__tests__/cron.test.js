@@ -11,6 +11,7 @@ const os = require('node:os');
 const path = require('node:path');
 
 const cron = require('../cron');
+const { withEnv } = require('../../test-helpers/with-env');
 
 const DAY = 86400000;
 const NOW = Date.parse('2026-09-21T12:00:00.000Z');
@@ -282,8 +283,15 @@ test('CA-27 · con un bajar ⇒ publica UNA vez con la propuesta y el ctx comple
     assert.equal(pctx.now, NOW);
     assert.equal(typeof pctx.logger, 'function');
     assert.ok(pctx.cfgRoot.model_value_audit);
-    assert.equal(pctx.pipelineRoot, path.join(c.dir, 'pipeline'));
+    assert.equal(pctx.pipelineRoot, c.dir);
     assert.ok(c.logs.some((m) => m === 'publicado cccccccc (1 ítems, audio omitido)'), c.logs.join('|'));
+});
+
+test('SEC-13 · respeta la raíz explícita aunque pipelineDir esté separado', () => {
+    const c = ctx({ run: () => reporte({ precios: { stale: true } }) });
+    const pipelineRoot = path.join(c.dir, 'repo');
+    assert.equal(c.tick({ pipelineRoot }).published, true);
+    assert.equal(c.publishCalls[0].ctx.pipelineRoot, pipelineRoot);
 });
 
 test('CA-27 · sólo stale:true ⇒ publica; sólo missing_models ⇒ publica', () => {
@@ -347,15 +355,11 @@ test('Gherkin CA-24 · Dado model_value_audit.enabled=false, cuando pasa el tick
 // ---------------------------------------------------------------------------
 test('P4 · defaultStateFile resuelve state/<STATE_FILE> vía write-target con PIPELINE_DIR_OVERRIDE', () => {
     const dir = tmpDir();
-    const prev = process.env.PIPELINE_DIR_OVERRIDE;
-    process.env.PIPELINE_DIR_OVERRIDE = dir;
-    try {
+    return withEnv({ PIPELINE_DIR_OVERRIDE: dir }, () => {
         const f = cron.defaultStateFile();
         assert.equal(f, path.join(dir, 'state', 'model-value-audit-cron.json'));
         assert.equal(cron.STATE_FILE, 'model-value-audit-cron.json');
-    } finally {
-        if (prev === undefined) delete process.env.PIPELINE_DIR_OVERRIDE; else process.env.PIPELINE_DIR_OVERRIDE = prev;
-    }
+    });
 });
 
 test('readState/writeStateAtomic: round-trip con 0o600 best-effort y lectura nula ante JSON roto', () => {

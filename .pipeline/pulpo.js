@@ -27212,6 +27212,7 @@ async function mainLoop() {
       try {
         const res = mvaCron.tickIfDue({
           pipelineDir: PIPELINE(),
+          pipelineRoot: ROOT,
           cfgRoot: loadConfig() || {},
           logger: (msg) => log('model-value', msg),
         });

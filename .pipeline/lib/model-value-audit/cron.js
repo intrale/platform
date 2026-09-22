@@ -123,6 +123,7 @@ function hash8Of(referencia) {
  *
  * @param {object} p
  * @param {string} p.pipelineDir     sólo viaja a `run`/`registrar` (lectura + audit)
+ * @param {string} [p.pipelineRoot]  raíz del repositorio para los destinos de audio
  * @param {object} p.cfgRoot         config resuelta (releída por el caller en cada tick)
  * @param {number} [p.now]
  * @param {object} [p.fsImpl]
@@ -135,7 +136,7 @@ function hash8Of(referencia) {
  * @returns {{ran:boolean, published:boolean, reason:string, hash8?:string}}
  */
 function tickIfDue({
-    pipelineDir, cfgRoot, now = Date.now(), fsImpl = fs, stateFile, run, registrar, publish, publishDeps, logger = () => {},
+    pipelineDir, pipelineRoot, cfgRoot, now = Date.now(), fsImpl = fs, stateFile, run, registrar, publish, publishDeps, logger = () => {},
 } = {}) {
     const section = resolveSection(cfgRoot);
     if (!section) return { ran: false, published: false, reason: 'deshabilitado' };
@@ -188,7 +189,7 @@ function tickIfDue({
         try {
             res = pub(proposal, {
                 productor: PRODUCTOR, report, hash: referencia, hash8, propagationEnabled,
-                cfgRoot, pipelineRoot: pipelineDir, logger, now,
+                cfgRoot, pipelineRoot: pipelineRoot === undefined ? path.resolve(pipelineDir, '..') : pipelineRoot, logger, now,
             });
         } catch (e) {
             logger(`suprimido publish_fallo (${codeOf(e)})`);

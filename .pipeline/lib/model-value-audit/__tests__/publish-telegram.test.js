@@ -10,6 +10,7 @@ const os = require('node:os');
 const path = require('node:path');
 
 const pt = require('../publish-telegram');
+const { withEnv } = require('../../test-helpers/with-env');
 const { buildProposal } = require('../proposal');
 const report = require('../report');
 const rec = require('../recommender');
@@ -112,6 +113,44 @@ function armar(rep, { root = cfgRoot(), audio, propagationEnabled = false, deps 
 }
 
 // ---------------------------------------------------------------------------
+test('SEC-13 · cron y audio real resuelven el OGG bajo el destino configurado e ignorado', async (t) => {
+    const repoRoot = path.resolve(__dirname, '../../../..');
+    const root = require('../../config-resolver').resolve({ pipelineDir: path.join(repoRoot, '.pipeline'), reload: true });
+    const writes = [];
+    const a = armar(fixture(), { root, deps: {
+        generateAudio: undefined,
+        audioDeps: {
+            loadTelegramSecrets: () => ({ bot_token: 'fake-token', chat_id: 'fake-chat' }),
+            textToSpeechWithMeta: async () => ({ buffer: Buffer.from('fake-ogg') }),
+            sendVoiceTelegram: async () => ({}),
+            writeAudioFile: (file) => writes.push(file),
+            now: () => NOW,
+        },
+    } });
+    let published;
+    const result = require('../cron').tickIfDue({
+        pipelineDir: path.join(a.dir, '.pipeline'),
+        cfgRoot: { ...root, model_value_audit: { ...root.model_value_audit, enabled: true, registrar: false, publish: 'telegram-plain' } },
+        stateFile: path.join(a.dir, 'state.json'),
+        now: NOW,
+        run: () => a.ctx.report,
+        publish: (proposal, ctx) => {
+            published = pt.publish(proposal, { ...ctx, deps: a.ctx.deps });
+            return published;
+        },
+    });
+    assert.equal(result.published, true);
+    assert.deepEqual(await published.audioTask, { audio: 'enviado' });
+    assert.equal(writes.length, 1);
+    assert.equal(path.dirname(writes[0]), path.join(a.dir, '.pipeline', 'audio', 'notifications'));
+    const relative = path.relative(a.dir, writes[0]).replace(/\\/g, '/');
+    assert.equal(relative.includes('.pipeline/.pipeline/'), false);
+    const ignored = require('node:child_process').spawnSync('git', ['check-ignore', '-v', relative], { cwd: repoRoot, encoding: 'utf8', timeout: 10000 });
+    assert.equal(ignored.status, 0, ignored.stderr);
+    t.diagnostic(`audio_root=${root.deliverable_notifications.audio_root}; OGG=${relative}`);
+    t.diagnostic(ignored.stdout.trim());
+});
+
 test('(a) SEC-12 · el JSON escrito tiene plain===true, disable_web_page_preview===true y NO tiene parse_mode/chat_id/reply_markup/voice', () => {
     const a = armar(fixture());
     const res = pt.publish(a.proposal, a.ctx);
@@ -384,12 +423,8 @@ test('renderMessage · sin subir/bajar (sólo precios) no agrega la advertencia 
 
 test('P5 · defaultQueueDir resuelve servicios/telegram/pendiente vía write-target con PIPELINE_DIR_OVERRIDE', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mva-wt-'));
-    const prev = process.env.PIPELINE_DIR_OVERRIDE;
-    process.env.PIPELINE_DIR_OVERRIDE = dir;
-    try {
+    return withEnv({ PIPELINE_DIR_OVERRIDE: dir }, () => {
         assert.equal(pt.defaultQueueDir(), path.join(dir, 'servicios', 'telegram', 'pendiente'));
         assert.equal(pt.SUFFIX, 'model-value-audit.json');
-    } finally {
-        if (prev === undefined) delete process.env.PIPELINE_DIR_OVERRIDE; else process.env.PIPELINE_DIR_OVERRIDE = prev;
-    }
+    });
 });
