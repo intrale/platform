@@ -618,6 +618,26 @@
       "via": "writeTarget.writeDir"
     },
     {
+      "modulo": "lib/model-value-audit/cron.js",
+      "funcion": "defaultStateFile",
+      "linea": 95,
+      "canal": "estado",
+      "destino": "state/model-value-audit-cron.json",
+      "tier": 3,
+      "estado": "migrado",
+      "via": "writeTarget.writeDir"
+    },
+    {
+      "modulo": "lib/model-value-audit/publish-telegram.js",
+      "funcion": "root",
+      "linea": 204,
+      "canal": "colas",
+      "destino": "servicios/telegram/pendiente",
+      "tier": 3,
+      "estado": "migrado",
+      "via": "writeTarget.writeDir"
+    },
+    {
       "modulo": "lib/multi-provider-coverage/api.js",
       "funcion": "PIPELINE_ROOT",
       "linea": 44,

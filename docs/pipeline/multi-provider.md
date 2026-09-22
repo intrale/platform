@@ -27,6 +27,7 @@
 17. [Plan de rollback — re-alta de un proveedor dado de baja (#6563)](#17-plan-de-rollback--re-alta-de-un-proveedor-dado-de-baja-6563) — cómo volver a habilitar un proveedor retirado con excepción temporal, nunca "para siempre".
 18. [Techo de cuota contratada por proveedor (#6559)](#18-techo-de-cuota-contratada-por-proveedor-6559) — el haber del libro contable: `plan`/`periodo`/`techo`/`unidad`/`reposicion` por proveedor activo, guardrail fail-closed en el boot y lectura programática para saldo y ritmo (#6560).
 19. [Saldo, ritmo y proyección de agotamiento de cuota (#6560)](#19-saldo-ritmo-y-proyección-de-agotamiento-de-cuota-6560) — el balance del libro contable: ledger de muestras, fórmula única (`computeQuotaBalance`), `/api/dash/quota-balance` y las cuatro series derivadas para el auditor (#6809).
+20. [Auditor calidad-precio por agente (#6793)](#20-auditor-calidad-precio-por-agente-6793) — corrida semanal desde el Pulpo, veredicto cerrado por skill, como máximo un mensaje por corrida; nunca cambia un modelo solo.
 
 > **Convención:** todos los paths `.pipeline/...` son relativos a la raíz del repo (`C:\Workspaces\Intrale\platform\`). Todos los comandos asumen Node.js 21 disponible en PATH.
 
@@ -4115,3 +4116,15 @@ Valores fuera de tipo/rango caen al default y se avisan en el log de lanzamiento
 - **Issues de mejora futura:** [#3197](https://github.com/intrale/platform/issues/3197) (auto-gen tablas).
 - **Issues cerrados relevantes:** [#3198](https://github.com/intrale/platform/issues/3198) (consumer runtime de fallbacks, mergeado 2026-05-15 — ver §2.3).
 - **Épico multi-provider end-to-end (#3791):** [#4401](https://github.com/intrale/platform/issues/4401) (smoke CLI + candado free-only), [#4402](https://github.com/intrale/platform/issues/4402) (health honesto OAuth), [#4403](https://github.com/intrale/platform/issues/4403) (telemetría `provider-cost.jsonl`), [#4404](https://github.com/intrale/platform/issues/4404) (failover + data-residency), [#4405](https://github.com/intrale/platform/issues/4405) (esta doc operativa — §14).
+
+## 20. Auditor calidad-precio por agente (#6793)
+
+Doc completa: [`docs/pipeline/model-value-audit.md`](model-value-audit.md). Resumen operativo:
+
+- **Qué hace**: cada `cadence_days` (7) el Pulpo corre `lib/model-value-audit` sobre los últimos `window_days` (≥ 30) y emite por skill `subir de modelo` / `bajar de modelo` / `mantener` / `sin evidencia suficiente` / `no evaluable`, con evidencia numérica. **Marca, no ejecuta**: nunca edita `agent-models.json`.
+- **Cómo avisa**: como máximo **un** mensaje de Telegram por corrida (texto plano + narración), y sólo si hay un `subir`/`bajar` o un hallazgo de precios (tabla vencida o modelo sin precio, #7507). Todo `mantener` con precios al día ⇒ silencio explicado en `pulpo.log` (`model-value`).
+- **Config**: sección `model_value_audit` de `config.yaml`, fail-closed (`enabled: false` de fábrica; sólo `true` exacto enciende). `enabled`/`registrar`/`publish`/`protected_skills` son de autoridad (sin override por entorno). Schema estricto: `window_days` mínimo 30, umbrales en `[0, 1]`, `publish ∈ {telegram-plain, registry, none}`.
+- **Escrituras**: sólo `state/model-value-audit-cron.json` (cadencia) y, con `registrar: true`, `audit/model-value-audit.jsonl` (append-only con hash-chain). Ambas vía `write-target`.
+- **Reproducir a mano**: `node .pipeline/scripts/model-value-report.js --dias=30 --hasta=YYYY-MM-DD` (el mensaje cita el comando exacto y `ref <hash8>` de su evidencia).
+- **Dependencias abiertas**: #7507 (precios de `claude-opus-5`), #7506 (costo con caché), #7508 (integridad de las fuentes secundarias), #6807 (registro único de propuestas ⇒ adaptador `registry` y dedup).
+- **Apagar**: `enabled: false` en archivo (≤ 1 h sin restart); sólo el audio: `audio_policy.by_event.model_value_audit: false` en `pipeline.config.json`.
