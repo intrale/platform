@@ -39,6 +39,7 @@
 // =============================================================================
 'use strict';
 
+const fs = require('node:fs');
 const path = require('path');
 const crypto = require('crypto');
 
@@ -46,7 +47,9 @@ const backend = require('./operational-state-backend');
 const { withLockSync } = require('./file-lock');
 const { detectInjection } = require('./handoff');
 const { redactObject } = require('./redact');
-const { canonicalJsonStringify } = require('./audit-log');
+const auditLog = require('./audit-log');
+const { canonicalJsonStringify } = auditLog;
+const { stateDir } = require('./project-context');
 
 const MODULO = 'propuestas-registry';
 const SCHEMA_FILE = path.join(__dirname, '..', 'contracts', 'propuesta.schema.json');
@@ -74,11 +77,30 @@ const TIPOS = Object.freeze([
 const ESTADOS = Object.freeze(['pendiente', 'aceptada', 'aceptada-con-agregado', 'rechazada']);
 
 /**
- * Previstos para la parte 3 (#7516, `decidir()`): quedan vacíos a propósito
- * para que completarlos no cambie la firma pública del módulo.
+ * Transiciones que admite `decidir()` (parte 3, #7516). Alineadas con #6810:
+ * son estas tres y NO existe `postergar` (ajuste del operador en #6807).
  */
-const DECISIONES = Object.freeze([]);
-const CANALES = Object.freeze([]);
+const DECISIONES = Object.freeze(['aceptar', 'aceptar-con-agregado', 'rechazar']);
+
+/** Superficies por las que el operador puede decidir. Valores, no presentación. */
+const CANALES = Object.freeze(['telegram', 'dashboard', 'cli']);
+
+/**
+ * Identidades del decisor (NO roles del pipeline). Es un enum CERRADO y
+ * AUTODECLARADO por el caller: el registro no autentica a nadie. Autenticar al
+ * operador es obligación del caller (#6810) — mismo reparto que
+ * `partial-pause-audit.js`, donde el gate real es `requireAuthorization()`
+ * aguas arriba. Lo que el registro sí garantiza es que cada entry del log
+ * lleve `actor_proceso`, que el caller no puede falsificar (SEC-7516-4).
+ */
+const AUTHORIZED_BY = Object.freeze(['operador:telegram', 'operador:dashboard', 'operador:cli']);
+
+/** Transición → estado persistido en `memoria`. */
+const ESTADO_FINAL_DE = Object.freeze({
+    aceptar: 'aceptada',
+    'aceptar-con-agregado': 'aceptada-con-agregado',
+    rechazar: 'rechazada',
+});
 
 const MOTIVOS_RECHAZO = Object.freeze([
     'productor_desconocido',
@@ -93,6 +115,15 @@ const MOTIVOS_RECHAZO = Object.freeze([
     'registro_lleno',
     'store_degradado',
     'escritura_rechazada',
+    // — propios de `decidir()` (#7516). `ya_decidida`, `inyeccion_detectada`,
+    //   `store_degradado` y `escritura_rechazada` se reutilizan tal cual.
+    'decision_invalida',
+    'authorized_by_invalido',
+    'canal_invalido',
+    'agregado_requerido',
+    'propuesta_inexistente',
+    'id_invalido',
+    'decision_no_aplicada',
 ]);
 
 /**
@@ -107,6 +138,12 @@ const CAMPOS_HASH = Object.freeze(['productor', 'tipo', 'accion', 'evidencia.tip
 
 const SCHEMA_VERSION = 1;
 const ID_HEX_LEN = 24;
+/** Forma del `id` que acepta `decidir()`, coherente con `ID_HEX_LEN` (SEC-7516-5). */
+const RE_ID = new RegExp(`^[0-9a-f]{${ID_HEX_LEN}}$`);
+/** Claves admitidas en el argumento de `decidir()` (allowlist, no denylist). */
+const CLAVES_DECIDIR = new Set(['id', 'decision', 'authorizedBy', 'canal', 'agregado']);
+/** Nombre del archivo del log encadenado de decisiones. */
+const LOG_DECISIONES = 'propuestas-decisiones.jsonl';
 
 // Caps (SEC-B / SEC-7515-4). El crudo se mide ANTES de cualquier regex.
 const MAX_BYTES_CRUDO = 64 * 1024;
@@ -696,9 +733,354 @@ function listarPendientes(filtro) {
     return { ok: true, items };
 }
 
+
+// ─── Log encadenado de decisiones (#7516) ───────────────────────────────────
+
+/**
+ * Path del log append-only de decisiones. Es una FUNCIÓN y no una constante de
+ * módulo a propósito: `stateDir()` depende del entorno del proceso (namespace
+ * de proyecto, `PIPELINE_DIR_OVERRIDE` de los tests) y evaluarlo en el
+ * `require` lo congelaría en el valor del arranque.
+ * @returns {string}
+ */
+function logDecisiones() {
+    return path.join(stateDir(), 'audit', LOG_DECISIONES);
+}
+
+/** Líneas no vacías del log. Nunca tira: un log ausente o ilegible es `[]`. */
+function lineasDelLog(file) {
+    try {
+        if (!fs.existsSync(file)) return [];
+        return fs.readFileSync(file, 'utf8').split('\n').filter((l) => l.trim().length > 0);
+    } catch {
+        return [];
+    }
+}
+
+/**
+ * Próximo `seq`: contiguo desde 1 sobre la cantidad de líneas. Se calcula
+ * DENTRO del lock del registro, que es el que serializa todos los `decidir()`
+ * del host, así que no hay dos procesos pidiendo el mismo número.
+ */
+function siguienteSeq(file) {
+    return lineasDelLog(file).length + 1;
+}
+
+/** `seq` de cada línea (o `null` si la línea no parsea). PURA, sin throw. */
+function leerSeqs(file) {
+    return lineasDelLog(file).map((l) => {
+        try {
+            const o = JSON.parse(l);
+            return Number.isInteger(o && o.seq) ? o.seq : null;
+        } catch {
+            return null;
+        }
+    });
+}
+
+/** ¿Alguna línea del log menciona ese hash (como `hash_self` o como `ref_hash`)? */
+function hashPresenteEnLog(file, hash) {
+    return lineasDelLog(file).some((l) => l.indexOf(hash) !== -1);
+}
+
+/**
+ * Aplica la transición de estado de una propuesta viva. Única superficie de
+ * decisión: `publicar()` no puede escribir `estado` ni mover nada a `memoria`.
+ *
+ * Nunca tira: siempre devuelve `{ok:true, ...}` o `{ok:false, motivo, detalle}`
+ * (mismo contrato que `publicar()`, CA-11 de #7515).
+ *
+ * Orden ESTRICTO:
+ *   (a) forma del argumento, enums, coherencia `authorizedBy`↔`canal`, forma
+ *       del `id`, `agregado` obligatorio para `aceptar-con-agregado`, inyección
+ *       sobre el `agregado` (dos variantes de Cf), cap de bytes y redacción.
+ *       Nada de esto toca el store ni el log.
+ *   (b) bajo el lock del registro: precondición contra el estado REAL y append
+ *       de la decisión al log encadenado. El log va PRIMERO: una decisión que
+ *       el store no llegó a aplicar queda registrada; una que el log no
+ *       registró no se aplica.
+ *   (c) recién después el write al store, re-validando la precondición en cada
+ *       reintento. Si otro proceso ganó la carrera, se aborta con una entry de
+ *       compensación y NO se re-appendea la decisión.
+ *
+ * Orden de locks SIEMPRE `propuestas` → log de decisiones (nunca al revés).
+ *
+ * @param {{id: string, decision: string, authorizedBy: string, canal: string, agregado?: string}} args
+ * @returns {object}
+ */
+function decidir(args) {
+    // (a0) — forma del argumento. Mismas guardas que el paso 0 de `publicar()`.
+    if (!args || typeof args !== 'object' || Array.isArray(args)) {
+        return rechazo('schema_invalido', 'el argumento debe ser un objeto');
+    }
+    if (tieneClaveProhibida(args)) {
+        console.warn(`[${MODULO}] schema_invalido: clave_prohibida en decidir()`);
+        return rechazo('schema_invalido', 'clave_prohibida');
+    }
+    for (const k of Object.keys(args)) {
+        if (!CLAVES_DECIDIR.has(k)) {
+            return rechazo('schema_invalido', `clave desconocida: ${claveLogueable(k)}`);
+        }
+    }
+
+    // (a1) — enums y forma del id, ANTES de tocar el store (SEC-7516-5).
+    const id = typeof args.id === 'string' ? args.id : '';
+    if (!RE_ID.test(id)) {
+        return rechazo('id_invalido', `el id debe tener ${ID_HEX_LEN} caracteres hexadecimales`);
+    }
+    if (!DECISIONES.includes(args.decision)) {
+        return rechazo('decision_invalida', `decision debe ser una de: ${DECISIONES.join(', ')}`);
+    }
+    if (!AUTHORIZED_BY.includes(args.authorizedBy)) {
+        console.warn(`[${MODULO}] authorized_by_invalido canal=${claveLogueable(args.canal)}`);
+        return rechazo('authorized_by_invalido', `authorizedBy debe ser una de: ${AUTHORIZED_BY.join(', ')}`);
+    }
+    if (!CANALES.includes(args.canal)) {
+        return rechazo('canal_invalido', `canal debe ser uno de: ${CANALES.join(', ')}`);
+    }
+    if (args.authorizedBy.split(':')[1] !== args.canal) {
+        return rechazo('canal_invalido', 'el canal no coincide con la identidad declarada en authorizedBy');
+    }
+    if (args.agregado != null && typeof args.agregado !== 'string') {
+        return rechazo('schema_invalido', 'agregado debe ser texto');
+    }
+    if (args.decision === 'aceptar-con-agregado' && !String(args.agregado == null ? '' : args.agregado).trim()) {
+        return rechazo('agregado_requerido', 'aceptar-con-agregado exige un agregado no vacío');
+    }
+
+    // (a2) — agregado: canonicalizar → inyección (dos variantes de Cf) → cap →
+    // redactar. Al log NUNCA entra el crudo (SEC-7516-1): el log es append-only
+    // encadenado y borrar una línea rompería todo lo posterior.
+    let agregado = null;
+    if (args.agregado != null) {
+        const canonico = canonicalizar({ agregado: args.agregado });
+        const comoEspacio = canonicalizar({ agregado: args.agregado }, { cfComoEspacio: true });
+        for (const { path: campo, texto } of [...textosDe(canonico), ...textosDe(comoEspacio)]) {
+            const { hits } = detectInjection(texto);
+            if (hits.length > 0) {
+                console.warn(`[${MODULO}] inyeccion_detectada campo=${campo} patron=${JSON.stringify(hits[0])}`);
+                return rechazo('inyeccion_detectada', `patrón de inyección en ${campo}`, { campo });
+            }
+        }
+        if (bytesDe(canonico.agregado) > MAX_BYTES_POR_STRING) {
+            return rechazo('schema_invalido', `agregado supera ${MAX_BYTES_POR_STRING} bytes`);
+        }
+        agregado = redactObject(canonico).agregado;
+    }
+
+    const ahora = new Date().toISOString();
+    const estadoFinal = ESTADO_FINAL_DE[args.decision];
+
+    let lockPath;
+    try {
+        lockPath = backend.fileFor(backend.KEYS.PROPUESTAS);
+    } catch (err) {
+        return rechazo('store_degradado', err.message);
+    }
+
+    const ciclo = () => {
+        // (b0) — precondición contra el estado REAL, no contra lo que crea el caller.
+        const lectura = leer();
+        if (!lectura.ok) {
+            return rechazo('store_degradado', (lectura.error && lectura.error.message) || 'registro ilegible');
+        }
+        const viva = lectura.value.vivas.find((v) => v && v.id === id);
+        if (!viva) {
+            const previa = buscarEnMemoria(lectura.value.memoria, id);
+            if (previa) {
+                return {
+                    ...rechazo('ya_decidida', `la propuesta ya fue decidida (${previa.estado_final})`),
+                    ya_decidida: true,
+                    id,
+                    estado_final: previa.estado_final || null,
+                    decidido_en: previa.decidido_en || null,
+                };
+            }
+            return rechazo('propuesta_inexistente', 'no hay ninguna propuesta viva con ese id');
+        }
+
+        let file;
+        try {
+            file = logDecisiones();
+        } catch (err) {
+            return rechazo('store_degradado', `log de decisiones no resoluble: ${err && err.message}`);
+        }
+
+        // (b) — el log PRIMERO. `appendChained` es fail-closed: si no toma su
+        // lock, TIRA. Se captura y se traduce: de `decidir()` no sale un throw.
+        const entry = {
+            timestamp: ahora,
+            seq: siguienteSeq(file),
+            id,
+            decision: args.decision,
+            estado_final: estadoFinal,
+            // Autodeclarado por el caller — NO es autenticación (ver `AUTHORIZED_BY`).
+            authorized_by: args.authorizedBy,
+            canal: args.canal,
+            // Contexto NO falsificable por el caller (SEC-7516-4).
+            actor_proceso: {
+                pid: process.pid,
+                projectId: require('./project-context').currentProjectIdOrNull(),
+                skill: String(process.env.PIPELINE_SKILL || '') || null,
+            },
+            agregado,
+            productor: viva.productor || null,
+            sensible: viva.sensible === true,
+        };
+        let firma;
+        try {
+            firma = auditLog.appendChained({ file, entry });
+        } catch (err) {
+            console.warn(`[${MODULO}] store_degradado: log de decisiones no disponible`);
+            return rechazo('store_degradado', `log de decisiones no disponible: ${err && err.message}`);
+        }
+
+        /**
+         * La decisión quedó en el log pero no se aplicó al store: se appendea UNA
+         * entry de compensación que la referencia (SEC-7516-8) y se devuelve un
+         * resultado distinguible (`decision_registrada: true`).
+         */
+        const compensar = (motivo, detalle) => {
+            try {
+                auditLog.appendChained({
+                    file,
+                    entry: {
+                        timestamp: new Date().toISOString(),
+                        seq: siguienteSeq(file),
+                        tipo: 'decision_no_aplicada',
+                        ref_hash: firma.hash_self,
+                        motivo,
+                        id,
+                    },
+                });
+            } catch (err) {
+                return rechazo('store_degradado', `compensación no registrada: ${err && err.message}`,
+                    { decision_registrada: true, hash_self: firma.hash_self, id });
+            }
+            return rechazo(motivo, detalle, { decision_registrada: true, hash_self: firma.hash_self, id });
+        };
+
+        // (c) — write al store. Cada reintento RE-VALIDA la precondición: al
+        // releer, otro proceso pudo haber movido el mismo id a `memoria`.
+        let ultimo = null;
+        for (let intento = 1; intento <= MAX_REINTENTOS_CONFLICT; intento++) {
+            const l = intento === 1 ? lectura : leer();
+            if (!l.ok) {
+                return compensar('store_degradado', (l.error && l.error.message) || 'registro ilegible');
+            }
+            const fuente = l.value.vivas.find((v) => v && v.id === id);
+            if (!fuente || buscarEnMemoria(l.value.memoria, id)) {
+                return compensar('ya_decidida', 'otra decisión sobre el mismo id ganó la carrera antes del write');
+            }
+            const nuevo = {
+                // Ancla cruzada store↔log (SEC-7516-3 ii): permite detectar una
+                // truncación por la cola del log, que el hash chain solo no ve.
+                meta: { ...l.value.meta, ultimo_hash_decision: firma.hash_self },
+                vivas: l.value.vivas.filter((v) => !(v && v.id === id)),
+                memoria: l.value.memoria.concat([{
+                    id,
+                    clave_dedup: fuente.clave_dedup || id,
+                    estado_final: estadoFinal,
+                    decidido_en: ahora,
+                    // `productor` + `creada_en` son de la CUOTA (CA-PO-3 / SEC-7515-8),
+                    // `sensible` es un bit de POLÍTICA (SEC-7516-7). Ninguno es cuerpo.
+                    productor: fuente.productor,
+                    creada_en: fuente.creada_en,
+                    sensible: fuente.sensible === true,
+                }]),
+            };
+            const res = escribir(nuevo, l.version);
+            if (res && res.ok) {
+                return {
+                    ok: true,
+                    id,
+                    estado_final: estadoFinal,
+                    decidido_en: ahora,
+                    sensible: fuente.sensible === true,
+                    // El agregado NO se persiste en `memoria`: vive en el log y
+                    // viaja al caller por este retorno.
+                    agregado,
+                    hash_self: firma.hash_self,
+                };
+            }
+            ultimo = res;
+            if (!(res && res.conflict)) break;
+        }
+        const msg = (ultimo && ultimo.error && ultimo.error.message)
+            || (ultimo && ultimo.conflict ? 'conflicto de versión persistente' : 'motivo desconocido');
+        console.warn(`[${MODULO}] decision_no_aplicada id=${id}: ${msg}`);
+        return compensar('decision_no_aplicada', msg);
+    };
+
+    try {
+        return withLockSync(lockPath, ciclo, {
+            component: `${MODULO}-lock`,
+            timeoutMs: LOCK_TIMEOUT_MS,
+            maxRetries: LOCK_MAX_RETRIES,
+        });
+    } catch (err) {
+        console.warn(`[${MODULO}] lock no adquirido: ${err && err.message}`);
+        return rechazo('store_degradado', `lock no adquirido: ${err && err.message}`);
+    }
+}
+
+/**
+ * Integridad del log de decisiones. NO es un alias de `verifyChain`: el hash
+ * chain detecta ALTERACIÓN pero no TRUNCACIÓN por la cola (al releer, la cadena
+ * re-ancla desde la última línea sobreviviente y queda coherente). Se cierra
+ * con dos señales extra, sin tocar `audit-log.js`:
+ *   - `seq` contiguo desde 1;
+ *   - ancla cruzada: `meta.ultimo_hash_decision` del store tiene que estar en el log.
+ *
+ * @returns {{ok:boolean, entriesChecked:number, motivo:string|null, brokenAt?:number, reason?:string}}
+ */
+function verificarCadenaDecisiones() {
+    let file;
+    try {
+        file = logDecisiones();
+    } catch (err) {
+        return { ok: false, entriesChecked: 0, motivo: 'no_resoluble', reason: (err && err.message) || 'path no resoluble' };
+    }
+    let base;
+    try {
+        base = auditLog.verifyChain(file);
+    } catch (err) {
+        return { ok: false, entriesChecked: 0, motivo: 'alterado', reason: (err && err.message) || 'cadena ilegible' };
+    }
+    if (!base.ok) return { ...base, motivo: 'alterado' };
+
+    const seqs = leerSeqs(file);
+    for (let i = 0; i < seqs.length; i++) {
+        if (seqs[i] !== i + 1) {
+            return {
+                ok: false,
+                entriesChecked: i,
+                brokenAt: i,
+                motivo: 'truncado',
+                reason: `seq ${String(seqs[i])} en la posición ${i + 1}`,
+            };
+        }
+    }
+
+    const ancla = leer();
+    const ultimo = ancla.ok && ancla.value.meta ? ancla.value.meta.ultimo_hash_decision : null;
+    if (typeof ultimo === 'string' && ultimo && !hashPresenteEnLog(file, ultimo)) {
+        return {
+            ok: false,
+            entriesChecked: seqs.length,
+            motivo: 'truncado',
+            reason: 'el store ancla un hash de decisión que no está en el log',
+        };
+    }
+    return { ok: true, entriesChecked: seqs.length, motivo: null };
+}
+
 module.exports = {
     publicar,
     listarPendientes,
+    decidir,
+    verificarCadenaDecisiones,
+    logDecisiones,
     claveDedup,
     // Puras para tests de contrato:
     canonicalizar,
@@ -712,6 +1094,8 @@ module.exports = {
     ESTADOS,
     DECISIONES,
     CANALES,
+    AUTHORIZED_BY,
+    ESTADO_FINAL_DE,
     MOTIVOS_RECHAZO,
     CAMPOS_HASH,
     SCHEMA_VERSION,
