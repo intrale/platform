@@ -144,6 +144,50 @@ rechazada`); el del body original de #6807 es su sinónimo histórico y **no** a
 **No existe `postergar` / `postergada`** (ajuste del operador, 01/09/2026): no decidir deja la
 propuesta en `pendiente`, que ya es toda la información que aportaba postergar.
 
+## Vocabulario del operador (los tres canales dicen lo mismo)
+
+El registro es agnóstico de canal, pero el operador es **uno solo**. Estas etiquetas son
+obligatorias para cualquier caller; no se traducen, no se abrevian y no se reemplazan
+por sinónimos.
+
+| Valor del enum | Etiqueta única para el operador |
+|---|---|
+| `aceptar` | Aceptar |
+| `aceptar-con-agregado` | Aceptar con un agregado |
+| `rechazar` | Rechazar |
+| `agregado` | "agregado" (nunca "comentario", "nota" ni "observación") |
+| `estado_final: aceptada` | Aceptada |
+| `estado_final: aceptada-con-agregado` | Aceptada con agregado |
+| `estado_final: rechazada` | Rechazada |
+
+## Qué ve el operador cuando algo falla
+
+`decidir()` nunca tira: siempre devuelve `{ok:false, motivo, detalle}`. La mitad de esos
+motivos son **errores de integración del caller** y el operador no tiene que enterarse.
+
+| Motivo | ¿Se le muestra al operador? | Qué pasó, en llano | Qué hace el caller |
+|---|---|---|---|
+| `schema_invalido`, `id_invalido`, `decision_invalida`, `authorized_by_invalido`, `canal_invalido` | **No** | El caller armó mal la llamada | Loguear y alertar al equipo. La propuesta sigue pendiente y el operador no ve nada |
+| `agregado_requerido` | Sí | Eligió aceptar con un agregado y no escribió texto | Volver a pedir el texto **sin perder** la decisión ya elegida |
+| `propuesta_inexistente` | Sí | Esa propuesta ya no está en el registro | Avisar y refrescar la lista de pendientes |
+| `ya_decidida` | Sí | Alguien —u otro canal— ya la decidió | Informar el `estado_final` y **no** volver a preguntar |
+| `inyeccion_detectada` | Sí | El agregado trae un patrón que el registro no admite | Pedir que lo reescriba, sin tratarlo como culpa del operador |
+| `store_degradado`, `escritura_rechazada` | Sí | Problema del sistema: la decisión **no** quedó registrada | Avisar que reintente más tarde. La propuesta sigue pendiente |
+| `decision_no_aplicada` (con `decision_registrada: true`) | Sí | La decisión **sí** quedó asentada en el historial, pero no se aplicó al registro | Informar que quedó registrada, **no** volver a preguntar lo mismo, y escalar al equipo |
+
+## Nadie decide a ciegas
+
+Para una propuesta `sensible` el **aviso** que viaja por el canal privado lleva sólo
+`titulo` + `id`. Ese recorte aplica al aviso, **no** a la superficie donde se decide:
+antes de ofrecer las tres opciones, el caller lee la propuesta completa con
+`listarPendientes()` —ya está en la sesión autenticada— y muestra `evidencia`,
+`beneficio`, `costo` y `riesgo`.
+
+Importa porque `forzarSensible()` marca como sensibles justamente `tipo: 'riesgo'` y las
+recomendaciones de `security`: las propuestas que **más** contexto necesitan para
+decidirse son las que llegan recortadas al aviso. Decidir viendo sólo un título es un
+defecto de producto, no una medida de seguridad.
+
 ## Pipeline de `decidir()` — orden estricto
 
 El orden importa y es parte del contrato: **el log va antes que el store**. Una decisión que el store
