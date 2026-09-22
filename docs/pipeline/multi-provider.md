@@ -27,7 +27,8 @@
 17. [Plan de rollback — re-alta de un proveedor dado de baja (#6563)](#17-plan-de-rollback--re-alta-de-un-proveedor-dado-de-baja-6563) — cómo volver a habilitar un proveedor retirado con excepción temporal, nunca "para siempre".
 18. [Techo de cuota contratada por proveedor (#6559)](#18-techo-de-cuota-contratada-por-proveedor-6559) — el haber del libro contable: `plan`/`periodo`/`techo`/`unidad`/`reposicion` por proveedor activo, guardrail fail-closed en el boot y lectura programática para saldo y ritmo (#6560).
 19. [Saldo, ritmo y proyección de agotamiento de cuota (#6560)](#19-saldo-ritmo-y-proyección-de-agotamiento-de-cuota-6560) — el balance del libro contable: ledger de muestras, fórmula única (`computeQuotaBalance`), `/api/dash/quota-balance` y las cuatro series derivadas para el auditor (#6809).
-20. [Panel de saldo y ritmo de cuota por proveedor en el dashboard (#6565)](#20-panel-de-saldo-y-ritmo-de-cuota-por-proveedor-en-el-dashboard-6565) — el correlato visual del libro contable en el home: techo, consumo, saldo, ritmo, proyección y excedente por proveedor, hidratados sólo desde `/api/dash/quota-balance`.
+20. [Auditor calidad-precio por agente (#6793)](#20-auditor-calidad-precio-por-agente-6793) — corrida semanal desde el Pulpo, veredicto cerrado por skill, como máximo un mensaje por corrida; nunca cambia un modelo solo.
+21. [Panel de saldo y ritmo de cuota por proveedor en el dashboard (#6565)](#21-panel-de-saldo-y-ritmo-de-cuota-por-proveedor-en-el-dashboard-6565) — el correlato visual del libro contable en el home: techo, consumo, saldo, ritmo, proyección y excedente por proveedor, hidratados sólo desde `/api/dash/quota-balance`.
 
 > **Convención:** todos los paths `.pipeline/...` son relativos a la raíz del repo (`C:\Workspaces\Intrale\platform\`). Todos los comandos asumen Node.js 21 disponible en PATH.
 
@@ -3919,14 +3920,42 @@ tiempos van en UTC (`*_at`) y como delta (`*_en_ms`); la presentación (#6565) f
 
 ---
 
-## 20. Panel de saldo y ritmo de cuota por proveedor en el dashboard (#6565)
+## Apéndice — links rápidos
+
+- **Código:** [`.pipeline/agent-models.json`](../../.pipeline/agent-models.json), [`.pipeline/agent-models.schema.json`](../../.pipeline/agent-models.schema.json), [`.pipeline/lib/agent-models-validate.js`](../../.pipeline/lib/agent-models-validate.js), [`.pipeline/validate-agent-models.js`](../../.pipeline/validate-agent-models.js), [`.pipeline/lib/multi-provider/`](../../.pipeline/lib/multi-provider/), [`.pipeline/lib/quota-adapters/`](../../.pipeline/lib/quota-adapters/), [`.pipeline/lib/agent-launcher/`](../../.pipeline/lib/agent-launcher/).
+- **Techo de cuota por proveedor (#6559):** [`.pipeline/lib/multi-provider/validate-quota-ceilings.js`](../../.pipeline/lib/multi-provider/validate-quota-ceilings.js) (validador puro + CLI + `getQuotaCeiling`), sección `multi_provider.quota` de [`.pipeline/config.yaml`](../../.pipeline/config.yaml), schema en [`.pipeline/lib/config-schema.js`](../../.pipeline/lib/config-schema.js) — ver §18.
+- **Saldo, ritmo y proyección (#6560):** [`.pipeline/lib/multi-provider/quota-balance.js`](../../.pipeline/lib/multi-provider/quota-balance.js) (fórmula pura), [`quota-ledger.js`](../../.pipeline/lib/multi-provider/quota-ledger.js) (serie persistida + lectores), [`quota-series.js`](../../.pipeline/lib/multi-provider/quota-series.js) (series derivadas), slice `quotaBalanceSlice` en [`dashboard-slices.js`](../../.pipeline/lib/dashboard-slices.js) → `GET /api/dash/quota-balance` — ver §19.
+- **Panel de saldo y ritmo (#6565):** `renderSystemQuotaPanel` / `_mzBalanceCells` / `_mzHydrateBalanceRow` en [`.pipeline/views/dashboard/home.js`](../../.pipeline/views/dashboard/home.js), harness [`.pipeline/tools/render-quota-balance-evidence-6565.js`](../../.pipeline/tools/render-quota-balance-evidence-6565.js) — ver §21.
+- **Diseño y decisiones:** [`docs/pipeline-multi-provider.md`](../pipeline-multi-provider.md) (1140 líneas, design doc v2).
+- **Permission mapping (capabilities cross-provider):** [`docs/pipeline-multi-provider/permission-mapping.md`](../pipeline-multi-provider/permission-mapping.md).
+- **Data residency / exclusiones:** [`docs/pipeline-multi-provider/data-residency.md`](../pipeline-multi-provider/data-residency.md).
+- **Issue de esta doc:** [#3176](https://github.com/intrale/platform/issues/3176).
+- **Issues de mejora futura:** [#3197](https://github.com/intrale/platform/issues/3197) (auto-gen tablas).
+- **Issues cerrados relevantes:** [#3198](https://github.com/intrale/platform/issues/3198) (consumer runtime de fallbacks, mergeado 2026-05-15 — ver §2.3).
+- **Épico multi-provider end-to-end (#3791):** [#4401](https://github.com/intrale/platform/issues/4401) (smoke CLI + candado free-only), [#4402](https://github.com/intrale/platform/issues/4402) (health honesto OAuth), [#4403](https://github.com/intrale/platform/issues/4403) (telemetría `provider-cost.jsonl`), [#4404](https://github.com/intrale/platform/issues/4404) (failover + data-residency), [#4405](https://github.com/intrale/platform/issues/4405) (esta doc operativa — §14).
+
+## 20. Auditor calidad-precio por agente (#6793)
+
+Doc completa: [`docs/pipeline/model-value-audit.md`](model-value-audit.md). Resumen operativo:
+
+- **Qué hace**: cada `cadence_days` (7) el Pulpo corre `lib/model-value-audit` sobre los últimos `window_days` (≥ 30) y emite por skill `subir de modelo` / `bajar de modelo` / `mantener` / `sin evidencia suficiente` / `no evaluable`, con evidencia numérica. **Marca, no ejecuta**: nunca edita `agent-models.json`.
+- **Cómo avisa**: como máximo **un** mensaje de Telegram por corrida (texto plano + narración), y sólo si hay un `subir`/`bajar` o un hallazgo de precios (tabla vencida o modelo sin precio, #7507). Todo `mantener` con precios al día ⇒ silencio explicado en `pulpo.log` (`model-value`).
+- **Config**: sección `model_value_audit` de `config.yaml`, fail-closed (`enabled: false` de fábrica; sólo `true` exacto enciende). `enabled`/`registrar`/`publish`/`protected_skills` son de autoridad (sin override por entorno). Schema estricto: `window_days` mínimo 30, umbrales en `[0, 1]`, `publish ∈ {telegram-plain, registry, none}`.
+- **Escrituras**: sólo `state/model-value-audit-cron.json` (cadencia) y, con `registrar: true`, `audit/model-value-audit.jsonl` (append-only con hash-chain). Ambas vía `write-target`.
+- **Reproducir a mano**: `node .pipeline/scripts/model-value-report.js --dias=30 --hasta=YYYY-MM-DD` (el mensaje cita el comando exacto y `ref <hash8>` de su evidencia).
+- **Dependencias abiertas**: #7507 (precios de `claude-opus-5`), #7506 (costo con caché), #7508 (integridad de las fuentes secundarias), #6807 (registro único de propuestas ⇒ adaptador `registry` y dedup).
+- **Apagar**: `enabled: false` en archivo (≤ 1 h sin restart); sólo el audio: `audio_policy.by_event.model_value_audit: false` en `pipeline.config.json`.
+
+---
+
+## 21. Panel de saldo y ritmo de cuota por proveedor en el dashboard (#6565)
 
 > **Estado:** implementado (#6565, Ola E8). **Programa:** Contabilidad y balanceo de cuota por
 > proveedor (8 de 10). **Depende de:** techos (#6559, §18) y balance (#6560, §19).
 
 **Cadena del programa:** #6560 (saldo y ritmo) → **#6565 (panel)**.
 
-### 20.1 Dónde vive
+### 21.1 Dónde vive
 
 Es la sección **🔌 CUOTA POR PROVEEDOR** del home del dashboard (`renderSystemQuotaPanel`,
 `.pipeline/views/dashboard/home.js`, panel #4533). **No hay una segunda sección de cuota** (CA-4):
@@ -3943,7 +3972,7 @@ el panel existente se extiende de 3 a 4 columnas y cada proveedor pasa a ocupar 
 La ventana larga que antes se hidrataba desde `/api/dash/quota` (`weekly`) **ya no existe**: dos
 endpoints escribiendo la misma celda era exactamente "dos secciones con datos distintos".
 
-### 20.2 La vista no recalcula nada (CA-3)
+### 21.2 La vista no recalcula nada (CA-3)
 
 El cliente (`_mzHydrateBalanceRow` / `renderQuotaBalanceMatrix` en el script de `home.js`) mapea
 campos del slice a elementos y **nada más**:
@@ -3969,7 +3998,7 @@ Copy del chip por estado (contrato UX §4 — un estado = un render):
 | `desactualizado` | `⏱ Dato viejo · muestra de hace 47m` | `sin proyección` |
 | `sin_proyeccion` | `◌ Ritmo en cálculo · 1/3 muestras` | `sin proyección` |
 
-### 20.3 Fail-closed (UX-7)
+### 21.3 Fail-closed (UX-7)
 
 - Antes del primer tick las celdas del período muestran `…` atenuado (`mz-qm-nodata`), nunca `0 pts`
   ni `100 pts`.
@@ -3979,7 +4008,7 @@ Copy del chip por estado (contrato UX §4 — un estado = un render):
 - "Proveedores sanos" (`mz-sig-healthy`) cruza las dos fuentes: un proveedor es sano si su ventana
   corta no está agotada **o** el balance le deja saldo con dato real (`estado ∉ {excedido, sin_datos}`).
 
-### 20.4 Evidencia visual y QA
+### 21.4 Evidencia visual y QA
 
 Con el ledger recién creado los 3 proveedores salen `sin_datos` durante la primera hora (el ritmo
 necesita `min_muestras: 3` dentro de `ventana_movil_min: 60`). Para ver los seis estados sin esperar:
@@ -3998,26 +4027,10 @@ fixtures con el shape exacto de `balanceForProvider()`: ① panel completo con l
 Mockup y contrato UX: [`.pipeline/assets/mockups/6565/`](../../.pipeline/assets/mockups/6565/)
 (`panel-esperado-cuota.html/.png`, `ux-validacion-6565.md`).
 
-### 20.5 Tests
+### 21.5 Tests
 
 - `.pipeline/tests/quota-balance-panel-6565.test.js` — SSR (una sola sección, ventana corta intacta,
   ids nuevos), hidratación real de los seis estados con DOM falso, fail-closed, countdowns vivos,
   formateadores (`pts`/`tok`/`mensajes`/`créditos`, coma decimal es-AR), anti-recalculo (CA-3) y
   cero hex nuevos (UX-8); anti-drift del harness de evidencia.
 - `home.test.js` y `home-mz-provider-rows-4249.test.js` ajustados: `mz-qm-<id>-long-*` ya no se emite.
-
----
-
-## Apéndice — links rápidos
-
-- **Código:** [`.pipeline/agent-models.json`](../../.pipeline/agent-models.json), [`.pipeline/agent-models.schema.json`](../../.pipeline/agent-models.schema.json), [`.pipeline/lib/agent-models-validate.js`](../../.pipeline/lib/agent-models-validate.js), [`.pipeline/validate-agent-models.js`](../../.pipeline/validate-agent-models.js), [`.pipeline/lib/multi-provider/`](../../.pipeline/lib/multi-provider/), [`.pipeline/lib/quota-adapters/`](../../.pipeline/lib/quota-adapters/), [`.pipeline/lib/agent-launcher/`](../../.pipeline/lib/agent-launcher/).
-- **Techo de cuota por proveedor (#6559):** [`.pipeline/lib/multi-provider/validate-quota-ceilings.js`](../../.pipeline/lib/multi-provider/validate-quota-ceilings.js) (validador puro + CLI + `getQuotaCeiling`), sección `multi_provider.quota` de [`.pipeline/config.yaml`](../../.pipeline/config.yaml), schema en [`.pipeline/lib/config-schema.js`](../../.pipeline/lib/config-schema.js) — ver §18.
-- **Saldo, ritmo y proyección (#6560):** [`.pipeline/lib/multi-provider/quota-balance.js`](../../.pipeline/lib/multi-provider/quota-balance.js) (fórmula pura), [`quota-ledger.js`](../../.pipeline/lib/multi-provider/quota-ledger.js) (serie persistida + lectores), [`quota-series.js`](../../.pipeline/lib/multi-provider/quota-series.js) (series derivadas), slice `quotaBalanceSlice` en [`dashboard-slices.js`](../../.pipeline/lib/dashboard-slices.js) → `GET /api/dash/quota-balance` — ver §19.
-- **Panel de saldo y ritmo (#6565):** `renderSystemQuotaPanel` / `_mzBalanceCells` / `_mzHydrateBalanceRow` en [`.pipeline/views/dashboard/home.js`](../../.pipeline/views/dashboard/home.js), harness [`.pipeline/tools/render-quota-balance-evidence-6565.js`](../../.pipeline/tools/render-quota-balance-evidence-6565.js) — ver §20.
-- **Diseño y decisiones:** [`docs/pipeline-multi-provider.md`](../pipeline-multi-provider.md) (1140 líneas, design doc v2).
-- **Permission mapping (capabilities cross-provider):** [`docs/pipeline-multi-provider/permission-mapping.md`](../pipeline-multi-provider/permission-mapping.md).
-- **Data residency / exclusiones:** [`docs/pipeline-multi-provider/data-residency.md`](../pipeline-multi-provider/data-residency.md).
-- **Issue de esta doc:** [#3176](https://github.com/intrale/platform/issues/3176).
-- **Issues de mejora futura:** [#3197](https://github.com/intrale/platform/issues/3197) (auto-gen tablas).
-- **Issues cerrados relevantes:** [#3198](https://github.com/intrale/platform/issues/3198) (consumer runtime de fallbacks, mergeado 2026-05-15 — ver §2.3).
-- **Épico multi-provider end-to-end (#3791):** [#4401](https://github.com/intrale/platform/issues/4401) (smoke CLI + candado free-only), [#4402](https://github.com/intrale/platform/issues/4402) (health honesto OAuth), [#4403](https://github.com/intrale/platform/issues/4403) (telemetría `provider-cost.jsonl`), [#4404](https://github.com/intrale/platform/issues/4404) (failover + data-residency), [#4405](https://github.com/intrale/platform/issues/4405) (esta doc operativa — §14).

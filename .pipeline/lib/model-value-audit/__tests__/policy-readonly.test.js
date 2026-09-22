@@ -204,3 +204,146 @@ test('ningun archivo de test contiene un literal de la denylist de handoff (SEC-
         assert.deepStrictEqual(handoff.detectInjection(fs.readFileSync(path.join(cliTests, f), 'utf8')).hits, [], `${f} dispara detectInjection`);
     }
 });
+
+
+// =============================================================================
+// #7520 (parte 4) — SEC-13: escrituras PERMITIDAS del cron y del adaptador
+// =============================================================================
+//
+// Los módulos nuevos de la parte 4 entran a la misma policy:
+//   - `proposal.js` y `publish.js` son read-only (sin `fs`, sin escrituras).
+//   - `cron.js` escribe SOLO `state/model-value-audit-cron.json` (tmp + rename).
+//   - `publish-telegram.js` escribe SOLO un dropfile en `servicios/telegram/pendiente/`.
+//   - Ambos resuelven el destino vía `write-target` en la MISMA línea (lint R1/R2),
+//     nunca `path.join(pipelineDir, …)` ni `__dirname`.
+
+const os = require('node:os');
+const READONLY_NUEVOS = ['proposal.js', 'publish.js'];
+const WRITERS_NUEVOS = ['cron.js', 'publish-telegram.js'];
+
+test('#7520 · proposal.js y publish.js son read-only: sin fs, sin primitivas de escritura, sin red ni procesos', () => {
+    for (const m of READONLY_NUEVOS) {
+        const codigo = sinComentarios(source(m));
+        assert.ok(!ESCRITURA.test(codigo), `${m} contiene una primitiva de escritura`);
+        assert.ok(!/require\(\s*['"](?:node:)?fs['"]\s*\)/.test(codigo), `${m} requiere fs`);
+        assert.ok(!RED_O_PROCESOS.test(codigo), `${m} abre red/procesos`);
+        assert.ok(!codigo.includes('console' + '.log'), `${m} usa la consola`);
+    }
+});
+
+test('#7520 · cron.js y publish-telegram.js: destino SIEMPRE vía write-target en la misma línea; sin path.join(pipelineDir) ni __dirname', () => {
+    const RE_WT = /require\(\s*['"]\.\.\/write-target['"]\s*\)\.(writeDir|writePath)\s*\(/;
+    for (const m of WRITERS_NUEVOS) {
+        const codigo = sinComentarios(source(m));
+        assert.ok(RE_WT.test(codigo), `${m} no resuelve por write-target`);
+        assert.ok(!/path\.join\(\s*pipelineDir/.test(codigo), `${m} arma un path con pipelineDir`);
+        assert.ok(!/__dirname/.test(codigo), `${m} usa __dirname`);
+        assert.ok(!/PIPELINE_DIR_OVERRIDE|PIPELINE_STATE_DIR|PIPELINE_REPO_ROOT/.test(codigo), `${m} lee variables de entorno de directorio a mano`);
+        assert.ok(!RED_O_PROCESOS.test(codigo), `${m} abre red/procesos`);
+        assert.ok(!codigo.includes('console' + '.log'), `${m} usa la consola`);
+        for (const spec of [...codigo.matchAll(REQUIRE_RE)].map((x) => x[2])) {
+            if (PERMITIDOS.has(spec)) continue;
+            const resuelto = path.resolve(MODULE_DIR, spec);
+            assert.ok(resuelto.startsWith(path.resolve(MODULE_DIR, '..') + path.sep), `${m}: "${spec}" sale de lib/`);
+        }
+    }
+    // cron.js: exactamente una writeFileSync y una renameSync (el estado); nunca appendChained propio.
+    const cron = sinComentarios(source('cron.js'));
+    assert.strictEqual((cron.match(/\bwriteFileSync\s*\(/g) || []).length, 1, 'cron.js: una sola writeFileSync');
+    assert.strictEqual((cron.match(/\brenameSync\s*\(/g) || []).length, 1, 'cron.js: una sola renameSync');
+    assert.ok(!/appendChained|appendFileSync/.test(cron), 'cron.js no escribe el audit por su cuenta');
+    // publish-telegram.js: la única escritura es el dropfile (por dropfile-writer) + mkdir del dir de la cola.
+    const tg = sinComentarios(source('publish-telegram.js'));
+    assert.ok(!/\bwriteFileSync\s*\(|\brenameSync\s*\(|appendChained|appendFileSync/.test(tg), 'publish-telegram.js sólo escribe vía dropfile-writer');
+    assert.strictEqual((tg.match(/writeDropfile\(/g) || []).length, 1, 'un solo writeDropfile');
+    assert.ok(!/notifyTelegram|parse_mode/.test(tg), 'nunca notifyTelegram ni parse_mode');
+    assert.ok(!/enqueueTelegramVoice/.test(tg));
+});
+
+test('#7520 · el policy test de escrituras no fija stateFile/queueDir dentro del .pipeline productivo (R3)', () => {
+    const src = fs.readFileSync(__filename, 'utf8');
+    assert.ok(!/stateFile:\s*path\.join\(__dirname|queueDir:\s*path\.join\(__dirname/.test(src));
+});
+
+test('#7520 SEC-13 · tick completo (enabled, registrar, telegram-plain): sólo estado (tmp→rename), audit (appendChained) y UN dropfile', () => {
+    const cron = require('../cron');
+    const audit = require('../audit');
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mva-policy-'));
+    const pipelineDir = path.join(tmp, 'pipeline');
+    const stateFile = path.join(tmp, 'estado', 'model-value-audit-cron.json');
+    const queueDir = path.join(tmp, 'cola', 'servicios', 'telegram', 'pendiente');
+    const auditFile = path.join(pipelineDir, 'audit', 'model-value-audit.jsonl');
+    fs.mkdirSync(pipelineDir, { recursive: true });
+
+    const escritos = [];
+    const permitido = (p) => {
+        const s = String(p);
+        return s === stateFile || s.startsWith(`${stateFile}.tmp.`) || s === auditFile
+            || s === path.dirname(stateFile) || s === path.dirname(auditFile) || s === queueDir
+            || (path.dirname(s) === queueDir && /-model-value-audit\.json$/.test(s));
+    };
+    const registrar = (op, p) => {
+        escritos.push([op, String(p)]);
+        assert.ok(permitido(p), `escritura NO permitida: ${op} ${p}`);
+    };
+    const fsImpl = {
+        existsSync: (p) => fs.existsSync(p),
+        readFileSync: (p, e) => fs.readFileSync(p, e),
+        readdirSync: (p) => fs.readdirSync(p),
+        statSync: (p) => fs.statSync(p),
+        mkdirSync: (p, o) => { registrar('mkdirSync', p); return fs.mkdirSync(p, o); },
+        writeFileSync: (p, d, o) => { registrar('writeFileSync', p); return fs.writeFileSync(p, d, o); },
+        renameSync: (a, b) => { registrar('renameSync', b); assert.ok(String(a).startsWith(`${stateFile}.tmp.`)); return fs.renameSync(a, b); },
+        chmodSync: (p, m) => { registrar('chmodSync', p); try { fs.chmodSync(p, m); } catch { /* win */ } },
+        openSync: (p, flag, mode) => { registrar('openSync', p); return fs.openSync(p, flag, mode); },
+        closeSync: (fd) => fs.closeSync(fd),
+        appendFileSync: (p, d) => { registrar('appendFileSync', p); return fs.appendFileSync(p, d); },
+        unlinkSync: (p) => { registrar('unlinkSync', p); },
+        rmSync: (p) => { registrar('rmSync', p); },
+        copyFileSync: (a, b) => { registrar('copyFileSync', b); },
+    };
+    const auditCalls = [];
+    const auditLog = { appendChained: ({ file, entry, fsImpl: f }) => { auditCalls.push({ file, entry }); f.appendFileSync(file, JSON.stringify(entry) + '\n'); return { hash_self: 'e'.repeat(64), hash_prev: null, line: 1 }; } };
+    const report = {
+        sha256: 'c'.repeat(64), propagation_enabled: false, agent_models_sha256: 'a'.repeat(64),
+        ventana: { from: '2026-08-22T00:00:00.000Z', to: '2026-09-21T23:59:59.999Z', dias: 30 },
+        precios: { stale: false, missing_models: [], updated_at: '2026-09-01T00:00:00Z', sha256: 'b'.repeat(64), version: 1 },
+        integridad: { spawn_exit: 'verificada', broken_files: 0 },
+        skills: { doc: { veredicto: 'bajar', evidencia: { n: 40, modelo_efectivo: 'claude-opus-5', modelo_destino: 'claude-sonnet-4-6', ahorro_mensual_estimado_usd: 3 } } },
+        calidad: { doc: { reboundRate: 0 } },
+    };
+    const audioCalls = [];
+    const now = Date.parse('2026-09-21T12:00:00.000Z');
+    const res = cron.tickIfDue({
+        pipelineDir, cfgRoot: { model_value_audit: { enabled: true, registrar: true, publish: 'telegram-plain' }, audio_policy: { enabled: true } },
+        now, fsImpl, stateFile,
+        run: () => report,
+        registrar: (args) => audit.registrar({ ...args, auditLog }),
+        publishDeps: { queueDir, fsImpl, generateAudio: async (a) => { audioCalls.push(a); return {}; } },
+        logger: () => {},
+    });
+    assert.strictEqual(res.ran, true);
+    assert.strictEqual(res.published, true);
+    assert.strictEqual(res.hash8, 'eeeeeeee', 'referencia = hash_self del audit');
+    assert.strictEqual(auditCalls.length, 1, 'una sola appendChained');
+    assert.strictEqual(auditCalls[0].file, auditFile);
+    assert.strictEqual(audioCalls.length, 1, 'una narración del mismo texto');
+    // Inventario exacto de destinos escritos.
+    const porOp = (op) => escritos.filter(([o]) => o === op).map(([, p]) => p);
+    assert.deepStrictEqual(porOp('renameSync'), [stateFile]);
+    assert.strictEqual(porOp('writeFileSync').filter((p) => p.startsWith(`${stateFile}.tmp.`)).length, 1);
+    const dropfiles = porOp('writeFileSync').filter((p) => path.dirname(p) === queueDir);
+    assert.strictEqual(dropfiles.length, 1, 'a lo sumo un dropfile');
+    assert.strictEqual(porOp('writeFileSync').length, 2, 'ninguna otra writeFileSync');
+    assert.deepStrictEqual(porOp('appendFileSync'), [auditFile]);
+    assert.deepStrictEqual(porOp('unlinkSync').concat(porOp('rmSync'), porOp('copyFileSync')), []);
+    // Ningún archivo del pipeline productivo fue tocado.
+    for (const [, p] of escritos) {
+        assert.ok(!/agent-models\.json|config\.yaml|metrics[\\/]/.test(p), `tocó ${p}`);
+    }
+    assert.deepStrictEqual(JSON.parse(fs.readFileSync(stateFile, 'utf8')), { last_run_at: now });
+    assert.strictEqual(fs.readdirSync(queueDir).length, 1);
+    const payload = JSON.parse(fs.readFileSync(path.join(queueDir, fs.readdirSync(queueDir)[0]), 'utf8'));
+    assert.strictEqual(payload.plain, true);
+    assert.ok(payload.text.endsWith('ref eeeeeeee'));
+});
