@@ -476,12 +476,19 @@ function measureStorage(gh, owner, repo) {
     return { cache_gb: round2(cacheBytes / GB), artifacts_gb: round2(artifactBytes / GB), artifacts_vigentes: artifacts };
 }
 
+/** Cantidad de committers distintos (login o email), ignorando vacíos. */
+function countCommitters(ids) {
+    return new Set((ids || []).filter(Boolean)).size;
+}
+
 function activeCommitters(gh, owner, repo) {
     const since = new Date(Date.now() - 90 * 86400000).toISOString();
     try {
         const ids = gh.lines(`repos/${owner}/${repo}/commits?since=${since}&per_page=100`,
-            '.[] | (.author.login // .commit.author.email)');
-        return new Set(ids.filter(Boolean)).size;
+            // `gh --jq` imprime los strings sin comillas y `lines()` parsea JSON por
+            // línea: se envuelve en `tojson` para que cada id llegue como JSON válido.
+            '.[] | (.author.login // .commit.author.email) | tojson');
+        return countCommitters(ids);
     } catch (_) { return 0; }
 }
 
@@ -585,7 +592,7 @@ function main() {
 module.exports = {
     RUNNER_MULTIPLIERS, runnerOs, runnerMultiplier, jobRawSeconds, billableMinutes, percentile,
     aggregate, rankWorkflows, estimateOptimizations, projectScenarios, releaseRunCost, monthly,
-    parseArgs, isInside, windowDays,
+    parseArgs, isInside, windowDays, countCommitters,
 };
 
 if (require.main === module) main();

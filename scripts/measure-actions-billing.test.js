@@ -273,3 +273,14 @@ test('ningún archivo nuevo del spike usa pull_request_target', () => {
     ];
     for (const f of files) assert.ok(!fs.readFileSync(f, 'utf8').includes('pull_request_target'), f);
 });
+
+test('countCommitters cuenta ids distintos e ignora vacíos (GHAS se cobra por committer activo)', () => {
+    assert.equal(m.countCommitters(['leitolarreta', 'leitolarreta', 'bot@intrale', null, '']), 2);
+    assert.equal(m.countCommitters([]), 0);
+    assert.equal(m.countCommitters(undefined), 0);
+});
+
+test('activeCommitters pide los ids como JSON (tojson) para que lines() pueda parsearlos', () => {
+    const src = fs.readFileSync(path.join(__dirname, 'measure-actions-billing.js'), 'utf8');
+    assert.match(src, /\.commit\.author\.email\) \| tojson/);
+});
