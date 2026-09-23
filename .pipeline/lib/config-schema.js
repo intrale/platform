@@ -577,6 +577,24 @@ const SCHEMA = {
                         quotaCeilings.QUOTA_PROVIDER_IDS.map((id) => [id, QUOTA_CEILING_SCHEMA]),
                     ),
                 },
+                // --- #6561 — balanceo por saldo de cuota y ritmo de consumo.
+                //     LENIENT como el resto de multi_provider (un typo en la
+                //     clave se ignora → default), pero con TIPOS y RANGOS
+                //     chequeados: un umbral no numérico no debe llegar al
+                //     selector. Los invariantes (nunca expande la cadena, la
+                //     reserva nunca veta, degradación sin dato fresco) viven
+                //     en `lib/agent-launcher/quota-balancer.js`, NO acá.
+                balanceo: {
+                    type: 'object',
+                    additionalProperties: true,
+                    properties: {
+                        enabled: { type: 'boolean' },
+                        delta_min_pct: { type: 'number', minimum: 0, maximum: 100 },
+                        margen_reserva_pct: { type: 'number', minimum: 0, maximum: 100 },
+                        fases_criticas: { type: 'array', items: { type: 'string' } },
+                        cache_ttl_ms: { type: 'number', minimum: 0 },
+                    },
+                },
             },
         },
 

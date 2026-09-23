@@ -894,6 +894,45 @@ multi_provider:
       unidad: porcentaje
       reposicion: rolling
 
+  # ---------------------------------------------------------------------------
+  # Balanceo de carga entre proveedores por saldo de cuota y ritmo (#6561)
+  # ---------------------------------------------------------------------------
+  # Capa de DECISIÓN del libro contable: en cada spawn el dispatcher cruza el
+  # saldo relativo (saldo / techo, #6560) de los proveedores de la cadena del
+  # skill (primario + fallbacks de agent-models.json) y prefiere al de mayor
+  # saldo, para no fundir una cuota mientras otra queda sin usar (caso medido
+  # 25/08: Codex 100 % agotado con Claude al 70 % libre).
+  #
+  # Reglas fijas (viven en código, `lib/agent-launcher/quota-balancer.js`):
+  #   - NUNCA expande la cadena: sólo reordena lo que el skill ya declara. La
+  #     capacidad por fase, las ventanas horarias, la cuota agotada, el
+  #     kill-switch y las credenciales tienen precedencia sobre el saldo.
+  #   - El orden declarado define el conjunto y el DESEMPATE: sólo reordena si
+  #     la diferencia de saldo relativo alcanza `delta_min_pct`.
+  #   - Sólo compara con dato FRESCO del ledger (`state/quota-ledger.jsonl`);
+  #     sin ledger, con dato viejo o con un solo candidato comparable degrada
+  #     al orden declarado sin frenar el spawn (el log lo dice: `balanceo:
+  #     degradado (<motivo>) → orden declarado`).
+  #   - La reserva de fin de período es SOFT: si el proveedor reservado es el
+  #     único hábil, se usa igual.
+  #
+  # Campos (todos opcionales; valores fuera de rango caen al default y se
+  # avisan en el log de lanzamiento):
+  #   enabled            — apaga el balanceo (orden declarado puro). Default true.
+  #   delta_min_pct      — diferencia mínima de saldo relativo (puntos
+  #                        porcentuales) para que el saldo reordene. Default 15.
+  #   fases_criticas     — fases del pipeline donde NO aplica la reserva.
+  #                        Default [verificacion, aprobacion, delivery].
+  #   margen_reserva_pct — saldo relativo por debajo del cual un proveedor se
+  #                        reserva para las fases críticas. Default 20.
+  #
+  # Cómo leer una decisión en el log: docs/pipeline/multi-provider.md §20.
+  balanceo:
+    enabled: true
+    delta_min_pct: 15
+    fases_criticas: [verificacion, aprobacion, delivery]
+    margen_reserva_pct: 20
+
 # =============================================================================
 # Presupuesto de ritmo (pacing budget) por proveedor (#4289)
 # =============================================================================

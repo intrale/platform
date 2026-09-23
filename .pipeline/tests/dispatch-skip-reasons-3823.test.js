@@ -641,6 +641,73 @@ test('#4289 · 🔴 rojo de pacing → salta al fallback, skipReason pacing_budg
 // ejercitado por la suite (CA: "cada código de razón figura en al menos un
 // test case").
 // =============================================================================
+// -----------------------------------------------------------------------------
+// #6561 — balanceo por saldo de cuota: los dos códigos SOFT nuevos.
+// El balance se inyecta (`quotaBalanceReader`) para no depender del ledger real;
+// `config` activa el balanceo (sin `config` el dispatcher no lo consulta).
+// -----------------------------------------------------------------------------
+function makeBalanceReader(map) {
+    return () => {
+        const out = {};
+        for (const [p, saldo] of Object.entries(map)) {
+            out[p] = { techo: 100, saldo_pts: saldo, consumo_pct: 100 - saldo, ritmo_pts_por_hora: 1.5,
+                agota_at: null, estado: 'alcanza', confidence: 'fresh' };
+        }
+        return out;
+    };
+}
+const BALANCE_CONFIG = { multi_provider: { balanceo: { delta_min_pct: 15, margen_reserva_pct: 20, fases_criticas: ['verificacion'] } } };
+
+test('#6561 · primario con menor saldo relativo → fallback, skipReason quota_balance_prefer_other', () => {
+    const models = baseModels();
+    models.skills['guru'] = { provider: 'anthropic', fallbacks: ['openai-codex'] };
+    const dir = mkTmpPipelineDir(models);
+    try {
+        const r = resolveSpawnWithFallback({
+            skill: 'guru', issue: 6561, pipelineDir: dir, fase: 'dev',
+            config: BALANCE_CONFIG,
+            quotaBalanceReader: makeBalanceReader({ anthropic: 30, 'openai-codex': 80 }),
+            quotaModule: makeQuotaModule([]),
+            primaryResolver, providerHandlerResolver,
+            notify: silentNotify, processEnv: ENV_WITH_KEYS,
+        });
+        assert.equal(r.provider, 'openai-codex');
+        const reasons = r.skipReasons.map((s) => s.reason);
+        assert.ok(reasons.includes('quota_balance_prefer_other'), JSON.stringify(reasons));
+        assert.equal(r.balance.regla, 'saldo');
+        recordReasons(r.skipReasons);
+        const block = formatProviderResolutionLog(r, { skill: 'guru', issue: 6561 });
+        assert.match(block, /quota_balance_prefer_other \(saldo relativo menor \(balanceo\)\)/);
+        assert.match(block, /Balanceo: regla=saldo/);
+    } finally { cleanup(dir); }
+});
+
+test('#6561 · primario bajo el margen en fase no crítica → reservado, skipReason quota_reserve_critical', () => {
+    const models = baseModels();
+    models.skills['guru'] = { provider: 'anthropic', fallbacks: ['openai-codex'] };
+    const dir = mkTmpPipelineDir(models);
+    try {
+        const r = resolveSpawnWithFallback({
+            skill: 'guru', issue: 6561, pipelineDir: dir, fase: 'dev',
+            config: BALANCE_CONFIG,
+            // delta 12 < umbral 15: sin reserva ganaría el orden declarado (anthropic);
+            // anthropic (10 %) queda bajo el margen (20 %) y codex (22 %) no.
+            quotaBalanceReader: makeBalanceReader({ anthropic: 10, 'openai-codex': 22 }),
+            quotaModule: makeQuotaModule([]),
+            primaryResolver, providerHandlerResolver,
+            notify: silentNotify, processEnv: ENV_WITH_KEYS,
+        });
+        assert.equal(r.provider, 'openai-codex');
+        const reasons = r.skipReasons.map((s) => s.reason);
+        assert.ok(reasons.includes('quota_reserve_critical'), JSON.stringify(reasons));
+        assert.equal(r.balance.regla, 'reserva');
+        recordReasons(r.skipReasons);
+        const block = formatProviderResolutionLog(r, { skill: 'guru', issue: 6561 });
+        assert.match(block, /reservado para fases críticas/);
+        assert.match(block, /fase=dev · saldo=10 % · margen=20 %/);
+    } finally { cleanup(dir); }
+});
+
 test('#3823 · cobertura completa de SKIP_REASON_CODES', () => {
     const documented = Object.values(SKIP_REASON_CODES);
     const missing = documented.filter(code => !REASONS_SEEN.has(code));
