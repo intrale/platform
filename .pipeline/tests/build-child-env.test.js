@@ -19,7 +19,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const {
-    buildChildEnv,
+    buildChildEnv: buildChildEnvConAssert,
     stripReservedChildSecrets,
     auditDroppedEnvVars,
     formatAuditLogEntry,
@@ -29,6 +29,11 @@ const {
     DEFAULT_REQUIRES_BY_SKILL,
     PROVIDER_DEFAULT_CREDENTIAL_ENV,
 } = require('../lib/build-child-env');
+
+// #7634 — estos casos miden los invariantes previos (allowlist, scopes, techo por
+// fase, strip). El assert del env final (`assertChildEnvMinimal`) tiene sus tests
+// propios en lib/__tests__/ (child-env-*.test.js); acá se apaga explícitamente.
+const buildChildEnv = (opts) => buildChildEnvConAssert({ assertMinimal: false, ...opts });
 
 // -----------------------------------------------------------------------------
 // Helpers — env "completo" del operador (worst case con TODAS las creds).
