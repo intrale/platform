@@ -168,8 +168,61 @@ Ver: docs/pipeline/entorno-agentes-hijos.md#<sitio>
 | `unknown-phase` | fase desconocida | La fase no está en `SCOPES_BY_FASE` |
 | `unknown-skill` | rol sin declaración de entorno | El skill no está en `agent-models.json` ni en `DEFAULT_REQUIRES_BY_SKILL` |
 | `invalid-exception` | excepción inválida (comodín o credencial reservada) | Las reservadas ganan sobre las excepciones y no se aceptan comodines |
+| `expired-exception` | excepción vencida (requiere revisión humana) | La variable sólo estaba cubierta por una excepción de `env-exceptions.yaml` cuya `revisar_el` ya pasó. El mensaje muestra la fecha y el aprobador |
 | `aws-access-key`, `github-token`, `provider-key`, `telegram-token`, `jwt` | valor con forma de secreto (…) en | Un valor con forma de credencial bajo un nombre que no es de su scope |
 
 El mensaje sólo lleva nombres (ordenados alfabéticamente). Nunca incluye valores, prefijos, largos, hashes ni máscaras. `JSON.stringify(err)` serializa sólo `{ name, code, message, details }`.
 
-El loader de excepciones (`env-exceptions.yaml`) llega en #7635. El encendido y la telemetría, en #7636.
+El encendido y la telemetría llegan en #7636.
+
+<a id="excepciones-declaradas-y-gate-de-permisos"></a>
+## Excepciones declaradas y gate de permisos
+
+Agregado en #7635. Cada excepción al entorno mínimo queda escrita con su motivo, un responsable y una fecha de revisión. Ningún cambio de permisos entra a `main` sin que el operador lo mire.
+
+### Formato de `.pipeline/env-exceptions.yaml`
+
+Es una lista YAML. Cada entrada lleva estos campos, todos obligatorios:
+
+| Campo | Valor |
+|---|---|
+| `tipo` | `agente` (un skill del pipeline) o `servicio` (un servicio de confianza del inventario de arriba) |
+| `rol` | nombre del skill o del servicio |
+| `scope` **o** `variable` | exactamente uno de los dos: un scope de `CREDENTIAL_SCOPES` o el nombre de una variable |
+| `fundamento` | por qué el rol la necesita (texto libre, no vacío) |
+| `aprobador` | usuario de GitHub, `^@?[A-Za-z0-9-]{1,39}$` |
+| `revisar_el` | fecha ISO `AAAA-MM-DD`, entre comillas |
+
+Lo lee `lib/child-env-exceptions.js` (`loadExceptions`, `forAgent`, `forService`) con estas reglas:
+
+- **La ruta sale de `__dirname`**, es decir, del repo principal que ejecuta el Pulpo. Nunca sale de `process.cwd()` ni de una variable de entorno. Así, un agente que edita el YAML en su worktree no consigue nada hasta que el cambio se mergea.
+- **Vencimiento:** con `revisar_el` igual a hoy o posterior, la entrada está vigente. Si es anterior, está vencida. "Hoy" se calcula en `America/Argentina/Buenos_Aires`. Una variable cubierta sólo por una excepción vencida frena el lanzamiento con `expired-exception`, y el mensaje muestra la fecha y el aprobador. El `fundamento` no se muestra nunca.
+- **Tope de 180 días:** una `revisar_el` que pasa de hoy + 180 días hace que la entrada se descarte.
+- **Reservadas:** una entrada que da AWS, GitHub, keys de providers o Telegram (`ISOLATION_RESERVED_NAMES` ∪ `RESERVED_CHILD_SECRET_NAMES`, más un piso propio del loader) se descarta al cargar. Esos permisos sólo los da `SCOPES_BY_FASE`.
+- **Fail-closed:** una entrada con un campo faltante, una clave desconocida, `scope` y `variable` a la vez, o una fecha inválida (incluido `2026-02-30` o un `Date`) se descarta. Si el archivo está roto, se descartan todas: pasa con un YAML ilegible, con claves duplicadas, con una raíz que no es lista o con más de 64 KB. En ese caso se aplican cero excepciones y `buildChildEnv` avisa con un warn.
+- **Servicio ≠ agente:** `forAgent` sólo mira `tipo: agente`. Un skill que se llame igual que un servicio no hereda su excepción. Las entradas `tipo: servicio` son **declarativas** hasta #7636, porque esos servicios no pasan por `assertChildEnvMinimal`.
+
+El archivo real declara el inventario de servicios de confianza: `envDeHijo`, `envDeServicio`, `adbEnv`, `builder`, `vault` y `notificadores`. `lib/__tests__/env-exceptions-inventory.test.js` verifica que estén todas vigentes y con fundamento. Si ese test se pone en rojo porque venció una fecha, la excepción hay que revisarla y renovarla con un PR. La fecha del test no se toca.
+
+Las excepciones se aplican sólo en el camino ON (`env_isolation_enabled: true`). Con el flag apagado, nada cambia en producción.
+
+### Datos de permisos fuera del código
+
+`SYSTEM_ALLOWLIST`, `CREDENTIAL_SCOPES`, `SCOPES_ALWAYS_ON`, `SCOPES_BY_FASE`, `CLI_OAUTH_ALLOWLIST` y `DEFAULT_REQUIRES_BY_SKILL` viven en `.pipeline/lib/child-env-scopes.json`. `build-child-env.js` los carga y los congela en profundidad, y conserva los mismos nombres de export. Así el gate los protege por path, sin hacer `require()` del código del PR.
+
+### Gate de permisos en delivery (paso 4b)
+
+`lib/permission-change-guard.js` (`detectPermissionChanges`) corre en `attemptMergeWithGates` justo después del paso de CODEOWNERS, dentro del mismo intento. Ante un `head-changed` se vuelve a evaluar. Un PR queda frenado con `needs-human` y gate `permisos` cuando:
+
+- toca **por path** (alta, baja, cambio o renombre, incluido `previous_filename`) `env-exceptions.yaml`, `lib/child-env-scopes.json`, `lib/child-env-exceptions.js`, `lib/permission-change-guard.js` o `lib/build-child-env.js`. Este último es el motor que arma el env del hijo: transporte, reservadas y assert;
+- cambia **por contenido** `requires_credentials` de algún skill, o `credentials_env`/`auth_mode` de algún provider, en `agent-models.json`. Cambiar sólo el provider o el modelo de un skill **no** frena. Crear o borrar el archivo también frena;
+- cambia `pipeline.env_isolation_enabled` en `config.yaml`;
+- quita la invocación del guard en `skills-deterministicos/delivery.js` (autoprotección).
+
+El contenido se lee con `git show origin/main:<path>` y `git show <headRefOid>:<path>`, con `spawnSync` y sin shell. La lista de archivos sale de `gh api --paginate .../pulls/N/files`, que trae los renombres. Si la API falla, se usa la del snapshot, que se marca incompleta a partir de 100 archivos.
+
+**Fail-closed:** una lista incompleta, un `git show` que falla, un JSON o YAML que no parsea, un `checkPermissions` que tira o que no está inyectado dan `needs-human` o `blocked`. Nunca se leen como "sin cambios".
+
+**Cómo se destraba:** delivery aplica el label `needs-human`, comenta el PR con los motivos y escala como bloqueo humano, sin rebote a dev y sin `rev++`. El operador revisa el diff y **mergea a mano**. No existe un label que lo apruebe: el pipeline opera con la misma cuenta que el operador (#5986), así que un agente podría ponérselo solo. El campo `aprobador` del YAML es declarativo y no es una firma. Cuando GATE 2 (firma humana) esté enforzado, este gate lo va a usar.
+
+**Límite conocido:** el gate protege el camino de `delivery`. Un agente con token de GitHub que ejecute `gh pr merge` a mano lo saltea. El respaldo es la protección de rama de `main`, que queda fuera de este alcance.

@@ -112,6 +112,8 @@ function recordingSleep(delays) {
 
 function baseDeps(over = {}) {
     return {
+        // #7635 — fake del gate de permisos: "sin motivos".
+        checkPermissions: () => ({ motivos: [] }),
         prNumber: 777,
         getSnapshot: () => snapshotOk(),
         loadOwners: ownersFromRemote(),
