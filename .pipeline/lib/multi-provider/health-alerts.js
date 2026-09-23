@@ -534,6 +534,68 @@ function recordContractEvent({ provider, cliVersion, maxTestedVersion, sent, now
     catch { /* best-effort: si no podemos escribir, próxima decisión re-emite */ }
 }
 
+// -----------------------------------------------------------------------------
+// #7597 — Eje de TÉRMINOS (política de proveedores, docs/legal/proveedores-ia.md).
+//
+// La verificación de términos de un proveedor tiene fecha de vencimiento. Un
+// vencimiento NO corta el ruteo (los roles vigentes siguen) pero bloquea
+// habilitaciones nuevas y tiene que verse: alerta propia, dedup por
+// `provider|terms|<expires_at>` y recordatorio cada 24 h SIN tope mientras
+// persista. La única forma de silenciarla es re-verificar y mover la fecha,
+// que cambia la key (mismo mecanismo que el eje de contrato de #7371).
+//
+// El `termsStatus` lo calcula `lib/provider-policy.js`; acá sólo se decide la
+// emisión. Entrada validada con regex estricto: nunca texto libre al payload.
+// -----------------------------------------------------------------------------
+const TERMS_ALERT_DEDUP_MS = 24 * 60 * 60 * 1000;
+const TERMS_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+function _termsKey(provider, expiresAt) {
+    return `${provider}|terms|${TERMS_DATE_RE.test(expiresAt || '') ? expiresAt : 'sin-fecha'}`;
+}
+
+/**
+ * @param {object} params
+ * @param {string} params.provider — nombre de config (`anthropic`, `openai-codex`, `antigravity`).
+ * @param {{state:string, reason:string, verified_at:string|null, expires_at:string|null}} params.terms
+ *   — salida de `provider-policy.termsStatus`.
+ * @param {string} [params.providerState] — sólo para que el texto diga el estado real.
+ */
+function decideTermsEvent({ provider, terms, providerState, now = Date.now(), dedupFile = HOME_DEDUP_FILE, fsImpl = fs } = {}) {
+    if (!sanitizeProvider(provider) || !terms || terms.state !== 'vencido') {
+        return { shouldEmit: false, reasonNoEmit: 'not_expired_or_invalid' };
+    }
+    const store = tryReadJson(dedupFile, fsImpl) || { alerts: {} };
+    if (!store.alerts || typeof store.alerts !== 'object') store.alerts = {};
+    const key = _termsKey(provider, terms.expires_at);
+    const prev = store.alerts[key];
+    if (prev && (now - (prev.last_sent_at || 0)) < TERMS_ALERT_DEDUP_MS) {
+        return { shouldEmit: false, reasonNoEmit: 'dedup_window', nextEligibleAt: prev.last_sent_at + TERMS_ALERT_DEDUP_MS };
+    }
+    const payload = {
+        event: 'terms_expired',
+        provider,
+        provider_state: ALLOWED_STATES.has(providerState) ? providerState : 'unknown',
+        terms_reason: ['expired', 'missing', 'invalid', 'no_entry'].includes(terms.reason) ? terms.reason : 'invalid',
+        verified_at: TERMS_DATE_RE.test(terms.verified_at || '') ? terms.verified_at : null,
+        expires_at: TERMS_DATE_RE.test(terms.expires_at || '') ? terms.expires_at : null,
+        reminder: !!prev,
+        observed_at: new Date(now).toISOString(),
+    };
+    return { shouldEmit: true, payload: redact.redactValue(payload) };
+}
+
+function recordTermsEvent({ provider, terms, sent, now = Date.now(), dedupFile = HOME_DEDUP_FILE, fsImpl = fs } = {}) {
+    if (!sent || !sanitizeProvider(provider) || !terms) return;
+    const store = tryReadJson(dedupFile, fsImpl) || { alerts: {} };
+    if (!store.alerts || typeof store.alerts !== 'object') store.alerts = {};
+    const key = _termsKey(provider, terms.expires_at);
+    const prev = store.alerts[key];
+    store.alerts[key] = { last_sent_at: now, consecutive_count: ((prev && prev.consecutive_count) || 0) + 1 };
+    try { writeJsonAtomic(dedupFile, store, fsImpl); }
+    catch { /* best-effort: si no podemos escribir, próxima decisión re-emite */ }
+}
+
 // #6564: la racha viene del snapshot durable; el dedupe conserva sólo envíos.
 function decidePlanEvent({ provider, providerState, planCheck, now = Date.now(), dedupFile = HOME_DEDUP_FILE, fsImpl = fs } = {}) {
     if (provider !== 'antigravity' || !ALLOWED_STATES.has(providerState)
@@ -583,4 +645,8 @@ module.exports = {
     CONTRACT_ALERT_DEDUP_MS,
     decideContractEvent,
     recordContractEvent,
+    // #7597 — eje de términos (política de proveedores).
+    TERMS_ALERT_DEDUP_MS,
+    decideTermsEvent,
+    recordTermsEvent,
 };

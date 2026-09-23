@@ -11,6 +11,15 @@
 > **Módulo de filtro**: [`.pipeline/lib/data-residency-filter.js`](../../.pipeline/lib/data-residency-filter.js)
 > **Tests**: [`.pipeline/lib/__tests__/data-residency-filter.test.js`](../../.pipeline/lib/__tests__/data-residency-filter.test.js)
 
+> **Alcance y política vigente (#7597):** este documento cubre sólo los **archivos** que
+> el lanzador manda como contexto. La política de proveedores
+> ([`docs/legal/proveedores-ia.md`](../legal/proveedores-ia.md), estructurada en
+> `.pipeline/provider-policy.json`) extiende el criterio a los **datos** y al **entorno**
+> (credenciales que recibe el proceso del agente, sistema de archivos que alcanza, herramientas
+> y modo de permisos), fija la fecha de vencimiento de la verificación de términos de cada
+> proveedor y es la fuente normativa de qué rol puede usar qué proveedor. Reusa este filtro:
+> no lo duplica.
+
 Esta política aplica solamente cuando hay **cambio de proveedor** (Política B
 del épico #3065). Cross-MODELO dentro del mismo proveedor (Opus → Sonnet →
 Haiku, etc.) no toca TOS/DPA — todos los modelos del mismo proveedor comparten

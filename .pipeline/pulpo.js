@@ -27906,7 +27906,9 @@ async function mainLoop() {
       // dispara LLM ni completion — solo /v1/models. Fire-and-forget.
       try {
         const healthCron = require(path.join(PIPELINE(), 'lib', 'multi-provider', 'health-cron'));
-        healthCron.tickIfDue({}).then((tick) => {
+        // #7597 — `checkTerms: true`: alerta de términos vencidos de la política
+        // de proveedores (opt-in para no alterar a otros consumidores de runOnce).
+        healthCron.tickIfDue({ checkTerms: true }).then((tick) => {
           if (tick && tick.skipped) return;
           try {
             const effectiveModel = require(path.join(PIPELINE(), 'lib', 'metrics', 'effective-model'));
