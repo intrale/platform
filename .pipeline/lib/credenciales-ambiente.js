@@ -64,7 +64,6 @@
  */
 
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
 
 const pipelineEnv = require('./pipeline-env');
@@ -129,8 +128,11 @@ const PROVIDER_PRUEBAS = 'deterministic';
  * no existen y que este módulo JAMÁS crea. Viven bajo el home (no bajo un temp
  * world-writable) por el mismo motivo que T2-1.4: plantarlos exige ya tener la
  * cuenta del operador.
+ *
+ * #7634 — vive en el módulo hoja `credential-sentinel.js` (compartido con
+ * `build-child-env.js`, sin duplicar); acá se re-exporta con el mismo nombre.
  */
-const SENTINEL_SIN_DIR = path.join(os.homedir(), '.intrale-pipeline', 'pruebas-sin-dir');
+const { SENTINEL_SIN_DIR, pareceToken, sentinelPath } = require('./credential-sentinel');
 
 /** Prefijo grepeable de todas las líneas del resumen (UX-1). */
 const PREFIJO = '[ambiente]';
@@ -157,14 +159,8 @@ function noVacio(v) {
     return v !== undefined && v !== null && String(v).trim() !== '';
 }
 
-/** Mismo criterio de forma que `telegram-secrets.isLikelyToken` (sin requerirlo: evita el ciclo). */
-function pareceToken(s) {
-    return typeof s === 'string' && /^\d{6,}:[A-Za-z0-9_-]{20,}$/.test(s);
-}
-
-function sentinel(...segmentos) {
-    return path.join(SENTINEL_SIN_DIR, ...segmentos);
-}
+// #7634 — `pareceToken` (forma de token de Telegram) y `sentinelPath` (ex
+// `sentinel`) viven en `credential-sentinel.js`, importados arriba.
 
 /** Lee la sección `vault` del `config.yaml` de un dir. `null` si no se puede leer. */
 function leerVaultDeConfig(dir) {
@@ -406,7 +402,7 @@ function aplicar(env, opts = {}) {
         configDir = path.join(ambiente.dir, SUBDIR_GH_CONFIG);
         try { fsImpl.mkdirSync(configDir, { recursive: true }); } catch { /* el sentinel inexistente también aísla */ }
     } else {
-        configDir = sentinel(SUBDIR_GH_CONFIG);
+        configDir = sentinelPath(SUBDIR_GH_CONFIG);
     }
     e.GH_CONFIG_DIR = configDir;
     const store = leerJson(fsImpl, storePath);
@@ -476,7 +472,7 @@ function aplicar(env, opts = {}) {
  * @returns {{CLAUDE_CONFIG_DIR: string, CODEX_HOME: string}}
  */
 function sesionesDePruebas(dir) {
-    const base = dir ? path.join(dir, SUBDIR_SESIONES) : sentinel(SUBDIR_SESIONES);
+    const base = dir ? path.join(dir, SUBDIR_SESIONES) : sentinelPath(SUBDIR_SESIONES);
     return { CLAUDE_CONFIG_DIR: path.join(base, 'claude'), CODEX_HOME: path.join(base, 'codex') };
 }
 
