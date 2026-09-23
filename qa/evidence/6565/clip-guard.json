@@ -1,0 +1,21 @@
+{
+  "body_width": 1092,
+  "panels": [
+    {
+      "wrap": "panel-real",
+      "panel_w": 1036,
+      "matrix_w": 743
+    },
+    {
+      "wrap": "panel-fail",
+      "panel_w": 1036,
+      "matrix_w": 743
+    },
+    {
+      "wrap": "panel-long",
+      "panel_w": 1036,
+      "matrix_w": 743
+    }
+  ],
+  "clipped": []
+}

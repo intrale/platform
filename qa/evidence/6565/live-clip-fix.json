@@ -1,0 +1,131 @@
+{
+  "1440": {
+    "viewport_body": 1440,
+    "panel_w": 1036,
+    "matrix_w": 743,
+    "rows": [
+      {
+        "id": "mz-ql2-anthropic",
+        "chip": "⚠Se agota 3d 13h antes del cierre · −152 pts",
+        "lectura": "techo 100 · consumido 28 ↻ cierra en 5d 13h",
+        "ql2_scroll": 397,
+        "ql2_client": 397,
+        "over_self_px": 0,
+        "rd_right": 1221,
+        "clipper_right": 1238,
+        "px_ocultos": 0,
+        "lineas": 2
+      },
+      {
+        "id": "mz-ql2-openai-codex",
+        "chip": "⚠Se agota 5d 8h antes del cierre · −1.841 pts",
+        "lectura": "techo 100 · consumido 28 ↻ cierra en 5d 13h",
+        "ql2_scroll": 412,
+        "ql2_client": 412,
+        "over_self_px": 0,
+        "rd_right": 1221,
+        "clipper_right": 1238,
+        "px_ocultos": 0,
+        "lineas": 2
+      },
+      {
+        "id": "mz-ql2-antigravity",
+        "chip": "✕Excedido +12 pts sobre el techo",
+        "lectura": "techo 100 · consumido 112 ↻ repone en 3h 20m",
+        "ql2_scroll": 412,
+        "ql2_client": 412,
+        "over_self_px": 0,
+        "rd_right": 1221,
+        "clipper_right": 1238,
+        "px_ocultos": 0,
+        "lineas": 1
+      }
+    ]
+  },
+  "1600": {
+    "viewport_body": 1600,
+    "panel_w": 1036,
+    "matrix_w": 743,
+    "rows": [
+      {
+        "id": "mz-ql2-anthropic",
+        "chip": "⚠Se agota 3d 13h antes del cierre · −152 pts",
+        "lectura": "techo 100 · consumido 28 ↻ cierra en 5d 13h",
+        "ql2_scroll": 397,
+        "ql2_client": 397,
+        "over_self_px": 0,
+        "rd_right": 1301,
+        "clipper_right": 1318,
+        "px_ocultos": 0,
+        "lineas": 2
+      },
+      {
+        "id": "mz-ql2-openai-codex",
+        "chip": "⚠Se agota 5d 8h antes del cierre · −1.841 pts",
+        "lectura": "techo 100 · consumido 28 ↻ cierra en 5d 13h",
+        "ql2_scroll": 412,
+        "ql2_client": 412,
+        "over_self_px": 0,
+        "rd_right": 1301,
+        "clipper_right": 1318,
+        "px_ocultos": 0,
+        "lineas": 2
+      },
+      {
+        "id": "mz-ql2-antigravity",
+        "chip": "✕Excedido +12 pts sobre el techo",
+        "lectura": "techo 100 · consumido 112 ↻ repone en 3h 20m",
+        "ql2_scroll": 412,
+        "ql2_client": 412,
+        "over_self_px": 0,
+        "rd_right": 1301,
+        "clipper_right": 1318,
+        "px_ocultos": 0,
+        "lineas": 1
+      }
+    ]
+  },
+  "1920": {
+    "viewport_body": 1920,
+    "panel_w": 1036,
+    "matrix_w": 743,
+    "rows": [
+      {
+        "id": "mz-ql2-anthropic",
+        "chip": "⚠Se agota 3d 13h antes del cierre · −152 pts",
+        "lectura": "techo 100 · consumido 28 ↻ cierra en 5d 13h",
+        "ql2_scroll": 397,
+        "ql2_client": 397,
+        "over_self_px": 0,
+        "rd_right": 1461,
+        "clipper_right": 1478,
+        "px_ocultos": 0,
+        "lineas": 2
+      },
+      {
+        "id": "mz-ql2-openai-codex",
+        "chip": "⚠Se agota 5d 8h antes del cierre · −1.841 pts",
+        "lectura": "techo 100 · consumido 28 ↻ cierra en 5d 13h",
+        "ql2_scroll": 412,
+        "ql2_client": 412,
+        "over_self_px": 0,
+        "rd_right": 1461,
+        "clipper_right": 1478,
+        "px_ocultos": 0,
+        "lineas": 2
+      },
+      {
+        "id": "mz-ql2-antigravity",
+        "chip": "✕Excedido +12 pts sobre el techo",
+        "lectura": "techo 100 · consumido 112 ↻ repone en 3h 20m",
+        "ql2_scroll": 412,
+        "ql2_client": 412,
+        "over_self_px": 0,
+        "rd_right": 1461,
+        "clipper_right": 1478,
+        "px_ocultos": 0,
+        "lineas": 1
+      }
+    ]
+  }
+}

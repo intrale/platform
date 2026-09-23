@@ -28,6 +28,7 @@
 18. [Techo de cuota contratada por proveedor (#6559)](#18-techo-de-cuota-contratada-por-proveedor-6559) — el haber del libro contable: `plan`/`periodo`/`techo`/`unidad`/`reposicion` por proveedor activo, guardrail fail-closed en el boot y lectura programática para saldo y ritmo (#6560).
 19. [Saldo, ritmo y proyección de agotamiento de cuota (#6560)](#19-saldo-ritmo-y-proyección-de-agotamiento-de-cuota-6560) — el balance del libro contable: ledger de muestras, fórmula única (`computeQuotaBalance`), `/api/dash/quota-balance` y las cuatro series derivadas para el auditor (#6809).
 20. [Auditor calidad-precio por agente (#6793)](#20-auditor-calidad-precio-por-agente-6793) — corrida semanal desde el Pulpo, veredicto cerrado por skill, como máximo un mensaje por corrida; nunca cambia un modelo solo.
+21. [Panel de saldo y ritmo de cuota por proveedor en el dashboard (#6565)](#21-panel-de-saldo-y-ritmo-de-cuota-por-proveedor-en-el-dashboard-6565) — el correlato visual del libro contable en el home: techo, consumo, saldo, ritmo, proyección y excedente por proveedor, hidratados sólo desde `/api/dash/quota-balance`.
 
 > **Convención:** todos los paths `.pipeline/...` son relativos a la raíz del repo (`C:\Workspaces\Intrale\platform\`). Todos los comandos asumen Node.js 21 disponible en PATH.
 
@@ -4109,6 +4110,7 @@ Valores fuera de tipo/rango caen al default y se avisan en el log de lanzamiento
 - **Techo de cuota por proveedor (#6559):** [`.pipeline/lib/multi-provider/validate-quota-ceilings.js`](../../.pipeline/lib/multi-provider/validate-quota-ceilings.js) (validador puro + CLI + `getQuotaCeiling`), sección `multi_provider.quota` de [`.pipeline/config.yaml`](../../.pipeline/config.yaml), schema en [`.pipeline/lib/config-schema.js`](../../.pipeline/lib/config-schema.js) — ver §18.
 - **Balanceo por saldo y ritmo (#6561):** [`.pipeline/lib/agent-launcher/quota-balancer.js`](../../.pipeline/lib/agent-launcher/quota-balancer.js) (plan puro + lector con caché), integración en [`dispatch-with-fallback.js`](../../.pipeline/lib/agent-launcher/dispatch-with-fallback.js) (`balance_by_quota`, `quota_balance_prefer_other`, `quota_reserve_critical`), sección `multi_provider.balanceo` de [`.pipeline/config.yaml`](../../.pipeline/config.yaml) — ver §20.
 - **Saldo, ritmo y proyección (#6560):** [`.pipeline/lib/multi-provider/quota-balance.js`](../../.pipeline/lib/multi-provider/quota-balance.js) (fórmula pura), [`quota-ledger.js`](../../.pipeline/lib/multi-provider/quota-ledger.js) (serie persistida + lectores), [`quota-series.js`](../../.pipeline/lib/multi-provider/quota-series.js) (series derivadas), slice `quotaBalanceSlice` en [`dashboard-slices.js`](../../.pipeline/lib/dashboard-slices.js) → `GET /api/dash/quota-balance` — ver §19.
+- **Panel de saldo y ritmo (#6565):** `renderSystemQuotaPanel` / `_mzBalanceCells` / `_mzHydrateBalanceRow` en [`.pipeline/views/dashboard/home.js`](../../.pipeline/views/dashboard/home.js), harness [`.pipeline/tools/render-quota-balance-evidence-6565.js`](../../.pipeline/tools/render-quota-balance-evidence-6565.js) — ver §21.
 - **Diseño y decisiones:** [`docs/pipeline-multi-provider.md`](../pipeline-multi-provider.md) (1140 líneas, design doc v2).
 - **Permission mapping (capabilities cross-provider):** [`docs/pipeline-multi-provider/permission-mapping.md`](../pipeline-multi-provider/permission-mapping.md).
 - **Data residency / exclusiones:** [`docs/pipeline-multi-provider/data-residency.md`](../pipeline-multi-provider/data-residency.md).
@@ -4128,3 +4130,94 @@ Doc completa: [`docs/pipeline/model-value-audit.md`](model-value-audit.md). Resu
 - **Reproducir a mano**: `node .pipeline/scripts/model-value-report.js --dias=30 --hasta=YYYY-MM-DD` (el mensaje cita el comando exacto y `ref <hash8>` de su evidencia).
 - **Dependencias abiertas**: #7507 (precios de `claude-opus-5`), #7506 (costo con caché), #7508 (integridad de las fuentes secundarias), #6807 (registro único de propuestas ⇒ adaptador `registry` y dedup).
 - **Apagar**: `enabled: false` en archivo (≤ 1 h sin restart); sólo el audio: `audio_policy.by_event.model_value_audit: false` en `pipeline.config.json`.
+
+---
+
+## 21. Panel de saldo y ritmo de cuota por proveedor en el dashboard (#6565)
+
+> **Estado:** implementado (#6565, Ola E8). **Programa:** Contabilidad y balanceo de cuota por
+> proveedor (8 de 10). **Depende de:** techos (#6559, §18) y balance (#6560, §19).
+
+**Cadena del programa:** #6560 (saldo y ritmo) → **#6565 (panel)**.
+
+### 21.1 Dónde vive
+
+Es la sección **🔌 CUOTA POR PROVEEDOR** del home del dashboard (`renderSystemQuotaPanel`,
+`.pipeline/views/dashboard/home.js`, panel #4533). **No hay una segunda sección de cuota** (CA-4):
+el panel existente se extiende de 3 a 4 columnas y cada proveedor pasa a ocupar dos líneas.
+
+| Columna | Fuente | Contenido |
+|---|---|---|
+| Proveedor | `MZ_PROVIDER_META` | dot + nombre + fuente (`CLI`) — sin cambios |
+| Ventana corta | `GET /api/dash/quota` → `providers[id].session` | mini-barra + % + countdown de reset — **intacta** (ids `mz-qm-<id>-short-*`) |
+| Período · saldo | `GET /api/dash/quota-balance` → `balance.providers[id]` | tag (`SEM`/`DÍA`/`HORA`) + barra techo/consumo + marca del saldo proyectado al cierre + tramo rayado del excedente + saldo (`77 %`) |
+| Ritmo · proyección | ídem | `0,62 %/h` + `agota en 5d 4h` / `agotado` / `no se agota` / `sin proyección` |
+| Línea 2 (bajo las dos columnas nuevas) | ídem | chip de veredicto (ícono + texto por `estado`) + lectura `techo 100 · consumido 23 ↻ cierra en 6d 5h` |
+
+Unidades (`MZ_QB_UNIT` en `home.js`, según `unidad` del techo): `porcentaje` → `%` / `%/h`; `tokens` → `tok` / `tok/h`; `mensajes` → `mensajes` / `msj/h`; `creditos` → `créditos` / `créd/h`. El placeholder estático del ritmo (`mz-qr-<id>-unit`) arranca en `%/h`.
+
+La ventana larga que antes se hidrataba desde `/api/dash/quota` (`weekly`) **ya no existe**: dos
+endpoints escribiendo la misma celda era exactamente "dos secciones con datos distintos".
+
+### 21.2 La vista no recalcula nada (CA-3)
+
+El cliente (`_mzHydrateBalanceRow` / `renderQuotaBalanceMatrix` en el script de `home.js`) mapea
+campos del slice a elementos y **nada más**:
+
+- **El color lo dicta `estado`** y sólo `estado` (`alcanza→ok · se_agota_antes→warn · excedido→bad ·
+  desactualizado→warn · sin_datos→dim · sin_proyeccion→ok` con el ritmo en `dim`). No se comparan
+  porcentajes contra umbrales ni se reutilizan `_mzThresholdClass`/`_mzConsumedClass` de la ventana corta.
+- El relleno de la barra (`consumo/techo`), el tramo rayado (`excedente_pts/techo`, tope visual 25 %)
+  y la marca vertical (`(techo − al_cierre_pts)/techo`) son **escala visual**, no umbral.
+- `agota en` sale de `agota_en_ms`; `cierra en` / `repone en` de `cierre_en_ms`. Se descuentan
+  localmente cada segundo desde que llegó la respuesta (UX-9) y un countdown vencido muestra
+  `renovando…`, nunca negativo. Re-fetch cada 60 s (`tickQuotaBalance`, mismo ritmo que `tickProviderQuota`).
+- Si cambia la fórmula, cambia en `quota-balance.js` y el panel lo refleja sin tocar CSS.
+
+Copy del chip por estado (contrato UX §4 — un estado = un render):
+
+| `estado` | Chip | "agota en" |
+|---|---|---|
+| `alcanza` | `✓ Alcanza · +37 % al cierre` (sin cierre conocido: `Alcanza · cierre desconocido`) | `agota en 6d 11h` / `no se agota` si ritmo 0 |
+| `se_agota_antes` | `⚠ Se agota 1d 1h antes del cierre · −16 %` (sin cierre: `Se agota en 5d 4h · cierre desconocido`) | `agota en 5d 4h` |
+| `excedido` | `✕ Excedido +12 % sobre el techo` | `agotado` |
+| `sin_datos` | `○ Sin datos del período` — saldo completo en **gris**, nunca verde ni error (CA-5) | `sin proyección` |
+| `desactualizado` | `⏱ Dato viejo · muestra de hace 47m` | `sin proyección` |
+| `sin_proyeccion` | `◌ Ritmo en cálculo · 1/3 muestras` | `sin proyección` |
+
+### 21.3 Fail-closed (UX-7)
+
+- Antes del primer tick las celdas del período muestran `…` atenuado (`mz-qm-nodata`), nunca `0 %`
+  ni `100 %`.
+- `ok: false` del slice, respuesta con shape inválido, `estado` fuera del enum o proveedor sin techo
+  declarado ⇒ `sin dato` gris con el **motivo en el `title`**, chip `○ Balance no disponible` y la nota
+  del header en `⚠ balance no disponible`.
+- "Proveedores sanos" (`mz-sig-healthy`) cruza las dos fuentes: un proveedor es sano si su ventana
+  corta no está agotada **o** el balance le deja saldo con dato real (`estado ∉ {excedido, sin_datos}`).
+
+### 21.4 Evidencia visual y QA
+
+Con el ledger recién creado los 3 proveedores salen `sin_datos` durante la primera hora (el ritmo
+necesita `min_muestras: 3` dentro de `ventana_movil_min: 60`). Para ver los seis estados sin esperar:
+
+```bash
+node .pipeline/tools/render-quota-balance-evidence-6565.js
+#  → qa/evidence/6565/render-real-quota-balance.{html,png}
+#  → qa/evidence/6565/compare-render-vs-mockup.png   (render real vs assets/mockups/6565/panel-esperado-cuota.png)
+```
+
+El harness incrusta CSS, markup SSR y script cliente **reales** de `home.js` (sin copias, misma
+disciplina que #4900) y hidrata con `renderQuotaBalanceMatrix` / `_mzHydrateBalanceRow` usando
+fixtures con el shape exacto de `balanceForProvider()`: ① panel completo con los tres proveedores,
+② catálogo de los seis estados, ③ slice con `ok:false`.
+
+Mockup y contrato UX: [`.pipeline/assets/mockups/6565/`](../../.pipeline/assets/mockups/6565/)
+(`panel-esperado-cuota.html/.png`, `ux-validacion-6565.md`).
+
+### 21.5 Tests
+
+- `.pipeline/tests/quota-balance-panel-6565.test.js` — SSR (una sola sección, ventana corta intacta,
+  ids nuevos), hidratación real de los seis estados con DOM falso, fail-closed, countdowns vivos,
+  formateadores (`pts`/`tok`/`mensajes`/`créditos`, coma decimal es-AR), anti-recalculo (CA-3) y
+  cero hex nuevos (UX-8); anti-drift del harness de evidencia.
+- `home.test.js` y `home-mz-provider-rows-4249.test.js` ajustados: `mz-qm-<id>-long-*` ya no se emite.
