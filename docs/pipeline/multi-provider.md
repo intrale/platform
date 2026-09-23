@@ -3965,9 +3965,11 @@ el panel existente se extiende de 3 a 4 columnas y cada proveedor pasa a ocupar 
 |---|---|---|
 | Proveedor | `MZ_PROVIDER_META` | dot + nombre + fuente (`CLI`) — sin cambios |
 | Ventana corta | `GET /api/dash/quota` → `providers[id].session` | mini-barra + % + countdown de reset — **intacta** (ids `mz-qm-<id>-short-*`) |
-| Período · saldo | `GET /api/dash/quota-balance` → `balance.providers[id]` | tag (`SEM`/`DÍA`/`HORA`) + barra techo/consumo + marca del saldo proyectado al cierre + tramo rayado del excedente + saldo (`77 pts`) |
-| Ritmo · proyección | ídem | `0,62 pts/h` + `agota en 5d 4h` / `agotado` / `no se agota` / `sin proyección` |
+| Período · saldo | `GET /api/dash/quota-balance` → `balance.providers[id]` | tag (`SEM`/`DÍA`/`HORA`) + barra techo/consumo + marca del saldo proyectado al cierre + tramo rayado del excedente + saldo (`77 %`) |
+| Ritmo · proyección | ídem | `0,62 %/h` + `agota en 5d 4h` / `agotado` / `no se agota` / `sin proyección` |
 | Línea 2 (bajo las dos columnas nuevas) | ídem | chip de veredicto (ícono + texto por `estado`) + lectura `techo 100 · consumido 23 ↻ cierra en 6d 5h` |
+
+Unidades (`MZ_QB_UNIT` en `home.js`, según `unidad` del techo): `porcentaje` → `%` / `%/h`; `tokens` → `tok` / `tok/h`; `mensajes` → `mensajes` / `msj/h`; `creditos` → `créditos` / `créd/h`. El placeholder estático del ritmo (`mz-qr-<id>-unit`) arranca en `%/h`.
 
 La ventana larga que antes se hidrataba desde `/api/dash/quota` (`weekly`) **ya no existe**: dos
 endpoints escribiendo la misma celda era exactamente "dos secciones con datos distintos".
@@ -3991,17 +3993,17 @@ Copy del chip por estado (contrato UX §4 — un estado = un render):
 
 | `estado` | Chip | "agota en" |
 |---|---|---|
-| `alcanza` | `✓ Alcanza · +37 pts al cierre` (sin cierre conocido: `Alcanza · cierre desconocido`) | `agota en 6d 11h` / `no se agota` si ritmo 0 |
-| `se_agota_antes` | `⚠ Se agota 1d 1h antes del cierre · −16 pts` (sin cierre: `Se agota en 5d 4h · cierre desconocido`) | `agota en 5d 4h` |
-| `excedido` | `✕ Excedido +12 pts sobre el techo` | `agotado` |
+| `alcanza` | `✓ Alcanza · +37 % al cierre` (sin cierre conocido: `Alcanza · cierre desconocido`) | `agota en 6d 11h` / `no se agota` si ritmo 0 |
+| `se_agota_antes` | `⚠ Se agota 1d 1h antes del cierre · −16 %` (sin cierre: `Se agota en 5d 4h · cierre desconocido`) | `agota en 5d 4h` |
+| `excedido` | `✕ Excedido +12 % sobre el techo` | `agotado` |
 | `sin_datos` | `○ Sin datos del período` — saldo completo en **gris**, nunca verde ni error (CA-5) | `sin proyección` |
 | `desactualizado` | `⏱ Dato viejo · muestra de hace 47m` | `sin proyección` |
 | `sin_proyeccion` | `◌ Ritmo en cálculo · 1/3 muestras` | `sin proyección` |
 
 ### 21.3 Fail-closed (UX-7)
 
-- Antes del primer tick las celdas del período muestran `…` atenuado (`mz-qm-nodata`), nunca `0 pts`
-  ni `100 pts`.
+- Antes del primer tick las celdas del período muestran `…` atenuado (`mz-qm-nodata`), nunca `0 %`
+  ni `100 %`.
 - `ok: false` del slice, respuesta con shape inválido, `estado` fuera del enum o proveedor sin techo
   declarado ⇒ `sin dato` gris con el **motivo en el `title`**, chip `○ Balance no disponible` y la nota
   del header en `⚠ balance no disponible`.

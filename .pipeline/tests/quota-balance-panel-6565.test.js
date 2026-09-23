@@ -114,12 +114,12 @@ test('UX-1/UX-2 — la ventana corta queda intacta y la larga no se emite', () =
     }
 });
 
-test('UX-7 — skeleton pendiente: "…" atenuado (mz-qm-nodata), nunca 0 pts ni 100 pts', () => {
+test('UX-7 — skeleton pendiente: "…" atenuado (mz-qm-nodata), nunca 0 % ni 100 %', () => {
     const cells = home._mzBalanceCells('anthropic', 'Sem');
     assert.match(cells, /class="mz-qb mz-qm-nodata"/);
     assert.match(cells, /class="mz-qr mz-qm-nodata"/);
     assert.match(cells, /id="mz-qb-anthropic-saldo">…</);
-    assert.ok(!/\b(0|100) pts\b/.test(cells), 'sin saldo por defecto');
+    assert.ok(!/\b(0|100) %/.test(cells), 'sin saldo por defecto');
     assert.ok(cells.includes(home.MZ_BALANCE_PENDING_HINT), 'title explica que es pendiente');
 });
 
@@ -144,22 +144,22 @@ test('los 6 estados del enum ESTADOS tienen tono y copy (contrato cerrado)', () 
     assert.equal(h._mzBalanceVerdict({ estado: 'inventado' }, {}, NOW), null, 'estado desconocido → null (fail-closed)');
 });
 
-test('alcanza — verde, marca de cierre dentro del saldo, chip "+37 pts al cierre"', () => {
+test('alcanza — verde, marca de cierre dentro del saldo, chip "+37 % al cierre"', () => {
     const { els, r } = hydrate('anthropic', evidence.STATE_FIXTURES.alcanza);
     assert.ok(cls(els, 'mz-qb-anthropic').includes('ok') && cls(els, 'mz-qv-anthropic').includes('ok'));
-    assert.equal(txt(els, 'mz-qb-anthropic-saldo'), '59 pts');
+    assert.equal(txt(els, 'mz-qb-anthropic-saldo'), '59 %');
     assert.equal(els['mz-qb-anthropic-fill'].style.width, '41.0%');
     assert.equal(els['mz-qb-anthropic-mark'].getAttribute('data-on'), '1');
     assert.equal(els['mz-qb-anthropic-mark'].style.left, '63.0%', 'marca en (techo − al_cierre)/techo');
     assert.equal(txt(els, 'mz-qr-anthropic-rate'), '0,38');
     assert.equal(txt(els, 'mz-qr-anthropic-eta'), 'agota en 6d 11h');
     assert.equal(txt(els, 'mz-qv-anthropic-ic'), '✓');
-    assert.equal(txt(els, 'mz-qv-anthropic-tx'), 'Alcanza · +37 pts al cierre');
+    assert.equal(txt(els, 'mz-qv-anthropic-tx'), 'Alcanza · +37 % al cierre');
     assert.equal(txt(els, 'mz-ql2-anthropic-rd'), 'techo 100 · consumido 41 ↻ cierra en 2d 9h');
     assert.equal(r.healthy, true);
 });
 
-test('alcanza sin cierre conocido (rolling) — guard: "cierre desconocido", nunca "+null pts" (guru §4.3)', () => {
+test('alcanza sin cierre conocido (rolling) — guard: "cierre desconocido", nunca "+null %" (guru §4.3)', () => {
     const f = Object.assign({}, evidence.STATE_FIXTURES.alcanza, { al_cierre_pts: null, cierre_en_ms: null, cierre_periodo_at: null, reposicion: 'rolling', rolling: true });
     const { els } = hydrate('anthropic', f);
     assert.equal(txt(els, 'mz-qv-anthropic-tx'), 'Alcanza · cierre desconocido');
@@ -178,12 +178,12 @@ test('alcanza con ritmo 0 — "no se agota"', () => {
 test('se_agota_antes — ámbar, chip con cuánto antes y el faltante con signo tipográfico', () => {
     const { els } = hydrate('anthropic', evidence.STATE_FIXTURES.se_agota_antes);
     assert.ok(cls(els, 'mz-qb-anthropic').includes('warn') && cls(els, 'mz-qr-anthropic').includes('warn') && cls(els, 'mz-qv-anthropic').includes('warn'));
-    assert.equal(txt(els, 'mz-qb-anthropic-saldo'), '77 pts');
+    assert.equal(txt(els, 'mz-qb-anthropic-saldo'), '77 %');
     assert.equal(txt(els, 'mz-qv-anthropic-ic'), '⚠');
-    assert.equal(txt(els, 'mz-qv-anthropic-tx'), 'Se agota 1d 1h antes del cierre · −16 pts');
+    assert.equal(txt(els, 'mz-qv-anthropic-tx'), 'Se agota 1d 1h antes del cierre · −16 %');
     assert.equal(txt(els, 'mz-qr-anthropic-eta'), 'agota en 5d 4h');
     assert.equal(els['mz-qb-anthropic-mark'].style.left, '100.0%', 'marca clampeada al 100 % cuando al_cierre < 0');
-    assert.equal(els['mz-qv-anthropic'].getAttribute('aria-label'), 'Se agota 1d 1h antes del cierre · −16 pts · Anthropic', 'UX-3: aria-label = texto + proveedor');
+    assert.equal(els['mz-qv-anthropic'].getAttribute('aria-label'), 'Se agota 1d 1h antes del cierre · −16 % · Anthropic', 'UX-3: aria-label = texto + proveedor');
 });
 
 test('se_agota_antes con cierre desconocido — "Se agota en X · cierre desconocido"', () => {
@@ -192,16 +192,16 @@ test('se_agota_antes con cierre desconocido — "Se agota en X · cierre descono
     assert.equal(txt(els, 'mz-qv-openai-codex-tx'), 'Se agota en 5d 4h · cierre desconocido');
 });
 
-test('CA-2/UX-5 — excedido: saldo 0, chip "+12 pts sobre el techo", barra llena + tramo rayado, "agotado"', () => {
+test('CA-2/UX-5 — excedido: saldo 0, chip "+12 % sobre el techo", barra llena + tramo rayado, "agotado"', () => {
     const { els, r } = hydrate('antigravity', evidence.STATE_FIXTURES.excedido);
     assert.ok(cls(els, 'mz-qb-antigravity').includes('bad') && cls(els, 'mz-qv-antigravity').includes('bad'));
-    assert.equal(txt(els, 'mz-qb-antigravity-saldo'), '0 pts', 'nunca saldo negativo');
+    assert.equal(txt(els, 'mz-qb-antigravity-saldo'), '0 %', 'nunca saldo negativo');
     assert.equal(els['mz-qb-antigravity-fill'].style.width, '100.0%');
     assert.equal(els['mz-qb-antigravity-over'].style.width, '12.0%', 'tramo rayado = excedente/techo');
     assert.equal(els['mz-qb-antigravity-bar'].getAttribute('data-over'), '1');
     assert.equal(els['mz-qb-antigravity-mark'].getAttribute('data-on'), '0');
     assert.equal(txt(els, 'mz-qv-antigravity-ic'), '✕');
-    assert.equal(txt(els, 'mz-qv-antigravity-tx'), 'Excedido +12 pts sobre el techo');
+    assert.equal(txt(els, 'mz-qv-antigravity-tx'), 'Excedido +12 % sobre el techo');
     assert.equal(txt(els, 'mz-qr-antigravity-eta'), 'agotado');
     assert.equal(txt(els, 'mz-ql2-antigravity-rd'), 'techo 100 · consumido 112 ↻ repone en 3h 20m');
     assert.equal(r.healthy, false);
@@ -211,7 +211,7 @@ test('CA-5/UX-4 — sin_datos: saldo completo en gris (dim, no ok), nunca error'
     const { els, r } = hydrate('antigravity', evidence.STATE_FIXTURES.sin_datos);
     const c = cls(els, 'mz-qb-antigravity');
     assert.ok(c.includes('dim') && !c.includes('ok') && !c.includes('bad') && !c.includes('mz-qm-nodata'), `clases: ${c}`);
-    assert.equal(txt(els, 'mz-qb-antigravity-saldo'), '100 pts');
+    assert.equal(txt(els, 'mz-qb-antigravity-saldo'), '100 %');
     assert.equal(txt(els, 'mz-qb-antigravity-tag'), 'DÍA');
     assert.equal(txt(els, 'mz-qr-antigravity-rate'), '—');
     assert.equal(txt(els, 'mz-qr-antigravity-eta'), 'sin proyección');
@@ -237,14 +237,14 @@ test('UX-6 — sin_proyeccion: saldo con color normal (ok), ritmo dim "en cálcu
     assert.ok(cls(els, 'mz-qr-openai-codex').includes('dim') && cls(els, 'mz-qv-openai-codex').includes('dim'));
     assert.equal(txt(els, 'mz-qv-openai-codex-ic'), '◌');
     assert.equal(txt(els, 'mz-qv-openai-codex-tx'), 'Ritmo en cálculo · 1/3 muestras');
-    assert.equal(txt(els, 'mz-qb-openai-codex-saldo'), '100 pts');
+    assert.equal(txt(els, 'mz-qb-openai-codex-saldo'), '100 %');
     assert.equal(txt(els, 'mz-ql2-openai-codex-rd'), 'saldo completo · repuesto hace 12m ↻ cierra en 7d');
 });
 
 test('UX-10 — title completo en las tres celdas del período', () => {
     const { els } = hydrate('anthropic', evidence.STATE_FIXTURES.se_agota_antes);
     const t = els['mz-qb-anthropic'].getAttribute('title');
-    for (const frag of ['plan Max', 'techo 100 pts', 'consumo 23 pts', 'saldo 77 pts', 'ritmo 0,62 pts/h', 'ventana móvil 60 min', '4/3 muestras', 'agota ', 'cierre ', 'al cierre −16 pts', 'muestra ', '(fresh)', 'reposición dom 21:00', 'estado se_agota_antes']) {
+    for (const frag of ['plan Max', 'techo 100 %', 'consumo 23 %', 'saldo 77 %', 'ritmo 0,62 %/h', 'ventana móvil 60 min', '4/3 muestras', 'agota ', 'cierre ', 'al cierre −16 %', 'muestra ', '(fresh)', 'reposición dom 21:00', 'estado se_agota_antes']) {
         assert.ok(t.includes(frag), `title incluye "${frag}": ${t}`);
     }
     assert.equal(els['mz-qr-anthropic'].getAttribute('title'), t);
@@ -296,7 +296,7 @@ test('proveedor sin techo declarado (ausente en balance.providers) → "sin dato
     h.renderQuotaBalanceMatrix(d, NOW, NOW);
     assert.equal(txt(els, 'mz-qb-antigravity-saldo'), 'sin dato');
     assert.match(els['mz-qb-antigravity'].getAttribute('title'), /sin techo declarado/);
-    assert.equal(txt(els, 'mz-qb-anthropic-saldo'), '77 pts', 'los demás se hidratan normal');
+    assert.equal(txt(els, 'mz-qb-anthropic-saldo'), '77 %', 'los demás se hidratan normal');
     assert.equal(txt(els, 'mz-qb-note'), 'muestra hace 2m', 'nota del header = muestra más reciente');
     assert.equal(els['mz-qm-h-note'].getAttribute('data-balance'), '1');
 });
@@ -317,18 +317,18 @@ test('UX-9 — los countdowns se descuentan con el tiempo transcurrido; vencido 
 // =============================================================================
 // Formateadores (UX §3)
 // =============================================================================
-test('formatos: pts sin decimales, tokens en M/k, mensajes/créditos con unidad, ritmo con coma es-AR', () => {
+test('formatos: % sin decimales, tokens en M/k, mensajes/créditos con unidad, ritmo con coma es-AR', () => {
     const { h } = hydrate('anthropic', evidence.STATE_FIXTURES.alcanza);
-    assert.equal(h._mzFmtPts(77.4, 'porcentaje'), '77 pts');
-    assert.equal(h._mzFmtPts(-5, 'porcentaje'), '5 pts', 'nunca negativo');
+    assert.equal(h._mzFmtPts(77.4, 'porcentaje'), '77 %');
+    assert.equal(h._mzFmtPts(-5, 'porcentaje'), '5 %', 'nunca negativo');
     assert.equal(h._mzFmtPts(1200000, 'tokens'), '1,2 M tok');
     assert.equal(h._mzFmtPts(850000, 'tokens'), '850 k tok');
     assert.equal(h._mzFmtPts(999, 'tokens'), '999 tok');
     assert.equal(h._mzFmtPts(12, 'mensajes'), '12 mensajes');
     assert.equal(h._mzFmtPts(1500, 'creditos'), '1.500 créditos');
     assert.equal(h._mzFmtPts(null, 'porcentaje'), '—');
-    assert.equal(h._mzFmtSigned(-16, 'porcentaje'), '−16 pts');
-    assert.equal(h._mzFmtSigned(37, 'porcentaje'), '+37 pts');
+    assert.equal(h._mzFmtSigned(-16, 'porcentaje'), '−16 %');
+    assert.equal(h._mzFmtSigned(37, 'porcentaje'), '+37 %');
     assert.equal(h._mzFmtRate(0.62), '0,62');
     assert.equal(h._mzFmtRate(1.8), '1,80');
     assert.equal(h._mzFmtRate(null), '—');
@@ -417,13 +417,13 @@ test('UX-11 — el harness rinde al ancho real del home (kiosk-frame − padding
     assert.ok(!html.includes('width:1384px'), 'ya no rinde al ancho irreal que escondía el recorte');
 });
 
-test('UX-11 — el harness incluye el bloque ④ (lecturas largas −152 / −1.841 pts) y el clip guard', () => {
+test('UX-11 — el harness incluye el bloque ④ (lecturas largas −152 / −1.841 %) y el clip guard', () => {
     const html = evidence.buildHarnessHtml();
     assert.ok(html.includes('id="lg-mz-ql2-anthropic"') && html.includes('id="lg-mz-ql2-openai-codex"'), 'panel ④ con ids prefijados lg-');
     assert.ok(html.includes('renderQuotaBalanceMatrix(FX.long'), 'se hidrata con la función real');
     assert.ok(html.includes('id="harness-clip"') && html.includes("setAttribute('data-clipped'"), 'clip guard embebido en la página');
     assert.ok(html.includes(evidence.CLIP_GUARD_SCRIPT), 'script del guard verbatim');
-    assert.equal(evidence.PANEL_REALISTA.balance.providers.anthropic.al_cierre_pts, -152, 'escenario del rechazo: −152 pts');
+    assert.equal(evidence.PANEL_REALISTA.balance.providers.anthropic.al_cierre_pts, -152, 'escenario del rechazo: −152 %');
     assert.equal(evidence.PANEL_REALISTA.balance.providers['openai-codex'].al_cierre_pts, -1841, 'peor caso medido por QA en el home vivo');
     assert.equal(evidence.EXIT_CLIPPED, 5);
 });
@@ -434,9 +434,9 @@ test('UX-11 — las lecturas largas se emiten completas (chip + "cierra en 5d 13
     els['mz-qb-note'] = mkEl(); els['mz-qm-h-note'] = mkEl(); els['mz-sig-healthy'] = mkEl();
     const h = loadHydrator(els);
     h.renderQuotaBalanceMatrix(JSON.parse(JSON.stringify(evidence.PANEL_REALISTA)), NOW, NOW);
-    assert.equal(txt(els, 'mz-qv-anthropic-tx'), 'Se agota 3d 13h antes del cierre · −152 pts');
+    assert.equal(txt(els, 'mz-qv-anthropic-tx'), 'Se agota 3d 13h antes del cierre · −152 %');
     assert.equal(txt(els, 'mz-ql2-anthropic-rd'), 'techo 100 · consumido 28 ↻ cierra en 5d 13h');
-    assert.equal(txt(els, 'mz-qv-openai-codex-tx'), 'Se agota 5d 8h antes del cierre · −1.841 pts');
+    assert.equal(txt(els, 'mz-qv-openai-codex-tx'), 'Se agota 5d 8h antes del cierre · −1.841 %');
     assert.equal(txt(els, 'mz-ql2-openai-codex-rd'), 'techo 100 · consumido 28 ↻ cierra en 5d 13h');
 });
 

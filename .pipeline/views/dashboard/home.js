@@ -1935,7 +1935,7 @@ ${(() => { try { return _commanderActivity ? _commanderActivity.commanderActivit
 /* Línea 2 = chip de veredicto + lectura del período. Las dos piezas son
    unidades (nowrap cada una) pero la línea ENVUELVE cuando no entran juntas:
    en el ancho real del home (kiosk-frame 1080 px → matriz 743 px, celda
-   ≈ 400 px) un veredicto largo ("Se agota 4d 20h antes del cierre · −152 pts")
+   ≈ 400 px) un veredicto largo ("Se agota 4d 20h antes del cierre · −152 %")
    más la lectura ("techo 100 · consumido 28 ↻ cierra en 5d 13h") suman
    > 410 px y .mz-sysquota{overflow:hidden} recortaba la cola ("cierra en 5d 1").
    Con flex-wrap la lectura baja a una segunda línea alineada a la derecha y
@@ -2924,7 +2924,7 @@ function renderProviderQuotaMatrix(d){
 // quota-balance.js y el panel lo refleja sin tocar CSS.
 //
 // Fail-closed (UX-7): ok:false o proveedor ausente ⇒ celdas "sin dato" gris
-// con el motivo en title; nunca "0 pts" ni "100 pts" verde por defecto.
+// con el motivo en title; nunca "0 %" ni "100 %" verde por defecto.
 // =============================================================================
 const MZ_QB_PERIOD_TAG = { semanal: 'SEM', diario: 'DÍA', horario: 'HORA' };
 // Tono por estado (UX §3): sólo estado pinta. sin_proyeccion conserva el
@@ -2938,7 +2938,7 @@ const MZ_QB_TONE = {
     sin_proyeccion: { qb: 'ok',   qr: 'dim',  qv: 'dim',  ic: '◌' },
 };
 const MZ_QB_UNIT = {
-    porcentaje: { pts: 'pts', rate: 'pts/h' },
+    porcentaje: { pts: '%', rate: '%/h' },
     tokens:     { pts: 'tok', rate: 'tok/h' },
     mensajes:   { pts: 'mensajes', rate: 'msj/h' },
     creditos:   { pts: 'créditos', rate: 'créd/h' },
@@ -2954,7 +2954,7 @@ function _mzFmtInt(v){
 function _mzFmtDec(v, d){
     return Number(v).toFixed(d).replace('.', ',');
 }
-// Cantidad en la unidad del techo (UX §3): 77 pts (0 decimales); tokens en
+// Cantidad en la unidad del techo (UX §3): 77 % (0 decimales); tokens en
 // 1,2 M tok / 850 k tok; mensajes/créditos entero + unidad. Nunca negativo
 // (el slice ya entrega saldo/excedente ≥ 0; se toma el valor absoluto igual).
 function _mzFmtPts(v, unidad){
@@ -2967,7 +2967,7 @@ function _mzFmtPts(v, unidad){
     }
     return _mzFmtInt(n) + ' ' + u.pts;
 }
-// Cantidad CON signo tipográfico (chip): +37 pts / −16 pts.
+// Cantidad CON signo tipográfico (chip): +37 % / −16 %.
 function _mzFmtSigned(v, unidad){
     if(v == null || !Number.isFinite(Number(v))) return '—';
     const n = Number(v);
@@ -6116,8 +6116,8 @@ function _mzWinCell(key, slot, winLabel) {
 }
 
 // #6565 — Celdas del PERÍODO (skeleton SSR). Reemplazan a la "ventana larga":
-// saldo (barra techo/consumo + saldo en pts + marca del saldo proyectado al
-// cierre + tramo rayado del excedente), ritmo (pts/h + "agota en") y la línea 2
+// saldo (barra techo/consumo + saldo en la unidad del techo + marca del saldo proyectado al
+// cierre + tramo rayado del excedente), ritmo (%/h + "agota en") y la línea 2
 // (chip de veredicto + lectura `techo · consumido · ↻ cierre`). Las hidrata
 // `_mzHydrateBalanceRow` SOLO desde `/api/dash/quota-balance` (#6560): la vista
 // no recalcula la fórmula (CA-3) ni mezcla fuentes con la ventana corta (CA-4).
@@ -6140,7 +6140,7 @@ function _mzBalanceCells(key, periodTag) {
         <div class="mz-qr mz-qm-nodata" id="${qr}" title="${escapeHtmlAttr(MZ_BALANCE_PENDING_HINT)}"
              aria-label="${escapeHtmlAttr(meta.name)} ritmo: pendiente">
           <span class="mz-qr-rate" id="${qr}-rate">…</span>
-          <span class="mz-qr-unit" id="${qr}-unit">pts/h</span>
+          <span class="mz-qr-unit" id="${qr}-unit">%/h</span>
           <span class="mz-qr-eta" id="${qr}-eta"></span>
         </div>
         <div class="mz-ql2" id="mz-ql2-${key}">

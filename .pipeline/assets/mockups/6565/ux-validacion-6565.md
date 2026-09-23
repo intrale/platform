@@ -32,8 +32,8 @@ Lo que cambia:
 |---|---|---|
 | Proveedor | dot + nombre + fuente | **igual** |
 | Ventana corta | `5H ▬▬ 83% ↻21m` desde `/api/dash/quota` | **igual, intacta** (la ventana corta no tiene techo declarado; queda fuera del libro contable) |
-| Ventana larga | `SEM ▬▬ 23% ↻6d5h` desde `/api/dash/quota` | pasa a **Período · saldo**: `SEM ▬▬▬|▬ 77 pts` desde `/api/dash/quota-balance` |
-| — | — | nueva **Ritmo · proyección**: `0,62 pts/h · agota en 5d 4h` |
+| Ventana larga | `SEM ▬▬ 23% ↻6d5h` desde `/api/dash/quota` | pasa a **Período · saldo**: `SEM ▬▬▬|▬ 77 %` desde `/api/dash/quota-balance` |
+| — | — | nueva **Ritmo · proyección**: `0,62 %/h · agota en 5d 4h` |
 | — | — | nueva **línea 2** bajo las dos columnas nuevas: chip de veredicto (ícono + texto) a la izquierda; `techo · consumido · ↻ cierre` a la derecha |
 
 Cada proveedor ocupa **dos líneas** (la primera versión en una sola línea no entraba en los
@@ -56,8 +56,8 @@ era exactamente el "dos secciones con datos distintos" que prohíbe el CA-4.
 | barra: relleno | `consumo` / `techo` | `min(100, consumo/techo·100)` % de ancho — sólo escala visual, no umbral |
 | barra: tramo rayado | `excedente_pts` / `techo` | ancho `excedente/techo·100` % a partir del borde derecho; sólo si `> 0` |
 | barra: marca vertical | `al_cierre_pts` | posición `(techo − al_cierre_pts)/techo`; se dibuja sólo si `al_cierre_pts != null`; clamp a 100 % |
-| saldo | `saldo_pts` + `unidad` | `77 pts` (0 decimales). Con `unidad: tokens` → `1,2 M tok`; `mensajes`/`creditos` → entero + unidad. **Nunca negativo** (ya viene ≥ 0) |
-| ritmo | `ritmo_pts_por_hora` | `0,62 pts/h` (2 decimales, coma decimal `es-AR`); `null → —` |
+| saldo | `saldo_pts` + `unidad` | `77 %` (0 decimales). Con `unidad: tokens` → `1,2 M tok`; `mensajes`/`creditos` → entero + unidad. **Nunca negativo** (ya viene ≥ 0) |
+| ritmo | `ritmo_pts_por_hora` | `0,62 %/h` (2 decimales, coma decimal `es-AR`); `null → —` |
 | "agota en" | `agota_en_ms` | `fmtETA(ms)` existente (`5d 4h`); `null` → `sin proyección`; excedido → `agotado` |
 | chip de veredicto | `estado` (+ `agota_en_ms`, `cierre_en_ms`, `al_cierre_pts`, `excedente_pts`, `muestras`, `min_muestras`, `muestra_at`) | tabla §4 |
 | lectura derecha | `techo`, `consumo`, `cierre_en_ms`, `ultimo_reset` | `techo 100 · consumido 23 ↻ cierra en 6d 5h` · si `ultimo_reset` en el período: `repuesto hace 12m` |
@@ -100,18 +100,18 @@ ensanchan 20 %), signo tipográfico `−` para negativos, `·` como separador, s
   en el cliente (§3, "Prohibido").
 - **UX-3 — Estado nunca sólo por color. BLOQUEANTE.** Cada fila muestra el chip con ícono + texto
   de §4. `aria-label` del chip = mismo texto + nombre del proveedor. Design system §3 lo exige.
-- **UX-4 — `sin_datos` = saldo completo en gris, nunca error, nunca verde.** `100 pts` en
+- **UX-4 — `sin_datos` = saldo completo en gris, nunca error, nunca verde.** `100 %` en
   `--in-fg-dim`, chip `○ Sin datos del período`. (Gherkin "proveedor recién repuesto": saldo
   completo + consumo 0 se muestra con `ok` sólo si hay muestra fresca; con `confidence: missing`
   va gris.)
-- **UX-5 — `excedido` muestra excedente explícito.** Saldo `0 pts`, chip `✕ Excedido +N pts`,
+- **UX-5 — `excedido` muestra excedente explícito.** Saldo `0 %`, chip `✕ Excedido +N %`,
   barra llena + tramo rayado (`repeating-linear-gradient` con `--in-bad`), lectura
   `techo 100 · consumido 112`. Nunca un saldo negativo ni un % > 100 sin el tramo rayado.
 - **UX-6 — Sin proyección sobre dato viejo o insuficiente.** `desactualizado` y
   `sin_proyeccion` renderizan ritmo `—` y `sin proyección`; no se dibuja la marca de cierre.
 - **UX-7 — Fail-closed del slice.** `ok: false` ⇒ las dos columnas nuevas quedan en `sin dato`
-  (`mz-qm-nodata`, gris) con `title = motivo`; header con `⚠ balance no disponible`. Nunca `0 pts`
-  ni `100 pts` verde por defecto. Mientras no llega el primer tick: `…` atenuado (misma convención
+  (`mz-qm-nodata`, gris) con `title = motivo`; header con `⚠ balance no disponible`. Nunca `0 %`
+  ni `100 %` verde por defecto. Mientras no llega el primer tick: `…` atenuado (misma convención
   CA-UX2 de #4249).
 - **UX-8 — Sólo tokens `--in-*`.** `--in-ok/--in-warn/--in-bad` + `-soft`, `--in-fg/-dim/-soft`,
   `--in-border`. Cero hex nuevos en `home.js` (el mockup no introduce ninguno). Contraste ya
@@ -169,7 +169,7 @@ ensanchan 20 %), signo tipográfico `−` para negativos, `·` como separador, s
     $ curl -s localhost:3200/api/dash/quota | jq '.providers.anthropic'
     session {pct:82, win:"5h", kind:"short"} · weekly {pct:23, win:"Sem", kind:"long"}  ← la
     celda larga de hoy muestra este 23 %; con #6565 ese 23 pasa a ser `consumo` del balance y
-    la celda muestra `77 pts` de saldo (misma muestra, otra lectura — no dos fuentes).
+    la celda muestra `77 %` de saldo (misma muestra, otra lectura — no dos fuentes).
 
     $ node render-mockup.js
     {"panelW":1036,"panelH":245,"clipped":["⚠Se agota 1d 1h antes del cierre · −16 p"]}

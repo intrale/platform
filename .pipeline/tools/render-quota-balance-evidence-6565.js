@@ -21,7 +21,7 @@
 //   ② catálogo de los 6 estados (una fila por estado, mismas celdas)
 //   ③ fail-closed: slice con ok:false (UX-7)
 //   ④ panel con las lecturas MÁS LARGAS observadas en el home vivo (saldo proyectado
-//      de 3 y 4 dígitos: "−152 pts", "−1.841 pts") — el escenario del rebote QA rev-2.
+//      de 3 y 4 dígitos: "−152 %", "−1.841 %") — el escenario del rebote QA rev-2.
 //
 // Ancho real (rebote QA rev-2): el harness rinde el panel al MISMO ancho que el
 // home vivo — el `.kiosk-frame` mide 1080 px fijos y `.kiosk-body` tiene 22 px de
@@ -114,10 +114,10 @@ const PANEL_SHORT = {
     'antigravity': { win: 'MIN', mode: 'gauge', pct: null, available: null },
 };
 // ④ Lecturas largas del home vivo (rebote QA rev-2): con estado se_agota_antes y
-// saldo proyectado de 3 dígitos (−152 pts = 1,5 pts/h sostenidos sobre techo 100)
+// saldo proyectado de 3 dígitos (−152 % = 1,5 %/h sostenidos sobre techo 100)
 // la línea 2 superaba los ≈ 400 px de su celda y .mz-sysquota{overflow:hidden}
 // dejaba "cierra en 5d 1" en vez de "cierra en 5d 13h". El 2.º proveedor lleva
-// el peor caso medido por QA (−1.841 pts, ritmo 14,32 pts/h).
+// el peor caso medido por QA (−1.841 %, ritmo 14,32 %/h).
 const LONG_CLOSE_MS = (5 * 24 + 13) * HOUR + 30 * 60000;
 const PANEL_REALISTA = {
     ok: true, motivo: null, computed_at: iso(NOW), horas: 24,
@@ -237,7 +237,7 @@ h2 { font-size:11px; font-weight:800; letter-spacing:.8px; color:#8b949e; text-t
 <div class="grid">${catalog}</div>
 <h2>③ Fail-closed — slice con ok:false (UX-7)</h2>
 <div id="panel-fail">${failPanel}</div>
-<h2>④ Ancho real (matriz ≈ 743 px) — lecturas largas del home vivo: −152 pts · −1.841 pts (rebote QA rev-2)</h2>
+<h2>④ Ancho real (matriz ≈ 743 px) — lecturas largas del home vivo: −152 % · −1.841 % (rebote QA rev-2)</h2>
 <p class="sub">La línea 2 (chip de veredicto + "techo · consumido · ↻ cierra en") envuelve cuando no entra en su celda: nada queda recortado por <code>.mz-sysquota{overflow:hidden}</code> (UX-11).</p>
 <div id="panel-long">${longPanel}</div>
 <pre id="harness-err"></pre>
