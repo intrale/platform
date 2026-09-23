@@ -678,6 +678,8 @@ Resuelve a `provider: 'openai-codex', model: 'gpt-5-codex'`. Si OpenAI agota cuo
 
 ### 4.4 Orden canónico por agente — sign-off Leo 2026-05-15 (#3221)
 
+> **Fuente normativa (#7597):** qué proveedor puede atender qué rol, y por qué, lo decide [`docs/legal/proveedores-ia.md`](../legal/proveedores-ia.md) (estructurado en `.pipeline/provider-policy.json`). Esta tabla describe el **ruteo**; un test de coherencia verifica que cada eslabón (primario y `fallbacks`) esté habilitado por la política.
+
 Esta tabla refleja la **fuente autoritativa**: la memoria `project_multi-provider-per-agent-order` (sign-off Leo 2026-05-15). El archivo `.pipeline/agent-models.json` es la fuente vigente; #6860 actualiza las filas afectadas por Antigravity con el sign-off del 2026-09-18. El resto conserva aquí su referencia histórica. Los tests en `lib/__tests__/agent-models-validate.test.js` actúan como drift detector — si la tabla cambia, los tests fallan y avisan.
 
 Convenciones:
@@ -723,6 +725,8 @@ Convenciones:
 > **Sobre `tester` y `build` (deterministic):** la memoria `project_multi-provider-per-agent-order` originalmente proponía `build` con un free provider y `tester`=claude-sonnet como primary LLM. Sin embargo, **ambos skills son determinísticos** — corren como Node scripts (`.pipeline/skills-deterministicos/{build,tester}.js`) y la allowlist hardcoded `DETERMINISTIC_SKILLS = ['build', 'tester', 'linter', 'delivery']` en `resolve-provider.js` fuerza spawn determinístico ignorando lo que diga `agent-models.json`. Declararlos con LLM declarativo y `fallbacks[]` en el JSON crea **drift entre fuentes de verdad** (mismo patrón del incidente #3157 que costó $2.72/h en builds). Por eso `agent-models.json` los declara con la forma mínima `{provider: deterministic}` igual que `linter` y `delivery`, y `deterministic-skills-coherence.test.js` lo enforce. Si alguna vez se introduce una variante LLM-augmented (ej. `tester --from-gherkin`), se trata como un skill nuevo con su propia entrada, no se mezcla con el determinístico.
 
 ### 4.4.1 Matriz modelo×agente sobre Antigravity — sign-off Leo 2026-09-18 (#6860)
+
+> **Fuente normativa (#7597):** el fundamento de qué ve Antigravity de nuestro código, datos y entorno, y los roles que tiene habilitados, vive en [`docs/legal/proveedores-ia.md`](../legal/proveedores-ia.md) §3.3. Esta sección conserva el sign-off histórico y la política de caducidad por **versión** del CLI; la caducidad por **fecha** de los términos la lleva la política.
 
 > **La conclusión caduca si `agy --version` ≠ 1.2.5** o cambian las fuentes contractuales. La auditoría de security del 2026-09-16 se realizó con 1.2.4; guru re-verificó la instalación con 1.2.5 el 2026-09-17. Desarrollo comprobó nuevamente 1.2.5 en los spawns del 2026-09-18 UTC. El gate security conserva la firma de la re-verificación contractual.
 

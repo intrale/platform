@@ -763,3 +763,160 @@ test('H-10 · pulpo cron usa origin/main, no HEAD local (CA-H-10)', () => {
     assert.ok(!codeOnly.includes("'rev-parse', 'HEAD'") && !codeOnly.includes('"rev-parse", "HEAD"'),
         'el cron NO debe usar `git rev-parse HEAD` (regresión review #2)');
 });
+
+// -----------------------------------------------------------------------------
+// #7597 · CA-4 — Registro auditable de habilitar/deshabilitar un proveedor
+// para un rol. El commit toca SÓLO provider-policy.json; autor, sha y fecha
+// salen de git; el "por qué" es el signoff_ref.
+// -----------------------------------------------------------------------------
+
+const POLICY_PATH = '.pipeline/provider-policy.json';
+const SIGN_7597 = 'https://github.com/intrale/platform/issues/6860#issuecomment-5723188265';
+
+function policyWithRoles(roles) {
+    return {
+        providers: {
+            antigravity: { roles_allowed: roles },
+        },
+    };
+}
+
+/**
+ * Fake git que distingue por PATH en `git show <sha>:<path>` y emite el
+ * autor (`%an`) en el header de `git log`. Registra los args de `git log`.
+ */
+function makePolicyFakeGit({ commits, blobs, calls }) {
+    return function fakeExec(cmd, args) {
+        if (cmd !== 'git') throw new Error(`fake git: cmd inesperado ${cmd}`);
+        if (args[0] === 'log') {
+            if (calls) calls.push(args);
+            return commits.map((c) => {
+                const header = `\x1f${c.sha}\x1e${c.ts}\x1e${(c.parents || []).join(' ')}\x1e${c.author || ''}`;
+                return `${header}\n${(c.files || []).join('\n')}`;
+            }).join('\n');
+        }
+        if (args[0] === 'show') {
+            const m = /^([^:]+):(.+)$/.exec(args[1] || '');
+            const blob = m && blobs[`${m[1]}:${m[2]}`];
+            if (blob == null) { const e = new Error('no blob'); e.status = 128; throw e; }
+            return JSON.stringify(blob);
+        }
+        throw new Error(`fake git: subcmd no soportado ${args[0]}`);
+    };
+}
+
+function readAudit(pipelineDir) {
+    const f = alert.auditFilePath(pipelineDir);
+    return fs.readFileSync(f, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+}
+
+test('#7597 · detectChanges observa provider-policy.json y pide el autor a git', () => {
+    const calls = [];
+    const fakeExec = makePolicyFakeGit({
+        commits: [{ sha: 'cccc', ts: '2026-09-23T15:45:02-03:00', parents: ['bbbb'], author: 'leitolarreta', files: [POLICY_PATH] }],
+        blobs: {},
+        calls,
+    });
+    const commits = alert.detectChanges('bbbb', 'cccc', { execFile: fakeExec, cwd: os.tmpdir() });
+    assert.equal(calls.length, 1);
+    assert.ok(calls[0].includes(POLICY_PATH), 'el pathspec incluye la política');
+    assert.ok(calls[0].includes('.pipeline/agent-models.json'), 'y sigue incluyendo agent-models.json');
+    assert.ok(calls[0].some((a) => a.includes('%an')), 'el formato pide el autor');
+    assert.equal(commits[0].author, 'leitolarreta');
+    assert.deepEqual(commits[0].files, [POLICY_PATH]);
+});
+
+test('#7597 · parseGitLogOutput es compatible con salidas sin autor', () => {
+    const got = alert.parseGitLogOutput('\x1faaaa\x1e2026-05-08T10:00:00Z\x1ebbbb\n.pipeline/agent-models.json');
+    assert.equal(got[0].author, null);
+});
+
+test('#7597 · commit que toca sólo la política → aviso UX-5 + audit con autor/sha/fecha y diff de roles', () => {
+    const fakeExec = makePolicyFakeGit({
+        commits: [{ sha: 'cccc1234567', ts: '2026-09-23T15:45:02-03:00', parents: ['bbbb'], author: 'leitolarreta', files: [POLICY_PATH] }],
+        blobs: {
+            [`bbbb:${POLICY_PATH}`]: policyWithRoles([{ role: 'perf', signoff_ref: SIGN_7597 }]),
+            [`cccc1234567:${POLICY_PATH}`]: policyWithRoles([{ role: 'ux', signoff_ref: SIGN_7597 }]),
+        },
+    });
+    const dir = tmpDir('alert-policy-7597');
+    const pipelineDir = path.join(dir, '.pipeline');
+    fs.mkdirSync(pipelineDir, { recursive: true });
+    try {
+        const result = alert.sendAlert('bbbb', 'cccc1234567', {
+            execFile: fakeExec, cwd: dir, pipelineDir, now: () => Date.parse('2026-09-23T19:00:00Z'),
+        });
+        assert.ok(result.ok);
+        const a = result.alerts.find((x) => x.kind === 'provider_policy');
+        assert.ok(a, 'hay alerta de política aunque agent-models.json no cambió');
+        assert.equal(a.ok, true);
+        assert.ok(fs.existsSync(a.queueFile), 'encola el aviso Telegram');
+
+        // UX-5: una línea por pregunta, con +/− y verbo (texto escapado MarkdownV2).
+        assert.ok(a.text.includes('Cambio en la política de proveedores'));
+        assert.ok(a.text.includes('Quién: leitolarreta · Cuándo: 23/09/2026 15:45 · Commit: cccc123'), a.text);
+        assert.ok(a.text.includes('Qué: \\+ ux habilitado en antigravity · − perf quitado de antigravity'), a.text);
+        assert.ok(a.text.includes('Por qué: https:'), a.text);
+        assert.ok(!a.narration.includes('leitolarreta'), 'la narración TTS no lleva el autor (CA-S4)');
+
+        const audit = readAudit(pipelineDir).find((e) => e.type === 'provider_policy_change');
+        assert.ok(audit, 'queda en el audit log append-only');
+        assert.deepEqual(audit.authors, ['leitolarreta']);
+        assert.equal(audit.last_sha, 'cccc1234567');
+        assert.equal(audit.commit_ts, '2026-09-23T15:45:02-03:00');
+        assert.deepEqual(audit.roles_changes, [
+            { provider: 'antigravity', role: 'perf', kind: 'removed', signoff_ref: null },
+            { provider: 'antigravity', role: 'ux', kind: 'added', signoff_ref: SIGN_7597 },
+        ]);
+        assert.equal(audit.missing_signoff, false);
+    } finally { rmr(dir); }
+});
+
+test('#7597 · alta sin signoff_ref → "sin sign-off (violación de política)" en el aviso y en el audit', () => {
+    const fakeExec = makePolicyFakeGit({
+        commits: [{ sha: 'dddd', ts: '2026-09-23T15:45:02-03:00', parents: ['bbbb'], author: 'agente', files: [POLICY_PATH] }],
+        blobs: {
+            [`bbbb:${POLICY_PATH}`]: policyWithRoles([]),
+            [`dddd:${POLICY_PATH}`]: policyWithRoles([{ role: 'qa' }]),
+        },
+    });
+    const dir = tmpDir('alert-policy-nosign');
+    const pipelineDir = path.join(dir, '.pipeline');
+    fs.mkdirSync(pipelineDir, { recursive: true });
+    try {
+        const result = alert.sendAlert('bbbb', 'dddd', { execFile: fakeExec, cwd: dir, pipelineDir, now: () => 1 });
+        const a = result.alerts.find((x) => x.kind === 'provider_policy');
+        assert.ok(a.text.includes('Por qué: sin sign\\-off \\(violación de política\\)'), a.text);
+        assert.ok(a.narration.includes('sin firma'));
+        const audit = readAudit(pipelineDir).find((e) => e.type === 'provider_policy_change');
+        assert.equal(audit.missing_signoff, true);
+    } finally { rmr(dir); }
+});
+
+test('#7597 · cambio de política sin altas ni bajas → se audita pero no se avisa', () => {
+    const same = policyWithRoles([{ role: 'perf', signoff_ref: SIGN_7597 }]);
+    const fakeExec = makePolicyFakeGit({
+        commits: [{ sha: 'eeee', ts: '2026-09-23T15:45:02-03:00', parents: ['bbbb'], author: 'leitolarreta', files: [POLICY_PATH] }],
+        blobs: { [`bbbb:${POLICY_PATH}`]: same, [`eeee:${POLICY_PATH}`]: same },
+    });
+    const dir = tmpDir('alert-policy-noroles');
+    const pipelineDir = path.join(dir, '.pipeline');
+    fs.mkdirSync(pipelineDir, { recursive: true });
+    try {
+        const result = alert.sendAlert('bbbb', 'eeee', { execFile: fakeExec, cwd: dir, pipelineDir, now: () => 1 });
+        const a = result.alerts.find((x) => x.kind === 'provider_policy');
+        assert.equal(a.text, '');
+        assert.equal(a.queueFile, undefined);
+        const queueDir = path.join(pipelineDir, 'servicios', 'telegram', 'pendiente');
+        assert.ok(!fs.existsSync(queueDir) || fs.readdirSync(queueDir).length === 0);
+        const audit = readAudit(pipelineDir).find((e) => e.type === 'provider_policy_change');
+        assert.deepEqual(audit.roles_changes, []);
+    } finally { rmr(dir); }
+});
+
+test('#7597 · safeAuthor no deja pasar markup ni texto largo del repo', () => {
+    assert.equal(alert.safeAuthor('Leo Larreta'), 'Leo Larreta');
+    assert.equal(alert.safeAuthor('evil`*[x](http://a)'), '[autor_invalido]');
+    assert.equal(alert.safeAuthor('x'.repeat(80)), '[autor_invalido]');
+    assert.equal(alert.safeAuthor(null), '[autor_desconocido]');
+});

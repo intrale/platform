@@ -49,6 +49,12 @@ const { MODEL_PRICING } = require('./traceability');
 const agentModels = require('./agent-models');
 // #6226 — nombres únicos + escritura fail-closed para los dropfiles de la cola.
 const dropfileWriter = require('./dropfile-writer');
+// #7597 — política de proveedores: el diff de habilitaciones (roles_allowed)
+// se audita con autoría tomada de git, nunca de un campo que escribe un agente.
+const providerPolicy = require('./provider-policy');
+
+const AGENT_MODELS_PATH = '.pipeline/agent-models.json';
+const PROVIDER_POLICY_PATH = '.pipeline/provider-policy.json';
 
 // ─── Constantes ──────────────────────────────────────────────────────────────
 
@@ -194,10 +200,16 @@ function detectChanges(prevSha, headSha, opts) {
             '--name-only',
             // Separador único entre commits: "%x1f" = byte 0x1f (unit separator)
             // que NO aparece naturalmente en filenames ni en commit messages tipados.
-            '--pretty=format:%x1f%H%x1e%cI%x1e%P',
+            // #7597 — `%an` al final: autor del commit para el registro de
+            // auditoría de la política de proveedores (SR-5).
+            '--pretty=format:%x1f%H%x1e%cI%x1e%P%x1e%an',
             '--reverse',
             '--',
-            '.pipeline/agent-models.json',
+            AGENT_MODELS_PATH,
+            // #7597 — la política de proveedores también se observa: un commit
+            // que habilita/deshabilita un proveedor para un rol queda registrado
+            // aunque no toque agent-models.json.
+            PROVIDER_POLICY_PATH,
         ];
         if (prevSha && typeof prevSha === 'string' && prevSha.trim()) {
             args.splice(1, 0, range);
@@ -231,9 +243,11 @@ function parseGitLogOutput(raw) {
         const sha = headerParts[0].trim();
         const ts = headerParts[1].trim();
         const parents = (headerParts[2] || '').trim().split(/\s+/).filter(Boolean);
+        // #7597 — autor opcional (4.º campo). Ausente en salidas viejas → null.
+        const author = headerParts.length > 3 ? (headerParts[3] || '').trim() || null : null;
         const files = lines.map((l) => l.trim()).filter((l) => l.length > 0);
         if (!sha) continue;
-        out.push({ sha, ts, parents, files });
+        out.push({ sha, ts, parents, files, author });
     }
     return out;
 }
@@ -254,6 +268,29 @@ function getAgentModelsAtSha(sha, opts) {
             // Silenciar stderr — un sha que no contiene el archivo es un caso
             // esperado (commit inicial, branch viejo) y NO queremos polución
             // en el output del CLI ni del cron.
+            stdio: ['ignore', 'pipe', 'ignore'],
+        });
+        return JSON.parse(out);
+    } catch (_e) {
+        return null;
+    }
+}
+
+/**
+ * #7597 — Contenido de provider-policy.json en un sha, parseado. Mismo
+ * contrato que `getAgentModelsAtSha`: null si no existe en ese sha o no parsea.
+ * NO valida: el diff de habilitaciones tiene que ver también una política
+ * inválida (una alta sin signoff_ref es justamente lo que hay que avisar).
+ */
+function getProviderPolicyAtSha(sha, opts) {
+    const _opts = opts || {};
+    const cwd = _opts.cwd || process.cwd();
+    const exec = _opts.execFile || execFileSync;
+    try {
+        const out = exec('git', ['show', `${sha}:${PROVIDER_POLICY_PATH}`], {
+            cwd,
+            encoding: 'utf8',
+            windowsHide: true,
             stdio: ['ignore', 'pipe', 'ignore'],
         });
         return JSON.parse(out);
@@ -836,6 +873,108 @@ function buildBucket(commits, opts) {
     };
 }
 
+// ─── #7597 · Cambios en la política de proveedores (CA-4 / UX-5) ─────────────
+
+// Autor de git saneado: es texto libre del repo. Sólo se muestra en el mensaje
+// (nunca en la narración TTS, CA-S4) y con un charset acotado.
+const SAFE_AUTHOR_RE = /^[\p{L}\p{N} ._@-]{1,60}$/u;
+
+function safeAuthor(name) {
+    if (typeof name !== 'string') return '[autor_desconocido]';
+    const t = name.trim();
+    return SAFE_AUTHOR_RE.test(t) ? t : '[autor_invalido]';
+}
+
+/**
+ * `2026-09-23T15:45:02-03:00` → `23/09/2026 15:45`, leyendo el texto tal cual
+ * lo da git (`%cI`, hora del commit con su offset). Sin Date ni locale: el
+ * formato no puede depender del proceso que lo arma.
+ */
+function formatCommitWhen(iso) {
+    const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/.exec(typeof iso === 'string' ? iso : '');
+    return m ? `${m[3]}/${m[2]}/${m[1]} ${m[4]}:${m[5]}` : '—';
+}
+
+function touchesPolicy(commit) {
+    return Array.isArray(commit && commit.files) && commit.files.includes(PROVIDER_POLICY_PATH);
+}
+
+/**
+ * Arma el bucket de auditoría de la política para una ventana de commits.
+ * Devuelve null si ningún commit de la ventana tocó provider-policy.json.
+ * Con commits que la tocan pero sin altas/bajas de rol (ej. sólo se
+ * re-verificaron términos), el bucket existe con `changes: []`: se audita,
+ * pero no se avisa por Telegram.
+ */
+function buildPolicyBucket(commits, opts) {
+    const _opts = opts || {};
+    const touching = (commits || []).filter(touchesPolicy);
+    if (touching.length === 0) return null;
+    const first = touching[0];
+    const last = touching[touching.length - 1];
+    const fromParent = first.parents && first.parents.length > 0 ? first.parents[0] : null;
+    const fromPolicy = fromParent ? getProviderPolicyAtSha(fromParent, _opts) : null;
+    const toPolicy = getProviderPolicyAtSha(last.sha, _opts);
+    const changes = providerPolicy.diffRolesAllowed(fromPolicy, toPolicy);
+    const authors = [...new Set(touching.map((c) => c.author).filter((a) => typeof a === 'string' && a.trim()))];
+    const missingSignoff = changes.some((c) => c.kind === 'added'
+        && !(typeof c.signoff_ref === 'string' && providerPolicy.SIGNOFF_REF_RE.test(c.signoff_ref)));
+    return {
+        firstSha: first.sha,
+        lastSha: last.sha,
+        lastTs: last.ts,
+        commitCount: touching.length,
+        authors,
+        changes,
+        missingSignoff,
+    };
+}
+
+/**
+ * Mensaje UX-5: quién / cuándo / qué / por qué, una línea cada uno.
+ * Texto MarkdownV2 saneado. Vacío si no hay altas ni bajas.
+ */
+function formatPolicyMessage(bucket) {
+    if (!bucket || !Array.isArray(bucket.changes) || bucket.changes.length === 0) return '';
+    const who = bucket.authors.length > 0 ? bucket.authors.map(safeAuthor).join(', ') : '[autor_desconocido]';
+    const sha7 = typeof bucket.lastSha === 'string' ? bucket.lastSha.slice(0, 7) : '—';
+    // Altas primero, después bajas (orden del ejemplo de UX-5).
+    const ordered = [...bucket.changes.filter((c) => c.kind === 'added'), ...bucket.changes.filter((c) => c.kind !== 'added')];
+    const items = ordered.map((c) => {
+        const role = safeSkillName(c.role);
+        const prov = safeSkillName(c.provider);
+        return c.kind === 'added' ? `+ ${role} habilitado en ${prov}` : `− ${role} quitado de ${prov}`;
+    });
+    const added = bucket.changes.filter((c) => c.kind === 'added');
+    let why;
+    if (bucket.missingSignoff) {
+        why = 'sin sign-off (violación de política)';
+    } else if (added.length > 0) {
+        why = [...new Set(added.map((c) => c.signoff_ref))].join(' · ');
+    } else {
+        why = 'bajas: no requieren sign-off';
+    }
+    const lines = [
+        `🔐 *${escapeMdV2('Cambio en la política de proveedores')}*`,
+        escapeMdV2(`Quién: ${who} · Cuándo: ${formatCommitWhen(bucket.lastTs)} · Commit: ${sha7}`),
+        escapeMdV2(`Qué: ${items.join(' · ')}`),
+        escapeMdV2(`Por qué: ${why}`),
+    ];
+    const raw = lines.join('\n');
+    return redactSensitive(sanitize(applyLocalExtraSanitization(raw)));
+}
+
+/** Narración TTS con template fijo: sin autor ni texto libre del repo (CA-S4). */
+function generatePolicyNarration(bucket) {
+    if (!bucket || !Array.isArray(bucket.changes) || bucket.changes.length === 0) return '';
+    const added = bucket.changes.filter((c) => c.kind === 'added').length;
+    const removed = bucket.changes.length - added;
+    const parts = [`Cambió la política de proveedores: ${added} habilitaciones nuevas y ${removed} bajas.`];
+    if (bucket.missingSignoff) parts.push('Ojo, hay una habilitación sin firma tuya: es una violación de la política.');
+    parts.push('Te dejo el detalle en el mensaje.');
+    return redactSensitive(sanitize(applyLocalExtraSanitization(parts.join(' '))));
+}
+
 // ─── Persistencia de cursor + audit log (CA-S6 / CA-S7) ─────────────────────
 
 const LAST_NOTIFIED_FILENAME = 'agent-models-last-notified.json';
@@ -923,6 +1062,79 @@ function stateHash(view) {
     }
 }
 
+// ─── #7597 · Emisión + auditoría de cambios en la política ──────────────────
+
+/**
+ * Procesa una ventana para la política de proveedores:
+ *   - Sin commits que toquen provider-policy.json → null.
+ *   - Con altas/bajas de rol → encola aviso Telegram (UX-5) y audita.
+ *   - Sin altas/bajas (ej. re-verificación de términos) → sólo audita.
+ * La autoría (autor, sha, fecha) sale de git; el "por qué" es el signoff_ref.
+ * El audit log es append-only (mismo archivo que el resto de este módulo).
+ */
+function processPolicyWindow(window, opts) {
+    const policyBucket = buildPolicyBucket(window, opts);
+    if (!policyBucket) return null;
+    const text = formatPolicyMessage(policyBucket);
+    const narration = generatePolicyNarration(policyBucket);
+    const result = {
+        kind: 'provider_policy',
+        ok: false,
+        text,
+        narration,
+        firstSha: policyBucket.firstSha,
+        lastSha: policyBucket.lastSha,
+        commitCount: policyBucket.commitCount,
+        authors: policyBucket.authors,
+        roles_changes: policyBucket.changes,
+        missing_signoff: policyBucket.missingSignoff,
+    };
+    if (!text) result.reason = 'policy_without_role_changes';
+    if (opts.dryRun) return result;
+
+    if (text) {
+        const queueDir = path.join(opts.pipelineDir, 'servicios', 'telegram', 'pendiente');
+        try {
+            if (!fs.existsSync(queueDir)) fs.mkdirSync(queueDir, { recursive: true });
+            const { filePath } = dropfileWriter.writeDropfileSync({
+                dir: queueDir,
+                suffix: 'provider-policy-change.json',
+                data: JSON.stringify({ text, parse_mode: 'MarkdownV2', narration_text: narration }),
+                now: () => opts.now,
+                onCollision: (name, attempt) => console.warn(
+                    `[agent-models-change-alert] colisión de nombre de dropfile (${name}, intento ${attempt + 1}) — se reintenta con otro nombre, no se sobreescribe`
+                ),
+            });
+            result.ok = true;
+            result.queueFile = filePath;
+        } catch (e) {
+            result.reason = `cannot_write_queue: ${e.message}`;
+        }
+    } else {
+        // Sin altas/bajas no hay nada que avisar: el registro es el resultado.
+        result.ok = true;
+    }
+
+    auditAppend(opts.pipelineDir, {
+        type: 'provider_policy_change',
+        ts: new Date(opts.now).toISOString(),
+        commit_ts: policyBucket.lastTs || null,
+        first_sha: policyBucket.firstSha,
+        last_sha: policyBucket.lastSha,
+        commit_count: policyBucket.commitCount,
+        authors: policyBucket.authors.map(safeAuthor),
+        roles_changes: policyBucket.changes.map((c) => ({
+            provider: safeSkillName(c.provider),
+            role: safeSkillName(c.role),
+            kind: c.kind,
+            signoff_ref: (typeof c.signoff_ref === 'string' && providerPolicy.SIGNOFF_REF_RE.test(c.signoff_ref)) ? c.signoff_ref : null,
+        })),
+        missing_signoff: policyBucket.missingSignoff,
+        queue_file: result.queueFile || null,
+    });
+    return result;
+}
+
 // ─── sendAlert ───────────────────────────────────────────────────────────────
 
 /**
@@ -953,6 +1165,12 @@ function sendAlert(prevSha, headSha, opts) {
     const alerts = [];
 
     for (const window of windows) {
+        // #7597 — la política de proveedores se procesa por su lado: una
+        // ventana puede tocar sólo provider-policy.json (sin cambios en la
+        // allowlist de agent-models) y aun así tiene que quedar auditada.
+        const policyAlert = processPolicyWindow(window, { ..._opts, pipelineDir, now, dryRun });
+        if (policyAlert) alerts.push(policyAlert);
+
         const bucket = buildBucket(window, _opts);
         if (!bucket) continue; // sin cambios efectivos en la allowlist
 
@@ -1134,6 +1352,16 @@ module.exports = {
     parseGitLogOutput,
     getAgentModelsAtSha,
     diffSkills,
+
+    // #7597 — política de proveedores.
+    PROVIDER_POLICY_PATH,
+    getProviderPolicyAtSha,
+    buildPolicyBucket,
+    formatPolicyMessage,
+    generatePolicyNarration,
+    processPolicyWindow,
+    formatCommitWhen,
+    safeAuthor,
 
     // Costo.
     readBaselineForSkill,

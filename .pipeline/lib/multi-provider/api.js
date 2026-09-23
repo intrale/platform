@@ -485,7 +485,8 @@ async function handleHealthRun(req, res) {
         return sendError(res, 503, 'health_cron_unavailable', 'health-cron no está disponible en este build.');
     }
     try {
-        const result = await healthCron.tickIfDue({});
+        // #7597 — incluye el eje de términos de la política de proveedores.
+        const result = await healthCron.tickIfDue({ checkTerms: true });
         sendJson(res, { ok: true, ...result });
     } catch (e) {
         sendError(res, 500, 'health_run_failed', e.message);

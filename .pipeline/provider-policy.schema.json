@@ -1,0 +1,133 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/intrale/platform/.pipeline/provider-policy.schema.json",
+  "title": "provider-policy.json — política de proveedores de IA (#7597)",
+  "description": "Qué ve cada proveedor de nuestro código, datos y entorno, con fundamento contractual y roles habilitados. Enums cerrados y additionalProperties:false en todos los niveles. Los chequeos que el schema no puede expresar (claves de CREDENTIAL_SCOPES, roles de data ⊆ roles_allowed, tope de vigencia de términos) los hace lib/provider-policy.js::validatePolicy.",
+  "type": "object",
+  "required": ["version", "doc_ref", "terms_max_validity_days", "exempt_providers", "providers", "open_differences"],
+  "additionalProperties": false,
+  "properties": {
+    "$schema": { "type": "string" },
+    "_doc": { "type": "string" },
+    "version": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" },
+    "doc_ref": { "type": "string", "const": "docs/legal/proveedores-ia.md" },
+    "terms_max_validity_days": { "type": "integer", "minimum": 1, "maximum": 365 },
+    "exempt_providers": {
+      "type": "array",
+      "items": { "type": "string", "enum": ["deterministic"] },
+      "uniqueItems": true
+    },
+    "providers": {
+      "type": "object",
+      "propertyNames": { "pattern": "^[a-z][a-z0-9-]{0,32}$" },
+      "additionalProperties": { "$ref": "#/$defs/provider" }
+    },
+    "open_differences": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/openDifference" }
+    }
+  },
+  "$defs": {
+    "role": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,40}$" },
+    "signoffRef": {
+      "type": "string",
+      "pattern": "^https://github\\.com/intrale/platform/(issues|pull)/\\d+#issuecomment-\\d+$"
+    },
+    "isoDate": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" },
+    "dataEntry": {
+      "type": "object",
+      "required": ["allowed"],
+      "additionalProperties": false,
+      "properties": {
+        "allowed": { "type": "boolean" },
+        "roles": { "type": "array", "items": { "$ref": "#/$defs/role" }, "uniqueItems": true }
+      }
+    },
+    "provider": {
+      "type": "object",
+      "required": ["code", "data", "env", "terms", "roles_allowed", "known_exposures"],
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "type": "object",
+          "required": ["access", "note"],
+          "additionalProperties": false,
+          "properties": {
+            "access": { "type": "string", "enum": ["read", "write", "none"] },
+            "note": { "type": "string", "minLength": 1, "maxLength": 400 }
+          }
+        },
+        "data": {
+          "type": "object",
+          "required": ["issues", "logs", "telegram", "qa_evidence", "handoff"],
+          "additionalProperties": false,
+          "properties": {
+            "issues": { "$ref": "#/$defs/dataEntry" },
+            "logs": { "$ref": "#/$defs/dataEntry" },
+            "telegram": { "$ref": "#/$defs/dataEntry" },
+            "qa_evidence": { "$ref": "#/$defs/dataEntry" },
+            "handoff": { "$ref": "#/$defs/dataEntry" }
+          }
+        },
+        "env": {
+          "type": "object",
+          "required": ["allowed_scopes", "fs_reach", "permission_mode", "tools"],
+          "additionalProperties": false,
+          "properties": {
+            "allowed_scopes": { "type": "array", "items": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,40}$" }, "uniqueItems": true },
+            "fs_reach": { "type": "string", "enum": ["operator_home", "worktree", "sandbox"] },
+            "permission_mode": { "type": "string", "enum": ["bypass", "full-auto", "restricted"] },
+            "tools": {
+              "type": "array",
+              "items": { "type": "string", "enum": ["shell", "network", "git", "gh", "aws", "gradle"] },
+              "uniqueItems": true
+            }
+          }
+        },
+        "terms": {
+          "type": "object",
+          "required": ["verified_at", "expires_at", "sources"],
+          "additionalProperties": false,
+          "properties": {
+            "verified_at": { "$ref": "#/$defs/isoDate" },
+            "expires_at": { "$ref": "#/$defs/isoDate" },
+            "sources": {
+              "type": "array",
+              "minItems": 1,
+              "items": { "type": "string", "pattern": "^https://[^\\s]+$" }
+            }
+          }
+        },
+        "roles_allowed": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["role", "signoff_ref"],
+            "additionalProperties": false,
+            "properties": {
+              "role": { "$ref": "#/$defs/role" },
+              "signoff_ref": { "$ref": "#/$defs/signoffRef" }
+            }
+          }
+        },
+        "known_exposures": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^#[0-9]+$" },
+          "uniqueItems": true
+        }
+      }
+    },
+    "openDifference": {
+      "type": "object",
+      "required": ["provider", "role", "kind", "request_ref"],
+      "additionalProperties": false,
+      "properties": {
+        "provider": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,32}$" },
+        "role": { "$ref": "#/$defs/role" },
+        "kind": { "type": "string", "enum": ["scope_exceeded", "role_not_allowed"] },
+        "scope": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,40}$" },
+        "request_ref": { "$ref": "#/$defs/signoffRef" }
+      }
+    }
+  }
+}

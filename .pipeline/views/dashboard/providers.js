@@ -452,6 +452,22 @@ function collectDisabled() {
     return out;
 }
 
+// #7597 — Política de proveedores (términos con vencimiento). Require
+// DEFENSIVO (CA-A3): si el módulo no carga, la fila no dibuja el chip de
+// términos y el resto del panel sigue renderizando.
+let providerPolicy = null;
+try { providerPolicy = require('../../lib/provider-policy.js'); } catch (_) { /* sin chip de términos */ }
+
+/**
+ * Política cargada una vez por render. `loadPolicy` ya es fail-closed (nunca
+ * lanza; política vacía ante error), así que sin módulo devolvemos null y la
+ * fila omite el chip en vez de inventar un estado.
+ */
+function collectProviderPolicy() {
+    if (!providerPolicy) return null;
+    try { return providerPolicy.loadPolicy({}); } catch (_) { return null; }
+}
+
 // ───────────────────────── Modelo unificado ─────────────────────────
 
 /**
@@ -470,6 +486,8 @@ function buildProvidersModel() {
     try { if (oauthSessionExpiry) oauthSession = oauthSessionExpiry.getOAuthSessionExpiry(); } catch (_) { /* degradación visible */ }
     // #6180 - estado del episodio de respaldo (parte 2 del split de #6151).
     const episode = collectFallbackEpisode();
+    // #7597 - política de proveedores (chip de términos).
+    const policy = collectProviderPolicy();
 
     const providers = PROVIDER_ORDER.map((key) => {
         const meta = PROVIDER_META[key];
@@ -536,6 +554,12 @@ function buildProvidersModel() {
             hasTraffic: dispatch.total > 0,
             models,
             disabled: disabled.disabledSet.has(meta.disabledKey),
+            // #7597 — entrada de la política para el chip de términos. El
+            // estado (vigente/vencido) NO se calcula acá ni en la vista: lo
+            // resuelve `provider-policy.termsStatus` al renderizar, con el
+            // `now` del render (tests inyectables). `null` = sin política
+            // cargable → sin chip. Entrada ausente → `{}` → vencido (fail-closed).
+            termsEntry: policy ? (policy.providers[meta.catalogKey] || {}) : null,
         };
     });
 
@@ -798,6 +822,33 @@ function renderKillSwitch(p) {
         + `<span class="prov-kill-dot" aria-hidden="true"></span>${label}</button>`;
 }
 
+// #7597 UX-1 — Chip de términos. Eje INDEPENDIENTE de la salud: un
+// vencimiento administrativo no corta el ruteo, así que el badge de salud no
+// cambia y el chip usa warn (nunca rojo, que en esta fila significa "no
+// rutea"). Adenda UX (contraste en tema claro): el TEXTO va en `--in-fg`; la
+// alerta la llevan borde + fondo warn y el glifo ⚠ en su propio span.
+function renderTermsChip(p, now) {
+    if (!providerPolicy || !p || p.termsEntry == null) return '';
+    const nowMs = Number.isFinite(now) ? now : Date.now();
+    let ts;
+    try { ts = providerPolicy.termsStatus(p.termsEntry, { now: nowMs }); } catch (_) { return ''; }
+    const dmy = (iso) => providerPolicy.formatDateDMY(iso);
+    if (ts.state === 'vigente') {
+        const exp = dmy(ts.expires_at);
+        const year = ts.expires_at.slice(0, 4);
+        const sameYear = String(new Date(nowMs).getUTCFullYear()) === year;
+        const label = 'TÉRMINOS HASTA ' + (sameYear ? exp.slice(0, 5) : exp);
+        const tip = 'Términos verificados el ' + dmy(ts.verified_at) + ' · vencen el ' + exp;
+        return `<span class="prov-terms-chip is-dim" title="${escapeHtmlAttr(tip)}">${escapeHtmlText(label)}</span>`;
+    }
+    const tip = ts.reason === 'expired'
+        ? 'Términos verificados el ' + dmy(ts.verified_at) + ' · vencieron el ' + dmy(ts.expires_at)
+            + ' · no se aceptan habilitaciones nuevas; los roles vigentes siguen ruteando'
+        : 'Sin fecha de verificación válida: se trata como vencida · no se aceptan habilitaciones nuevas';
+    return `<span class="prov-terms-chip is-warn" title="${escapeHtmlAttr(tip)}">`
+        + `<span class="prov-terms-glyph" aria-hidden="true">⚠</span> ${escapeHtmlText('TÉRMINOS VENCIDOS')}</span>`;
+}
+
 /**
  * Una fila por proveedor (mockup v2). Toda la info — key, salud, tier, catálogo,
  * kill-switch — en una sola línea legible, sin solapas.
@@ -855,6 +906,7 @@ function renderProviderRow(p, now) {
     <div class="prov-health-badges">
       ${renderStatusBadge({ severity: sev, label: healthLabel, title: 'Salud en vivo: ' + healthLabel + ' (' + reasonTxt + ')' })}
       ${renderQuotaChip(p)}
+      ${renderTermsChip(p, now)}
     </div>
     <span class="prov-health-reason${aboveTested && !badge.stale ? ' is-warn' : ''}" title="${escapeHtmlAttr('Causa reportada por el health-cron')}">${escapeHtmlText(reasonTxt)}</span>
     ${session ? `<span class="prov-session is-${escapeHtmlAttr(session.tono)}" title="${escapeHtmlAttr(session.title)}">${escapeHtmlText(session.texto)}</span>` : ''}
@@ -1385,6 +1437,12 @@ const PANEL_CSS = `
 .prov-quota-chip.is-ok { color: var(--in-ok); background: var(--in-ok-soft); border-color: var(--in-ok); }
 .prov-quota-chip.is-bad { color: var(--in-bad); background: var(--in-bad-soft); border-color: var(--in-bad); }
 .prov-quota-chip.is-dim { color: var(--in-fg-dim); background: transparent; }
+/* #7597 — chip de términos: misma geometría que .prov-quota-chip. En vencido el
+   texto va en --in-fg (AA en ambos temas); borde, fondo y glifo llevan el warn. */
+.prov-terms-chip { font-size: 10.5px; font-weight: 700; letter-spacing: .04em; padding: 2px 7px; border-radius: 999px; border: 1px solid var(--in-border); white-space: nowrap; }
+.prov-terms-chip.is-warn { color: var(--in-fg); background: var(--in-warn-soft); border-color: var(--in-warn); }
+.prov-terms-chip.is-warn .prov-terms-glyph { color: var(--in-warn); }
+.prov-terms-chip.is-dim { color: var(--in-fg-dim); background: transparent; }
 .prov-quota { display: flex; align-items: center; gap: 8px; }
 .prov-quota-track { flex: 1; height: 7px; border-radius: 4px; background: var(--in-bg-2); border: 1px solid var(--in-border); overflow: hidden; min-width: 70px; }
 .prov-quota-fill { height: 100%; border-radius: 4px; transition: width .3s; }
@@ -1625,6 +1683,8 @@ module.exports = {
     // #5888 — expuestos para los tests del eje de modelo (CA-9/CA-15/CA-16/CA-18).
     renderCatalogCell,
     renderVigenciaLine,
+    // #7597 — chip de términos (política de proveedores).
+    renderTermsChip,
     REASON_LABEL,
     // #6857 — exportados para tests: mapeo de los tres estados y frescura.
     HEALTH_LABEL_BY_REASON,
