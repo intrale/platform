@@ -197,6 +197,9 @@ const AUTHORITY_PREFIXES = Object.freeze([
     'model_value_audit.registrar',
     'model_value_audit.publish',
     'model_value_audit.protected_skills',
+    // #6809 (SEC-6809-7) — encender el auditor del modelo operativo es
+    // autoridad; cadencia, ventana y muestras mínimas son calibración.
+    'process_audit.enabled',
     // #7515 (SEC-7515-6) — allowlist de cuentas que pueden meter texto en el
     // registro de propuestas desde un repo público (`recomendacion-agente`).
     // `propuestas` entera es kernel (cuota/tope = mecanismo); la allowlist es
@@ -243,6 +246,10 @@ const SIDE_MAP = Object.freeze({
     'model_value_audit.registrar': 'autoridad',
     'model_value_audit.publish': 'autoridad',
     'model_value_audit.protected_skills': 'autoridad',
+    // #6809 — auditor del modelo operativo: mecanismo del pipeline (cadencia,
+    // ventana, muestras mínimas). Encenderlo es autoridad.
+    process_audit: 'kernel',
+    'process_audit.enabled': 'autoridad',
     // #6708 — presupuesto de disco del guardián. Es mecanismo del pipeline
     // (cuánto margen necesita la máquina para operar), no política de producto.
     disk_budget: 'kernel',
@@ -1062,6 +1069,22 @@ const SCHEMA = {
                 },
                 registrar: { type: 'boolean' },
                 publish: { type: 'string', enum: ['telegram-plain', 'registry', 'none'] },
+            },
+        },
+
+        // --- process_audit: auditor del modelo operativo (#6809). Estricto
+        //     (SEC-6809-7): un typo en `enabled` o un rango inválido no puede
+        //     dejar el brazo en un estado ambiguo. Los rangos son los mismos que
+        //     valida `lib/process-audit/cron.js#resolveSection`.
+        process_audit: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['enabled'],
+            properties: {
+                enabled: { type: 'boolean' },
+                cadence_days: { type: 'integer', minimum: 1, maximum: 30 },
+                window_days: { type: 'integer', minimum: 7, maximum: 30 },
+                min_samples_hora: { type: 'integer', minimum: 1, maximum: 120 },
             },
         },
 

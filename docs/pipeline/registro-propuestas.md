@@ -395,6 +395,20 @@ presentación, y falla si aparece alguno. Para sumar una superficie nueva:
 Todo lo que es presentación —formato, longitud máxima de un mensaje, controles interactivos, emojis—
 vive en el adaptador. El registro sólo conoce valores.
 
+## Productores habilitados
+
+Enum cerrado `PRODUCTORES` de `propuestas-registry.js`. Un productor fuera de la lista recibe
+`productor_desconocido`.
+
+| Productor | Módulo | Qué publica |
+|---|---|---|
+| `recomendacion-agente` | cosecha de comentarios de agentes (#7361) | recomendaciones de los skills |
+| `auditor-modelos` | `lib/model-value-audit/` (#6793) | calidad-precio del modelo por agente |
+| `digest-bloqueos` | digest de bloqueos | bloqueos humanos pendientes |
+| `digest-desempates` | digest de desempates | desempates pendientes |
+| `commander-proactivo` | commander | sugerencias proactivas del commander |
+| `auditor-proceso` | `lib/process-audit/` (#6809) | mejoras del **proceso**: pasos invariantes, fallos recurrentes, costo por fase, controles apagados, paralelismo y proveedores/cuota. Ver `docs/pipeline/process-audit.md`. |
+
 ## Obligaciones de los consumidores
 
 ### #5528 y #6810 — entrega y decisión

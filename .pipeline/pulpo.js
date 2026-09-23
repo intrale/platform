@@ -24148,6 +24148,24 @@ function METRICS_FILE() { return path.join(PIPELINE(), 'metrics-history.jsonl');
 const METRICS_MAX_ENTRIES = 2880; // ~24h a 30s/ciclo
 let metricsLastRotation = 0;
 
+// #6809 — archivo hermano con el rollup horario (90 días) que consume el
+// auditor del modelo operativo (`lib/process-audit/`).
+function METRICS_HOURLY_FILE() { return path.join(PIPELINE(), 'metrics-history-hourly.jsonl'); }
+
+// #6809 — hechos de despacho (elegibles + causa) memoizados ~1 min: el rollup
+// los muestrea sin recalcular `recolectarHechosDespacho` en cada ciclo de 30 s.
+// El watchdog de despacho refresca este mismo cache cuando ya los calculó.
+const HECHOS_ROLLUP_TTL_MS = 55000;
+let hechosRollupCache = { ts: 0, hechos: undefined };
+function hechosDespachoParaRollup(config) {
+  const now = Date.now();
+  if (now - hechosRollupCache.ts < HECHOS_ROLLUP_TTL_MS) return hechosRollupCache.hechos;
+  let hechos;
+  try { hechos = recolectarHechosDespacho(config, require('./lib/waves')); } catch { hechos = undefined; }
+  hechosRollupCache = { ts: now, hechos };
+  return hechos;
+}
+
 function persistMetricsSnapshot(config) {
   try {
     const pressure = getResourcePressure(config);
@@ -24186,6 +24204,19 @@ function persistMetricsSnapshot(config) {
     };
 
     fs.appendFileSync(METRICS_FILE(), JSON.stringify(snapshot) + '\n');
+
+    // #6809 — rollup horario para el auditor del modelo operativo. try/catch
+    // PROPIO: un fallo del rollup jamás afecta al snapshot ni al tick (SEC-6809-8).
+    // Acumulador O(1) en memoria; escribe UNA línea por hora al cambiar la hora UTC.
+    try {
+      const limits = getEffectiveResourceLimits(config);
+      require('./lib/process-audit/hourly-rollup').accumulate(snapshot, {
+        hechos: hechosDespachoParaRollup(config),
+        cap: limits.max_concurrent_devs,
+        devs: countRunningDevs(),
+        nocturna: limits._nightWindowActive === true,
+      }, { file: METRICS_HOURLY_FILE() });
+    } catch {}
 
     // Rotar cada 10min para no crecer indefinidamente
     const now = Date.now();
@@ -26812,6 +26843,7 @@ async function mainLoop() {
         //      - los bloqueados viven en `bloqueado-*`, no en `pendiente/`;
         //      - una cola legítimamente vacía da 0 → skip, sin alerta (CA-3).
         const hechos = recolectarHechosDespacho(cfgRoot, waves);
+        hechosRollupCache = { ts: Date.now(), hechos }; // #6809 — reuso en el rollup horario
         const pendientes = hechos.conteo.elegibles;
         const dispatching = countTrabajandoGlobal(cfgRoot);
         const cause = hechos.cause;
@@ -27231,6 +27263,40 @@ async function mainLoop() {
     log('model-value', 'Auditor calidad-precio montado: tick cada 60min');
   } catch (e) {
     log('model-value', `No se pudo montar el auditor calidad-precio: ${e.message}`);
+  }
+
+  // #6809 — AUDITOR del modelo operativo (proceso, capacidad, proveedores).
+  // Copia del brazo #7520: lógica en `lib/process-audit/cron.js` (tests
+  // propios). Timer SIEMPRE montado; el gate (`process_audit.enabled === true`)
+  // se relee en cada tick vía loadConfig() para encender/apagar sin restart.
+  // Tick horario; la corrida real ocurre cada `cadence_days`. Con el default de
+  // fábrica (`enabled: false`) cuesta un loadConfig() por hora y cero escrituras.
+  // Sólo sugiere: publica en el registro único (#6807), nunca aplica cambios.
+  try {
+    const paCron = require('./lib/process-audit/cron');
+    let paLastReason = null;
+    const runPaTick = () => {
+      try {
+        const res = paCron.tickIfDue({
+          pipelineDir: PIPELINE(),
+          cfgRoot: loadConfig() || {},
+          logger: (msg) => log('process-audit', msg),
+        });
+        // Sólo se loguean transiciones (deshabilitado/no_due son el estado normal).
+        if (res.reason !== paLastReason) {
+          log('process-audit', res.reason);
+          paLastReason = res.reason;
+        }
+      } catch (err) {
+        log('process-audit', `Tick excepción no capturada: ${err.message}`);
+      }
+    };
+    runPaTick();
+    const paTimer = setInterval(runPaTick, 60 * 60 * 1000);
+    if (typeof paTimer.unref === 'function') paTimer.unref();
+    log('process-audit', 'Auditor del modelo operativo montado: tick cada 60min');
+  } catch (e) {
+    log('process-audit', `No se pudo montar el auditor del modelo operativo: ${e.message}`);
   }
 
   // #5453 — COORDINADOR de la migración por host (rotación → convivencia →

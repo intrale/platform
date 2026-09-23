@@ -1521,6 +1521,10 @@ const API_ROUTES = {
     // muestra refresh, nunca "sin pendientes" (CA-8). Refresh natural 30s desde
     // el cliente; cache TTL 45s server-side en operativo-drift.
     '/api/dash/restart-pendiente': (state, ctx) => slices.restartPendienteSlice(state, ctx),
+    // #6809 — estado del auditor del modelo operativo: flag, última corrida y
+    // conteos por eje. SÓLO LECTURA (SEC-6809-9): no hay ruta para encenderlo
+    // ni para forzar una corrida. Hereda el gate loopback + Sec-Fetch-Site.
+    '/api/dash/process-audit': (state, ctx) => slices.processAuditSlice(state, ctx),
     // EP8-H7 (#3960) CA-1 — historial de transiciones vivo↔muerto por servicio
     // con agregación por motivo en ventana 7d. `?service=<svc>` filtra; sin
     // param devuelve todos. El `lastError` ya viene redactado del store

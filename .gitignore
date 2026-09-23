@@ -97,6 +97,8 @@ logs/
 
 # Estado runtime del pipeline (nunca versionar)
 .pipeline/state/
+# #6809 — rollup horario de métricas (90 días) del auditor del modelo operativo
+.pipeline/metrics-history-hourly.jsonl
 
 # Node (Wasm)
 node_modules/
