@@ -57,16 +57,19 @@ test('CA-A2 — la lista deriva de fuente única (MZ_PROVIDER_META), no de un ar
     assert.equal(derived, _mzProviderMatrix(), '_mzProviderMatrix debe derivar de MZ_ACTIVE_PROVIDERS');
 });
 
-test('CA-A3 — cada celda usa el id canónico mz-qm-${key}-${slot}-{tag,bar,pct,rst}', () => {
+test('CA-A3 — cada celda usa el id canónico mz-qm-${key}-short-{tag,bar,pct,rst} + período mz-qb/mz-qr/mz-qv (#6565)', () => {
     const html = _mzProviderMatrix();
     for (const key of MZ_ACTIVE_PROVIDERS) {
-        for (const slot of ['short', 'long']) {
-            for (const part of ['tag', 'bar', 'pct', 'rst']) {
-                assert.ok(
-                    html.includes(`id="mz-qm-${key}-${slot}-${part}"`),
-                    `falta id mz-qm-${key}-${slot}-${part}`,
-                );
-            }
+        for (const part of ['tag', 'bar', 'pct', 'rst']) {
+            assert.ok(
+                html.includes(`id="mz-qm-${key}-short-${part}"`),
+                `falta id mz-qm-${key}-short-${part}`,
+            );
+        }
+        // #6565 (UX-2): la ventana larga se retiró; el período viene del balance.
+        assert.ok(!html.includes(`id="mz-qm-${key}-long"`), `la ventana larga mz-qm-${key}-long ya no se emite (#6565)`);
+        for (const id of [`mz-qb-${key}-bar`, `mz-qb-${key}-saldo`, `mz-qr-${key}-rate`, `mz-qr-${key}-eta`, `mz-qv-${key}`, `mz-ql2-${key}-rd`]) {
+            assert.ok(html.includes(`id="${id}"`), `falta id ${id}`);
         }
     }
 });

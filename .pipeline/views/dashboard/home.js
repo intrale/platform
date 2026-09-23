@@ -1860,11 +1860,19 @@ ${(() => { try { return _commanderActivity ? _commanderActivity.commanderActivit
 .mz-sq-matrix { padding: 13px 16px; min-width: 0; }
 .mz-qm-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; gap: 8px; }
 .mz-qm-h-l { font-size: 10px; font-weight: 800; letter-spacing: .7px; color: var(--in-fg-dim,#8A93A6); }
-.mz-qm-h-note { font-size: 8.5px; color: var(--in-fg-soft,#6e7681); font-weight: 600; }
-.mz-qm-cols, .mz-qm-row { display: grid; grid-template-columns: 1.25fr 1fr 1fr; column-gap: 16px; align-items: center; }
-.mz-qm-gh { font-size: 8.5px; font-weight: 800; letter-spacing: .4px; color: var(--in-fg-soft,#6e7681); text-transform: uppercase; padding-bottom: 4px; }
-.mz-qm-row > * { border-top: 1px solid var(--in-border,rgba(255,255,255,.07)); min-height: 30px; display: flex; align-items: center; }
-.mz-qm-prov { gap: 7px; }
+.mz-qm-h-note { font-size: 8.5px; color: var(--in-fg-soft,#6e7681); font-weight: 600; text-align: right; }
+.mz-qm-h-note[data-balance="0"] { color: var(--in-warn,#d29922); }
+/* #6565 (UX-11) — 4 columnas × 2 líneas por proveedor: Proveedor | Ventana corta |
+   Período · saldo | Ritmo · proyección. Proveedor y ventana corta ocupan las dos
+   líneas; la línea 2 (veredicto + lectura del período) va bajo las dos columnas
+   nuevas. El borde separador pasa de cada celda a la fila. */
+.mz-qm-cols { display: grid; grid-template-columns: 0.8fr 0.95fr 1.35fr 1.2fr; column-gap: 12px; align-items: center; }
+.mz-qm-row  { display: grid; grid-template-columns: 0.8fr 0.95fr 1.35fr 1.2fr; grid-template-rows: auto auto; column-gap: 12px; align-items: center;
+    border-top: 1px solid var(--in-border,rgba(255,255,255,.07)); padding: 5px 0 6px; }
+.mz-qm-gh { font-size: 8.5px; font-weight: 800; letter-spacing: .4px; color: var(--in-fg-soft,#6e7681); text-transform: uppercase; padding-bottom: 4px; white-space: nowrap; }
+.mz-qm-row > * { min-height: 26px; display: flex; align-items: center; }
+.mz-qm-prov, .mz-qm-cell { grid-row: 1 / span 2; }
+.mz-qm-prov { gap: 7px; white-space: nowrap; }
 .mz-pdot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
 .mz-qm-pn { font-size: 12px; font-weight: 800; }
 .mz-qm-src { font-size: 8.5px; color: var(--in-fg-soft,#6e7681); font-weight: 700; }
@@ -1893,6 +1901,57 @@ ${(() => { try { return _commanderActivity ? _commanderActivity.commanderActivit
    especificidad y lo pintaba azul (#4900 rebote PO: render vs mockup). */
 .mz-qm-cell.mz-qm-nodata .mz-qm-mini, .mz-qm-cell.mz-qm-nodata .mz-qm-rst { display: none; }
 .mz-qm-cell.mz-qm-nodata .mz-qm-pct { color: var(--in-fg-soft,#6e7681); font-weight: 600; font-size: 10px; min-width: 0; }
+.mz-qm-cell { white-space: nowrap; }
+
+/* ===== #6565 — Período · saldo / Ritmo · proyección / línea de veredicto =====
+   Hidratadas SOLO desde /api/dash/quota-balance (#6560). El color lo dicta el
+   estado del slice (ok/warn/bad/dim): la vista no compara porcentajes contra
+   umbrales (UX §3 "Prohibido"). Sólo tokens --in-* con los mismos fallbacks
+   que el resto del panel (UX-8: cero hex nuevos). */
+.mz-qb { grid-column: 3; grid-row: 1; gap: 7px; font-size: 11px; white-space: nowrap; }
+.mz-qb-bar { position: relative; flex: 1; height: 6px; border-radius: 3px; background: rgba(255,255,255,.09); min-width: 60px; }
+.mz-qb-bar i { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 3px; background: var(--in-fg-dim,#8b949e); transition: width .4s ease; }
+/* marca vertical: saldo proyectado al cierre (al_cierre_pts). Sólo con proyección. */
+.mz-qb-bar em { position: absolute; top: -3px; bottom: -3px; width: 2px; background: var(--in-fg,#e6edf3); opacity: .5; display: none; }
+.mz-qb-bar em[data-on="1"] { display: block; }
+/* tramo rayado: excedente sobre el techo, a partir del borde derecho de la barra. */
+.mz-qb-bar .mz-qb-over { position: absolute; left: 100%; top: 0; bottom: 0; border-radius: 0 3px 3px 0; width: 0;
+    background: repeating-linear-gradient(135deg, var(--in-bad,#f85149) 0 3px, transparent 3px 6px); }
+.mz-qb-bar[data-over="1"] { margin-right: 14px; }
+.mz-qb-saldo { font-weight: 800; font-variant-numeric: tabular-nums; min-width: 46px; text-align: right; color: var(--in-fg,#e6edf3); white-space: nowrap; }
+.mz-qb.ok   .mz-qb-bar i { background: var(--in-ok,#3fb950); }   .mz-qb.ok   .mz-qb-saldo { color: var(--in-ok,#3fb950); }
+.mz-qb.warn .mz-qb-bar i { background: var(--in-warn,#d29922); } .mz-qb.warn .mz-qb-saldo { color: var(--in-warn,#d29922); }
+.mz-qb.bad  .mz-qb-bar i { background: var(--in-bad,#f85149); }  .mz-qb.bad  .mz-qb-saldo { color: var(--in-bad,#f85149); }
+.mz-qb.dim  .mz-qb-saldo { color: var(--in-fg-dim,#8b949e); }
+.mz-qr { grid-column: 4; grid-row: 1; gap: 5px; font-size: 11px; white-space: nowrap; }
+.mz-qr-rate { font-weight: 800; font-variant-numeric: tabular-nums; color: var(--in-fg,#e6edf3); }
+.mz-qr-unit { font-size: 9px; font-weight: 700; color: var(--in-fg-soft,#6e7681); }
+.mz-qr-eta { margin-left: auto; font-size: 9.5px; font-weight: 700; color: var(--in-fg-dim,#8b949e); font-variant-numeric: tabular-nums; }
+.mz-qr.dim .mz-qr-rate { color: var(--in-fg-soft,#6e7681); }
+.mz-qr.warn .mz-qr-eta { color: var(--in-warn,#d29922); } .mz-qr.bad .mz-qr-eta { color: var(--in-bad,#f85149); }
+/* Fail-closed (UX-7) y pendiente de primer tick: "sin dato" / "…" atenuados, sin barra ni ritmo. */
+.mz-qb.mz-qm-nodata .mz-qb-bar, .mz-qr.mz-qm-nodata .mz-qr-unit, .mz-qr.mz-qm-nodata .mz-qr-eta { display: none; }
+.mz-qb.mz-qm-nodata .mz-qb-saldo, .mz-qr.mz-qm-nodata .mz-qr-rate { color: var(--in-fg-soft,#6e7681); font-weight: 600; font-size: 10px; min-width: 0; text-align: left; }
+/* Línea 2 = chip de veredicto + lectura del período. Las dos piezas son
+   unidades (nowrap cada una) pero la línea ENVUELVE cuando no entran juntas:
+   en el ancho real del home (kiosk-frame 1080 px → matriz 743 px, celda
+   ≈ 400 px) un veredicto largo ("Se agota 4d 20h antes del cierre · −152 %")
+   más la lectura ("techo 100 · consumido 28 ↻ cierra en 5d 13h") suman
+   > 410 px y .mz-sysquota{overflow:hidden} recortaba la cola ("cierra en 5d 1").
+   Con flex-wrap la lectura baja a una segunda línea alineada a la derecha y
+   nada queda oculto (UX-11: "nada recortado a 1440 px · no se oculta";
+   #6565 rebote QA rev-2). */
+.mz-ql2 { grid-column: 3 / span 2; grid-row: 2; flex-wrap: wrap; row-gap: 3px; column-gap: 10px; min-width: 0; min-height: 22px; font-size: 9px; font-weight: 700; color: var(--in-fg-dim,#8b949e); white-space: nowrap; }
+.mz-ql2 .mz-qv { flex: none; }
+.mz-ql2 .mz-ql2-rd { display: flex; flex: none; gap: 6px; align-items: center; margin-left: auto; font-variant-numeric: tabular-nums; }
+.mz-ql2 .mz-ql2-rst { margin-left: 4px; }
+.mz-qv { display: inline-flex; align-items: center; gap: 5px; font-size: 9px; font-weight: 800; letter-spacing: .2px;
+    padding: 2px 7px; border-radius: 999px; border: 1px solid var(--in-border,rgba(255,255,255,.10)); color: var(--in-fg-dim,#8b949e); }
+.mz-qv .mz-qv-ic { font-size: 10px; line-height: 1; }
+.mz-qv.ok   { color: var(--in-ok,#3fb950);   border-color: var(--in-ok,#3fb950);   background: var(--in-ok-soft); }
+.mz-qv.warn { color: var(--in-warn,#d29922); border-color: var(--in-warn,#d29922); background: var(--in-warn-soft); }
+.mz-qv.bad  { color: var(--in-bad,#f85149);  border-color: var(--in-bad,#f85149);  background: var(--in-bad-soft); }
+.mz-qv.dim  { color: var(--in-fg-soft,#6e7681); background: transparent; }
 
 /* --- Grilla 2-col + paneles --- */
 .mz-grid { display: grid; grid-template-columns: 1fr 1.62fr; gap: 16px; align-items: start; }
@@ -2823,24 +2882,341 @@ function _mzHydrateWinCell(key, slot, b){
     return { healthy: false };
 }
 
-function renderProviderQuotaMatrix(d){
-    if(!d || !d.providers) return;
-    // Buckets del slice: short ↔ session, long ↔ weekly.
-    const SLOT_BUCKET = { short: 'session', long: 'weekly' };
+// #6565 — "Proveedores sanos" cruza las dos fuentes de la matriz: la ventana
+// corta (/api/dash/quota) y el período del libro contable (/api/dash/quota-balance).
+// Cada ticker escribe su mapa y recomputa el conteo; un proveedor es sano si
+// alguna de sus dos celdas no está agotada (misma semántica que #4533 con la
+// ventana larga, ahora provista por el balance).
+const _mzHealthyShort = {};
+const _mzHealthyBalance = {};
+function _mzUpdateHealthySig(){
     let healthyCount = 0;
     for(const key of MZ_ACTIVE_PROVIDERS){
-        const p = d.providers[key];
-        let provHealthy = false;
-        for(const slot of ['short', 'long']){
-            const b = p ? p[SLOT_BUCKET[slot]] : null;
-            const r = _mzHydrateWinCell(key, slot, b);
-            if(r.healthy) provHealthy = true;
-        }
-        if(provHealthy) healthyCount++;
+        if(_mzHealthyShort[key] || _mzHealthyBalance[key]) healthyCount++;
     }
     const healthyEl = document.getElementById('mz-sig-healthy');
     if(healthyEl) healthyEl.textContent = healthyCount + '/' + MZ_ACTIVE_PROVIDERS.length;
 }
+
+function renderProviderQuotaMatrix(d){
+    if(!d || !d.providers) return;
+    // #6565 (UX-2): /api/dash/quota SOLO hidrata la ventana corta (bucket
+    // session). La ventana larga ya no existe: el período se rinde desde
+    // /api/dash/quota-balance (renderQuotaBalanceMatrix). Dos endpoints
+    // escribiendo la misma celda era el "dos secciones con datos distintos"
+    // que prohíbe el CA-4.
+    for(const key of MZ_ACTIVE_PROVIDERS){
+        const p = d.providers[key];
+        const b = p ? p.session : null;
+        const r = _mzHydrateWinCell(key, 'short', b);
+        _mzHealthyShort[key] = !!r.healthy;
+    }
+    _mzUpdateHealthySig();
+}
+
+// =============================================================================
+// #6565 — Período · saldo / Ritmo · proyección desde el libro contable (#6560).
+//
+// Fuente ÚNICA: /api/dash/quota-balance → balance.providers[<key>]. La vista
+// mapea campos a elementos y NADA más: no compara consumo contra umbrales, no
+// deriva estado del %, no calcula "agota" con regla de tres. El color lo
+// dicta estado (UX §3 "Prohibido"); si cambia la fórmula, cambia en
+// quota-balance.js y el panel lo refleja sin tocar CSS.
+//
+// Fail-closed (UX-7): ok:false o proveedor ausente ⇒ celdas "sin dato" gris
+// con el motivo en title; nunca "0 %" ni "100 %" verde por defecto.
+// =============================================================================
+const MZ_QB_PERIOD_TAG = { semanal: 'SEM', diario: 'DÍA', horario: 'HORA' };
+// Tono por estado (UX §3): sólo estado pinta. sin_proyeccion conserva el
+// color normal del saldo (ok) y atenúa el ritmo.
+const MZ_QB_TONE = {
+    alcanza:        { qb: 'ok',   qr: 'ok',   qv: 'ok',   ic: '✓' },
+    se_agota_antes: { qb: 'warn', qr: 'warn', qv: 'warn', ic: '⚠' },
+    excedido:       { qb: 'bad',  qr: 'bad',  qv: 'bad',  ic: '✕' },
+    sin_datos:      { qb: 'dim',  qr: 'dim',  qv: 'dim',  ic: '○' },
+    desactualizado: { qb: 'warn', qr: 'warn', qv: 'warn', ic: '⏱' },
+    sin_proyeccion: { qb: 'ok',   qr: 'dim',  qv: 'dim',  ic: '◌' },
+};
+const MZ_QB_UNIT = {
+    porcentaje: { pts: '%', rate: '%/h' },
+    tokens:     { pts: 'tok', rate: 'tok/h' },
+    mensajes:   { pts: 'mensajes', rate: 'msj/h' },
+    creditos:   { pts: 'créditos', rate: 'créd/h' },
+};
+function _mzQbUnit(unidad){ return MZ_QB_UNIT[unidad] || MZ_QB_UNIT.porcentaje; }
+
+// Entero con separador de miles es-AR (punto). Sin Intl para que el harness de
+// evidencia (file://) y el browser rindan idéntico.
+function _mzFmtInt(v){
+    const n = Math.round(Math.abs(Number(v) || 0));
+    return String(n).replace(/\\B(?=(\\d{3})+(?!\\d))/g, '.');
+}
+function _mzFmtDec(v, d){
+    return Number(v).toFixed(d).replace('.', ',');
+}
+// Cantidad en la unidad del techo (UX §3): 77 % (0 decimales); tokens en
+// 1,2 M tok / 850 k tok; mensajes/créditos entero + unidad. Nunca negativo
+// (el slice ya entrega saldo/excedente ≥ 0; se toma el valor absoluto igual).
+function _mzFmtPts(v, unidad){
+    if(v == null || !Number.isFinite(Number(v))) return '—';
+    const u = _mzQbUnit(unidad);
+    const n = Math.abs(Number(v));
+    if(unidad === 'tokens'){
+        if(n >= 1e6) return _mzFmtDec(n / 1e6, 1) + ' M ' + u.pts;
+        if(n >= 1e3) return _mzFmtInt(n / 1e3) + ' k ' + u.pts;
+    }
+    return _mzFmtInt(n) + ' ' + u.pts;
+}
+// Cantidad CON signo tipográfico (chip): +37 % / −16 %.
+function _mzFmtSigned(v, unidad){
+    if(v == null || !Number.isFinite(Number(v))) return '—';
+    const n = Number(v);
+    return (n < 0 ? '−' : '+') + _mzFmtPts(n, unidad);
+}
+// Ritmo: 2 decimales con coma (es-AR); null → '—'.
+function _mzFmtRate(v){
+    if(v == null || !Number.isFinite(Number(v))) return '—';
+    return _mzFmtDec(Number(v), 2);
+}
+// Antigüedad de una muestra: 'hace 12m' / 'hace 1h 5m' / 'hace 2d 3h'.
+function _mzRelAgo(iso, now){
+    const ts = Date.parse(iso || '');
+    if(!Number.isFinite(ts)) return '—';
+    const ms = Math.max(0, (now || Date.now()) - ts);
+    const totalMin = Math.floor(ms / 60000);
+    if(totalMin < 1) return 'hace ' + Math.floor(ms / 1000) + 's';
+    if(totalMin < 60) return 'hace ' + totalMin + 'm';
+    const h = Math.floor(totalMin / 60), m = totalMin % 60;
+    if(h < 24) return 'hace ' + h + 'h' + (m > 0 ? ' ' + m + 'm' : '');
+    const d = Math.floor(h / 24), rh = h % 24;
+    return 'hace ' + d + 'd' + (rh > 0 ? ' ' + rh + 'h' : '');
+}
+function _mzFmtLocal(iso){
+    const ts = Date.parse(iso || '');
+    if(!Number.isFinite(ts)) return '—';
+    const dt = new Date(ts);
+    const p2 = (n) => (n < 10 ? '0' : '') + n;
+    return p2(dt.getDate()) + '/' + p2(dt.getMonth() + 1) + ' ' + p2(dt.getHours()) + ':' + p2(dt.getMinutes());
+}
+// Countdown vivo (UX-9): el slice trae *_en_ms relativos a computed_at; se
+// descuenta lo transcurrido desde que llegó la respuesta. Vencido ⇒ 'renovando…'
+// (nunca negativo).
+function _mzLiveMs(ms, elapsed){
+    if(ms == null || !Number.isFinite(Number(ms))) return null;
+    return Number(ms) - (elapsed || 0);
+}
+function _mzFmtLive(ms){
+    if(ms == null) return null;
+    if(ms <= 0) return 'renovando…';
+    return String(fmtETA(ms)).trim();
+}
+
+function _mzQbSetTone(el, tone, extra){
+    if(!el) return;
+    el.classList.remove('ok', 'warn', 'bad', 'dim', 'mz-qm-nodata');
+    if(tone) el.classList.add(tone);
+    if(extra) el.classList.add(extra);
+}
+
+// Celdas del período en "sin dato" (fail-closed UX-7 / proveedor sin techo).
+function _mzBalanceNoData(key, reason){
+    const meta = MZ_PROVIDER_META[key] || { name: key };
+    const qb = document.getElementById('mz-qb-' + key);
+    const qr = document.getElementById('mz-qr-' + key);
+    const qv = document.getElementById('mz-qv-' + key);
+    _mzQbSetTone(qb, null, 'mz-qm-nodata');
+    _mzQbSetTone(qr, null, 'mz-qm-nodata');
+    setText('mz-qb-' + key + '-saldo', 'sin dato');
+    setText('mz-qr-' + key + '-rate', 'sin dato');
+    setText('mz-qr-' + key + '-eta', '');
+    const fill = document.getElementById('mz-qb-' + key + '-fill');
+    if(fill) fill.style.width = '0%';
+    const mark = document.getElementById('mz-qb-' + key + '-mark');
+    if(mark) mark.setAttribute('data-on', '0');
+    if(qb){ qb.setAttribute('title', reason); qb.setAttribute('aria-label', meta.name + ' período: sin dato'); }
+    if(qr){ qr.setAttribute('title', reason); qr.setAttribute('aria-label', meta.name + ' ritmo: sin dato'); }
+    if(qv){
+        _mzQbSetTone(qv, 'dim');
+        setText('mz-qv-' + key + '-ic', '○');
+        setText('mz-qv-' + key + '-tx', 'Balance no disponible');
+        qv.setAttribute('title', reason);
+        qv.setAttribute('aria-label', 'Balance no disponible · ' + meta.name);
+    }
+    setText('mz-ql2-' + key + '-rd', '');
+    _mzHealthyBalance[key] = false;
+}
+
+// Copy del chip por estado (UX §4 — un estado = un render). Devuelve
+// { text, eta } donde eta es el texto de "agota en" de la celda de ritmo.
+function _mzBalanceVerdict(p, live, now){
+    const u = p.unidad;
+    const ritmoCero = p.ritmo_pts_por_hora != null && Number(p.ritmo_pts_por_hora) === 0;
+    switch(p.estado){
+    case 'alcanza': {
+        // Guard (guru §4.3): con reposición rolling y sin cierre conocido el
+        // slice no calcula al_cierre_pts — no se pinta "+null pts".
+        const text = p.al_cierre_pts == null
+            ? 'Alcanza · cierre desconocido'
+            : 'Alcanza · ' + _mzFmtSigned(p.al_cierre_pts, u) + ' al cierre';
+        const eta = ritmoCero || live.agota == null ? 'no se agota' : 'agota en ' + _mzFmtLive(live.agota);
+        return { text, eta };
+    }
+    case 'se_agota_antes': {
+        const agotaTxt = live.agota != null ? _mzFmtLive(live.agota) : '—';
+        if(live.cierre == null || p.cierre_periodo_at == null){
+            return { text: 'Se agota en ' + agotaTxt + ' · cierre desconocido', eta: 'agota en ' + agotaTxt };
+        }
+        const antes = Math.max(0, Number(p.cierre_en_ms) - Number(p.agota_en_ms));
+        const pts = p.al_cierre_pts != null ? ' · ' + _mzFmtSigned(p.al_cierre_pts, u) : '';
+        return { text: 'Se agota ' + String(fmtETA(antes)).trim() + ' antes del cierre' + pts, eta: 'agota en ' + agotaTxt };
+    }
+    case 'excedido':
+        return { text: 'Excedido ' + _mzFmtSigned(p.excedente_pts, u) + ' sobre el techo', eta: 'agotado' };
+    case 'sin_datos':
+        return { text: 'Sin datos del período', eta: 'sin proyección' };
+    case 'desactualizado':
+        return { text: 'Dato viejo · muestra de ' + _mzRelAgo(p.muestra_at, now), eta: 'sin proyección' };
+    case 'sin_proyeccion':
+        return { text: 'Ritmo en cálculo · ' + (p.muestras != null ? p.muestras : 0) + '/' + (p.min_muestras != null ? p.min_muestras : '?') + ' muestras', eta: 'sin proyección' };
+    default:
+        return null;
+    }
+}
+
+// Hidrata las tres celdas del período de un proveedor con
+// p = balance.providers[key]. elapsed = ms desde que llegó el slice
+// (countdowns vivos). Devuelve { healthy }.
+function _mzHydrateBalanceRow(key, p, elapsed, now){
+    const meta = MZ_PROVIDER_META[key] || { name: key, src: '' };
+    if(!p || typeof p !== 'object'){
+        _mzBalanceNoData(key, meta.name + ': sin techo declarado en config.yaml (multi_provider.quota) — el libro contable no lo reporta.');
+        return { healthy: false };
+    }
+    const tone = MZ_QB_TONE[p.estado];
+    if(!tone){
+        _mzBalanceNoData(key, meta.name + ': estado desconocido del balance (' + String(p.estado) + ') — fail-closed.');
+        return { healthy: false };
+    }
+    now = now || Date.now();
+    const u = p.unidad;
+    const techo = Number(p.techo);
+    const consumo = Number(p.consumo) || 0;
+    const live = { agota: _mzLiveMs(p.agota_en_ms, elapsed), cierre: _mzLiveMs(p.cierre_en_ms, elapsed) };
+    const v = _mzBalanceVerdict(p, live, now);
+
+    // --- Período · saldo ---
+    const qb = document.getElementById('mz-qb-' + key);
+    _mzQbSetTone(qb, tone.qb);
+    setText('mz-qb-' + key + '-tag', MZ_QB_PERIOD_TAG[p.periodo] || String(p.periodo || '').toUpperCase());
+    // Relleno y tramo rayado: sólo ESCALA visual (consumo/techo, excedente/techo),
+    // no umbral. Clamp para que un excedente enorme no rompa la grilla.
+    const fillPct = techo > 0 ? Math.max(0, Math.min(100, (consumo / techo) * 100)) : 0;
+    const overPct = techo > 0 && Number(p.excedente_pts) > 0 ? Math.max(0, Math.min(25, (Number(p.excedente_pts) / techo) * 100)) : 0;
+    const fill = document.getElementById('mz-qb-' + key + '-fill');
+    if(fill) fill.style.width = fillPct.toFixed(1) + '%';
+    const over = document.getElementById('mz-qb-' + key + '-over');
+    if(over) over.style.width = overPct.toFixed(1) + '%';
+    const bar = document.getElementById('mz-qb-' + key + '-bar');
+    if(bar) bar.setAttribute('data-over', overPct > 0 ? '1' : '0');
+    // Marca vertical = saldo proyectado al cierre; sólo con proyección vigente
+    // (UX-6: nada sobre dato viejo o insuficiente; excedido va sin marca).
+    const mark = document.getElementById('mz-qb-' + key + '-mark');
+    const showMark = (p.estado === 'alcanza' || p.estado === 'se_agota_antes') && p.al_cierre_pts != null && techo > 0;
+    if(mark){
+        mark.setAttribute('data-on', showMark ? '1' : '0');
+        if(showMark) mark.style.left = Math.max(0, Math.min(100, ((techo - Number(p.al_cierre_pts)) / techo) * 100)).toFixed(1) + '%';
+    }
+    setText('mz-qb-' + key + '-saldo', _mzFmtPts(p.saldo_pts, u));
+
+    // --- Ritmo · proyección ---
+    const qr = document.getElementById('mz-qr-' + key);
+    _mzQbSetTone(qr, tone.qr);
+    const showRate = p.estado !== 'desactualizado' && p.estado !== 'sin_proyeccion' && p.estado !== 'sin_datos';
+    setText('mz-qr-' + key + '-rate', showRate ? _mzFmtRate(p.ritmo_pts_por_hora) : '—');
+    setText('mz-qr-' + key + '-unit', _mzQbUnit(u).rate);
+    setText('mz-qr-' + key + '-eta', v.eta);
+
+    // --- Línea 2: chip de veredicto + lectura del período ---
+    const qv = document.getElementById('mz-qv-' + key);
+    _mzQbSetTone(qv, tone.qv);
+    setText('mz-qv-' + key + '-ic', tone.ic);
+    setText('mz-qv-' + key + '-tx', v.text);
+    if(qv) qv.setAttribute('aria-label', v.text + ' · ' + meta.name);
+    // Lectura: techo T · consumido C; con consumo 0 el mockup lee "saldo
+    // completo" (recién repuesto / sin muestras) en vez de "consumido 0".
+    let rdLeft;
+    if(p.estado === 'sin_datos') rdLeft = 'saldo completo · sin muestras';
+    else if(consumo <= 0) rdLeft = 'saldo completo';
+    else rdLeft = 'techo ' + _mzFmtInt(techo) + ' · consumido ' + _mzFmtInt(consumo);
+    if(p.ultimo_reset && p.ultimo_reset.at) rdLeft += ' · repuesto ' + _mzRelAgo(p.ultimo_reset.at, now);
+    let rdRight;
+    if(live.cierre != null) rdRight = (p.reposicion === 'rolling' ? '↻ repone en ' : '↻ cierra en ') + _mzFmtLive(live.cierre);
+    else rdRight = '↻ cierre desconocido';
+    setText('mz-ql2-' + key + '-rd', rdLeft + ' ' + rdRight);
+
+    // --- title completo (UX-10): el "ver más" sin ensuciar la grilla ---
+    const title = meta.name + ' · ' + (p.plan ? 'plan ' + p.plan + ' · ' : '') + String(p.periodo || '') + (p.rolling ? ' rolling' : '')
+        + ' · techo ' + _mzFmtPts(techo, u) + ' · consumo ' + _mzFmtPts(consumo, u) + (p.consumo_pct != null ? ' (' + _mzFmtDec(p.consumo_pct, 0) + ' %)' : '')
+        + ' · saldo ' + _mzFmtPts(p.saldo_pts, u)
+        + (Number(p.excedente_pts) > 0 ? ' · EXCEDENTE ' + _mzFmtPts(p.excedente_pts, u) : '')
+        + ' · ritmo ' + (p.ritmo_pts_por_hora != null ? _mzFmtRate(p.ritmo_pts_por_hora) + ' ' + _mzQbUnit(u).rate : '—')
+        + ' (ventana móvil ' + (p.ventana_movil_min != null ? p.ventana_movil_min : '?') + ' min · ' + (p.muestras != null ? p.muestras : 0) + '/' + (p.min_muestras != null ? p.min_muestras : '?') + ' muestras)'
+        + ' · agota ' + (p.agota_at ? _mzFmtLocal(p.agota_at) : '—')
+        + ' · cierre ' + (p.cierre_periodo_at ? _mzFmtLocal(p.cierre_periodo_at) : 'desconocido')
+        + ' · al cierre ' + (p.al_cierre_pts != null ? _mzFmtSigned(p.al_cierre_pts, u) : '—')
+        + ' · muestra ' + (p.muestra_at ? _mzFmtLocal(p.muestra_at) + ' (' + String(p.confidence || '') + ')' : 'ninguna')
+        + ' · reposición ' + String(p.reposicion || '—')
+        + ' · estado ' + p.estado;
+    if(qb){ qb.setAttribute('title', title); qb.setAttribute('aria-label', meta.name + ' período: saldo ' + _mzFmtPts(p.saldo_pts, u) + ' · ' + v.text); }
+    if(qr){ qr.setAttribute('title', title); qr.setAttribute('aria-label', meta.name + ' ritmo: ' + (showRate ? _mzFmtRate(p.ritmo_pts_por_hora) + ' ' + _mzQbUnit(u).rate : 'sin ritmo') + ' · ' + v.eta); }
+    if(qv) qv.setAttribute('title', title);
+
+    // Sano = queda saldo con dato real (no excedido, no sin datos).
+    const healthy = p.estado !== 'excedido' && p.estado !== 'sin_datos' && Number(p.saldo_pts) > 0;
+    _mzHealthyBalance[key] = healthy;
+    return { healthy };
+}
+
+// Hidrata la matriz completa desde la respuesta del slice.
+function renderQuotaBalanceMatrix(d, receivedAt, now){
+    now = now || Date.now();
+    const elapsed = Math.max(0, now - (receivedAt || now));
+    const note = document.getElementById('mz-qb-note');
+    const head = document.getElementById('mz-qm-h-note');
+    if(!d || d.ok !== true || !d.balance || !d.balance.providers){
+        const reason = 'Balance no disponible: ' + ((d && d.motivo) ? String(d.motivo) : 'respuesta inválida de /api/dash/quota-balance') + '.';
+        for(const key of MZ_ACTIVE_PROVIDERS) _mzBalanceNoData(key, reason);
+        if(note) note.textContent = '⚠ balance no disponible';
+        if(head){ head.setAttribute('data-balance', '0'); head.setAttribute('title', reason); }
+        _mzUpdateHealthySig();
+        return;
+    }
+    // Nota del header: antigüedad de la muestra más reciente del ledger (no del
+    // cálculo): es lo que le dice al operador qué tan vivo está el libro contable.
+    let newest = null;
+    for(const key of MZ_ACTIVE_PROVIDERS){
+        const p = d.balance.providers[key];
+        _mzHydrateBalanceRow(key, p, elapsed, now);
+        const ts = p && p.muestra_at ? Date.parse(p.muestra_at) : NaN;
+        if(Number.isFinite(ts) && (newest == null || ts > newest)) newest = ts;
+    }
+    if(note) note.textContent = newest != null ? 'muestra ' + _mzRelAgo(new Date(newest).toISOString(), now) : 'sin muestras del período';
+    if(head){ head.setAttribute('data-balance', '1'); head.removeAttribute('title'); }
+    _mzUpdateHealthySig();
+}
+
+let _quotaBalanceData = null;
+let _quotaBalanceReceivedAt = 0;
+// Ticker del período (UX-9): 60 s como tickProviderQuota; countdowns descontados
+// localmente cada segundo sin re-fetch.
+async function tickQuotaBalance(){
+    const d = await fetchJson('/api/dash/quota-balance');
+    if(!d) return;
+    _quotaBalanceData = d;
+    _quotaBalanceReceivedAt = Date.now();
+    renderQuotaBalanceMatrix(d, _quotaBalanceReceivedAt);
+}
+setInterval(() => { if(_quotaBalanceData) renderQuotaBalanceMatrix(_quotaBalanceData, _quotaBalanceReceivedAt); }, 1000);
 
 // Alias retro-compat: algún ticker antiguo podría llamar renderProviderQuotaRows.
 function renderProviderQuotaRows(d){ return renderProviderQuotaMatrix(d); }
@@ -4258,6 +4634,11 @@ const POLLS = [
     // #4202 — desglose de cuota por proveedor (6 filas del panel MIZPÁ). 60s
     // alineado con tickQuota; el dato cambia lento (snapshot OCR + métricas).
     { fn: tickProviderQuota, ms: 60000 },
+    // #6565 — saldo, ritmo y proyección por proveedor desde el libro contable
+    // (#6560). 60s alineado con tickProviderQuota (UX-9); el slice persiste
+    // series con debounce de 1 h, así que este tick no lo dispara más de una
+    // vez por hora (guru §4.6).
+    { fn: tickQuotaBalance, ms: 60000 },
     // #2976 — banner de cuota agotada. 5s da una latencia aceptable entre
     // que el detector escribe el flag y el banner aparece, sin saturar
     // el dashboard con I/O del JSON cada segundo (cap 10KB ya defendía,
@@ -5734,18 +6115,55 @@ function _mzWinCell(key, slot, winLabel) {
         </div>`;
 }
 
+// #6565 — Celdas del PERÍODO (skeleton SSR). Reemplazan a la "ventana larga":
+// saldo (barra techo/consumo + saldo en la unidad del techo + marca del saldo proyectado al
+// cierre + tramo rayado del excedente), ritmo (%/h + "agota en") y la línea 2
+// (chip de veredicto + lectura `techo · consumido · ↻ cierre`). Las hidrata
+// `_mzHydrateBalanceRow` SOLO desde `/api/dash/quota-balance` (#6560): la vista
+// no recalcula la fórmula (CA-3) ni mezcla fuentes con la ventana corta (CA-4).
+//
+// Antes del primer tick el saldo y el ritmo muestran "…" atenuado (pendiente,
+// no "0 pts" ni "100 pts" — convención CA-UX2 #4249 / UX-7 #6565).
+const MZ_BALANCE_PENDING_HINT = 'Pendiente del primer tick de /api/dash/quota-balance (#6560).';
+function _mzBalanceCells(key, periodTag) {
+    const meta = MZ_PROVIDER_META[key] || { name: key };
+    const qb = 'mz-qb-' + key;
+    const qr = 'mz-qr-' + key;
+    const qv = 'mz-qv-' + key;
+    return `
+        <div class="mz-qb mz-qm-nodata" id="${qb}" title="${escapeHtmlAttr(MZ_BALANCE_PENDING_HINT)}"
+             aria-label="${escapeHtmlAttr(meta.name)} período: pendiente">
+          <span class="mz-qm-wtag" id="${qb}-tag">${escapeHtmlText(periodTag)}</span>
+          <span class="mz-qb-bar" id="${qb}-bar" data-over="0"><i id="${qb}-fill" style="width:0%"></i><em id="${qb}-mark" data-on="0"></em><span class="mz-qb-over" id="${qb}-over" style="width:0%"></span></span>
+          <span class="mz-qb-saldo" id="${qb}-saldo">…</span>
+        </div>
+        <div class="mz-qr mz-qm-nodata" id="${qr}" title="${escapeHtmlAttr(MZ_BALANCE_PENDING_HINT)}"
+             aria-label="${escapeHtmlAttr(meta.name)} ritmo: pendiente">
+          <span class="mz-qr-rate" id="${qr}-rate">…</span>
+          <span class="mz-qr-unit" id="${qr}-unit">%/h</span>
+          <span class="mz-qr-eta" id="${qr}-eta"></span>
+        </div>
+        <div class="mz-ql2" id="mz-ql2-${key}">
+          <span class="mz-qv dim" id="${qv}" aria-label="${escapeHtmlAttr(meta.name)}: pendiente"><span class="mz-qv-ic" id="${qv}-ic" aria-hidden="true">◌</span><span id="${qv}-tx">…</span></span>
+          <span class="mz-ql2-rd" id="mz-ql2-${key}-rd"></span>
+        </div>`;
+}
+
 function _mzProviderMatrixRow(key) {
     const m = MZ_PROVIDER_META[key];
     const w = MZ_PROVIDER_WINDOWS[key] || { short: 'Min', long: 'Día' };
+    // #6565: la ventana larga (`_mzWinCell(key,'long')`, hidratada desde
+    // /api/dash/quota) se retira. El período se rinde con `_mzBalanceCells`
+    // desde el libro contable (#6560). La ventana corta queda intacta.
     return `
-      <div class="mz-qm-row">
+      <div class="mz-qm-row" id="mz-qm-row-${key}">
         <div class="mz-qm-prov">
           <span class="mz-pdot" style="background:${m.color}"></span>
           <span class="mz-qm-pn">${escapeHtmlText(m.name)}</span>
           <span class="mz-qm-src">· ${escapeHtmlText(m.src)}</span>
         </div>
         ${_mzWinCell(key, 'short', w.short)}
-        ${_mzWinCell(key, 'long', w.long)}
+        ${_mzBalanceCells(key, w.long)}
       </div>`;
 }
 
@@ -5756,9 +6174,11 @@ function _mzProviderMatrix() {
 // Panel "Estado del sistema + Cuotas" (#4533). Izquierda: estado del sistema
 // COMPACTO (semáforo dot + label, sin el círculo gigante ni el chip redundante)
 // + señales accionables (anomalía, rebote de la ola, proveedores sanos).
-// Derecha: matriz de cuota por proveedor (5) × ventana (corta/larga) — Anthropic
-// rinde % CONSUMIDO (#4884), el resto % DISPONIBLE (#4533) —, color por umbral
-// según la semántica de cada fila, y reset propio por bucket. Panel de
+// Derecha: matriz de cuota por proveedor (3) × [ventana corta | período]. La
+// ventana corta — Anthropic rinde % CONSUMIDO (#4884), el resto % DISPONIBLE
+// (#4533) — se hidrata desde /api/dash/quota con color por umbral; el período
+// (saldo · ritmo · proyección · veredicto, #6565) se hidrata SOLO desde
+// /api/dash/quota-balance (#6560) y su color lo dicta `estado`. Panel de
 // APOYO: compacto, no compite con "Ahora · En Ejecución" ni "Issues de la Ola".
 // El semáforo completo (con sus IDs `semaforo-*`) vive en el sink de telemetría
 // oculto para que `_missionMirrorKpis` y `tickAlertTray` sigan leyéndolo.
@@ -5786,12 +6206,13 @@ function renderSystemQuotaPanel(state) {
       <div class="mz-sq-matrix">
         <div class="mz-qm-head">
           <span class="mz-qm-h-l">🔌 CUOTA POR PROVEEDOR</span>
-          <span class="mz-qm-h-note">% leído del proveedor · reset propio por bucket</span>
+          <span class="mz-qm-h-note" id="mz-qm-h-note" data-balance="1">corta: % leído del proveedor · período: saldo y ritmo del libro contable (#6560) · <span id="mz-qb-note">muestra pendiente</span></span>
         </div>
         <div class="mz-qm-cols">
           <span class="mz-qm-gh">Proveedor</span>
           <span class="mz-qm-gh">Ventana corta</span>
-          <span class="mz-qm-gh">Ventana larga</span>
+          <span class="mz-qm-gh">Período · saldo</span>
+          <span class="mz-qm-gh">Ritmo · proyección</span>
         </div>
         <div class="mz-qm-body">${_mzProviderMatrix()}</div>
       </div>
@@ -6112,6 +6533,9 @@ module.exports = {
     // #4249/#4533 — matriz de cuota por proveedor × ventana (Bloque A): fuente
     // única + helpers puros expuestos para test aislado del render por proveedor.
     _mzWinCell,
+    // #6565 — celdas del período (saldo / ritmo / veredicto) del libro contable.
+    _mzBalanceCells,
+    MZ_BALANCE_PENDING_HINT,
     _mzProviderMatrixRow,
     _mzProviderMatrix,
     MZ_PROVIDER_META,

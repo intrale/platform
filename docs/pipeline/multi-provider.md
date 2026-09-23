@@ -28,6 +28,7 @@
 18. [Techo de cuota contratada por proveedor (#6559)](#18-techo-de-cuota-contratada-por-proveedor-6559) — el haber del libro contable: `plan`/`periodo`/`techo`/`unidad`/`reposicion` por proveedor activo, guardrail fail-closed en el boot y lectura programática para saldo y ritmo (#6560).
 19. [Saldo, ritmo y proyección de agotamiento de cuota (#6560)](#19-saldo-ritmo-y-proyección-de-agotamiento-de-cuota-6560) — el balance del libro contable: ledger de muestras, fórmula única (`computeQuotaBalance`), `/api/dash/quota-balance` y las cuatro series derivadas para el auditor (#6809).
 20. [Auditor calidad-precio por agente (#6793)](#20-auditor-calidad-precio-por-agente-6793) — corrida semanal desde el Pulpo, veredicto cerrado por skill, como máximo un mensaje por corrida; nunca cambia un modelo solo.
+21. [Panel de saldo y ritmo de cuota por proveedor en el dashboard (#6565)](#21-panel-de-saldo-y-ritmo-de-cuota-por-proveedor-en-el-dashboard-6565) — el correlato visual del libro contable en el home: techo, consumo, saldo, ritmo, proyección y excedente por proveedor, hidratados sólo desde `/api/dash/quota-balance`.
 
 > **Convención:** todos los paths `.pipeline/...` son relativos a la raíz del repo (`C:\Workspaces\Intrale\platform\`). Todos los comandos asumen Node.js 21 disponible en PATH.
 
@@ -3919,11 +3920,197 @@ tiempos van en UTC (`*_at`) y como delta (`*_en_ms`); la presentación (#6565) f
 
 ---
 
+## 20. Balanceo de carga entre proveedores por saldo de cuota y ritmo (#6561)
+
+> Programa "Contabilidad y balanceo de cuota por proveedor" (4 de 10). Es la **capa de
+> decisión** del libro contable: con el balance de §19 (saldo, ritmo, proyección) el
+> dispatcher deja de tratar a los proveedores como un semáforo binario ("disponible /
+> agotado") y prefiere al que **más saldo relativo** conserva. Caso que lo motiva (medido el
+> 25/08/2026): Codex al 100 % de cuota agotada desde las 03:22 y Claude con el 70 % libre sin
+> usar.
+
+### 20.1 Dónde vive y cuándo participa
+
+| Pieza | Dónde | Qué hace |
+|---|---|---|
+| Plan de balanceo (puro) | `.pipeline/lib/agent-launcher/quota-balancer.js` → `planQuotaBalance({chain, balance, policy, fase})` | Reordena la cadena declarada del skill (primario + `fallbacks[]`) por saldo relativo con umbral, desempate por orden declarado y reserva de fin de período. Sin I/O. |
+| Lectura del balance | mismo módulo → `readQuotaBalanceForDispatch({config, pipelineDir, now, providers})` | Lee la cola de `state/quota-ledger.jsonl` y llama `computeQuotaBalance` (§19.3). Never-throws; caché en memoria de 30 s por `pipelineDir` para ráfagas de spawn. |
+| Integración | `dispatch-with-fallback.js` → `resolveSpawnWithFallback({... config, fase})` | Un solo bloque bajo `try/catch` fail-open, entre los gates del primario y el recorrido de fallbacks. |
+| Cableado | `pulpo.js` → `lanzarAgenteClaude` | Pasa `config` (el YAML parseado) y `fase`. Las sondas read-only del Commander no pasan `config` ⇒ no balancean (comportamiento previo intacto). |
+
+El balanceo **sólo participa** cuando el llamador pasa `config` **y** hay dato fresco
+(`confidence: 'fresh'`, §19.3) para **al menos dos** candidatos de la cadena. En cualquier
+otro caso — ledger ausente (primer arranque), muestras viejas (`stale`), un solo candidato,
+error del lector, `enabled: false` — el ruteo es **exactamente el de antes** (orden
+declarado) y el log lo dice de forma explícita.
+
+### 20.2 Política de reparto (qué manda sobre qué)
+
+1. **Hard gates primero, siempre**: cuota agotada (`shouldGateSpawn`), kill-switch (#3811),
+   horario (#3871), pacing rojo (#4289), health rojo (#3809), credencial (MP-05). Un candidato
+   hard-gated se descarta aunque el plan lo rankee primero. La **capacidad por fase** está
+   garantizada por `agent-models-validate.js` sobre la cadena declarada: el balanceo **no
+   expande** la cadena, sólo la reordena.
+2. **Soft gates previos** (#4282 degradación preventiva, #4289 amarillo) se respetan: si el
+   primario ya estaba soft-gated, el balanceo no lo "rescata".
+3. **Orden por agente = conjunto y desempate.** El saldo sólo reordena cuando la diferencia de
+   saldo relativo (`saldo_pts / techo`, en puntos porcentuales) alcanza
+   `multi_provider.balanceo.delta_min_pct` (default **15**). Por debajo, gana el orden
+   declarado (anti-flapping). Empate exacto ⇒ orden declarado.
+4. **Reserva de fin de período** (cambio 3): fuera de `fases_criticas` (default
+   `verificacion`, `aprobacion`, `delivery`), un candidato con saldo relativo <
+   `margen_reserva_pct` (default **20**) queda *reservado* y se rankea después de los no
+   reservados. **Nunca es un veto**: si todos están bajo el margen se comparan igual, y si el
+   reservado es el único hábil se usa.
+5. **Honestidad (§19)**: un candidato sin dato fresco **no participa** y conserva su posición
+   declarada; los que sí participan se reordenan entre las posiciones que ocupaban. Así
+   `antigravity` (que no reporta consumo verificable) no queda ni premiado ni castigado.
+6. **El balanceo prefiere, no veta.** Si el primario fue diferido sólo por saldo y ningún
+   candidato mejor rankeado resuelve (o los que faltan rankean peor que él), se usa el
+   primario (`balanceCede: true`). La cadena nunca se vacía por saldo.
+
+Orden de recorrido cuando el primario está hard-gated: los fallbacks se visitan según el
+ranking del plan (índices `< MAX_FALLBACK_DEPTH`), conservando el `fallback_index` declarado
+en el audit.
+
+### 20.3 Cómo leer una decisión de balanceo en el log
+
+El bloque es el mismo de #3823 (`formatProviderResolutionLog`); el balanceo se suma como un
+motivo más, con la misma voz.
+
+**Happy path — el balanceo confirma al primario (una sola línea, con sufijo):**
+
+```
+✓ guru:#6561 provider=anthropic (primary, sin fallback necesario) (balanceo: anthropic 68 % · openai-codex 12 %, mayor saldo → orden declarado)
+✓ guru:#6561 provider=anthropic (primary, sin fallback necesario) (balanceo: anthropic 40 % · openai-codex 50 %, delta < 15 → orden declarado)
+✓ guru:#6561 provider=anthropic (primary, sin fallback necesario) (balanceo: degradado (sin_datos) → orden declarado)
+```
+
+La tercera línea es el **primer arranque** (ledger sin muestras) — se distingue de "saldos
+parecidos" a propósito, para que nadie crea que el balanceo no funciona el primer día.
+
+**El saldo cambió la decisión (bloque multilínea + línea `Balanceo:`):**
+
+```
+🔄 guru:#6561 — Resolución de provider:
+  → anthropic (DESCARTADO: quota_balance_prefer_other (saldo relativo menor (balanceo)) — saldo 12 % · ritmo 3.1 pts/h · se agota ~2026-09-21T18:05:00.000Z — mejor: openai-codex)
+  ✓ openai-codex (ELEGIDO — fallback[0], model=gpt-5-codex)
+  Chain evaluada: anthropic → openai-codex (2 eslabones evaluados)
+  Balanceo: regla=saldo (anthropic 12 % · openai-codex 71 %, delta 59 ≥ umbral 15 → openai-codex) · restricciones respetadas: hard-gates ✓ capacidad ✓ horario ✓ orden=desempate
+```
+
+**Reserva de fin de período (soft, el proveedor sigue hábil):**
+
+```
+  → anthropic (DESCARTADO: quota_reserve_critical (reservado para fases críticas) — fase=dev · saldo=12 % · margen=20 %)
+  ...
+  Balanceo: regla=reserva (anthropic 12 % · openai-codex 22 %, anthropic reservado (< 20 %, fase=dev) → openai-codex) · ...
+```
+
+**El mejor por saldo no era hábil (Gherkin 2):** el descarte lleva la restricción real
+(`provider_inactive_by_schedule`, `quota_exhausted`, …) y el primario vuelve con
+`⚖️↩️ … balanceo por saldo sin mejor candidato resoluble — uso el primary`.
+
+### 20.4 Audit estructurado: `balance_by_quota`
+
+Un evento por decisión en `logs/cross-provider-dispatch-YYYY-MM-DD.jsonl` (hash-chain de
+`auditAppend`), con los candidatos completos para que el dashboard (#6565 y siguientes)
+dibuje la comparación sin re-derivar:
+
+```json
+{ "event": "balance_by_quota", "skill": "guru", "issue": 6561,
+  "primary_provider": "anthropic", "primary_deferred_by_balance": true,
+  "elegido": "openai-codex", "regla": "saldo", "fuente": "fresh", "degradado_motivo": null,
+  "umbral": 15, "margen_reserva_pct": 20, "fase": "dev", "fase_critica": false,
+  "orden": ["openai-codex", "anthropic"],
+  "candidatos": [
+    { "provider": "anthropic", "orden_declarado": 0, "saldo_relativo": 12, "ritmo_pts_por_hora": 3.1,
+      "agota_at": "2026-09-21T18:05:00.000Z", "estado": "se_agota_antes", "confidence": "fresh",
+      "participa": true, "reservado": false, "motivo": "saldo relativo menor (12 % vs 71 %)" },
+    { "provider": "openai-codex", "orden_declarado": 1, "saldo_relativo": 71, "ritmo_pts_por_hora": 0.8,
+      "agota_at": null, "estado": "alcanza", "confidence": "fresh",
+      "participa": true, "reservado": false, "motivo": "mayor saldo relativo (71 %)" }
+  ] }
+```
+
+`regla` ∈ `saldo | orden | degradado | reserva`; `degradado_motivo` ∈ `deshabilitado |
+sin_balance | sin_datos | desactualizado | sin_techo | un_solo_candidato | insuficiente`.
+El mismo resumen viaja en el resultado de `resolveSpawnWithFallback` como `balance` (null
+cuando el balanceo no participó).
+
+### 20.5 Configuración
+
+```yaml
+multi_provider:
+  balanceo:
+    enabled: true                 # false ⇒ orden declarado puro (degradado: deshabilitado)
+    delta_min_pct: 15             # puntos porcentuales de saldo relativo para reordenar
+    fases_criticas: [verificacion, aprobacion, delivery]
+    margen_reserva_pct: 20        # bajo este saldo relativo se reserva para fases críticas
+```
+
+Valores fuera de tipo/rango caen al default y se avisan en el log de lanzamiento
+(`multi_provider.balanceo con valores inválidos (se usan defaults)`). El schema
+(`config-schema.js`) es lenient en claves y estricto en tipos, como el resto de
+`multi_provider`.
+
+### 20.6 Operación
+
+- **Rollout:** requiere reinicio del pulpo (el repo principal sólo se actualiza al respawn).
+  Hasta que el ledger acumule ≥ 3 muestras frescas por proveedor (§19.3) el selector opera en
+  modo degradado y lo dice en cada línea `✓`.
+- **Sin Telegram por decisión** (UX §8): elegir un fallback por saldo **no es una degradación**
+  — el primario tiene cuota, está en horario, con credencial y sin kill-switch — y por eso el
+  dispatcher lo registra en el episodio de #6179 como `crossProvider: false` (modo `primario`).
+  Consecuencias verificadas con el módulo real de episodio (`fallback-episode-state`) y
+  `notify` capturado (tests de regresión de §20.7):
+  - dos o más spawns balanceados seguidos ⇒ **0 avisos** y el archivo
+    `state/fallback-episode.json` queda en modo `primario` (nunca `respaldo`);
+  - si había un episodio **real** abierto (un spawn anterior con el primario hard-gateado), el
+    primer spawn balanceado con el primario ya sano lo **cierra una sola vez** ("✅ volvió al
+    motor principal") — coherente: el pipeline dejó de estar degradado, está balanceando — y los
+    siguientes no vuelven a abrirlo (sin flapping);
+  - el salto por gate real (cuota agotada, horario, kill-switch, pacing rojo, soft-gate
+    preventivo) conserva su semántica: `crossProvider: true` en el episodio y aviso de
+    "entra en respaldo" según la política de #6179.
+- **Trazabilidad del salto por balanceo (CA-4):** cuando el primario está sano y sólo fue
+  diferido por saldo, la línea de salto es `⚖️↪️ <skill>:#<issue> primary=<P> diferido por
+  balanceo (sano, con menor saldo relativo), usando fallback="<F>"` (no `primary=<P> gated`), el
+  audit `fallback_selected` lleva `primary_deferred_by_balance: true` y `raw_excerpt:
+  "primary=<P> diferido por balanceo, fallback=<F> preferido por saldo"`, y el resultado expone
+  `disqualifyReason: 'primary_quota_balance_deferred'` (literal estático, mismo criterio que
+  `balancer_selected` del Commander) más `primaryBalanceDeferred: true`, así
+  `_trace.resolution.reason` del pulpo no queda vacío. El `crossProvider: true` del **resultado**
+  se conserva (el pulpo lo usa para args/billing del provider efectivo); sólo el avisador deja de
+  leerlo como degradación.
+- **Apagar de urgencia:** `multi_provider.balanceo.enabled: false` + reinicio. No hay
+  kill-switch en caliente porque el balanceo nunca es causa de que un agente no se lance.
+
+### 20.7 Tests
+
+- `.pipeline/tests/dispatch-quota-balance-6561.test.js` — los dos Gherkin, CA-1..CA-5,
+  umbral, reserva (fase crítica / no crítica / todos bajo el margen / único hábil),
+  precedencia de hard y soft gates, preempción del primario, orden del plan en el recorrido,
+  audit `balance_by_quota` sin secretos, degradaciones (sin config, sin ledger, stale, lector
+  que tira, deshabilitado, config inválida) e integración real con `quota-ledger` +
+  `quota-balance` (caso medido 25/08, caché, muestras viejas). Sección "regresión (review
+  rev-1)": con `recordEpisode` activo (módulo real sobre el `pipelineDir` temporal) y `notify`
+  capturado — dos spawns balanceados ⇒ 0 avisos y sin episodio en modo `respaldo`;
+  trazabilidad "diferido por balanceo" + `primary_quota_balance_deferred`; el gate real sigue
+  diciendo "gated" y abre episodio; episodio real abierto + spawns balanceados ⇒ se cierra una
+  vez y no flapea.
+- `.pipeline/tests/dispatch-skip-reasons-3823.test.js` — cobertura de los códigos nuevos
+  `quota_balance_prefer_other` y `quota_reserve_critical`.
+
+---
+
 ## Apéndice — links rápidos
 
 - **Código:** [`.pipeline/agent-models.json`](../../.pipeline/agent-models.json), [`.pipeline/agent-models.schema.json`](../../.pipeline/agent-models.schema.json), [`.pipeline/lib/agent-models-validate.js`](../../.pipeline/lib/agent-models-validate.js), [`.pipeline/validate-agent-models.js`](../../.pipeline/validate-agent-models.js), [`.pipeline/lib/multi-provider/`](../../.pipeline/lib/multi-provider/), [`.pipeline/lib/quota-adapters/`](../../.pipeline/lib/quota-adapters/), [`.pipeline/lib/agent-launcher/`](../../.pipeline/lib/agent-launcher/).
 - **Techo de cuota por proveedor (#6559):** [`.pipeline/lib/multi-provider/validate-quota-ceilings.js`](../../.pipeline/lib/multi-provider/validate-quota-ceilings.js) (validador puro + CLI + `getQuotaCeiling`), sección `multi_provider.quota` de [`.pipeline/config.yaml`](../../.pipeline/config.yaml), schema en [`.pipeline/lib/config-schema.js`](../../.pipeline/lib/config-schema.js) — ver §18.
+- **Balanceo por saldo y ritmo (#6561):** [`.pipeline/lib/agent-launcher/quota-balancer.js`](../../.pipeline/lib/agent-launcher/quota-balancer.js) (plan puro + lector con caché), integración en [`dispatch-with-fallback.js`](../../.pipeline/lib/agent-launcher/dispatch-with-fallback.js) (`balance_by_quota`, `quota_balance_prefer_other`, `quota_reserve_critical`), sección `multi_provider.balanceo` de [`.pipeline/config.yaml`](../../.pipeline/config.yaml) — ver §20.
 - **Saldo, ritmo y proyección (#6560):** [`.pipeline/lib/multi-provider/quota-balance.js`](../../.pipeline/lib/multi-provider/quota-balance.js) (fórmula pura), [`quota-ledger.js`](../../.pipeline/lib/multi-provider/quota-ledger.js) (serie persistida + lectores), [`quota-series.js`](../../.pipeline/lib/multi-provider/quota-series.js) (series derivadas), slice `quotaBalanceSlice` en [`dashboard-slices.js`](../../.pipeline/lib/dashboard-slices.js) → `GET /api/dash/quota-balance` — ver §19.
+- **Panel de saldo y ritmo (#6565):** `renderSystemQuotaPanel` / `_mzBalanceCells` / `_mzHydrateBalanceRow` en [`.pipeline/views/dashboard/home.js`](../../.pipeline/views/dashboard/home.js), harness [`.pipeline/tools/render-quota-balance-evidence-6565.js`](../../.pipeline/tools/render-quota-balance-evidence-6565.js) — ver §21.
 - **Diseño y decisiones:** [`docs/pipeline-multi-provider.md`](../pipeline-multi-provider.md) (1140 líneas, design doc v2).
 - **Permission mapping (capabilities cross-provider):** [`docs/pipeline-multi-provider/permission-mapping.md`](../pipeline-multi-provider/permission-mapping.md).
 - **Data residency / exclusiones:** [`docs/pipeline-multi-provider/data-residency.md`](../pipeline-multi-provider/data-residency.md).
@@ -3943,3 +4130,94 @@ Doc completa: [`docs/pipeline/model-value-audit.md`](model-value-audit.md). Resu
 - **Reproducir a mano**: `node .pipeline/scripts/model-value-report.js --dias=30 --hasta=YYYY-MM-DD` (el mensaje cita el comando exacto y `ref <hash8>` de su evidencia).
 - **Dependencias abiertas**: #7507 (precios de `claude-opus-5`), #7506 (costo con caché), #7508 (integridad de las fuentes secundarias), #6807 (registro único de propuestas ⇒ adaptador `registry` y dedup).
 - **Apagar**: `enabled: false` en archivo (≤ 1 h sin restart); sólo el audio: `audio_policy.by_event.model_value_audit: false` en `pipeline.config.json`.
+
+---
+
+## 21. Panel de saldo y ritmo de cuota por proveedor en el dashboard (#6565)
+
+> **Estado:** implementado (#6565, Ola E8). **Programa:** Contabilidad y balanceo de cuota por
+> proveedor (8 de 10). **Depende de:** techos (#6559, §18) y balance (#6560, §19).
+
+**Cadena del programa:** #6560 (saldo y ritmo) → **#6565 (panel)**.
+
+### 21.1 Dónde vive
+
+Es la sección **🔌 CUOTA POR PROVEEDOR** del home del dashboard (`renderSystemQuotaPanel`,
+`.pipeline/views/dashboard/home.js`, panel #4533). **No hay una segunda sección de cuota** (CA-4):
+el panel existente se extiende de 3 a 4 columnas y cada proveedor pasa a ocupar dos líneas.
+
+| Columna | Fuente | Contenido |
+|---|---|---|
+| Proveedor | `MZ_PROVIDER_META` | dot + nombre + fuente (`CLI`) — sin cambios |
+| Ventana corta | `GET /api/dash/quota` → `providers[id].session` | mini-barra + % + countdown de reset — **intacta** (ids `mz-qm-<id>-short-*`) |
+| Período · saldo | `GET /api/dash/quota-balance` → `balance.providers[id]` | tag (`SEM`/`DÍA`/`HORA`) + barra techo/consumo + marca del saldo proyectado al cierre + tramo rayado del excedente + saldo (`77 %`) |
+| Ritmo · proyección | ídem | `0,62 %/h` + `agota en 5d 4h` / `agotado` / `no se agota` / `sin proyección` |
+| Línea 2 (bajo las dos columnas nuevas) | ídem | chip de veredicto (ícono + texto por `estado`) + lectura `techo 100 · consumido 23 ↻ cierra en 6d 5h` |
+
+Unidades (`MZ_QB_UNIT` en `home.js`, según `unidad` del techo): `porcentaje` → `%` / `%/h`; `tokens` → `tok` / `tok/h`; `mensajes` → `mensajes` / `msj/h`; `creditos` → `créditos` / `créd/h`. El placeholder estático del ritmo (`mz-qr-<id>-unit`) arranca en `%/h`.
+
+La ventana larga que antes se hidrataba desde `/api/dash/quota` (`weekly`) **ya no existe**: dos
+endpoints escribiendo la misma celda era exactamente "dos secciones con datos distintos".
+
+### 21.2 La vista no recalcula nada (CA-3)
+
+El cliente (`_mzHydrateBalanceRow` / `renderQuotaBalanceMatrix` en el script de `home.js`) mapea
+campos del slice a elementos y **nada más**:
+
+- **El color lo dicta `estado`** y sólo `estado` (`alcanza→ok · se_agota_antes→warn · excedido→bad ·
+  desactualizado→warn · sin_datos→dim · sin_proyeccion→ok` con el ritmo en `dim`). No se comparan
+  porcentajes contra umbrales ni se reutilizan `_mzThresholdClass`/`_mzConsumedClass` de la ventana corta.
+- El relleno de la barra (`consumo/techo`), el tramo rayado (`excedente_pts/techo`, tope visual 25 %)
+  y la marca vertical (`(techo − al_cierre_pts)/techo`) son **escala visual**, no umbral.
+- `agota en` sale de `agota_en_ms`; `cierra en` / `repone en` de `cierre_en_ms`. Se descuentan
+  localmente cada segundo desde que llegó la respuesta (UX-9) y un countdown vencido muestra
+  `renovando…`, nunca negativo. Re-fetch cada 60 s (`tickQuotaBalance`, mismo ritmo que `tickProviderQuota`).
+- Si cambia la fórmula, cambia en `quota-balance.js` y el panel lo refleja sin tocar CSS.
+
+Copy del chip por estado (contrato UX §4 — un estado = un render):
+
+| `estado` | Chip | "agota en" |
+|---|---|---|
+| `alcanza` | `✓ Alcanza · +37 % al cierre` (sin cierre conocido: `Alcanza · cierre desconocido`) | `agota en 6d 11h` / `no se agota` si ritmo 0 |
+| `se_agota_antes` | `⚠ Se agota 1d 1h antes del cierre · −16 %` (sin cierre: `Se agota en 5d 4h · cierre desconocido`) | `agota en 5d 4h` |
+| `excedido` | `✕ Excedido +12 % sobre el techo` | `agotado` |
+| `sin_datos` | `○ Sin datos del período` — saldo completo en **gris**, nunca verde ni error (CA-5) | `sin proyección` |
+| `desactualizado` | `⏱ Dato viejo · muestra de hace 47m` | `sin proyección` |
+| `sin_proyeccion` | `◌ Ritmo en cálculo · 1/3 muestras` | `sin proyección` |
+
+### 21.3 Fail-closed (UX-7)
+
+- Antes del primer tick las celdas del período muestran `…` atenuado (`mz-qm-nodata`), nunca `0 %`
+  ni `100 %`.
+- `ok: false` del slice, respuesta con shape inválido, `estado` fuera del enum o proveedor sin techo
+  declarado ⇒ `sin dato` gris con el **motivo en el `title`**, chip `○ Balance no disponible` y la nota
+  del header en `⚠ balance no disponible`.
+- "Proveedores sanos" (`mz-sig-healthy`) cruza las dos fuentes: un proveedor es sano si su ventana
+  corta no está agotada **o** el balance le deja saldo con dato real (`estado ∉ {excedido, sin_datos}`).
+
+### 21.4 Evidencia visual y QA
+
+Con el ledger recién creado los 3 proveedores salen `sin_datos` durante la primera hora (el ritmo
+necesita `min_muestras: 3` dentro de `ventana_movil_min: 60`). Para ver los seis estados sin esperar:
+
+```bash
+node .pipeline/tools/render-quota-balance-evidence-6565.js
+#  → qa/evidence/6565/render-real-quota-balance.{html,png}
+#  → qa/evidence/6565/compare-render-vs-mockup.png   (render real vs assets/mockups/6565/panel-esperado-cuota.png)
+```
+
+El harness incrusta CSS, markup SSR y script cliente **reales** de `home.js` (sin copias, misma
+disciplina que #4900) y hidrata con `renderQuotaBalanceMatrix` / `_mzHydrateBalanceRow` usando
+fixtures con el shape exacto de `balanceForProvider()`: ① panel completo con los tres proveedores,
+② catálogo de los seis estados, ③ slice con `ok:false`.
+
+Mockup y contrato UX: [`.pipeline/assets/mockups/6565/`](../../.pipeline/assets/mockups/6565/)
+(`panel-esperado-cuota.html/.png`, `ux-validacion-6565.md`).
+
+### 21.5 Tests
+
+- `.pipeline/tests/quota-balance-panel-6565.test.js` — SSR (una sola sección, ventana corta intacta,
+  ids nuevos), hidratación real de los seis estados con DOM falso, fail-closed, countdowns vivos,
+  formateadores (`pts`/`tok`/`mensajes`/`créditos`, coma decimal es-AR), anti-recalculo (CA-3) y
+  cero hex nuevos (UX-8); anti-drift del harness de evidencia.
+- `home.test.js` y `home-mz-provider-rows-4249.test.js` ajustados: `mz-qm-<id>-long-*` ya no se emite.

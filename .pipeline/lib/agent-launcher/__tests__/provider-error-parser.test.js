@@ -316,19 +316,37 @@ test('#5454 precedencia: "Usage credits required for 1M context" sigue siendo cl
     }
 });
 
+// Mejor-de-N para las mediciones SR-4: el suite completo corre miles de tests
+// en batch y una preemption del scheduler (o una pausa de GC) infló una muestra
+// puntual hasta ~120ms con el parser sano (rebote del tester en #6565). El
+// mínimo de N corridas filtra ese ruido sin aflojar la garantía: un ReDoS real
+// se iría por encima del umbral en TODAS las corridas. Mismo criterio que el
+// test hermano en lib/commander/__tests__/provider-error-parser.test.js.
+const SR4_MUESTRAS = 5;
+function bestOfMs(fn) {
+    let best = Infinity;
+    let r;
+    for (let i = 0; i < SR4_MUESTRAS; i++) {
+        const start = process.hrtime.bigint();
+        r = fn();
+        best = Math.min(best, Number(process.hrtime.bigint() - start) / 1e6);
+    }
+    return { best, r };
+}
+
 test('#5454 SR-4: entrada larga adversarial con prefijos weekly parciales queda unknown en <50ms', () => {
     // Peor caso para el patrón nuevo: muchísimas repeticiones del prefijo
     // `hit your weekly ` sin la palabra final `limit`, más whitespace largo
     // entre tokens (el separador `\s+` es el único cuantificador del regex).
     const evil =
         ('hit your weekly ' + ' '.repeat(200)).repeat(2000) + 'NOT_A_LIMIT_SUFFIX';
-    const start = process.hrtime.bigint();
-    const r = parseProviderError(evil, { provider: 'anthropic', transport: 'cli' });
-    const elapsedMs = Number(process.hrtime.bigint() - start) / 1e6;
+    const { best, r } = bestOfMs(() =>
+        parseProviderError(evil, { provider: 'anthropic', transport: 'cli' }));
     assert.equal(r.errorClass, 'unknown',
         'sin la palabra `limit` no hay match: debe quedar unknown');
     assert.notEqual(r.errorClass, 'quota_exhausted');
-    assert.ok(elapsedMs < 50, `Esperaba <50ms (SR-4), tardó ${elapsedMs.toFixed(2)}ms`);
+    assert.ok(best < 50,
+        `Esperaba <50ms (SR-4), mejor de ${SR4_MUESTRAS} corridas fue ${best.toFixed(2)}ms`);
 });
 
 test('CA-7 cross-skill: commander result event estructural clasifica quota_exhausted (mismo shape que skills)', () => {
@@ -396,18 +414,18 @@ test('SR-3 splitBoundedLines respeta cap de línea 16KB', () => {
 
 test('SR-4 parser con 1MB de input ejecuta en <50ms', () => {
     const huge = 'a'.repeat(1024 * 1024);
-    const start = process.hrtime.bigint();
-    parseProviderError(huge, { provider: 'anthropic', transport: 'cli' });
-    const elapsedMs = Number(process.hrtime.bigint() - start) / 1e6;
-    assert.ok(elapsedMs < 50, `Esperaba <50ms, tardó ${elapsedMs.toFixed(2)}ms`);
+    const { best } = bestOfMs(() =>
+        parseProviderError(huge, { provider: 'anthropic', transport: 'cli' }));
+    assert.ok(best < 50,
+        `Esperaba <50ms, mejor de ${SR4_MUESTRAS} corridas fue ${best.toFixed(2)}ms`);
 });
 
 test('SR-4 parser no ReDoS con payload patológico de quota', () => {
     const evil = 'quota' + ' '.repeat(50000) + 'NOT_EXHAUSTED_SUFFIX';
-    const start = process.hrtime.bigint();
-    parseProviderError(evil, { provider: 'anthropic', transport: 'cli' });
-    const elapsedMs = Number(process.hrtime.bigint() - start) / 1e6;
-    assert.ok(elapsedMs < 50, `Esperaba <50ms vs ReDoS, tardó ${elapsedMs.toFixed(2)}ms`);
+    const { best } = bestOfMs(() =>
+        parseProviderError(evil, { provider: 'anthropic', transport: 'cli' }));
+    assert.ok(best < 50,
+        `Esperaba <50ms vs ReDoS, mejor de ${SR4_MUESTRAS} corridas fue ${best.toFixed(2)}ms`);
 });
 
 // -----------------------------------------------------------------------------

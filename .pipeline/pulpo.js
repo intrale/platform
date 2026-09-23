@@ -11838,6 +11838,12 @@ async function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, 
       pipelineDir: PIPELINE(),
       quotaModule: quotaExhausted,
       onLog: log,
+      // #6561 — balanceo por saldo de cuota y ritmo: con `config` el dispatcher
+      // consulta el ledger de #6560 y reordena la cadena declarada; `fase`
+      // alimenta la reserva de fin de período (fases críticas). Sin ledger o
+      // sin dato fresco degrada al orden declarado (CA-5).
+      config,
+      fase,
     });
 
     // #3823 — armar el bloque legible de la decisión (razones por proveedor +

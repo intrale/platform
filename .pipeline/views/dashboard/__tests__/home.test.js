@@ -264,12 +264,15 @@ test('#4189: renderHomeHTML emite el layout MIZPÁ (banner + panel + grilla 2-co
     // #4249/#4533: la matriz usa los ids canónicos de ALLOWED_PROVIDERS
     // (openai-codex, antigravity, etc.). Se renderizan los 5 proveedores activos
     // en su ventana corta (short) y larga (long).
-    assert.ok(html.includes('id="mz-qm-anthropic-short-bar"') && html.includes('id="mz-qm-anthropic-long-bar"')
-        && html.includes('id="mz-qm-openai-codex-short-bar"')
-        && html.includes('id="mz-qm-antigravity-short-bar"')
-        && !html.includes('id="mz-qm-cerebras-long-bar"')
-        && !html.includes('id="mz-qm-nvidia-nim-long-bar"'),
-        'matriz proveedor×ventana con ids canónicos Anthropic/Codex/Gemini (CA-6, #4533) y sin retirados (#6563)');
+    // #6565 (UX-2): la ventana larga (mz-qm-<key>-long-*) se retiró; el período
+    // se rinde con las celdas del libro contable (mz-qb-<key>-* / mz-qr-<key>-*).
+    assert.ok(html.includes('id="mz-qm-anthropic-short-bar"') && !html.includes('id="mz-qm-anthropic-long-bar"')
+        && html.includes('id="mz-qb-anthropic-bar"') && html.includes('id="mz-qr-anthropic-rate"')
+        && html.includes('id="mz-qm-openai-codex-short-bar"') && html.includes('id="mz-qb-openai-codex-bar"')
+        && html.includes('id="mz-qm-antigravity-short-bar"') && html.includes('id="mz-qb-antigravity-bar"')
+        && !html.includes('id="mz-qb-cerebras-bar"')
+        && !html.includes('id="mz-qb-nvidia-nim-bar"'),
+        'matriz proveedor×ventana con ids canónicos Anthropic/Codex/Gemini (CA-6, #4533), período del balance (#6565) y sin retirados (#6563)');
     assert.ok(html.includes('class="mz-grid"'), 'grilla de 2 columnas');
     assert.ok(html.includes('class="mz-panel mz-now"') && html.includes('class="mz-panel mz-board"'),
         'columna Ahora·Ejecución + Tablero de la Ola');

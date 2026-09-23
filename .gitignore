@@ -99,6 +99,12 @@ logs/
 .pipeline/state/
 # #6809 — rollup horario de métricas (90 días) del auditor del modelo operativo
 .pipeline/metrics-history-hourly.jsonl
+# #6565 — defensa en profundidad: un PIPELINE_DIR_OVERRIDE relativo (backslashes
+# de Windows consumidos como escapes por el shell POSIX) aterriza el estado
+# runtime dentro del working tree como "<ruta-colapsada>.pipeline/", nombre que
+# la regla de arriba ya no reconoce. El "?" exige >=1 carácter: no matchea
+# ".pipeline/" (un "*.pipeline/" pelado ignoraría el pipeline entero).
+?*.pipeline/
 
 # Node (Wasm)
 node_modules/
