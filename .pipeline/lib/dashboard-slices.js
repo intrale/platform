@@ -103,6 +103,9 @@ let quotaBalance = null;
 try { quotaBalance = require('./multi-provider/quota-balance'); } catch { /* opcional */ }
 let quotaSeries = null;
 try { quotaSeries = require('./multi-provider/quota-series'); } catch { /* opcional */ }
+// #6809 — estado del auditor del modelo operativo (sólo lectura).
+let processAuditCron = null;
+try { processAuditCron = require('./process-audit/cron'); } catch { /* opcional */ }
 
 // #2976 — Skills determinísticos: corren en Node puro sin tokens LLM y por
 // eso siguen ejecutándose aún con `quota-exhausted.json` activo. Mantener
@@ -4544,6 +4547,34 @@ function _sanitizeRestartItem(raw) {
     return { issue, componente: componente || 'pipeline', motivo };
 }
 
+// =============================================================================
+// #6809 — processAuditSlice: estado visible del auditor del modelo operativo.
+//
+// SÓLO LECTURA (SEC-6809-9): flag, validez de la sección, última corrida,
+// motivo y conteos por eje. Todo sale de `process-audit/cron#readStatus`, que
+// sólo devuelve booleanos, números, un ISO y tokens `[a-z_]` — ningún texto de
+// la telemetría ni de las propuestas. No hay endpoint para encender el
+// auditor ni para forzar una corrida: se prende en `config.yaml`.
+// Estados (UX-G5): `inactivo` | `esperando_primera_corrida` | `activo`.
+// =============================================================================
+function processAuditSlice(state, ctx) {
+    const PIPELINE = (ctx && ctx.PIPELINE) || path.join(process.cwd(), '.pipeline');
+    if (!processAuditCron || typeof processAuditCron.readStatus !== 'function') {
+        return { disponible: false, estado: 'desconocido' };
+    }
+    let cfgRoot = null;
+    try { cfgRoot = _loadGuardRawConfig(PIPELINE); } catch { cfgRoot = null; }
+    try {
+        const status = processAuditCron.readStatus({
+            cfgRoot,
+            stateFile: path.join(PIPELINE, 'state', processAuditCron.STATE_FILE),
+        });
+        return { disponible: true, config_legible: cfgRoot !== null, ...status };
+    } catch {
+        return { disponible: false, estado: 'desconocido' };
+    }
+}
+
 function restartPendienteSlice(state, ctx) {
     // Sin libs (checkout viejo / require falló) → estado desconocido honesto.
     if (!runtimeBoot || !operativoDrift) {
@@ -4646,6 +4677,8 @@ module.exports = {
     providerCostSlice,
     // #6560 — saldo, ritmo y proyección de cuota por proveedor + series derivadas
     quotaBalanceSlice,
+    // #6809 — estado del auditor del modelo operativo (sólo lectura)
+    processAuditSlice,
     reconcilerStaleOrdersSlice,
     // #4460 — banner "Reiniciar modelo operativo" (drift bootSHA↔origin/main)
     restartPendienteSlice,

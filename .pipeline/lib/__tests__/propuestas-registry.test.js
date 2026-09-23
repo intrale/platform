@@ -284,7 +284,7 @@ test('CA-1 · ESTADOS no incluye postergada; enums exportados y congelados; DECI
         assert.ok(registry.MOTIVOS_RECHAZO.includes(m), `${m} declarado`);
     }
     assert.deepEqual(registry.PRODUCTORES,
-        ['recomendacion-agente', 'auditor-modelos', 'digest-bloqueos', 'digest-desempates', 'commander-proactivo']);
+        ['recomendacion-agente', 'auditor-modelos', 'digest-bloqueos', 'digest-desempates', 'commander-proactivo', 'auditor-proceso']);
 });
 
 // -----------------------------------------------------------------------------

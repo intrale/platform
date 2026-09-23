@@ -819,6 +819,16 @@
       "via": "writeTarget.writeDir"
     },
     {
+      "modulo": "lib/process-audit/cron.js",
+      "funcion": "defaultStateFile",
+      "linea": 104,
+      "canal": "estado",
+      "destino": "state/process-audit-cron.json",
+      "tier": 3,
+      "estado": "migrado",
+      "via": "writeTarget.writeDir"
+    },
+    {
       "modulo": "lib/process-transitions.js",
       "funcion": "resolvePipelineDir",
       "linea": 56,

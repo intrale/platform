@@ -1075,6 +1075,29 @@ model_value_audit:
   registrar: false
   publish: telegram-plain   # 'telegram-plain' | 'registry' (#6807) | 'none'
 
+# #6809 — Auditor del modelo operativo (proceso, capacidad, proveedores). El
+# brazo del Pulpo corre `lib/process-audit/cron.js` cada hora; la corrida real
+# ocurre cada `cadence_days`. 100 % determinístico: sólo LEE telemetría y
+# publica SUGERENCIAS en el registro único de propuestas (#6807) con el
+# productor `auditor-proceso` (tope diario: `propuestas.cuota_diaria_por_productor`
+# + como máximo 10 intentos por corrida). Nunca toca configuración, issues ni
+# labels, y no tiene otro canal: si el registro rechaza, sólo se loguea.
+#
+# AUTORIDAD (sólo en este archivo, sin override por entorno): `enabled`.
+# CALIBRACIÓN (rangos validados; fuera de rango ⇒ el auditor queda APAGADO,
+# sin clamp silencioso):
+#   cadence_days      1..30  — cada cuántos días corre.
+#   window_days       7..30  — ventana de telemetría analizada.
+#   min_samples_hora  1..120 — muestras mínimas (de 30 s) para que una hora del
+#                              rollup `metrics-history-hourly.jsonl` cuente.
+# Estado visible: `state/process-audit-cron.json` y `/api/dash/process-audit`.
+# Doc: docs/pipeline/process-audit.md
+process_audit:
+  enabled: false            # fail-closed; sólo `true` exacto enciende el brazo
+  cadence_days: 7
+  window_days: 14
+  min_samples_hora: 60
+
 # #4870 — Modo reducido: aviso advisory cuando no hay proveedor PAGO disponible.
 #
 # Diseño: receta del Arquitecto en el body del issue #4870. Cuando TODOS los

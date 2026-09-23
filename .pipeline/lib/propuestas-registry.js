@@ -63,6 +63,9 @@ const PRODUCTORES = Object.freeze([
     'digest-bloqueos',
     'digest-desempates',
     'commander-proactivo',
+    // #6809 — auditor del modelo operativo (lib/process-audit/): sugerencias del
+    // proceso a partir de la telemetría. Publica sólo por acá (D3 / SEC-6809-4).
+    'auditor-proceso',
 ]);
 
 const TIPOS = Object.freeze([
