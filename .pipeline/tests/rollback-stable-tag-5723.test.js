@@ -267,6 +267,8 @@ function installRollbackScript(dir) {
     for (const rel of ['rollback.js', 'pid-discovery.js', 'lib/rollback-guard.js', 'lib/dropfile-writer.js',
         'lib/write-target.js', 'lib/pipeline-env.js', 'lib/config-resolver.js', 'lib/config-schema.js',
         'lib/launcher-env.js', 'lib/build-child-env.js', 'lib/safe-project-id.js',
+        // #7634 — build-child-env requiere dos módulos hoja nuevos.
+        'lib/credential-sentinel.js', 'lib/child-env-error.js',
         'lib/multi-provider/validate-quota-ceilings.js']) {
         const dst = path.join(dir, '.pipeline', rel);
         fs.mkdirSync(path.dirname(dst), { recursive: true });
