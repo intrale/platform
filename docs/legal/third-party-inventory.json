@@ -5514,7 +5514,7 @@
   },
   {
     "ecosistema": "gradle",
-    "coordenada": "org.jetbrains.compose.desktop:desktop-jvm-windows-x64",
+    "coordenada": "org.jetbrains.compose.desktop:desktop-jvm-<os>-<arch>",
     "version": "1.8.2",
     "licencia_spdx": "Apache-2.0",
     "licencia_declarada": "Apache-2.0",
@@ -7290,7 +7290,7 @@
   },
   {
     "ecosistema": "gradle",
-    "coordenada": "org.jetbrains.skiko:skiko-awt-runtime-windows-x64",
+    "coordenada": "org.jetbrains.skiko:skiko-awt-runtime-<os>-<arch>",
     "version": "0.9.4.2",
     "licencia_spdx": "Apache-2.0",
     "licencia_declarada": "Apache-2.0",

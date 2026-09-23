@@ -2428,7 +2428,7 @@ org.jetbrains.compose.desktop:desktop-jvm 1.8.2
   Copyright: no declarado en los metadatos del paquete
   Proyecto: https://github.com/JetBrains/compose-jb
 
-org.jetbrains.compose.desktop:desktop-jvm-windows-x64 1.8.2
+org.jetbrains.compose.desktop:desktop-jvm-<os>-<arch> 1.8.2
   Licencia: Apache-2.0
   Copyright: no declarado en los metadatos del paquete
   Proyecto: https://github.com/JetBrains/compose-jb
@@ -3203,7 +3203,7 @@ org.jetbrains.skiko:skiko-awt 0.9.4.2
   Copyright: no declarado en los metadatos del paquete
   Proyecto: https://www.github.com/JetBrains/skiko
 
-org.jetbrains.skiko:skiko-awt-runtime-windows-x64 0.9.4.2
+org.jetbrains.skiko:skiko-awt-runtime-<os>-<arch> 0.9.4.2
   Licencia: Apache-2.0
   Copyright: no declarado en los metadatos del paquete
   Proyecto: https://www.github.com/JetBrains/skiko

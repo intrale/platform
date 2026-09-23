@@ -54,6 +54,12 @@ corridas sobre las mismas dependencias dan los mismos bytes. El CI regenera todo
 memoria y falla si difiere de lo versionado (drift, mismo patrón que
 `verifyNoLegacyStrings`).
 
+También son independientes del sistema operativo que corre Gradle: `compose.desktop.currentOs`
+resuelve `desktop-jvm-windows-x64` en la máquina del operador y `desktop-jvm-linux-x64` en
+CI. Las coordenadas listadas en `gradle.variantes_por_host` de la política se inventarían
+como `<prefijo><os>-<arch>` (la licencia es la misma en todas las variantes), así el
+inventario generado en Windows coincide con el que el CI regenera en Linux.
+
 ### Cómo funciona
 
 - **Gradle:** el plugin `app.cash.licensee` (versión exacta en

@@ -5,7 +5,7 @@ const test = require('node:test');
 const assert = require('node:assert');
 
 const { collectNpm } = require('../collect-npm');
-const { collectGradle, resolveLicenses } = require('../collect-gradle');
+const { collectGradle, resolveLicenses, normalizeHostVariant } = require('../collect-gradle');
 const { buildAliasIndex } = require('../spdx');
 const { renderInventoryJson, renderNotice, renderReport } = require('../render');
 const { artifact, basePolicy, cleanupAll, lockfile, makeRepo, writeJson } = require('./_fixture-repo');
@@ -112,4 +112,20 @@ test('gradle: el alcance sale del módulo y distribuido gana al deduplicar', () 
   assert.equal(byCoord['org.jetbrains.kotlin:kotlin-stdlib'].scope, 'distribuido');
   assert.deepEqual(byCoord['org.jetbrains.kotlin:kotlin-stdlib'].origins, [':lib', ':tool']);
   assert.equal(byCoord['org.junit:junit'].scope, 'build/test');
+});
+
+test('gradle: las variantes nativas por host se normalizan para que el inventario no dependa del SO', () => {
+  const variantes = [
+    { grupo: 'org.jetbrains.compose.desktop', prefijo: 'desktop-jvm-' },
+    { grupo: 'org.jetbrains.skiko', prefijo: 'skiko-awt-runtime-' },
+  ];
+  for (const host of ['windows-x64', 'linux-x64', 'macos-arm64']) {
+    assert.equal(normalizeHostVariant('org.jetbrains.compose.desktop', `desktop-jvm-${host}`, variantes), 'desktop-jvm-<os>-<arch>');
+    assert.equal(normalizeHostVariant('org.jetbrains.skiko', `skiko-awt-runtime-${host}`, variantes), 'skiko-awt-runtime-<os>-<arch>');
+  }
+  // Fuera de la lista o con sufijo que no es un host: no se toca.
+  assert.equal(normalizeHostVariant('org.jetbrains.compose.desktop', 'desktop-jvm', variantes), 'desktop-jvm');
+  assert.equal(normalizeHostVariant('org.jetbrains.compose.desktop', 'desktop-jvm-foo', variantes), 'desktop-jvm-foo');
+  assert.equal(normalizeHostVariant('otro.grupo', 'desktop-jvm-linux-x64', variantes), 'desktop-jvm-linux-x64');
+  assert.equal(normalizeHostVariant('org.jetbrains.skiko', 'skiko-awt-runtime-linux-x64', undefined), 'skiko-awt-runtime-linux-x64');
 });

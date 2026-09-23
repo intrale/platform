@@ -76,7 +76,13 @@ function collectAll({ fs, root, policy }) {
   let gradle;
   let npm;
   try {
-    gradle = collectGradle({ rootDir: root, modules: policy.gradle && policy.gradle.modulos, aliasIndex, fs });
+    gradle = collectGradle({
+      rootDir: root,
+      modules: policy.gradle && policy.gradle.modulos,
+      hostVariants: policy.gradle && policy.gradle.variantes_por_host,
+      aliasIndex,
+      fs,
+    });
   } catch (e) {
     throw new InventoryError(`colector Gradle: ${e.message}`);
   }

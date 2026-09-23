@@ -12,6 +12,12 @@
 // artefacto es DESCONOCIDO (fail-closed).
 //
 // CA-1: si un módulo esperado no tiene ningún artifacts.json, se lanza error.
+//
+// Variantes nativas por host: `compose.desktop.currentOs` resuelve el artefacto
+// del SO que corre Gradle (desktop-jvm-windows-x64 en la máquina del operador,
+// desktop-jvm-linux-x64 en CI). Para que el inventario sea el mismo en cualquier
+// host, las coordenadas declaradas en `gradle.variantes_por_host` de la política
+// se normalizan a `<prefijo><os>-<arch>` (misma licencia en todas las variantes).
 // =============================================================================
 'use strict';
 
@@ -68,6 +74,18 @@ function resolveLicenses(artifact, aliasIndex) {
   return { declared, expression: toString(ast), unknownReason: null, unmapped };
 }
 
+const HOST_SUFFIX = /^(windows|linux|macos)-(x64|arm64)$/;
+
+/** Normaliza el artifactId de una variante nativa por host; si no aplica, lo deja igual. */
+function normalizeHostVariant(groupId, artifactId, hostVariants) {
+  for (const v of Array.isArray(hostVariants) ? hostVariants : []) {
+    if (!v || v.grupo !== groupId || typeof v.prefijo !== 'string' || !v.prefijo) continue;
+    if (!artifactId.startsWith(v.prefijo)) continue;
+    if (HOST_SUFFIX.test(artifactId.slice(v.prefijo.length))) return `${v.prefijo}<os>-<arch>`;
+  }
+  return artifactId;
+}
+
 function publicUrl(artifact) {
   const u = artifact && artifact.scm && artifact.scm.url;
   return typeof u === 'string' && /^https?:\/\//i.test(u) ? u : null;
@@ -78,9 +96,10 @@ function publicUrl(artifact) {
  * @param {string} opts.rootDir
  * @param {Array<{path:string, dir:string, alcance:string}>} opts.modules
  * @param {Map} opts.aliasIndex
+ * @param {Array<{grupo:string, prefijo:string}>} [opts.hostVariants]
  * @param {object} [opts.fs]
  */
-function collectGradle({ rootDir, modules, aliasIndex, fs = nodeFs }) {
+function collectGradle({ rootDir, modules, aliasIndex, hostVariants = [], fs = nodeFs }) {
   if (!Array.isArray(modules) || modules.length === 0) {
     throw new Error('la política no declara módulos Gradle (gradle.modulos)');
   }
@@ -109,7 +128,7 @@ function collectGradle({ rootDir, modules, aliasIndex, fs = nodeFs }) {
       }
       for (const a of artifacts) {
         if (!a || typeof a.groupId !== 'string' || typeof a.artifactId !== 'string' || typeof a.version !== 'string') continue;
-        const coordinate = `${a.groupId}:${a.artifactId}`;
+        const coordinate = `${a.groupId}:${normalizeHostVariant(a.groupId, a.artifactId, hostVariants)}`;
         const id = `gradle|${coordinate}|${a.version}`;
         count++;
         let entry = byKey.get(id);
@@ -147,4 +166,4 @@ function collectGradle({ rootDir, modules, aliasIndex, fs = nodeFs }) {
   return { entries: [...byKey.values()], stats };
 }
 
-module.exports = { collectGradle, resolveLicenses, findArtifactFiles };
+module.exports = { collectGradle, resolveLicenses, findArtifactFiles, normalizeHostVariant };

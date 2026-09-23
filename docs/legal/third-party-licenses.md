@@ -508,7 +508,7 @@
 | org.jetbrains.compose.components:components-ui-tooling-preview-wasmJs | 1.8.2 | Apache-2.0 | atribución en NOTICE y conservar el NOTICE del proyecto si existe |
 | org.jetbrains.compose.desktop:desktop | 1.8.2 | Apache-2.0 | atribución en NOTICE y conservar el NOTICE del proyecto si existe |
 | org.jetbrains.compose.desktop:desktop-jvm | 1.8.2 | Apache-2.0 | atribución en NOTICE y conservar el NOTICE del proyecto si existe |
-| org.jetbrains.compose.desktop:desktop-jvm-windows-x64 | 1.8.2 | Apache-2.0 | atribución en NOTICE y conservar el NOTICE del proyecto si existe |
+| org.jetbrains.compose.desktop:desktop-jvm-&lt;os&gt;-&lt;arch&gt; | 1.8.2 | Apache-2.0 | atribución en NOTICE y conservar el NOTICE del proyecto si existe |
 | org.jetbrains.compose.foundation:foundation | 1.8.2 | Apache-2.0 | atribución en NOTICE y conservar el NOTICE del proyecto si existe |
 | org.jetbrains.compose.foundation:foundation-desktop | 1.8.2 | Apache-2.0 | atribución en NOTICE y conservar el NOTICE del proyecto si existe |
 | org.jetbrains.compose.foundation:foundation-layout | 1.8.2 | Apache-2.0 | atribución en NOTICE y conservar el NOTICE del proyecto si existe |
@@ -663,7 +663,7 @@
 | org.jetbrains.kotlinx:kotlinx-serialization-json-wasm-js | 1.7.3 | Apache-2.0 | atribución en NOTICE y conservar el NOTICE del proyecto si existe |
 | org.jetbrains.skiko:skiko | 0.9.4.2 | Apache-2.0 | atribución en NOTICE y conservar el NOTICE del proyecto si existe |
 | org.jetbrains.skiko:skiko-awt | 0.9.4.2 | Apache-2.0 | atribución en NOTICE y conservar el NOTICE del proyecto si existe |
-| org.jetbrains.skiko:skiko-awt-runtime-windows-x64 | 0.9.4.2 | Apache-2.0 | atribución en NOTICE y conservar el NOTICE del proyecto si existe |
+| org.jetbrains.skiko:skiko-awt-runtime-&lt;os&gt;-&lt;arch&gt; | 0.9.4.2 | Apache-2.0 | atribución en NOTICE y conservar el NOTICE del proyecto si existe |
 | org.jetbrains.skiko:skiko-iosarm64 | 0.9.4.2 | Apache-2.0 | atribución en NOTICE y conservar el NOTICE del proyecto si existe |
 | org.jetbrains.skiko:skiko-iossimulatorarm64 | 0.9.4.2 | Apache-2.0 | atribución en NOTICE y conservar el NOTICE del proyecto si existe |
 | org.jetbrains.skiko:skiko-iosx64 | 0.9.4.2 | Apache-2.0 | atribución en NOTICE y conservar el NOTICE del proyecto si existe |

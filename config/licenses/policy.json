@@ -9,6 +9,10 @@
       { "path": ":users", "dir": "users", "alcance": "distribuido" },
       { "path": ":tools:forbidden-strings-processor", "dir": "tools/forbidden-strings-processor", "alcance": "build/test" },
       { "path": ":qa", "dir": "qa", "alcance": "build/test" }
+    ],
+    "variantes_por_host": [
+      { "grupo": "org.jetbrains.compose.desktop", "prefijo": "desktop-jvm-", "motivo": "compose.desktop.currentOs resuelve el artefacto del SO que compila; se normaliza para que el inventario no dependa del host" },
+      { "grupo": "org.jetbrains.skiko", "prefijo": "skiko-awt-runtime-", "motivo": "runtime nativo de Skiko por SO, arrastrado por compose.desktop.currentOs" }
     ]
   },
   "npm": {
