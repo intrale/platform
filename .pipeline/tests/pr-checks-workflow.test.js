@@ -288,3 +288,17 @@ test('el workflow no se dispara por labels: un evento de label no puede pisar un
   assert.ok(!types.includes('labeled') && !types.includes('unlabeled'),
     'con labeled, los jobs que se saltean por evento dejarian un pr-status verde sobre el mismo SHA');
 });
+
+test('el indice no tiene gitlinks huerfanos: rompen el checkout de check-licenses', () => {
+  // actions/checkout con persist-credentials: false corre 'git submodule foreach'
+  // al quitar la auth; un gitlink (modo 160000) sin entrada en .gitmodules aborta
+  // con 'No url found for submodule path' (exit 128) y el job nunca arranca.
+  const { execFileSync } = require('node:child_process');
+  const root = path.resolve(__dirname, '..', '..');
+  const salida = execFileSync('git', ['ls-files', '-s'], { cwd: root, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+  const gitlinks = salida.split('\n').filter((l) => l.startsWith('160000 ')).map((l) => l.split('\t')[1]);
+  const gitmodulesPath = path.join(root, '.gitmodules');
+  const gitmodules = fs.existsSync(gitmodulesPath) ? fs.readFileSync(gitmodulesPath, 'utf8') : '';
+  const huerfanos = gitlinks.filter((p) => !gitmodules.includes(`path = ${p}`));
+  assert.deepStrictEqual(huerfanos, [], `gitlinks sin .gitmodules: ${huerfanos.join(', ')}`);
+});
