@@ -1,0 +1,468 @@
+{
+  "generated_at": "2026-09-23T20:48:38.491Z",
+  "owner": "intrale",
+  "repos": {
+    "platform": {
+      "workflows": {
+        "Admission Gate": {
+          "runs": 1206,
+          "jobs": 1205,
+          "raw_min": 128.03,
+          "billable_min": 1207,
+          "billable_by_os": {
+            "linux": 1207,
+            "windows": 0,
+            "macos": 0
+          },
+          "raw_by_os": {
+            "linux": 128.03,
+            "windows": 0,
+            "macos": 0
+          },
+          "retried_runs": 0,
+          "unknown_runner": 0,
+          "p50_min": 1,
+          "p95_min": 1
+        },
+        "Operational State Lint": {
+          "runs": 317,
+          "jobs": 317,
+          "raw_min": 116.9,
+          "billable_min": 320,
+          "billable_by_os": {
+            "linux": 320,
+            "windows": 0,
+            "macos": 0
+          },
+          "raw_by_os": {
+            "linux": 116.9,
+            "windows": 0,
+            "macos": 0
+          },
+          "retried_runs": 0,
+          "unknown_runner": 0,
+          "p50_min": 1,
+          "p95_min": 1
+        },
+        "Runtime state guard": {
+          "runs": 225,
+          "jobs": 225,
+          "raw_min": 66.68,
+          "billable_min": 228,
+          "billable_by_os": {
+            "linux": 228,
+            "windows": 0,
+            "macos": 0
+          },
+          "raw_by_os": {
+            "linux": 66.68,
+            "windows": 0,
+            "macos": 0
+          },
+          "retried_runs": 0,
+          "unknown_runner": 0,
+          "p50_min": 1,
+          "p95_min": 1
+        },
+        "Ghost Artifact Lint": {
+          "runs": 317,
+          "jobs": 317,
+          "raw_min": 102.57,
+          "billable_min": 319,
+          "billable_by_os": {
+            "linux": 319,
+            "windows": 0,
+            "macos": 0
+          },
+          "raw_by_os": {
+            "linux": 102.57,
+            "windows": 0,
+            "macos": 0
+          },
+          "retried_runs": 0,
+          "unknown_runner": 0,
+          "p50_min": 1,
+          "p95_min": 1
+        },
+        "Security SAST": {
+          "runs": 333,
+          "jobs": 1143,
+          "raw_min": 14023.67,
+          "billable_min": 14703,
+          "billable_by_os": {
+            "linux": 14703,
+            "windows": 0,
+            "macos": 0
+          },
+          "raw_by_os": {
+            "linux": 14023.67,
+            "windows": 0,
+            "macos": 0
+          },
+          "retried_runs": 0,
+          "unknown_runner": 0,
+          "p50_min": 13,
+          "p95_min": 226
+        },
+        "PR Checks": {
+          "runs": 252,
+          "jobs": 579,
+          "raw_min": 485.02,
+          "billable_min": 951,
+          "billable_by_os": {
+            "linux": 951,
+            "windows": 0,
+            "macos": 0
+          },
+          "raw_by_os": {
+            "linux": 485.02,
+            "windows": 0,
+            "macos": 0
+          },
+          "retried_runs": 1,
+          "unknown_runner": 0,
+          "p50_min": 2,
+          "p95_min": 13
+        },
+        "Distribución Web — AWS S3 + CloudFront (Wasm)": {
+          "runs": 1,
+          "jobs": 2,
+          "raw_min": 11.1,
+          "billable_min": 13,
+          "billable_by_os": {
+            "linux": 13,
+            "windows": 0,
+            "macos": 0
+          },
+          "raw_by_os": {
+            "linux": 11.1,
+            "windows": 0,
+            "macos": 0
+          },
+          "retried_runs": 0,
+          "unknown_runner": 0,
+          "p50_min": 13,
+          "p95_min": 13
+        },
+        "Distribución Desktop — GitHub Releases (MSI + Deb)": {
+          "runs": 1,
+          "jobs": 4,
+          "raw_min": 14.52,
+          "billable_min": 29,
+          "billable_by_os": {
+            "linux": 5,
+            "windows": 24,
+            "macos": 0
+          },
+          "raw_by_os": {
+            "linux": 2.83,
+            "windows": 11.68,
+            "macos": 0
+          },
+          "retried_runs": 0,
+          "unknown_runner": 0,
+          "p50_min": 29,
+          "p95_min": 29
+        },
+        "CI-CD Plataforma": {
+          "runs": 1,
+          "jobs": 1,
+          "raw_min": 27.95,
+          "billable_min": 28,
+          "billable_by_os": {
+            "linux": 28,
+            "windows": 0,
+            "macos": 0
+          },
+          "raw_by_os": {
+            "linux": 27.95,
+            "windows": 0,
+            "macos": 0
+          },
+          "retried_runs": 0,
+          "unknown_runner": 0,
+          "p50_min": 28,
+          "p95_min": 28
+        },
+        "Distribución Android — Firebase App Distribution (3 Flavors)": {
+          "runs": 1,
+          "jobs": 4,
+          "raw_min": 14.27,
+          "billable_min": 17,
+          "billable_by_os": {
+            "linux": 17,
+            "windows": 0,
+            "macos": 0
+          },
+          "raw_by_os": {
+            "linux": 14.27,
+            "windows": 0,
+            "macos": 0
+          },
+          "retried_runs": 0,
+          "unknown_runner": 0,
+          "p50_min": 17,
+          "p95_min": 17
+        },
+        "Test Env Lint": {
+          "runs": 159,
+          "jobs": 159,
+          "raw_min": 50.5,
+          "billable_min": 159,
+          "billable_by_os": {
+            "linux": 159,
+            "windows": 0,
+            "macos": 0
+          },
+          "raw_by_os": {
+            "linux": 50.5,
+            "windows": 0,
+            "macos": 0
+          },
+          "retried_runs": 0,
+          "unknown_runner": 0,
+          "p50_min": 1,
+          "p95_min": 1
+        },
+        "Write Target Lint": {
+          "runs": 34,
+          "jobs": 34,
+          "raw_min": 15.57,
+          "billable_min": 34,
+          "billable_by_os": {
+            "linux": 34,
+            "windows": 0,
+            "macos": 0
+          },
+          "raw_by_os": {
+            "linux": 15.57,
+            "windows": 0,
+            "macos": 0
+          },
+          "retried_runs": 0,
+          "unknown_runner": 0,
+          "p50_min": 1,
+          "p95_min": 1
+        }
+      },
+      "totals": {
+        "runs": 2847,
+        "jobs": 3990,
+        "raw_min": 15056.78,
+        "billable_min": 18008,
+        "billable_by_os": {
+          "linux": 17984,
+          "windows": 24,
+          "macos": 0
+        },
+        "raw_by_os": {
+          "linux": 15045.090000000002,
+          "windows": 11.68,
+          "macos": 0
+        }
+      }
+    }
+  },
+  "window": {
+    "days": 30,
+    "from": "2026-08-24",
+    "to": "2026-09-22"
+  },
+  "method": "ceil((completed_at - started_at)/60s) por job x multiplicador (linux 1, windows 2, macos 10); filter=all; una consulta por dia",
+  "api_calls": 6,
+  "active_committers_90d": 2,
+  "totals": {
+    "runs": 2847,
+    "jobs": 3990,
+    "raw_min": 15056.78,
+    "billable_min": 18008,
+    "billable_by_os": {
+      "linux": 17984,
+      "windows": 24,
+      "macos": 0
+    },
+    "raw_by_os": {
+      "linux": 15045.09,
+      "windows": 11.68,
+      "macos": 0
+    }
+  },
+  "unknown_runner": 0,
+  "top_workflows": [
+    {
+      "repo": "platform",
+      "workflow": "Security SAST",
+      "runs": 333,
+      "jobs": 1143,
+      "billable_min": 14703,
+      "raw_min": 14023.67,
+      "pct": 81.65,
+      "p50_min": 13,
+      "p95_min": 226
+    },
+    {
+      "repo": "platform",
+      "workflow": "Admission Gate",
+      "runs": 1206,
+      "jobs": 1205,
+      "billable_min": 1207,
+      "raw_min": 128.03,
+      "pct": 6.7,
+      "p50_min": 1,
+      "p95_min": 1
+    },
+    {
+      "repo": "platform",
+      "workflow": "PR Checks",
+      "runs": 252,
+      "jobs": 579,
+      "billable_min": 951,
+      "raw_min": 485.02,
+      "pct": 5.28,
+      "p50_min": 2,
+      "p95_min": 13
+    },
+    {
+      "repo": "platform",
+      "workflow": "Operational State Lint",
+      "runs": 317,
+      "jobs": 317,
+      "billable_min": 320,
+      "raw_min": 116.9,
+      "pct": 1.78,
+      "p50_min": 1,
+      "p95_min": 1
+    },
+    {
+      "repo": "platform",
+      "workflow": "Ghost Artifact Lint",
+      "runs": 317,
+      "jobs": 317,
+      "billable_min": 319,
+      "raw_min": 102.57,
+      "pct": 1.77,
+      "p50_min": 1,
+      "p95_min": 1
+    }
+  ],
+  "storage": {
+    "by_repo": {
+      "platform": {
+        "cache_gb": 8.02,
+        "artifacts_gb": 2.59,
+        "artifacts_vigentes": 366
+      },
+      "kernel": {
+        "cache_gb": 0,
+        "artifacts_gb": 0,
+        "artifacts_vigentes": 0
+      }
+    },
+    "artifacts_gb": 2.59,
+    "cache_gb_by_repo": {
+      "platform": 8.02,
+      "kernel": 0
+    }
+  },
+  "optimizations": [
+    {
+      "id": "owasp-schedule",
+      "type": "schedule",
+      "label": "OWASP Dependency Check pasa de correr por PR a un schedule diario",
+      "measured_min": 12818,
+      "after_min": 750,
+      "saving_min": 12068
+    },
+    {
+      "id": "sast-concurrency",
+      "type": "concurrency",
+      "label": "concurrency + cancel-in-progress en Security SAST (cancela el run viejo de la misma rama)",
+      "measured_min": 1885,
+      "after_min": 1862,
+      "saving_min": 23
+    },
+    {
+      "id": "pr-checks-concurrency",
+      "type": "concurrency",
+      "label": "concurrency + cancel-in-progress en PR Checks",
+      "measured_min": 951,
+      "after_min": 914,
+      "saving_min": 37
+    },
+    {
+      "id": "lints-consolidate",
+      "type": "consolidate",
+      "label": "Consolidar los lints en un solo workflow/job (un redondeo por commit en vez de cinco)",
+      "measured_min": 1060,
+      "after_min": 501,
+      "saving_min": 559
+    }
+  ],
+  "scenarios": [
+    {
+      "id": "public",
+      "label": "Seguir público",
+      "billable_min": 0,
+      "included_min": 0,
+      "excess_min": 0,
+      "minutes_usd": 0,
+      "storage_usd": 0,
+      "seats_usd": 0,
+      "ghas_usd": 0,
+      "control_perdido": "",
+      "ghas_note": "Code scanning y secret scanning gratis en públicos",
+      "total_usd": 0
+    },
+    {
+      "id": "private_free",
+      "label": "Privado · Free",
+      "billable_min": 18008,
+      "included_min": 2000,
+      "excess_min": 16008,
+      "minutes_usd": 96.03,
+      "storage_usd": 0.52,
+      "seats_usd": 0,
+      "ghas_usd": 0,
+      "control_perdido": "Se pierde: code scanning (upload-sarif de Semgrep) / secret scanning + push protection del servidor. Reemplazo parcial: Semgrep + detect-secrets + Secret scan (blocking) en CI, sin push protection.",
+      "total_usd": 96.55
+    },
+    {
+      "id": "private_team",
+      "label": "Privado · Team (+ GHAS)",
+      "billable_min": 18008,
+      "included_min": 3000,
+      "excess_min": 15008,
+      "minutes_usd": 90.03,
+      "storage_usd": 0.15,
+      "seats_usd": 8,
+      "ghas_usd": 98,
+      "control_perdido": "",
+      "total_usd": 196.18
+    },
+    {
+      "id": "private_team_optimized",
+      "label": "Privado · Team optimizado (+ GHAS)",
+      "billable_min": 5321,
+      "included_min": 3000,
+      "excess_min": 2321,
+      "minutes_usd": 13.92,
+      "storage_usd": 0.15,
+      "seats_usd": 8,
+      "ghas_usd": 98,
+      "control_perdido": "",
+      "total_usd": 120.07
+    }
+  ],
+  "releases": [],
+  "calibration": null,
+  "pricing_source": {
+    "fetched_at": "2026-09-23",
+    "source_url": {
+      "runner_per_minute": "https://docs.github.com/en/billing/reference/actions-runner-pricing",
+      "included_quota_and_storage": "https://docs.github.com/en/billing/concepts/product-billing/github-actions",
+      "plans": "https://github.com/pricing",
+      "ghas": "https://github.blog/changelog/2025-03-04-introducing-github-secret-protection-and-github-code-security/",
+      "ghas_active_committer": "https://docs.github.com/en/billing/concepts/product-billing/github-advanced-security"
+    }
+  }
+}
