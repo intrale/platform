@@ -236,3 +236,55 @@ test('el job e2e-qa no recupera privilegios de escritura', () => {
       'dependencias transitivas). No puede tener ningun scope en write.'
   );
 });
+
+// -- Gate de licencias de terceros (#7592) --------------------------------
+test('check-licenses alimenta pr-status, que es el unico check requerido', () => {
+  const wf = cargarWorkflow();
+  const job = wf.jobs['check-licenses'];
+  assert.ok(job, 'falta el job check-licenses');
+  assert.ok(wf.jobs['pr-status'].needs.includes('check-licenses'), 'check-licenses no esta en pr-status.needs: no bloquearia nada');
+  const verify = wf.jobs['pr-status'].steps.find((s) => s.name === 'Verify all checks passed');
+  assert.match(verify.run, /classify "check-licenses"\s+"\$\{\{ needs\.check-licenses\.result \}\}"/);
+});
+
+test('check-licenses es bloqueante: sin continue-on-error ni en el job ni en sus steps', () => {
+  const job = cargarWorkflow().jobs['check-licenses'];
+  assert.equal(job['continue-on-error'], undefined);
+  for (const step of job.steps) assert.equal(step['continue-on-error'], undefined, `step "${step.name}" con continue-on-error`);
+});
+
+test('check-licenses corre por cambios de dependencias y en el schedule diario', () => {
+  const wf = cargarWorkflow();
+  const cond = wf.jobs['check-licenses'].if;
+  assert.match(cond, /!cancelled\(\)/);
+  assert.match(cond, /github\.event_name == 'schedule'/);
+  assert.match(cond, /needs\.detect-changes\.outputs\.deps == 'true'/);
+  assert.ok(wf.jobs['detect-changes'].outputs.deps, 'detect-changes no expone el output deps');
+  const filtro = wf.jobs['detect-changes'].steps.find((s) => typeof s.uses === 'string' && s.uses.startsWith('dorny/paths-filter@'));
+  const deps = yaml.load(filtro.with.filters).deps;
+  for (const p of ['**/*.gradle.kts', 'gradle/libs.versions.toml', '**/package-lock.json', 'config/licenses/**', 'NOTICE', 'scripts/licenses/**']) {
+    assert.ok(deps.includes(p), `el filtro deps no incluye ${p}`);
+  }
+});
+
+test('check-licenses: actions pineadas por SHA, checkout sin credenciales y sin secrets', () => {
+  const job = cargarWorkflow().jobs['check-licenses'];
+  const usos = job.steps.filter((s) => s.uses);
+  assert.ok(usos.length >= 4, 'se esperaban checkout, setup-java, setup-gradle y setup-node');
+  for (const s of usos) assert.match(s.uses, /^[\w.-]+\/[\w./-]+@[0-9a-f]{40}$/, `${s.uses} no esta pineada por SHA de 40 hex`);
+  const checkout = usos.find((s) => s.uses.startsWith('actions/checkout@'));
+  assert.equal(checkout.with['persist-credentials'], false);
+  assert.equal(checkout.with['fetch-depth'], 0);
+  const raw = JSON.stringify(job);
+  assert.doesNotMatch(raw, /secrets\./, 'check-licenses no puede usar secrets');
+  assert.deepEqual(scopesConEscritura(normalizarPermissions(job.permissions) || {}), []);
+});
+
+test('el workflow no se dispara por labels: un evento de label no puede pisar un pr-status rojo', () => {
+  const wf = cargarWorkflow();
+  const workflowOn = wf.on || wf[true];
+  assert.ok(!('pull_request_target' in workflowOn), 'pull_request_target corre codigo del PR con privilegios');
+  const types = (workflowOn.pull_request && workflowOn.pull_request.types) || [];
+  assert.ok(!types.includes('labeled') && !types.includes('unlabeled'),
+    'con labeled, los jobs que se saltean por evento dejarian un pr-status verde sobre el mismo SHA');
+});
