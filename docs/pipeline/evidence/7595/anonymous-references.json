@@ -1,0 +1,6 @@
+{
+  "checkedAt": "2026-09-24T00:10:51.511Z",
+  "scope": "Archivos tracked de docs/, README.md y .github; referencias exactas a repos legacy",
+  "references": [],
+  "additionalCheck": "rg de URLs github.com/intrale/<legacy> y shields.io/*intrale/<legacy> sobre docs README.md .github, excluyendo evidencia propia: exit 1, sin coincidencias"
+}

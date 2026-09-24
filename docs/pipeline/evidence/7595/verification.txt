@@ -1,0 +1,36 @@
+Verificación #7595, 2026-09-24 UTC (2026-09-23 America/Buenos_Aires)
+
+$ node --test .pipeline/tests/verify-repo-post-change.test.js .pipeline/hooks/__tests__/screenshots-mockup-gate.test.js
+tests 42; pass 42; fail 0; skipped 0; exit 0
+
+$ node --test .pipeline/tests/*.js
+tests 2617; suites 3; pass 2604; fail 10; cancelled 0; skipped 3; todo 0
+duration_ms 236511.1592
+exit 1. Fallas por ambiente heredado sin PIPELINE_DIR_OVERRIDE: EscrituraBloqueadaError y roster null. No se declara suite amplia verde.
+
+Reejecución de los cinco archivos fallidos con ensureTestRunDir() de .pipeline/lib/test-run-dir, spawnSync(node, ['--test', archivos]), timeout 120000 y limpieza al finalizar:
+equipo-roster.test.js
+merge-race-reclaim-avisos-6432.test.js
+qa-evidence-gate-skip-label-source.test.js
+qa-seal-enforcement-scope.test.js
+rollback-stable-tag-5723.test.js
+tests 49; suites 0; pass 49; fail 0; cancelled 0; skipped 0; todo 0
+duration_ms 14026.3803
+exit 0. Ningún test fue omitido por esta tarea; los 3 skipped de la suite amplia vienen de sus definiciones originales.
+
+$ node .pipeline/lib/verify-repo-post-change.js --repo intrale/codex --visibility public --archived false --profile legacy
+visibility public OK; archived false OK; workflows []; releases []; runs 0; ok true; exit 0
+
+$ bash .pipeline/smoke-test.sh
+pulpo: OK 8184
+dashboard: OK 21268
+svc-telegram: OK 21192
+dashboard HTTP 200
+WARN last-restart.json tiene 33820s (esperado < 300)
+OK agy-catalog: 6 id(s) configurados y 14 id(s) en total
+=== SMOKE TEST OK ===
+exit 0. Sin restart ni modificación del tag pipeline-stable.
+
+Inventario: 23 repos; 22 PUBLIC, 1 PRIVATE (kernel); 0 archivados.
+Legacy: 21, cero runs/releases; 14 tienen workflows activos (no se acepta CI no aplica).
+Gitleaks 8.30.1: 21 mirrors, 18 sin hallazgos, 3 con 11 hallazgos pendientes (users 2, intrale-mobile 8, intrale-notifications 1). Ver secret-scan-summary.json y snapshots de refs.

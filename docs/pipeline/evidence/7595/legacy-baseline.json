@@ -1,0 +1,926 @@
+[
+  {
+    "repo": "intrale/repo",
+    "checkedAt": "2026-09-24T00:06:56.013Z",
+    "expected": {
+      "repo": "intrale/repo",
+      "visibility": "public",
+      "archived": false,
+      "profile": "legacy"
+    },
+    "checks": [
+      {
+        "name": "visibility",
+        "ok": true,
+        "evidence": "public"
+      },
+      {
+        "name": "archived",
+        "ok": true,
+        "evidence": false
+      },
+      {
+        "name": "sin workflows",
+        "ok": false,
+        "evidence": [
+          {
+            "id": 171351211,
+            "path": ".github/workflows/publish-ktor-artifacts.yml",
+            "state": "active"
+          }
+        ]
+      },
+      {
+        "name": "sin releases",
+        "ok": true,
+        "evidence": []
+      },
+      {
+        "name": "sin runs",
+        "ok": true,
+        "evidence": 0
+      }
+    ],
+    "defaultBranch": "master",
+    "scope": "Inventario legacy: CI/SAST/distribución no aplican sólo si no hay workflows, runs ni releases. No acredita escaneo ni operación humana.",
+    "ok": false
+  },
+  {
+    "repo": "intrale/codex",
+    "checkedAt": "2026-09-24T00:07:01.049Z",
+    "expected": {
+      "repo": "intrale/codex",
+      "visibility": "public",
+      "archived": false,
+      "profile": "legacy"
+    },
+    "checks": [
+      {
+        "name": "visibility",
+        "ok": true,
+        "evidence": "public"
+      },
+      {
+        "name": "archived",
+        "ok": true,
+        "evidence": false
+      },
+      {
+        "name": "sin workflows",
+        "ok": true,
+        "evidence": []
+      },
+      {
+        "name": "sin releases",
+        "ok": true,
+        "evidence": []
+      },
+      {
+        "name": "sin runs",
+        "ok": true,
+        "evidence": 0
+      }
+    ],
+    "defaultBranch": "main",
+    "scope": "Inventario legacy: CI/SAST/distribución no aplican sólo si no hay workflows, runs ni releases. No acredita escaneo ni operación humana.",
+    "ok": true
+  },
+  {
+    "repo": "intrale/backend",
+    "checkedAt": "2026-09-24T00:07:08.475Z",
+    "expected": {
+      "repo": "intrale/backend",
+      "visibility": "public",
+      "archived": false,
+      "profile": "legacy"
+    },
+    "checks": [
+      {
+        "name": "visibility",
+        "ok": true,
+        "evidence": "public"
+      },
+      {
+        "name": "archived",
+        "ok": true,
+        "evidence": false
+      },
+      {
+        "name": "sin workflows",
+        "ok": false,
+        "evidence": [
+          {
+            "id": 157782055,
+            "path": ".github/workflows/main.yml",
+            "state": "active"
+          }
+        ]
+      },
+      {
+        "name": "sin releases",
+        "ok": true,
+        "evidence": []
+      },
+      {
+        "name": "sin runs",
+        "ok": true,
+        "evidence": 0
+      }
+    ],
+    "defaultBranch": "main",
+    "scope": "Inventario legacy: CI/SAST/distribución no aplican sólo si no hay workflows, runs ni releases. No acredita escaneo ni operación humana.",
+    "ok": false
+  },
+  {
+    "repo": "intrale/users",
+    "checkedAt": "2026-09-24T00:07:14.185Z",
+    "expected": {
+      "repo": "intrale/users",
+      "visibility": "public",
+      "archived": false,
+      "profile": "legacy"
+    },
+    "checks": [
+      {
+        "name": "visibility",
+        "ok": true,
+        "evidence": "public"
+      },
+      {
+        "name": "archived",
+        "ok": true,
+        "evidence": false
+      },
+      {
+        "name": "sin workflows",
+        "ok": false,
+        "evidence": [
+          {
+            "id": 158065830,
+            "path": ".github/workflows/main.yml",
+            "state": "active"
+          }
+        ]
+      },
+      {
+        "name": "sin releases",
+        "ok": true,
+        "evidence": []
+      },
+      {
+        "name": "sin runs",
+        "ok": true,
+        "evidence": 0
+      }
+    ],
+    "defaultBranch": "main",
+    "scope": "Inventario legacy: CI/SAST/distribución no aplican sólo si no hay workflows, runs ni releases. No acredita escaneo ni operación humana.",
+    "ok": false
+  },
+  {
+    "repo": "intrale/app",
+    "checkedAt": "2026-09-24T00:07:20.129Z",
+    "expected": {
+      "repo": "intrale/app",
+      "visibility": "public",
+      "archived": false,
+      "profile": "legacy"
+    },
+    "checks": [
+      {
+        "name": "visibility",
+        "ok": true,
+        "evidence": "public"
+      },
+      {
+        "name": "archived",
+        "ok": true,
+        "evidence": false
+      },
+      {
+        "name": "sin workflows",
+        "ok": true,
+        "evidence": []
+      },
+      {
+        "name": "sin releases",
+        "ok": true,
+        "evidence": []
+      },
+      {
+        "name": "sin runs",
+        "ok": true,
+        "evidence": 0
+      }
+    ],
+    "defaultBranch": "main",
+    "scope": "Inventario legacy: CI/SAST/distribución no aplican sólo si no hay workflows, runs ni releases. No acredita escaneo ni operación humana.",
+    "ok": true
+  },
+  {
+    "repo": "intrale/intrale-back-test",
+    "checkedAt": "2026-09-24T00:07:25.424Z",
+    "expected": {
+      "repo": "intrale/intrale-back-test",
+      "visibility": "public",
+      "archived": false,
+      "profile": "legacy"
+    },
+    "checks": [
+      {
+        "name": "visibility",
+        "ok": true,
+        "evidence": "public"
+      },
+      {
+        "name": "archived",
+        "ok": true,
+        "evidence": false
+      },
+      {
+        "name": "sin workflows",
+        "ok": false,
+        "evidence": [
+          {
+            "id": 121278830,
+            "path": ".github/workflows/main.yml",
+            "state": "active"
+          }
+        ]
+      },
+      {
+        "name": "sin releases",
+        "ok": true,
+        "evidence": []
+      },
+      {
+        "name": "sin runs",
+        "ok": true,
+        "evidence": 0
+      }
+    ],
+    "defaultBranch": "main",
+    "scope": "Inventario legacy: CI/SAST/distribución no aplican sólo si no hay workflows, runs ni releases. No acredita escaneo ni operación humana.",
+    "ok": false
+  },
+  {
+    "repo": "intrale/back-core",
+    "checkedAt": "2026-09-24T00:07:30.650Z",
+    "expected": {
+      "repo": "intrale/back-core",
+      "visibility": "public",
+      "archived": false,
+      "profile": "legacy"
+    },
+    "checks": [
+      {
+        "name": "visibility",
+        "ok": true,
+        "evidence": "public"
+      },
+      {
+        "name": "archived",
+        "ok": true,
+        "evidence": false
+      },
+      {
+        "name": "sin workflows",
+        "ok": true,
+        "evidence": []
+      },
+      {
+        "name": "sin releases",
+        "ok": true,
+        "evidence": []
+      },
+      {
+        "name": "sin runs",
+        "ok": true,
+        "evidence": 0
+      }
+    ],
+    "defaultBranch": "main",
+    "scope": "Inventario legacy: CI/SAST/distribución no aplican sólo si no hay workflows, runs ni releases. No acredita escaneo ni operación humana.",
+    "ok": true
+  },
+  {
+    "repo": "intrale/kotlin-multiplatform-example",
+    "checkedAt": "2026-09-24T00:07:34.123Z",
+    "expected": {
+      "repo": "intrale/kotlin-multiplatform-example",
+      "visibility": "public",
+      "archived": false,
+      "profile": "legacy"
+    },
+    "checks": [
+      {
+        "name": "visibility",
+        "ok": true,
+        "evidence": "public"
+      },
+      {
+        "name": "archived",
+        "ok": true,
+        "evidence": false
+      },
+      {
+        "name": "sin workflows",
+        "ok": true,
+        "evidence": []
+      },
+      {
+        "name": "sin releases",
+        "ok": true,
+        "evidence": []
+      },
+      {
+        "name": "sin runs",
+        "ok": true,
+        "evidence": 0
+      }
+    ],
+    "defaultBranch": "main",
+    "scope": "Inventario legacy: CI/SAST/distribución no aplican sólo si no hay workflows, runs ni releases. No acredita escaneo ni operación humana.",
+    "ok": true
+  },
+  {
+    "repo": "intrale/intrale-mobile-mercadopago",
+    "checkedAt": "2026-09-24T00:07:39.517Z",
+    "expected": {
+      "repo": "intrale/intrale-mobile-mercadopago",
+      "visibility": "public",
+      "archived": false,
+      "profile": "legacy"
+    },
+    "checks": [
+      {
+        "name": "visibility",
+        "ok": true,
+        "evidence": "public"
+      },
+      {
+        "name": "archived",
+        "ok": true,
+        "evidence": false
+      },
+      {
+        "name": "sin workflows",
+        "ok": true,
+        "evidence": []
+      },
+      {
+        "name": "sin releases",
+        "ok": true,
+        "evidence": []
+      },
+      {
+        "name": "sin runs",
+        "ok": true,
+        "evidence": 0
+      }
+    ],
+    "defaultBranch": "main",
+    "scope": "Inventario legacy: CI/SAST/distribución no aplican sólo si no hay workflows, runs ni releases. No acredita escaneo ni operación humana.",
+    "ok": true
+  },
+  {
+    "repo": "intrale/intrale-delivery",
+    "checkedAt": "2026-09-24T00:07:45.959Z",
+    "expected": {
+      "repo": "intrale/intrale-delivery",
+      "visibility": "public",
+      "archived": false,
+      "profile": "legacy"
+    },
+    "checks": [
+      {
+        "name": "visibility",
+        "ok": true,
+        "evidence": "public"
+      },
+      {
+        "name": "archived",
+        "ok": true,
+        "evidence": false
+      },
+      {
+        "name": "sin workflows",
+        "ok": false,
+        "evidence": [
+          {
+            "id": 22569582,
+            "path": ".github/workflows/main.yml",
+            "state": "active"
+          }
+        ]
+      },
+      {
+        "name": "sin releases",
+        "ok": true,
+        "evidence": []
+      },
+      {
+        "name": "sin runs",
+        "ok": true,
+        "evidence": 0
+      }
+    ],
+    "defaultBranch": "main",
+    "scope": "Inventario legacy: CI/SAST/distribución no aplican sólo si no hay workflows, runs ni releases. No acredita escaneo ni operación humana.",
+    "ok": false
+  },
+  {
+    "repo": "intrale/intrale-files",
+    "checkedAt": "2026-09-24T00:07:51.044Z",
+    "expected": {
+      "repo": "intrale/intrale-files",
+      "visibility": "public",
+      "archived": false,
+      "profile": "legacy"
+    },
+    "checks": [
+      {
+        "name": "visibility",
+        "ok": true,
+        "evidence": "public"
+      },
+      {
+        "name": "archived",
+        "ok": true,
+        "evidence": false
+      },
+      {
+        "name": "sin workflows",
+        "ok": false,
+        "evidence": [
+          {
+            "id": 11181520,
+            "path": ".github/workflows/main.yml",
+            "state": "active"
+          }
+        ]
+      },
+      {
+        "name": "sin releases",
+        "ok": true,
+        "evidence": []
+      },
+      {
+        "name": "sin runs",
+        "ok": true,
+        "evidence": 0
+      }
+    ],
+    "defaultBranch": "main",
+    "scope": "Inventario legacy: CI/SAST/distribución no aplican sólo si no hay workflows, runs ni releases. No acredita escaneo ni operación humana.",
+    "ok": false
+  },
+  {
+    "repo": "intrale/intrale-products",
+    "checkedAt": "2026-09-24T00:07:56.692Z",
+    "expected": {
+      "repo": "intrale/intrale-products",
+      "visibility": "public",
+      "archived": false,
+      "profile": "legacy"
+    },
+    "checks": [
+      {
+        "name": "visibility",
+        "ok": true,
+        "evidence": "public"
+      },
+      {
+        "name": "archived",
+        "ok": true,
+        "evidence": false
+      },
+      {
+        "name": "sin workflows",
+        "ok": false,
+        "evidence": [
+          {
+            "id": 6195695,
+            "path": ".github/workflows/main.yml",
+            "state": "active"
+          }
+        ]
+      },
+      {
+        "name": "sin releases",
+        "ok": true,
+        "evidence": []
+      },
+      {
+        "name": "sin runs",
+        "ok": true,
+        "evidence": 0
+      }
+    ],
+    "defaultBranch": "main",
+    "scope": "Inventario legacy: CI/SAST/distribución no aplican sólo si no hay workflows, runs ni releases. No acredita escaneo ni operación humana.",
+    "ok": false
+  },
+  {
+    "repo": "intrale/intrale-users",
+    "checkedAt": "2026-09-24T00:08:02.172Z",
+    "expected": {
+      "repo": "intrale/intrale-users",
+      "visibility": "public",
+      "archived": false,
+      "profile": "legacy"
+    },
+    "checks": [
+      {
+        "name": "visibility",
+        "ok": true,
+        "evidence": "public"
+      },
+      {
+        "name": "archived",
+        "ok": true,
+        "evidence": false
+      },
+      {
+        "name": "sin workflows",
+        "ok": false,
+        "evidence": [
+          {
+            "id": 7531847,
+            "path": ".github/workflows/main.yml",
+            "state": "active"
+          }
+        ]
+      },
+      {
+        "name": "sin releases",
+        "ok": true,
+        "evidence": []
+      },
+      {
+        "name": "sin runs",
+        "ok": true,
+        "evidence": 0
+      }
+    ],
+    "defaultBranch": "main",
+    "scope": "Inventario legacy: CI/SAST/distribución no aplican sólo si no hay workflows, runs ni releases. No acredita escaneo ni operación humana.",
+    "ok": false
+  },
+  {
+    "repo": "intrale/intrale-test",
+    "checkedAt": "2026-09-24T00:08:07.518Z",
+    "expected": {
+      "repo": "intrale/intrale-test",
+      "visibility": "public",
+      "archived": false,
+      "profile": "legacy"
+    },
+    "checks": [
+      {
+        "name": "visibility",
+        "ok": true,
+        "evidence": "public"
+      },
+      {
+        "name": "archived",
+        "ok": true,
+        "evidence": false
+      },
+      {
+        "name": "sin workflows",
+        "ok": false,
+        "evidence": [
+          {
+            "id": 5477668,
+            "path": ".github/workflows/main.yml",
+            "state": "active"
+          }
+        ]
+      },
+      {
+        "name": "sin releases",
+        "ok": true,
+        "evidence": []
+      },
+      {
+        "name": "sin runs",
+        "ok": true,
+        "evidence": 0
+      }
+    ],
+    "defaultBranch": "main",
+    "scope": "Inventario legacy: CI/SAST/distribución no aplican sólo si no hay workflows, runs ni releases. No acredita escaneo ni operación humana.",
+    "ok": false
+  },
+  {
+    "repo": "intrale/intrale-commons",
+    "checkedAt": "2026-09-24T00:08:12.672Z",
+    "expected": {
+      "repo": "intrale/intrale-commons",
+      "visibility": "public",
+      "archived": false,
+      "profile": "legacy"
+    },
+    "checks": [
+      {
+        "name": "visibility",
+        "ok": true,
+        "evidence": "public"
+      },
+      {
+        "name": "archived",
+        "ok": true,
+        "evidence": false
+      },
+      {
+        "name": "sin workflows",
+        "ok": false,
+        "evidence": [
+          {
+            "id": 1168582,
+            "path": ".github/workflows/main.yml",
+            "state": "active"
+          }
+        ]
+      },
+      {
+        "name": "sin releases",
+        "ok": true,
+        "evidence": []
+      },
+      {
+        "name": "sin runs",
+        "ok": true,
+        "evidence": 0
+      }
+    ],
+    "defaultBranch": "main",
+    "scope": "Inventario legacy: CI/SAST/distribución no aplican sólo si no hay workflows, runs ni releases. No acredita escaneo ni operación humana.",
+    "ok": false
+  },
+  {
+    "repo": "intrale/intrale-core",
+    "checkedAt": "2026-09-24T00:08:18.407Z",
+    "expected": {
+      "repo": "intrale/intrale-core",
+      "visibility": "public",
+      "archived": false,
+      "profile": "legacy"
+    },
+    "checks": [
+      {
+        "name": "visibility",
+        "ok": true,
+        "evidence": "public"
+      },
+      {
+        "name": "archived",
+        "ok": true,
+        "evidence": false
+      },
+      {
+        "name": "sin workflows",
+        "ok": false,
+        "evidence": [
+          {
+            "id": 23349750,
+            "path": ".github/workflows/main.yml",
+            "state": "active"
+          }
+        ]
+      },
+      {
+        "name": "sin releases",
+        "ok": true,
+        "evidence": []
+      },
+      {
+        "name": "sin runs",
+        "ok": true,
+        "evidence": 0
+      }
+    ],
+    "defaultBranch": "main",
+    "scope": "Inventario legacy: CI/SAST/distribución no aplican sólo si no hay workflows, runs ni releases. No acredita escaneo ni operación humana.",
+    "ok": false
+  },
+  {
+    "repo": "intrale/intrale-mobile",
+    "checkedAt": "2026-09-24T00:08:23.408Z",
+    "expected": {
+      "repo": "intrale/intrale-mobile",
+      "visibility": "public",
+      "archived": false,
+      "profile": "legacy"
+    },
+    "checks": [
+      {
+        "name": "visibility",
+        "ok": true,
+        "evidence": "public"
+      },
+      {
+        "name": "archived",
+        "ok": true,
+        "evidence": false
+      },
+      {
+        "name": "sin workflows",
+        "ok": true,
+        "evidence": []
+      },
+      {
+        "name": "sin releases",
+        "ok": true,
+        "evidence": []
+      },
+      {
+        "name": "sin runs",
+        "ok": true,
+        "evidence": 0
+      }
+    ],
+    "defaultBranch": "main",
+    "scope": "Inventario legacy: CI/SAST/distribución no aplican sólo si no hay workflows, runs ni releases. No acredita escaneo ni operación humana.",
+    "ok": true
+  },
+  {
+    "repo": "intrale/intrale-arq-ms",
+    "checkedAt": "2026-09-24T00:08:32.867Z",
+    "expected": {
+      "repo": "intrale/intrale-arq-ms",
+      "visibility": "public",
+      "archived": false,
+      "profile": "legacy"
+    },
+    "checks": [
+      {
+        "name": "visibility",
+        "ok": true,
+        "evidence": "public"
+      },
+      {
+        "name": "archived",
+        "ok": true,
+        "evidence": false
+      },
+      {
+        "name": "sin workflows",
+        "ok": false,
+        "evidence": [
+          {
+            "id": 27225455,
+            "path": ".github/workflows/main.yml",
+            "state": "active"
+          }
+        ]
+      },
+      {
+        "name": "sin releases",
+        "ok": true,
+        "evidence": []
+      },
+      {
+        "name": "sin runs",
+        "ok": true,
+        "evidence": 0
+      }
+    ],
+    "defaultBranch": "main",
+    "scope": "Inventario legacy: CI/SAST/distribución no aplican sólo si no hay workflows, runs ni releases. No acredita escaneo ni operación humana.",
+    "ok": false
+  },
+  {
+    "repo": "intrale/intrale-notifications",
+    "checkedAt": "2026-09-24T00:08:50.372Z",
+    "expected": {
+      "repo": "intrale/intrale-notifications",
+      "visibility": "public",
+      "archived": false,
+      "profile": "legacy"
+    },
+    "checks": [
+      {
+        "name": "visibility",
+        "ok": true,
+        "evidence": "public"
+      },
+      {
+        "name": "archived",
+        "ok": true,
+        "evidence": false
+      },
+      {
+        "name": "sin workflows",
+        "ok": false,
+        "evidence": [
+          {
+            "id": 31758477,
+            "path": ".github/workflows/main.yml",
+            "state": "active"
+          }
+        ]
+      },
+      {
+        "name": "sin releases",
+        "ok": true,
+        "evidence": []
+      },
+      {
+        "name": "sin runs",
+        "ok": true,
+        "evidence": 0
+      }
+    ],
+    "defaultBranch": "main",
+    "scope": "Inventario legacy: CI/SAST/distribución no aplican sólo si no hay workflows, runs ni releases. No acredita escaneo ni operación humana.",
+    "ok": false
+  },
+  {
+    "repo": "intrale/intrale-parent",
+    "checkedAt": "2026-09-24T00:09:06.901Z",
+    "expected": {
+      "repo": "intrale/intrale-parent",
+      "visibility": "public",
+      "archived": false,
+      "profile": "legacy"
+    },
+    "checks": [
+      {
+        "name": "visibility",
+        "ok": true,
+        "evidence": "public"
+      },
+      {
+        "name": "archived",
+        "ok": true,
+        "evidence": false
+      },
+      {
+        "name": "sin workflows",
+        "ok": false,
+        "evidence": [
+          {
+            "id": 5601699,
+            "path": ".github/workflows/main.yml",
+            "state": "active"
+          }
+        ]
+      },
+      {
+        "name": "sin releases",
+        "ok": true,
+        "evidence": []
+      },
+      {
+        "name": "sin runs",
+        "ok": true,
+        "evidence": 0
+      }
+    ],
+    "defaultBranch": "main",
+    "scope": "Inventario legacy: CI/SAST/distribución no aplican sólo si no hay workflows, runs ni releases. No acredita escaneo ni operación humana.",
+    "ok": false
+  },
+  {
+    "repo": "intrale/intrale-web",
+    "checkedAt": "2026-09-24T00:09:25.410Z",
+    "expected": {
+      "repo": "intrale/intrale-web",
+      "visibility": "public",
+      "archived": false,
+      "profile": "legacy"
+    },
+    "checks": [
+      {
+        "name": "visibility",
+        "ok": true,
+        "evidence": "public"
+      },
+      {
+        "name": "archived",
+        "ok": true,
+        "evidence": false
+      },
+      {
+        "name": "sin workflows",
+        "ok": true,
+        "evidence": []
+      },
+      {
+        "name": "sin releases",
+        "ok": true,
+        "evidence": []
+      },
+      {
+        "name": "sin runs",
+        "ok": true,
+        "evidence": 0
+      }
+    ],
+    "defaultBranch": "master",
+    "scope": "Inventario legacy: CI/SAST/distribución no aplican sólo si no hay workflows, runs ni releases. No acredita escaneo ni operación humana.",
+    "ok": true
+  }
+]
