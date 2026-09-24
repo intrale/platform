@@ -222,6 +222,7 @@ Reparto: **41 kernel · 12 autoridad · 9 producto**.
 | 50 | `architect` (1509) | obj | kernel | Split: `.enabled`/`.gate_mode`/`.go_live_date` son autoridad; `.poll_cap_min`/`.poll_interval_seconds`/`.bot_login` son calibración. |
 | 51 | `operator_signoff` (1580) | obj | **autoridad** | Gate de sign-off humano; decide quién aprueba. |
 | 52 | `operator_signature` (1633) | obj | **autoridad** | Gate de firma; `nonce_ttl_seconds` acota el replay de una firma. |
+| 52b | `authorship` | obj | **autoridad** | #7631: trailer de autoría del squash + gate pre-merge. `gate_mode`/`go_live_date` deciden si un merge sin firma humana se bloquea; `identity_map` decide qué firmante cuenta como aprobador (clave = sha256 del `signed_by`, nunca el id crudo). |
 | 53 | `deliverable_gate` (1667) | obj | **autoridad** | Gate de entregables; decide qué se considera entregado. |
 | 54 | `gates` (1697) | obj | **autoridad** | Política de gate3 y de ausencia del operador; decide quién aprueba. |
 | 55 | `waves` (1759) | obj | kernel | Modelo de olas del motor; mecanismo. |

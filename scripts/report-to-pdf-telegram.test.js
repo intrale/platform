@@ -61,3 +61,24 @@ test('es case-insensitive en el esquema', () => {
 test('rechaza url no-string', () => {
     assert.strictEqual(isRequestAllowed({ url: null, isNavigation: true, mainUrl: MAIN }), false);
 });
+
+// #7633 (A1) — no regresión: generatePdf delega en el render strict extraído,
+// con la misma ruta de salida y el mismo título de siempre.
+test('generatePdf delega en renderPdfStrict con outPath .pdf y título "Intrale Platform — <nombre>"', async () => {
+    const { generatePdf } = require('./report-to-pdf-telegram');
+    const calls = [];
+    const render = async (htmlPath, opts) => { calls.push({ htmlPath, opts }); return opts.outPath; };
+    const out = await generatePdf('/c/docs/qa/reporte-x.html', { render });
+    assert.strictEqual(out, '/c/docs/qa/reporte-x.pdf');
+    assert.deepStrictEqual(calls, [{
+        htmlPath: '/c/docs/qa/reporte-x.html',
+        opts: { outPath: '/c/docs/qa/reporte-x.pdf', title: 'Intrale Platform — reporte-x' },
+    }]);
+});
+
+test('el script de reportes ya no arma su propio puppeteer (usa pdf-render-strict)', () => {
+    const src = require('fs').readFileSync(require('path').join(__dirname, 'report-to-pdf-telegram.js'), 'utf8');
+    assert.ok(src.includes("'pdf-render-strict'"));
+    assert.ok(!src.includes('puppeteer.launch'));
+    assert.ok(!src.includes('setJavaScriptEnabled'));
+});

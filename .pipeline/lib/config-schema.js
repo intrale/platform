@@ -205,6 +205,9 @@ const AUTHORITY_PREFIXES = Object.freeze([
     // `propuestas` entera es kernel (cuota/tope = mecanismo); la allowlist es
     // autoridad y no puede venir por entorno ni por el manifiesto de producto.
     'propuestas.autores_permitidos',
+    // #7631 — gate de autoría del squash: modo, go-live e identity_map deciden
+    // si un merge sin firma humana se bloquea y quién cuenta como aprobador.
+    'authorship',
 ]);
 
 // Clasificación completa de las secciones top-level de `config.yaml`
@@ -324,6 +327,7 @@ const SIDE_MAP = Object.freeze({
     firma_operador: 'autoridad',
     operator_signoff: 'autoridad',
     operator_signature: 'autoridad',
+    authorship: 'autoridad',                     // #7631 — trailer de autoría + gate pre-merge
     deliverable_gate: 'autoridad',
     gates: 'autoridad',
     wave_auto_transition: 'autoridad',
@@ -1151,6 +1155,21 @@ const SCHEMA = {
                 // nonce_ttl_seconds acota la ventana de replay de una firma.
                 nonce_ttl_seconds: { type: 'number', minimum: 0 },
                 max_signature_rebotes: { type: 'number', minimum: 0 },
+            },
+        },
+
+        // --- authorship: trailer de autoría del squash + gate pre-merge (#7631)
+        // Calcado de operator_signature. `identity_map` mapea el sha256 del
+        // `signed_by` a un login público: el id crudo nunca entra al repo.
+        authorship: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['enabled', 'gate_mode'],
+            properties: {
+                enabled: { type: 'boolean' },
+                gate_mode: { type: 'string' },
+                go_live_date: { type: ['string', 'null'] },
+                identity_map: { type: 'object', additionalProperties: { type: 'string' } },
             },
         },
 

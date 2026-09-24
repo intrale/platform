@@ -57,8 +57,13 @@ const { sanitize: sanitizeUtf8 } = require(path.join(__dirname, '..', '.claude',
 // docs/qa/generate-pdf.js). Este entrypoint renderiza contenido derivado de
 // LLM / input del issue, así que usa SIEMPRE el modo 'strict' (sin red, sin
 // file:// extra) y NO delega en generate-pdf.js (que corre JS para Mermaid).
-const { isRequestAllowed, makeRequestHandler } = require(
+const { isRequestAllowed } = require(
   path.join(__dirname, '..', '.pipeline', 'lib', 'render-sandbox')
+);
+// #7633 (A1) — el render strict vive en un módulo reutilizable, con la política
+// fija en el código (JS off, handler 'strict', sin --no-sandbox, título escapado).
+const { renderPdfStrict } = require(
+  path.join(__dirname, '..', '.pipeline', 'lib', 'pdf-render-strict')
 );
 
 async function readStdin() {
@@ -133,38 +138,20 @@ function markdownToHtml(md) {
 </body></html>`;
 }
 
-async function generatePdf(htmlPath) {
-  const pdfPath = htmlPath.replace(/\.html$/, '.pdf');
+// CA-7 (#3929) — endurecimiento del render HTML→PDF. El HTML puede contener
+// contenido generado por LLM o input del issue, así que el sandbox bloquea
+// SSRF/LFI/XSS. IMPORTANTE: NO se delega en docs/qa/generate-pdf.js (que corre
+// JS para Mermaid). Desde #7633 el render vive en .pipeline/lib/pdf-render-strict.js
+// con la política fija (JS off, handler 'strict', sin --no-sandbox, título
+// escapado en headerTemplate). Este wrapper conserva nombre, ruta de salida y
+// valor de retorno. `deps.render` sólo se inyecta en tests.
+async function generatePdf(htmlPath, deps = {}) {
+  const render = deps.render || renderPdfStrict;
   const reportName = path.basename(htmlPath, '.html');
-
-  // CA-7 (#3929) — endurecimiento del render HTML→PDF. El HTML puede contener
-  // contenido generado por LLM o input del issue, así que el sandbox bloquea
-  // SSRF/LFI/XSS. IMPORTANTE: NO se delega en docs/qa/generate-pdf.js (que corre
-  // JS para Mermaid), porque eso reabriría los vectores de CA-7 sobre contenido
-  // no confiable. El render se hace siempre acá, en modo 'strict':
-  //   - JavaScript deshabilitado (los reportes/entregables son estáticos).
-  //   - Interceptación de requests: sólo se permite la navegación al documento
-  //     principal; se aborta todo `file://` adicional (LFI) y toda la red
-  //     `http(s)/ftp/ws` (SSRF) — sin allowlist de CDN.
-  //   - NO se pasa `--no-sandbox` (sólo aceptable en contenedor aislado).
-  const puppeteer = require(path.join(DOCS_QA_DIR, 'node_modules', 'puppeteer'));
-  const browser = await puppeteer.launch({ headless: 'new' });
-  const page = await browser.newPage();
-  await page.setJavaScriptEnabled(false);
-  const mainUrl = 'file:///' + htmlPath.replace(/\\/g, '/');
-  await page.setRequestInterception(true);
-  page.on('request', makeRequestHandler(mainUrl, 'strict'));
-  await page.goto(mainUrl, { waitUntil: 'networkidle0', timeout: 60000 });
-  await page.pdf({
-    path: pdfPath,
-    format: 'A4',
-    printBackground: true,
-    margin: { top: '18mm', bottom: '18mm', left: '14mm', right: '14mm' },
-    displayHeaderFooter: true,
-    headerTemplate: `<div style="font-size:8px; color:#999; width:100%; text-align:center; margin-top:5mm;">Intrale Platform — ${reportName}</div>`,
-    footerTemplate: '<div style="font-size:8px; color:#999; width:100%; text-align:center; margin-bottom:5mm;">Pagina <span class="pageNumber"></span> de <span class="totalPages"></span></div>'
+  const pdfPath = await render(htmlPath, {
+    outPath: htmlPath.replace(/\.html$/, '.pdf'),
+    title: 'Intrale Platform — ' + reportName,
   });
-  await browser.close();
   console.log('PDF generado:', pdfPath);
   return pdfPath;
 }
@@ -286,4 +273,4 @@ if (require.main === module) {
   main().catch(e => { console.error('Error:', e.message); process.exit(1); });
 }
 
-module.exports = { isRequestAllowed, markdownToHtml };
+module.exports = { isRequestAllowed, markdownToHtml, generatePdf };

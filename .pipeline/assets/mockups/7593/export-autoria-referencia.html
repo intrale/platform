@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<!--
+  Mockup de referencia UX — Export de la cadena de autoría (#7593, CA-5)
+  -----------------------------------------------------------------------------
+  Qué es: la maqueta visual y de copy que `exportChain` debe reproducir al
+  generar el HTML → PDF. Los datos son FICTICIOS (ejemplo ilustrativo).
+
+  Reglas de este mockup (y del export real):
+  - Autocontenido: sin <script>, sin fuentes web, sin imágenes remotas, sin
+    links a recursos externos (el render corre con JS y red deshabilitados, S7).
+    Los links a GitHub se muestran como texto + href, no se cargan.
+  - Tema CLARO pensado para imprimir/archivar (A4). Los colores salen de la
+    paleta de marca de design-tokens.css, oscurecidos donde hace falta para
+    WCAG AA sobre blanco. Nunca información sólo por color: cada estado lleva
+    texto ("Firmado", "Sin firma registrada").
+  - Nada de claves técnicas `Intrale-*` en la vista principal: se traducen a
+    español llano. Las claves originales van sólo en el Anexo técnico.
+  - PROHIBIDO en el export: chat_id, tokens, paths del host, contenido de
+    mensajes privados. Sólo: login, rol, timestamp, hash del ancla, canal.
+-->
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:">
+<title>Constancia de dirección humana — PR #7650</title>
+<style>
+  @page { size: A4; margin: 18mm 16mm 20mm 16mm; }
+  :root {
+    /* Derivados de design-tokens.css (marca Intrale) para fondo claro */
+    --ink:        #1F2328;  /* texto principal — 15.8:1 sobre blanco */
+    --ink-2:      #424A53;  /* texto secundario — 9.1:1 */
+    --ink-3:      #59636E;  /* notas, timestamps — 6.3:1 */
+    --line:       #D0D7DE;
+    --paper:      #FFFFFF;
+    --paper-2:    #F6F8FA;
+    --brand-navy: #0D274D;  /* = --brand-navy */
+    --brand-blue: #0F6CD6;  /* = --brand-blue-dim, 4.9:1 sobre blanco */
+    --ok:         #1A7F37;  /* 5.1:1 */
+    --ok-bg:      #DAFBE1;
+    --warn:       #9A6700;  /* 4.9:1 */
+    --warn-bg:    #FFF8C5;
+    --bad:        #CF222E;  /* 5.4:1 */
+    --bad-bg:     #FFEBE9;
+    --sans: "Segoe UI", -apple-system, "Helvetica Neue", Arial, sans-serif;
+    --mono: "Consolas", "Liberation Mono", Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--paper); color: var(--ink); }
+  body { font: 10.5pt/1.5 var(--sans); max-width: 178mm; margin: 0 auto; padding: 8mm 0; }
+  h1, h2, h3 { color: var(--brand-navy); line-height: 1.25; margin: 0; }
+  h1 { font-size: 18pt; }
+  h2 { font-size: 13pt; margin: 18pt 0 6pt; padding-bottom: 3pt; border-bottom: 1.5pt solid var(--brand-navy); }
+  h3 { font-size: 11pt; }
+  p { margin: 0 0 6pt; }
+  a { color: var(--brand-blue); text-decoration: underline; }
+  code, .mono { font-family: var(--mono); font-size: 9pt; overflow-wrap: anywhere; }
+
+  /* ---- Encabezado ---- */
+  .doc-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12pt;
+              border-bottom: 3pt solid var(--brand-navy); padding-bottom: 8pt; }
+  .brand { font-weight: 700; letter-spacing: .04em; color: var(--brand-navy); font-size: 9pt; text-transform: uppercase; }
+  .brand .dot { display: inline-block; width: 8pt; height: 8pt; border-radius: 2pt; margin-right: 4pt; vertical-align: -1pt;
+                background: linear-gradient(135deg, #00D6FF, #1890FF); }
+  .doc-meta { text-align: right; font-size: 9pt; color: var(--ink-3); }
+  .subtitle { color: var(--ink-2); margin-top: 4pt; }
+
+  /* ---- Resumen para no técnicos ---- */
+  .summary { background: var(--paper-2); border: 1pt solid var(--line); border-left: 4pt solid var(--brand-blue);
+             padding: 10pt 12pt; margin-top: 12pt; border-radius: 3pt; }
+  .summary strong { color: var(--brand-navy); }
+  .kpis { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8pt; margin-top: 8pt; }
+  .kpi { background: var(--paper); border: 1pt solid var(--line); border-radius: 3pt; padding: 6pt 8pt; }
+  .kpi .n { font-size: 16pt; font-weight: 700; color: var(--brand-navy); }
+  .kpi .l { font-size: 8.5pt; color: var(--ink-2); }
+
+  /* ---- Estado (siempre ícono-texto + color, nunca sólo color) ---- */
+  .badge { display: inline-block; font-size: 8.5pt; font-weight: 700; padding: 1pt 6pt; border-radius: 10pt; border: 1pt solid; white-space: nowrap; }
+  .badge.ok   { color: var(--ok);   background: var(--ok-bg);   border-color: var(--ok); }
+  .badge.warn { color: var(--warn); background: var(--warn-bg); border-color: var(--warn); }
+  .badge.bad  { color: var(--bad);  background: var(--bad-bg);  border-color: var(--bad); }
+
+  /* ---- Cadena: 4 eslabones ---- */
+  .chain { list-style: none; margin: 0; padding: 0; counter-reset: step; }
+  .chain > li { position: relative; padding: 0 0 10pt 28pt; break-inside: avoid; }
+  .chain > li::before { counter-increment: step; content: counter(step);
+    position: absolute; left: 0; top: 0; width: 18pt; height: 18pt; border-radius: 50%;
+    background: var(--brand-navy); color: #fff; font-weight: 700; font-size: 9pt; text-align: center; line-height: 18pt; }
+  .chain > li:not(:last-child)::after { content: ""; position: absolute; left: 8.5pt; top: 20pt; bottom: 2pt; width: 1pt; background: var(--line); }
+  .step-title { font-weight: 700; color: var(--brand-navy); }
+  .step-body { color: var(--ink); }
+  .step-note { color: var(--ink-3); font-size: 9pt; }
+
+  /* ---- Tabla de detalle ---- */
+  table { width: 100%; border-collapse: collapse; margin: 4pt 0 8pt; font-size: 9.5pt; }
+  th, td { text-align: left; vertical-align: top; padding: 4pt 6pt; border-bottom: .75pt solid var(--line); }
+  th { width: 34%; color: var(--ink-2); font-weight: 600; background: var(--paper-2); }
+
+  .card { border: 1pt solid var(--line); border-radius: 3pt; padding: 8pt 10pt; margin: 8pt 0; break-inside: avoid; }
+  .card-head { display: flex; justify-content: space-between; gap: 8pt; align-items: baseline; margin-bottom: 4pt; }
+
+  .callout { border: 1pt solid var(--line); border-left: 4pt solid var(--warn); background: var(--warn-bg);
+             padding: 8pt 10pt; border-radius: 3pt; margin: 8pt 0; break-inside: avoid; }
+  .callout.info { border-left-color: var(--brand-blue); background: var(--paper-2); }
+
+  .annex { font-size: 9pt; color: var(--ink-2); }
+  .annex pre { font-family: var(--mono); font-size: 8.5pt; background: var(--paper-2); border: 1pt solid var(--line);
+               padding: 6pt 8pt; white-space: pre-wrap; overflow-wrap: anywhere; border-radius: 3pt; }
+
+  footer { margin-top: 16pt; padding-top: 6pt; border-top: 1pt solid var(--line); font-size: 8.5pt; color: var(--ink-3); }
+  @media print { a { color: var(--ink); } .no-print { display: none; } }
+</style>
+</head>
+<body>
+
+<!-- ===================================================================== -->
+<!-- 1. ENCABEZADO: qué es este documento, alcance, cuándo se generó       -->
+<!-- ===================================================================== -->
+<header class="doc-head">
+  <div>
+    <div class="brand"><span class="dot"></span>Intrale · Constancia de autoría</div>
+    <h1>Constancia de dirección humana</h1>
+    <p class="subtitle">Cambio integrado a la rama principal mediante el Pull Request <strong>#7650</strong></p>
+  </div>
+  <div class="doc-meta">
+    Generado el <strong>23/09/2026, 16:40</strong> (hora de Argentina)<br>
+    Alcance: 1 cambio<br>
+    Versión del formato: 1
+  </div>
+</header>
+
+<!-- ===================================================================== -->
+<!-- 2. RESUMEN EN LENGUAJE LLANO (lo primero que lee el abogado)          -->
+<!-- ===================================================================== -->
+<section class="summary" aria-label="Resumen">
+  <p><strong>En resumen:</strong> este cambio lo escribieron herramientas de inteligencia artificial
+  <strong>por encargo y bajo la dirección de una persona</strong>. El documento muestra, paso por paso,
+  quién pidió el trabajo, quién lo aprobó y cuándo, qué herramientas asistieron, y dónde quedó registrado
+  de forma permanente.</p>
+  <div class="kpis">
+    <div class="kpi"><div class="n">leitolarreta</div><div class="l">Persona que dirigió el trabajo (usuario de GitHub del operador)</div></div>
+    <div class="kpi"><div class="n"><span class="badge ok">✔ Firmado</span></div><div class="l">Aceptó el código final por el canal de firma</div></div>
+    <div class="kpi"><div class="n">3</div><div class="l">Herramientas de IA que asistieron</div></div>
+  </div>
+</section>
+
+<!-- ===================================================================== -->
+<!-- 3. LA CADENA: 4 eslabones, siempre en este orden                      -->
+<!-- ===================================================================== -->
+<h2>La cadena de autoría, paso a paso</h2>
+<ol class="chain">
+  <li>
+    <div class="step-title">Se definió qué había que hacer</div>
+    <div class="step-body">Pedido registrado como tarea <a href="https://github.com/intrale/platform/issues/7593">#7593 — Trazabilidad de autoría humana en commits de agentes</a>.</div>
+    <div class="step-note">Creada el 22/09/2026. La tarea describe el objetivo, los cambios y los criterios de aceptación.</div>
+  </li>
+  <li>
+    <div class="step-title">Una persona decidió avanzar y fijó las condiciones</div>
+    <div class="step-body"><strong>leitolarreta</strong> (operador) firmó la definición de la tarea el <strong>22/09/2026 a las 15:04</strong>.</div>
+    <div class="step-note">Canal: firma del operador por Telegram, registrada en el libro de aprobaciones del pipeline.</div>
+  </li>
+  <li>
+    <div class="step-title">Herramientas de IA escribieron y revisaron el código</div>
+    <div class="step-body">Anthropic Claude Opus 5.5 escribió el código; OpenAI GPT-5 Codex lo revisó; Anthropic Claude Sonnet ejecutó las pruebas.</div>
+    <div class="step-note">Dato tomado del registro del pipeline (qué herramienta corrió realmente), no de lo que la herramienta dice de sí misma.</div>
+  </li>
+  <li>
+    <div class="step-title">La persona aceptó el resultado y quedó sellado</div>
+    <div class="step-body"><strong>leitolarreta</strong> (operador) firmó la aceptación del código el <strong>23/09/2026 a las 16:12</strong>. El cambio entró a la rama principal ese mismo día, en el registro <span class="mono">9f3c2a1</span>.</div>
+    <div class="step-note">Desde ese momento, la huella de la firma queda escrita dentro del propio registro del código en GitHub y no puede modificarse sin que se note.</div>
+  </li>
+</ol>
+
+<!-- ===================================================================== -->
+<!-- 4. DETALLE POR CAMBIO (una tarjeta por commit si el export es un rango) -->
+<!-- ===================================================================== -->
+<h2>Detalle del cambio</h2>
+<div class="card">
+  <div class="card-head">
+    <h3>Registro <span class="mono">9f3c2a1</span> · PR #7650</h3>
+    <span class="badge ok">✔ Dirección humana firmada</span>
+  </div>
+  <table>
+    <tr><th>Tarea de origen</th><td><a href="https://github.com/intrale/platform/issues/7593">#7593 — Trazabilidad de autoría humana en commits de agentes</a></td></tr>
+    <tr><th>Quién dirigió</th><td><span class="mono">leitolarreta</span> — operador del proyecto</td></tr>
+    <tr><th>Qué decidió y cuándo</th><td>Firmó la aceptación del código · 23/09/2026 16:12 (hora de Argentina)</td></tr>
+    <tr><th>Cómo se registró la decisión</th><td>Firma por el canal del operador (Telegram), anotada en el libro de aprobaciones</td></tr>
+    <tr><th>Herramientas de IA que asistieron</th><td>
+      Anthropic Claude Opus 5.5 — escribió el código<br>
+      OpenAI GPT-5 Codex — revisó el código<br>
+      Anthropic Claude Sonnet — ejecutó las pruebas
+    </td></tr>
+    <tr><th>Pull Request</th><td><a href="https://github.com/intrale/platform/pull/7650">#7650</a></td></tr>
+    <tr><th>Registro en la rama principal</th><td><span class="mono">9f3c2a1e7b4d…</span> (23/09/2026)</td></tr>
+    <tr><th>Huella de la firma</th><td><span class="mono">sha256:ab12cd34ef56…</span></td></tr>
+  </table>
+</div>
+
+<p class="step-note no-print"><em>[Nota del mockup — no va en el export real] Variante de tarjeta cuando el cambio no tiene firma registrada (aparece en exports por rango; el encabezado dice entonces "Alcance: N cambios" y el resumen "X de N con firma").</em></p>
+<!-- Ejemplo de tarjeta para un cambio SIN firma (dry-run / histórico).
+     Mismo layout, badge distinto y texto explícito: nunca se esconde. -->
+<div class="card">
+  <div class="card-head">
+    <h3>Registro <span class="mono">4be07d9</span> · PR #7612</h3>
+    <span class="badge warn">⚠ Sin firma registrada</span>
+  </div>
+  <table>
+    <tr><th>Tarea de origen</th><td><a href="https://github.com/intrale/platform/issues/7601">#7601 — (título de la tarea)</a></td></tr>
+    <tr><th>Quién dirigió</th><td>No se encontró una decisión del operador en el libro de aprobaciones para esta tarea.</td></tr>
+    <tr><th>Por qué</th><td>El cambio se integró mientras la verificación de autoría estaba en <strong>modo de prueba</strong>: se registra el faltante pero no se frena la integración.</td></tr>
+    <tr><th>Herramientas de IA que asistieron</th><td>Anthropic Claude Opus 5.5 — escribió el código</td></tr>
+  </table>
+</div>
+
+<!-- ===================================================================== -->
+<!-- 5. QUÉ PRUEBA Y QUÉ NO (S5 — obligatorio, no negociable)              -->
+<!-- ===================================================================== -->
+<h2>Qué prueba este documento y qué no</h2>
+<div class="callout info">
+  <p><strong>Prueba con solidez:</strong> que, una vez integrado el cambio, la huella de la firma quedó escrita en el
+  registro público del código (GitHub) con su fecha. Desde ese momento no se puede alterar sin dejar rastro.</p>
+</div>
+<div class="callout">
+  <p><strong>Depende de otros elementos:</strong> que la firma la haya dado efectivamente la persona indicada.
+  Eso se apoya en el canal de firma del operador (Telegram) y en el libro de aprobaciones que se guarda en el
+  servidor del proyecto. Hoy todas las acciones en GitHub se hacen con la misma cuenta, por lo que GitHub por sí
+  solo no distingue a la persona de la herramienta automática.</p>
+</div>
+<p class="step-note">Criterio completo, fuentes legales y plazos de conservación: <span class="mono">docs/legal/autoria.md</span>.</p>
+
+<!-- ===================================================================== -->
+<!-- 6. ANEXO TÉCNICO (claves originales, sólo para peritos)               -->
+<!-- ===================================================================== -->
+<h2>Anexo técnico</h2>
+<div class="annex">
+  <p>Bloque de datos tal como figura en el registro <span class="mono">9f3c2a1</span> de la rama principal.
+  Cada línea corresponde a una fila de la tabla anterior.</p>
+<pre>Closes #7593
+Intrale-Issue: #7593
+Intrale-Human-Direction: leitolarreta; 2026-09-23T19:12:00Z; gate2:sha256:ab12cd34ef56
+Intrale-AI-Assisted: anthropic/claude-opus-5-5 (backend-dev), openai/gpt-5-codex (review), anthropic/claude-sonnet (tester)
+Co-Authored-By: Claude Opus 5.5 &lt;noreply@anthropic.com&gt;</pre>
+  <table>
+    <tr><th>Clave técnica</th><td><strong>Significa</strong></td></tr>
+    <tr><th class="mono">Intrale-Issue</th><td>Tarea de origen</td></tr>
+    <tr><th class="mono">Intrale-Human-Direction</th><td>Quién dirigió; cuándo (hora universal); tipo de decisión y huella</td></tr>
+    <tr><th class="mono">gate2 / gate1 / approval</th><td>Firmó la aceptación del código / Firmó la definición / Aprobó por el canal de firma</td></tr>
+    <tr><th class="mono">none … missing</th><td>Sin firma registrada</td></tr>
+    <tr><th class="mono">Intrale-AI-Assisted</th><td>Herramientas de IA que asistieron y en qué rol</td></tr>
+    <tr><th class="mono">Co-Authored-By</th><td>Atribución estándar de GitHub a la herramienta de IA principal</td></tr>
+  </table>
+</div>
+
+<footer>
+  Constancia generada automáticamente por el pipeline de Intrale a partir de registros existentes; no agrega
+  información nueva. No contiene identificadores de mensajería, credenciales ni rutas internas del servidor.
+  Página <span class="mono">1</span> · #7650
+</footer>
+
+</body>
+</html>

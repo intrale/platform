@@ -1224,3 +1224,27 @@ test('#7520 SEC-14 · enabled/registrar/publish/protected_skills son autoridad; 
     assert.deepStrictEqual(SCHEMA.properties.model_value_audit.required, ['enabled']);
     assert.deepStrictEqual(SCHEMA.properties.model_value_audit.properties.publish.enum, ['telegram-plain', 'registry', 'none']);
 });
+
+// --- #7631 · authorship: sección de autoridad con schema cerrado ------------
+
+test('#7631 authorship está en AUTHORITY_PREFIXES y su lado es autoridad', () => {
+    assert.ok(AUTHORITY_PREFIXES.includes('authorship'));
+    assert.strictEqual(resolveSide('authorship'), 'autoridad');
+    assert.strictEqual(resolveSide('authorship.identity_map'), 'autoridad');
+    assert.strictEqual(resolveSide('authorship.gate_mode'), 'autoridad');
+});
+
+test('#7631 el schema de authorship rechaza claves extra y tipos inválidos', () => {
+    const ok = validateConfig({ authorship: { enabled: true, gate_mode: 'dry-run', go_live_date: null, identity_map: { 'sha256:ab': 'leitolarreta' } } });
+    assert.ok(!ok.errors.some((e) => String(e.path).startsWith('/authorship')), JSON.stringify(ok.errors));
+    const extra = validateConfig({ authorship: { enabled: true, gate_mode: 'dry-run', bypass: true } });
+    assert.ok(extra.errors.some((e) => String(e.path).startsWith('/authorship')));
+    const sinModo = validateConfig({ authorship: { enabled: true } });
+    assert.ok(sinModo.errors.some((e) => String(e.path).startsWith('/authorship')));
+    const mapa = validateConfig({ authorship: { enabled: true, gate_mode: 'dry-run', identity_map: { k: 5 } } });
+    assert.ok(mapa.errors.some((e) => String(e.path).startsWith('/authorship')));
+    // La config real del repo trae la sección, en dry-run y sin ids crudos.
+    const real = realConfig().authorship;
+    assert.strictEqual(real.gate_mode, 'dry-run');
+    for (const k of Object.keys(real.identity_map || {})) assert.match(k, /^sha256:[0-9a-f]{64}$/);
+});

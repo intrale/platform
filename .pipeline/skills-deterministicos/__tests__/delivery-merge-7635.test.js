@@ -252,6 +252,18 @@ test('producción inyecta checkPermissions en el camino de merge', () => {
     assert.match(src, /require\('\.\.\/lib\/permission-change-guard'\)/);
 });
 
+test('producción inyecta checkPermissions en los DOS caminos de merge (principal y reclaim)', () => {
+    const src = fs.readFileSync(require.resolve('../delivery'), 'utf8');
+    const llamadas = (src.match(/attemptMergeWithGates\(\{/g) || []).length;
+    const inyecciones = (src.match(/checkPermissions: buildPermissionsChecker\(\{ prNumber, /g) || []).length;
+    assert.equal(inyecciones, llamadas, 'cada attemptMergeWithGates de producción inyecta el gate de permisos');
+    const i = src.indexOf('function reclaimMergeWithGates(');
+    const fin = /\r?\n\}\r?\n/.exec(src.slice(i));
+    const j = fin ? i + fin.index : -1;
+    assert.ok(i > 0 && j > i, 'existe reclaimMergeWithGates');
+    assert.match(src.slice(i, j), /checkPermissions: buildPermissionsChecker\(\{ prNumber, cwd, logAppend \}\)/);
+});
+
 // ── Wiring de producción con fakes de gh y git ─────────────────────────────
 
 function fakeSpawn(mapa) {

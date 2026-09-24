@@ -2701,6 +2701,37 @@ operator_signature:
   max_signature_rebotes: 3
 
 # =============================================================================
+# #7631 — Trailer de autoría en el squash + gate pre-merge `authorship`
+# =============================================================================
+# Todo squash de agente termina con el bloque Closes → Intrale-Issue →
+# Intrale-Human-Direction → Intrale-AI-Assisted → Co-Authored-By, generado por
+# código desde el registro (`lib/authorship/`). Sección de AUTORIDAD
+# (`AUTHORITY_PREFIXES`): cambiar el modo o agregar un aprobador exige revisión
+# humana por el gate de config.
+#
+# Rollout fail-closed (S8):
+#   - `gate_mode: dry-run` → el merge sigue; el trailer dice `none; <ISO>; <motivo>`
+#     y queda UN comentario en el PR. `enforce` → bloquea el merge.
+#   - Bloque ausente / tipo inválido / `gate_mode` desconocido → `enforce` si ya
+#     estuvo activo (marcador `.pipeline/state/authorship-enforce-seen`), si no
+#     `dry-run`. Nunca se apaga.
+#   - `off` apaga SÓLO si está escrito literal. `enabled: false` se ignora.
+#   - PRs creados antes de `go_live_date` no se evalúan.
+#
+# `identity_map`: `sha256:<hex del signed_by>` → login público. La clave es el
+# HASH del id del firmante (chat_id de Telegram), nunca el id crudo (SEC-F). Un
+# firmante sin entrada sale `unmapped`. Se calcula con
+# `require('.pipeline/lib/authorship/human-direction').identityKey(<signed_by>)`.
+authorship:
+  enabled: true
+  gate_mode: dry-run
+  go_live_date: '2026-09-23T00:00:00Z'
+  # Operador (rebote #7631): hash del chat_id de `telegram.leo_operator_chat_id`
+  # (el mismo `signed_by` que registra el canal de firma).
+  identity_map:
+    'sha256:cb840ae5e58459126d74ec58aaa6ad9fe252b2643537e2958cf5dbbd80b6a8e2': leitolarreta
+
+# =============================================================================
 # #4502 — Gate de entregable obligatorio del PO al cerrar Definición
 # =============================================================================
 # Al promover `definicion/criterios → sizing`, el pulpo verifica que el agente

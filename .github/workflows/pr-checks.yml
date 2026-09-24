@@ -624,14 +624,77 @@ jobs:
           retention-days: 14
           if-no-files-found: ignore
 
+  # ── Autoría del PR (#7632) ──────────────────────────────────────
+  # Verifica que el mensaje de squash propuesto de un PR agent/* traiga el
+  # bloque de autoría completo y consistente. Verifica CONSISTENCIA, no
+  # autenticidad: ver docs/pipeline/authorship-ci.md.
+  #
+  # Seguridad (RS-1 / RS-4 / RS-7):
+  #   - El script y el config.yaml (modo dry-run/enforce) salen del checkout de
+  #     base_ref: un PR no puede cambiar el verificador que lo juzga. No hay
+  #     checkout del head del PR ni `npm install` (sólo built-ins de Node).
+  #   - Los datos del PR entran sólo por `env:`; ningun `run:` interpola `${{`.
+  #   - Permisos del job: exactamente contents/pull-requests/issues en read.
+  #     El bloque del job REEMPLAZA al raiz, por eso van los tres explicitos.
+  authorship-trailer:
+    name: Autoría del PR (trailer)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request' && startsWith(github.head_ref, 'agent/')
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: read
+    steps:
+      - name: Checkout de la rama base (verificador de confianza)
+        # La lista de abajo ES el contrato de empaquetado del CLI: el test
+        # authorship-ci-packaging.test.js resuelve los require de cli.js y exige
+        # que cada archivo figure aca. Si agregas un require, agrega el archivo
+        # en el MISMO commit.
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.base_ref }}
+          persist-credentials: false
+          sparse-checkout: |
+            .pipeline/config.yaml
+            .pipeline/lib/authorship/cli.js
+            .pipeline/lib/authorship/verify.js
+            .pipeline/lib/authorship/ci-mode.js
+            .pipeline/lib/authorship/annotations.js
+            .pipeline/lib/authorship/gh-client.js
+            .pipeline/lib/authorship/trailer.js
+            .pipeline/lib/authorship/normalize.js
+            .pipeline/lib/delivery/commit-builder.js
+          sparse-checkout-cone-mode: false
+
+      - name: Verificar trailer de autoría
+        shell: bash
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_REF: ${{ github.head_ref }}
+          BASE_REF: ${{ github.base_ref }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          # Bootstrap: si la rama base todavia no tiene el verificador (el PR que
+          # lo introduce, o una base como develop), se omite sin freno falso
+          # (#7622). No es fail-open explotable: el PR no puede cambiar la base.
+          if [ ! -f .pipeline/lib/authorship/cli.js ]; then
+            echo "::notice title=Autoría del PR::El verificador no está disponible en la rama base; se omite."
+            exit 0
+          fi
+          node .pipeline/lib/authorship/cli.js verify --pr "$PR_NUMBER" --config .pipeline/config.yaml
+
   # ── Gate final — todos los checks deben pasar ───────────────────
   pr-status:
     runs-on: ubuntu-latest
-    needs: [detect-changes, verify-strings, check-backend, check-users, check-app, check-tools, check-licenses, e2e-qa]
+    needs: [detect-changes, verify-strings, check-backend, check-users, check-app, check-tools, check-licenses, e2e-qa, authorship-trailer]
     if: always()
     steps:
       - name: Verify all checks passed
         shell: bash
+        env:
+          # #7632: el resultado nuevo entra por env (no se interpola en run:).
+          AUTHORSHIP_RESULT: ${{ needs.authorship-trailer.result }}
         run: |
           # Issue #6579 (CA-4): un job "skipped" nunca corrio, asi que no puede
           # contabilizarse como check aprobado. No lo tratamos como fallo — un PR
@@ -658,6 +721,7 @@ jobs:
           classify "check-tools"    "${{ needs.check-tools.result }}"
           classify "check-licenses" "${{ needs.check-licenses.result }}"
           classify "e2e-qa"         "${{ needs.e2e-qa.result }}"
+          classify "authorship-trailer" "$AUTHORSHIP_RESULT"
           echo
 
           if [ ${#BROKEN[@]} -gt 0 ]; then
