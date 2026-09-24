@@ -302,3 +302,111 @@ test('el indice no tiene gitlinks huerfanos: rompen el checkout de check-license
   const huerfanos = gitlinks.filter((p) => !gitmodules.includes(`path = ${p}`));
   assert.deepStrictEqual(huerfanos, [], `gitlinks sin .gitmodules: ${huerfanos.join(', ')}`);
 });
+
+// -- Autoria del PR: trailer (#7632) --------------------------------------
+const AUDIT_PATH = path.join(__dirname, '..', '..', '.github', 'workflows', 'authorship-main-audit.yml');
+
+function cargarAuditoria() {
+  const doc = yaml.load(fs.readFileSync(AUDIT_PATH, 'utf8'));
+  assert.ok(doc && typeof doc === 'object', 'authorship-main-audit.yml no parsea como objeto YAML');
+  return doc;
+}
+
+function checkouts(job) {
+  return (job.steps || []).filter((s) => typeof s.uses === 'string' && s.uses.startsWith('actions/checkout@'));
+}
+
+test('authorship-trailer: nombre visible, solo PRs agent/* y via pull_request', () => {
+  const job = cargarWorkflow().jobs['authorship-trailer'];
+  assert.ok(job, 'falta el job authorship-trailer');
+  assert.strictEqual(job.name, 'Autoría del PR (trailer)');
+  assert.strictEqual(job.if, "github.event_name == 'pull_request' && startsWith(github.head_ref, 'agent/')");
+});
+
+// CA-9.13
+test('authorship-trailer: checkout de base_ref sin credenciales, sin head del PR ni npm install', () => {
+  const job = cargarWorkflow().jobs['authorship-trailer'];
+  const cos = checkouts(job);
+  assert.strictEqual(cos.length, 1, 'un unico checkout: el de la base');
+  assert.strictEqual(cos[0].with.ref, '${{ github.base_ref }}');
+  assert.strictEqual(cos[0].with['persist-credentials'], false);
+  assert.match(cos[0].uses, /^actions\/checkout@[0-9a-f]{40}$/);
+  const raw = JSON.stringify(job);
+  assert.doesNotMatch(raw, /pull_request\.head|head\.sha/, 'no puede hacer checkout del head del PR');
+  const runs = job.steps.map((s) => s.run || '').join('\n');
+  assert.doesNotMatch(runs, /\bnpm\b|\byarn\b|\bnpx\b/);
+  assert.doesNotMatch(runs, /set\s+-x/);
+  assert.match(runs, /node \.pipeline\/lib\/authorship\/cli\.js verify --pr "\$PR_NUMBER" --config \.pipeline\/config\.yaml/);
+  assert.match(runs, /test -f|\[ ! -f \.pipeline\/lib\/authorship\/cli\.js \]/, 'falta el guard de bootstrap (base sin verificador)');
+});
+
+test('authorship-trailer: base sin cli.js → notice y exit 0 (script de bootstrap real)', { skip: process.platform === 'win32' && !process.env.SHELL }, () => {
+  const { execFileSync } = require('node:child_process');
+  const os = require('node:os');
+  const job = cargarWorkflow().jobs['authorship-trailer'];
+  const step = job.steps.find((s) => s.run);
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'authorship-boot-'));
+  try {
+    const out = execFileSync('bash', ['-c', step.run], { cwd: tmp, encoding: 'utf8', env: { ...process.env, PR_NUMBER: '1' } });
+    assert.match(out, /::notice title=Autoría del PR::El verificador no está disponible en la rama base; se omite\./);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+// CA-9.14
+test('authorship-trailer: permisos exactamente contents/pull-requests/issues en read', () => {
+  const job = cargarWorkflow().jobs['authorship-trailer'];
+  assert.deepStrictEqual(normalizarPermissions(job.permissions), {
+    contents: 'read', 'pull-requests': 'read', issues: 'read',
+  });
+});
+
+test('authorship-main-audit: push a main, solo contents: read, ningun write', () => {
+  const wf = cargarAuditoria();
+  const on = wf.on || wf[true];
+  assert.deepStrictEqual(Object.keys(on), ['push']);
+  assert.deepStrictEqual(on.push.branches, ['main']);
+  assert.deepStrictEqual(normalizarPermissions(wf.permissions), { contents: 'read' });
+  for (const [nombre, job] of Object.entries(wf.jobs)) {
+    const permisos = normalizarPermissions(job.permissions) || {};
+    assert.deepStrictEqual(scopesConEscritura(permisos), [], `${nombre} escala a write`);
+    assert.deepStrictEqual(permisos, { contents: 'read' });
+    for (const co of checkouts(job)) {
+      assert.strictEqual(co.with['persist-credentials'], false);
+      assert.match(co.uses, /^actions\/checkout@[0-9a-f]{40}$/);
+    }
+    const runs = job.steps.map((s) => s.run || '').join('\n');
+    assert.match(runs, /verify --commit "\$sha" --informative/);
+    assert.doesNotMatch(runs, /\bnpm\b/);
+  }
+});
+
+// CA-9.15 — acotado al job nuevo y a la auditoria: pr-status ya interpola
+// needs.*.result en run: desde antes y queda fuera de alcance.
+test('ningun run: del job authorship-trailer ni de authorship-main-audit.yml contiene ${{', () => {
+  const infractores = [];
+  const revisar = (origen, job) => {
+    for (const s of job.steps || []) {
+      if (typeof s.run === 'string' && s.run.includes('${{')) infractores.push(`${origen}/${s.name}`);
+    }
+  };
+  revisar('pr-checks/authorship-trailer', cargarWorkflow().jobs['authorship-trailer']);
+  for (const [nombre, job] of Object.entries(cargarAuditoria().jobs)) revisar(`authorship-main-audit/${nombre}`, job);
+  assert.deepStrictEqual(infractores, []);
+});
+
+test('authorship-trailer: los datos del PR entran solo por env:', () => {
+  const step = cargarWorkflow().jobs['authorship-trailer'].steps.find((s) => s.run);
+  assert.deepStrictEqual(Object.keys(step.env).sort(), ['BASE_REF', 'GH_REPO', 'GH_TOKEN', 'HEAD_REF', 'PR_NUMBER']);
+  assert.strictEqual(step.env.GH_TOKEN, '${{ github.token }}');
+});
+
+// CA-9.16
+test('authorship-trailer esta en needs y en el classify de pr-status (por env, no interpolado)', () => {
+  const wf = cargarWorkflow();
+  assert.ok(wf.jobs['pr-status'].needs.includes('authorship-trailer'));
+  const verify = wf.jobs['pr-status'].steps.find((s) => s.name === 'Verify all checks passed');
+  assert.match(verify.run, /classify "authorship-trailer" "\$AUTHORSHIP_RESULT"/);
+  assert.strictEqual(verify.env.AUTHORSHIP_RESULT, '${{ needs.authorship-trailer.result }}');
+});

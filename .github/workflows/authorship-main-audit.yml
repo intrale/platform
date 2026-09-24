@@ -1,0 +1,66 @@
+name: Auditoría de autoría en main
+
+# #7632 (CA-6) — Auditoría INFORMATIVA de los squash que entran a main.
+#
+# Cubre el hueco del check pre-merge: un merge manual que no pasó por delivery
+# puede entrar sin trailer de autoría. Por cada commit nuevo en main que parezca
+# un squash de agent/* sin trailer válido emite un único ::warning::. Nunca
+# falla el run. Verifica consistencia, no autenticidad
+# (docs/pipeline/authorship-ci.md).
+#
+# Seguridad: sólo `contents: read` (no consulta la API de PRs ni issues). Los
+# datos del push entran por `env:`; ningún `run:` interpola `${{`.
+
+on:
+  push:
+    branches: [ main ]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: authorship-main-audit-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  authorship-main-audit:
+    name: Auditoría de autoría (main)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout de main
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 50
+          persist-credentials: false
+          sparse-checkout: |
+            .pipeline/config.yaml
+            .pipeline/lib/authorship/cli.js
+            .pipeline/lib/authorship/verify.js
+            .pipeline/lib/authorship/ci-mode.js
+            .pipeline/lib/authorship/annotations.js
+            .pipeline/lib/authorship/gh-client.js
+            .pipeline/lib/authorship/trailer.js
+            .pipeline/lib/authorship/normalize.js
+            .pipeline/lib/delivery/commit-builder.js
+          sparse-checkout-cone-mode: false
+
+      - name: Auditar trailers de los commits del push
+        shell: bash
+        env:
+          BEFORE_SHA: ${{ github.event.before }}
+          AFTER_SHA: ${{ github.sha }}
+        run: |
+          if [ ! -f .pipeline/lib/authorship/cli.js ]; then
+            echo "::notice title=Autoría del PR::El verificador no está disponible en main; se omite."
+            exit 0
+          fi
+          # Push inicial (before = ceros) o before fuera de la historia traída:
+          # se audita sólo el commit final.
+          if [ -z "${BEFORE_SHA//0/}" ] || ! SHAS="$(git rev-list --max-count=50 "$BEFORE_SHA".."$AFTER_SHA" 2>/dev/null)"; then
+            SHAS="$AFTER_SHA"
+          fi
+          for sha in $SHAS; do
+            node .pipeline/lib/authorship/cli.js verify --commit "$sha" --informative --config .pipeline/config.yaml || true
+          done
