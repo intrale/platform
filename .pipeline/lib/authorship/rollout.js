@@ -5,7 +5,9 @@
 // Reglas:
 //   - Bloque `authorship` ausente, con tipo inválido o `gate_mode` desconocido
 //     → modo MÁS ESTRICTO que ya estuvo activo: `enforce` si alguna vez se vio
-//     `enforce` (marcador persistente), `dry-run` si no. Nunca se apaga.
+//     `enforce` (marcador persistente EXISTENTE), `dry-run` si no. Nunca se
+//     apaga. Un marcador cuyo destino no se puede resolver cuenta como "no
+//     visto" (rebote #7631: si no, el modo de prueba bloqueaba).
 //   - `gate_mode: 'off'` apaga SÓLO si está escrito literalmente así.
 //   - `enabled: false` NO apaga: se ignora con warning. El único apagado
 //     posible es el explícito (`gate_mode: off`).
@@ -78,14 +80,21 @@ function resolveAuthorshipMode(cfg, { prCreatedAt = null, enforceSeen = false } 
     return { mode: gm, grandfathered: false, reason: 'config', warnings };
 }
 
-function readEnforceSeen(markerFile, fsImpl) {
+function readEnforceSeen(markerFile, fsImpl, { resolveDefault = defaultMarkerFile } = {}) {
     const _fs = fsImpl || require('fs');
+    if (!markerFile) {
+        // Rebote #7631 (freno falso en PR #7651): un destino NO resoluble
+        // (write-target bloqueado, ambiente sin declarar) no prueba que alguna
+        // vez hubo `enforce`: con el mismo resolver `markEnforceSeen` tampoco
+        // pudo escribirlo nunca. Tratarlo como "enforce visto" convertía el
+        // modo de prueba en bloqueo. Sin marcador legible ⇒ no visto
+        // (dry-run avisa y deja mergear; `enforce` explícito sigue bloqueando).
+        try { markerFile = resolveDefault(); } catch { markerFile = null; }
+        if (!markerFile) return false;
+    }
     try {
-        if (!markerFile) markerFile = defaultMarkerFile();
-        // Sin destino resoluble no se puede probar que nunca hubo enforce ⇒ lo más estricto.
-        if (!markerFile) return true;
         return _fs.existsSync(markerFile);
-    } catch { return true; /* no poder leer ⇒ lo más estricto */ }
+    } catch { return true; /* destino resuelto pero ilegible ⇒ lo más estricto */ }
 }
 
 function markEnforceSeen(markerFile, fsImpl) {

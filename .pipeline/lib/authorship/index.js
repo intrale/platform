@@ -57,11 +57,13 @@ function evaluateAuthorship({
     auditFile,
     logFiles,
     markerFile, // undefined ⇒ rollout lo resuelve por llamada (write-target)
+    markerResolver, // sólo tests: sustituye al resolver del destino por defecto
     fsImpl,
 } = {}) {
+    const seenOpts = typeof markerResolver === 'function' ? { resolveDefault: markerResolver } : undefined;
     let mode = null;
     try {
-        const enforceSeen = rollout.readEnforceSeen(markerFile, fsImpl);
+        const enforceSeen = rollout.readEnforceSeen(markerFile, fsImpl, seenOpts);
         mode = rollout.resolveAuthorshipMode(config, { prCreatedAt, enforceSeen });
         if (mode.mode === 'enforce' && !enforceSeen) rollout.markEnforceSeen(markerFile, fsImpl);
 
@@ -104,7 +106,7 @@ function evaluateAuthorship({
             warnings: mode.warnings,
         };
     } catch {
-        const m = mode && mode.mode ? mode.mode : (rollout.readEnforceSeen(markerFile, fsImpl) ? 'enforce' : 'dry-run');
+        const m = mode && mode.mode ? mode.mode : (rollout.readEnforceSeen(markerFile, fsImpl, seenOpts) ? 'enforce' : 'dry-run');
         const enforce = m !== 'dry-run';
         return {
             decision: enforce ? 'block' : 'pass',

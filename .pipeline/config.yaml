@@ -2726,7 +2726,10 @@ authorship:
   enabled: true
   gate_mode: dry-run
   go_live_date: '2026-09-23T00:00:00Z'
-  identity_map: {}
+  # Operador (rebote #7631): hash del chat_id de `telegram.leo_operator_chat_id`
+  # (el mismo `signed_by` que registra el canal de firma).
+  identity_map:
+    'sha256:cb840ae5e58459126d74ec58aaa6ad9fe252b2643537e2958cf5dbbd80b6a8e2': leitolarreta
 
 # =============================================================================
 # #4502 — Gate de entregable obligatorio del PO al cerrar Definición

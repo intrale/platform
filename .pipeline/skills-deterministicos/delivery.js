@@ -787,7 +787,9 @@ function buildAuthorshipEvaluator({
             try { syncAnchor({ prNumber, issue, lines: { humanLine: res.humanLine, aiLine: res.aiLine }, cwd }); }
             catch (e) { logAppend(`[delivery] authorship: ancla del body no actualizada (${e && e.message}) — no bloqueante`); }
         }
-        if (res && res.notice && res.decision === 'pass') {
+        // En dry-run el aviso sale aunque la evaluación haya pedido bloquear:
+        // el gate lo degrada a "pasa con aviso" (rebote #7631).
+        if (res && res.notice && (res.decision === 'pass' || res.mode === 'dry-run')) {
             try { postNotice({ prNumber, issue, reason: res.reason, cwd }); }
             catch (e) { logAppend(`[delivery] authorship: comentario de dry-run no publicado (${e && e.message}) — no bloqueante`); }
         }
@@ -1717,6 +1719,12 @@ function attemptMergeWithGatesInner({
         }
         if (!authorshipEval || typeof authorshipEval !== 'object') {
             authorshipEval = { decision: 'block', reason: 'missing', error: 'evaluación de autoría sin resultado' };
+        }
+        // Rebote #7631 — en modo de prueba (`dry-run`) el gate SÓLO avisa:
+        // aunque la evaluación haya salido `block`, no frena el merge.
+        if (authorshipEval.decision !== 'pass' && authorshipEval.mode === 'dry-run') {
+            log(`[delivery] gate merge: autoría en modo de prueba — la evaluación pedía bloquear (${authorshipEval.reason || 'missing'}) pero dry-run sólo avisa; el merge sigue`);
+            authorshipEval = { ...authorshipEval, decision: 'pass', notice: true, reason: authorshipEval.reason || 'missing' };
         }
         if (authorshipEval.decision !== 'pass') {
             const reason = authorship.copy.describeBlockReason(authorshipEval.reason);

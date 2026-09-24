@@ -223,3 +223,38 @@ test('ancla del body: se eliminan anclas falsas y líneas Intrale-* y queda sól
     assert.ok(copy.applyAnchorToBody('', 7631, lines).startsWith('<!-- authorship-anchor issue=7631 -->'));
     assert.strictEqual(copy.stripAnchorBlocks('a <!-- authorship-anchor --> <!-- /authorship-anchor --> b\nc\n<!-- /authorship-anchor -->'), 'c');
 });
+
+// ── Rebote #7631: freno falso en PR #7651 ──────────────────────────────────
+// El delivery leyó la config de `main` (sin bloque `authorship`) y el destino
+// del marcador enforce-seen no se pudo resolver (write-target bloqueado). Eso
+// se trataba como "enforce ya visto" ⇒ bloqueaba en modo de prueba.
+
+test('regresión #7651: destino del marcador no resoluble cuenta como NO visto', () => {
+    assert.strictEqual(R.readEnforceSeen(undefined, undefined, { resolveDefault: () => null }), false);
+    assert.strictEqual(R.readEnforceSeen(undefined, undefined, { resolveDefault: () => { throw new Error('bloqueado'); } }), false);
+});
+
+test('regresión #7651: modo de prueba + sin firma + marcador no resoluble ⇒ merge permitido con aviso', () => {
+    const base = { issue: 7631, headSha: 'a'.repeat(40), auditFile: tmp('sin-audit'), logFiles: [], markerResolver: () => null };
+    for (const config of [null, cfg(undefined), cfg({ enabled: true, gate_mode: 'dry-run', identity_map: {} })]) {
+        const r = evaluateAuthorship({ ...base, config });
+        assert.strictEqual(r.mode, 'dry-run', JSON.stringify(config));
+        assert.strictEqual(r.decision, 'pass', JSON.stringify(config));
+        assert.strictEqual(r.notice, true);
+        assert.strictEqual(r.reason, 'missing');
+        assert.match(r.humanLine, /^none; .+; missing$/);
+    }
+    // `enforce` explícito sigue bloqueando aunque el marcador no se resuelva.
+    const enf = evaluateAuthorship({ ...base, markerFile: tmp('m-enf'), config: cfg({ enabled: true, gate_mode: 'enforce' }) });
+    assert.strictEqual(enf.decision, 'block');
+});
+
+test('config real: identity_map mapea al operador leitolarreta con clave sha256', () => {
+    const yaml = require('js-yaml');
+    const real = yaml.load(fs.readFileSync(path.join(__dirname, '..', '..', 'config.yaml'), 'utf8'));
+    const map = real.authorship.identity_map || {};
+    const logins = Object.values(map);
+    assert.ok(logins.includes('leitolarreta'), 'identity_map debe incluir al operador');
+    for (const k of Object.keys(map)) assert.match(k, /^sha256:[0-9a-f]{64}$/);
+    assert.strictEqual(real.authorship.gate_mode, 'dry-run');
+});

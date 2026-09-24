@@ -200,6 +200,34 @@ test('dry-run → mergea, con el head del snapshot vigente y la MISMA evaluació
     assert.equal(recibido.authorship, evalRes);
 });
 
+test('regresión #7651: evaluación "block" en modo de prueba (dry-run) NO frena el merge', () => {
+    let recibido = null;
+    const out = delivery.attemptMergeWithGates(baseDeps({
+        evaluateAuthorship: () => ({ decision: 'block', mode: 'dry-run', reason: 'missing', humanLine: HUMAN_NONE, aiLine: AI_LINE }),
+        mergePR: (args) => { recibido = args; return MERGED_OK; },
+    }));
+    assert.equal(out.status, 'merged');
+    assert.equal(recibido.authorship.decision, 'pass');
+    assert.equal(recibido.authorship.notice, true);
+    assert.equal(recibido.authorship.humanLine, HUMAN_NONE);
+});
+
+test('regresión #7651: evaluador de producción en modo de prueba sin firma avisa en el PR y deja mergear', () => {
+    const notices = [];
+    const ev = delivery.buildAuthorshipEvaluator({
+        issue: 7631,
+        loadConfig: () => ({ authorship: { enabled: true, gate_mode: 'dry-run', identity_map: {} } }),
+        prCreatedAtReader: () => '2026-09-24T00:00:00Z',
+        evaluate: () => ({ decision: 'block', mode: 'dry-run', notice: true, reason: 'missing', humanLine: HUMAN_NONE, aiLine: AI_LINE }),
+        postNotice: (a) => { notices.push(a); return { posted: true }; },
+        syncAnchor: () => ({ updated: true }),
+    });
+    const out = delivery.attemptMergeWithGates(baseDeps({ evaluateAuthorship: ev, mergePR: () => MERGED_OK }));
+    assert.equal(out.status, 'merged');
+    assert.equal(notices.length, 1);
+    assert.equal(notices[0].reason, 'missing');
+});
+
 test('sin evaluador inyectado, el default pasa sin líneas (suites viejas intactas)', () => {
     let recibido = null;
     const out = delivery.attemptMergeWithGates(baseDeps({ mergePR: (a) => { recibido = a; return MERGED_OK; } }));
