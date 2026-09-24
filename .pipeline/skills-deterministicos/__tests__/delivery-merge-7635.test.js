@@ -289,11 +289,11 @@ test('wiring · usa la lista paginada de la API (con renombres) y git show sin s
     assert.ok(r.motivos.some((m) => /env-exceptions\.yaml/.test(m)), 'el renombre se detecta por previous_filename');
 });
 
-test('wiring · si la API falla cae al snapshot (y respeta su filesComplete)', () => {
+test('wiring · si la API falla el snapshot no acredita una lista completa', () => {
     const gh = () => ({ exit_code: 1, stdout: '', stderr: 'boom' });
     const logs = [];
     const check = delivery.buildPermissionsChecker({ prNumber: 1, ghImpl: gh, spawnImpl: fakeSpawn({}), logAppend: (m) => logs.push(m) });
-    assert.deepEqual(check(snapshotOk({ files: ['docs/x.md'], filesComplete: true })).motivos, []);
+    assert.ok(check(snapshotOk({ files: ['docs/x.md'], filesComplete: true })).motivos.some((m) => /incompleta/.test(m)));
     assert.ok(check(snapshotOk({ files: ['docs/x.md'], filesComplete: false })).motivos.some((m) => /incompleta/.test(m)));
     assert.ok(logs.some((m) => /gate permisos/.test(m)));
 });
@@ -320,7 +320,7 @@ test('wiring · gitShowAt rechaza refs o paths con caracteres de shell', () => {
     assert.throws(() => delivery.gitShowAt('origin/main', '../$(x)', { spawnImpl: fakeSpawn({}) }));
 });
 
-test('getPRSnapshot expone filesComplete (false con 100 archivos o más)', () => {
+test('getPRSnapshot no acredita renombres completos aunque haya menos de 100 archivos', () => {
     const mk = (n) => () => ({
         exit_code: 0,
         stdout: JSON.stringify({
@@ -328,6 +328,53 @@ test('getPRSnapshot expone filesComplete (false con 100 archivos o más)', () =>
             files: Array.from({ length: n }, (_, i) => ({ path: `f${i}.js` })),
         }),
     });
-    assert.equal(delivery.getPRSnapshot(1, { ghImpl: mk(3) }).filesComplete, true);
+    assert.equal(delivery.getPRSnapshot(1, { ghImpl: mk(3) }).filesComplete, false);
     assert.equal(delivery.getPRSnapshot(1, { ghImpl: mk(100) }).filesComplete, false);
+});
+
+for (const escenario of [
+    { nombre: 'renombre sensible con API caída', previous_filename: '.pipeline/env-exceptions.yaml', api: { exit_code: 1 } },
+    { nombre: 'snapshot sin metadatos de renombre con API caída', api: { exit_code: 1 } },
+    { nombre: 'API con JSON roto', api: { exit_code: 0, stdout: '{' } },
+    { nombre: 'API con una entrada inválida entre rutas válidas', api: { exit_code: 0, stdout: '{"path":"docs/x.md"}\n{"path":null}' } },
+    { nombre: 'API con renombre inválido', api: { exit_code: 0, stdout: '{"path":"docs/x.md","previous_filename":42}' } },
+    { nombre: 'API vacía', api: { exit_code: 0, stdout: '' } },
+]) {
+    test(`CA-4 regresión integrada · ${escenario.nombre} bloquea sin merge`, () => {
+        const file = { path: '.pipeline/archived-exceptions.yaml', ...(escenario.previous_filename
+            ? { previous_filename: escenario.previous_filename } : {}) };
+        const fakeGithub = (argv) => argv[0] === 'pr' ? {
+            exit_code: 0,
+            stdout: JSON.stringify({ labels: [{ name: 'qa:passed' }], headRefOid: HEAD_SHA,
+                headRefName: 'agent/7635-pipeline-dev', state: 'OPEN', files: [file], statusCheckRollup: [] }),
+        } : escenario.api;
+        const snapshot = delivery.getPRSnapshot(7635, { ghImpl: fakeGithub });
+        assert.equal(snapshot.ok, true);
+        assert.deepEqual(snapshot.files, [file.path], 'compatibilidad con los otros gates');
+        assert.deepEqual(snapshot.permissionFiles, [file], 'conserva el nombre anterior');
+        assert.equal(snapshot.filesComplete, false);
+        const { d, merges } = deps({
+            getSnapshot: () => snapshot,
+            checkPermissions: delivery.buildPermissionsChecker({ prNumber: 7635, ghImpl: fakeGithub,
+                spawnImpl: () => { throw new Error('no corresponde leer contenido'); } }),
+        });
+        const out = delivery.attemptMergeWithGates(d);
+        assert.equal(out.status, 'needs-human');
+        assert.equal(out.gate, 'permisos');
+        assert.ok(out.motivos.some((m) => /incompleta/.test(m)));
+        if (escenario.previous_filename) assert.ok(out.motivos.some((m) => /env-exceptions/.test(m)));
+        assert.equal(merges.length, 0);
+    });
+}
+
+test('CA-4 regresión integrada · API completa permite un PR inocuo y frena un renombre sensible', () => {
+    for (const previous_filename of [null, '.pipeline/env-exceptions.yaml']) {
+        const fakeGithub = () => ({ exit_code: 0, stdout: JSON.stringify({ path: 'docs/x.md', previous_filename }) });
+        const { d, merges } = deps({
+            checkPermissions: delivery.buildPermissionsChecker({ prNumber: 7635, ghImpl: fakeGithub }),
+        });
+        const out = delivery.attemptMergeWithGates(d);
+        assert.equal(out.status, previous_filename ? 'needs-human' : 'merged');
+        assert.equal(merges.length, previous_filename ? 0 : 1);
+    }
 });

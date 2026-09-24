@@ -580,9 +580,12 @@ function getPRSnapshot(prNumber, { ghImpl = git.runGh, cwd = WORK_DIR, logAppend
     const labels = Array.isArray(parsed.labels)
         ? parsed.labels.map((l) => (l && typeof l.name === 'string' ? l.name : null)).filter(Boolean)
         : [];
-    const files = Array.isArray(parsed.files)
-        ? parsed.files.map((f) => (f && typeof f.path === 'string' ? f.path : null)).filter(Boolean)
+    const permissionFiles = Array.isArray(parsed.files)
+        ? parsed.files.filter((f) => f && typeof f.path === 'string' && f.path)
+            .map((f) => (typeof f.previous_filename === 'string' && f.previous_filename
+                ? { path: f.path, previous_filename: f.previous_filename } : { path: f.path }))
         : [];
+    const files = permissionFiles.map((f) => f.path);
     // Un PR SIEMPRE toca archivos: una lista vacía es una lectura degradada, no
     // un PR inocuo. Tratarla como "no matchea CODEOWNERS" sería fail-open.
     if (!files.length) {
@@ -591,10 +594,11 @@ function getPRSnapshot(prNumber, { ghImpl = git.runGh, cwd = WORK_DIR, logAppend
 
     return {
         ok: true, labels, files, headRefOid, headRefName,
-        // #7635 — `gh pr view --json files` corta en 100: con 100 o más la
-        // lista puede estar truncada y el gate de permisos la trata como
-        // incompleta (fail-closed) salvo que la pagine por la API.
-        filesComplete: files.length < 100,
+        // Conserva files como strings para los otros gates. El snapshot de gh
+        // no acredita todos los renombres, incluso con menos de 100 archivos.
+        // Sólo la API paginada permite acreditar la lista para permisos.
+        permissionFiles,
+        filesComplete: false,
         // #6384/#6431 — Disciplina de dos valores: `null` = "no lo leí" (el `gh`
         // no conoce el campo, o degradamos de nivel), `[]` = "lo leí y está
         // vacío" (el commit todavía no tiene ningún check instanciado: la
@@ -714,9 +718,12 @@ function listPrFilesForPermissions(prNumber, { ghImpl = git.runGh, cwd = WORK_DI
             '--jq', '.[] | {path: .filename, previous_filename: .previous_filename}',
         ], { cwd, timeoutMs: 60 * 1000 });
         if (!r || r.exit_code !== 0 || typeof r.stdout !== 'string') return null;
-        const files = r.stdout.split(/\r?\n/).filter((l) => l.trim()).map((l) => JSON.parse(l))
-            .filter((f) => f && typeof f.path === 'string')
-            .map((f) => (typeof f.previous_filename === 'string' && f.previous_filename
+        const entries = r.stdout.split(/\r?\n/).filter((l) => l.trim()).map((l) => JSON.parse(l));
+        // No descartar entradas inválidas: ocultar una sola ruta vuelve parcial
+        // la lista aunque el transporte haya terminado correctamente.
+        if (entries.some((f) => !f || typeof f.path !== 'string' || !f.path
+            || (f.previous_filename != null && typeof f.previous_filename !== 'string'))) return null;
+        const files = entries.map((f) => (typeof f.previous_filename === 'string' && f.previous_filename
                 ? { path: f.path, previous_filename: f.previous_filename } : { path: f.path }));
         if (!files.length) return null;
         return { files, filesComplete: files.length < PERMISOS_MAX_FILES_API };
@@ -735,8 +742,11 @@ function buildPermissionsChecker({ prNumber, cwd = WORK_DIR, baseRef = OWNERS_RE
             ({ files, filesComplete } = api);
         } else {
             log('[delivery] gate permisos: no se pudo paginar la lista de archivos por la API — se usa la del snapshot');
-            files = (snapshot && Array.isArray(snapshot.files)) ? snapshot.files.map((p) => ({ path: p })) : null;
-            filesComplete = !!(snapshot && snapshot.filesComplete === true);
+            files = snapshot && Array.isArray(snapshot.permissionFiles) ? snapshot.permissionFiles
+                : (snapshot && Array.isArray(snapshot.files)) ? snapshot.files.map((p) => ({ path: p })) : null;
+            // El fallback sirve para describir rutas conocidas, nunca para
+            // certificar ausencia de cambios sensibles sin la API de renombres.
+            filesComplete = false;
         }
         const headRef = snapshot && snapshot.headRefOid;
         return detectPermissionChanges({
