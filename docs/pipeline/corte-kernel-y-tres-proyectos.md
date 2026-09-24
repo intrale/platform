@@ -277,7 +277,8 @@ Refinamiento propio, más allá del rollback. Ordenado por lo que más duele si 
    fue el incidente.
 10. **Higiene del repo del kernel.** Si alguna vez se abre o se comparte, no puede arrastrar nada de
     Intrale: el escaneo de secretos como gate de publicación ya está definido, pero conviene sumar
-    licencia y política de visibilidad antes de que haya terceros mirando.
+    licencia y política de visibilidad antes de que haya terceros mirando. Opciones y recomendación
+    por repo: [licenciamiento](../legal/licenciamiento.md).
 
 ---
 

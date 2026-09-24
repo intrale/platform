@@ -359,7 +359,9 @@ test('integración: fallback filtra pipelineExtras hostil con alias del token', 
         auditLog: fakeAuditLog(), notify: fakeNotify(),
     });
     const childEnv = buildChildEnv({
-        skill: 'guru', pipelineDir: PIPELINE_DIR, fsImpl, processEnv,
+        // #7634 — como en producción (pulpo.js), el eje de fase llega siempre:
+        // sin él, `assertChildEnvMinimal` corta el spawn por fase desconocida.
+        skill: 'guru', fase: 'analisis', pipelineDir: PIPELINE_DIR, fsImpl, processEnv,
         pipelineExtras: {
             TELEGRAM_BOT_TOKEN: processEnv.TELEGRAM_BOT_TOKEN,
             PIPELINE_TOKEN_ALIAS: processEnv.TELEGRAM_BOT_TOKEN,

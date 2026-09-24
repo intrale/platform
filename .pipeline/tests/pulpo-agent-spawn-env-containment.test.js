@@ -466,7 +466,7 @@ async function evaluarConstruirEnvCommander({
         attemptSnapshotInyectado,
         aislamiento,
         { pipeline: { credential_snapshot_enabled: snapshotEnabled } },
-        { COMMANDER_SKILL: 'commander' },
+        { COMMANDER_SKILL: 'telegram-commander' }, // #7634 — el nombre real (lib/commander/multi-provider.js)
         () => PIPELINE_DIR, // #7112 · PIPELINE es función por llamada (SEC-13)
         () => {},
     );
