@@ -65,6 +65,8 @@ const RX_HUMAN_SIGNED = new RegExp(
 const RX_HUMAN_NONE = new RegExp(
     `^none; (\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,3})?Z); (${REASONS.join('|')})$`
 );
+// Una línea que es clave `Intrale-*` (sobre la línea ya normalizada).
+const RX_INTRALE_KEY = /^\s*intrale-[a-z0-9-]+\s*:/i;
 const AI_ITEM = '[A-Za-z0-9._:@+-]+/[A-Za-z0-9._:@+-]+ \\([A-Za-z0-9._-]+\\)';
 const RX_AI = new RegExp(`^(unknown|${AI_ITEM}(, ${AI_ITEM})*)$`);
 
@@ -267,7 +269,7 @@ function parseTrailerBlock(msg) {
     // exactamente la forma de colar una segunda "verdad" más arriba.
     for (let i = 0; i < paragraphs.length - 1; i++) {
         for (const line of paragraphs[i].split('\n')) {
-            if (/^\s*intrale-[a-z0-9-]+\s*:/i.test(normalizeLine(line))) {
+            if (RX_INTRALE_KEY.test(normalizeLine(line))) {
                 return { ok: false, error: 'clave Intrale-* fuera del bloque de trailers' };
             }
         }
@@ -342,6 +344,54 @@ function verifyTrailer(msg, issue) {
     return { ok: true, trailers: t };
 }
 
+// -----------------------------------------------------------------------------
+// Lectura de valores ya validados (#7633 · P2 del guru)
+//
+// El export de la cadena de autoría necesita el login, el tipo y la huella de
+// `Intrale-Human-Direction` y la lista de `Intrale-AI-Assisted`. Se exponen acá,
+// sobre las MISMAS regex que usan build y verify, para que ningún consumidor
+// tenga una segunda definición del formato (SE2).
+// -----------------------------------------------------------------------------
+
+/**
+ * @param {string} value — valor de `Intrale-Human-Direction` (sin la clave).
+ * @returns {{signed:true, login:string, ts:string, kind:string, hash:string}
+ *          |{signed:false, ts:string, reason:string}|null} null si no cumple el formato.
+ */
+function parseHumanDirection(value) {
+    if (typeof value !== 'string') return null;
+    const s = RX_HUMAN_SIGNED.exec(value);
+    if (s) return { signed: true, login: s[1], ts: s[2], kind: s[3], hash: s[4] };
+    const n = RX_HUMAN_NONE.exec(value);
+    if (n) return { signed: false, ts: n[1], reason: n[2] };
+    return null;
+}
+
+/**
+ * @param {string} value — valor de `Intrale-AI-Assisted` (sin la clave).
+ * @returns {'unknown'|Array<{provider:string, model:string, role:string}>|null}
+ *          null si no cumple el formato.
+ */
+function parseAiAssisted(value) {
+    if (typeof value !== 'string' || !RX_AI.test(value)) return null;
+    if (value === 'unknown') return 'unknown';
+    return value.split(', ').map((item) => {
+        const slash = item.indexOf('/');
+        const paren = item.lastIndexOf(' (');
+        return { provider: item.slice(0, slash), model: item.slice(slash + 1, paren), role: item.slice(paren + 2, -1) };
+    });
+}
+
+/**
+ * true si ALGUNA línea del mensaje (en cualquier párrafo) es una clave
+ * `Intrale-*`, con la misma normalización que `parseTrailerBlock`. Distingue un
+ * commit sin bloque de autoría de uno con un bloque roto.
+ */
+function hasIntraleKey(msg) {
+    return String(msg == null ? '' : msg).replace(/\r\n?/g, '\n').split('\n')
+        .some((line) => RX_INTRALE_KEY.test(normalizeLine(line)));
+}
+
 module.exports = {
     TRAILER_ORDER,
     REASONS,
@@ -355,4 +405,7 @@ module.exports = {
     buildTrailerBlock,
     parseTrailerBlock,
     verifyTrailer,
+    parseHumanDirection,
+    parseAiAssisted,
+    hasIntraleKey,
 };
