@@ -6,15 +6,23 @@
 // Subcomandos:
 //   verify --pr <N> [--config <path>]
 //   verify --commit <SHA> --informative [--config <path>]
+//   export --pr <N> | --range <a>..<b> [--pdf] [--out <dir>]   (#7633)
 //
 // Corre en GitHub Actions desde el checkout de `base_ref` (S4) bajo un
 // sparse-checkout acotado: sólo built-ins de Node y módulos relativos listados
 // en `pr-checks.yml`. Es el ÚNICO archivo que hace I/O (gh, git, fs, stdout);
 // `verify.js`, `ci-mode.js` y `annotations.js` son puros.
+//
+// `export` (#7633) vive en `export-cli.js` y se carga en forma diferida con un
+// path calculado: sus dependencias (git-source, config-resolver,
+// pdf-render-strict) quedan FUERA del cierre de require que exige
+// authorship-ci-packaging.test.js y del sparse-checkout de CI, que nunca
+// ejecuta `export`.
 // =============================================================================
 
 const childProcess = require('node:child_process');
 const nodeFs = require('node:fs');
+const nodePath = require('node:path');
 
 const verify = require('./verify');
 const ciMode = require('./ci-mode');
@@ -27,6 +35,8 @@ const PR = /^\d{1,7}$/;
 const HELP = `Uso:
   node .pipeline/lib/authorship/cli.js verify --pr <N> [--config <path>]
   node .pipeline/lib/authorship/cli.js verify --commit <SHA> --informative [--config <path>]
+  node .pipeline/lib/authorship/cli.js export --pr <N> [--pdf] [--out <dir>]
+  node .pipeline/lib/authorship/cli.js export --range <a>..<b> [--pdf] [--out <dir>]
 
 verify --pr <N>
   Verifica que el mensaje de squash PROPUESTO de un PR agent/* traiga el
@@ -55,6 +65,11 @@ verify --pr <N>
 verify --commit <SHA> --informative
   Misma validación sobre un commit ya integrado. Siempre sale con 0: sólo
   emite un warning por commit. Omite los commits anteriores a go_live_date.
+
+export --pr <N> | --range <a>..<b> [--pdf] [--out <dir>]
+  Genera la constancia de dirección humana (HTML y, con --pdf, PDF) en
+  .pipeline/tmp/authorship-export/ (o en un subdirectorio de ahí con --out).
+  Ver docs/legal/autoria.md.
 
 Alcance: este check verifica CONSISTENCIA, NO AUTENTICIDAD. El trailer es texto
 que el autor del PR puede escribir; un verde no es prueba de autoría y no debe
@@ -177,6 +192,11 @@ async function main(argv = [], {
     execFileImpl = childProcess.execFile,
 } = {}) {
     const out = (line) => stdout.write(`${line}\n`);
+    if (Array.isArray(argv) && argv[0] === 'export') {
+        // Carga diferida con path calculado (ver cabecera): fuera del cierre de CI.
+        const exportCli = require(nodePath.join(__dirname, 'export-cli.js'));
+        return exportCli.runExportCommand(argv.slice(1), { stdout, stderr });
+    }
     const args = parseArgs(argv);
     const sub = args._[0];
     if (args.help || !sub) {

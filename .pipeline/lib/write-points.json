@@ -236,9 +236,19 @@
       "via": "writeTarget.writeDir"
     },
     {
+      "modulo": "lib/authorship/git-source.js",
+      "funcion": "file",
+      "linea": 45,
+      "canal": "logs",
+      "destino": "logs/authorship-export.log",
+      "tier": 3,
+      "estado": "safe",
+      "via": "writeTarget.safeWriteDir"
+    },
+    {
       "modulo": "lib/authorship/rollout.js",
       "funcion": "defaultMarkerFile",
-      "linea": 29,
+      "linea": 31,
       "canal": "estado",
       "destino": "writeTarget.safeWriteDir",
       "tier": 3,
@@ -2048,7 +2058,7 @@
     {
       "modulo": "skills-deterministicos/delivery.js",
       "funcion": "savedOverride",
-      "linea": 2096,
+      "linea": 2104,
       "canal": "logs",
       "destino": "lectura del override para restaurarlo en finally",
       "tier": 3,
@@ -2059,7 +2069,7 @@
     {
       "modulo": "skills-deterministicos/delivery.js",
       "funcion": "auditFailClosedDecision",
-      "linea": 2098,
+      "linea": 2106,
       "canal": "logs",
       "destino": "absence-audit.safeAppendDecision via PIPELINE_DIR_OVERRIDE=REPO_ROOT/.pipeline (mutacion en runtime, #7393)",
       "tier": 3,
