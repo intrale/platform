@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<!--
+  Mockup de referencia UX: export de la cadena de autoría, variante RANGO (#7633).
+  Complementa .pipeline/assets/mockups/7593/export-autoria-referencia.html (#7593).
+  Mismo <head> (CSS + CSP idénticos), mismo orden de las 6 secciones U1.
+  Qué agrega: la vista de un rango mixto de 5 commits con el conteo literal
+  "1 de 5 cambios con firma" y una tarjeta por cada estado de U3/CA-3/CA-4:
+    firmado · sin firma (modo de prueba) · sin firma (anterior a la vigencia)
+    · trailer inválido · sin firma (dato no reconocido, valor crudo oculto).
+  Datos FICTICIOS. Todo sale del trailer en main + títulos de GitHub (D-A2):
+  no hay referencias al libro de aprobaciones ni a Telegram como fuente.
+  Sin scripts. Los textos en [corchetes] con clase no-print son notas del mockup
+  y NO van en el export real.
+-->
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:">
+<title>Constancia de dirección humana — rango 4be07d9..9f3c2a1</title>
+<style>
+  @page { size: A4; margin: 18mm 16mm 20mm 16mm; }
+  :root {
+    /* Derivados de design-tokens.css (marca Intrale) para fondo claro */
+    --ink:        #1F2328;  /* texto principal — 15.8:1 sobre blanco */
+    --ink-2:      #424A53;  /* texto secundario — 9.1:1 */
+    --ink-3:      #59636E;  /* notas, timestamps — 6.3:1 */
+    --line:       #D0D7DE;
+    --paper:      #FFFFFF;
+    --paper-2:    #F6F8FA;
+    --brand-navy: #0D274D;  /* = --brand-navy */
+    --brand-blue: #0F6CD6;  /* = --brand-blue-dim, 4.9:1 sobre blanco */
+    --ok:         #1A7F37;  /* 5.1:1 */
+    --ok-bg:      #DAFBE1;
+    --warn:       #9A6700;  /* 4.9:1 */
+    --warn-bg:    #FFF8C5;
+    --bad:        #CF222E;  /* 5.4:1 */
+    --bad-bg:     #FFEBE9;
+    --sans: "Segoe UI", -apple-system, "Helvetica Neue", Arial, sans-serif;
+    --mono: "Consolas", "Liberation Mono", Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--paper); color: var(--ink); }
+  body { font: 10.5pt/1.5 var(--sans); max-width: 178mm; margin: 0 auto; padding: 8mm 0; }
+  h1, h2, h3 { color: var(--brand-navy); line-height: 1.25; margin: 0; }
+  h1 { font-size: 18pt; }
+  h2 { font-size: 13pt; margin: 18pt 0 6pt; padding-bottom: 3pt; border-bottom: 1.5pt solid var(--brand-navy); }
+  h3 { font-size: 11pt; }
+  p { margin: 0 0 6pt; }
+  a { color: var(--brand-blue); text-decoration: underline; }
+  code, .mono { font-family: var(--mono); font-size: 9pt; overflow-wrap: anywhere; }
+
+  /* ---- Encabezado ---- */
+  .doc-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12pt;
+              border-bottom: 3pt solid var(--brand-navy); padding-bottom: 8pt; }
+  .brand { font-weight: 700; letter-spacing: .04em; color: var(--brand-navy); font-size: 9pt; text-transform: uppercase; }
+  .brand .dot { display: inline-block; width: 8pt; height: 8pt; border-radius: 2pt; margin-right: 4pt; vertical-align: -1pt;
+                background: linear-gradient(135deg, #00D6FF, #1890FF); }
+  .doc-meta { text-align: right; font-size: 9pt; color: var(--ink-3); }
+  .subtitle { color: var(--ink-2); margin-top: 4pt; }
+
+  /* ---- Resumen para no técnicos ---- */
+  .summary { background: var(--paper-2); border: 1pt solid var(--line); border-left: 4pt solid var(--brand-blue);
+             padding: 10pt 12pt; margin-top: 12pt; border-radius: 3pt; }
+  .summary strong { color: var(--brand-navy); }
+  .kpis { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8pt; margin-top: 8pt; }
+  .kpi { background: var(--paper); border: 1pt solid var(--line); border-radius: 3pt; padding: 6pt 8pt; }
+  .kpi .n { font-size: 16pt; font-weight: 700; color: var(--brand-navy); }
+  .kpi .l { font-size: 8.5pt; color: var(--ink-2); }
+
+  /* ---- Estado (siempre ícono-texto + color, nunca sólo color) ---- */
+  .badge { display: inline-block; font-size: 8.5pt; font-weight: 700; padding: 1pt 6pt; border-radius: 10pt; border: 1pt solid; white-space: nowrap; }
+  .badge.ok   { color: var(--ok);   background: var(--ok-bg);   border-color: var(--ok); }
+  .badge.warn { color: var(--warn); background: var(--warn-bg); border-color: var(--warn); }
+  .badge.bad  { color: var(--bad);  background: var(--bad-bg);  border-color: var(--bad); }
+
+  /* ---- Cadena: 4 eslabones ---- */
+  .chain { list-style: none; margin: 0; padding: 0; counter-reset: step; }
+  .chain > li { position: relative; padding: 0 0 10pt 28pt; break-inside: avoid; }
+  .chain > li::before { counter-increment: step; content: counter(step);
+    position: absolute; left: 0; top: 0; width: 18pt; height: 18pt; border-radius: 50%;
+    background: var(--brand-navy); color: #fff; font-weight: 700; font-size: 9pt; text-align: center; line-height: 18pt; }
+  .chain > li:not(:last-child)::after { content: ""; position: absolute; left: 8.5pt; top: 20pt; bottom: 2pt; width: 1pt; background: var(--line); }
+  .step-title { font-weight: 700; color: var(--brand-navy); }
+  .step-body { color: var(--ink); }
+  .step-note { color: var(--ink-3); font-size: 9pt; }
+
+  /* ---- Tabla de detalle ---- */
+  table { width: 100%; border-collapse: collapse; margin: 4pt 0 8pt; font-size: 9.5pt; }
+  th, td { text-align: left; vertical-align: top; padding: 4pt 6pt; border-bottom: .75pt solid var(--line); }
+  th { width: 34%; color: var(--ink-2); font-weight: 600; background: var(--paper-2); }
+
+  .card { border: 1pt solid var(--line); border-radius: 3pt; padding: 8pt 10pt; margin: 8pt 0; break-inside: avoid; }
+  .card-head { display: flex; justify-content: space-between; gap: 8pt; align-items: baseline; margin-bottom: 4pt; }
+
+  .callout { border: 1pt solid var(--line); border-left: 4pt solid var(--warn); background: var(--warn-bg);
+             padding: 8pt 10pt; border-radius: 3pt; margin: 8pt 0; break-inside: avoid; }
+  .callout.info { border-left-color: var(--brand-blue); background: var(--paper-2); }
+
+  .annex { font-size: 9pt; color: var(--ink-2); }
+  .annex pre { font-family: var(--mono); font-size: 8.5pt; background: var(--paper-2); border: 1pt solid var(--line);
+               padding: 6pt 8pt; white-space: pre-wrap; overflow-wrap: anywhere; border-radius: 3pt; }
+
+  footer { margin-top: 16pt; padding-top: 6pt; border-top: 1pt solid var(--line); font-size: 8.5pt; color: var(--ink-3); }
+  @media print { a { color: var(--ink); } .no-print { display: none; } }
+</style>
+</head>
+<body>
+
+<!-- 1. ENCABEZADO -->
+<header class="doc-head">
+  <div>
+    <div class="brand"><span class="dot"></span>Intrale · Constancia de autoría</div>
+    <h1>Constancia de dirección humana</h1>
+    <p class="subtitle">Cambios integrados a la rama principal entre los registros <span class="mono">4be07d9</span> y <span class="mono">9f3c2a1</span></p>
+  </div>
+  <div class="doc-meta">
+    Generado el <strong>23/09/2026, 16:40</strong> (hora de Argentina)<br>
+    Alcance: 5 cambios<br>
+    Versión del formato: 1
+  </div>
+</header>
+
+<!-- 2. EN RESUMEN: el conteo literal "X de N" va primero y en negrita -->
+<section class="summary" aria-label="Resumen">
+  <p><strong>En resumen:</strong> <strong>1 de 5 cambios con firma.</strong> Uno de los cambios tiene registrada la firma
+  de la persona que dirigió el trabajo. Los otros cuatro no la tienen, y cada tarjeta explica por qué: nunca se esconde
+  un faltante.</p>
+  <div class="kpis">
+    <div class="kpi"><div class="n">1 de 5</div><div class="l">Cambios con firma</div></div>
+    <div class="kpi"><div class="n">3</div><div class="l">Cambios sin firma registrada (modo de prueba, anterior a la vigencia o dato no reconocido)</div></div>
+    <div class="kpi"><div class="n">1</div><div class="l">Cambio con registro de firma inválido (no suma al conteo)</div></div>
+  </div>
+</section>
+<p class="step-note no-print"><em>[Nota del mockup: no va en el export real] Si X = 0 y todos los motivos son "modo de prueba" o "anterior a la vigencia", se agrega al resumen: "Ningún cambio de este alcance tiene firma registrada. Es lo esperado mientras la verificación de firma funciona en modo de prueba; no indica un error del documento."</em></p>
+
+<!-- 3. LA CADENA: mismos 4 eslabones; en un rango se describen en general -->
+<h2>La cadena de autoría, paso a paso</h2>
+<ol class="chain">
+  <li>
+    <div class="step-title">Se definió qué había que hacer</div>
+    <div class="step-body">Cada cambio nace de una tarea registrada en GitHub. La tarea de cada uno figura en su tarjeta.</div>
+  </li>
+  <li>
+    <div class="step-title">Herramientas de IA escribieron y revisaron el código</div>
+    <div class="step-body">Las herramientas y sus roles figuran en cada tarjeta, tomados del registro del propio cambio.</div>
+  </li>
+  <li>
+    <div class="step-title">Una persona aceptó el resultado</div>
+    <div class="step-body">En <strong>1 de 5</strong> cambios hay una firma del operador registrada.</div>
+    <div class="step-note">Donde no la hay, la tarjeta lo dice con su motivo.</div>
+  </li>
+  <li>
+    <div class="step-title">Quedó sellado en la rama principal</div>
+    <div class="step-body">Los 5 cambios están en la rama principal; cada tarjeta indica su registro.</div>
+  </li>
+</ol>
+
+<!-- 4. UNA TARJETA POR COMMIT -->
+<h2>Detalle de los cambios</h2>
+
+<!-- Estado: firmado -->
+<div class="card">
+  <div class="card-head">
+    <h3>Registro <span class="mono">9f3c2a1</span> · PR #7650</h3>
+    <span class="badge ok">✔ Dirección humana firmada</span>
+  </div>
+  <table>
+    <tr><th>Tarea de origen</th><td><a href="https://github.com/intrale/platform/issues/7593">#7593 — Trazabilidad de autoría humana en commits de agentes</a></td></tr>
+    <tr><th>Quién dirigió</th><td><span class="mono">leitolarreta</span> (operador)</td></tr>
+    <tr><th>Qué decidió y cuándo</th><td>Firmó la aceptación del código · 23/09/2026 16:12 (hora de Argentina)</td></tr>
+    <tr><th>Herramientas de IA que asistieron</th><td>Anthropic Claude Opus 5.5 — escribió el código<br>OpenAI GPT-5 Codex — revisó el código</td></tr>
+    <tr><th>Registro en la rama principal</th><td><span class="mono">9f3c2a1e7b4d…</span> (23/09/2026)</td></tr>
+    <tr><th>Huella de la firma</th><td><span class="mono">sha256:ab12cd34ef56…</span></td></tr>
+  </table>
+</div>
+
+<!-- Estado: sin firma, motivo dry-run -->
+<div class="card">
+  <div class="card-head">
+    <h3>Registro <span class="mono">4be07d9</span> · PR #7612</h3>
+    <span class="badge warn">⚠ Sin firma registrada</span>
+  </div>
+  <table>
+    <tr><th>Tarea de origen</th><td><a href="https://github.com/intrale/platform/issues/7601">#7601 — (título de la tarea)</a></td></tr>
+    <tr><th>Quién dirigió</th><td>Sin firma registrada</td></tr>
+    <tr><th>Por qué</th><td>Se integró mientras la verificación estaba en modo de prueba.</td></tr>
+    <tr><th>Herramientas de IA que asistieron</th><td>Anthropic Claude Opus 5.5 — escribió el código</td></tr>
+    <tr><th>Registro en la rama principal</th><td><span class="mono">4be07d9a11c2…</span> (21/09/2026)</td></tr>
+  </table>
+</div>
+
+<!-- Estado: sin firma, motivo pre-go-live -->
+<div class="card">
+  <div class="card-head">
+    <h3>Registro <span class="mono">71ac03e</span> · PR #7388</h3>
+    <span class="badge warn">⚠ Sin firma registrada</span>
+  </div>
+  <table>
+    <tr><th>Tarea de origen</th><td><a href="https://github.com/intrale/platform/issues/7350">#7350 — (título de la tarea)</a></td></tr>
+    <tr><th>Quién dirigió</th><td>Sin firma registrada</td></tr>
+    <tr><th>Por qué</th><td>Cambio anterior a la entrada en vigencia del registro de firma (20/09/2026).</td></tr>
+    <tr><th>Registro en la rama principal</th><td><span class="mono">71ac03e5b0d9…</span> (12/09/2026)</td></tr>
+  </table>
+</div>
+
+<!-- Estado: trailer inválido (clave duplicada o fuera del último párrafo): NO suma -->
+<div class="card">
+  <div class="card-head">
+    <h3>Registro <span class="mono">c0de511</span> · PR #7640</h3>
+    <span class="badge bad">✖ Trailer inválido</span>
+  </div>
+  <table>
+    <tr><th>Tarea de origen</th><td><a href="https://github.com/intrale/platform/issues/7622">#7622 — (título de la tarea)</a></td></tr>
+    <tr><th>Quién dirigió</th><td>No se puede afirmar</td></tr>
+    <tr><th>Por qué</th><td>Los datos de autoría de este cambio están repetidos o fuera de lugar, así que no se toman como firma y el cambio no suma al conteo.</td></tr>
+    <tr><th>Registro en la rama principal</th><td><span class="mono">c0de5117f3aa…</span> (22/09/2026)</td></tr>
+  </table>
+</div>
+
+<!-- Estado: valor fuera de allowlist: se muestra como sin firma, NUNCA el valor crudo -->
+<div class="card">
+  <div class="card-head">
+    <h3>Registro <span class="mono">2d9e8f0</span> · PR #7645</h3>
+    <span class="badge warn">⚠ Sin firma registrada</span>
+  </div>
+  <table>
+    <tr><th>Tarea de origen</th><td><a href="https://github.com/intrale/platform/issues/7630">#7630 — (título de la tarea)</a></td></tr>
+    <tr><th>Quién dirigió</th><td>Sin firma registrada</td></tr>
+    <tr><th>Por qué</th><td>El dato de firma de este cambio no tiene un formato reconocido; por seguridad no se muestra.</td></tr>
+    <tr><th>Registro en la rama principal</th><td><span class="mono">2d9e8f04c6b1…</span> (22/09/2026)</td></tr>
+  </table>
+</div>
+
+<!-- 5. QUÉ PRUEBA Y QUÉ NO: idéntico a la variante PR, siempre presente -->
+<h2>Qué prueba este documento y qué no</h2>
+<div class="callout">
+  <p><strong>Esta constancia verifica la consistencia de los registros en <span class="mono">main</span>; no prueba por sí sola la autenticidad de la firma.</strong></p>
+</div>
+<div class="callout info">
+  <p><strong>Prueba con solidez:</strong> que, una vez integrado cada cambio, lo que dice su registro quedó escrito en el
+  registro público del código (GitHub) con su fecha, y no se puede alterar sin dejar rastro.</p>
+</div>
+<div class="callout info">
+  <p><strong>Depende de otros elementos:</strong> que cada firma la haya dado efectivamente la persona indicada.
+  Eso se apoya en el canal de firma del operador y en el servidor del proyecto. Hoy todas las acciones en GitHub
+  se hacen con la misma cuenta, por lo que GitHub por sí solo no distingue a la persona de la herramienta automática.</p>
+</div>
+<p class="step-note">Criterio completo, fuentes legales y conservación: <span class="mono">docs/legal/autoria.md</span>.</p>
+
+<!-- 6. ANEXO TÉCNICO: SHA completos, claves técnicas y horas UTC SÓLO acá -->
+<h2>Anexo técnico</h2>
+<div class="annex">
+  <p>Datos de autoría de cada registro, tal como figuran en la rama principal. Los valores que no pasaron la validación no se transcriben.</p>
+<pre>9f3c2a1e7b4d5c6a8b9f0e1d2c3b4a5968778695
+  Intrale-Issue: #7593
+  Intrale-Human-Direction: leitolarreta; 2026-09-23T19:12:00Z; gate2:sha256:ab12cd34ef56…(completo)
+  Intrale-AI-Assisted: anthropic/claude-opus-5-5 (backend-dev), openai/gpt-5-codex (review)
+4be07d9a11c2…(completo)   sin bloque Intrale-* · 2026-09-21T14:03:10Z · modo de prueba
+71ac03e5b0d9…(completo)   sin bloque Intrale-* · 2026-09-12T18:40:55Z · anterior a go_live_date 2026-09-20
+c0de5117f3aa…(completo)   bloque inválido: clave Intrale-Human-Direction duplicada
+2d9e8f04c6b1…(completo)   valor fuera de formato en Intrale-Human-Direction (no transcripto)</pre>
+</div>
+
+<footer>
+  Constancia generada automáticamente a partir de los registros de la rama principal y de GitHub; no agrega
+  información nueva y se puede regenerar en cualquier momento. No contiene identificadores de mensajería,
+  credenciales ni rutas internas del servidor.
+</footer>
+
+</body>
+</html>
