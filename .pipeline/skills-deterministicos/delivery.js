@@ -34,6 +34,9 @@ const requiredChecks = require('../lib/required-checks');
 // módulo compartido; este skill (el camino REAL de la fase `entrega`) y el CLI
 // `.pipeline/delivery.js` la consumen, no la duplican.
 const freshnessGate = require('../lib/delivery/freshness-gate');
+// #7631 — Trailer de autoría del squash + gate pre-merge `authorship`.
+const authorship = require('../lib/authorship');
+const commitBuilder = require('../lib/delivery/commit-builder');
 
 // #5420 — Ref desde la que se carga CODEOWNERS para el gate de merge. Fija a
 // `origin/main` a propósito: el head del PR podría estar modificando el propio
@@ -612,7 +615,189 @@ function buildRequiredChecksReader({ cwd = WORK_DIR, repo = EXPECTED_PR_REPO, ba
     return requiredChecks.createRequiredChecksReader({ cwd, repo, baseBranch });
 }
 
-function reclaimMergeWithGates({ prNumber, issueTitle, expectedHeadSha, cwd = REPO_ROOT, logAppend = () => {} } = {}) {
+// -----------------------------------------------------------------------------
+// #7631 — Autoría del squash: fábrica común de `mergePR`, evaluador del gate
+// `authorship`, comentario de dry-run y ancla del body del PR.
+// -----------------------------------------------------------------------------
+
+// Mensajes de los commits de la rama que entran con el squash. Por argv (sin
+// shell) y best-effort: si git no puede (head no fetcheado en el repo de la
+// reclaim, por ejemplo), el cuerpo queda vacío y el mensaje es sólo el bloque.
+function readBranchMessages(cwd, sha, { runGit = git.runGit } = {}) {
+    if (!/^[0-9a-f]{7,40}$/i.test(String(sha || ''))) return '';
+    try {
+        const res = runGit(['log', '--format=%B', `origin/${MERGE_BASE_BRANCH}..${sha}`], { cwd, timeoutMs: 30 * 1000 });
+        return res && res.exit_code === 0 ? String(res.stdout || '') : '';
+    } catch { return ''; }
+}
+
+/**
+ * Fábrica ÚNICA del PUT de merge, usada por el camino principal y por la
+ * reclaim: el test de wiring verifica un solo camino y que los dos lo usan.
+ *
+ * El cuerpo del PUT viaja como JSON por `--input <archivo>` y no como `-f`:
+ * `commit_message` es multilínea, y un argumento con saltos de línea no
+ * sobrevive al fallback `shell:true` (cmd.exe) de `runGh`. Los campos son los
+ * mismos: `merge_method=squash`, `commit_title` saneado (SEC-A), `sha`
+ * pinneado y `commit_message` con el bloque de trailers.
+ *
+ * Sin evaluación de autoría (gate apagado o PR grandfathered) NO se manda
+ * `commit_message`: queda el comportamiento anterior.
+ */
+function buildMergePRCall({
+    cwd = WORK_DIR,
+    issue,
+    issueTitle,
+    fallbackTitle = null,
+    runGh = git.runGh,
+    runGit = git.runGit,
+    writeTmp = tmpFile,
+    unlink = (f) => { try { fs.unlinkSync(f); } catch {} },
+    logAppend = () => {},
+} = {}) {
+    return ({ prNumber: n, sha, authorship: auth } = {}) => {
+        const fb = typeof fallbackTitle === 'function' ? fallbackTitle(n) : fallbackTitle;
+        const title = authorship.trailer.sanitizeTitle(issueTitle)
+            || authorship.trailer.sanitizeTitle(fb)
+            || `PR #${n}`;
+        const payload = { merge_method: 'squash', commit_title: `${title} (#${n})`, sha };
+        if (auth && typeof auth.humanLine === 'string' && typeof auth.aiLine === 'string') {
+            try {
+                payload.commit_message = commitBuilder.buildSquashMessage({
+                    issue,
+                    branchMessages: readBranchMessages(cwd, sha, { runGit }),
+                    humanLine: auth.humanLine,
+                    aiLine: auth.aiLine,
+                });
+            } catch (e) {
+                // Las líneas ya vienen validadas por el gate; si igual falla,
+                // se manda SÓLO el bloque (sin cuerpo), nunca un mensaje sin
+                // trailers.
+                logAppend(`[delivery] authorship: no se pudo armar el cuerpo del squash (${e && e.message}) — se envía sólo el bloque`);
+                try {
+                    payload.commit_message = authorship.trailer.buildTrailerBlock({
+                        issue, humanLine: auth.humanLine, aiLine: auth.aiLine,
+                    });
+                } catch (e2) {
+                    // Ni siquiera el bloque se puede armar (issue inválido):
+                    // NO se mergea sin trailers. Respuesta de transporte
+                    // fallida → el llamador no la confirma como merge.
+                    logAppend(`[delivery] authorship: bloque de trailers inválido (${e2 && e2.message}) — merge NO enviado`);
+                    return { exit_code: 1, stdout: '', stderr: 'authorship: bloque de trailers inválido, merge no enviado', cmd: 'authorship' };
+                }
+            }
+        }
+        const file = writeTmp('merge-payload', JSON.stringify(payload));
+        try {
+            return runGh([
+                'api', '-X', 'PUT', `repos/{owner}/{repo}/pulls/${n}/merge`,
+                '--input', file,
+            ], { cwd, timeoutMs: 3 * 60 * 1000 });
+        } finally { unlink(file); }
+    };
+}
+
+// Config del pipeline server-side. `null` ⇒ `resolveAuthorshipMode` aplica el
+// modo más estricto (nunca apaga).
+function loadPipelineConfigSafe() {
+    try {
+        const cfg = require('../lib/config-resolver').resolve();
+        return cfg && typeof cfg === 'object' ? cfg : null;
+    } catch { return null; }
+}
+
+function readPrCreatedAt(prNumber, { cwd, runGh = git.runGh } = {}) {
+    try {
+        const res = runGh(['pr', 'view', String(prNumber), '--json', 'createdAt'], { cwd, timeoutMs: 30 * 1000 });
+        if (!res || res.exit_code !== 0) return null;
+        const parsed = JSON.parse(res.stdout);
+        return parsed && typeof parsed.createdAt === 'string' ? parsed.createdAt : null;
+    } catch { return null; }
+}
+
+/**
+ * UX-1 / Riesgo 7 — comentario de dry-run IDEMPOTENTE por marker
+ * (`issue` + `reason`). Si no se pueden leer los comentarios, NO se postea a
+ * ciegas (sería spam en cada barrido). Sólo lleva el motivo del enum.
+ */
+function postAuthorshipDryRunNotice({ prNumber, issue, reason, cwd = WORK_DIR, gh = git.runGh } = {}) {
+    const marker = authorship.copy.buildDryRunMarker(issue, reason);
+    const res = gh(['pr', 'view', String(prNumber), '--json', 'comments'], { cwd, timeoutMs: 30 * 1000 });
+    if (!res || res.exit_code !== 0) return { posted: false, reason: 'comentarios-no-legibles' };
+    let existentes = '';
+    try {
+        const parsed = JSON.parse(res.stdout);
+        existentes = (parsed && Array.isArray(parsed.comments) ? parsed.comments : [])
+            .map((c) => (c && typeof c.body === 'string' ? c.body : '')).join('\n');
+    } catch { return { posted: false, reason: 'comentarios-no-legibles' }; }
+    if (existentes.includes(marker)) return { posted: false, reason: 'ya-publicado' };
+    const out = gh(
+        ['pr', 'comment', String(prNumber), '--body', authorship.copy.buildDryRunComment(issue, reason)],
+        { cwd, timeoutMs: 30 * 1000 }
+    );
+    return { posted: !!(out && out.exit_code === 0) };
+}
+
+/**
+ * UX-2 — Ancla de autoría en el body del PR con las MISMAS líneas que va a
+ * llevar el squash (sale de la misma evaluación del gate). Quita antes
+ * cualquier ancla o línea `Intrale-*` que haya dejado un agente. Es sólo
+ * presentación: si falla se loguea y el veredicto del gate NO cambia.
+ */
+function syncAuthorshipAnchor({ prNumber, issue, lines, cwd = WORK_DIR, gh = git.runGh, writeTmp = tmpFile, unlink = (f) => { try { fs.unlinkSync(f); } catch {} } } = {}) {
+    const res = gh(['pr', 'view', String(prNumber), '--json', 'body'], { cwd, timeoutMs: 30 * 1000 });
+    if (!res || res.exit_code !== 0) return { updated: false, reason: 'body-no-legible' };
+    let body = '';
+    try { body = String((JSON.parse(res.stdout) || {}).body || ''); } catch { return { updated: false, reason: 'body-no-legible' }; }
+    const next = authorship.copy.applyAnchorToBody(body, issue, lines);
+    if (next.replace(/\s+$/, '') === body.replace(/\r\n?/g, '\n').replace(/\s+$/, '')) return { updated: false, reason: 'sin-cambios' };
+    const file = writeTmp('pr-body-authorship', next);
+    try {
+        const out = gh(['pr', 'edit', String(prNumber), '--body-file', file], { cwd, timeoutMs: 60 * 1000 });
+        return { updated: !!(out && out.exit_code === 0) };
+    } finally { unlink(file); }
+}
+
+/**
+ * Evaluador de PRODUCCIÓN del gate `authorship`, inyectado en los dos caminos
+ * de merge. Corre con `snapshot.headRefOid` (el mismo `sha=` del PUT). Los
+ * efectos visibles (comentario de dry-run, ancla del body) son best-effort y
+ * nunca cambian la decisión.
+ */
+function buildAuthorshipEvaluator({
+    issue,
+    cwd = WORK_DIR,
+    logAppend = () => {},
+    evaluate = authorship.evaluateAuthorship,
+    loadConfig = loadPipelineConfigSafe,
+    prCreatedAtReader = (n) => readPrCreatedAt(n, { cwd }),
+    postNotice = postAuthorshipDryRunNotice,
+    syncAnchor = syncAuthorshipAnchor,
+} = {}) {
+    return ({ prNumber, snapshot } = {}) => {
+        const headSha = snapshot && typeof snapshot.headRefOid === 'string' ? snapshot.headRefOid : '';
+        const res = evaluate({
+            issue,
+            headSha,
+            config: loadConfig(),
+            prCreatedAt: prCreatedAtReader(prNumber),
+        });
+        for (const w of (res && res.warnings) || []) logAppend(`[delivery] authorship: ${w}`);
+        if (res && res.humanLine && res.aiLine) {
+            try { syncAnchor({ prNumber, issue, lines: { humanLine: res.humanLine, aiLine: res.aiLine }, cwd }); }
+            catch (e) { logAppend(`[delivery] authorship: ancla del body no actualizada (${e && e.message}) — no bloqueante`); }
+        }
+        // En dry-run el aviso sale aunque la evaluación haya pedido bloquear:
+        // el gate lo degrada a "pasa con aviso" (rebote #7631).
+        if (res && res.notice && (res.decision === 'pass' || res.mode === 'dry-run')) {
+            try { postNotice({ prNumber, issue, reason: res.reason, cwd }); }
+            catch (e) { logAppend(`[delivery] authorship: comentario de dry-run no publicado (${e && e.message}) — no bloqueante`); }
+        }
+        return res;
+    };
+}
+
+function reclaimMergeWithGates({ prNumber, issue = null, issueTitle, expectedHeadSha, cwd = REPO_ROOT, logAppend = () => {} } = {}) {
     return attemptMergeWithGates({
         prNumber,
         logAppend,
@@ -633,12 +818,13 @@ function reclaimMergeWithGates({ prNumber, issueTitle, expectedHeadSha, cwd = RE
             try { return verifyRemoteBranchOrigin(cwd, branchName); }
             catch (e) { return { ok: false, reason: `excepcion: ${((e && e.message) || '').slice(0, 120)}` }; }
         },
-        mergePR: ({ prNumber: n, sha }) => git.runGh([
-            'api', '-X', 'PUT', `repos/{owner}/{repo}/pulls/${n}/merge`,
-            '-f', 'merge_method=squash',
-            '-f', `commit_title=${issueTitle || `reclaim PR #${n}`} (#${n})`,
-            '-f', `sha=${sha}`,
-        ], { cwd, timeoutMs: 3 * 60 * 1000 }),
+        // #7631 — gate `authorship` + fábrica común del PUT (Riesgo 4: el
+        // `sha` es el mismo que valida `getSnapshot` contra `expectedHeadSha`).
+        evaluateAuthorship: buildAuthorshipEvaluator({ issue, cwd, logAppend }),
+        mergePR: buildMergePRCall({
+            cwd, issue, issueTitle, logAppend,
+            fallbackTitle: (n) => `reclaim PR #${n}`,
+        }),
     });
 }
 
@@ -1165,6 +1351,11 @@ function attemptMergeWithGatesInner({
     // #6496 CA-15 / SEC-F — SHA que pasó GATE 3 (caducidad del veredicto de QA).
     // Cuando viene, el merge sólo procede si el head del PR es ese mismo commit.
     expectedHeadSha = null,
+    // #7631 — Gate pre-merge `authorship`. Default: no-op que PASA sin líneas,
+    // a propósito (Riesgo 2): un default que bloquee rompería todas las suites
+    // de merge existentes. Producción SIEMPRE inyecta el evaluador real
+    // (`buildAuthorshipEvaluator`) en los dos caminos y hay un test de wiring.
+    evaluateAuthorship = () => ({ decision: 'pass', humanLine: null, aiLine: null }),
 } = {}, captura = {}) {
     const log = typeof logAppend === 'function' ? logAppend : () => {};
     const attemptsMax = Number.isInteger(maxAttempts) && maxAttempts > 0 ? maxAttempts : MAX_MERGE_ATTEMPTS;
@@ -1513,11 +1704,44 @@ function attemptMergeWithGatesInner({
             }
         }
 
+        // (5e) #7631 — Gate `authorship`: DESPUÉS de todos los demás gates y con
+        //      el head del snapshot VIGENTE (el mismo `sha=` del PUT). Si
+        //      bloquea, sale sin `continue` ni reintento: respeta el invariante
+        //      anti-bucle de arriba. Una excepción del evaluador NO se lee como
+        //      "pasa": bloquea (fail-closed).
+        let authorshipEval;
+        try {
+            authorshipEval = typeof evaluateAuthorship === 'function'
+                ? evaluateAuthorship({ prNumber, snapshot, headSha: snapshot.headRefOid })
+                : null;
+        } catch (e) {
+            authorshipEval = { decision: 'block', reason: 'missing', error: (e && e.message) || 'excepción' };
+        }
+        if (!authorshipEval || typeof authorshipEval !== 'object') {
+            authorshipEval = { decision: 'block', reason: 'missing', error: 'evaluación de autoría sin resultado' };
+        }
+        // Rebote #7631 — en modo de prueba (`dry-run`) el gate SÓLO avisa:
+        // aunque la evaluación haya salido `block`, no frena el merge.
+        if (authorshipEval.decision !== 'pass' && authorshipEval.mode === 'dry-run') {
+            log(`[delivery] gate merge: autoría en modo de prueba — la evaluación pedía bloquear (${authorshipEval.reason || 'missing'}) pero dry-run sólo avisa; el merge sigue`);
+            authorshipEval = { ...authorshipEval, decision: 'pass', notice: true, reason: authorshipEval.reason || 'missing' };
+        }
+        if (authorshipEval.decision !== 'pass') {
+            const reason = authorship.copy.describeBlockReason(authorshipEval.reason);
+            log(`[delivery] gate merge: autoría sin dirección humana verificable (${authorshipEval.reason || 'missing'}${authorshipEval.error ? `; ${authorshipEval.error}` : ''}) — merge bloqueado`);
+            return { status: 'blocked', gate: 'authorship', reason, authorshipReason: authorshipEval.reason || 'missing', snapshot, attempt };
+        }
+        if (authorshipEval.reason) {
+            log(`[delivery] gate merge: autoría en dry-run sin dirección humana (${authorshipEval.reason}) — el merge sigue con "none" en el trailer`);
+        }
+
         // (6) Merge con el SHA observado al evaluar los gates. Si el head se
         //     movió, GitHub responde 409 y NO mergea nada.
         //     El `sha` sale del snapshot del intento VIGENTE — el `continue` de
         //     arriba garantiza que nunca se reuse el previo a una espera.
-        const mergeRes = mergePR({ prNumber, sha: snapshot.headRefOid, headRefName: snapshot.headRefName });
+        //     #7631 — `authorship` es la MISMA evaluación que acaba de pasar el
+        //     gate: el mensaje del squash no hace una segunda lectura.
+        const mergeRes = mergePR({ prNumber, sha: snapshot.headRefOid, headRefName: snapshot.headRefName, authorship: authorshipEval });
         const confirmed = confirmMergeResponse(mergeRes);
         if (confirmed.ok) {
             return { status: 'merged', sha: confirmed.sha, snapshot, attempt };
@@ -1963,6 +2187,9 @@ const GATE_BLOCK_LABELS = {
     // aunque el merge nunca ocurriera. Ahora escalan fail-closed como el resto.
     'qa-gate': 'el PR no tiene el gate de QA (falta label qa:passed o qa:skipped)',
     'codeowners-human': 'el PR toca paths con CODEOWNERS humano y exige review manual',
+    // #7631 — gate `authorship` en `enforce`: el detalle (qué falló → cómo se
+    // cubre) viaja en `reason`, con el mismo diccionario que el dry-run (UX-3).
+    authorship: 'el cambio no tiene una firma registrada del operador que acredite la dirección humana',
     // #6012 CA-UX-2 — Estados que el 405 mezclaba con "conflicto de merge". Salen
     // por este camino (no por el de conflicto) porque el vocabulario correcto ya
     // está acá: "No es un conflicto de merge: el PR puede estar perfecto…".
@@ -2846,14 +3073,19 @@ async function main() {
                 // "fatal: 'main' is already used by worktree at <otro path>".
                 // La API REST hace todo del lado del servidor — el estado local
                 // del repo no importa.
-                mergePR: ({ prNumber: n, sha }) => git.runGh([
-                    'api', '-X', 'PUT', `repos/{owner}/{repo}/pulls/${n}/merge`,
-                    '-f', 'merge_method=squash',
-                    '-f', `commit_title=${issueTitle} (#${n})`,
-                    // El SHA observado al evaluar los gates: si el head se movió,
-                    // GitHub responde 409 y no mergea un árbol no verificado.
-                    '-f', `sha=${sha}`,
-                ], { cwd: WORK_DIR, timeoutMs: 3 * 60 * 1000 }),
+                //
+                // #7631 — El PUT sale de la fábrica común (`buildMergePRCall`),
+                // la misma que usa la reclaim. Sigue viajando el `sha` observado
+                // al evaluar los gates: si el head se movió, GitHub responde 409
+                // y no mergea un árbol no verificado.
+                mergePR: buildMergePRCall({
+                    cwd: WORK_DIR, issue, issueTitle, logAppend,
+                    fallbackTitle: `Issue #${issue}`,
+                }),
+                // #7631 — gate pre-merge `authorship`. Producción SIEMPRE lo
+                // inyecta (el default de la función es un no-op que pasa, sólo
+                // para que las suites viejas no cambien de comportamiento).
+                evaluateAuthorship: buildAuthorshipEvaluator({ issue, cwd: WORK_DIR, logAppend }),
             });
 
             if (outcome.snapshot && Array.isArray(outcome.snapshot.labels)) {
@@ -3123,7 +3355,7 @@ if (require.main === module) {
             process.stderr.write('[delivery] argumentos --reclaim invalidos\n');
             process.exit(2);
         }
-        const outcome = reclaimMergeWithGates({ prNumber, issueTitle: `Issue #${issue}`, expectedHeadSha: headSha, cwd: REPO_ROOT });
+        const outcome = reclaimMergeWithGates({ prNumber, issue, issueTitle: `Issue #${issue}`, expectedHeadSha: headSha, cwd: REPO_ROOT });
         process.stdout.write(JSON.stringify({ status: outcome.status, sha: outcome.sha || null, gate: outcome.gate || null, reason: outcome.reason || null }) + '\n');
         process.exit(outcome.status === 'merged' ? 0 : 1);
     } else if (process.argv.includes('--self-check')) {
@@ -3174,6 +3406,12 @@ module.exports = {
     readMarker,
     updateMarker,
     reclaimMergeWithGates,
+    // #7631 — autoría del squash.
+    buildMergePRCall,
+    buildAuthorshipEvaluator,
+    postAuthorshipDryRunNotice,
+    syncAuthorshipAnchor,
+    readBranchMessages,
     fetchIssueTitle,
     findExistingPR,
     getPRLabels,
