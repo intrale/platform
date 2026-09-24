@@ -93,3 +93,16 @@ aceptar el retiro de workflows/consumidores y ejecutar el archivado humano con
 evidencia final. El cierre del agente debe conservar este resultado en
 `trabajando/` y terminar normalmente; no corresponde provocar un exit 1 para
 comunicar el rechazo.
+
+## Verificación Gradle solicitada
+
+```text
+$ & 'C:\Program Files\Git\bin\bash.exe' ./gradlew check --no-daemon
+BUILD SUCCESSFUL in 3m 40s
+365 actionable tasks: 168 executed, 197 from cache
+exit 0
+```
+
+Sin exclusiones de tests agregadas. Gradle marcó algunas tareas como `SKIPPED`
+por su configuración existente (entre ellas QA, iOS y browser Wasm); este
+resultado no acredita E2E de esas plataformas ni reemplaza los CA operativos.
