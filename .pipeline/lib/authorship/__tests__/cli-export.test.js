@@ -6,7 +6,8 @@ const assert = require('node:assert');
 const fs = require('fs');
 const path = require('path');
 
-const cli = require('../cli');
+const cli = require('../export-cli');
+const dispatcher = require('../cli');
 const { createGitSource, LOG_FORMAT } = require('../git-source');
 const F = require('./fixtures/commits');
 
@@ -282,15 +283,15 @@ test('readGoLiveDate lee authorship.go_live_date por el config-resolver y tolera
 
 test('main: sin subcomando o con args inválidos devuelve 2 y muestra el uso', async () => {
     const out = []; const err = [];
-    const io = { out: { write: (s) => out.push(s) }, err: { write: (s) => err.push(s) } };
-    assert.strictEqual(await cli.main([], io), 2);
-    assert.strictEqual(await cli.main(['export', '--pr', 'abc'], io), 2);
+    const io = { stdout: { write: (s) => out.push(s) }, stderr: { write: (s) => err.push(s) } };
+    assert.strictEqual(await dispatcher.main([], io), 2);
+    assert.strictEqual(await dispatcher.main(['export', '--pr', 'abc'], io), 2);
     assert.ok(err.join('').includes('Uso:'));
     assert.strictEqual(out.length, 0);
 });
 
 test('estático: el CLI no requiere módulos de Telegram ni de Drive', () => {
-    for (const f of ['cli.js', 'export-chain.js', 'git-source.js', 'labels-es.js']) {
+    for (const f of ['cli.js', 'export-cli.js', 'export-chain.js', 'git-source.js', 'labels-es.js']) {
         const src = fs.readFileSync(path.join(__dirname, '..', f), 'utf8');
         const requires = [...src.matchAll(/require\(\s*['"]([^'"]+)['"]\s*\)/g)].map((m) => m[1]);
         for (const r of requires) assert.ok(!/telegram|drive|https?$/i.test(r), `${f} requiere ${r}`);
