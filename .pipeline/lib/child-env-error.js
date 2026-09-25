@@ -197,8 +197,69 @@ function isChildEnvViolation(e) {
     return !!e && e.code === CODE;
 }
 
+
+// -----------------------------------------------------------------------------
+// #7636 · CA-5 / RS-3 — LÍNEA GREPEABLE del bloqueo en el log del Pulpo.
+//
+//   [entorno-hijo] bloqueado rol=<skill> fase=<fase> intento=<primary|fallback>:<provider> causa=<k1+k2> nombres=<n1,n2,…,(+N)>
+//
+// Doble saneo sobre lo que ya trae `details` (que pasó por `nombreSeguro`):
+//   - `rol` y `fase` contra ^[a-z0-9-]{1,40}$ (si no, `(inválido)`).
+//   - cada nombre contra ^[A-Za-z0-9_()]{1,64}$; el que no pasa se DESCARTA
+//     (incluye los reemplazos con espacios de `nombreSeguro`, p. ej.
+//     `(nombre no imprimible)`, y cualquier `\n`, `=`, `,` o espacio).
+//   - hasta 8 nombres; el resto se resume como `(+N)`.
+// Nunca lee valores: sólo `details.causas[].nombres` (invariante I-S2).
+// -----------------------------------------------------------------------------
+const LINEA_ROL_FASE = /^[a-z0-9-]{1,40}$/;
+const LINEA_NOMBRE = /^[A-Za-z0-9_()]{1,64}$/;
+const LINEA_INTENTO = /^[a-z0-9-]{1,40}(:[a-z0-9._-]{1,40})?$/;
+const LINEA_MAX_NOMBRES = 8;
+
+function rolFaseLinea(v) {
+    return (typeof v === 'string' && LINEA_ROL_FASE.test(v)) ? v : '(inválido)';
+}
+
+function detailsDe(violation) {
+    const d = violation && violation.details;
+    return (d && typeof d === 'object') ? d : { causas: [] };
+}
+
+/** Clave estable de la causa: los `kind` presentes (enum cerrado), ordenados y unidos con `+`. */
+function causaKey(violation) {
+    const kinds = new Set();
+    for (const c of detailsDe(violation).causas || []) {
+        if (c && KINDS.includes(c.kind)) kinds.add(c.kind);
+    }
+    return kinds.size ? [...kinds].sort().join('+') : 'desconocida';
+}
+
+/** Nombres imprimibles de todas las causas (dedupe + orden), ya filtrados por LINEA_NOMBRE. */
+function nombresBloqueados(violation) {
+    const out = new Set();
+    for (const c of detailsDe(violation).causas || []) {
+        for (const n of (c && c.nombres) || []) {
+            if (typeof n === 'string' && LINEA_NOMBRE.test(n)) out.add(n);
+        }
+    }
+    return [...out].sort();
+}
+
+function formatChildEnvBlockedLine({ skill, fase, intento, violation } = {}) {
+    const nombres = nombresBloqueados(violation);
+    const visibles = nombres.slice(0, LINEA_MAX_NOMBRES);
+    if (nombres.length > LINEA_MAX_NOMBRES) visibles.push(`(+${nombres.length - LINEA_MAX_NOMBRES})`);
+    const intentoTxt = (typeof intento === 'string' && LINEA_INTENTO.test(intento)) ? intento : '(inválido)';
+    return `[entorno-hijo] bloqueado rol=${rolFaseLinea(skill)} fase=${rolFaseLinea(fase)}`
+        + ` intento=${intentoTxt} causa=${causaKey(violation)}`
+        + ` nombres=${visibles.length ? visibles.join(',') : '(ninguno)'}`;
+}
+
 module.exports = {
     ChildEnvViolation,
+    formatChildEnvBlockedLine,
+    causaKey,
+    nombresBloqueados,
     formatChildEnvViolation,
     isChildEnvViolation,
     CODE,

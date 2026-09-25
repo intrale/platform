@@ -1,6 +1,13 @@
 'use strict';
 
 /**
+ * #7636 · CA-7 — ALCANCE: este módulo arma el env de los SERVICIOS DE
+ * CONFIANZA del pipeline (servicios, brazos, scripts propios del Pulpo), NO el
+ * de los agentes LLM. El env de un agente LLM lo arma `build-child-env.js`
+ * (`buildChildEnv` con scopes por rol/fase, o `buildMinimalCliEnv` para los
+ * jueces/resúmenes), y con `pipeline.env_isolation_enabled: true` se verifica
+ * con `assertChildEnvMinimal`. Nada de acá cambia ese contrato.
+ *
  * #7112 · CA-6 / CA-7.2 — ENV QUE UN LANZADOR ENTREGA A SUS HIJOS.
  *
  * Dos piezas, una por extremo de la cadena de declaración de ambiente:

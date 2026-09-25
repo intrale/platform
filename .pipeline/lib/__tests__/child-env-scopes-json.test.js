@@ -3,6 +3,7 @@
 // #7635 · CA-15 — Los datos de permisos se extrajeron de build-child-env.js a
 // child-env-scopes.json SIN cambiar el comportamiento: mismo contenido que en
 // `5052c08b3` (snapshot literal abajo), mismos exports y todos congelados.
+// #7636 suma `architect` y `dev` a DEFAULT_REQUIRES_BY_SKILL (cambio intencional).
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -50,6 +51,10 @@ const SNAPSHOT_5052c08b3 = {
         builder: ['gradle-android'], tester: ['gradle-android'], delivery: ['github'], linter: [],
         qa: ['gradle-android', 'aws', 'github'], build: ['gradle-android'],
         'telegram-commander': [], 'telegram-sherlock': [],
+        // #7636 · CA-4 — únicos agregados deliberados sobre el snapshot: roles
+        // despachables que no tenían declaración. Ninguno amplía un techo de fase.
+        architect: ['github'],
+        dev: ['github', 'gradle-android', 'aws'],
     },
 };
 

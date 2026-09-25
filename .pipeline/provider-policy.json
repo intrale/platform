@@ -362,6 +362,13 @@
   "open_differences": [
     {
       "provider": "antigravity",
+      "role": "architect",
+      "kind": "scope_exceeded",
+      "scope": "github",
+      "request_ref": "https://github.com/intrale/platform/issues/7636#issuecomment-5839678078"
+    },
+    {
+      "provider": "antigravity",
       "role": "po",
       "kind": "scope_exceeded",
       "scope": "github",
