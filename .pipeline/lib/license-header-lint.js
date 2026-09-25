@@ -598,7 +598,11 @@ function main(argv, io = {}) {
             const isPs1 = path.posix.extname(rel).toLowerCase() === '.ps1';
             const readAll = opts.mode === 'fix' || isPs1;
             const buf = readAll ? fs.readFileSync(res.abs) : readHead(res.abs, HEAD_BYTES);
-            if (buf.includes(0)) { stats.excluded++; continue; }
+            // Binario = NUL en los primeros 2 KB, en los DOS modos: si `--fix`
+            // mirara el archivo completo, un fuente con un NUL literal más
+            // abajo quedaría "binario" para el fix y "sin encabezado" para el
+            // check, y el repo nunca convergería.
+            if (buf.subarray(0, HEAD_BYTES).includes(0)) { stats.excluded++; continue; }
             const hasBom = buf.length >= 3 && buf[0] === 0xef && buf[1] === 0xbb && buf[2] === 0xbf;
             const text = buf.toString('utf8', hasBom ? 3 : 0);
             if (isPs1 && text.includes(PS1_SIGNATURE)) { stats.excluded++; continue; }

@@ -188,6 +188,15 @@ test('exclusiones fijas: binario, .conf, .env*, *credentials* y *secret* se salt
     assert.equal(fs.readFileSync(path.join(dir, 'lib/credentials-loader.js'), 'utf8'), 'x();\n');
 });
 
+test('un NUL después de los primeros 2 KB no vuelve binario al fuente: check y fix coinciden', () => {
+    const body = '// ' + 'x'.repeat(3000) + '\nconst s = "a\u0000b";\n';
+    const dir = makeRepo({ files: { 'nul-tardio.js': body } });
+    assert.equal(run(dir, ['--check']).code, 1);
+    const fix = run(dir, ['--fix']);
+    assert.match(fix.stdout, /1 modificados/);
+    assert.equal(run(dir, ['--check']).code, 0);
+});
+
 test('.ps1 firmado con Authenticode se excluye y no se toca', () => {
     const signed = 'Write-Host hola\r\n\r\n# SIG # Begin signature block\r\n# MIIabc\r\n# SIG # End signature block\r\n';
     const dir = makeRepo({ files: { 'scripts/firmado.ps1': signed } });
