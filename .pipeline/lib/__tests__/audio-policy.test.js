@@ -233,3 +233,31 @@ test('notify · sin telegram_thread_id NO agrega message_thread_id (General, bac
         );
     } finally { cleanup(); }
 });
+
+// -----------------------------------------------------------------------------
+// #7520 — evento `model_value_audit` (CA-UX-4): audio por default, apagable por
+// `by_event` y por `kill_switch`; no cambia los 6 defaults existentes.
+// -----------------------------------------------------------------------------
+
+test('#7520 · EVENT.MODEL_VALUE_AUDIT existe y defaultForEvent("model_value_audit") === true', () => {
+    assert.equal(ap.EVENT.MODEL_VALUE_AUDIT, 'model_value_audit');
+    assert.equal(ap.defaultForEvent('model_value_audit'), true);
+    assert.equal(ap.DEFAULT_BY_EVENT.model_value_audit, true);
+    assert.equal(ap.shouldEmitAudio(null, ap.EVENT.MODEL_VALUE_AUDIT), true);
+    assert.equal(ap.shouldEmitAudio(defaultPolicy(), ap.EVENT.MODEL_VALUE_AUDIT), true, 'la política del #4586 no lo declara ⇒ default del evento');
+});
+
+test('#7520 · by_event.model_value_audit:false lo apaga; kill_switch lo apaga; enabled:false lo apaga', () => {
+    assert.equal(ap.shouldEmitAudio({ by_event: { model_value_audit: false } }, 'model_value_audit'), false);
+    assert.equal(ap.shouldEmitAudio(defaultPolicy({ by_event: { model_value_audit: false } }), 'model_value_audit'), false);
+    assert.equal(ap.shouldEmitAudio(defaultPolicy({ kill_switch: true }), 'model_value_audit'), false);
+    assert.equal(ap.shouldEmitAudio(defaultPolicy({ enabled: false }), 'model_value_audit'), false);
+    assert.equal(ap.shouldEmitAudio({ by_event: { model_value_audit: 'true' } }, 'model_value_audit'), false, 'sólo true exacto');
+});
+
+test('#7520 · los 6 defaults previos no cambian', () => {
+    assert.deepEqual(
+        Object.fromEntries(Object.entries(ap.DEFAULT_BY_EVENT).filter(([k]) => k !== 'model_value_audit')),
+        { commander_reply: true, rejection_report: true, status: true, gate_signature: true, agent_deliverable: false, cua_stage: false },
+    );
+});

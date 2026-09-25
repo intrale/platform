@@ -42,6 +42,7 @@ jobs:
       users: ${{ steps.filter.outputs.users }}
       tools: ${{ steps.filter.outputs.tools }}
       shared: ${{ steps.filter.outputs.shared }}
+      deps: ${{ steps.filter.outputs.deps }}
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
@@ -62,6 +63,17 @@ jobs:
               - 'gradle/**'
               - 'buildSrc/**'
               - 'gradle.properties'
+            # Inventario de licencias (#7592): cualquier cambio de dependencias,
+            # de la politica o de lo generado dispara check-licenses.
+            deps:
+              - '**/*.gradle.kts'
+              - 'gradle/libs.versions.toml'
+              - '**/package.json'
+              - '**/package-lock.json'
+              - 'config/licenses/**'
+              - 'NOTICE'
+              - 'docs/legal/**'
+              - 'scripts/licenses/**'
 
   # ── Verificación global de strings ──────────────────────────────
   verify-strings:
@@ -310,6 +322,62 @@ jobs:
             tools/forbidden-strings-processor/build/test-results/
           retention-days: 14
 
+  # ── Licencias de dependencias de terceros (#7592) ──────────────
+  # Gate bloqueante: inventario Gradle (licensee) + npm (lockfiles), politica
+  # de config/licenses/policy.json, aprobacion humana de excepciones nuevas y
+  # drift del NOTICE. Corre tambien en el schedule diario para detectar una
+  # dependencia que cambio de licencia sin que nadie toque el repo.
+  #
+  # Seguridad (SR-2): hereda 'contents: read' + 'pull-requests: read' del
+  # workflow, sin secrets y sin continue-on-error; actions pineadas por SHA;
+  # checkout sin credenciales persistidas. Los labels del PR (label humano
+  # licencias:excepcion-aprobada) se leen EN RUNTIME con github.token: no hay
+  # trigger 'labeled', asi que ningun evento de label puede producir un
+  # pr-status verde que pise uno rojo. Aplicado el label: gh run rerun --failed.
+  check-licenses:
+    needs: detect-changes
+    if: |
+      !cancelled() && (
+        github.event_name == 'schedule' ||
+        github.event_name == 'workflow_dispatch' ||
+        needs.detect-changes.outputs.deps == 'true'
+      )
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+          # Historia completa: se compara la politica y el inventario con la base.
+          fetch-depth: 0
+
+      - name: Setup JDK 21
+        uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00 # v4.7.1
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@ac638b010cf58a27ee6c972d7336334ccaf61c96 # v4.4.1
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22'
+
+      - name: Grant execute permission
+        run: chmod +x gradlew
+
+      - name: Inventario Gradle (licensee)
+        run: ./gradlew licensesInventory --no-daemon
+        env:
+          GRADLE_OPTS: -Xmx3g -Dfile.encoding=UTF-8
+
+      - name: Gate de licencias
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/licenses/cli.js check
+
   # ── E2E QA Tests ──────────────────────────────────────────────
   e2e-qa:
     needs: detect-changes
@@ -556,14 +624,77 @@ jobs:
           retention-days: 14
           if-no-files-found: ignore
 
+  # ── Autoría del PR (#7632) ──────────────────────────────────────
+  # Verifica que el mensaje de squash propuesto de un PR agent/* traiga el
+  # bloque de autoría completo y consistente. Verifica CONSISTENCIA, no
+  # autenticidad: ver docs/pipeline/authorship-ci.md.
+  #
+  # Seguridad (RS-1 / RS-4 / RS-7):
+  #   - El script y el config.yaml (modo dry-run/enforce) salen del checkout de
+  #     base_ref: un PR no puede cambiar el verificador que lo juzga. No hay
+  #     checkout del head del PR ni `npm install` (sólo built-ins de Node).
+  #   - Los datos del PR entran sólo por `env:`; ningun `run:` interpola `${{`.
+  #   - Permisos del job: exactamente contents/pull-requests/issues en read.
+  #     El bloque del job REEMPLAZA al raiz, por eso van los tres explicitos.
+  authorship-trailer:
+    name: Autoría del PR (trailer)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request' && startsWith(github.head_ref, 'agent/')
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: read
+    steps:
+      - name: Checkout de la rama base (verificador de confianza)
+        # La lista de abajo ES el contrato de empaquetado del CLI: el test
+        # authorship-ci-packaging.test.js resuelve los require de cli.js y exige
+        # que cada archivo figure aca. Si agregas un require, agrega el archivo
+        # en el MISMO commit.
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.base_ref }}
+          persist-credentials: false
+          sparse-checkout: |
+            .pipeline/config.yaml
+            .pipeline/lib/authorship/cli.js
+            .pipeline/lib/authorship/verify.js
+            .pipeline/lib/authorship/ci-mode.js
+            .pipeline/lib/authorship/annotations.js
+            .pipeline/lib/authorship/gh-client.js
+            .pipeline/lib/authorship/trailer.js
+            .pipeline/lib/authorship/normalize.js
+            .pipeline/lib/delivery/commit-builder.js
+          sparse-checkout-cone-mode: false
+
+      - name: Verificar trailer de autoría
+        shell: bash
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_REF: ${{ github.head_ref }}
+          BASE_REF: ${{ github.base_ref }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          # Bootstrap: si la rama base todavia no tiene el verificador (el PR que
+          # lo introduce, o una base como develop), se omite sin freno falso
+          # (#7622). No es fail-open explotable: el PR no puede cambiar la base.
+          if [ ! -f .pipeline/lib/authorship/cli.js ]; then
+            echo "::notice title=Autoría del PR::El verificador no está disponible en la rama base; se omite."
+            exit 0
+          fi
+          node .pipeline/lib/authorship/cli.js verify --pr "$PR_NUMBER" --config .pipeline/config.yaml
+
   # ── Gate final — todos los checks deben pasar ───────────────────
   pr-status:
     runs-on: ubuntu-latest
-    needs: [detect-changes, verify-strings, check-backend, check-users, check-app, check-tools, e2e-qa]
+    needs: [detect-changes, verify-strings, check-backend, check-users, check-app, check-tools, check-licenses, e2e-qa, authorship-trailer]
     if: always()
     steps:
       - name: Verify all checks passed
         shell: bash
+        env:
+          # #7632: el resultado nuevo entra por env (no se interpola en run:).
+          AUTHORSHIP_RESULT: ${{ needs.authorship-trailer.result }}
         run: |
           # Issue #6579 (CA-4): un job "skipped" nunca corrio, asi que no puede
           # contabilizarse como check aprobado. No lo tratamos como fallo — un PR
@@ -588,7 +719,9 @@ jobs:
           classify "check-users"    "${{ needs.check-users.result }}"
           classify "check-app"      "${{ needs.check-app.result }}"
           classify "check-tools"    "${{ needs.check-tools.result }}"
+          classify "check-licenses" "${{ needs.check-licenses.result }}"
           classify "e2e-qa"         "${{ needs.e2e-qa.result }}"
+          classify "authorship-trailer" "$AUTHORSHIP_RESULT"
           echo
 
           if [ ${#BROKEN[@]} -gt 0 ]; then

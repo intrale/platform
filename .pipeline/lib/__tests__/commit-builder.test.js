@@ -235,3 +235,92 @@ test('build sin issueNumber no agrega Closes (compat hacia atrás)', () => {
     });
     assert.doesNotMatch(result.message, /Closes #/);
 });
+
+// =============================================================================
+// #7631 — buildSquashMessage: bloque de trailers de autoría en el squash
+// =============================================================================
+
+const { buildSquashMessage, _internals } = require('../delivery/commit-builder');
+const { verifyTrailer } = require('../authorship/trailer');
+const { checkClosesIssue } = require('../../skills-deterministicos/lib/static-checks');
+
+const HUMAN_OK = 'leitolarreta; 2026-09-23T17:00:00Z; gate2:sha256:' + 'a'.repeat(64);
+const HUMAN_NONE = 'none; 2026-09-23T17:00:00Z; missing';
+const AI_LINE = 'anthropic/claude-opus-4-7 (pipeline-dev)';
+const NL = String.fromCharCode(10);
+const BRANCH = [
+    'feat(pipeline): trailer de autoría',
+    '',
+    'Detalle del cambio.',
+    '',
+    'Closes #7631',
+    'Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>',
+    '',
+    'fix: ajuste',
+    '',
+    'Intrale-Human-Direction' + String.fromCharCode(0xFF1A) + ' leitolarreta; 2026-01-01T00:00:00Z; gate2:sha256:' + 'f'.repeat(64),
+    'Fixes #1',
+    'Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>',
+].join(NL);
+
+test('#7631 buildSquashMessage: bloque completo al final, sin duplicados ni trailers forjados', () => {
+    const msg = buildSquashMessage({ issue: 7631, branchMessages: BRANCH, humanLine: HUMAN_OK, aiLine: AI_LINE });
+    const v = verifyTrailer(msg, 7631);
+    assert.ok(v.ok, v.error);
+    assert.equal((msg.match(/Closes #7631/g) || []).length, 1);
+    assert.equal((msg.match(/Co-Authored-By/g) || []).length, 1);
+    assert.equal((msg.match(/Intrale-Human-Direction/g) || []).length, 1);
+    assert.doesNotMatch(msg, /Fixes #1/);
+    assert.doesNotMatch(msg, /f{64}/);
+    assert.ok(msg.startsWith('feat(pipeline): trailer de autoría'));
+    assert.ok(msg.endsWith('Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>'));
+});
+
+test('#7631 buildSquashMessage: variante dry-run "none; <ISO>; missing"', () => {
+    const msg = buildSquashMessage({ issue: 7631, branchMessages: 'feat: x', humanLine: HUMAN_NONE, aiLine: 'unknown' });
+    assert.equal(msg, [
+        'feat: x', '',
+        'Closes #7631',
+        'Intrale-Issue: #7631',
+        'Intrale-Human-Direction: none; 2026-09-23T17:00:00Z; missing',
+        'Intrale-AI-Assisted: unknown',
+    ].join(NL));
+});
+
+test('#7631 buildSquashMessage: sin cuerpo queda sólo el bloque', () => {
+    const msg = buildSquashMessage({ issue: 7631, humanLine: HUMAN_NONE, aiLine: 'unknown' });
+    assert.ok(msg.startsWith('Closes #7631'));
+    assert.ok(verifyTrailer(msg, 7631).ok);
+});
+
+test('#7631 buildSquashMessage: truncado a 16 KB por bytes sin cortar los trailers ni un code point', () => {
+    const big = 'ñ😀'.repeat(8000); // multibyte + surrogates
+    const msg = buildSquashMessage({ issue: 7631, branchMessages: big, humanLine: HUMAN_OK, aiLine: AI_LINE });
+    const body = msg.slice(0, msg.indexOf(NL + NL + 'Closes #7631'));
+    assert.ok(Buffer.byteLength(body, 'utf8') <= 16384, String(Buffer.byteLength(body, 'utf8')));
+    assert.ok(body.endsWith('[cuerpo truncado por el pipeline]'));
+    assert.ok(!body.includes(String.fromCharCode(0xFFFD)));
+    for (let i = 0; i < body.length; i++) {
+        const c = body.charCodeAt(i);
+        if (c >= 0xD800 && c <= 0xDBFF) {
+            const d = body.charCodeAt(i + 1);
+            assert.ok(d >= 0xDC00 && d <= 0xDFFF, 'surrogate huérfano');
+            i++;
+        }
+    }
+    assert.ok(verifyTrailer(msg, 7631).ok);
+    assert.equal(_internals.truncateUtf8('corto', 100), 'corto');
+    const custom = buildSquashMessage({ issue: 7631, branchMessages: 'x'.repeat(500), humanLine: HUMAN_OK, aiLine: AI_LINE, maxBodyBytes: 100 });
+    assert.ok(Buffer.byteLength(custom.split(NL + NL + 'Closes')[0], 'utf8') <= 100);
+});
+
+test('#7631 regresión: checkClosesIssue aprueba la salida y ensureClosesReference no la modifica', () => {
+    const msg = buildSquashMessage({ issue: 7631, branchMessages: BRANCH, humanLine: HUMAN_NONE, aiLine: AI_LINE });
+    assert.equal(ensureClosesReference(msg, 7631), msg);
+    assert.deepEqual(checkClosesIssue([msg], 7631), []);
+});
+
+test('#7631 buildSquashMessage lanza con líneas crudas o issue inválido', () => {
+    assert.throws(() => buildSquashMessage({ issue: 7631, humanLine: 'leo', aiLine: AI_LINE }));
+    assert.throws(() => buildSquashMessage({ issue: 'x', humanLine: HUMAN_NONE, aiLine: AI_LINE }));
+});

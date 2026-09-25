@@ -1137,3 +1137,145 @@ test('#5801 el TTL de la caché del vault sigue topado en 300 y el config real l
     assert.ok(!validateConfig({ vault: { cache_ttl_seconds: 301 } }).valid);
     assert.ok(validateConfig({ vault: { cache_ttl_seconds: 300 } }).valid);
 });
+
+// --- #7520 · model_value_audit: sección estricta + lados (CA-23 / SEC-14) ---
+
+/** Sección válida, tal cual el body del issue (ítem 3). */
+function modelValueAuditValida() {
+    return {
+        enabled: false,
+        cadence_days: 7,
+        window_days: 30,
+        min_sample: 10,
+        min_sample_by_skill: {},
+        pricing_max_age_days: 60,
+        protected_skills: ['security', 'review', 'tester', 'qa', 'po'],
+        thresholds: { subir_rebound: 0.30, subir_early_death: 0.10, subir_qa_fail: 0.25, bajar_rebound: 0.05, bajar_early_death: 0.02 },
+        registrar: false,
+        publish: 'telegram-plain',
+    };
+}
+
+test('#7520 CA-23 · la sección model_value_audit válida pasa el schema y la config REAL la trae con enabled=false', () => {
+    const cfg = validConfig();
+    cfg.model_value_audit = modelValueAuditValida();
+    const r = validateConfig(cfg);
+    assert.strictEqual(r.valid, true, formatErrors(r.errors));
+    const real = configReal();
+    assert.ok(real.model_value_audit, 'config.yaml trae la sección');
+    assert.strictEqual(real.model_value_audit.enabled, false, 'default de fábrica apagado');
+    assert.strictEqual(real.model_value_audit.publish, 'telegram-plain');
+    assert.strictEqual(real.model_value_audit.registrar, false);
+    assert.strictEqual(real.model_value_audit.window_days, 30);
+    // La config EFECTIVA (kernel + producto, lo que valida el Pulpo) sigue verde con la sección.
+    assert.strictEqual(validateConfig(real).valid, true);
+    // Mínima: sólo `enabled` es obligatoria.
+    const min = validConfig();
+    min.model_value_audit = { enabled: true };
+    assert.strictEqual(validateConfig(min).valid, true);
+});
+
+test('#7520 CA-23 · cada valor inválido de model_value_audit es rechazado (ConfigSchemaViolation vía resolve)', () => {
+    const casos = {
+        'window_days: 29': { window_days: 29 },
+        'min_sample: 0': { min_sample: 0 },
+        'thresholds.subir_rebound: 1.5': { thresholds: { subir_rebound: 1.5 } },
+        'thresholds.bajar_rebound: -0.1': { thresholds: { bajar_rebound: -0.1 } },
+        'thresholds con clave extra': { thresholds: { otro: 0.5 } },
+        "publish: 'digest'": { publish: 'digest' },
+        "enabled: 'true'": { enabled: 'true' },
+        'enabled: 1': { enabled: 1 },
+        'clave extra enabeld': { enabeld: true },
+        "protected_skills: 'security'": { protected_skills: 'security' },
+        "protected_skills: ['']": { protected_skills: [''] },
+        'cadence_days: 0': { cadence_days: 0 },
+        'cadence_days: 1.5': { cadence_days: 1.5 },
+        'pricing_max_age_days: 0': { pricing_max_age_days: 0 },
+        'min_sample_by_skill con 0': { min_sample_by_skill: { guru: 0 } },
+        "registrar: 'false'": { registrar: 'false' },
+    };
+    for (const [nombre, over] of Object.entries(casos)) {
+        const cfg = validConfig();
+        cfg.model_value_audit = { ...modelValueAuditValida(), ...over };
+        assert.strictEqual(validateConfig(cfg).valid, false, `debería rechazar: ${nombre}`);
+    }
+    // Sin `enabled` ⇒ rechazo (required).
+    const sinEnabled = validConfig();
+    sinEnabled.model_value_audit = { cadence_days: 7 };
+    assert.strictEqual(validateConfig(sinEnabled).valid, false);
+    // Y un rechazo de schema termina en ConfigSchemaViolation con el error tipado.
+    const errs = validateConfig({ ...validConfig(), model_value_audit: { ...modelValueAuditValida(), window_days: 29 } }).errors;
+    const e = new ConfigSchemaViolation(formatErrors(errs), errs);
+    assert.strictEqual(e.name, 'ConfigSchemaViolation');
+    assert.ok(errs.some((x) => /model_value_audit\/window_days/.test(x.path)), JSON.stringify(errs));
+});
+
+test('#7520 SEC-14 · enabled/registrar/publish/protected_skills son autoridad; el resto de la sección es kernel', () => {
+    for (const k of ['enabled', 'registrar', 'publish', 'protected_skills']) {
+        assert.strictEqual(resolveSide(`model_value_audit.${k}`), 'autoridad', k);
+        assert.ok(AUTHORITY_PREFIXES.includes(`model_value_audit.${k}`), `${k} en AUTHORITY_PREFIXES`);
+        assert.strictEqual(SIDE_MAP[`model_value_audit.${k}`], 'autoridad');
+    }
+    for (const k of ['cadence_days', 'window_days', 'min_sample', 'min_sample_by_skill', 'pricing_max_age_days', 'thresholds', 'thresholds.subir_rebound']) {
+        assert.strictEqual(resolveSide(`model_value_audit.${k}`), 'kernel', k);
+    }
+    assert.strictEqual(SIDE_MAP.model_value_audit, 'kernel');
+    assert.strictEqual(SCHEMA.properties.model_value_audit.additionalProperties, false);
+    assert.deepStrictEqual(SCHEMA.properties.model_value_audit.required, ['enabled']);
+    assert.deepStrictEqual(SCHEMA.properties.model_value_audit.properties.publish.enum, ['telegram-plain', 'registry', 'none']);
+});
+
+// --- #7631 · authorship: sección de autoridad con schema cerrado ------------
+
+test('#7631 authorship está en AUTHORITY_PREFIXES y su lado es autoridad', () => {
+    assert.ok(AUTHORITY_PREFIXES.includes('authorship'));
+    assert.strictEqual(resolveSide('authorship'), 'autoridad');
+    assert.strictEqual(resolveSide('authorship.identity_map'), 'autoridad');
+    assert.strictEqual(resolveSide('authorship.gate_mode'), 'autoridad');
+});
+
+test('#7631 el schema de authorship rechaza claves extra y tipos inválidos', () => {
+    const ok = validateConfig({ authorship: { enabled: true, gate_mode: 'dry-run', go_live_date: null, identity_map: { 'sha256:ab': 'leitolarreta' } } });
+    assert.ok(!ok.errors.some((e) => String(e.path).startsWith('/authorship')), JSON.stringify(ok.errors));
+    const extra = validateConfig({ authorship: { enabled: true, gate_mode: 'dry-run', bypass: true } });
+    assert.ok(extra.errors.some((e) => String(e.path).startsWith('/authorship')));
+    const sinModo = validateConfig({ authorship: { enabled: true } });
+    assert.ok(sinModo.errors.some((e) => String(e.path).startsWith('/authorship')));
+    const mapa = validateConfig({ authorship: { enabled: true, gate_mode: 'dry-run', identity_map: { k: 5 } } });
+    assert.ok(mapa.errors.some((e) => String(e.path).startsWith('/authorship')));
+    // La config real del repo trae la sección, en dry-run y sin ids crudos.
+    const real = realConfig().authorship;
+    assert.strictEqual(real.gate_mode, 'dry-run');
+    for (const k of Object.keys(real.identity_map || {})) assert.match(k, /^sha256:[0-9a-f]{64}$/);
+});
+
+// --- #7673 · corte transitorio de recomendaciones ---------------------------
+
+test('#7673 recomendaciones.crear_issues es válida en el schema y el config.yaml real la trae en false', () => {
+    const cfg = configReal();
+    assert.deepStrictEqual(cfg.recomendaciones, { crear_issues: false });
+    const { valid, errors } = validateConfig(cfg);
+    assert.strictEqual(valid, true, JSON.stringify(errors));
+    const conTrue = { ...validConfig(), recomendaciones: { crear_issues: true } };
+    assert.strictEqual(validateConfig(conTrue).valid, true);
+});
+
+test('#7673 recomendaciones.crear_issues no booleano o ausente se rechaza', () => {
+    for (const valor of ['true', 1, null, 'false']) {
+        const cfg = { ...validConfig(), recomendaciones: { crear_issues: valor } };
+        assert.strictEqual(validateConfig(cfg).valid, false, `crear_issues=${JSON.stringify(valor)} debe rechazarse`);
+    }
+    assert.strictEqual(validateConfig({ ...validConfig(), recomendaciones: {} }).valid, false, 'crear_issues es requerida');
+    assert.strictEqual(
+        validateConfig({ ...validConfig(), recomendaciones: { crear_issues: false, extra: 1 } }).valid,
+        false,
+        'la sección está cerrada',
+    );
+});
+
+test('#7673 recomendaciones.crear_issues resuelve como autoridad', () => {
+    assert.ok(AUTHORITY_PREFIXES.includes('recomendaciones'));
+    assert.strictEqual(SIDE_MAP.recomendaciones, 'autoridad');
+    assert.strictEqual(resolveSide('recomendaciones'), 'autoridad');
+    assert.strictEqual(resolveSide('recomendaciones.crear_issues'), 'autoridad');
+});

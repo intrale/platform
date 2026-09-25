@@ -140,17 +140,17 @@ línea. Valores de la columna **Lado**:
 | `_frozen/ios-dev` | adaptador | Stack del producto (Compose iOS); congelado. |
 | `_frozen/scrum` | kernel | Proceso de orquestación (zombi V3); congelado, genérico. |
 
-### 2.4. `config.yaml` — clasificación completa de las 64 secciones (#5173)
+### 2.4. `config.yaml` — clasificación completa de las 66 secciones (#5173)
 
 <!-- #5173 · Entrega B de #5111. Reemplaza la tabla parcial del inventario original,
      que clasificaba 6 de 57 secciones y dejaba 4 ítems sin decidir. -->
 
-Las **64** secciones top-level de la configuración efectiva, una por una, con su forma real y su
+Las **66** secciones top-level de la configuración efectiva, una por una, con su forma real y su
 lado. Es la expresión legible de `SIDE_MAP` en `.pipeline/lib/config-schema.js`: **si esta tabla
 y ese mapa divergen, falla el test** `#5173 toda sección top-level de config.yaml está declarada
 en el schema y tiene lado` **en el PR**, no en el arranque.
 
-Reparto: **40 kernel · 12 autoridad · 9 producto**.
+Reparto: **41 kernel · 13 autoridad · 9 producto**.
 
 > **Regla operativa (CA-1).** La raíz del schema está **cerrada**
 > (`additionalProperties: false`). Agregar una sección nueva a `config.yaml` exige declararla en
@@ -198,6 +198,8 @@ Reparto: **40 kernel · 12 autoridad · 9 producto**.
 | 29 | `pacing` (652) | obj | kernel | Cadencia de dispatch; mecanismo. |
 | 30 | `handoff` (702) | obj | **autoridad** | Tiene `kill_switch`: gobierna el traspaso de contexto entre agentes. |
 | 30b | `model_propagation_rollout` | obj | **autoridad** | Gobierna el encendido y rollback fail-closed de modelos por actor/proveedor. |
+| 30c | `model_value_audit` | obj | kernel | #7520: auditor periódico de calidad-precio del modelo por agente. Split: el mecanismo (`cadence_days`, `window_days`, `min_sample*`, `pricing_max_age_days`, `thresholds`) es kernel; `.enabled`/`.registrar`/`.publish`/`.protected_skills` son **autoridad** (encienden el brazo, eligen canal, escriben audit, protegen skills) y NO admiten override por entorno. Nace `enabled: false`. |
+| 30d | `process_audit` | obj | kernel | #6809: auditor del modelo operativo (proceso, capacidad, proveedores). Split: el mecanismo (`cadence_days`, `window_days`, `min_samples_hora`) es kernel; `.enabled` es **autoridad** (enciende el brazo) y NO admite override por entorno. Sólo sugiere, por el registro de propuestas. Nace `enabled: false`. |
 | 31 | `reduced_mode` (739) | obj | kernel | Modo reducido del motor; mecanismo. |
 | 32 | `firma_operador` (783) | obj | **autoridad** | Auto-aprobación de la firma del operador; núcleo de la autoridad. |
 | 33 | `wave_coherence_gate` (831) | obj | kernel | Coherencia de ola; mecanismo de orquestación. |
@@ -220,6 +222,7 @@ Reparto: **40 kernel · 12 autoridad · 9 producto**.
 | 50 | `architect` (1509) | obj | kernel | Split: `.enabled`/`.gate_mode`/`.go_live_date` son autoridad; `.poll_cap_min`/`.poll_interval_seconds`/`.bot_login` son calibración. |
 | 51 | `operator_signoff` (1580) | obj | **autoridad** | Gate de sign-off humano; decide quién aprueba. |
 | 52 | `operator_signature` (1633) | obj | **autoridad** | Gate de firma; `nonce_ttl_seconds` acota el replay de una firma. |
+| 52b | `authorship` | obj | **autoridad** | #7631: trailer de autoría del squash + gate pre-merge. `gate_mode`/`go_live_date` deciden si un merge sin firma humana se bloquea; `identity_map` decide qué firmante cuenta como aprobador (clave = sha256 del `signed_by`, nunca el id crudo). |
 | 53 | `deliverable_gate` (1667) | obj | **autoridad** | Gate de entregables; decide qué se considera entregado. |
 | 54 | `gates` (1697) | obj | **autoridad** | Política de gate3 y de ausencia del operador; decide quién aprueba. |
 | 55 | `waves` (1759) | obj | kernel | Modelo de olas del motor; mecanismo. |
@@ -233,6 +236,8 @@ Reparto: **40 kernel · 12 autoridad · 9 producto**.
 | 62 | `operational_state` | obj | kernel | #5110: namespaceo del estado operativo (olas, allowlist, `archived/`, audit) por `projectId`. Es la dimensión de AISLAMIENTO del motor entre proyectos; no conoce el producto y se muda al kernel tal cual. `namespaced.enabled` es un flag de layout con default OFF, no una decisión de autoridad: no habilita ni bloquea a nadie, elige dónde vive el archivo. El halt total (`.paused`) queda explícitamente FUERA del namespace. |
 | 63 | `delivery` | obj | kernel | Techo temporal del polling de checks requeridos antes del auto-merge; mecanismo de orquestación. |
 | 64 | `pr_mergeability_watcher` (1166) | obj | kernel | #4966: cadencia y allowlist repo/base del watcher que observa PRs en conflicto con `main`. Es mecanismo de orquestación (cada cuánto mira, qué considera propio), no política de producto; nace `enabled: false` y sus límites están clampeados en código, no en el YAML. |
+| 65 | `propuestas` | obj | kernel | #7515 (parte 2/3 de #6807): registro único de propuestas al operador. Split: `cuota_diaria_por_productor` y `max_vivas` son mecanismo (cuánto acepta el registro por día y en total); `.autores_permitidos` es **autoridad** (allowlist de cuentas de GitHub cuyo comentario puede entrar al registro vía `recomendacion-agente` desde un repo público; en `AUTHORITY_PREFIXES`, no editable por entorno ni por el manifiesto). |
+| 66 | `recomendaciones` | obj | **autoridad** | #7673: corte transitorio de la creación de issues de recomendación hasta la Ola Propuestas (#7361). `crear_issues: true` reabre un canal de escritura en GitHub, así que es control y no calibración; sólo el booleano `true` levanta el corte (fail-closed). |
 
 #### 2.4.1. Matriz de precedencia
 

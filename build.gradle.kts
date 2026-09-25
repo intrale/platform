@@ -61,6 +61,79 @@ plugins {
 
     // SAST: OWASP Dependency Check (modo warning — no bloquea el build)
     alias(libs.plugins.dependencyCheck)
+
+    // Inventario de licencias (#7592): sólo se carga en el classpath; se aplica
+    // por convención a los módulos de licenseeModules (ver más abajo).
+    alias(libs.plugins.licensee) apply false
+}
+
+// ── Inventario de licencias de terceros (#7592) ─────────────────────────────
+// licensee se usa SÓLO como extractor: resuelve las dependencias runtime de cada
+// target (JVM, Android, KMP) y deja build/reports/licensee/<target>/artifacts.json.
+// La política (permitidas / prohibidas / excepciones con fecha) NO vive acá: la
+// evalúa scripts/licenses/ contra config/licenses/policy.json, así hay un único
+// evaluador para Gradle y npm. Por eso las violaciones se ignoran en Gradle.
+// ':app' es un proyecto contenedor sin código: no se inventaría.
+val licenseeModules = listOf(
+    ":shared",
+    ":app:composeApp",
+    ":backend",
+    ":users",
+    ":tools:forbidden-strings-processor",
+    ":qa",
+)
+
+// Módulos que son enteramente herramientas de build/test (no se distribuyen).
+// licensee sólo mira el classpath runtime, que en estos módulos está casi vacío:
+// sus dependencias reales son compileOnly (KSP API) o de test (Playwright,
+// JUnit). Para que la política también cubra el tooling (D3 de #7592), su tarea
+// licensee se apunta a una configuración que junta compile + runtime + test.
+val buildTestLicenseeModules = setOf(":tools:forbidden-strings-processor", ":qa")
+
+configure(licenseeModules.map { project(it) }) {
+    apply(plugin = "app.cash.licensee")
+    extensions.configure<app.cash.licensee.LicenseeExtension> {
+        violationAction(app.cash.licensee.ViolationAction.IGNORE)
+        unusedAction(app.cash.licensee.UnusedAction.IGNORE)
+    }
+
+    if (path in buildTestLicenseeModules) {
+        pluginManager.withPlugin("java") {
+            val buildTestInventory = configurations.create("licenseInventoryBuildTest") {
+                isCanBeConsumed = false
+                isCanBeResolved = true
+                isVisible = false
+                description = "Dependencias de compilación, runtime y test para el inventario de licencias (#7592)"
+                listOf(
+                    "implementation", "compileOnly", "runtimeOnly",
+                    "testImplementation", "testCompileOnly", "testRuntimeOnly",
+                ).forEach { bucket -> configurations.findByName(bucket)?.let { extendsFrom(it) } }
+                attributes {
+                    attribute(Usage.USAGE_ATTRIBUTE, objects.named(Usage.JAVA_RUNTIME))
+                    attribute(Category.CATEGORY_ATTRIBUTE, objects.named(Category.LIBRARY))
+                    attribute(LibraryElements.LIBRARY_ELEMENTS_ATTRIBUTE, objects.named(LibraryElements.JAR))
+                    attribute(Bundling.BUNDLING_ATTRIBUTE, objects.named(Bundling.EXTERNAL))
+                    attribute(
+                        TargetJvmEnvironment.TARGET_JVM_ENVIRONMENT_ATTRIBUTE,
+                        objects.named(TargetJvmEnvironment.STANDARD_JVM),
+                    )
+                    attribute(
+                        org.jetbrains.kotlin.gradle.plugin.KotlinPlatformType.attribute,
+                        org.jetbrains.kotlin.gradle.plugin.KotlinPlatformType.jvm,
+                    )
+                }
+            }
+            tasks.named<app.cash.licensee.LicenseeTask>("licensee") {
+                configurationToCheck(buildTestInventory)
+            }
+        }
+    }
+}
+
+tasks.register("licensesInventory") {
+    group = "verification"
+    description = "Genera los artifacts.json de licensee de todos los módulos (#7592)"
+    dependsOn(licenseeModules.map { "$it:licensee" })
 }
 
 dependencyCheck {

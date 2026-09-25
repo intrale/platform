@@ -184,12 +184,33 @@ const AUTHORITY_PREFIXES = Object.freeze([
     'deliverable_gate',
     'gates',
     'wave_auto_transition',
+    // #7673 — prender `recomendaciones.crear_issues` reabre un canal de escritura
+    // en GitHub (issues de recomendación): es control, no calibración.
+    'recomendaciones',
     'brazo',
     'commander_products',
     'cross_repo_delivery',
     'architect.enabled',
     'architect.gate_mode',
     'architect.go_live_date',
+    // #7520 SEC-14 — el brazo del auditor calidad-precio: las claves que lo
+    // encienden, le eligen canal, lo hacen escribir audit o protegen skills son
+    // autoridad; el resto de la sección (cadencia, ventana, umbrales) es calibración.
+    'model_value_audit.enabled',
+    'model_value_audit.registrar',
+    'model_value_audit.publish',
+    'model_value_audit.protected_skills',
+    // #6809 (SEC-6809-7) — encender el auditor del modelo operativo es
+    // autoridad; cadencia, ventana y muestras mínimas son calibración.
+    'process_audit.enabled',
+    // #7515 (SEC-7515-6) — allowlist de cuentas que pueden meter texto en el
+    // registro de propuestas desde un repo público (`recomendacion-agente`).
+    // `propuestas` entera es kernel (cuota/tope = mecanismo); la allowlist es
+    // autoridad y no puede venir por entorno ni por el manifiesto de producto.
+    'propuestas.autores_permitidos',
+    // #7631 — gate de autoría del squash: modo, go-live e identity_map deciden
+    // si un merge sin firma humana se bloquea y quién cuenta como aprobador.
+    'authorship',
 ]);
 
 // Clasificación completa de las secciones top-level de `config.yaml`
@@ -223,6 +244,18 @@ const SIDE_MAP = Object.freeze({
     partial_pause_deps: 'kernel',
     cost_anomaly_alert: 'kernel',
     ghostbusters_cron: 'kernel',
+    // #7520 — auditor calidad-precio del modelo por agente: mecanismo del
+    // pipeline (cadencia, ventana, umbrales). Las cuatro sub-claves de
+    // autoridad ya entran por AUTHORITY_PREFIXES; se listan por legibilidad.
+    model_value_audit: 'kernel',
+    'model_value_audit.enabled': 'autoridad',
+    'model_value_audit.registrar': 'autoridad',
+    'model_value_audit.publish': 'autoridad',
+    'model_value_audit.protected_skills': 'autoridad',
+    // #6809 — auditor del modelo operativo: mecanismo del pipeline (cadencia,
+    // ventana, muestras mínimas). Encenderlo es autoridad.
+    process_audit: 'kernel',
+    'process_audit.enabled': 'autoridad',
     // #6708 — presupuesto de disco del guardián. Es mecanismo del pipeline
     // (cuánto margen necesita la máquina para operar), no política de producto.
     disk_budget: 'kernel',
@@ -258,6 +291,11 @@ const SIDE_MAP = Object.freeze({
     deliverable_notifications: 'kernel',
     'deliverable_notifications.skills': 'producto',       // whitelist de skills del producto
     'deliverable_notifications.attachments_per_skill': 'producto',
+    // #7515 — registro de propuestas al operador: cuota diaria y tope de vivas
+    // son mecanismo del pipeline; la allowlist de autores es autoridad
+    // (también en AUTHORITY_PREFIXES, que gana en `resolveSide`).
+    propuestas: 'kernel',
+    'propuestas.autores_permitidos': 'autoridad',
     cua: 'kernel',
     kernel: 'kernel',
     // #5352 — el vault direcciona secretos de INFRAESTRUCTURA por host: es
@@ -292,9 +330,11 @@ const SIDE_MAP = Object.freeze({
     firma_operador: 'autoridad',
     operator_signoff: 'autoridad',
     operator_signature: 'autoridad',
+    authorship: 'autoridad',                     // #7631 — trailer de autoría + gate pre-merge
     deliverable_gate: 'autoridad',
     gates: 'autoridad',
     wave_auto_transition: 'autoridad',
+    recomendaciones: 'autoridad',                // #7673 — corte transitorio de recomendaciones
     brazo: 'autoridad',
     commander_products: 'autoridad',
     'commander_products.products.*.operators': 'autoridad',
@@ -356,6 +396,21 @@ function hasProductoDescendant(segs) {
         e.side === 'producto'
         && e.segs.length > segs.length
         && matchesPrefix(e.segs.slice(0, segs.length), segs));
+}
+
+/**
+ * #7520 / #7515 — ¿Existe alguna sub-clave de AUTORIDAD estrictamente por
+ * debajo de `segs`? Una sección kernel con sub-claves de autoridad
+ * (`architect.enabled`, `model_value_audit.enabled`,
+ * `propuestas.autores_permitidos`) puesta del lado producto debe reportar la
+ * sub-clave con su lado real (`autoridad`), no la sección entera como `kernel`:
+ * de otro modo el operador leería "movela al kernel" cuando lo que hay es un
+ * intento de cambiar una clave de autoridad por el canal de producto.
+ */
+function hasAuthorityDescendant(segs) {
+    return AUTHORITY_PATTERNS.some((pat) =>
+        pat.length > segs.length
+        && matchesPrefix(pat.slice(0, segs.length), segs));
 }
 
 // -----------------------------------------------------------------------------
@@ -537,6 +592,24 @@ const SCHEMA = {
                         quotaCeilings.QUOTA_PROVIDER_IDS.map((id) => [id, QUOTA_CEILING_SCHEMA]),
                     ),
                 },
+                // --- #6561 — balanceo por saldo de cuota y ritmo de consumo.
+                //     LENIENT como el resto de multi_provider (un typo en la
+                //     clave se ignora → default), pero con TIPOS y RANGOS
+                //     chequeados: un umbral no numérico no debe llegar al
+                //     selector. Los invariantes (nunca expande la cadena, la
+                //     reserva nunca veta, degradación sin dato fresco) viven
+                //     en `lib/agent-launcher/quota-balancer.js`, NO acá.
+                balanceo: {
+                    type: 'object',
+                    additionalProperties: true,
+                    properties: {
+                        enabled: { type: 'boolean' },
+                        delta_min_pct: { type: 'number', minimum: 0, maximum: 100 },
+                        margen_reserva_pct: { type: 'number', minimum: 0, maximum: 100 },
+                        fases_criticas: { type: 'array', items: { type: 'string' } },
+                        cache_ttl_ms: { type: 'number', minimum: 0 },
+                    },
+                },
             },
         },
 
@@ -593,6 +666,25 @@ const SCHEMA = {
         // ConfigSchemaViolation. Va en el MISMO commit que la sección nueva.
         telegram_voice_outbound: OBJ(),
         deliverable_notifications: OBJ(),
+        // #7515 — registro único de propuestas al operador (parte 2/3 de #6807).
+        // Sección ESTRICTA: la raíz está cerrada y esta declaración va en el
+        // MISMO commit que la sección `propuestas:` de config.yaml — si una
+        // está y la otra no, config.yaml no valida y el Pulpo no arranca.
+        // `max_vivas` se cota a `MAX_PROPUESTAS_VIVAS` (500) del sustrato
+        // (CA-PO-4): un valor mayor persistiría en FS una forma que el modo
+        // durable lee como `degraded`.
+        propuestas: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+                cuota_diaria_por_productor: { type: 'integer', minimum: 1 },
+                max_vivas: { type: 'integer', minimum: 1, maximum: 500 },
+                autores_permitidos: {
+                    type: 'array',
+                    items: { type: 'string', minLength: 1 },
+                },
+            },
+        },
         cua: OBJ(),
         kernel: OBJ(),
 
@@ -975,6 +1067,53 @@ const SCHEMA = {
             },
         },
 
+        // --- model_value_audit: auditor calidad-precio del modelo por agente
+        //     (#7520, parte 4 de #6793). Estricto (CA-23 / SEC-14): un typo en
+        //     `enabled` no puede dejar el brazo apagado en silencio, y
+        //     `window_days` respeta el mínimo de 30 (CA-1 de #6145).
+        model_value_audit: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['enabled'],
+            properties: {
+                enabled: { type: 'boolean' },
+                cadence_days: { type: 'integer', minimum: 1 },
+                window_days: { type: 'integer', minimum: 30 },
+                min_sample: { type: 'integer', minimum: 1 },
+                min_sample_by_skill: { type: 'object', additionalProperties: { type: 'integer', minimum: 1 } },
+                pricing_max_age_days: { type: 'integer', minimum: 1 },
+                protected_skills: { type: 'array', items: { type: 'string', minLength: 1 } },
+                thresholds: {
+                    type: 'object', additionalProperties: false,
+                    properties: {
+                        subir_rebound: { type: 'number', minimum: 0, maximum: 1 },
+                        subir_early_death: { type: 'number', minimum: 0, maximum: 1 },
+                        subir_qa_fail: { type: 'number', minimum: 0, maximum: 1 },
+                        bajar_rebound: { type: 'number', minimum: 0, maximum: 1 },
+                        bajar_early_death: { type: 'number', minimum: 0, maximum: 1 },
+                    },
+                },
+                registrar: { type: 'boolean' },
+                publish: { type: 'string', enum: ['telegram-plain', 'registry', 'none'] },
+            },
+        },
+
+        // --- process_audit: auditor del modelo operativo (#6809). Estricto
+        //     (SEC-6809-7): un typo en `enabled` o un rango inválido no puede
+        //     dejar el brazo en un estado ambiguo. Los rangos son los mismos que
+        //     valida `lib/process-audit/cron.js#resolveSection`.
+        process_audit: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['enabled'],
+            properties: {
+                enabled: { type: 'boolean' },
+                cadence_days: { type: 'integer', minimum: 1, maximum: 30 },
+                window_days: { type: 'integer', minimum: 7, maximum: 30 },
+                min_samples_hora: { type: 'integer', minimum: 1, maximum: 120 },
+            },
+        },
+
         // --- firma_operador: auto-aprobación de firma del operador (#4576) ---
         //     Default seguro = firma humana; el schema NO permite que un valor
         //     corrupto habilite auto-aprobación silenciosamente.
@@ -1020,6 +1159,21 @@ const SCHEMA = {
                 // nonce_ttl_seconds acota la ventana de replay de una firma.
                 nonce_ttl_seconds: { type: 'number', minimum: 0 },
                 max_signature_rebotes: { type: 'number', minimum: 0 },
+            },
+        },
+
+        // --- authorship: trailer de autoría del squash + gate pre-merge (#7631)
+        // Calcado de operator_signature. `identity_map` mapea el sha256 del
+        // `signed_by` a un login público: el id crudo nunca entra al repo.
+        authorship: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['enabled', 'gate_mode'],
+            properties: {
+                enabled: { type: 'boolean' },
+                gate_mode: { type: 'string' },
+                go_live_date: { type: ['string', 'null'] },
+                identity_map: { type: 'object', additionalProperties: { type: 'string' } },
             },
         },
 
@@ -1083,6 +1237,18 @@ const SCHEMA = {
                 kill_switch: { type: 'boolean' },
                 mode: { type: 'string' },
                 gh_timeout_ms: { type: 'number', minimum: 0 },
+            },
+        },
+
+        // --- recomendaciones: corte transitorio hasta la Ola Propuestas (#7673) --
+        //     Sólo el booleano `true` reactiva la creación de issues de
+        //     recomendación; el lector (`lib/recommendations-cut.js`) falla cerrado.
+        recomendaciones: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['crear_issues'],
+            properties: {
+                crear_issues: { type: 'boolean' },
             },
         },
 
@@ -1405,6 +1571,16 @@ function collectSideViolations(node, segs, out, esperado = 'producto') {
         if (esperado === 'producto' && esMapa && hasProductoDescendant(childSegs)) {
             collectSideViolations(child, childSegs, out, esperado);
             continue;
+        }
+        // #7520 / #7515 — sección NO admitida que esconde una sub-clave de
+        // autoridad (`model_value_audit.enabled`, `propuestas.autores_permitidos`):
+        // se baja para nombrar la sub-clave con su lado real. Las secciones que
+        // YA son de autoridad enteras no bajan (el padre ya nombra el lado
+        // correcto), y si el subárbol no emite nada cae al reporte de sección.
+        if (esperado === 'producto' && esMapa && side !== 'autoridad' && hasAuthorityDescendant(childSegs)) {
+            const antes = out.length;
+            collectSideViolations(child, childSegs, out, esperado);
+            if (out.length > antes) continue;
         }
         out.push({
             path: '/' + childSegs.map(sanitizeKeyName).join('/'),

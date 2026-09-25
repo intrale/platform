@@ -725,7 +725,7 @@ function buildSnapshot({ providers, now = Date.now() } = {}) {
     };
 }
 
-function emitAlerts({ snapshot, prevSnapshot, telegramSender, dedupFile, fsImpl = fs, now = Date.now() } = {}) {
+function emitAlerts({ snapshot, prevSnapshot, telegramSender, dedupFile, fsImpl = fs, now = Date.now(), termsCheck = null } = {}) {
     const sent = [];
     const prevByProvider = {};
     if (prevSnapshot && Array.isArray(prevSnapshot.providers)) {
@@ -830,6 +830,27 @@ function emitAlerts({ snapshot, prevSnapshot, telegramSender, dedupFile, fsImpl 
             }
         }
 
+        // #7597 Trigger 6: términos del proveedor vencidos (política de
+        // proveedores). Opt-in: sólo corre si el caller pasa `termsCheck`
+        // (runOnce lo arma con `checkTerms: true`). Así ningún consumidor
+        // existente —ni sus tests— pasa a depender de la fecha real.
+        // El vencimiento NO toca el estado de salud: es otro eje (SR-4).
+        if (typeof termsCheck === 'function') {
+            const configProvider = PING_TO_CONFIG_PROVIDER[p.provider] || p.provider;
+            let terms = null;
+            try { terms = termsCheck(configProvider); } catch (_) { terms = null; }
+            if (terms && terms.state === 'vencido') {
+                const decision = healthAlerts.decideTermsEvent({
+                    provider: configProvider, terms, providerState: p.state, now, dedupFile, fsImpl,
+                });
+                if (decision.shouldEmit) {
+                    const okSend = telegramSender ? !!telegramSender(decision.payload) : true;
+                    healthAlerts.recordTermsEvent({ provider: configProvider, terms, sent: okSend, now, dedupFile, fsImpl });
+                    if (okSend) sent.push({ kind: 'terms_expired', provider: configProvider, payload: decision.payload });
+                }
+            }
+        }
+
         // #5888 Trigger 4: modelo configurado fuera del catálogo del provider.
         //
         // SÓLO `model_not_in_catalog`. `model_check_unavailable` NO emite a
@@ -914,6 +935,27 @@ function formatAlertText(payload) {
              + `Acción: re-verificar los TOS con ${ver} (#7343) y subir \`max_tested_version\` en `
              + `\`lib/multi-provider/agy-catalog-probe.js\`. Te lo recuerdo cada 24 h mientras persista.\n`
              + `Observado: ${payload.observed_at}`;
+    }
+    // #7597 UX-2 — términos vencidos. Misma estructura que `plan_tier_unknown`:
+    // cabecera ⚠️, estado del provider SUBORDINADO (sale del health real),
+    // consecuencia, acción, y el código técnico al final (se lee bien en voz
+    // alta). Sólo fechas validadas por regex; sin paths absolutos (SR-6).
+    if (payload.event === 'terms_expired') {
+        const emoji = payload.provider_state === 'red' ? '🔴'
+            : payload.provider_state === 'yellow' ? '🟡'
+            : payload.provider_state === 'green' ? '🟢' : '⚪';
+        const est = payload.provider_state === 'red' ? 'CAÍDO'
+            : payload.provider_state === 'yellow' ? 'DEGRADADO'
+            : payload.provider_state === 'green' ? 'SANO' : 'SIN DATO';
+        const header = payload.reminder ? '⚠️ *Términos siguen vencidos*' : '⚠️ *Términos vencidos*';
+        const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(payload.expires_at || '');
+        const when = m
+            ? `la verificación de términos venció el ${m[3]}/${m[2]}/${m[1]}`
+            : 'la verificación de términos no tiene una fecha válida y se trata como vencida';
+        return `${header} — \`${payload.provider}\` sigue ${emoji} ${est} y sus roles vigentes siguen ruteando, pero ${when}. `
+             + 'Hasta re-verificarlos no se aceptan habilitaciones nuevas para este proveedor. '
+             + 'Revisá los términos vigentes y actualizá la fecha en docs/legal/proveedores-ia.md.\n'
+             + `(\`terms_expired\`) · Observado: ${payload.observed_at}`;
     }
     if (payload.event === 'multi_down') {
         const provs = Array.isArray(payload.providers_red) ? payload.providers_red.join(', ') : '?';
@@ -1055,6 +1097,18 @@ async function runOnce(opts = {}) {
     // Emitir alertas (con dedupe + back-off). Si no inyectan sender, usar
     // el default que encola en `servicios/telegram/pendiente/`.
     const sender = opts.telegramSender || ((payload) => defaultTelegramSender(payload, { fsImpl }));
+    // #7597 — eje de términos, opt-in (`checkTerms: true` o `termsCheck`
+    // inyectado). La política se lee UNA vez por corrida; si no carga, el
+    // módulo devuelve la política vacía (fail-closed) y todos los proveedores
+    // quedan vencidos → alerta visible, nunca silencio.
+    let termsCheck = typeof opts.termsCheck === 'function' ? opts.termsCheck : null;
+    if (!termsCheck && opts.checkTerms === true) {
+        try {
+            const providerPolicy = require('../provider-policy');
+            const policy = providerPolicy.loadPolicy({});
+            termsCheck = (provider) => providerPolicy.termsStatus(provider, { now, policy });
+        } catch (_) { termsCheck = null; /* accesorio: nunca tumba el health-cron */ }
+    }
     const alerts = emitAlerts({
         snapshot,
         prevSnapshot,
@@ -1062,6 +1116,7 @@ async function runOnce(opts = {}) {
         dedupFile: opts.dedupFile,
         fsImpl,
         now,
+        termsCheck,
     });
 
     // Audit log — entries por provider con cambio de estado, y entry resumen.

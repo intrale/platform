@@ -136,46 +136,37 @@ El Pulpo clasifica cada rechazo como **accionable** o **ruido** (`lib/observatio
 
 Para que tu hallazgo quede protegido por el invariante, **escribí el claim empírico explícito** (CVE / secret+ubicación / vector+archivo:línea). Un rechazo de seguridad redactado como observación genérica y sin ancla ("convendría revisar la seguridad") podría clasificarse como ruido — no es ese el caso de una vuln real, así que siempre incluí la evidencia concreta.
 
-**Ruido** (no rechaces por esto, va como issue de recomendación con `needs:triage-backlog`):
+**Ruido** (no rechaces por esto, va como una línea en "Otras oportunidades observadas" del comentario del issue origen — ver protocolo abajo; nunca como issue mientras dure el corte #7673):
 - Hardening deseable a futuro sin vulnerabilidad explotable concreta.
 - Buenas prácticas defensivas sin defecto verificable en el código actual.
 
 ## Protocolo de oportunidades de mejora (aplicable en TODAS las fases)
 
-Durante tu análisis (`analisis`, `verificacion`), si identificás **hardening adicional no crítico, mejoras de postura de seguridad, migraciones de dependencias con CVEs de severidad baja, o prácticas defensivas deseables** que NO deben frenar la aprobación del issue actual pero vale la pena registrar, **NO las dejes sólo como texto**. Creá un issue independiente por cada una, **marcado como recomendación que requiere aprobación humana** (issue #2653 — el pipeline NO procesa recomendaciones hasta que un humano las apruebe):
+> **Corte transitorio de recomendaciones (#7673) — vigente hasta la Ola Propuestas (#7361 · modo ledger).**
+> Mientras `recomendaciones.crear_issues` no sea `true` en `.pipeline/config.yaml` (hoy es `false`), **no se crean issues de recomendación**: ningún `gh issue create` (ni `gh issue edit --add-label`, ni `gh api …/issues`) con los labels de recomendación. El hook `recommendation-guard.js` bloquea esos comandos y el guardrail de la cola de GitHub descarta esas órdenes. En los proveedores de fallback (Codex/Antigravity) los hooks no corren y la barrera es este rol: el corte aplica igual a todos.
 
-```bash
-export PATH="/c/Workspaces/gh-cli/bin:$PATH"
-gh issue create --repo intrale/platform \
-  --title "[security] <descripción imperativa breve>" \
-  --label "enhancement,source:recommendation,tipo:recomendacion,needs:triage-backlog,priority:low<,area:backend|,area:pipeline|,area:infra>" \
-  --body "## Contexto de seguridad
+Durante tu análisis (`analisis`, `verificacion`), si identificás **hardening adicional no crítico, mejoras de postura de seguridad, migraciones de dependencias con CVEs de severidad baja o prácticas defensivas deseables** que NO deben frenar la aprobación del issue actual pero vale la pena registrar, listalas en el comentario del issue origen con este formato:
 
-<qué observaste / qué motivó la recomendación>
-
-## Beneficio esperado
-
-<qué mejora la postura de seguridad / impacto si no se hace>
-
-## Referencia
-
-> Propuesto automáticamente por el agente \`security\` durante el análisis del issue #<origen>.
-> **Es una recomendación pendiente de triaje humano** — no entra al pipeline automático hasta que un humano agregue el label \`recommendation:approved\` (o la cierre con \`recommendation:rejected\`). Lo que la frena es tener \`tipo:recomendacion\` **sin** \`recommendation:approved\`; \`needs:triage-backlog\` sólo señala que falta triaje y **no** bloquea nada.
-> **No depende ni bloquea a #<origen>** — es una oportunidad independiente."
+```markdown
+### Otras oportunidades observadas
+- [security] <frase imperativa breve> — <beneficio en ≤ 12 palabras>
 ```
 
-**Reglas inquebrantables:**
+**Reglas:**
 
-1. **Un issue por recomendación** — no consolidar múltiples en el mismo issue.
-2. **Máximo 3 recomendaciones por issue analizado** (anti-explosión, issue #2653). Si detectás más de 3, priorizá las top 3 por riesgo/beneficio y listá el resto en el comentario del issue origen, sin crear los issues.
-3. **Título con prefijo `[security]`** + frase imperativa breve.
-4. **Heredar** labels `area:*` del issue origen.
-5. **OBLIGATORIO**: incluir labels `tipo:recomendacion` + `needs:triage-backlog`. Lo que frena al pulpo es `tipo:recomendacion` **sin** `recommendation:approved` — el freno ya vive en ese par y no requiere ningún label de bloqueo. `needs:triage-backlog` sólo marca que la recomendación espera triaje humano y **no** bloquea el pipeline. **Excepción**: vulnerabilidad explotable detectada (priority:high/critical) — sigue requiriendo aprobación humana, pero la prioridad alta hace que Leo la vea inmediatamente en el panel de recomendaciones del dashboard.
-6. **Prohibido** labels `blocks`, `depends-on`, `blocked:dependencies`, `needs-definition` (este último porque sacaría a la recomendación del flujo de aprobación humana) y `needs-human` (reservado a bloqueos reales que exigen intervención inmediata del operador: mezclarlo con `tipo:recomendacion` ahoga las alertas que sí hay que atender).
-7. **Prioridad inicial** — usar `priority:low` para hardening no crítico. Si detectás una vulnerabilidad explotable (aunque sea en otra parte del código, no en el issue actual), usá `priority:high` o `priority:critical` y marcalo como defecto de seguridad en issue separado (no bloquea el origen pero sí requiere atención inmediata).
-8. **Listar en `notas` del YAML** de tu resultado los issues creados.
-9. **Mencionar en el comentario del issue origen** los issues creados, indicando que son recomendaciones pendientes de aprobación humana.
+1. **Máximo 3 oportunidades**, una línea cada una. Si detectás más, quedate con las 3 de mayor riesgo/beneficio.
+2. **Sin crear issues** para estas oportunidades.
+3. Título siempre `### Otras oportunidades observadas`, con ese texto exacto (sin emoji ni variantes). Si no hay ninguna, omití el bloque.
+4. Texto para humanos: sin `archivo:línea` ni jerga interna en la frase principal.
+5. El corte depende de `recomendaciones.crear_issues` y es transitorio hasta #7361, que define el reemplazo (registro único de propuestas).
+
+**Reglas SEC-5 — los hallazgos de seguridad NO se degradan a "Otras oportunidades observadas":**
+
+- **(a) Vulnerabilidad explotable en el código del issue** ⇒ `resultado: rechazado` + `gravedad: grave` del mismo issue (igual que antes del corte).
+- **(b) Vulnerabilidad explotable fuera del alcance del issue** ⇒ se escala como **issue normal** con `needs-definition` (sin labels de recomendación) o como aviso al operador. **Nunca** como línea en "Otras oportunidades observadas" ni descartada por el corte: el corte sólo frena recomendaciones, este camino sigue abierto.
+- **(c) "Otras oportunidades observadas" es un comentario público**: para `security` sólo lleva hardening genérico en una línea. **Prohibido** poner ahí vector de explotación, `archivo:línea` de una vulnerabilidad abierta, CVE sin parche aplicado o ubicación de secrets. Esos datos van por el entregable sensible (`writeDeliverable(..., sensible: true)`) y el rebote.
+- Ya no existe la excepción `priority:high` para recomendaciones: una vulnerabilidad explotable nunca es una recomendación.
 
 **Cuándo aplicar**: "Hardening adicional", "Buenas prácticas defensivas futuras", "Migraciones de dependencias con CVEs low/medium", "Logging de auditoría a ampliar".
 
-**Cuándo NO aplicar**: vulnerabilidades explotables en el código del issue actual — eso va como `resultado: rechazado` del mismo issue.
+**Cuándo NO aplicar**: vulnerabilidades explotables — ver las reglas SEC-5 de arriba.

@@ -894,6 +894,45 @@ multi_provider:
       unidad: porcentaje
       reposicion: rolling
 
+  # ---------------------------------------------------------------------------
+  # Balanceo de carga entre proveedores por saldo de cuota y ritmo (#6561)
+  # ---------------------------------------------------------------------------
+  # Capa de DECISIÓN del libro contable: en cada spawn el dispatcher cruza el
+  # saldo relativo (saldo / techo, #6560) de los proveedores de la cadena del
+  # skill (primario + fallbacks de agent-models.json) y prefiere al de mayor
+  # saldo, para no fundir una cuota mientras otra queda sin usar (caso medido
+  # 25/08: Codex 100 % agotado con Claude al 70 % libre).
+  #
+  # Reglas fijas (viven en código, `lib/agent-launcher/quota-balancer.js`):
+  #   - NUNCA expande la cadena: sólo reordena lo que el skill ya declara. La
+  #     capacidad por fase, las ventanas horarias, la cuota agotada, el
+  #     kill-switch y las credenciales tienen precedencia sobre el saldo.
+  #   - El orden declarado define el conjunto y el DESEMPATE: sólo reordena si
+  #     la diferencia de saldo relativo alcanza `delta_min_pct`.
+  #   - Sólo compara con dato FRESCO del ledger (`state/quota-ledger.jsonl`);
+  #     sin ledger, con dato viejo o con un solo candidato comparable degrada
+  #     al orden declarado sin frenar el spawn (el log lo dice: `balanceo:
+  #     degradado (<motivo>) → orden declarado`).
+  #   - La reserva de fin de período es SOFT: si el proveedor reservado es el
+  #     único hábil, se usa igual.
+  #
+  # Campos (todos opcionales; valores fuera de rango caen al default y se
+  # avisan en el log de lanzamiento):
+  #   enabled            — apaga el balanceo (orden declarado puro). Default true.
+  #   delta_min_pct      — diferencia mínima de saldo relativo (puntos
+  #                        porcentuales) para que el saldo reordene. Default 15.
+  #   fases_criticas     — fases del pipeline donde NO aplica la reserva.
+  #                        Default [verificacion, aprobacion, delivery].
+  #   margen_reserva_pct — saldo relativo por debajo del cual un proveedor se
+  #                        reserva para las fases críticas. Default 20.
+  #
+  # Cómo leer una decisión en el log: docs/pipeline/multi-provider.md §20.
+  balanceo:
+    enabled: true
+    delta_min_pct: 15
+    fases_criticas: [verificacion, aprobacion, delivery]
+    margen_reserva_pct: 20
+
 # =============================================================================
 # Presupuesto de ritmo (pacing budget) por proveedor (#4289)
 # =============================================================================
@@ -1010,6 +1049,54 @@ model_propagation_rollout:
     - actors: [review, tester, qa]
     # 4 — devs pesados: objetivo final del épico.
     - actors: [backend-dev, pipeline-dev, android-dev, web-dev, dev]
+
+# #7520 — Auditor periódico de calidad-precio del modelo por agente (parte 4 de
+# #6793). El brazo del Pulpo corre `lib/model-value-audit/cron.js` cada
+# `cadence_days` y publica COMO MÁXIMO un mensaje por corrida, sólo si hay algo
+# accionable (un `subir`/`bajar` o un hallazgo de precios). Nunca edita
+# `agent-models.json`: un cambio de modelo sigue siendo un PR.
+#
+# AUTORIDAD (sólo en este archivo, sin override por entorno — SEC-14):
+#   `enabled`, `registrar`, `publish`, `protected_skills`.
+# CALIBRACIÓN: `cadence_days`, `window_days`, `min_sample*`,
+#   `pricing_max_age_days`, `thresholds`.
+# El audio del mensaje se apaga aparte, en `pipeline.config.json`:
+#   `audio_policy.by_event.model_value_audit: false`.
+# Doc: docs/pipeline/model-value-audit.md
+model_value_audit:
+  enabled: false            # fail-closed; sólo `true` exacto enciende el brazo
+  cadence_days: 7
+  window_days: 30           # mínimo 30 (CA-1 de #6145)
+  min_sample: 10
+  min_sample_by_skill: {}
+  pricing_max_age_days: 60
+  protected_skills: [security, review, tester, qa, po]
+  thresholds: { subir_rebound: 0.30, subir_early_death: 0.10, subir_qa_fail: 0.25, bajar_rebound: 0.05, bajar_early_death: 0.02 }
+  registrar: false
+  publish: telegram-plain   # 'telegram-plain' | 'registry' (#6807) | 'none'
+
+# #6809 — Auditor del modelo operativo (proceso, capacidad, proveedores). El
+# brazo del Pulpo corre `lib/process-audit/cron.js` cada hora; la corrida real
+# ocurre cada `cadence_days`. 100 % determinístico: sólo LEE telemetría y
+# publica SUGERENCIAS en el registro único de propuestas (#6807) con el
+# productor `auditor-proceso` (tope diario: `propuestas.cuota_diaria_por_productor`
+# + como máximo 10 intentos por corrida). Nunca toca configuración, issues ni
+# labels, y no tiene otro canal: si el registro rechaza, sólo se loguea.
+#
+# AUTORIDAD (sólo en este archivo, sin override por entorno): `enabled`.
+# CALIBRACIÓN (rangos validados; fuera de rango ⇒ el auditor queda APAGADO,
+# sin clamp silencioso):
+#   cadence_days      1..30  — cada cuántos días corre.
+#   window_days       7..30  — ventana de telemetría analizada.
+#   min_samples_hora  1..120 — muestras mínimas (de 30 s) para que una hora del
+#                              rollup `metrics-history-hourly.jsonl` cuente.
+# Estado visible: `state/process-audit-cron.json` y `/api/dash/process-audit`.
+# Doc: docs/pipeline/process-audit.md
+process_audit:
+  enabled: false            # fail-closed; sólo `true` exacto enciende el brazo
+  cadence_days: 7
+  window_days: 14
+  min_samples_hora: 60
 
 # #4870 — Modo reducido: aviso advisory cuando no hay proveedor PAGO disponible.
 #
@@ -1682,6 +1769,31 @@ deliverable_notifications:
   attachment_max_count: 5                     # >5 adjuntos por notificación → resto rechazado
   attachment_max_size_bytes: 52428800         # 50 MB cap local (más que los 20 MB Telegram)
   attachment_video_max_duration_s: 300        # 5 min máximo por video (ffprobe duration check)
+
+# #7515 (parte 2/3 de #6807) — Registro único de propuestas al operador.
+#
+# Lo lee `lib/propuestas-registry.js` (publicar/listarPendientes). El registro
+# vive bajo la clave `propuestas` del estado operativo (`.pipeline/.propuestas.json`
+# en modo FS, habilitada en #7514). Sección ESTRICTA en `config-schema.js`
+# (raíz cerrada #5173): sin la declaración del schema esta sección no valida y
+# el Pulpo no arranca — van siempre en el mismo commit.
+#
+#   - cuota_diaria_por_productor: máximo de propuestas por productor y día UTC
+#                                 (cuenta vivas + memoria). Excedida →
+#                                 `cuota_excedida`, sin escribir.
+#   - max_vivas:                  tope de propuestas pendientes en el registro.
+#                                 Cotado a 500 (= MAX_PROPUESTAS_VIVAS del
+#                                 sustrato). Alcanzado → `registro_lleno`.
+#   - autores_permitidos:         allowlist de cuentas de GitHub cuyo comentario
+#                                 puede entrar al registro vía el productor
+#                                 `recomendacion-agente` (#7361). Lado AUTORIDAD:
+#                                 sólo se edita acá, nunca por entorno ni por el
+#                                 manifiesto de producto. Vacía = nadie entra.
+propuestas:
+  cuota_diaria_por_productor: 50
+  max_vivas: 500
+  autores_permitidos:
+    - leitolarreta
 
 # Issue #3541 — Entregables parciales del CUA (Comando de Usuario Asistido).
 #
@@ -2589,6 +2701,37 @@ operator_signature:
   max_signature_rebotes: 3
 
 # =============================================================================
+# #7631 — Trailer de autoría en el squash + gate pre-merge `authorship`
+# =============================================================================
+# Todo squash de agente termina con el bloque Closes → Intrale-Issue →
+# Intrale-Human-Direction → Intrale-AI-Assisted → Co-Authored-By, generado por
+# código desde el registro (`lib/authorship/`). Sección de AUTORIDAD
+# (`AUTHORITY_PREFIXES`): cambiar el modo o agregar un aprobador exige revisión
+# humana por el gate de config.
+#
+# Rollout fail-closed (S8):
+#   - `gate_mode: dry-run` → el merge sigue; el trailer dice `none; <ISO>; <motivo>`
+#     y queda UN comentario en el PR. `enforce` → bloquea el merge.
+#   - Bloque ausente / tipo inválido / `gate_mode` desconocido → `enforce` si ya
+#     estuvo activo (marcador `.pipeline/state/authorship-enforce-seen`), si no
+#     `dry-run`. Nunca se apaga.
+#   - `off` apaga SÓLO si está escrito literal. `enabled: false` se ignora.
+#   - PRs creados antes de `go_live_date` no se evalúan.
+#
+# `identity_map`: `sha256:<hex del signed_by>` → login público. La clave es el
+# HASH del id del firmante (chat_id de Telegram), nunca el id crudo (SEC-F). Un
+# firmante sin entrada sale `unmapped`. Se calcula con
+# `require('.pipeline/lib/authorship/human-direction').identityKey(<signed_by>)`.
+authorship:
+  enabled: true
+  gate_mode: dry-run
+  go_live_date: '2026-09-23T00:00:00Z'
+  # Operador (rebote #7631): hash del chat_id de `telegram.leo_operator_chat_id`
+  # (el mismo `signed_by` que registra el canal de firma).
+  identity_map:
+    'sha256:cb840ae5e58459126d74ec58aaa6ad9fe252b2643537e2958cf5dbbd80b6a8e2': leitolarreta
+
+# =============================================================================
 # #4502 — Gate de entregable obligatorio del PO al cerrar Definición
 # =============================================================================
 # Al promover `definicion/criterios → sizing`, el pulpo verifica que el agente
@@ -2818,6 +2961,15 @@ wave_auto_transition:
   kill_switch: false    # override de emergencia adicional
   mode: notify          # "notify" (default) | "auto" (opt-in explícito de Leo)
   gh_timeout_ms: 30000  # timeout por consulta `gh issue view`
+
+# #7673 — corte transitorio de recomendaciones hasta la Ola Propuestas (#7361).
+# Los agentes (guru, security, review, ux, po) dejan de crear issues con
+# `tipo:recomendacion` / `source:recommendation`: listan las oportunidades en el
+# comentario del issue origen bajo "Otras oportunidades observadas".
+# Sólo `true` literal reactiva la creación; cualquier otro valor = corte activo.
+# El cambio se aplica en ≤60 s, sin reiniciar (hook + servicio-github leen en caliente).
+recomendaciones:
+  crear_issues: false
 
 # telegram: movida al lado PRODUCTO (#5174) → pipeline.config.json · productConfig.telegram (la prosa viajó a productConfigNotes)
 

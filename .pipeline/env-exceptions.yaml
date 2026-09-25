@@ -1,0 +1,81 @@
+# =============================================================================
+# Excepciones declaradas al entorno mínimo de los hijos del pipeline (#7635)
+# =============================================================================
+#
+# Cada entrada declara una variable (o un scope) que un rol recibe por fuera de
+# su scope efectivo, con motivo, responsable y fecha de revisión. Lo lee
+# `.pipeline/lib/child-env-exceptions.js` (siempre desde el repo principal,
+# nunca desde el worktree de un agente).
+#
+# Ejemplo copiable (los 6 campos; usar `scope` O `variable`, nunca los dos):
+#
+#   - tipo: agente            # agente | servicio
+#     rol: pipeline-dev       # skill (agente) o nombre del servicio de confianza
+#     variable: MI_VARIABLE   # o bien:  scope: gradle-android
+#     fundamento: "Por qué el rol la necesita y qué pasa si no la tiene."
+#     aprobador: "@leitolarreta"
+#     revisar_el: "2027-01-31" # fecha ISO entre comillas
+#
+# Reglas:
+#   - Ninguna excepción puede dar AWS, GitHub, keys de providers ni Telegram:
+#     esas entradas se descartan al cargar. Esos permisos los da SCOPES_BY_FASE.
+#   - Tope de 180 días: `revisar_el` más allá de hoy + 180 días se descarta.
+#   - `aprobador` es DECLARATIVO: cualquiera puede escribir un nombre. La
+#     autoridad real es el gate de permisos de delivery: todo PR que toca este
+#     archivo queda en `needs-human` y sólo entra con un merge manual del operador.
+#   - Entradas con un campo faltante, una clave desconocida o una fecha inválida
+#     se descartan. Un archivo roto no habilita ninguna excepción.
+#   - `tipo: servicio` es declarativo hasta #7636 y nunca le da nada a un skill
+#     que se llame igual.
+#
+# Qué pasa al vencer: la entrada deja de aplicarse. Si el agente sigue
+# recibiendo la variable, el lanzamiento falla con `expired-exception`, que
+# muestra la fecha y el aprobador. Para renovarla hay que actualizar
+# `revisar_el` con un PR que el operador revise y mergee a mano.
+#
+# Detalle: docs/pipeline/entorno-agentes-hijos.md#excepciones-declaradas-y-gate-de-permisos
+# =============================================================================
+
+# --- Servicios de confianza (inventario de docs/pipeline/entorno-agentes-hijos.md)
+
+- tipo: servicio
+  rol: envDeHijo
+  variable: PIPELINE_REPO_ROOT
+  fundamento: "Scripts propios del Pulpo (rotacion de caches, ghostbusters, rejection-report, generacion de casos de QA) que heredan process.env completo mas PIPELINE_REPO_ROOT. No invocan LLM."
+  aprobador: "@leitolarreta"
+  revisar_el: "2027-03-15"
+
+- tipo: servicio
+  rol: envDeServicio
+  variable: ROLLBACK_STDIO_IS_LOG
+  fundamento: "Componentes que lanza restart.js (Pulpo, listener, servicios de Telegram, GitHub, Drive, emulador, reconciler, dashboard) y el rollback huerfano; heredan process.env completo. No invocan LLM directamente."
+  aprobador: "@leitolarreta"
+  revisar_el: "2027-03-15"
+
+- tipo: servicio
+  rol: adbEnv
+  variable: MSYS_NO_PATHCONV
+  fundamento: "adb pull / adb shell rm despues de QA; hereda process.env completo y solo necesita PATH para encontrar adb. No invoca LLM."
+  aprobador: "@leitolarreta"
+  revisar_el: "2027-03-15"
+
+- tipo: servicio
+  rol: builder
+  variable: GRADLE_LOCK_PATH
+  fundamento: "Skill deterministico build: build.js agrega JAVA_HOME, PATH y GRADLE_LOCK_PATH despues de recibir su env para lanzar gradlew. No invoca LLM."
+  aprobador: "@leitolarreta"
+  revisar_el: "2027-03-15"
+
+- tipo: servicio
+  rol: vault
+  variable: PIPELINE_MAIN_ROOT
+  fundamento: "Boveda de secretos del pipeline (lib/secret-vault.js): resuelve el repo principal para leer el manifiesto de secretos. Corre dentro de procesos del Pulpo."
+  aprobador: "@leitolarreta"
+  revisar_el: "2027-03-15"
+
+- tipo: servicio
+  rol: notificadores
+  scope: telegram-hooks
+  fundamento: "Servicios de notificacion (servicio-telegram, listener) que conservan el destino de los mensajes. El token de Telegram no se declara aca: es reservado."
+  aprobador: "@leitolarreta"
+  revisar_el: "2027-03-15"

@@ -1,0 +1,378 @@
+{
+  "$schema": "./provider-policy.schema.json",
+  "_doc": "Política de proveedores de IA (#7597). Fuente estructurada de docs/legal/proveedores-ia.md. Declara qué ve cada proveedor de nuestro código, datos y entorno, y qué roles habilita. NO copia listas de scopes: allowed_scopes son claves de CREDENTIAL_SCOPES (lib/build-child-env.js) y los scopes efectivos de cada rol se derivan de ahí. Validación y consultas: lib/provider-policy.js (canEnable, termsStatus, checkMatrixCoherence). El registro de altas y bajas sale del historial de git de este archivo (lib/agent-models-change-alert.js), nunca de un campo escrito por un agente.",
+  "version": "2026-09-23",
+  "doc_ref": "docs/legal/proveedores-ia.md",
+  "terms_max_validity_days": 120,
+  "exempt_providers": [
+    "deterministic"
+  ],
+  "providers": {
+    "anthropic": {
+      "code": {
+        "access": "write",
+        "note": "Rol primario de todos los skills LLM: lee el repo completo y escribe código que llega a main por PR."
+      },
+      "data": {
+        "issues": {
+          "allowed": true
+        },
+        "logs": {
+          "allowed": true
+        },
+        "telegram": {
+          "allowed": true
+        },
+        "qa_evidence": {
+          "allowed": true
+        },
+        "handoff": {
+          "allowed": true
+        }
+      },
+      "env": {
+        "allowed_scopes": [
+          "github",
+          "aws",
+          "gradle-android",
+          "telegram-hooks"
+        ],
+        "fs_reach": "operator_home",
+        "permission_mode": "bypass",
+        "tools": [
+          "shell",
+          "network",
+          "git",
+          "gh",
+          "aws",
+          "gradle"
+        ]
+      },
+      "terms": {
+        "verified_at": "2026-09-16",
+        "expires_at": "2026-12-15",
+        "sources": [
+          "https://www.anthropic.com/legal/commercial-terms",
+          "https://www.anthropic.com/legal/consumer-terms",
+          "https://www.anthropic.com/legal/dpa"
+        ]
+      },
+      "roles_allowed": [
+        {
+          "role": "backend-dev",
+          "signoff_ref": "https://github.com/intrale/platform/issues/6860#issuecomment-5723188265"
+        },
+        {
+          "role": "pipeline-dev",
+          "signoff_ref": "https://github.com/intrale/platform/issues/6860#issuecomment-5723188265"
+        },
+        {
+          "role": "android-dev",
+          "signoff_ref": "https://github.com/intrale/platform/issues/6860#issuecomment-5723188265"
+        },
+        {
+          "role": "web-dev",
+          "signoff_ref": "https://github.com/intrale/platform/issues/6860#issuecomment-5723188265"
+        },
+        {
+          "role": "security",
+          "signoff_ref": "https://github.com/intrale/platform/issues/6860#issuecomment-5723188265"
+        },
+        {
+          "role": "qa",
+          "signoff_ref": "https://github.com/intrale/platform/issues/6860#issuecomment-5723188265"
+        },
+        {
+          "role": "review",
+          "signoff_ref": "https://github.com/intrale/platform/issues/6860#issuecomment-5723188265"
+        },
+        {
+          "role": "po",
+          "signoff_ref": "https://github.com/intrale/platform/issues/6860#issuecomment-5723188265"
+        },
+        {
+          "role": "ux",
+          "signoff_ref": "https://github.com/intrale/platform/issues/6860#issuecomment-5723188265"
+        },
+        {
+          "role": "doc",
+          "signoff_ref": "https://github.com/intrale/platform/issues/6860#issuecomment-5723188265"
+        },
+        {
+          "role": "planner",
+          "signoff_ref": "https://github.com/intrale/platform/issues/6860#issuecomment-5723188265"
+        },
+        {
+          "role": "guru",
+          "signoff_ref": "https://github.com/intrale/platform/issues/6860#issuecomment-5723188265"
+        },
+        {
+          "role": "architect",
+          "signoff_ref": "https://github.com/intrale/platform/issues/6860#issuecomment-5723188265"
+        },
+        {
+          "role": "ops",
+          "signoff_ref": "https://github.com/intrale/platform/issues/6860#issuecomment-5723188265"
+        },
+        {
+          "role": "perf",
+          "signoff_ref": "https://github.com/intrale/platform/issues/6860#issuecomment-5723188265"
+        },
+        {
+          "role": "auth",
+          "signoff_ref": "https://github.com/intrale/platform/issues/6860#issuecomment-5723188265"
+        },
+        {
+          "role": "refinar",
+          "signoff_ref": "https://github.com/intrale/platform/issues/6860#issuecomment-5723188265"
+        },
+        {
+          "role": "telegram-commander",
+          "signoff_ref": "https://github.com/intrale/platform/issues/6860#issuecomment-5723188265"
+        },
+        {
+          "role": "telegram-sherlock",
+          "signoff_ref": "https://github.com/intrale/platform/issues/6860#issuecomment-5723188265"
+        }
+      ],
+      "known_exposures": [
+        "#7041",
+        "#7316",
+        "#7641"
+      ]
+    },
+    "openai-codex": {
+      "code": {
+        "access": "write",
+        "note": "Primer respaldo de casi todos los skills LLM, incluidos los devs: lee el repo y escribe código que llega a main por PR."
+      },
+      "data": {
+        "issues": {
+          "allowed": true
+        },
+        "logs": {
+          "allowed": true
+        },
+        "telegram": {
+          "allowed": true
+        },
+        "qa_evidence": {
+          "allowed": true
+        },
+        "handoff": {
+          "allowed": true
+        }
+      },
+      "env": {
+        "allowed_scopes": [
+          "github",
+          "aws",
+          "gradle-android",
+          "telegram-hooks"
+        ],
+        "fs_reach": "operator_home",
+        "permission_mode": "bypass",
+        "tools": [
+          "shell",
+          "network",
+          "git",
+          "gh",
+          "aws",
+          "gradle"
+        ]
+      },
+      "terms": {
+        "verified_at": "2026-09-16",
+        "expires_at": "2026-12-15",
+        "sources": [
+          "https://openai.com/policies/row-business-terms/",
+          "https://openai.com/policies/data-processing-addendum/"
+        ]
+      },
+      "roles_allowed": [
+        {
+          "role": "backend-dev",
+          "signoff_ref": "https://github.com/intrale/platform/issues/6860#issuecomment-5723188265"
+        },
+        {
+          "role": "pipeline-dev",
+          "signoff_ref": "https://github.com/intrale/platform/issues/6860#issuecomment-5723188265"
+        },
+        {
+          "role": "android-dev",
+          "signoff_ref": "https://github.com/intrale/platform/issues/6860#issuecomment-5723188265"
+        },
+        {
+          "role": "web-dev",
+          "signoff_ref": "https://github.com/intrale/platform/issues/6860#issuecomment-5723188265"
+        },
+        {
+          "role": "security",
+          "signoff_ref": "https://github.com/intrale/platform/issues/6860#issuecomment-5723188265"
+        },
+        {
+          "role": "qa",
+          "signoff_ref": "https://github.com/intrale/platform/issues/6860#issuecomment-5723188265"
+        },
+        {
+          "role": "review",
+          "signoff_ref": "https://github.com/intrale/platform/issues/6860#issuecomment-5723188265"
+        },
+        {
+          "role": "po",
+          "signoff_ref": "https://github.com/intrale/platform/issues/6860#issuecomment-5723188265"
+        },
+        {
+          "role": "ux",
+          "signoff_ref": "https://github.com/intrale/platform/issues/6860#issuecomment-5723188265"
+        },
+        {
+          "role": "doc",
+          "signoff_ref": "https://github.com/intrale/platform/issues/6860#issuecomment-5723188265"
+        },
+        {
+          "role": "planner",
+          "signoff_ref": "https://github.com/intrale/platform/issues/6860#issuecomment-5723188265"
+        },
+        {
+          "role": "guru",
+          "signoff_ref": "https://github.com/intrale/platform/issues/6860#issuecomment-5723188265"
+        },
+        {
+          "role": "architect",
+          "signoff_ref": "https://github.com/intrale/platform/issues/6860#issuecomment-5723188265"
+        },
+        {
+          "role": "ops",
+          "signoff_ref": "https://github.com/intrale/platform/issues/6860#issuecomment-5723188265"
+        },
+        {
+          "role": "perf",
+          "signoff_ref": "https://github.com/intrale/platform/issues/6860#issuecomment-5723188265"
+        },
+        {
+          "role": "auth",
+          "signoff_ref": "https://github.com/intrale/platform/issues/6860#issuecomment-5723188265"
+        },
+        {
+          "role": "refinar",
+          "signoff_ref": "https://github.com/intrale/platform/issues/6860#issuecomment-5723188265"
+        },
+        {
+          "role": "telegram-commander",
+          "signoff_ref": "https://github.com/intrale/platform/issues/6860#issuecomment-5723188265"
+        },
+        {
+          "role": "telegram-sherlock",
+          "signoff_ref": "https://github.com/intrale/platform/issues/6860#issuecomment-5723188265"
+        }
+      ],
+      "known_exposures": [
+        "#7041",
+        "#7316",
+        "#7641"
+      ]
+    },
+    "antigravity": {
+      "code": {
+        "access": "write",
+        "note": "El CLI edita archivos del worktree, pero los roles habilitados no producen código que llegue a main. Recibe el repo sin los paths excluidos por data-residency."
+      },
+      "data": {
+        "issues": {
+          "allowed": true,
+          "roles": [
+            "architect",
+            "perf",
+            "telegram-commander",
+            "telegram-sherlock"
+          ]
+        },
+        "logs": {
+          "allowed": true,
+          "roles": [
+            "perf"
+          ]
+        },
+        "telegram": {
+          "allowed": true,
+          "roles": [
+            "telegram-commander",
+            "telegram-sherlock"
+          ]
+        },
+        "qa_evidence": {
+          "allowed": false
+        },
+        "handoff": {
+          "allowed": true,
+          "roles": [
+            "architect",
+            "perf"
+          ]
+        }
+      },
+      "env": {
+        "allowed_scopes": [
+          "telegram-hooks"
+        ],
+        "fs_reach": "operator_home",
+        "permission_mode": "bypass",
+        "tools": [
+          "shell",
+          "network",
+          "git"
+        ]
+      },
+      "terms": {
+        "verified_at": "2026-09-16",
+        "expires_at": "2026-12-15",
+        "sources": [
+          "https://antigravity.google/terms",
+          "https://antigravity.google/docs/faq/",
+          "https://antigravity.google/docs/plans/"
+        ]
+      },
+      "roles_allowed": [
+        {
+          "role": "architect",
+          "signoff_ref": "https://github.com/intrale/platform/issues/6860#issuecomment-5723188265"
+        },
+        {
+          "role": "perf",
+          "signoff_ref": "https://github.com/intrale/platform/issues/6860#issuecomment-5723188265"
+        },
+        {
+          "role": "telegram-commander",
+          "signoff_ref": "https://github.com/intrale/platform/issues/6860#issuecomment-5723188265"
+        },
+        {
+          "role": "telegram-sherlock",
+          "signoff_ref": "https://github.com/intrale/platform/issues/6860#issuecomment-5723188265"
+        }
+      ],
+      "known_exposures": [
+        "#7302",
+        "#7316",
+        "#7041",
+        "#7343"
+      ]
+    }
+  },
+  "open_differences": [
+    {
+      "provider": "antigravity",
+      "role": "po",
+      "kind": "scope_exceeded",
+      "scope": "github",
+      "request_ref": "https://github.com/intrale/platform/issues/7597#issuecomment-5798076359"
+    },
+    {
+      "provider": "antigravity",
+      "role": "ux",
+      "kind": "scope_exceeded",
+      "scope": "github",
+      "request_ref": "https://github.com/intrale/platform/issues/7597#issuecomment-5798076359"
+    }
+  ]
+}

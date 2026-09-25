@@ -84,39 +84,23 @@ que aprobarías igual, es `leve` — y entonces preguntate si corresponde rechaz
 
 ## Protocolo de oportunidades de mejora (aplicable en fase aprobacion)
 
-Durante tu code review, si identificás **refactors sugeridos, mejoras de cohesión, consolidaciones de duplicación, extracciones de utilidades u otros cambios de calidad semántica** que NO son bloqueantes del PR actual pero vale la pena registrar para iterar la calidad del codebase, **NO las dejes sólo como comentario en el PR**. Creá un issue independiente por cada una, **marcado como recomendación que requiere aprobación humana** (issue #2653 — el pipeline NO procesa recomendaciones hasta que un humano las apruebe):
+> **Corte transitorio de recomendaciones (#7673) — vigente hasta la Ola Propuestas (#7361 · modo ledger).**
+> Mientras `recomendaciones.crear_issues` no sea `true` en `.pipeline/config.yaml` (hoy es `false`), **no se crean issues de recomendación**: ningún `gh issue create` (ni `gh issue edit --add-label`, ni `gh api …/issues`) con los labels de recomendación. El hook `recommendation-guard.js` bloquea esos comandos y el guardrail de la cola de GitHub descarta esas órdenes. En los proveedores de fallback (Codex/Antigravity) los hooks no corren y la barrera es este rol: el corte aplica igual a todos.
 
-```bash
-export PATH="/c/Workspaces/gh-cli/bin:$PATH"
-gh issue create --repo intrale/platform \
-  --title "[review] <descripción imperativa breve>" \
-  --label "enhancement,source:recommendation,tipo:recomendacion,needs:triage-backlog,priority:low<,area:backend|,area:pipeline|,area:infra|,app:client|,app:business|,app:delivery>" \
-  --body "## Contexto
+Durante tu code review, si identificás **refactors sugeridos, mejoras de cohesión, consolidaciones de duplicación, extracciones de utilidades u otros cambios de calidad semántica** que NO deben frenar la aprobación del issue actual pero vale la pena registrar, listalas en el comentario del PR/issue origen con este formato:
 
-<qué observaste durante el code review / archivo:línea si aplica>
-
-## Beneficio esperado
-
-<qué mejora de calidad/mantenibilidad aporta>
-
-## Referencia
-
-> Propuesto automáticamente por el agente \`review\` durante la aprobación del issue #<origen>.
-> **Es una recomendación pendiente de triaje humano** — no entra al pipeline automático hasta que un humano agregue el label \`recommendation:approved\` (o la cierre con \`recommendation:rejected\`). Lo que la frena es tener \`tipo:recomendacion\` **sin** \`recommendation:approved\`; \`needs:triage-backlog\` sólo señala que falta triaje y **no** bloquea nada.
-> **No depende ni bloquea a #<origen>** — es una oportunidad independiente."
+```markdown
+### Otras oportunidades observadas
+- [review] <frase imperativa breve> — <beneficio en ≤ 12 palabras>
 ```
 
-**Reglas inquebrantables:**
+**Reglas:**
 
-1. **Un issue por recomendación** — no consolidar múltiples en el mismo issue.
-2. **Máximo 3 recomendaciones por PR/issue revisado** (anti-explosión, issue #2653). Si detectás más de 3, priorizá las top 3 por impacto en calidad/mantenibilidad y mencioná el resto en el comentario del PR sin crear issues.
-3. **Título con prefijo `[review]`** + frase imperativa breve.
-4. **Heredar** labels `area:*` y `app:*` del issue origen cuando apliquen.
-5. **OBLIGATORIO**: incluir labels `tipo:recomendacion` + `needs:triage-backlog`. Lo que frena al pulpo es `tipo:recomendacion` **sin** `recommendation:approved` — el freno ya vive en ese par y no requiere ningún label de bloqueo. `needs:triage-backlog` sólo marca que la recomendación espera triaje humano y **no** bloquea el pipeline.
-6. **Prohibido** labels `blocks`, `depends-on`, `blocked:dependencies`, `needs-definition` (este último porque sacaría a la recomendación del flujo de aprobación humana) y `needs-human` (reservado a bloqueos reales que exigen intervención inmediata del operador: mezclarlo con `tipo:recomendacion` ahoga las alertas que sí hay que atender).
-7. **Prioridad inicial siempre `priority:low`** — son mejoras de calidad, no bloqueantes.
-8. **Listar en `notas` del YAML** de tu resultado los issues creados.
-9. **Mencionar en el comentario del PR/issue origen** los issues creados, indicando que son recomendaciones pendientes de aprobación humana.
+1. **Máximo 3 oportunidades**, una línea cada una. Si detectás más, quedate con las 3 de mayor impacto en calidad/mantenibilidad.
+2. **Sin crear issues** para estas oportunidades.
+3. Título siempre `### Otras oportunidades observadas`, con ese texto exacto (sin emoji ni variantes). Si no hay ninguna, omití el bloque.
+4. Texto para humanos: sin `archivo:línea` ni jerga interna en la frase principal.
+5. El corte depende de `recomendaciones.crear_issues` y es transitorio hasta #7361, que define el reemplazo (registro único de propuestas).
 
 **Cuándo aplicar**: "Refactors sugeridos", "Oportunidades de extracción/consolidación", "Mejoras de cohesión no bloqueantes", "Código duplicado detectado a consolidar a futuro".
 

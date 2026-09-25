@@ -28,9 +28,12 @@ const PIPELINE = path.resolve(__dirname, '..');
  * @param {object} opts
  * @param {string[]|'throw'} opts.labels - lo que devuelve `getIssueLabels`
  *        (o 'throw' para simular rate limit / red caída).
+ * @param {string} [opts.configYaml] - #7673: contenido del `config.yaml` del
+ *        tmpdir (lo lee `recommendations-cut`). Sin él, no hay config ⇒ corte activo.
  */
-function correrOrden(orden, { labels = [] } = {}) {
+function correrOrden(orden, { labels = [], configYaml = null } = {}) {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), '5690-cola-'));
+    if (configYaml != null) fs.writeFileSync(path.join(dir, 'config.yaml'), configYaml);
     for (const sub of ['pendiente', 'trabajando', 'listo', 'fallido']) {
         fs.mkdirSync(path.join(dir, 'servicios', 'github', sub), { recursive: true });
     }
@@ -408,14 +411,15 @@ test('SEC-H: create-issue con recommendation:approved sin procedencia NO crea el
     assert.strictEqual(procesada.guardrail_motivo, 'approved-sin-origen-autorizado');
 });
 
-test('SEC-H: create-issue de una recomendacion limpia SI se crea (camino de los 5 roles)', () => {
+test('SEC-H: create-issue de una recomendacion limpia SI se crea con recomendaciones.crear_issues: true', () => {
+    // #7673 CA-6 — reversible sin tocar código: con la bandera en `true` vuelve el comportamiento previo.
     const { observado, procesada } = correrOrden({
         action: 'create-issue',
         issue: 9985,
         title: 'reco limpia',
         body: 'cuerpo',
         labels: 'tipo:recomendacion,source:recommendation,needs:triage-backlog,enhancement,priority:low',
-    });
+    }, { configYaml: 'recomendaciones:\n  crear_issues: true\n' });
     assert.strictEqual(observado.createIssue.length, 1, 'el flujo legitimo de recomendaciones no puede romperse');
     assert.strictEqual(observado.createIssue[0].labels, 'tipo:recomendacion,source:recommendation,needs:triage-backlog,enhancement,priority:low');
     assert.ok(!procesada || !procesada.discarded);
@@ -430,4 +434,86 @@ test('SEC-H: create-issue con needs-human SOLO se crea (bloqueo legitimo del cir
         labels: 'needs-human,priority:critical',
     });
     assert.strictEqual(observado.createIssue.length, 1, 'lo prohibido es la COMBINACION, no el label de bloqueo');
+});
+
+// -----------------------------------------------------------------------------
+// #7673 — corte transitorio de recomendaciones contra el worker real.
+// -----------------------------------------------------------------------------
+
+function leerAuditoria(dir) {
+    const auditDir = path.join(dir, 'audit');
+    if (!fs.existsSync(auditDir)) return '';
+    return fs.readdirSync(auditDir)
+        .filter((f) => f.startsWith('label-guardrail-'))
+        .map((f) => fs.readFileSync(path.join(auditDir, f), 'utf8'))
+        .join('');
+}
+
+test('#7673: create-issue con tipo:recomendacion y bandera false NO se crea y queda auditado sin body', () => {
+    const { observado, procesada, dir } = correrOrden({
+        action: 'create-issue',
+        issue: 9970,
+        title: '[guru] recomendacion que ya no se crea',
+        body: 'CUERPO-SENSIBLE-7673',
+        labels: 'enhancement,source:recommendation,tipo:recomendacion,needs:triage-backlog,priority:low',
+        skill: 'guru',
+    }, { configYaml: 'recomendaciones:\n  crear_issues: false\n' });
+    assert.deepStrictEqual(observado.createIssue, [], 'el issue NO puede crearse con el corte activo');
+    assert.deepStrictEqual(observado.createLabel, [], 'ni siquiera debe crear los labels');
+    assert.strictEqual(procesada.discarded, 'label-guardrail:recomendaciones-corte-transitorio');
+    const audit = leerAuditoria(dir);
+    assert.match(audit, /recomendaciones-corte-transitorio/);
+    assert.match(audit, /recomendacion que ya no se crea/, 'el título (recortado) entra al registro');
+    assert.match(audit, /"skill":"guru"/);
+    assert.ok(!audit.includes('CUERPO-SENSIBLE-7673'), 'SEC-4: el body nunca entra al registro');
+});
+
+test('#7673: sin config.yaml legible el corte está activo (fail-closed)', () => {
+    const { observado, procesada } = correrOrden({
+        action: 'create-issue',
+        issue: 9969,
+        title: 'reco sin config',
+        body: 'cuerpo',
+        labels: 'source:recommendation',
+    });
+    assert.deepStrictEqual(observado.createIssue, []);
+    assert.strictEqual(procesada.guardrail_motivo, 'recomendaciones-corte-transitorio');
+});
+
+test('#7673: bandera string "true" NO levanta el corte', () => {
+    const { observado, procesada } = correrOrden({
+        action: 'create-issue',
+        issue: 9968,
+        title: 'reco con bandera mal tipada',
+        body: 'cuerpo',
+        labels: 'tipo:recomendacion',
+    }, { configYaml: 'recomendaciones:\n  crear_issues: "true"\n' });
+    assert.deepStrictEqual(observado.createIssue, []);
+    assert.strictEqual(procesada.guardrail_motivo, 'recomendaciones-corte-transitorio');
+});
+
+test('#7673 SEC-2: procedencia declarada en la orden NO saltea el corte', () => {
+    const { observado, procesada } = correrOrden({
+        action: 'create-issue',
+        issue: 9967,
+        title: 'reco con origen humano declarado',
+        body: 'cuerpo',
+        labels: 'source:recommendation,enhancement',
+        origen: 'humano',
+        guardrail_authorized: true,
+        authorized_by: 'leitolarreta',
+    }, { configYaml: 'recomendaciones:\n  crear_issues: false\n' });
+    assert.deepStrictEqual(observado.createIssue, []);
+    assert.strictEqual(procesada.guardrail_motivo, 'recomendaciones-corte-transitorio');
+});
+
+test('#7673: create-issue sin labels de recomendación se crea igual con el corte activo', () => {
+    const { observado } = correrOrden({
+        action: 'create-issue',
+        issue: 9966,
+        title: 'issue normal',
+        body: 'cuerpo',
+        labels: 'enhancement,needs-definition',
+    }, { configYaml: 'recomendaciones:\n  crear_issues: false\n' });
+    assert.strictEqual(observado.createIssue.length, 1);
 });

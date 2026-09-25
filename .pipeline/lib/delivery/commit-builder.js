@@ -65,6 +65,61 @@ function ensureClosesReference(message, issueNumber) {
   return `${base}\n\nCloses #${issue}`;
 }
 
+// #7631 — Mensaje del squash con el bloque de trailers de autoría (CA-1).
+//
+// Pasos, en este orden y sin atajos:
+//   1. `stripForgedTrailers` sobre los mensajes de la rama: los commits los
+//      escribieron agentes, así que traen sus propios `Co-Authored-By`,
+//      `Closes` e incluso `Intrale-*` (Riesgo 1). Los Co-Authored-By válidos
+//      se REUBICAN al final del bloque, deduplicados.
+//   2. Truncar el cuerpo a `maxBodyBytes` por bytes UTF-8 sin partir un code
+//      point (Riesgo 5).
+//   3. Agregar `buildTrailerBlock` como ÚLTIMO párrafo. Como se agrega después
+//      del truncado, un truncado nunca corta los trailers.
+//
+// `Closes #N` lo emite el bloque (una sola vez). NO se llama a
+// `ensureClosesReference` sobre el cuerpo: se verifica al final que no
+// re-inyecte nada, porque de esa invariante depende `checkClosesIssue`.
+const TRUNCATION_NOTE = '[cuerpo truncado por el pipeline]';
+
+function truncateUtf8(text, maxBytes) {
+  if (Buffer.byteLength(text, 'utf8') <= maxBytes) return text;
+  const noteBytes = Buffer.byteLength(`\n\n${TRUNCATION_NOTE}`, 'utf8');
+  const budget = Math.max(0, maxBytes - noteBytes);
+  let used = 0;
+  let out = '';
+  for (const cp of text) { // itera por code point: nunca parte un surrogate
+    const b = Buffer.byteLength(cp, 'utf8');
+    if (used + b > budget) break;
+    used += b;
+    out += cp;
+  }
+  return `${out.replace(/\s+$/, '')}\n\n${TRUNCATION_NOTE}`;
+}
+
+function buildSquashMessage({
+  issue,
+  branchMessages = '',
+  humanLine,
+  aiLine,
+  maxBodyBytes = 16384,
+} = {}) {
+  const trailer = require('../authorship/trailer');
+  const stripped = trailer.stripForgedTrailers(branchMessages);
+  let body = stripped.text
+    .split('\n').map((l) => l.replace(/\s+$/, '')).join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+  const limit = Number.isInteger(maxBodyBytes) && maxBodyBytes > 0 ? maxBodyBytes : 16384;
+  if (body) body = truncateUtf8(body, limit);
+  const block = trailer.buildTrailerBlock({ issue, humanLine, aiLine, coAuthors: stripped.coAuthors });
+  const message = body ? `${body}\n\n${block}` : block;
+  if (ensureClosesReference(message, issue) !== message) {
+    throw new Error('[commit-builder] buildSquashMessage: el mensaje no referencia Closes del issue');
+  }
+  return message;
+}
+
 // API principal. Lee el issue, extrae el payload o cae a fallback.
 //
 // `issue` puede ser:
@@ -120,6 +175,7 @@ module.exports = {
   parseDeliveryPayload,
   buildFallbackMessage,
   ensureClosesReference,
+  buildSquashMessage,
   // exports para tests
-  _internals: { parseDeliveryPayload, buildFallbackMessage, ensureClosesReference },
+  _internals: { parseDeliveryPayload, buildFallbackMessage, ensureClosesReference, truncateUtf8 },
 };

@@ -28,8 +28,12 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const lib = require('../lib/build-child-env');
-const { buildChildEnv, SCOPES_BY_FASE, SCOPES_ALWAYS_ON, CREDENTIAL_SCOPES,
+const { SCOPES_BY_FASE, SCOPES_ALWAYS_ON, CREDENTIAL_SCOPES,
         DEFAULT_REQUIRES_BY_SKILL, KERNEL_FASE, KERNEL_PROJECT_ID } = lib;
+// #7634 — estos casos miden los invariantes previos (allowlist, scopes, techo por
+// fase, strip). El assert del env final (`assertChildEnvMinimal`) tiene sus tests
+// propios en lib/__tests__/ (child-env-*.test.js); acá se apaga explícitamente.
+const buildChildEnv = (opts) => lib.buildChildEnv({ assertMinimal: false, ...opts });
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
 

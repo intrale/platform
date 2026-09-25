@@ -1,0 +1,47 @@
+{
+  "fetched_at": "2026-09-23",
+  "currency": "USD",
+  "source_url": {
+    "runner_per_minute": "https://docs.github.com/en/billing/reference/actions-runner-pricing",
+    "included_quota_and_storage": "https://docs.github.com/en/billing/concepts/product-billing/github-actions",
+    "plans": "https://github.com/pricing",
+    "ghas": "https://github.blog/changelog/2025-03-04-introducing-github-secret-protection-and-github-code-security/",
+    "ghas_active_committer": "https://docs.github.com/en/billing/concepts/product-billing/github-advanced-security"
+  },
+  "per_minute_usd": { "linux": 0.006, "windows": 0.010, "macos": 0.062 },
+  "included_minutes_multipliers": { "linux": 1, "windows": 2, "macos": 10 },
+  "plans": {
+    "free": { "seat_usd_month": 0, "included_minutes": 2000, "included_storage_gb": 0.5, "ghas_available": false },
+    "team": { "seat_usd_month": 4, "included_minutes": 3000, "included_storage_gb": 2, "ghas_available": true }
+  },
+  "seats": 2,
+  "storage": {
+    "artifacts_usd_gb_month": 0.25,
+    "cache_free_gb_per_repo": 10,
+    "cache_usd_gb_month": 0.07
+  },
+  "ghas": {
+    "secret_protection_usd_committer_month": 19,
+    "code_security_usd_committer_month": 30,
+    "active_committer_window_days": 90
+  },
+  "control_perdido_sin_ghas": "Se pierde: code scanning (upload-sarif de Semgrep) / secret scanning + push protection del servidor. Reemplazo parcial: Semgrep + detect-secrets + Secret scan (blocking) en CI, sin push protection.",
+  "optimization_rules": [
+    { "id": "owasp-schedule", "type": "schedule", "workflow": "Security SAST", "job": "OWASP Dependency Check", "runs_per_day": 1,
+      "label": "OWASP Dependency Check pasa de correr por PR a un schedule diario" },
+    { "id": "sast-concurrency", "type": "concurrency", "workflow": "Security SAST",
+      "label": "concurrency + cancel-in-progress en Security SAST (cancela el run viejo de la misma rama)" },
+    { "id": "pr-checks-concurrency", "type": "concurrency", "workflow": "PR Checks",
+      "label": "concurrency + cancel-in-progress en PR Checks" },
+    { "id": "lints-consolidate", "type": "consolidate",
+      "workflows": ["Ghost Artifact Lint", "Operational State Lint", "Test Env Lint", "Write Target Lint", "Runtime state guard"],
+      "label": "Consolidar los lints en un solo workflow/job (un redondeo por commit en vez de cinco)" }
+  ],
+  "notes": [
+    "Los repos públicos no consumen minutos de runners estándar (fuente: included_quota_and_storage).",
+    "GitHub redondea cada job al minuto hacia arriba (fuente: runner_per_minute).",
+    "Los multiplicadores 2x/10x se usan para el consumo de la cuota incluida (supuesto conservador: la doc 2026 no los publica); el excedente se cotiza a la tarifa por SKU.",
+    "El precio Team tiene nota 'por los primeros 12 meses' en la página de pricing.",
+    "GHAS (Secret Protection + Code Security) no se puede comprar en el plan Free para repos privados; en Team sí."
+  ]
+}

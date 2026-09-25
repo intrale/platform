@@ -31,6 +31,7 @@
 //   GET /api/dash/reconciler-stale-orders        {total_24h, by_reason}
 //   GET /api/diagnostico/reconciler-stale-orders {total_24h, by_reason}  (alias)
 //   GET /api/dash/quota-snapshot      {state, ageMs, ttlMin, staleMaxHours, lastSnapshot, parserState}  (#3013)
+//   GET /api/dash/quota-balance       {ok, balance:{providers}, series:{gateado, cadena_agotada, unica_pata, trabajo_por_cuota}}  (#6560)
 
 'use strict';
 
@@ -1471,6 +1472,13 @@ const API_ROUTES = {
     // + drill-down REDACTADO. Hereda el gate loopback CA-S2 + Sec-Fetch-Site del
     // dispatch de API_ROUTES.
     '/api/dash/costos': (state, ctx) => slices.costosSlice(state, ctx),
+    // #6560 — saldo, ritmo y proyección de agotamiento de cuota por proveedor
+    // (balance del período vigente) + series derivadas para el auditor (#6809).
+    // `?horas=N` acota la ventana de las series (default 24, tope 168).
+    '/api/dash/quota-balance': (state, ctx, query) => {
+        const horas = query && typeof query.get === 'function' ? Number(query.get('horas')) : undefined;
+        return slices.quotaBalanceSlice(state, ctx, { horas });
+    },
     // #2976 — banner amarillo de cuota Anthropic agotada (modo determinístico).
     // Polling natural del dashboard cubre aparición/desaparición sin reload.
     '/api/dash/quota-exhausted': (state) => slices.quotaExhaustedSlice(state),
@@ -1513,6 +1521,10 @@ const API_ROUTES = {
     // muestra refresh, nunca "sin pendientes" (CA-8). Refresh natural 30s desde
     // el cliente; cache TTL 45s server-side en operativo-drift.
     '/api/dash/restart-pendiente': (state, ctx) => slices.restartPendienteSlice(state, ctx),
+    // #6809 — estado del auditor del modelo operativo: flag, última corrida y
+    // conteos por eje. SÓLO LECTURA (SEC-6809-9): no hay ruta para encenderlo
+    // ni para forzar una corrida. Hereda el gate loopback + Sec-Fetch-Site.
+    '/api/dash/process-audit': (state, ctx) => slices.processAuditSlice(state, ctx),
     // EP8-H7 (#3960) CA-1 — historial de transiciones vivo↔muerto por servicio
     // con agregación por motivo en ventana 7d. `?service=<svc>` filtra; sin
     // param devuelve todos. El `lastError` ya viene redactado del store

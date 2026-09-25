@@ -186,7 +186,7 @@
     {
       "modulo": "lib/agent-models-change-alert.js",
       "funcion": "logFile",
-      "linea": 350,
+      "linea": 387,
       "canal": "logs",
       "destino": "__dirname",
       "tier": 3,
@@ -198,7 +198,7 @@
     {
       "modulo": "lib/agent-models-change-alert.js",
       "funcion": "sendAlert",
-      "linea": 944,
+      "linea": 1156,
       "canal": "estado",
       "destino": "writeTarget.writeDir",
       "tier": 3,
@@ -208,7 +208,7 @@
     {
       "modulo": "lib/agent-models-change-alert.js",
       "funcion": "pipelineDir",
-      "linea": 1098,
+      "linea": 1316,
       "canal": "colas",
       "destino": "servicios/telegram/pendiente",
       "tier": 3,
@@ -234,6 +234,26 @@
       "tier": 3,
       "estado": "migrado",
       "via": "writeTarget.writeDir"
+    },
+    {
+      "modulo": "lib/authorship/git-source.js",
+      "funcion": "file",
+      "linea": 45,
+      "canal": "logs",
+      "destino": "logs/authorship-export.log",
+      "tier": 3,
+      "estado": "safe",
+      "via": "writeTarget.safeWriteDir"
+    },
+    {
+      "modulo": "lib/authorship/rollout.js",
+      "funcion": "defaultMarkerFile",
+      "linea": 31,
+      "canal": "estado",
+      "destino": "writeTarget.safeWriteDir",
+      "tier": 3,
+      "estado": "safe",
+      "via": "writeTarget.safeWriteDir"
     },
     {
       "modulo": "lib/codex-reset-credit.js",
@@ -600,7 +620,7 @@
     {
       "modulo": "lib/metrics/provider-cost.js",
       "funcion": "defaultFile",
-      "linea": 57,
+      "linea": 121,
       "canal": "logs",
       "destino": "__dirname",
       "tier": 3,
@@ -613,6 +633,26 @@
       "linea": 134,
       "canal": "estado",
       "destino": "writeTarget.writeDir",
+      "tier": 3,
+      "estado": "migrado",
+      "via": "writeTarget.writeDir"
+    },
+    {
+      "modulo": "lib/model-value-audit/cron.js",
+      "funcion": "defaultStateFile",
+      "linea": 95,
+      "canal": "estado",
+      "destino": "state/model-value-audit-cron.json",
+      "tier": 3,
+      "estado": "migrado",
+      "via": "writeTarget.writeDir"
+    },
+    {
+      "modulo": "lib/model-value-audit/publish-telegram.js",
+      "funcion": "root",
+      "linea": 204,
+      "canal": "colas",
+      "destino": "servicios/telegram/pendiente",
       "tier": 3,
       "estado": "migrado",
       "via": "writeTarget.writeDir"
@@ -680,9 +720,19 @@
     {
       "modulo": "lib/multi-provider/health-cron.js",
       "funcion": "root",
-      "linea": 965,
+      "linea": 1007,
       "canal": "estado",
       "destino": "__dirname",
+      "tier": 3,
+      "estado": "migrado",
+      "via": "writeTarget.writeDir"
+    },
+    {
+      "modulo": "lib/multi-provider/quota-ledger.js",
+      "funcion": "resolvePipelineDir",
+      "linea": 82,
+      "canal": "estado",
+      "destino": "writeTarget.writeDir",
       "tier": 3,
       "estado": "migrado",
       "via": "writeTarget.writeDir"
@@ -700,7 +750,7 @@
     {
       "modulo": "lib/operational-state-backend.js",
       "funcion": "pipelineDir",
-      "linea": 230,
+      "linea": 255,
       "canal": "estado",
       "destino": "process.env.PIPELINE_*",
       "tier": 1,
@@ -711,7 +761,7 @@
     {
       "modulo": "lib/operational-state-backend.js",
       "funcion": "halt",
-      "linea": 431,
+      "linea": 456,
       "canal": "estado",
       "destino": "writeTarget.writeDir",
       "tier": 1,
@@ -784,6 +834,16 @@
       "linea": 93,
       "canal": "colas",
       "destino": "writeTarget.writeDir",
+      "tier": 3,
+      "estado": "migrado",
+      "via": "writeTarget.writeDir"
+    },
+    {
+      "modulo": "lib/process-audit/cron.js",
+      "funcion": "defaultStateFile",
+      "linea": 104,
+      "canal": "estado",
+      "destino": "state/process-audit-cron.json",
       "tier": 3,
       "estado": "migrado",
       "via": "writeTarget.writeDir"
@@ -1513,7 +1573,7 @@
     {
       "modulo": "pulpo.js",
       "funcion": "PAUSE_FILE",
-      "linea": 21698,
+      "linea": 22176,
       "canal": "pausa",
       "destino": "writeTarget.writeDir",
       "tier": 1,
@@ -1988,7 +2048,7 @@
     {
       "modulo": "skills-deterministicos/delivery.js",
       "funcion": "REPO_ROOT",
-      "linea": 46,
+      "linea": 49,
       "canal": "logs",
       "destino": "logs/<agente>.log + desarrollo/*/trabajando/* (colas)",
       "tier": 3,
@@ -1998,7 +2058,7 @@
     {
       "modulo": "skills-deterministicos/delivery.js",
       "funcion": "savedOverride",
-      "linea": 1880,
+      "linea": 2104,
       "canal": "logs",
       "destino": "lectura del override para restaurarlo en finally",
       "tier": 3,
@@ -2009,7 +2069,7 @@
     {
       "modulo": "skills-deterministicos/delivery.js",
       "funcion": "auditFailClosedDecision",
-      "linea": 1882,
+      "linea": 2106,
       "canal": "logs",
       "destino": "absence-audit.safeAppendDecision via PIPELINE_DIR_OVERRIDE=REPO_ROOT/.pipeline (mutacion en runtime, #7393)",
       "tier": 3,

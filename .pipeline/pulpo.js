@@ -11838,6 +11838,12 @@ async function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, 
       pipelineDir: PIPELINE(),
       quotaModule: quotaExhausted,
       onLog: log,
+      // #6561 — balanceo por saldo de cuota y ritmo: con `config` el dispatcher
+      // consulta el ledger de #6560 y reordena la cadena declarada; `fase`
+      // alimenta la reserva de fin de período (fases críticas). Sin ledger o
+      // sin dato fresco degrada al orden declarado (CA-5).
+      config,
+      fase,
     });
 
     // #3823 — armar el bloque legible de la decisión (razones por proveedor +
@@ -11914,7 +11920,27 @@ async function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, 
     // Da trazabilidad en tiempo real de qué provider arrancó y por qué.
     // Hubo ruta de despacho: la cuenta de agotamientos vuelve a cero para que el
     // próximo backoff arranque en 1 minuto y no herede el techo de la noche.
-    try { dispatchBackoff.limpiar(PIPELINE(), skill, issue); } catch { /* best-effort */ }
+    // #6560 — si venía de una cadena agotada (había backoff), dejamos el cierre
+    // del intervalo en el audit del detector: `gate_blocked_spawn` (apertura,
+    // con issue+fase) → `dispatch_resumed` (cierre). Antes ese intervalo sólo
+    // vivía en `pulpo.log` y `dispatch-backoff.json` (volátil); ahora la serie
+    // "cadena agotada con trabajo elegible" (quota-series.js) se deriva de acá.
+    try {
+      const veniaAgotada = dispatchBackoff.limpiar(PIPELINE(), skill, issue);
+      if (veniaAgotada === true) {
+        try {
+          quotaExhausted.appendAudit({
+            event: 'dispatch_resumed',
+            agent: skill,
+            provider: (dispatchResolution.fallbackUsed && dispatchResolution.fallbackUsed.provider) || dispatchResolution.primaryProvider || null,
+            model: dispatchResolution.model || null,
+            error_type: null,
+            raw_excerpt: `issue=${issue} fase=${fase} pipeline=${pipeline} source=${dispatchResolution.source || 'primary'}`,
+            flag_set: false,
+          });
+        } catch { /* best-effort */ }
+      }
+    } catch { /* best-effort */ }
 
     if (providerResolutionLog) {
       log('lanzamiento', providerResolutionLog);
@@ -24128,6 +24154,24 @@ function METRICS_FILE() { return path.join(PIPELINE(), 'metrics-history.jsonl');
 const METRICS_MAX_ENTRIES = 2880; // ~24h a 30s/ciclo
 let metricsLastRotation = 0;
 
+// #6809 — archivo hermano con el rollup horario (90 días) que consume el
+// auditor del modelo operativo (`lib/process-audit/`).
+function METRICS_HOURLY_FILE() { return path.join(PIPELINE(), 'metrics-history-hourly.jsonl'); }
+
+// #6809 — hechos de despacho (elegibles + causa) memoizados ~1 min: el rollup
+// los muestrea sin recalcular `recolectarHechosDespacho` en cada ciclo de 30 s.
+// El watchdog de despacho refresca este mismo cache cuando ya los calculó.
+const HECHOS_ROLLUP_TTL_MS = 55000;
+let hechosRollupCache = { ts: 0, hechos: undefined };
+function hechosDespachoParaRollup(config) {
+  const now = Date.now();
+  if (now - hechosRollupCache.ts < HECHOS_ROLLUP_TTL_MS) return hechosRollupCache.hechos;
+  let hechos;
+  try { hechos = recolectarHechosDespacho(config, require('./lib/waves')); } catch { hechos = undefined; }
+  hechosRollupCache = { ts: now, hechos };
+  return hechos;
+}
+
 function persistMetricsSnapshot(config) {
   try {
     const pressure = getResourcePressure(config);
@@ -24166,6 +24210,19 @@ function persistMetricsSnapshot(config) {
     };
 
     fs.appendFileSync(METRICS_FILE(), JSON.stringify(snapshot) + '\n');
+
+    // #6809 — rollup horario para el auditor del modelo operativo. try/catch
+    // PROPIO: un fallo del rollup jamás afecta al snapshot ni al tick (SEC-6809-8).
+    // Acumulador O(1) en memoria; escribe UNA línea por hora al cambiar la hora UTC.
+    try {
+      const limits = getEffectiveResourceLimits(config);
+      require('./lib/process-audit/hourly-rollup').accumulate(snapshot, {
+        hechos: hechosDespachoParaRollup(config),
+        cap: limits.max_concurrent_devs,
+        devs: countRunningDevs(),
+        nocturna: limits._nightWindowActive === true,
+      }, { file: METRICS_HOURLY_FILE() });
+    } catch {}
 
     // Rotar cada 10min para no crecer indefinidamente
     const now = Date.now();
@@ -26792,6 +26849,7 @@ async function mainLoop() {
         //      - los bloqueados viven en `bloqueado-*`, no en `pendiente/`;
         //      - una cola legítimamente vacía da 0 → skip, sin alerta (CA-3).
         const hechos = recolectarHechosDespacho(cfgRoot, waves);
+        hechosRollupCache = { ts: Date.now(), hechos }; // #6809 — reuso en el rollup horario
         const pendientes = hechos.conteo.elegibles;
         const dispatching = countTrabajandoGlobal(cfgRoot);
         const cause = hechos.cause;
@@ -27177,6 +27235,74 @@ async function mainLoop() {
     }
   } catch (e) {
     log('vault-cut', `No se pudo iniciar el productor de propuesta: ${e.message}`);
+  }
+
+  // #7520 — AUDITOR calidad-precio del modelo por agente (parte 4 de #6793).
+  // Lógica en `lib/model-value-audit/cron.js` (tests propios). Timer SIEMPRE
+  // montado; el gate (`model_value_audit.enabled === true`) se relee en cada
+  // tick vía loadConfig() para encender/apagar sin restart (SEC-17). El tick
+  // es horario; la corrida real ocurre cada `cadence_days`. Con el default de
+  // fábrica (`enabled: false`) cuesta un loadConfig() por hora y cero escrituras.
+  try {
+    const mvaCron = require('./lib/model-value-audit/cron');
+    let mvaLastReason = null;
+    const runMvaTick = () => {
+      try {
+        const res = mvaCron.tickIfDue({
+          pipelineDir: PIPELINE(),
+          pipelineRoot: ROOT,
+          cfgRoot: loadConfig() || {},
+          logger: (msg) => log('model-value', msg),
+        });
+        // Sólo se loguean transiciones (deshabilitado/no_due son el estado normal).
+        if (res.reason !== mvaLastReason) {
+          log('model-value', res.reason);
+          mvaLastReason = res.reason;
+        }
+      } catch (err) {
+        log('model-value', `Tick excepción no capturada: ${err.message}`);
+      }
+    };
+    runMvaTick();
+    const mvaTimer = setInterval(runMvaTick, 60 * 60 * 1000);
+    if (typeof mvaTimer.unref === 'function') mvaTimer.unref();
+    log('model-value', 'Auditor calidad-precio montado: tick cada 60min');
+  } catch (e) {
+    log('model-value', `No se pudo montar el auditor calidad-precio: ${e.message}`);
+  }
+
+  // #6809 — AUDITOR del modelo operativo (proceso, capacidad, proveedores).
+  // Copia del brazo #7520: lógica en `lib/process-audit/cron.js` (tests
+  // propios). Timer SIEMPRE montado; el gate (`process_audit.enabled === true`)
+  // se relee en cada tick vía loadConfig() para encender/apagar sin restart.
+  // Tick horario; la corrida real ocurre cada `cadence_days`. Con el default de
+  // fábrica (`enabled: false`) cuesta un loadConfig() por hora y cero escrituras.
+  // Sólo sugiere: publica en el registro único (#6807), nunca aplica cambios.
+  try {
+    const paCron = require('./lib/process-audit/cron');
+    let paLastReason = null;
+    const runPaTick = () => {
+      try {
+        const res = paCron.tickIfDue({
+          pipelineDir: PIPELINE(),
+          cfgRoot: loadConfig() || {},
+          logger: (msg) => log('process-audit', msg),
+        });
+        // Sólo se loguean transiciones (deshabilitado/no_due son el estado normal).
+        if (res.reason !== paLastReason) {
+          log('process-audit', res.reason);
+          paLastReason = res.reason;
+        }
+      } catch (err) {
+        log('process-audit', `Tick excepción no capturada: ${err.message}`);
+      }
+    };
+    runPaTick();
+    const paTimer = setInterval(runPaTick, 60 * 60 * 1000);
+    if (typeof paTimer.unref === 'function') paTimer.unref();
+    log('process-audit', 'Auditor del modelo operativo montado: tick cada 60min');
+  } catch (e) {
+    log('process-audit', `No se pudo montar el auditor del modelo operativo: ${e.message}`);
   }
 
   // #5453 — COORDINADOR de la migración por host (rotación → convivencia →
@@ -27780,7 +27906,9 @@ async function mainLoop() {
       // dispara LLM ni completion — solo /v1/models. Fire-and-forget.
       try {
         const healthCron = require(path.join(PIPELINE(), 'lib', 'multi-provider', 'health-cron'));
-        healthCron.tickIfDue({}).then((tick) => {
+        // #7597 — `checkTerms: true`: alerta de términos vencidos de la política
+        // de proveedores (opt-in para no alterar a otros consumidores de runOnce).
+        healthCron.tickIfDue({ checkTerms: true }).then((tick) => {
           if (tick && tick.skipped) return;
           try {
             const effectiveModel = require(path.join(PIPELINE(), 'lib', 'metrics', 'effective-model'));

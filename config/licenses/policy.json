@@ -1,0 +1,90 @@
+{
+  "version": 1,
+  "descripcion": "Política de licencias de dependencias de terceros (#7592). Modelo asumido: propietario o source-available (D2). La evalúa scripts/licenses/policy.js; ver docs/legal/licencias-terceros.md. Una excepción nueva o modificada exige el label humano licencias:excepcion-aprobada en el PR.",
+  "gradle": {
+    "modulos": [
+      { "path": ":shared", "dir": "shared", "alcance": "distribuido" },
+      { "path": ":app:composeApp", "dir": "app/composeApp", "alcance": "distribuido" },
+      { "path": ":backend", "dir": "backend", "alcance": "distribuido" },
+      { "path": ":users", "dir": "users", "alcance": "distribuido" },
+      { "path": ":tools:forbidden-strings-processor", "dir": "tools/forbidden-strings-processor", "alcance": "build/test" },
+      { "path": ":qa", "dir": "qa", "alcance": "build/test" }
+    ],
+    "variantes_por_host": [
+      { "grupo": "org.jetbrains.compose.desktop", "prefijo": "desktop-jvm-", "motivo": "compose.desktop.currentOs resuelve el artefacto del SO que compila; se normaliza para que el inventario no dependa del host" },
+      { "grupo": "org.jetbrains.skiko", "prefijo": "skiko-awt-runtime-", "motivo": "runtime nativo de Skiko por SO, arrastrado por compose.desktop.currentOs" }
+    ]
+  },
+  "npm": {
+    "lockfiles": [
+      { "path": "package-lock.json", "alcance": "build/test", "descripcion": "Pipeline y scripts del repositorio: tooling interno, no se distribuye con el producto" },
+      { "path": ".claude/hooks/package-lock.json", "alcance": "build/test", "descripcion": "Hooks de Claude Code: tooling interno, no se distribuye con el producto" },
+      { "path": "docs/qa/package-lock.json", "alcance": "build/test", "descripcion": "Generación de evidencia de QA (puppeteer): tooling interno, no se distribuye" }
+    ],
+    "excluidos": [
+      { "path": "fixtures/demo/target/package-lock.json", "motivo": "Fixture de test del kernel: proyecto de juguete sin dependencias que no se distribuye ni se ejecuta en producción" }
+    ]
+  },
+  "allowed": [
+    { "id": "0BSD", "obligacion": "sin obligación de atribución" },
+    { "id": "Apache-2.0", "obligacion": "atribución en NOTICE y conservar el NOTICE del proyecto si existe" },
+    { "id": "BlueOak-1.0.0", "obligacion": "atribución en NOTICE" },
+    { "id": "BSD-2-Clause", "obligacion": "atribución en NOTICE" },
+    { "id": "BSD-3-Clause", "obligacion": "atribución en NOTICE" },
+    { "id": "BSL-1.0", "obligacion": "atribución en NOTICE" },
+    { "id": "CC0-1.0", "obligacion": "sin obligación de atribución" },
+    { "id": "ISC", "obligacion": "atribución en NOTICE" },
+    { "id": "MIT", "obligacion": "atribución en NOTICE" },
+    { "id": "MIT-0", "obligacion": "sin obligación de atribución" },
+    { "id": "Python-2.0", "obligacion": "atribución en NOTICE" },
+    { "id": "Unlicense", "obligacion": "sin obligación de atribución" },
+    { "id": "WTFPL", "obligacion": "sin obligación de atribución" },
+    { "id": "Zlib", "obligacion": "atribución en NOTICE" }
+  ],
+  "allowed_with_obligation": [
+    { "id": "EPL-1.0", "obligacion": "publicar los cambios al código EPL y atribución en NOTICE", "motivo": "copyleft débil a nivel de módulo: no alcanza al código propio que sólo la usa (D2)" },
+    { "id": "EPL-2.0", "obligacion": "publicar los cambios al código EPL y atribución en NOTICE", "motivo": "copyleft débil a nivel de módulo: no alcanza al código propio que sólo la usa (D2)" },
+    { "id": "LGPL-2.1-only", "obligacion": "publicar cambios a la librería y permitir reemplazarla (enlace dinámico)", "motivo": "copyleft débil: se permite usada como librería sin modificar (D2)" },
+    { "id": "LGPL-2.1-or-later", "obligacion": "publicar cambios a la librería y permitir reemplazarla (enlace dinámico)", "motivo": "copyleft débil: se permite usada como librería sin modificar (D2)" },
+    { "id": "LGPL-3.0-only", "obligacion": "publicar cambios a la librería y permitir reemplazarla (enlace dinámico)", "motivo": "copyleft débil: se permite usada como librería sin modificar (D2)" },
+    { "id": "LGPL-3.0-or-later", "obligacion": "publicar cambios a la librería y permitir reemplazarla (enlace dinámico)", "motivo": "copyleft débil: se permite usada como librería sin modificar (D2)" },
+    { "id": "MPL-2.0", "obligacion": "publicar los cambios a los archivos MPL y atribución en NOTICE", "motivo": "copyleft débil a nivel de archivo: no alcanza al código propio (D2)" }
+  ],
+  "denied": [
+    { "regla": "gpl", "prefijos": ["GPL-"], "motivo": "copyleft fuerte: distribuir el producto obligaría a abrir el código propio bajo GPL" },
+    { "regla": "agpl", "prefijos": ["AGPL-"], "motivo": "copyleft de red: ofrecer el servicio obligaría a publicar el código propio bajo AGPL" },
+    { "regla": "sspl", "prefijos": ["SSPL-"], "motivo": "SSPL obliga a publicar todo el stack que ofrece el servicio; incompatible con un modelo propietario" }
+  ],
+  "with_exceptions": [],
+  "aliases": {
+    "Apache 2.0": "Apache-2.0",
+    "Apache-2": "Apache-2.0",
+    "Apache License 2.0": "Apache-2.0",
+    "Apache License, Version 2.0": "Apache-2.0",
+    "The Apache License, Version 2.0": "Apache-2.0",
+    "The Apache Software License, Version 2.0": "Apache-2.0",
+    "ASL 2.0": "Apache-2.0",
+    "https://aws.amazon.com/apache2.0": "Apache-2.0",
+    "https://www.apache.org/licenses/LICENSE-2.0": "Apache-2.0",
+    "https://www.apache.org/licenses/LICENSE-2.0.txt": "Apache-2.0",
+    "MIT License": "MIT",
+    "The MIT License": "MIT",
+    "The MIT License (MIT)": "MIT",
+    "https://opensource.org/license/mit": "MIT",
+    "https://opensource.org/licenses/MIT": "MIT",
+    "BSD 3-Clause": "BSD-3-Clause",
+    "The BSD 3-Clause License": "BSD-3-Clause",
+    "New BSD License": "BSD-3-Clause",
+    "BSD 2-Clause": "BSD-2-Clause",
+    "Simplified BSD License": "BSD-2-Clause"
+  },
+  "out_of_scope": [
+    { "item": "Proyecto Gradle :app", "motivo": "Proyecto contenedor sin código ni dependencias propias: sus dependencias viven en :app:composeApp, que sí se inventaría" },
+    { "item": "Dependencias sólo de test o compileOnly de los módulos distribuidos (:shared, :app:composeApp, :backend, :users)", "motivo": "licensee inventaría el classpath runtime de cada target, que es lo que se distribuye; en :qa y :tools sí se inventarían compile + runtime + test (configuración licenseInventoryBuildTest)" },
+    { "item": "Plugins de Gradle, buildSrc y el build incluido gradle/", "motivo": "Herramientas de build que corren en la máquina que compila y no se distribuyen; licensee no inventaría el classpath de buildscript" },
+    { "item": "Toolchain npm de Kotlin/Wasm (webpack, karma) que descarga Gradle", "motivo": "No hay lockfile versionado (kotlin-js-store) y sólo se usa para empaquetar y probar; las dependencias Kotlin del target wasmJs sí se inventarían" },
+    { "item": "SDKs de plataforma (JDK, Android SDK, frameworks de Apple)", "motivo": "Los provee la plataforma de ejecución bajo sus propios términos; no forman parte de los artefactos que publica el proyecto" },
+    { "item": "Paquetes npm private: true y links de workspace", "motivo": "Son código propio del repositorio, no dependencias de terceros" }
+  ],
+  "exceptions": []
+}
