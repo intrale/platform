@@ -30,12 +30,36 @@ const CODEXBOT_ID = 215716766;   // leitocodexbot
 const ACTIONS_BOT_ID = 41898282;
 const EXT_ID = 9000001;
 const EXT2_ID = 9000002;
+const BASE_REPO_ID = 123456789;  // intrale/platform (fixture)
+const FORK_REPO_ID = 987654321;  // fork de un externo (fixture)
 
 function commitBy(id, email = 'x@example.com') {
     return { sha: 'c'.repeat(40), author: id === null ? null : { id, login: `u${id}` }, commit: { author: { email } } };
 }
-function pr({ userId = EXT_ID, assoc = 'NONE', commits = 1 } = {}) {
-    return { user: { id: userId }, author_association: assoc, commits };
+function pr({ userId = EXT_ID, assoc = 'NONE', commits = 1, headRepoId = FORK_REPO_ID } = {}) {
+    return {
+        user: { id: userId }, author_association: assoc, commits,
+        head: { repo: headRepoId === null ? null : { id: headRepoId } },
+        base: { repo: { id: BASE_REPO_ID } },
+    };
+}
+/**
+ * Fixture REAL de un commit de agente del pipeline, tal como lo devuelve
+ * `GET /repos/intrale/platform/pulls/7674/commits` (verificado 25/09/2026):
+ * email sin cuenta de GitHub ⇒ `author` y `committer` null, sin firma.
+ */
+function agentCommit(skill = 'backend-dev') {
+    const email = `${skill}-agent@intrale`;
+    return {
+        sha: 'eb27c8f80'.padEnd(40, '0'),
+        author: null,
+        committer: null,
+        commit: {
+            author: { name: `${skill}-agent`, email },
+            committer: { name: `${skill}-agent`, email },
+            verification: { verified: false, reason: 'unsigned' },
+        },
+    };
 }
 function sig(userId, hash = CLA_HASH) {
     return { user_id: userId, login_at_signing: `u${userId}`, signed_at: '2026-09-25T00:00:00Z', cla_version: '1.0', cla_hash: hash, pr: 1 };
@@ -154,7 +178,54 @@ test('T9b comentario anterior al último cambio del CLA o ya consumido ⇒ no se
     assert.equal(fresh[0].cla_hash, CLA_HASH);
 });
 
-test('T10 commit con author null (sin cuenta vinculada) ⇒ failure que ninguna firma destraba', () => {
+test('T4b PR de MEMBER desde este repo con commits reales de agentes (author null, *@intrale) ⇒ success', () => {
+    const r = cla.evaluate({
+        pr: pr({ userId: OWNER_ID, assoc: 'MEMBER', headRepoId: BASE_REPO_ID }),
+        commits: [agentCommit('backend-dev'), agentCommit('pipeline-dev')],
+        signatures: [], claHash: CLA_HASH,
+    });
+    assert.equal(r.state, 'success');
+    assert.equal(r.kind, 'internal');
+    assert.deepEqual(r.required, []);
+});
+
+test('T4c commit de agente sin cuenta en PR externo ⇒ sigue exigiendo firma (fork o mismo repo)', () => {
+    for (const headRepoId of [FORK_REPO_ID, BASE_REPO_ID]) {
+        const r = cla.evaluate({
+            pr: pr({ userId: EXT_ID, assoc: 'NONE', headRepoId }),
+            commits: [commitBy(EXT_ID), agentCommit()],
+            signatures: [sig(EXT_ID)], claHash: CLA_HASH,
+        });
+        assert.equal(r.state, 'failure', `headRepoId=${headRepoId}`);
+        assert.deepEqual(r.missing, [cla.UNLINKED]);
+    }
+});
+
+test('T4d PR interno desde un fork (o head sin repo) con commit sin cuenta ⇒ failure (fail-closed)', () => {
+    for (const headRepoId of [FORK_REPO_ID, null]) {
+        const r = cla.evaluate({
+            pr: pr({ userId: OWNER_ID, assoc: 'OWNER', headRepoId }),
+            commits: [commitBy(OWNER_ID), agentCommit()],
+            signatures: [], claHash: CLA_HASH,
+        });
+        assert.equal(r.state, 'failure', `headRepoId=${headRepoId}`);
+        assert.deepEqual(r.missing, [cla.UNLINKED]);
+    }
+    assert.equal(cla.isSameRepoHead({ head: { repo: { id: 1 } }, base: { repo: {} } }), false);
+    assert.equal(cla.isSameRepoHead({}), false);
+});
+
+test('T4e PR interno desde este repo con un commit externo CON cuenta ⇒ sigue exigiendo su firma', () => {
+    const r = cla.evaluate({
+        pr: pr({ userId: OWNER_ID, assoc: 'OWNER', headRepoId: BASE_REPO_ID }),
+        commits: [agentCommit(), commitBy(EXT2_ID)],
+        signatures: [], claHash: CLA_HASH,
+    });
+    assert.equal(r.state, 'failure');
+    assert.deepEqual(r.missing, [EXT2_ID]);
+});
+
+test('T10 commit con author null (sin cuenta vinculada) en PR desde fork ⇒ failure que ninguna firma destraba', () => {
     const r = cla.evaluate({
         pr: pr({ userId: OWNER_ID, assoc: 'OWNER' }), commits: [commitBy(OWNER_ID), commitBy(null)],
         signatures: [sig(EXT_ID)], claHash: CLA_HASH,
@@ -376,6 +447,22 @@ test('run: un marker falso de un tercero no se toma como comentario del bot', as
     const f = fakeGithubClient({ prData: prData(), commits: [commitBy(EXT_ID)], comments: [fake] });
     await cla.run({ github: f.github, context: prEvent, core: fakeCore(), claText: CLA_TEXT });
     assert.equal(f.calls.created.length, 1);
+});
+
+test('run: PR de MEMBER desde este repo con commits reales de agentes ⇒ success sin comentario', async () => {
+    const f = fakeGithubClient({
+        prData: prData({
+            user: { id: OWNER_ID }, author_association: 'MEMBER', commits: 2,
+            head: { sha: HEAD, repo: { id: BASE_REPO_ID } }, base: { repo: { id: BASE_REPO_ID, default_branch: 'main' } },
+        }),
+        commits: [agentCommit('backend-dev'), agentCommit('pipeline-dev')],
+    });
+    const out = await cla.run({ github: f.github, context: prEvent, core: fakeCore(), claText: CLA_TEXT });
+    assert.equal(out.state, 'success');
+    assert.equal(out.kind, 'internal');
+    assert.equal(lastStatus(f.calls).state, 'success');
+    assert.equal(lastStatus(f.calls).description, cla.DESCRIPTIONS.internal);
+    assert.equal(f.calls.created.length, 0);
 });
 
 test('run: PR interno ⇒ success sin comentario', async () => {

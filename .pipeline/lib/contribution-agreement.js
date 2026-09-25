@@ -144,8 +144,27 @@ function classifyActor({ userId, authorAssociation, allowlistIds } = {}) {
  * Para los commits, GitHub no expone `author_association`: un autor de commit
  * es interno sólo si está en la allowlist o si es el mismo autor (interno)
  * del PR. Nunca se mira el email ni el nombre git (CA-S3, test T5).
+ *
+ * Commits sin cuenta vinculada (`author: null`), p. ej. los de los agentes
+ * del pipeline (`<skill>-agent@intrale`): se atribuyen al autor del PR SÓLO
+ * si el PR es interno (OWNER/MEMBER o allowlist) Y la rama head vive en el
+ * propio repo (`sameRepo`, comparando IDs numéricos de repo). En cualquier
+ * otro caso siguen aportando `UNLINKED` (no firmable ⇒ failure).
+ *
+ * Fundamento de seguridad (#7599, rebote de review):
+ *   - Pushear una rama a este repo exige permiso de escritura: los commits
+ *     del head los subió alguien con write, no un tercero anónimo. En un fork
+ *     eso no vale, por eso ahí no hay atribución.
+ *   - La autoría git (nombre/email) no está autenticada: un miembro con write
+ *     siempre puede re-firmar como propio el commit de un tercero. El gate no
+ *     puede impedirlo, así que tratar los commits sin cuenta como del miembro
+ *     que abre el PR no abre un vector nuevo: la responsabilidad del aporte
+ *     queda en el miembro, igual que si los hubiera re-autoreado.
+ *   - Un commit con cuenta vinculada externa sigue exigiendo firma aunque el
+ *     PR sea interno (test T6): la atribución sólo cubre commits SIN cuenta.
+ *   - La decisión usa sólo IDs y `author_association`, nunca el email (CA-S3).
  */
-function collectExternalAuthors({ prAuthor, commits, allowlistIds } = {}) {
+function collectExternalAuthors({ prAuthor, commits, allowlistIds, sameRepo = false } = {}) {
     const ids = allowlistIds || INTERNAL_ALLOWLIST_IDS;
     if (!prAuthor || !isPositiveInt(prAuthor.id)) throw new Error('autor del PR inválido');
     if (!Array.isArray(commits)) throw new Error('lista de commits inválida');
@@ -161,8 +180,14 @@ function collectExternalAuthors({ prAuthor, commits, allowlistIds } = {}) {
     for (const commit of commits) {
         if (!commit || typeof commit !== 'object') throw new Error('commit inválido');
         const author = commit.author;
-        if (author === null || author === undefined) { add(UNLINKED); continue; }
-        if (!isPositiveInt(author.id)) { add(UNLINKED); continue; }
+        const unlinked = author === null || author === undefined || !isPositiveInt(author.id);
+        if (unlinked) {
+            // Commit sin cuenta: sólo se atribuye al autor de un PR interno cuya
+            // rama vive en este repo (ver fundamento arriba). Si no, UNLINKED.
+            if (sameRepo === true && prClass !== 'external') continue;
+            add(UNLINKED);
+            continue;
+        }
         if (author.id === prAuthor.id) {
             if (prClass === 'external') add(author.id);
             continue;
@@ -207,10 +232,21 @@ function hasSigned(signatures, userId, claHash) {
 }
 
 /**
+ * ¿La rama head del PR vive en el mismo repo que la base? Compara IDs
+ * numéricos de repo (no nombres). Si falta cualquier dato (fork borrado,
+ * payload incompleto) ⇒ false (fail-closed: se trata como fork).
+ */
+function isSameRepoHead(pr) {
+    const headId = pr && pr.head && pr.head.repo && pr.head.repo.id;
+    const baseId = pr && pr.base && pr.base.repo && pr.base.repo.id;
+    return isPositiveInt(headId) && isPositiveInt(baseId) && headId === baseId;
+}
+
+/**
  * Evalúa el PR. Fail-closed: cualquier entrada inválida ⇒ `failure`.
  *
  * @param {object} p
- * @param {{ user: {id:number}, author_association: string, commits?: number }} p.pr
+ * @param {{ user: {id:number}, author_association: string, commits?: number, head?: {repo?: {id:number}}, base?: {repo?: {id:number}} }} p.pr
  * @param {Array<{author: ?{id:number}}>} p.commits
  * @param {Array<object>} p.signatures  registros del JSON de `cla-signatures`
  * @param {string} p.claHash
@@ -234,6 +270,7 @@ function evaluate({ pr, commits, signatures, claHash, allowlistIds } = {}) {
             prAuthor: { id: pr.user.id, authorAssociation: pr.author_association },
             commits,
             allowlistIds,
+            sameRepo: isSameRepoHead(pr),
         });
         if (required.length === 0) {
             return { state: 'success', description: DESCRIPTIONS.internal, kind: 'internal', missing: [], required };
@@ -568,6 +605,7 @@ module.exports = {
     parseClaVersion,
     classifyActor,
     collectExternalAuthors,
+    isSameRepoHead,
     isValidSignature,
     parseSignatures,
     evaluate,

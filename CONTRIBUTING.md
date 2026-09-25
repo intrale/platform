@@ -55,3 +55,10 @@ Sólo el ID numérico de tu cuenta de GitHub, tu nombre de usuario al momento de
 ## Mientras el repositorio sea público
 
 Este acuerdo aplica a los aportes externos mientras el repositorio sea público. Si en algún momento pasa a ser privado, dejará de recibir aportes externos por fork.
+
+## Para mantenedores: cómo se tratan los aportes internos
+
+- Los pull requests de miembros de la organización (`OWNER`/`MEMBER`) o de cuentas de la allowlist (por ID numérico) no requieren firma.
+- Los commits **sin cuenta de GitHub vinculada** (por ejemplo, los de los agentes del pipeline, que commitean como `<skill>-agent@intrale`) se atribuyen al autor del pull request **sólo** si el pull request es interno **y** su rama vive en este mismo repositorio (no en un fork). Pushear a este repositorio exige permiso de escritura, así que el miembro que abre el pull request responde por esos commits. En un pull request externo o desde un fork, un commit sin cuenta sigue bloqueando el chequeo.
+- Un commit con cuenta vinculada de alguien externo exige su firma aunque el pull request sea interno.
+- GitHub no informa la pertenencia a la organización de los autores de commits. Un miembro que no está en la allowlist y no es el autor del pull request se trata como externo: si hace falta, agregá su ID numérico a la allowlist de `.pipeline/lib/contribution-agreement.js`.
