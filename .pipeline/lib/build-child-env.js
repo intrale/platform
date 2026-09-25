@@ -73,6 +73,29 @@ const pipelineEnv = require('./pipeline-env');
 // en disco + formas de secreto, y el error tipado del entorno del hijo.
 const credentialSentinel = require('./credential-sentinel');
 const { ChildEnvViolation } = require('./child-env-error');
+// #7635 — loader de excepciones declaradas (módulo HOJA: no importa este archivo).
+const childEnvExceptions = require('./child-env-exceptions');
+
+// -----------------------------------------------------------------------------
+// #7635 — los DATOS de permisos (allowlists, scopes, techos por fase y defaults
+// por skill) viven en `child-env-scopes.json`, no en este archivo. Así el gate de
+// permisos de delivery (`lib/permission-change-guard.js`) los protege POR PATH,
+// sin tener que hacer `require()` del código del PR para saber si cambiaron.
+//
+// Se resuelve desde `__dirname` (nunca desde cwd ni env) y se congela en
+// profundidad: los exports mantienen nombre, forma y `Object.isFrozen`.
+// Un JSON ilegible TIRA al cargar el módulo (fail-closed y ruidoso): sin la
+// tabla de permisos no hay forma segura de armar el env de un hijo.
+// -----------------------------------------------------------------------------
+function deepFreeze(obj) {
+    if (obj && typeof obj === 'object' && !Object.isFrozen(obj)) {
+        for (const v of Object.values(obj)) deepFreeze(v);
+        Object.freeze(obj);
+    }
+    return obj;
+}
+const CHILD_ENV_SCOPES_PATH = path.join(__dirname, 'child-env-scopes.json');
+const SCOPES_DATA = deepFreeze(JSON.parse(fs.readFileSync(CHILD_ENV_SCOPES_PATH, 'utf8')));
 
 // -----------------------------------------------------------------------------
 // #7634 · B1 — lookupEnvCI: búsqueda de una variable SIN distinguir mayúsculas.
@@ -123,28 +146,7 @@ function lookupEnvCI(src, name) {
 //   NODE_PATH    — resolución de módulos Node globales
 //   NODE_OPTIONS — flags de Node (--max-old-space-size, etc.)
 // -----------------------------------------------------------------------------
-const SYSTEM_ALLOWLIST = Object.freeze([
-    'PATH',
-    'PATHEXT',
-    'HOME',
-    'USERPROFILE',
-    'USERNAME',
-    'APPDATA',
-    'LOCALAPPDATA',
-    'PROGRAMFILES',
-    'PROGRAMFILES(X86)',
-    'PROGRAMDATA',
-    'SystemRoot',
-    'ComSpec',
-    'WINDIR',
-    'TEMP',
-    'TMP',
-    'LANG',
-    'LC_ALL',
-    'TZ',
-    'NODE_PATH',
-    'NODE_OPTIONS',
-]);
+const SYSTEM_ALLOWLIST = SCOPES_DATA.SYSTEM_ALLOWLIST; // #7635 — child-env-scopes.json
 
 // -----------------------------------------------------------------------------
 // PROVIDER_DEFAULT_CREDENTIAL_ENV — fallback si `agent-models.json` no declara
@@ -167,29 +169,12 @@ const PROVIDER_DEFAULT_CREDENTIAL_ENV = Object.freeze({
 // **NO agregar scopes sin justificación** — cada scope es un permiso adicional
 // que se le da al child.
 // -----------------------------------------------------------------------------
-const CREDENTIAL_SCOPES = Object.freeze({
-    github: Object.freeze(['GH_TOKEN', 'GITHUB_TOKEN']),
-    aws: Object.freeze([
-        'AWS_ACCESS_KEY_ID',
-        'AWS_SECRET_ACCESS_KEY',
-        'AWS_SESSION_TOKEN',
-        'AWS_REGION',
-        'AWS_PROFILE',
-    ]),
-    'gradle-android': Object.freeze([
-        'JAVA_HOME',
-        'GRADLE_USER_HOME',
-        'ANDROID_HOME',
-        'ANDROID_SDK_ROOT',
-        'ANDROID_AVD_HOME',
-    ]),
-    // Los hooks pueden conservar contexto de destino, pero nunca reciben el
-    // token: notifican mediante la cola/frontera local privilegiada.
-    'telegram-hooks': Object.freeze(['TELEGRAM_CHAT_ID']),
-});
+const CREDENTIAL_SCOPES = SCOPES_DATA.CREDENTIAL_SCOPES; // #7635 — child-env-scopes.json
+// Los hooks pueden conservar contexto de destino (`telegram-hooks`), pero nunca
+// reciben el token: notifican mediante la cola/frontera local privilegiada.
 
 // Scope always-on sin secretos, conservado por compatibilidad de hooks.
-const SCOPES_ALWAYS_ON = Object.freeze(['telegram-hooks']);
+const SCOPES_ALWAYS_ON = SCOPES_DATA.SCOPES_ALWAYS_ON; // #7635 — child-env-scopes.json
 
 // -----------------------------------------------------------------------------
 // SCOPES_BY_FASE — TECHO de scopes por fase del pipeline (#5901 · REQ-SEC-4).
@@ -225,34 +210,18 @@ const SCOPES_ALWAYS_ON = Object.freeze(['telegram-hooks']);
 // fail-closed y perdería scopes el día que #5040 active el aislamiento.
 const KERNEL_FASE = 'kernel';
 
-const SCOPES_BY_FASE = Object.freeze({
-    // --- pipeline `definicion` (config.yaml:6) --------------------------------
-    // guru, security · po, ux, architect · planner — todos sólo leen/comentan
-    // issues por `gh`. Ninguno compila ni toca AWS.
-    analisis:     Object.freeze(['github']),
-    criterios:    Object.freeze(['github']),
-    sizing:       Object.freeze(['github']),
-
-    // --- pipeline `desarrollo` (config.yaml:11) -------------------------------
-    // po, ux, guru — igual que en definición.
-    validacion:   Object.freeze(['github']),
-    // backend-dev pide aws + gradle-android; android-dev/web-dev gradle-android;
-    // pipeline-dev sólo github. El techo es la unión de los cuatro.
-    dev:          Object.freeze(['github', 'gradle-android', 'aws']),
-    // skill determinístico `build`: compila, no habla con GitHub.
-    build:        Object.freeze(['gradle-android']),
-    // tester (gradle) · security (github) · qa (gradle + aws + github).
-    verificacion: Object.freeze(['github', 'gradle-android', 'aws']),
-    // `linter` es Node puro sobre el worktree: no necesita ninguna credencial.
-    linteo:       Object.freeze([]),
-    // review, po, ux, architect — comentan el PR.
-    aprobacion:   Object.freeze(['github']),
-    // `delivery` mergea a main.
-    entrega:      Object.freeze(['github']),
-
-    // --- kernel (commander) ---------------------------------------------------
-    [KERNEL_FASE]: Object.freeze(['github']),
-});
+// Techos vigentes (child-env-scopes.json):
+//   definicion: analisis/criterios/sizing → github (guru, security, po, ux,
+//     architect, planner sólo leen/comentan issues por gh).
+//   desarrollo: validacion → github · dev → github + gradle-android + aws
+//     (unión de backend-dev, android-dev, web-dev, pipeline-dev) · build →
+//     gradle-android · verificacion → github + gradle-android + aws (tester,
+//     security, qa) · linteo → [] (Node puro) · aprobacion/entrega → github.
+//   kernel (KERNEL_FASE) → github.
+const SCOPES_BY_FASE = SCOPES_DATA.SCOPES_BY_FASE; // #7635 — child-env-scopes.json
+if (!Object.prototype.hasOwnProperty.call(SCOPES_BY_FASE, KERNEL_FASE)) {
+    throw new Error(`[build-child-env] child-env-scopes.json sin techo para la fase '${KERNEL_FASE}'.`);
+}
 
 // Material reservado que jamás puede cruzar al child, ni con aislamiento
 // desactivado ni reintroducido desde pipelineExtras bajo otro nombre.
@@ -339,10 +308,9 @@ function stripReservedChildSecrets(candidateEnv = {}, operatorEnv = process.env)
 // fuera del env. Si algún día un provider HTTP-only necesitara una key acá, la
 // decisión pasa por `buildChildEnv` (scopes por skill), no por este helper.
 // -----------------------------------------------------------------------------
-const CLI_OAUTH_ALLOWLIST = Object.freeze([
-    'CODEX_HOME',        // codex: directorio de auth.json/config.toml (default ~/.codex)
-    'CLAUDE_CONFIG_DIR', // claude: directorio de config/credenciales (default ~/.claude)
-]);
+// CODEX_HOME: directorio de auth.json/config.toml de codex (default ~/.codex).
+// CLAUDE_CONFIG_DIR: directorio de config/credenciales de claude (default ~/.claude).
+const CLI_OAUTH_ALLOWLIST = SCOPES_DATA.CLI_OAUTH_ALLOWLIST; // #7635 — child-env-scopes.json
 
 function buildMinimalCliEnv({ processEnv = process.env, extras = {} } = {}) {
     const src = (processEnv && typeof processEnv === 'object') ? processEnv : {};
@@ -400,43 +368,13 @@ const PROVIDER_MODEL_ENV = Object.freeze({
 // #3085 (comments del issue). Skills que no aparecen acá obtienen `[]`
 // (solo SYSTEM_ALLOWLIST + PIPELINE_* + SCOPES_ALWAYS_ON + provider key).
 // -----------------------------------------------------------------------------
-const DEFAULT_REQUIRES_BY_SKILL = Object.freeze({
-    // Skills LLM que postean comentarios / leen issues vía gh CLI.
-    security: ['github'],
-    guru: ['github'],
-    po: ['github'],
-    ux: ['github'],
-    planner: ['github'],
-    review: ['github'],
-    refinar: ['github'],
-    priorizar: ['github'],
-    historia: ['github'],
-    doc: ['github'],
-    handoff: ['github'],
-
-    // Skills LLM que tocan código → necesitan github (comentarios + branches).
-    'pipeline-dev': ['github'],
-    'android-dev': ['github', 'gradle-android'],
-    'backend-dev': ['github', 'aws', 'gradle-android'],
-    'web-dev': ['github', 'gradle-android'],
-
-    // Skills determinísticos (bypass LLM).
-    builder: ['gradle-android'],
-    tester: ['gradle-android'],
-    delivery: ['github'],
-    linter: [],
-
-    // Verificación.
-    qa: ['gradle-android', 'aws', 'github'],
-    build: ['gradle-android'],
-
-    // #7634 — skills del kernel. `[]` = mismo efectivo que tenían sin entrada
-    // (sólo SCOPES_ALWAYS_ON): no gana ningún scope. La entrada existe para que
-    // `assertChildEnvMinimal` los reconozca como roles declarados aunque
-    // `agent-models.json` no se pueda leer (unknown-skill bloquearía al Commander).
-    'telegram-commander': [],
-    'telegram-sherlock': [],
-});
+// Grupos (child-env-scopes.json): skills LLM que comentan/leen issues → github;
+// los que tocan código → github (+ gradle-android, + aws en backend-dev);
+// determinísticos (builder, tester, build → gradle-android; delivery → github;
+// linter → []); qa → gradle-android + aws + github; kernel (#7634:
+// telegram-commander, telegram-sherlock → [] para que el assert los reconozca
+// como roles declarados aunque agent-models.json no se pueda leer).
+const DEFAULT_REQUIRES_BY_SKILL = SCOPES_DATA.DEFAULT_REQUIRES_BY_SKILL; // #7635 — child-env-scopes.json
 
 // -----------------------------------------------------------------------------
 // #7634 · E1 — ISOLATION_RESERVED_NAMES: credenciales que NUNCA pueden llegar a
@@ -499,7 +437,11 @@ const CHILD_TRANSPORT_ALLOWLIST = Object.freeze([
 //     (las reservadas GANAN sobre las excepciones)
 //
 // Todas las comparaciones de nombre son SIN distinguir mayúsculas (S3).
-// `exceptions` se copia y congela al recibirla; el loader llega en #7635.
+// `exceptions` se copia y congela al recibirla. #7635: el loader
+// (`lib/child-env-exceptions.js`) la alimenta desde `buildChildEnv`, junto con
+// `expiredExceptions` ([{ nombre, revisar_el, aprobador }]): una variable que
+// sólo está cubierta por una excepción VENCIDA da `expired-exception`, no
+// `undeclared`.
 // -----------------------------------------------------------------------------
 function assertChildEnvMinimal(env, opts = {}) {
     const {
@@ -509,12 +451,21 @@ function assertChildEnvMinimal(env, opts = {}) {
         providerKeyVar = null,
         effectiveScopes = [],
         exceptions = [],
+        expiredExceptions = [],
         skillDeclared,
         ancla,
     } = opts;
     const excepciones = Object.freeze([...(Array.isArray(exceptions) ? exceptions : [])].map(String));
     const causas = [];
     const push = (kind, nombre) => causas.push({ kind, nombres: nombre === undefined ? [] : [nombre] });
+    // #7635 — vencidas por nombre (mayúsculas indistintas).
+    const vencidasPorNombre = new Map();
+    for (const v of Array.isArray(expiredExceptions) ? expiredExceptions : []) {
+        if (!v || typeof v.nombre !== 'string' || v.nombre === '') continue;
+        const u = v.nombre.toUpperCase();
+        if (!vencidasPorNombre.has(u)) vencidasPorNombre.set(u, []);
+        vencidasPorNombre.get(u).push({ nombre: v.nombre, revisar_el: v.revisar_el, aprobador: v.aprobador });
+    }
 
     if (typeof fase !== 'string' || !Object.prototype.hasOwnProperty.call(SCOPES_BY_FASE, fase)) {
         push('unknown-phase');
@@ -560,7 +511,15 @@ function assertChildEnvMinimal(env, opts = {}) {
         if (reservadas.has(u) && !credencialesPermitidas.has(u)) {
             push('reserved-alias', name);
         } else if (!name.startsWith('PIPELINE_') && !permitidas.has(u)) {
-            push('undeclared', name);
+            if (vencidasPorNombre.has(u)) {
+                causas.push({
+                    kind: 'expired-exception',
+                    nombres: [name],
+                    vencimientos: vencidasPorNombre.get(u).map((v) => ({ ...v, nombre: name })),
+                });
+            } else {
+                push('undeclared', name);
+            }
         }
         if (!credencialesPermitidas.has(u)) {
             const kind = credentialSentinel.looksLikeSecret(src[name]);
@@ -692,6 +651,9 @@ function buildChildEnv(opts = {}) {
         // `true`; en producción nadie pasa `false` (existe para el test que
         // separa el warn de fase ausente del throw del assert).
         assertMinimal = true,
+        // #7635 — fuente de excepciones del rol. Inyectable SÓLO por código (tests);
+        // el default lee el YAML junto a esta `lib/`, nunca de cwd ni del env (SEC-1).
+        exceptionsForAgent = childEnvExceptions.forAgent,
     } = opts;
 
     if (!skill || typeof skill !== 'string') {
@@ -855,7 +817,7 @@ function buildChildEnv(opts = {}) {
             `[build-child-env] fase '${fase === undefined ? '(ausente)' : fase}' sin techo declarado `
             + `— skill='${skill}' projectId='${effectiveProjectId}' `
             + `scopes omitidos=[${omitidos.join(', ')}]. `
-            + 'Acción: agregar la fase a SCOPES_BY_FASE en lib/build-child-env.js '
+            + 'Acción: agregar la fase a SCOPES_BY_FASE en lib/child-env-scopes.json '
             + `(fases con techo: ${Object.keys(SCOPES_BY_FASE).join(', ')}).`
         );
     }
@@ -921,7 +883,24 @@ function buildChildEnv(opts = {}) {
     const final = stripReservedChildSecrets(merged, processEnv);
     if (hijoEnPruebas) require('./credenciales-ambiente').purgarClavesProductivas(final);
     if (assertMinimal) {
+        // #7635 — excepciones declaradas del rol (`tipo: agente`), leídas SIEMPRE
+        // del YAML junto a esta `lib/` (SEC-1). `forAgent` nunca tira: un YAML
+        // roto da cero excepciones (fail-closed). Sólo en el camino ON.
+        let ex;
+        try {
+            ex = exceptionsForAgent(skill, {
+                reservedNames: [...ISOLATION_RESERVED_NAMES, ...RESERVED_CHILD_SECRET_NAMES],
+            });
+        } catch {
+            ex = null;
+        }
+        if (!ex || !Array.isArray(ex.nombres) || !Array.isArray(ex.vencidas)) {
+            ex = { nombres: [], vencidas: [], error: 'respuesta inválida del loader' };
+        }
+        if (ex.error) warn(`[build-child-env] excepciones de entorno no cargadas: ${ex.error} (se aplican cero excepciones).`);
         assertChildEnvMinimal(final, {
+            exceptions: ex.nombres,
+            expiredExceptions: ex.vencidas,
             skill,
             fase,
             intento: providerName,

@@ -269,6 +269,8 @@ function installRollbackScript(dir) {
         'lib/launcher-env.js', 'lib/build-child-env.js', 'lib/safe-project-id.js',
         // #7634 — build-child-env requiere dos módulos hoja nuevos.
         'lib/credential-sentinel.js', 'lib/child-env-error.js',
+        // #7635 — dependencias del loader de excepciones y de los scopes extraídos.
+        'lib/child-env-exceptions.js', 'lib/child-env-scopes.json',
         'lib/multi-provider/validate-quota-ceilings.js']) {
         const dst = path.join(dir, '.pipeline', rel);
         fs.mkdirSync(path.dirname(dst), { recursive: true });

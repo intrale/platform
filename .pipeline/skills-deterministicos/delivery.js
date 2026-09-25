@@ -34,6 +34,11 @@ const requiredChecks = require('../lib/required-checks');
 // módulo compartido; este skill (el camino REAL de la fase `entrega`) y el CLI
 // `.pipeline/delivery.js` la consumen, no la duplican.
 const freshnessGate = require('../lib/delivery/freshness-gate');
+// #7635 — gate de permisos del entorno de agentes (paso 4b de mergeWithGates).
+// Se carga del repo principal (código de `main`): un PR que lo modifica no
+// cambia el guard que evalúa su propio merge.
+const { detectPermissionChanges } = require('../lib/permission-change-guard');
+const { spawnSync } = require('child_process');
 // #7631 — Trailer de autoría del squash + gate pre-merge `authorship`.
 const authorship = require('../lib/authorship');
 const commitBuilder = require('../lib/delivery/commit-builder');
@@ -578,9 +583,12 @@ function getPRSnapshot(prNumber, { ghImpl = git.runGh, cwd = WORK_DIR, logAppend
     const labels = Array.isArray(parsed.labels)
         ? parsed.labels.map((l) => (l && typeof l.name === 'string' ? l.name : null)).filter(Boolean)
         : [];
-    const files = Array.isArray(parsed.files)
-        ? parsed.files.map((f) => (f && typeof f.path === 'string' ? f.path : null)).filter(Boolean)
+    const permissionFiles = Array.isArray(parsed.files)
+        ? parsed.files.filter((f) => f && typeof f.path === 'string' && f.path)
+            .map((f) => (typeof f.previous_filename === 'string' && f.previous_filename
+                ? { path: f.path, previous_filename: f.previous_filename } : { path: f.path }))
         : [];
+    const files = permissionFiles.map((f) => f.path);
     // Un PR SIEMPRE toca archivos: una lista vacía es una lectura degradada, no
     // un PR inocuo. Tratarla como "no matchea CODEOWNERS" sería fail-open.
     if (!files.length) {
@@ -589,6 +597,11 @@ function getPRSnapshot(prNumber, { ghImpl = git.runGh, cwd = WORK_DIR, logAppend
 
     return {
         ok: true, labels, files, headRefOid, headRefName,
+        // Conserva files como strings para los otros gates. El snapshot de gh
+        // no acredita todos los renombres, incluso con menos de 100 archivos.
+        // Sólo la API paginada permite acreditar la lista para permisos.
+        permissionFiles,
+        filesComplete: false,
         // #6384/#6431 — Disciplina de dos valores: `null` = "no lo leí" (el `gh`
         // no conoce el campo, o degradamos de nivel), `[]` = "lo leí y está
         // vacío" (el commit todavía no tiene ningún check instanciado: la
@@ -818,6 +831,10 @@ function reclaimMergeWithGates({ prNumber, issue = null, issueTitle, expectedHea
             try { return verifyRemoteBranchOrigin(cwd, branchName); }
             catch (e) { return { ok: false, reason: `excepcion: ${((e && e.message) || '').slice(0, 120)}` }; }
         },
+        // #7635 — la reclaim también mergea: el gate de permisos (paso 4b) se
+        // inyecta igual que en el camino principal. Sin esto, el default
+        // fail-closed bloquearía toda reclaim, y un wiring laxo la abriría.
+        checkPermissions: buildPermissionsChecker({ prNumber, cwd, logAppend }),
         // #7631 — gate `authorship` + fábrica común del PUT (Riesgo 4: el
         // `sha` es el mismo que valida `getSnapshot` contra `expectedHeadSha`).
         evaluateAuthorship: buildAuthorshipEvaluator({ issue, cwd, logAppend }),
@@ -841,18 +858,94 @@ function buildRequiredContextsReader({ cwd = WORK_DIR, baseBranch = MERGE_BASE_B
     return requiredChecks.createRequiredContextsCache({ cwd, baseBranch });
 }
 
-function applyNeedsHumanLabel(issue, prNumber, owners, repoRoot) {
+function applyNeedsHumanLabel(issue, prNumber, owners, repoRoot, bodyOverride = null) {
     const lbl = git.runGh(
         ['issue', 'edit', String(issue), '--add-label', 'needs-human'],
         { cwd: repoRoot, timeoutMs: 30 * 1000 }
     );
     const ownersList = owners.join(' ');
-    const body = `🛑 Merge bloqueado — este PR toca paths con CODEOWNERS humano (${ownersList}). Requiere review manual antes de mergear.`;
+    const body = (typeof bodyOverride === 'string' && bodyOverride)
+        ? bodyOverride
+        : `🛑 Merge bloqueado — este PR toca paths con CODEOWNERS humano (${ownersList}). Requiere review manual antes de mergear.`;
     const cmt = git.runGh(
         ['pr', 'comment', String(prNumber), '--body', body],
         { cwd: repoRoot, timeoutMs: 30 * 1000 }
     );
     return { labelExitCode: lbl.exit_code, commentExitCode: cmt.exit_code };
+}
+
+// -----------------------------------------------------------------------------
+// #7635 — Wiring de producción del gate de permisos (paso 4b).
+//
+// Lee el contenido con `git show <ref>:<path>` vía `spawnSync` SIN shell:
+// nunca se hace `require()` de código del PR. `null` = el archivo no existe en
+// ese ref; cualquier otra falla TIRA y el guard la convierte en motivo
+// (fail-closed).
+// -----------------------------------------------------------------------------
+const PERMISOS_MAX_FILES_API = 3000; // techo documentado de la API de GitHub
+
+function gitShowAt(ref, repoPath, { cwd = WORK_DIR, spawnImpl = spawnSync } = {}) {
+    if (!/^[A-Za-z0-9_./-]{1,200}$/.test(String(ref)) || !/^[A-Za-z0-9_./-]{1,300}$/.test(String(repoPath))) {
+        throw new Error('ref o path inválido para git show');
+    }
+    const r = spawnImpl('git', ['show', `${ref}:${repoPath}`], {
+        cwd, encoding: 'utf8', shell: false, timeout: 30 * 1000, maxBuffer: 16 * 1024 * 1024, windowsHide: true,
+    });
+    if (r && r.status === 0 && typeof r.stdout === 'string') return r.stdout;
+    const err = String((r && r.stderr) || '');
+    if (/does not exist in|exists on disk, but not in|path '.*' does not exist/i.test(err)) return null;
+    throw new Error('git show falló');
+}
+
+/**
+ * Lista completa de archivos del PR con `previous_filename` (renombres), por la
+ * API paginada. Devuelve `null` si no se pudo leer (el caller cae al snapshot).
+ */
+function listPrFilesForPermissions(prNumber, { ghImpl = git.runGh, cwd = WORK_DIR } = {}) {
+    try {
+        const r = ghImpl([
+            'api', '--paginate', `repos/{owner}/{repo}/pulls/${prNumber}/files?per_page=100`,
+            '--jq', '.[] | {path: .filename, previous_filename: .previous_filename}',
+        ], { cwd, timeoutMs: 60 * 1000 });
+        if (!r || r.exit_code !== 0 || typeof r.stdout !== 'string') return null;
+        const entries = r.stdout.split(/\r?\n/).filter((l) => l.trim()).map((l) => JSON.parse(l));
+        // No descartar entradas inválidas: ocultar una sola ruta vuelve parcial
+        // la lista aunque el transporte haya terminado correctamente.
+        if (entries.some((f) => !f || typeof f.path !== 'string' || !f.path
+            || (f.previous_filename != null && typeof f.previous_filename !== 'string'))) return null;
+        const files = entries.map((f) => (typeof f.previous_filename === 'string' && f.previous_filename
+                ? { path: f.path, previous_filename: f.previous_filename } : { path: f.path }));
+        if (!files.length) return null;
+        return { files, filesComplete: files.length < PERMISOS_MAX_FILES_API };
+    } catch {
+        return null;
+    }
+}
+
+function buildPermissionsChecker({ prNumber, cwd = WORK_DIR, baseRef = OWNERS_REF, logAppend,
+    ghImpl = git.runGh, spawnImpl = spawnSync } = {}) {
+    const log = typeof logAppend === 'function' ? logAppend : () => {};
+    return (snapshot) => {
+        const api = listPrFilesForPermissions(prNumber, { ghImpl, cwd });
+        let files; let filesComplete;
+        if (api) {
+            ({ files, filesComplete } = api);
+        } else {
+            log('[delivery] gate permisos: no se pudo paginar la lista de archivos por la API — se usa la del snapshot');
+            files = snapshot && Array.isArray(snapshot.permissionFiles) ? snapshot.permissionFiles
+                : (snapshot && Array.isArray(snapshot.files)) ? snapshot.files.map((p) => ({ path: p })) : null;
+            // El fallback sirve para describir rutas conocidas, nunca para
+            // certificar ausencia de cambios sensibles sin la API de renombres.
+            filesComplete = false;
+        }
+        const headRef = snapshot && snapshot.headRefOid;
+        return detectPermissionChanges({
+            files,
+            filesComplete,
+            readAtBase: (p) => gitShowAt(baseRef, p, { cwd, spawnImpl }),
+            readAtHead: (p) => gitShowAt(headRef, p, { cwd, spawnImpl }),
+        });
+    };
 }
 
 // -----------------------------------------------------------------------------
@@ -1351,6 +1444,12 @@ function attemptMergeWithGatesInner({
     // #6496 CA-15 / SEC-F — SHA que pasó GATE 3 (caducidad del veredicto de QA).
     // Cuando viene, el merge sólo procede si el head del PR es ese mismo commit.
     expectedHeadSha = null,
+    // #7635 — Gate de permisos del entorno de agentes (paso 4b). Recibe el
+    // snapshot y devuelve `{ motivos: string[] }`. Default `null` y, a
+    // diferencia de los lectores de arriba, la ausencia BLOQUEA (fail-closed):
+    // un wiring que se olvide de inyectarlo no puede dejar pasar un PR que
+    // cambia permisos. Producción SIEMPRE lo inyecta y hay un test que lo verifica.
+    checkPermissions = null,
     // #7631 — Gate pre-merge `authorship`. Default: no-op que PASA sin líneas,
     // a propósito (Riesgo 2): un default que bloquee rompería todas las suites
     // de merge existentes. Producción SIEMPRE inyecta el evaluador real
@@ -1581,6 +1680,31 @@ function attemptMergeWithGatesInner({
         if (humanOwners.length) {
             log(`[delivery] gate merge: CODEOWNERS humano ${humanOwners.join(' ')} — merge bloqueado`);
             return { status: 'needs-human', owners: humanOwners, snapshot, attempt };
+        }
+
+        // (4b) #7635 — Gate de permisos del entorno de agentes, sobre el MISMO
+        //      snapshot (se reevalúa ante `head-changed`, porque el reintento
+        //      vuelve al paso 1). Si el PR amplía lo que un hijo puede recibir
+        //      (excepciones, scopes, requires_credentials, env_isolation_enabled,
+        //      el propio guard), NO se mergea: needs-human y merge manual del
+        //      operador. Sin label llave (#5986). Fail-closed en todo desvío.
+        if (typeof checkPermissions !== 'function') {
+            const reason = 'gate de permisos no inyectado';
+            log(`[delivery] gate merge: ${reason} — merge bloqueado (fail-closed)`);
+            return { status: 'blocked', gate: 'permisos', reason, snapshot, attempt };
+        }
+        let permisos;
+        try {
+            permisos = checkPermissions(snapshot);
+        } catch {
+            permisos = { motivos: ['el gate de permisos falló al evaluar (fail-closed)'] };
+        }
+        const motivosPermisos = (permisos && Array.isArray(permisos.motivos))
+            ? permisos.motivos.map(String)
+            : ['respuesta inválida del gate de permisos (fail-closed)'];
+        if (motivosPermisos.length) {
+            log(`[delivery] gate merge: el PR cambia permisos del entorno de agentes (${motivosPermisos.map((m) => codeowners.sanitizeRefReason(m, 120)).join('; ')}) — merge bloqueado, requiere firma humana`);
+            return { status: 'needs-human', gate: 'permisos', motivos: motivosPermisos, owners: [], snapshot, attempt };
         }
 
         // (5) Procedencia del head del PR: el primer commit sobre main tiene que
@@ -2187,6 +2311,9 @@ const GATE_BLOCK_LABELS = {
     // aunque el merge nunca ocurriera. Ahora escalan fail-closed como el resto.
     'qa-gate': 'el PR no tiene el gate de QA (falta label qa:passed o qa:skipped)',
     'codeowners-human': 'el PR toca paths con CODEOWNERS humano y exige review manual',
+    // #7635 — gate de permisos del entorno de agentes (paso 4b). Sin label llave:
+    // se destraba sólo con un merge manual del operador.
+    permisos: 'el PR cambia permisos del entorno de agentes y exige firma humana: revisar el diff y mergear a mano',
     // #7631 — gate `authorship` en `enforce`: el detalle (qué falló → cómo se
     // cubre) viaja en `reason`, con el mismo diccionario que el dry-run (UX-3).
     authorship: 'el cambio no tiene una firma registrada del operador que acredite la dirección humana',
@@ -3049,6 +3176,9 @@ async function main() {
                 // vuelve a desaparecer del resumen. Lector liviano y cacheado:
                 // no agrega una llamada de red por vuelta del polling.
                 requiredContextsReader: buildRequiredContextsReader(),
+                // #7635 — gate de permisos del entorno de agentes (paso 4b). Sin
+                // esta inyección el merge se BLOQUEA (default fail-closed).
+                checkPermissions: buildPermissionsChecker({ prNumber, logAppend }),
                 // #6012 CA-7 — El pre-check ya calculado se reusa SÓLO para
                 // loguear la contradicción con el servidor. No reclasifica nada.
                 mergeTreeClean: mergeCheck.supported === true && mergeCheck.mergeable === true,
@@ -3110,6 +3240,27 @@ async function main() {
                     issue, prNumber, branch,
                     gate: 'qa-gate',
                     reason: 'el PR no tiene label qa:passed ni qa:skipped',
+                    logAppend,
+                });
+                motivo = esc.motivo;
+                gateBlocked = true;
+                exitCode = 1;
+                phaseEnd('pr_merge', t);
+                return; // finally: marker con motivo human-block → NO rebota, escala
+            } else if (outcome.status === 'needs-human' && outcome.gate === 'permisos') {
+                // #7635 — El PR cambia permisos del entorno de agentes. Mismo
+                // tratamiento que CODEOWNERS humano: label + escalado human-block,
+                // sin rebote a dev ni rev++. Sin label llave: sólo merge manual.
+                const motivosSaneados = (outcome.motivos || [])
+                    .map((m) => sanitizeGateText(m, 120)).slice(0, 10).join('; ');
+                applyNeedsHumanLabel(issue, prNumber, [], WORK_DIR,
+                    `🛑 Merge bloqueado — este PR cambia permisos del entorno de agentes (${motivosSaneados}). `
+                    + 'Requiere que el operador revise el diff y mergee a mano: no hay label que lo apruebe.');
+                labelsApplied = Array.from(new Set([...labelsApplied, 'needs-human']));
+                const esc = escalateMergeGateBlock({
+                    issue, prNumber, branch,
+                    gate: 'permisos',
+                    reason: `cambio de permisos de agentes: ${motivosSaneados}`,
                     logAppend,
                 });
                 motivo = esc.motivo;
@@ -3430,6 +3581,10 @@ module.exports = {
     getPRSnapshot,
     confirmMergeResponse,
     attemptMergeWithGates,
+    // #7635 — gate de permisos del entorno de agentes (wiring de producción).
+    buildPermissionsChecker,
+    listPrFilesForPermissions,
+    gitShowAt,
     buildGateBlockMotivo,
     buildGateBlockEscalation,
     escalateMergeGateBlock,

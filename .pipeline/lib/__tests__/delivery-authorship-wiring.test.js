@@ -63,6 +63,9 @@ function baseDeps(over = {}) {
         verifyOrigin: () => ({ ok: true }),
         mergePR: () => MERGED_OK,
         sleepImpl: () => {},
+        // #7635 — el gate de permisos es fail-closed sin inyección; esta suite
+        // aísla el gate `authorship`, así que se inyecta uno inocuo.
+        checkPermissions: () => ({ motivos: [] }),
         ...over,
     };
 }
