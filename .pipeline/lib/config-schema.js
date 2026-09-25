@@ -184,6 +184,9 @@ const AUTHORITY_PREFIXES = Object.freeze([
     'deliverable_gate',
     'gates',
     'wave_auto_transition',
+    // #7673 — prender `recomendaciones.crear_issues` reabre un canal de escritura
+    // en GitHub (issues de recomendación): es control, no calibración.
+    'recomendaciones',
     'brazo',
     'commander_products',
     'cross_repo_delivery',
@@ -331,6 +334,7 @@ const SIDE_MAP = Object.freeze({
     deliverable_gate: 'autoridad',
     gates: 'autoridad',
     wave_auto_transition: 'autoridad',
+    recomendaciones: 'autoridad',                // #7673 — corte transitorio de recomendaciones
     brazo: 'autoridad',
     commander_products: 'autoridad',
     'commander_products.products.*.operators': 'autoridad',
@@ -1233,6 +1237,18 @@ const SCHEMA = {
                 kill_switch: { type: 'boolean' },
                 mode: { type: 'string' },
                 gh_timeout_ms: { type: 'number', minimum: 0 },
+            },
+        },
+
+        // --- recomendaciones: corte transitorio hasta la Ola Propuestas (#7673) --
+        //     Sólo el booleano `true` reactiva la creación de issues de
+        //     recomendación; el lector (`lib/recommendations-cut.js`) falla cerrado.
+        recomendaciones: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['crear_issues'],
+            properties: {
+                crear_issues: { type: 'boolean' },
             },
         },
 

@@ -741,10 +741,12 @@ test('SEC-H: crear un issue bloqueado (needs-human SOLO) sigue siendo legitimo',
     assert.strictEqual(v.allowed, true);
 });
 
-test('SEC-H: crear una recomendacion limpia (el flujo de los 5 roles) pasa', () => {
+test('SEC-H: crear una recomendacion limpia (el flujo de los 5 roles) pasa con la bandera en true', () => {
+    // #7673 — el camino sólo existe con `recomendaciones.crear_issues: true` (CA-6 reversible).
     const v = guardrail.evaluateCreateIssueLabels({
         labels: 'tipo:recomendacion,source:recommendation,needs:triage-backlog,enhancement,priority:low',
         order: {},
+        recommendationsEnabled: true,
     });
     assert.strictEqual(v.allowed, true);
 });
@@ -876,6 +878,135 @@ test('#7232 CA-8: MOTIVOS no gana ningun motivo nuevo', () => {
         'MEZCLA_BLOQUEO_SOBRE_RECO',
         'MEZCLA_EN_LA_MISMA_ORDEN',
         'MEZCLA_RECO_SOBRE_BLOQUEO',
+        // #7673 — único motivo agregado después de #7232: el corte transitorio.
+        'RECOMENDACIONES_CORTE_TRANSITORIO',
         'REMOVE_NEEDS_HUMAN_SIN_ORIGEN_HUMANO',
     ]);
+});
+
+// -----------------------------------------------------------------------------
+// #7673 — corte transitorio de recomendaciones (`recomendaciones.crear_issues`)
+// -----------------------------------------------------------------------------
+
+const CORTE = 'recomendaciones-corte-transitorio';
+
+test('#7673 bandera false + tipo:recomendacion ⇒ recomendaciones-corte-transitorio', () => {
+    const v = guardrail.evaluateCreateIssueLabels({
+        labels: 'enhancement,tipo:recomendacion,priority:low',
+        order: {},
+        recommendationsEnabled: false,
+    });
+    assert.strictEqual(v.allowed, false);
+    assert.strictEqual(v.motivo, CORTE);
+    assert.strictEqual(v.motivo, guardrail.MOTIVOS.RECOMENDACIONES_CORTE_TRANSITORIO);
+});
+
+test('#7673 bandera false + source:recommendation sola ⇒ corte', () => {
+    const v = guardrail.evaluateCreateIssueLabels({ labels: 'source:recommendation,enhancement', order: {}, recommendationsEnabled: false });
+    assert.strictEqual(v.allowed, false);
+    assert.strictEqual(v.motivo, CORTE);
+});
+
+test('#7673 sin pasar la bandera el default es corte activo (fail-closed)', () => {
+    const v = guardrail.evaluateCreateIssueLabels({ labels: 'tipo:recomendacion', order: {} });
+    assert.strictEqual(v.allowed, false);
+    assert.strictEqual(v.motivo, CORTE);
+});
+
+test('#7673 sólo el booleano true levanta el corte: "true", 1 y null no', () => {
+    for (const valor of ['true', 1, null, undefined, 'yes', {}]) {
+        const v = guardrail.evaluateCreateIssueLabels({ labels: 'tipo:recomendacion', order: {}, recommendationsEnabled: valor });
+        assert.strictEqual(v.allowed, false, `valor ${JSON.stringify(valor)} no debe levantar el corte`);
+        assert.strictEqual(v.motivo, CORTE);
+    }
+});
+
+test('#7673 labels con mayúsculas y espacios también se cortan', () => {
+    for (const labels of [' Tipo:Recomendacion , enhancement', 'ENHANCEMENT, SOURCE:RECOMMENDATION ']) {
+        const v = guardrail.evaluateCreateIssueLabels({ labels, order: {}, recommendationsEnabled: false });
+        assert.strictEqual(v.allowed, false, labels);
+        assert.strictEqual(v.motivo, CORTE);
+    }
+});
+
+test('#7673 labels en formato array también se cortan', () => {
+    const v = guardrail.evaluateCreateIssueLabels({ labels: ['enhancement', ' TIPO:RECOMENDACION'], order: {}, recommendationsEnabled: false });
+    assert.strictEqual(v.allowed, false);
+    assert.strictEqual(v.motivo, CORTE);
+});
+
+test('#7673 SEC-2: la procedencia declarada NO saltea el corte', () => {
+    const v = guardrail.evaluateCreateIssueLabels({
+        labels: 'source:recommendation,tipo:recomendacion,recommendation:approved',
+        order: { guardrail_authorized: true, authorized_by: 'leitolarreta', origen: 'humano' },
+        recommendationsEnabled: false,
+    });
+    assert.strictEqual(v.allowed, false);
+    assert.strictEqual(v.motivo, CORTE);
+    assert.strictEqual(v.authorizedBy, undefined);
+});
+
+test('#7673 bandera true: la mezcla con needs-human se sigue rechazando', () => {
+    const v = guardrail.evaluateCreateIssueLabels({ labels: 'needs-human,tipo:recomendacion', order: {}, recommendationsEnabled: true });
+    assert.strictEqual(v.allowed, false);
+    assert.strictEqual(v.motivo, guardrail.MOTIVOS.MEZCLA_EN_LA_MISMA_ORDEN);
+});
+
+test('#7673 bandera true: recommendation:approved sin procedencia se sigue rechazando', () => {
+    const v = guardrail.evaluateCreateIssueLabels({ labels: 'tipo:recomendacion,recommendation:approved', order: {}, recommendationsEnabled: true });
+    assert.strictEqual(v.allowed, false);
+    assert.strictEqual(v.motivo, guardrail.MOTIVOS.APPROVED_SIN_ORIGEN_HUMANO);
+});
+
+test('#7673 sin labels de recomendación el corte no cambia nada', () => {
+    const a = guardrail.evaluateCreateIssueLabels({ labels: 'bug,area:infra', order: {}, recommendationsEnabled: false });
+    assert.strictEqual(a.allowed, true);
+    assert.strictEqual(a.motivo, 'label-no-sensible');
+    const b = guardrail.evaluateCreateIssueLabels({ labels: 'needs-human,priority:critical', order: {}, recommendationsEnabled: false });
+    assert.strictEqual(b.allowed, true, 'needs-human solo (circuit breaker) sigue permitido');
+});
+
+test('#7673 describeRejection del corte remite a "Otras oportunidades observadas"', () => {
+    const msg = guardrail.describeRejection({
+        label_solicitado: 'tipo:recomendacion',
+        motivo: CORTE,
+        accion: 'create-issue',
+        origen: 'x.json',
+    });
+    assert.match(msg, /Otras oportunidades observadas/);
+    assert.match(msg, /#7673/);
+    assert.match(msg, /NO fue creado/);
+});
+
+test('#7673 SEC-4: auditConflict guarda título recortado y skill, nunca body', () => {
+    const dir = tmpDir('audit-7673');
+    guardrail._resetDedupeForTests();
+    const r = guardrail.auditConflict({
+        dir,
+        issue: null,
+        label_solicitado: 'tipo:recomendacion',
+        origen: 'x.json',
+        accion: 'create-issue',
+        motivo: CORTE,
+        titulo: 'T'.repeat(300),
+        skill: 'guru',
+        body: 'SECRETO-NO-DEBE-QUEDAR',
+    });
+    assert.ok(r.written, r.error);
+    const raw = fs.readFileSync(r.file, 'utf8');
+    assert.ok(!raw.includes('SECRETO-NO-DEBE-QUEDAR'), 'el body no puede entrar al registro');
+    const e = auditLog.readAll(r.file)[0];
+    assert.strictEqual(e.titulo.length, 120);
+    assert.strictEqual(e.skill, 'guru');
+    assert.strictEqual(e.motivo, CORTE);
+});
+
+test('#7673 auditConflict sin titulo/skill no agrega campos (formato previo intacto)', () => {
+    const dir = tmpDir('audit-7673b');
+    guardrail._resetDedupeForTests();
+    const r = guardrail.auditConflict({ dir, issue: 1, label_solicitado: 'needs-human', accion: 'label', motivo: 'x' });
+    assert.ok(r.written, r.error);
+    const e = auditLog.readAll(r.file)[0];
+    assert.ok(!('titulo' in e));
+    assert.ok(!('skill' in e));
 });
