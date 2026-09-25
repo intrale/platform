@@ -32,55 +32,32 @@ function leerRol(rol) {
     return fs.readFileSync(path.join(ROLES_DIR, rol + '.md'), 'utf8');
 }
 
-function lineaDelLabel(texto) {
-    return texto.split('\n').find((l) => l.includes('--label "enhancement'));
-}
-
+// #7673 — corte transitorio de recomendaciones (hasta la Ola Propuestas, #7361).
+// La receta `gh issue create … --label "enhancement,source:recommendation,…"` que
+// este test sincronizaba (#5690: `--label`, prosa y ítem OBLIGATORIO) se ELIMINÓ
+// de los 5 roles a propósito: con `recomendaciones.crear_issues: false` las
+// oportunidades van a "Otras oportunidades observadas" del comentario del issue
+// origen. Los tres sitios que había que mantener alineados ya no existen; lo
+// que sigue valiendo es que ninguno la reintroduzca a medias (receta sin la
+// prosa, o con `needs-human`). Cuando #7361 defina el reemplazo, este test se
+// redefine con él. La cobertura positiva del corte vive en
+// `lib/__tests__/recommendations-cut.test.js`.
 for (const rol of ROLES) {
-    test(`${rol}: el --label del gh issue create emite ${TRIAGE} y no ${NEEDS_HUMAN}`, () => {
-        const linea = lineaDelLabel(leerRol(rol));
-        assert.ok(linea, `${rol}.md no tiene la linea del --label`);
-        assert.ok(linea.includes(TRIAGE), `${rol}.md no emite ${TRIAGE}`);
-        assert.ok(!linea.includes(NEEDS_HUMAN), `${rol}.md sigue emitiendo ${NEEDS_HUMAN}`);
-    });
-
-    test(`${rol}: el --label conserva intactos los labels que no cambian`, () => {
-        const linea = lineaDelLabel(leerRol(rol));
-        for (const label of ['enhancement', 'source:recommendation', TIPO_RECO, 'priority:low']) {
-            assert.ok(linea.includes(label), `${rol}.md perdio el label ${label}`);
-        }
-        // Los placeholders de área/app van entre < > con separadores |.
-        assert.match(linea, /<,(area|app):[^>]+>/, `${rol}.md perdio los placeholders de area/app`);
-    });
-
-    test(`${rol}: la prosa describe ${APPROVED} como el gate, no ${NEEDS_HUMAN}`, () => {
+    test(`${rol}: #7673 no queda receta de emisión de recomendaciones (ni --label, ni prosa, ni ítem OBLIGATORIO)`, () => {
         const texto = leerRol(rol);
-        const prosa = texto.split('\n').find((l) => l.includes('Es una recomendación pendiente'));
-        assert.ok(prosa, `${rol}.md no tiene la prosa del flujo de aprobación`);
-        assert.ok(prosa.includes(APPROVED), `${rol}.md: la prosa no nombra ${APPROVED}`);
-        assert.ok(!prosa.includes(NEEDS_HUMAN), `${rol}.md: la prosa sigue nombrando ${NEEDS_HUMAN}`);
-        // UX-3a: el mecanismo real es `tipo:recomendacion` SIN `recommendation:approved`.
-        assert.ok(prosa.includes(TIPO_RECO), `${rol}.md: la prosa no explica el mecanismo real`);
+        assert.ok(!texto.split('\n').some((l) => l.includes('--label "enhancement')), `${rol}.md conserva la línea del --label`);
+        assert.ok(!texto.includes('Es una recomendación pendiente'), `${rol}.md conserva la prosa del flujo de aprobación`);
+        assert.ok(!texto.split('\n').some((l) => l.startsWith('5. **OBLIGATORIO**')), `${rol}.md conserva el ítem OBLIGATORIO`);
+        assert.ok(!texto.includes(TIPO_RECO), `${rol}.md sigue nombrando ${TIPO_RECO}`);
+        assert.ok(!texto.includes(TRIAGE), `${rol}.md sigue pidiendo ${TRIAGE}`);
     });
 
-    test(`${rol}: el item OBLIGATORIO pide ${TRIAGE} y explica el mecanismo real`, () => {
+    test(`${rol}: #7673 el protocolo remite a "Otras oportunidades observadas" y no a ${NEEDS_HUMAN} ni ${APPROVED}`, () => {
         const texto = leerRol(rol);
-        const item = texto.split('\n').find((l) => l.startsWith('5. **OBLIGATORIO**'));
-        assert.ok(item, `${rol}.md no tiene el item OBLIGATORIO`);
-        assert.ok(item.includes(TRIAGE), `${rol}.md: el item OBLIGATORIO no pide ${TRIAGE}`);
-        assert.ok(!item.includes(NEEDS_HUMAN), `${rol}.md: el item OBLIGATORIO sigue pidiendo ${NEEDS_HUMAN}`);
-        // UX-3b: una sola acción humana (agregar), no dos (remover + agregar).
-        assert.ok(item.includes(APPROVED), `${rol}.md: el item OBLIGATORIO no nombra el gate real`);
-    });
-
-    test(`${rol}: ${NEEDS_HUMAN} figura en la lista de labels prohibidos`, () => {
-        const texto = leerRol(rol);
-        const prohibidos = texto.split('\n').find((l) => l.startsWith('6. **Prohibido** labels'));
-        assert.ok(prohibidos, `${rol}.md no tiene el item de labels prohibidos`);
-        assert.ok(
-            prohibidos.includes(NEEDS_HUMAN),
-            `${rol}.md: sin la prohibición explícita, el próximo agente vuelve a razonar que necesita un label de bloqueo`,
-        );
+        const protocolo = texto.slice(texto.indexOf('## Protocolo de oportunidades de mejora'));
+        assert.ok(protocolo.includes('### Otras oportunidades observadas'), `${rol}.md: falta el formato del bloque`);
+        assert.ok(!protocolo.includes(NEEDS_HUMAN), `${rol}.md: el protocolo no puede pedir ${NEEDS_HUMAN}`);
+        assert.ok(!protocolo.includes(APPROVED), `${rol}.md: el protocolo no describe aprobaciones de recomendaciones`);
     });
 }
 
@@ -89,9 +66,8 @@ test(`ninguna mencion de ${NEEDS_HUMAN} en los roles describe el flujo de recome
     for (const rol of ROLES) {
         leerRol(rol).split('\n').forEach((linea, i) => {
             if (!linea.includes(NEEDS_HUMAN)) return;
-            // La única mención admitida es la lista de labels prohibidos: no
-            // describe el flujo, lo prohíbe.
-            if (linea.startsWith('6. **Prohibido** labels')) return;
+            // #7673 — la lista de labels prohibidos se fue con la receta: ya no
+            // hay ninguna mención admitida en los 5 roles.
             ofensoras.push(`${rol}.md:${i + 1}: ${linea.trim().slice(0, 120)}`);
         });
     }

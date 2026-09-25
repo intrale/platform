@@ -2962,6 +2962,15 @@ wave_auto_transition:
   mode: notify          # "notify" (default) | "auto" (opt-in explícito de Leo)
   gh_timeout_ms: 30000  # timeout por consulta `gh issue view`
 
+# #7673 — corte transitorio de recomendaciones hasta la Ola Propuestas (#7361).
+# Los agentes (guru, security, review, ux, po) dejan de crear issues con
+# `tipo:recomendacion` / `source:recommendation`: listan las oportunidades en el
+# comentario del issue origen bajo "Otras oportunidades observadas".
+# Sólo `true` literal reactiva la creación; cualquier otro valor = corte activo.
+# El cambio se aplica en ≤60 s, sin reiniciar (hook + servicio-github leen en caliente).
+recomendaciones:
+  crear_issues: false
+
 # telegram: movida al lado PRODUCTO (#5174) → pipeline.config.json · productConfig.telegram (la prosa viajó a productConfigNotes)
 
 # =============================================================================
