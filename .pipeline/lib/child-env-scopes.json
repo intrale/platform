@@ -158,6 +158,14 @@
       "gradle-android"
     ],
     "telegram-commander": [],
-    "telegram-sherlock": []
+    "telegram-sherlock": [],
+    "architect": [
+      "github"
+    ],
+    "dev": [
+      "github",
+      "gradle-android",
+      "aws"
+    ]
   }
 }

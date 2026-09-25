@@ -1398,20 +1398,29 @@ pr_mergeability_watcher:
 # skill declara via `requires_credentials` (github / aws / gradle-android /
 # telegram-hooks).
 #
-# Cuando `false` (default rollout), el pulpo conserva el comportamiento previo
-# al issue #3085: hereda TODO el `process.env` al child. Esto preserva
-# regresión cero corriendo solo Anthropic.
+# #7636 — ENCENDIDO. Con `true`, TODO lanzamiento de agente LLM del Pulpo
+# (primario y fallback) pasa por `buildChildEnv` + `assertChildEnvMinimal`; el
+# resumen de turnos del Commander y Sherlock usan el env mínimo de CLI.
+# Una violación (`CHILD_ENV_VIOLATION`) NO se reintenta: el workfile queda en
+# `bloqueado-humano/` con `motivo_tipo: child-env-violation` y el log del Pulpo
+# deja `[entorno-hijo] bloqueado rol=… fase=… intento=… causa=… nombres=…`.
 #
-# Plan de rollout:
-#   1. Mergear con `false` y telemetría 1 sprint para detectar skills que
-#      rompen por falta de credencial cuando se flippea.
-#   2. Flippear a `true` después de validar que ningún hook ni skill quedó
-#      sin credencial necesaria (ver tests de #3085 + ejecución empírica de
-#      builder/tester/delivery con scope `gradle-android`/`github`).
+# REVERSA (volver al comportamiento previo):
+#   a. Poner `env_isolation_enabled: false`. Se relee en caliente: aplica desde
+#      el próximo lanzamiento, sin reiniciar el Pulpo.
+#   b. Con `false` sigue activo `stripReservedChildSecrets`: TELEGRAM_BOT_TOKEN
+#      (y cualquier alias con su mismo valor) sigue sin heredarse al hijo.
+#   c. Cambiar este flag está bajo el gate de permisos de delivery (#7635): el
+#      PR queda en `needs-human` y lo mergea el operador a mano.
+#   d. El Pulpo deja la línea `[entorno-hijo] aislamiento APAGADO (reversa)` y
+#      avisa al operador una sola vez por transición true→false.
+# Este flag NO depende de `credential_snapshot_enabled` ni de `vault.enabled`
+# (no se tocan acá). Detalle: docs/pipeline/entorno-agentes-hijos.md
+# ("Encendido y reversa").
 #
 # Ver: docs/pipeline-multi-provider.md §5.2 (acoplamiento A16).
 pipeline:
-  env_isolation_enabled: false
+  env_isolation_enabled: true
 
   # #5799 — Snapshot de credenciales POR INTENTO de lanzamiento.
   #
