@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // wave-promote-rollback-5113.test.js — Regresión del camino de rollback
 // transaccional de `/wave promote` (#5113 rev-7).

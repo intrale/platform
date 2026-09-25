@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Tests de #7673 — corte transitorio de recomendaciones (`lib/recommendations-cut.js`).
 'use strict';
 

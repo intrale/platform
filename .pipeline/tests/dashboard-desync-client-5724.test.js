@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // dashboard-desync-client-5724.test.js — Issue #5724 CA-4
 //

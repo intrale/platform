@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // cleanup-worktrees.js — Limpieza completa de worktrees muertos/huérfanos
 // Uso standalone: node cleanup-worktrees.js [--dry-run] [path1 path2 ...]
 // Uso stdin:      git worktree list --porcelain | node cleanup-worktrees.js

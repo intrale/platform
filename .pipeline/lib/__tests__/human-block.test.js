@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Tests de .pipeline/lib/human-block.js (issue #2478)
 // Valida marker en disco, schema de eventos human:blocked/unblocked y comandos.
 'use strict';

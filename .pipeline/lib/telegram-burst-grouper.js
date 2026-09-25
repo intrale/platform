@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // telegram-burst-grouper.js — Agrupador de bursts del drainer Telegram (#3668).
 //

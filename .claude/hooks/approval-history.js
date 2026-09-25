@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // approval-history.js — Tracking de aprobaciones por patrón
 // Cuenta cuántas veces se aprobó cada patrón de permiso.
 // Después de N aprobaciones, el approver sugiere persistir la regla.

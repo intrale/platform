@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // stuck-reconciler-wiring-5396.test.js — #5396, requisito SEC-0
 //

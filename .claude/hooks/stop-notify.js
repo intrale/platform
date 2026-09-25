@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Hook Stop: notifica a Telegram (imagen card o mini-reporte) y marca sesion como "done"
 // Para ejecuciones individuales: enriquece con datos de sesión (issue, tareas, PR, duración)
 // Para ejecuciones de sprint: mantiene comportamiento simple (sprint-report.js cubre)

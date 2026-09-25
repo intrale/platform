@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // worktree-cleanup.js — Limpieza segura de worktrees post-merge
 //
 // Reemplaza el Paso 6.6 del SKILL.md (markdown interpretado por LLM) con

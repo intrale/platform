@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // http-error-classifier.js — Clasificador HTTP universal cross-provider (#3486)
 //

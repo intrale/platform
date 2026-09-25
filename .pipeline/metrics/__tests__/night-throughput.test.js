@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // night-throughput.test.js — #4051 CA-5
 // Verifica el cálculo de métricas nocturnas a partir de muestras sintéticas.

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // product-command.js — Núcleo product-aware del Telegram Commander
 // Issue #4780 (Ola Puente P6, split de #4691 §4.7).

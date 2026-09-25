@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // Tests approval-channel.js — Kernel del canal único de firma (#6206)
 // =============================================================================

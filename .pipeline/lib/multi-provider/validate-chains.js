@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // validate-chains.js — Validación de cadenas multi-provider al boot (#4407 D1).
 //

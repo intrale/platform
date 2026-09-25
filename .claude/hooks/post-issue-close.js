@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Hook PostToolUse[Bash]: detecta gh issue close y aplica gate de QA
 // Gate de calidad: verifica labels qa:passed/qa:skipped antes de mover a Done
 // Si el issue no tiene label de QA → mueve a "QA Pending" y notifica por Telegram

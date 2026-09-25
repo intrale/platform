@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // google-drive-oauth-setup.js — Configura OAuth 2.0 para Google Drive (cuenta personal)
 //
 // Uso:

@@ -11,32 +11,32 @@
   "rules": [
     {
       "file": "lib/restart-orphan-annotator.js",
-      "line": 70,
+      "line": 73,
       "reason": "readdirSync(pipeDir) lista subdirectorios de fase (no contenido operacional). Los entries devueltos NO son markers; el verdadero filtro está en la línea 80 con AGENTE_FILE_REGEX que es estructuralmente equivalente a isMarkerArtifact (rechaza >2 segmentos)."
     },
     {
       "file": "lib/restart-orphan-annotator.js",
-      "line": 80,
+      "line": 83,
       "reason": "Filtra con AGENTE_FILE_REGEX (^\\d+\\.[a-z][a-z0-9-]*$), que por construcción excluye .comment.md/.guidance.txt/.reason.json (más de 2 segmentos). Equivalente al invariant de isMarkerArtifact."
     },
     {
       "file": "rollback.js",
-      "line": 87,
+      "line": 90,
       "reason": "readdirSync(PIPELINE_DIR) lista la raíz del pipeline para encontrar archivos .pid (PID files de procesos del pipeline). NO toca carpetas operacionales (definicion/desarrollo). El filtro implícito es endsWith('.pid')."
     },
     {
       "file": "servicio-drive.js",
-      "line": 215,
+      "line": 218,
       "reason": "Filtro estructural por endsWith('.yaml') && includes('qa') sobre verificacion/procesado/. Solo lee markers reales de QA; los artifacts (.reason.json, .guidance.txt, .comment.md) están excluidos porque no terminan en .yaml. (línea recalculada por #3927: +59 líneas de containment RS-2 + notificación de fallo CA-3 + module.exports antes de esta función)"
     },
     {
       "file": "ghostbusters.js",
-      "line": 364,
+      "line": 367,
       "reason": "Check `hasIssueActive`: solo determina si HAY archivos del issue (any prefix match), no levanta markers. Si hay .comment.md huérfano, sigue siendo señal válida de actividad del issue (cuestionable, pero no rompe invariantes). Trabajo del ghost-artifact-cleaner gestionar esos archivos huérfanos. (línea recalculada por #3943: extracción de lógica de worktrees a lib/ghostbusters-worktrees.js)"
     },
     {
       "file": "smoke-test.js",
-      "line": 230,
+      "line": 233,
       "reason": "Lee `servicios/commander/trabajando/` (no es definicion/desarrollo) buscando mensajes .json del commander. Filtro explícito endsWith('.json'). (línea recalculada por #4136: el merge de #4131 —gate de rollback resiliente al pico de arranque— agregó código antes del readdir y lo desplazó de 206 a 230)."
     }
   ]

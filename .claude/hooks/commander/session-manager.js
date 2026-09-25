@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // commander/session-manager.js — Gestión de sesiones conversacionales
 // Responsabilidad: crear, persistir, limpiar y verificar sesiones de Claude
 "use strict";

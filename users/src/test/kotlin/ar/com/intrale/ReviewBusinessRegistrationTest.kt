@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 import ar.com.intrale.*
 import ar.com.intrale.Function
 import aws.sdk.kotlin.services.cognitoidentityprovider.CognitoIdentityProviderClient

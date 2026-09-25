@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // quota-snapshot-alerter.test.js — Tests del alerter Telegram (3 fallos + cuenta).
 // Issue #3012 (split de #3008, hija 1).

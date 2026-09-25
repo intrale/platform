@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // wave-add-rollback-5882.test.js — Escritura conjunta o rollback en `/wave add`
 // (#5882 CA-1, CA-2, CA-7).

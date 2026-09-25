@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // session-gc.js — Garbage Collector de sesiones
 // Hook PostToolUse: limpia sesiones obsoletas de .claude/sessions/
 // - done  > 1h  → eliminar

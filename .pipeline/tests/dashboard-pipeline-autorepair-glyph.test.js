@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // #6117 CA-UX-5 / regla P6 — la línea "Última auto-reparación" de la vista
 // Pipeline debe mover TRES canales cuando supera el umbral: color, texto y
 // GLYPH. Nunca sólo color.

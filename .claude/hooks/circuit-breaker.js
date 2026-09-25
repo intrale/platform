@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // circuit-breaker.js — Solucion S3 del reporte operativo 2026-03-24
 // Patron Open/Half-Open/Closed para agent-recovery
 // Previene loops infinitos de reintento con backoff exponencial

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // code-scanning-alerts.js — Consulta de alertas de code-scanning de un PR
 // (#5337, CA-3, caso 1 de los cuatro del 2026-08-01).

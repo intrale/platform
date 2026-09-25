@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // credential-retry-wiring.js — CABLEADO del coordinador de retry de credencial
 // (#5796, hija de #5792).

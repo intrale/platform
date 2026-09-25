@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 'use strict';
 
 // Tests del handler de restart (EP8-H7 #3960, CA-3 + REQ-SEC-H7-2/3/4/5).

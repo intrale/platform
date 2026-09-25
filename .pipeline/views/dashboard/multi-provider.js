@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // multi-provider.js — Vista HTML/JS de la pestaña Multi-Provider del dashboard.
 //

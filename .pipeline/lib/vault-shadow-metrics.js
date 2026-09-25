@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // vault-shadow-metrics.js — núcleo auditable de la ventana sombra del vault
 // (#5448 · entrega 1/3 del split de #5427)

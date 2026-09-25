@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // Tests de la vista esperando-firma.js — bandeja "Esperando tu firma" (#4580).
 //

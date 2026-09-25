@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // #6495 (rebote 6) · CA-2 — La traza de descarte tiene que sobrevivir al ÚNICO
 // llamador de producción, no sólo al módulo invocado aislado.

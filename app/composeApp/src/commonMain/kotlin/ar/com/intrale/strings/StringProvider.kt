@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 @file:Suppress("DEPRECATION_ERROR")
 
 package ar.com.intrale.strings

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 'use strict';
 // =============================================================================
 // #7632 — Adaptador mínimo de `gh` para el verificador de CI (RS-2 · RS-6).

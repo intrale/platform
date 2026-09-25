@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Test P-10: Eliminar token hardcodeado en Watch-Agentes.ps1
 const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");

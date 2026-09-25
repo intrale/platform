@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // resume.js — Comando manual para reanudar el pipeline tras un corte de red
 //

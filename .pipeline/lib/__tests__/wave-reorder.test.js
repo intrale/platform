@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // wave-reorder.test.js — Priorización wave-scoped desde el dashboard (#4369).
 //

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // architect-signoff-gate.js — Gate de promoción criterios → Ready (#3614)
 // =============================================================================

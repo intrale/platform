@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // telegram-receipt.js — Bus de recibos cross-proceso de entrega Telegram (#4082)
 // =============================================================================

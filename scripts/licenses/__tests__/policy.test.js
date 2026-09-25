@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Tests del evaluador de política (#7592 · CA-3 · CA-4 · CA-5 · CA-7 casos 1, 2, 4 y 5).
 'use strict';
 

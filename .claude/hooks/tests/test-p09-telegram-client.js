@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Test P-09: telegram-client.js compartido
 const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");

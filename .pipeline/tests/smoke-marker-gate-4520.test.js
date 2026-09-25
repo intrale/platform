@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // smoke-marker-gate-4520.test.js — gate de markers con ventana diferenciada
 // para el dashboard (#4520).

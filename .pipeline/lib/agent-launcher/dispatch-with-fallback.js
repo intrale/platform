@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // dispatch-with-fallback.js — Consumer runtime del array `skill.fallbacks[]`.
 //

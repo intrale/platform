@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // commander-llm-audit.test.js — Integration test del audit-log LLM
 // Issue #3257 · CA-4

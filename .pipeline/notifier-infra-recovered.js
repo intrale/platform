@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // notifier-infra-recovered.js — Notificador Telegram + audio para
 // `connectivity_restored` (Historia #2336, hija 2 de #2329).

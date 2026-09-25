@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // #6448 — El gate de decisión de arquitectura frena issues con receta ya firmada
 //

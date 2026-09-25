@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 'use strict';
 
 // #4249 + #4533 — Matriz de cuota DISPONIBLE por proveedor × ventana en la home

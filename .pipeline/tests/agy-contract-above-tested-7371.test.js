@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 'use strict';
 
 // #7371 — Antigravity queda fuera de la cascada en silencio cada vez que agy se

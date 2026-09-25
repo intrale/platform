@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // Tests del núcleo de la ventana sombra del vault (#5448 — split 1/3 de #5427)
 // node --test  (entra por el glob existente de `npm run test:pipeline`)

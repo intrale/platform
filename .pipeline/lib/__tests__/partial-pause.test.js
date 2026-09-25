@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Tests de .pipeline/lib/partial-pause.js (issue #2490)
 // Valida precedencia paused > partial_pause > running, allowlist, y normalización.
 'use strict';

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 'use strict';
 
 // Tests de operativo-sync.js (#4460 fix rebote rev-1) — avance seguro del tree

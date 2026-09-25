@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // kernel-store-migrate-rollback-target-5113.test.js — #5113 rev-12
 //

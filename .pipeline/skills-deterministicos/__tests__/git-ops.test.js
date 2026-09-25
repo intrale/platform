@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Tests unitarios de .pipeline/skills-deterministicos/lib/git-ops.js (issue #2484)
 // Validamos los builders puros (commit message + PR body) y heurísticas
 // (inferCommitType, inferScope) sin tocar git ni gh.

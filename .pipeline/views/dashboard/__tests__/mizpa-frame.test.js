@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // Tests del marco común MIZPÁ reutilizable (#4236, sobre #4234).
 //

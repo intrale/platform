@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 'use strict';
 
 // Tests de restart-verify.js + cableado en restart.js (#6441, CA-1/CA-2).

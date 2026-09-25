@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // sanitize.js — Saneamiento de strings de terceros (#7592, SR-5 / SR-7)
 //

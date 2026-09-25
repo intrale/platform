@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // partial-pause-resolution.js — Las 2 resoluciones que faltaban de "pausa
 // parcial trabada" (issue #5923).

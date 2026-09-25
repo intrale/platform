@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // telegram-last-full-response.js — Almacén temporal de la última respuesta completa
 // TTL: 10 minutos. Se usa para servir el detalle bajo demanda (/detalle o botón).
 "use strict";

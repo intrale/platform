@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // quota-exhausted-bare-error-5978.test.js — Shape DESNUDO `{error:{code}}` de
 // los providers OpenAI-compat (#5978).

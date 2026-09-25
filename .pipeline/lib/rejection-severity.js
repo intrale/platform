@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // .pipeline/lib/rejection-severity.js
 // =============================================================================
 // Severidad de un rechazo de validador (#6296).

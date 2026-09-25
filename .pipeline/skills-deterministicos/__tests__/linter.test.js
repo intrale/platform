@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Tests unitarios de .pipeline/skills-deterministicos/linter.js (issue #2491)
 // No ejecutamos git real: validamos parseArgs, heartbeat, updateMarker y
 // el agregado de findings con filesystem aislado.

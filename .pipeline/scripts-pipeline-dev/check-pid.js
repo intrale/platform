@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // check-pid.js <archivo.pid>
 // Verifica que un archivo .pid del pipeline contiene un PID vivo.
 // Reemplaza la combinacion Bash + razonamiento del agente.

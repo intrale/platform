@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 'use strict';
 // =============================================================================
 // #7631 — Textos que ve una persona sobre la autoría (UX-1 · UX-2 · UX-3 · UX-4).

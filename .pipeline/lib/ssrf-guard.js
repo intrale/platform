@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // ssrf-guard.js — Prevención SSRF IPv4 + IPv6 con mitigación DNS rebinding
 // Issue #2307 · CA-9 / CA-13 / CA-20

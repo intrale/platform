@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // #3625 CA-5 — Renderer server-side de filas del widget "Audit trail · Allowlist
 // mutations" del dashboard. Convierte entries del slice `partialPauseAuditSlice`
 // en HTML siguiendo la narrativa-allowlist-audit-trail.md (4 estados visuales

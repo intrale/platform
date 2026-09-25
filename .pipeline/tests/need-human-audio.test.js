@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // need-human-audio.test.js — #4067 (split de #4050)
 // Audio TTS best-effort en la alerta needs-human.

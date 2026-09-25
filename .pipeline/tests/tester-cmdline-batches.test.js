@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Tests de `buildNodeTestBatches` — regresión del rebote #3953
 // (`spawn ENAMETOOLONG`): la línea de comandos de `node --test <files...>`
 // superaba el límite de Windows (32767 chars) al volcar 307 rutas absolutas.

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Tests de la guarda del barrido de huérfanos (incidente 2026-09-08).
 //
 // El caso que reproducen es el real: el Pulpo reinició a las 10:09:23 y a las

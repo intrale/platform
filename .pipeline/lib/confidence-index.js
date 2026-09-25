@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // confidence-index.js — Índice de confiabilidad DESCOMPUESTO por criterio.
 //

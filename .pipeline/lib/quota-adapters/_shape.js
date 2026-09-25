@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // quota-adapters/_shape.js — Contrato común que devuelven todos los adapters
 // de cuota multi-provider (#3092 + #3065 §5.4).

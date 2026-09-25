@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // V3 Traceability helpers — emite eventos session:start / session:end al activity-log
 // Contrato definido en issue #2477 y extendido en #3083 (S5 multi-provider).
 // Los consumen skills LLM y skills determinísticos.

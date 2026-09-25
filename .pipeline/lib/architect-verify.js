@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // architect-verify.js — Fase 2 de verificación del rol `architect` (#3643)
 //

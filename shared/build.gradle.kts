@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 import org.jetbrains.kotlin.gradle.ExperimentalWasmDsl
 
 plugins {

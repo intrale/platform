@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // sprint-report.js — Genera HTML+PDF del sprint y lo envía a Telegram
 // Uso: node sprint-report.js [path-to-sprint-plan.json]
 // Fail-open: cualquier error queda en scripts/logs/sprint-report.log sin interrumpir el flujo

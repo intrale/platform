@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // label-guardrail.js — Guardrail fail-closed contra la mezcla de labels de
 // bloqueo real (`needs-human`) y de recomendación (`tipo:recomendacion`).

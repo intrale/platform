@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Tests de .pipeline/lib/action-token.js (issue #4068)
 // Cubren las 4 ramas de verify(): firma OK, tampered, expirado, replay (nonce
 // un-solo-uso). Secreto y store de nonces inyectados → tests herméticos.

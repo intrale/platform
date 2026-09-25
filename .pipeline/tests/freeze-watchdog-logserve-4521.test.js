@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // freeze-watchdog-logserve-4521.test.js — el servido de logs queda NOMBRADO
 // en un freeze (#4521).

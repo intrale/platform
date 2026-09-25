@@ -1,4 +1,7 @@
 #!/bin/bash
+# Copyright (c) 2026 Leonel Larreta
+# SPDX-License-Identifier: LicenseRef-Proprietary
+
 # smart-build.sh — Build inteligente: compila solo módulos afectados
 #
 # Uso:

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // Tests qa-evidence-gate.js — Issue #2351 (CA-1, CA-3, CA-6 + R1, R3)
 //

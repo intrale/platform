@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 Leonel Larreta
+# SPDX-License-Identifier: LicenseRef-Proprietary
+
 # Tira abajo el entorno QA: mata backend + docker compose down.
 # Uso: ./qa/scripts/qa-env-down.sh
 set -uo pipefail

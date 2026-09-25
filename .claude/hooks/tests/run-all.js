@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // run-all.js — Runner para todos los tests P-01 a P-16
 // Uso: node run-all.js
 const { execSync } = require("child_process");

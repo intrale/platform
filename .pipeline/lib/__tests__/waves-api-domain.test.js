@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // waves-api-domain.test.js — Tests del dominio nuevo de la API de gestión de
 // olas (#4372, Ola 8.3): `editWave`, `removeIssueFromWave` y el soporte de

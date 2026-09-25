@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 'use strict';
 // Fixtures de commits para el export de autoría (#7633). Los bloques se arman
 // con `buildTrailerBlock` / `formatHumanDirection` reales (#7631), así el fixture

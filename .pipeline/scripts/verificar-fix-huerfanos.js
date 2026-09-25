@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // verificar-fix-huerfanos.js — mide en producción si los fixes del incidente
 // 2026-09-08 (#7103) están funcionando.

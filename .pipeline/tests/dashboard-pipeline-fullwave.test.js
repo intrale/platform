@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // #4234 — Tests de la "Vista Total de la Ola" del rediseño Pipeline (MIZPÁ).
 //
 // El delta sobre #4190 (Ola 7.1) es:

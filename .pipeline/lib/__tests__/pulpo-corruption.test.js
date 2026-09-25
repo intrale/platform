@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // pulpo-corruption.test.js — readYaml ENOENT-vs-corrupto + granularidad SEC-3
 // (#3941, EP5-H4)

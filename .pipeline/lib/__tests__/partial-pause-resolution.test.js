@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // partial-pause-resolution.test.js — Endpoints nuevos de "pausa parcial
 // trabada" y su gate de request (issue #5923).

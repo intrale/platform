@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // watchdog-supervisor.js — Lógica de decisión del supervisor del watchdog (#4077)
 //

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // jsonl-rotation.js — Mecanismo único de rotación + gzip + retención de JSONL.
 // Issue #4174 (split de #3946, EP6-H4, parte 2).

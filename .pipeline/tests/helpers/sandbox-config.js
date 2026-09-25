@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // sandbox-config.js — Sembrar la configuración COMPLETA en un sandbox de test
 //                     (#5174 · partición kernel/producto)

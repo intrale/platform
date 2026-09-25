@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // wave-renderer.js — Renderer Markdown V2 + TTS para el snapshot de ola (#3262).
 //

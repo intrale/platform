@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // fallback-episode-concurrency.test.js — #6179 CA-14 / SEC-6
 //

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // #4371 CA-8/CA-10 — Renderer server-side de las filas del widget "Audit trail ·
 // Olas & Issues" del dashboard. Convierte entries del slice `waveIssueAuditSlice`
 // en HTML siguiendo la narrativa-wave-issue-audit-trail.md (estados visuales

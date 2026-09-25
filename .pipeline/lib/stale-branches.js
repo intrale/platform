@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // stale-branches.js — Detección y limpieza de branches locales `agent/*` stale.
 //

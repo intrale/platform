@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // test-watchdog-heartbeat-contract.js — Contrato del heartbeat del watchdog (#4077).
 //

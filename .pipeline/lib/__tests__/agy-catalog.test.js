@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 'use strict';
 // =============================================================================
 // agy-catalog.test.js — #6858: cruce automático de los ids de Antigravity

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // credential-retry-orphan-guard-5796.test.js — #5796 (fix rev-4)
 //

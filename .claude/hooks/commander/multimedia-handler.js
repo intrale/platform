@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // commander/multimedia-handler.js — Procesamiento multimedia (audio, vision, TTS)
 // Responsabilidad: transcripción de audio, análisis de imágenes, text-to-speech
 // Un fallo aquí NO debe tirar el poller principal

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // Tests del rediseño integral de la pantalla PIPELINE (#4190, Ola 7.1 · MIZPÁ).
 //

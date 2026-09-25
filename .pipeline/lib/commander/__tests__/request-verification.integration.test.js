@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // request-verification.integration.test.js — Test de INTEGRACIÓN de la cadena
 // completa de la verificación de Sherlock en el Historial del Commander

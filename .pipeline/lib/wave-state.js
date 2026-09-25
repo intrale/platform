@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // wave-state.js — Builder mínimo de pipeline state para el snapshot ejecutivo (#3262).
 //

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // screenshots-mockup-gate.test.js — Tests del hook (#3381 · CA-9/10/11/12/17)
 //

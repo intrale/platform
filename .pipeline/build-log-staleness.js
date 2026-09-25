@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // build-log-staleness.js — Detección de logs stale + reset seguro del
 // circuit breaker (#2404).

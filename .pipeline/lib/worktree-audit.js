@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // worktree-audit.js — Audit trail persistente de abortos / auto-recovery del
 // resolver de worktree para fases `useExistingWorktree` (build/linteo/

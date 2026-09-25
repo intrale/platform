@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // delivery.js — Orquestador determinístico del refactor #2870.
 //
 // Reemplaza la lógica del SKILL.md de /delivery con un script que:

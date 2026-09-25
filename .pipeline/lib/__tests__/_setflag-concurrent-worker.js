@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // _setflag-concurrent-worker.js — Worker forkeado para el test de concurrencia
 // de `quotaExhausted.setFlag` (#3575 CA-5).

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // wizards/providers/index.js — Flow "Configurar / rotar / desactivar provider"
 // (#3740, split de #3715 / paraguas #3669).

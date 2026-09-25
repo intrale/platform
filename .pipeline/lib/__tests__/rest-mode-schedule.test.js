@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Tests de .pipeline/lib/rest-mode-schedule.js (hija frontend #3242 del épico #3230).
 // Cubre:
 //   - validatePeriod (HH:MM, start === end, día completo)

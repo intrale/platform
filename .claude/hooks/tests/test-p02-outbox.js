@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Test P-02: Outbox pattern (telegram-outbox.js)
 const { describe, it, before, after } = require("node:test");
 const assert = require("node:assert/strict");

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // #5420 (split de #5401, bloque B) — Camino de merge endurecido de la fase de
 // entrega: CODEOWNERS fail-closed desde origin/main, SHA pinneado en el PUT y
 // procedencia de la rama verificada antes de mergear.

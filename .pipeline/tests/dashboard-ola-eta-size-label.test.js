@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // #3529 — Precedencia D3 end-to-end: el caller del dashboard
 // (`_scheduleOlaETARefresh` en `.pipeline/dashboard.js`) debe extraer el label
 // `size:*` desde `state.issueMatrix[id].labels` y pasarlo a `calculateOlaETA`

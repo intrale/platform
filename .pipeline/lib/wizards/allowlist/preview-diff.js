@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // preview-diff.js — Pieza pura del wizard de triaje de allowlist (#3742).
 //

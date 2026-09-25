@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Test P-05: Eliminación de orphan detection interval de 3s
 const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");

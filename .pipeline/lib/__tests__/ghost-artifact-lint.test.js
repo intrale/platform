@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 'use strict';
 
 // Tests: `lib/ghost-artifact-lint` (#3638 CA-F-9..F-11).

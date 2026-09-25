@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // auto-plan-sprint.js — Planificación automática del siguiente sprint con priorización
 // Se ejecuta automáticamente después de planner-propose-interactive.js.
 //

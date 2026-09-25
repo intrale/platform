@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // anthropic-1m-workaround.test.js — Cobertura del feature flag y ciclo de vida
 // del workaround Anthropic CLI 1M (#3508 — T-1..T-6 de los criterios CA).

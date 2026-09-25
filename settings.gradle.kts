@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 import org.gradle.kotlin.dsl.maven
 
 enableFeaturePreview("TYPESAFE_PROJECT_ACCESSORS")

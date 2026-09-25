@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // pre-sprint-cleanup.js — S4 del reporte operativo 2026-03-24
 // Limpieza de recursos pre-sprint: stashes, temps, state files corruptos
 // Ejecutado por Start-Agente.ps1 antes de lanzar agentes

@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 Leonel Larreta
+# SPDX-License-Identifier: LicenseRef-Proprietary
+
 # Uso: android-build-verify.sh
 # Ejecuta el ciclo completo de verificacion del Paso 7 del SKILL del agente
 # /android-dev: build + tests + verifyNoLegacyStrings + validateComposeResources

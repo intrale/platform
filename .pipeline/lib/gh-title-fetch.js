@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // gh-title-fetch.js — Clasificación de respuestas/errores de `gh` al poblar el
 // issue-title-cache (#4566).

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Tests de .pipeline/lib/tts-logger.js (issue #2477)
 // Valida schema de eventos tts:generated, cálculo de costos y estimación audio_seconds.
 'use strict';

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Regresión del rebote rev-1 de #5426 (fase `entrega`).
 //
 // Síntoma: «[delivery] git add falló: La línea de comandos es demasiado larga.»

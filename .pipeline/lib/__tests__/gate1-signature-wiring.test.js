@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // gate1-signature-wiring.test.js — #6207 · INVARIANTES ESTÁTICOS del cableado.
 //

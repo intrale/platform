@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // Tests #4327 (CA-3) — `quotaSlice.declaredProviders` alineado con la config
 // real (`agent-models.json`) y SIN el fantasma `groq` (descontinuado #3353),

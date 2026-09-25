@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // ci-monitor-bg.js — Monitoreo CI en background (Pure Node.js)
 // Lanzado por post-git-push.js tras detectar un git push exitoso.
 // Polling: consulta GitHub Actions cada 30s hasta que el run concluya.

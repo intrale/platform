@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // telegram-alert-dedup.js — Agrupación acotada de alertas de fallo de svc-telegram
 // Issue #5924 (split de #5915, parte 2)

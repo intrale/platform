@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // provider-quota-guard.js — Alerta y switch preventivo por cuota de proveedor.
 // Issue #4282.

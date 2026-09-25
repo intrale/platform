@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // desync-detector.test.js — Tests de lib/desync-detector.js (issue #3518 CA-6).
 // =============================================================================

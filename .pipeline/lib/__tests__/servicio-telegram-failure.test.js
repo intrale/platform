@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // Tests del path de fallo terminal de envío de adjuntos/mensajes en
 // servicio-telegram.js (#3927 / EP3-H1 — CA-3 / RS-3)

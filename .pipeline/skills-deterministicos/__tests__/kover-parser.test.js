@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Tests unitarios de .pipeline/skills-deterministicos/lib/kover-parser.js (issue #2482)
 'use strict';
 

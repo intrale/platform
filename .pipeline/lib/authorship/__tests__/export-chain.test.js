@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 'use strict';
 // #7633 — Tests del export legible de la cadena de autoría (CA-2 · CA-3 · CA-4 · CA-5 · CA-9).
 

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // request-log.js — Log por petición atendida del Commander (#3949 / EP7-H2).
 //

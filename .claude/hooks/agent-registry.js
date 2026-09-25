@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // agent-registry.js — Fuente de verdad centralizada para agentes activos (#1642)
 // Módulo compartido: lo importan activity-logger.js, stop-notify.js,
 // agent-concurrency-check.js y dashboard-server.js.

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // partial-pause-deps-mute.test.js — Store del silencio de la alerta de
 // dependencias faltantes (issue #6118, CA-9..CA-13).

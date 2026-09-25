@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // agent-launcher-mode-resolution.test.js — #4274 (CA-3 / SR-1)
 //

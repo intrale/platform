@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // product-registry.test.js — Binding server-side productId→operadores (#4780).
 // Cubre SR-1 (authz por from.id), SR-5 (fail-closed indistinguible) y SR-6

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // #5212 · Coherencia entre el guard fail-closed y el runbook que él mismo cita.
 //
 // El mensaje de aborto de `kernel-durable-config-guard.js` remite al runbook como

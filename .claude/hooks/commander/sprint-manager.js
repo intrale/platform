@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // commander/sprint-manager.js — Ejecución y monitoreo de sprints
 // Responsabilidad: cargar plan, ejecutar agentes secuencialmente, monitor periódico
 "use strict";

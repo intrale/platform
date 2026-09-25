@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 'use strict';
 
 // #7635 · CA-15 — Los datos de permisos se extrajeron de build-child-env.js a

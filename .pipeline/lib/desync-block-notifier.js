@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // desync-block-notifier.js — Lifecycle de aviso del dispatch suspendido por
 // desync (#5724 CA-3).

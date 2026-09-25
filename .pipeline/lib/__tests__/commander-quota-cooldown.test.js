@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // commander-quota-cooldown.test.js — Tests del modo degradado del Commander
 // Issue #3253 — Commander SPoF en Claude (path a)

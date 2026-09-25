@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // gate-signature-request.js — Delegación de la firma del operador desde el
 // dashboard hacia el kernel (épico #4570 · issue #4580).

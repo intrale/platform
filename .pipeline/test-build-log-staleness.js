@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 /**
  * test-build-log-staleness.js — Tests del módulo build-log-staleness (#2404).
  *

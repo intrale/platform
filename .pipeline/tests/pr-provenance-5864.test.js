@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // #5864 SEC-2 — tests del guard de procedencia de PRs (lib/pr-provenance.js).
 // Vector: repo PÚBLICO + rama predecible `agent/<issue>-<skill>` ⇒ un tercero
 // forkea, crea esa rama en su fork y abre un PR contra `main`. Si ese PR cobra

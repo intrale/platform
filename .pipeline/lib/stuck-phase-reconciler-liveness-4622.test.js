@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // stuck-phase-reconciler-liveness-4622.test.js — Gherkin C (#4622): una fase con
 // un skill en `trabajando/` cuyo heartbeat apunta a un pid MUERTO NO cuenta como

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // telegram-sanitizer.js — Sanitización UTF-8 para envío a la API de Telegram (#1637)
 // Limpia caracteres problemáticos que causan errores de encoding en la API
 // Pure Node.js — sin dependencias externas

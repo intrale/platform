@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // phases-alias.js — Mapping de jerga coloquial → fase oficial del pipeline.
 // Issue #3415 · CA-6 / CA-7 / CA-11 / SEC-1.4

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Test P-08: Agent monitor (unificación Watch-Agentes + Guardian-Sprint)
 const { describe, it, after } = require("node:test");
 const assert = require("node:assert/strict");

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // #6612 — `delivery` espera y escala SÓLO por los checks que la protección de
 // rama exige, y NO mergea con un escáner de seguridad en rojo.

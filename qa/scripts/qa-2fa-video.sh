@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 Leonel Larreta
+# SPDX-License-Identifier: LicenseRef-Proprietary
+
 # qa-2fa-video.sh — Grabar evidencia en video del flujo 2FA
 # Usa adb screenrecord + input para navegar la app
 # Genera videos en qa/evidence/1092/

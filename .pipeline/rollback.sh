@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 Leonel Larreta
+# SPDX-License-Identifier: LicenseRef-Proprietary
+
 # rollback.sh — Rollback de emergencia del pipeline V2
 #
 # Diseño: bash puro, ejecutable aunque el pipeline esté muerto o corrupto.

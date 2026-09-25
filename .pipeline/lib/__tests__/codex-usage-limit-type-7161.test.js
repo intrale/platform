@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // codex-usage-limit-type-7161.test.js — El cap rolling de codex deja de
 // apagarse 24h por un error_type adivinado (#7161).

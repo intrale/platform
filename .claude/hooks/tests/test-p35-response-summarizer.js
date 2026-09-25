@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // test-p35-response-summarizer.js — Tests para telegram-response-summarizer.js
 // Verifica que el resumidor inteligente cumpla los criterios del issue #1681
 "use strict";

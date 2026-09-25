@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Tests de .pipeline/metrics/projections.js (#2488)
 // Verifica promedios diarios, proyecciones mensuales/semanales y detección de desvío.
 'use strict';

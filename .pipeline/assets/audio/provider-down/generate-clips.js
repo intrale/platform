@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 /**
  * UX #6144 — genera los clips pregrabados del aviso de cadena de IA caída.
  *

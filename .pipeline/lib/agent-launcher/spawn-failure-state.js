@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // agent-launcher/spawn-failure-state.js — Marker persistido de spawn-failures
 // del provider (issue #4052, puente CA-1 → CA-3).

@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // rotate-caches.js — Rotacion de caches de maquina que nadie mas toca.
 //
 // Uso: node rotate-caches.js [--dry-run] [--force] [--min-free-gb=N]

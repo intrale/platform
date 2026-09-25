@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // waves.js — Source of truth multi-ola del pipeline V3 (#3489 / Spike #3378).
 //

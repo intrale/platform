@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // pulpo-liveness.js — Lógica de decisión de liveness del Pulpo (#4154)
 //

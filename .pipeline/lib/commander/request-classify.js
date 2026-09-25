@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // request-classify.js — Clasificador PURO del resultado de una petición del
 // Commander (#3951 / EP7-H4).

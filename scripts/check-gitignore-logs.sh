@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 Leonel Larreta
+# SPDX-License-Identifier: LicenseRef-Proprietary
+
 # =============================================================================
 # check-gitignore-logs.sh — verifica que .pipeline/logs/ este en .gitignore.
 #

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // semantic-dedup-judge-no-agency-6563.test.js — Regresión del hallazgo security
 // del rebote 1 de #6563 (OWASP LLM01 → LLM08).

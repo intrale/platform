@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 'use strict';
 
 // #4732 — CA-3 se cumple por el belt-and-suspenders del lado render: la lectura

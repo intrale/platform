@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // delegation-grant.js — Capabilities firmadas HMAC-SHA256 para delegar acciones
 // operativas del pipeline (issue #4630, split de #4581).

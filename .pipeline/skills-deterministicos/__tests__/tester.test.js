@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Tests unitarios de .pipeline/skills-deterministicos/tester.js (issue #2482)
 // No lanzamos gradle real: validamos parseArgs, buildGradleCommand, heartbeat,
 // updateMarker, copyArtifacts y renderReport con filesystem aislado.

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // ux-android-actual-lookup.js — Lookup del "Estado actual" para issues Android
 // Issue #3408 · CA-3 + CA-S1 + CA-S6 + CA-UX-10

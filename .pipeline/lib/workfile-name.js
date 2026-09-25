@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // workfile-name.js — Frontera FS: derivación segura de issue + skill (EP5-H1, #3938)
 //

@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // qa-narration.js — Genera audio TTS narrado con OpenAI gpt-4o-mini-tts y lo mergea con video QA
 //
 // Uso:

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // product-command-integration.test.js — Flujo product-aware END-TO-END en vivo
 // Issue #4780 (rechazo PO rev-1: los primitivos existían pero NADA los invocaba

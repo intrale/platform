@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Leonel Larreta
+# SPDX-License-Identifier: LicenseRef-Proprietary
+
 # whisper_fw.py — wrapper de faster-whisper (CTranslate2) para STT local offline.
 #
 # Invocado por whisper-local.js vía spawn(python, [este_script, <input>, --model ...]).

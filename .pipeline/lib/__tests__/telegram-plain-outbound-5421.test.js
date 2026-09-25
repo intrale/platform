@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // #5421 — El aviso crítico llega SIN `parse_mode` y sin ser destruido.
 //

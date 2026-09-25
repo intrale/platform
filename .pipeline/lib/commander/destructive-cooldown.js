@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // destructive-cooldown.js — Cooldown por-comando-destructivo del Commander
 // Issue #3253 · CA-4

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // agent-models-rw.js — Lectura/escritura segura de `agent-models.json` desde
 // la UI del dashboard (#3177).

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // rewind-merge-dedupe.test.js — Barrera dura de idempotencia (#4967 CA-9).
 // =============================================================================

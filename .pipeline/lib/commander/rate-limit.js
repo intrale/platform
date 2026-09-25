@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // rate-limit.js — Token bucket por chat_id para la pista determinística
 // Issue #3257 · CA-11

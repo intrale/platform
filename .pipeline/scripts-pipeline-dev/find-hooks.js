@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // find-hooks.js <pattern>
 // Localiza hooks (.claude/hooks/*.js) y scripts del pipeline (.pipeline/*.js)
 // que contienen un patron literal o regex. Reemplaza Glob+Grep iterativo

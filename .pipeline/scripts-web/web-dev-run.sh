@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 Leonel Larreta
+# SPDX-License-Identifier: LicenseRef-Proprietary
+
 # Uso: web-dev-run.sh
 # Levanta el target Wasm en modo development con webpack-dev-server.
 # Reemplaza la invocacion repetitiva del Paso 6 del SKILL del agente /web-dev

@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 Leonel Larreta
+# SPDX-License-Identifier: LicenseRef-Proprietary
+
 # Tira abajo el entorno QA remoto: desactiva Priority Window + limpia estado.
 # Uso: ./qa/scripts/qa-env-down-remote.sh
 set -uo pipefail

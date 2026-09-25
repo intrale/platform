@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // test-failover.test.js — Smoke del failover reproducible (#4404 D5 · RS-4).
 //

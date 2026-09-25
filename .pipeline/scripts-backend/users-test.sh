@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 Leonel Larreta
+# SPDX-License-Identifier: LicenseRef-Proprietary
+
 # Uso: users-test.sh
 # Corre :users:test con setup de JAVA_HOME y resume el resultado.
 # Cuando el issue toca el modulo :users (autenticacion, perfiles, 2FA).

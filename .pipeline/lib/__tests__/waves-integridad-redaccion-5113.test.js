@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // waves-integridad-redaccion-5113.test.js — CA-A1 (#5113 rev-9)
 //

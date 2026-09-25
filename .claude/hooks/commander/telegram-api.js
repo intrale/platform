@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // commander/telegram-api.js — Helpers de bajo nivel para la API de Telegram
 // Responsabilidad: HTTP requests, envío de mensajes, fotos, media groups
 // Aislado del resto del commander para que un error aquí no tire todo el daemon

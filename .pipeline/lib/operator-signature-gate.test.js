@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // .pipeline/lib/operator-signature-gate.test.js
 // Tests node --test del gate de auto-aprobación (#4576, CA-5/6/7/10/11/12).
 'use strict';

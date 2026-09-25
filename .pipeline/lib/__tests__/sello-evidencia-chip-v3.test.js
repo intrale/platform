@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // Tests del chip del sello de evidencia en la SUPERFICIE DEL OPERADOR — #6498
 //

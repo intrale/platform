@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Tests para .pipeline/lib/eta.js (issue #2895).
 //
 // Verificamos las cuatro responsabilidades del módulo:

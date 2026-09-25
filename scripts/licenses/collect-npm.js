@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // collect-npm.js — Inventario npm desde package-lock.json v2/v3 (#7592)
 //

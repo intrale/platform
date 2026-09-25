@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // operator-signature.test.js — Tests GATE 2 · Firma de Aceptación (#4575)
 //

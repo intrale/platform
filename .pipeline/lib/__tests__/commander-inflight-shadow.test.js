@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // commander-inflight-shadow.test.js — Tests para los detectores shadow del
 // Commander (#3577, parte 1/2 del split de #3472).

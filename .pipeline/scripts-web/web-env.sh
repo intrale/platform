@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 Leonel Larreta
+# SPDX-License-Identifier: LicenseRef-Proprietary
+
 # Uso: source .pipeline/scripts-web/web-env.sh
 # Setup de JAVA_HOME y PATH para el agente /web-dev.
 # Reemplaza el bloque de exports del Paso 1 del SKILL.

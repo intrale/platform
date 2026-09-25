@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // Tests de integración — alcance del fail-closed del sellado de evidencia QA
 // (#6495, rebote 3 · R-2).

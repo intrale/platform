@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // quota-adapters/antigravity.js — "Sin dato" deliberado (#3092 M2a + #3220 + #4202).
 //

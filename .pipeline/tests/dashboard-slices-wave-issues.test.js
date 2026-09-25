@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // #3905 — Tests del bloque `waveIssues` de pipelineSlice: cruce de la allowlist
 // de la ola con el matrix, derivación de estados no-ingreso/finalizado a partir
 // del state (OPEN/CLOSED) del title-cache, SEC-2 (descarte de no-enteros),

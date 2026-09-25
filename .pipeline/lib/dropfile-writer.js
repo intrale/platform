@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 'use strict';
 
 // dropfile-writer.js — Nombres ÚNICOS y escritura fail-closed para los dropfiles

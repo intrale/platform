@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Tests del filtro `shouldRunQaPreflight(skill, fase)` y la whitelist
 // `SKILLS_THAT_NEED_EMULATOR` (issue #3140).
 //

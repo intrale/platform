@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 'use strict';
 
 // #6432 — CA-23 y CA-24: los DOS desenlaces del barrido de rescate avisan, y

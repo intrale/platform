@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 Leonel Larreta
+# SPDX-License-Identifier: LicenseRef-Proprietary
+
 # Uso: web-build.sh
 # Corre :app:composeApp:wasmJsBrowserDevelopmentWebpack con setup de JAVA_HOME
 # y resume el resultado. Reemplaza la invocacion repetitiva del Paso 6 del

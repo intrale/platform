@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 Leonel Larreta
+# SPDX-License-Identifier: LicenseRef-Proprietary
+
 # qa-apply-verdict-label.sh — Aplica label qa:passed | qa:failed | qa:skipped al issue.
 #
 # Uso:

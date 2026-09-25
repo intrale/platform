@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // provider-attribution-6612.test.js — #6612 (rebote 1, causa raíz)
 //

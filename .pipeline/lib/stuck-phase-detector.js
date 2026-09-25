@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // stuck-phase-detector.js — Self-healing del estado de fase post-crash (#4614,
 // parte B de #4612).

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // ready-marker.js — marcadores de "componente listo"
 //
 // Diseño: cada componente del pipeline (pulpo, dashboard, listener,

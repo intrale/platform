@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // render.js — Renderer de REFERENCIA del aviso por episodio (#6179, UX)
 //

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // health-cron-quota-real-4283.test.js — El snapshot del cron incorpora la
 // señal de cuota REAL (#4283).

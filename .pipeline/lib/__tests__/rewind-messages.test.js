@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // rewind-messages.test.js — Tests de copy del rewind (#3416 G-UX-1..7).
 // =============================================================================

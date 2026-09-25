@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // wave-audit-slice.test.js — Slice del dashboard `waveIssueAuditSlice` (#4371
 // CA-8/CA-10): tail de eventos, stats 24h, clasificación visual y estado de la

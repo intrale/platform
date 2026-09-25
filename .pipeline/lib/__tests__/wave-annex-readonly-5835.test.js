@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // wave-annex-readonly-5835.test.js — `readOnly` de handleWaveStatus (#5835).
 //

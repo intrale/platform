@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // whisper-local-confidence.test.js — Parser defensivo del JSON de whisper (#3918, RS-6)
 //

@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // cli-monitor.js — Dashboard de estado operativo sin necesidad de Claude
 // Uso: node scripts/cli-monitor.js [--json] [--compact]
 // Reemplaza /monitor para lectura de estado determinista (#1661)

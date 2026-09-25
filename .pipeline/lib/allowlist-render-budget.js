@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // allowlist-render-budget.js — El render de `/allowlist` entra SIEMPRE en un
 // saliente de Telegram, y cuando no entra lo dice (#5176).

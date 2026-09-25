@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Tests de .pipeline/skills-deterministicos/lib/gradle-parser.js (issue #2476)
 // Valida parseo de BUILD SUCCESSFUL/FAILED, clasificación de errores conocidos
 // y render del reporte markdown.

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // Tests brazo-desbloqueo-core.js — decisión pura de desbloqueo (EP5-H1, #3938)
 //

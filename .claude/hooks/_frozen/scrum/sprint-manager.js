@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // sprint-manager.js -- Gestion unificada del sprint: sincronizacion y reparacion
 // Consolidacion de sprint-sync.js + auto-repair-sprint.js (#1511)
 // Issue #1621: roadmap.json es fuente de verdad para composición de sprints

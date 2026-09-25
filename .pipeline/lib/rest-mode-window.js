@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // rest-mode-window.js — Modo descanso del pipeline (gating horario).
 // PR-A del épico #2882 (issue #2890), refactor a schedule semanal (#3241).

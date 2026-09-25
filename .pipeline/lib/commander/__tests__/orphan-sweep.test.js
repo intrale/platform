@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // orphan-sweep.test.js — Cobertura del barrido de rescate de turnos huérfanos
 // del Commander (#6459).

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 'use strict';
 // #7631 — Wiring del trailer de autoría y del gate `authorship` en delivery.js.
 //

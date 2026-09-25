@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Tests del escáner de secretos fail-closed del commit 1 del repo del kernel
 // (issue #4662 · Ola 9.1). Cubre CA-2: verde sin secretos, bloqueo ante token
 // inyectado (red fail-closed) y bloqueo ante archivo ilegible ("no pudo correr" ≠ verde).

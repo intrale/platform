@@ -3,19 +3,13 @@
     "entries": [
         {
             "file": "__tests__/quota-snapshot-scheduler.test.js",
-            "line": 25,
+            "line": 28,
             "variable": "QUOTA_SNAPSHOT_ENABLED",
             "sentido": "apagar"
         },
         {
             "file": "__tests__/quota-snapshot-scheduler.test.js",
-            "line": 27,
-            "variable": "QUOTA_SNAPSHOT_ENABLED",
-            "sentido": "apagar"
-        },
-        {
-            "file": "__tests__/quota-snapshot-scheduler.test.js",
-            "line": 29,
+            "line": 30,
             "variable": "QUOTA_SNAPSHOT_ENABLED",
             "sentido": "apagar"
         },
@@ -27,13 +21,13 @@
         },
         {
             "file": "__tests__/quota-snapshot-scheduler.test.js",
-            "line": 33,
+            "line": 35,
             "variable": "QUOTA_SNAPSHOT_ENABLED",
             "sentido": "apagar"
         },
         {
             "file": "__tests__/quota-snapshot-scheduler.test.js",
-            "line": 43,
+            "line": 36,
             "variable": "QUOTA_SNAPSHOT_ENABLED",
             "sentido": "apagar"
         },
@@ -45,247 +39,253 @@
         },
         {
             "file": "__tests__/quota-snapshot-scheduler.test.js",
-            "line": 51,
+            "line": 49,
             "variable": "QUOTA_SNAPSHOT_ENABLED",
             "sentido": "apagar"
         },
         {
             "file": "__tests__/quota-snapshot-scheduler.test.js",
-            "line": 52,
+            "line": 54,
             "variable": "QUOTA_SNAPSHOT_ENABLED",
             "sentido": "apagar"
         },
         {
             "file": "__tests__/quota-snapshot-scheduler.test.js",
-            "line": 85,
+            "line": 55,
             "variable": "QUOTA_SNAPSHOT_ENABLED",
             "sentido": "apagar"
         },
         {
             "file": "__tests__/quota-snapshot-scheduler.test.js",
-            "line": 90,
+            "line": 88,
             "variable": "QUOTA_SNAPSHOT_ENABLED",
             "sentido": "apagar"
         },
         {
             "file": "__tests__/quota-snapshot-scheduler.test.js",
-            "line": 91,
+            "line": 93,
             "variable": "QUOTA_SNAPSHOT_ENABLED",
             "sentido": "apagar"
         },
         {
             "file": "__tests__/quota-snapshot-scheduler.test.js",
-            "line": 99,
+            "line": 94,
             "variable": "QUOTA_SNAPSHOT_ENABLED",
             "sentido": "apagar"
         },
         {
             "file": "__tests__/quota-snapshot-scheduler.test.js",
-            "line": 116,
+            "line": 102,
             "variable": "QUOTA_SNAPSHOT_ENABLED",
             "sentido": "apagar"
         },
         {
             "file": "__tests__/quota-snapshot-scheduler.test.js",
-            "line": 117,
+            "line": 119,
             "variable": "QUOTA_SNAPSHOT_ENABLED",
             "sentido": "apagar"
         },
         {
             "file": "__tests__/quota-snapshot-scheduler.test.js",
-            "line": 123,
+            "line": 120,
             "variable": "QUOTA_SNAPSHOT_ENABLED",
             "sentido": "apagar"
         },
         {
             "file": "__tests__/quota-snapshot-scheduler.test.js",
-            "line": 140,
+            "line": 126,
             "variable": "QUOTA_SNAPSHOT_ENABLED",
             "sentido": "apagar"
         },
         {
             "file": "__tests__/quota-snapshot-scheduler.test.js",
-            "line": 141,
+            "line": 143,
             "variable": "QUOTA_SNAPSHOT_ENABLED",
             "sentido": "apagar"
         },
         {
             "file": "__tests__/quota-snapshot-scheduler.test.js",
-            "line": 147,
+            "line": 144,
             "variable": "QUOTA_SNAPSHOT_ENABLED",
             "sentido": "apagar"
         },
         {
             "file": "__tests__/quota-snapshot-scheduler.test.js",
-            "line": 185,
+            "line": 150,
             "variable": "QUOTA_SNAPSHOT_ENABLED",
             "sentido": "apagar"
         },
         {
             "file": "__tests__/quota-snapshot-scheduler.test.js",
-            "line": 186,
+            "line": 188,
             "variable": "QUOTA_SNAPSHOT_ENABLED",
             "sentido": "apagar"
         },
         {
             "file": "__tests__/quota-snapshot-scheduler.test.js",
+            "line": 189,
+            "variable": "QUOTA_SNAPSHOT_ENABLED",
+            "sentido": "apagar"
+        },
+        {
+            "file": "__tests__/quota-snapshot-scheduler.test.js",
+            "line": 196,
+            "variable": "QUOTA_SNAPSHOT_ENABLED",
+            "sentido": "apagar"
+        },
+        {
+            "file": "__tests__/quota-snapshot-scheduler.test.js",
+            "line": 225,
+            "variable": "QUOTA_SNAPSHOT_ENABLED",
+            "sentido": "apagar"
+        },
+        {
+            "file": "__tests__/quota-snapshot-scheduler.test.js",
+            "line": 226,
+            "variable": "QUOTA_SNAPSHOT_ENABLED",
+            "sentido": "apagar"
+        },
+        {
+            "file": "hooks/__tests__/visual-report-shape-gate.test.js",
+            "line": 22,
+            "variable": "(clave no resoluble)",
+            "sentido": "(n/a)"
+        },
+        {
+            "file": "hooks/__tests__/visual-report-shape-gate.test.js",
+            "line": 26,
+            "variable": "(clave no resoluble)",
+            "sentido": "(n/a)"
+        },
+        {
+            "file": "lib/__tests__/config-manifest-side.test.js",
+            "line": 100,
+            "variable": "(clave no resoluble)",
+            "sentido": "(n/a)"
+        },
+        {
+            "file": "lib/__tests__/config-manifest-side.test.js",
+            "line": 109,
+            "variable": "(clave no resoluble)",
+            "sentido": "(n/a)"
+        },
+        {
+            "file": "lib/__tests__/config-manifest-side.test.js",
+            "line": 110,
+            "variable": "(clave no resoluble)",
+            "sentido": "(n/a)"
+        },
+        {
+            "file": "lib/__tests__/config-partition-rollback.test.js",
+            "line": 70,
+            "variable": "(clave no resoluble)",
+            "sentido": "(n/a)"
+        },
+        {
+            "file": "lib/__tests__/config-partition-rollback.test.js",
+            "line": 78,
+            "variable": "(clave no resoluble)",
+            "sentido": "(n/a)"
+        },
+        {
+            "file": "lib/__tests__/config-partition-rollback.test.js",
+            "line": 79,
+            "variable": "(clave no resoluble)",
+            "sentido": "(n/a)"
+        },
+        {
+            "file": "lib/__tests__/config-partition-rollback.test.js",
+            "line": 187,
+            "variable": "PIPELINE_CFG_FIRMA_OPERADOR__ENABLED",
+            "sentido": "apagar"
+        },
+        {
+            "file": "lib/__tests__/config-partition-rollback.test.js",
             "line": 193,
-            "variable": "QUOTA_SNAPSHOT_ENABLED",
+            "variable": "PIPELINE_CFG_FIRMA_OPERADOR__ENABLED",
             "sentido": "apagar"
         },
         {
-            "file": "__tests__/quota-snapshot-scheduler.test.js",
-            "line": 222,
-            "variable": "QUOTA_SNAPSHOT_ENABLED",
-            "sentido": "apagar"
-        },
-        {
-            "file": "__tests__/quota-snapshot-scheduler.test.js",
-            "line": 223,
-            "variable": "QUOTA_SNAPSHOT_ENABLED",
-            "sentido": "apagar"
-        },
-        {
-            "file": "hooks/__tests__/visual-report-shape-gate.test.js",
-            "line": 19,
-            "variable": "(clave no resoluble)",
-            "sentido": "(n/a)"
-        },
-        {
-            "file": "hooks/__tests__/visual-report-shape-gate.test.js",
-            "line": 23,
-            "variable": "(clave no resoluble)",
-            "sentido": "(n/a)"
-        },
-        {
-            "file": "lib/__tests__/config-manifest-side.test.js",
-            "line": 97,
-            "variable": "(clave no resoluble)",
-            "sentido": "(n/a)"
-        },
-        {
-            "file": "lib/__tests__/config-manifest-side.test.js",
-            "line": 106,
-            "variable": "(clave no resoluble)",
-            "sentido": "(n/a)"
-        },
-        {
-            "file": "lib/__tests__/config-manifest-side.test.js",
-            "line": 107,
-            "variable": "(clave no resoluble)",
-            "sentido": "(n/a)"
-        },
-        {
-            "file": "lib/__tests__/config-partition-rollback.test.js",
-            "line": 67,
-            "variable": "(clave no resoluble)",
-            "sentido": "(n/a)"
-        },
-        {
-            "file": "lib/__tests__/config-partition-rollback.test.js",
+            "file": "lib/__tests__/config-resolver-authority.test.js",
             "line": 75,
             "variable": "(clave no resoluble)",
             "sentido": "(n/a)"
         },
         {
-            "file": "lib/__tests__/config-partition-rollback.test.js",
+            "file": "lib/__tests__/config-resolver-authority.test.js",
+            "line": 83,
+            "variable": "(clave no resoluble)",
+            "sentido": "(n/a)"
+        },
+        {
+            "file": "lib/__tests__/config-resolver-authority.test.js",
+            "line": 84,
+            "variable": "(clave no resoluble)",
+            "sentido": "(n/a)"
+        },
+        {
+            "file": "lib/__tests__/config-resolver-authority.test.js",
+            "line": 156,
+            "variable": "(clave no resoluble)",
+            "sentido": "(n/a)"
+        },
+        {
+            "file": "lib/__tests__/config-resolver-authority.test.js",
+            "line": 172,
+            "variable": "(clave no resoluble)",
+            "sentido": "(n/a)"
+        },
+        {
+            "file": "lib/__tests__/config-resolver-authority.test.js",
+            "line": 179,
+            "variable": "PIPELINE_CFG_FIRMA_OPERADOR__ENABLED",
+            "sentido": "apagar"
+        },
+        {
+            "file": "lib/__tests__/config-resolver-authority.test.js",
+            "line": 187,
+            "variable": "PIPELINE_CFG_FIRMA_OPERADOR__ENABLED",
+            "sentido": "apagar"
+        },
+        {
+            "file": "lib/__tests__/config-resolver-precedence.test.js",
             "line": 76,
             "variable": "(clave no resoluble)",
             "sentido": "(n/a)"
         },
         {
-            "file": "lib/__tests__/config-partition-rollback.test.js",
-            "line": 184,
-            "variable": "PIPELINE_CFG_FIRMA_OPERADOR__ENABLED",
-            "sentido": "apagar"
-        },
-        {
-            "file": "lib/__tests__/config-partition-rollback.test.js",
-            "line": 190,
-            "variable": "PIPELINE_CFG_FIRMA_OPERADOR__ENABLED",
-            "sentido": "apagar"
-        },
-        {
-            "file": "lib/__tests__/config-resolver-authority.test.js",
-            "line": 72,
-            "variable": "(clave no resoluble)",
-            "sentido": "(n/a)"
-        },
-        {
-            "file": "lib/__tests__/config-resolver-authority.test.js",
-            "line": 80,
-            "variable": "(clave no resoluble)",
-            "sentido": "(n/a)"
-        },
-        {
-            "file": "lib/__tests__/config-resolver-authority.test.js",
-            "line": 81,
-            "variable": "(clave no resoluble)",
-            "sentido": "(n/a)"
-        },
-        {
-            "file": "lib/__tests__/config-resolver-authority.test.js",
-            "line": 153,
-            "variable": "(clave no resoluble)",
-            "sentido": "(n/a)"
-        },
-        {
-            "file": "lib/__tests__/config-resolver-authority.test.js",
-            "line": 169,
-            "variable": "(clave no resoluble)",
-            "sentido": "(n/a)"
-        },
-        {
-            "file": "lib/__tests__/config-resolver-authority.test.js",
-            "line": 176,
-            "variable": "PIPELINE_CFG_FIRMA_OPERADOR__ENABLED",
-            "sentido": "apagar"
-        },
-        {
-            "file": "lib/__tests__/config-resolver-authority.test.js",
-            "line": 184,
-            "variable": "PIPELINE_CFG_FIRMA_OPERADOR__ENABLED",
-            "sentido": "apagar"
-        },
-        {
             "file": "lib/__tests__/config-resolver-precedence.test.js",
-            "line": 73,
+            "line": 84,
             "variable": "(clave no resoluble)",
             "sentido": "(n/a)"
         },
         {
             "file": "lib/__tests__/config-resolver-precedence.test.js",
-            "line": 81,
+            "line": 85,
             "variable": "(clave no resoluble)",
             "sentido": "(n/a)"
         },
         {
             "file": "lib/__tests__/config-resolver-precedence.test.js",
-            "line": 82,
-            "variable": "(clave no resoluble)",
-            "sentido": "(n/a)"
-        },
-        {
-            "file": "lib/__tests__/config-resolver-precedence.test.js",
-            "line": 136,
+            "line": 139,
             "variable": "ADMISSION_SWEEP_ENABLED",
             "sentido": "apagar"
         },
         {
             "file": "lib/__tests__/config-resolver-root.test.js",
-            "line": 30,
+            "line": 33,
             "variable": "(clave no resoluble)",
             "sentido": "(n/a)"
         },
         {
             "file": "lib/__tests__/config-resolver-root.test.js",
-            "line": 36,
+            "line": 39,
             "variable": "(clave no resoluble)",
             "sentido": "(n/a)"
         },
         {
             "file": "lib/__tests__/config-resolver-root.test.js",
-            "line": 37,
+            "line": 40,
             "variable": "(clave no resoluble)",
             "sentido": "(n/a)"
         },
@@ -369,85 +369,85 @@
         },
         {
             "file": "lib/__tests__/hydrate-provider-env.test.js",
-            "line": 35,
+            "line": 38,
             "variable": "(clave no resoluble)",
             "sentido": "(n/a)"
         },
         {
             "file": "lib/__tests__/hydrate-provider-env.test.js",
-            "line": 40,
+            "line": 43,
             "variable": "(clave no resoluble)",
             "sentido": "(n/a)"
         },
         {
             "file": "lib/__tests__/hydrate-provider-env.test.js",
-            "line": 41,
+            "line": 44,
             "variable": "(clave no resoluble)",
             "sentido": "(n/a)"
         },
         {
             "file": "lib/__tests__/quota-exhausted-reconcile-4865.test.js",
-            "line": 212,
+            "line": 215,
             "variable": "QUOTA_RECONCILE_DISABLED",
             "sentido": "encender"
         },
         {
             "file": "lib/__tests__/quota-snapshot-integration.test.js",
-            "line": 62,
+            "line": 65,
             "variable": "QUOTA_SNAPSHOT_ENABLED",
             "sentido": "apagar"
         },
         {
             "file": "lib/__tests__/quota-snapshot-integration.test.js",
-            "line": 63,
+            "line": 66,
             "variable": "QUOTA_SNAPSHOT_GATE_ENABLED",
             "sentido": "apagar"
         },
         {
             "file": "lib/__tests__/quota-snapshot-integration.test.js",
-            "line": 376,
+            "line": 379,
             "variable": "QUOTA_SNAPSHOT_ENABLED",
             "sentido": "apagar"
         },
         {
             "file": "lib/__tests__/quota-snapshot-integration.test.js",
-            "line": 389,
+            "line": 392,
             "variable": "QUOTA_SNAPSHOT_ENABLED",
             "sentido": "apagar"
         },
         {
             "file": "lib/__tests__/quota-snapshot-integration.test.js",
-            "line": 401,
+            "line": 404,
             "variable": "QUOTA_SNAPSHOT_GATE_ENABLED",
             "sentido": "apagar"
         },
         {
             "file": "lib/__tests__/reconciler-admission-sweep.test.js",
-            "line": 192,
+            "line": 195,
             "variable": "ADMISSION_SWEEP_ENABLED",
             "sentido": "apagar"
         },
         {
             "file": "lib/__tests__/reconciler-admission-sweep.test.js",
-            "line": 248,
+            "line": 251,
             "variable": "ADMISSION_SWEEP_ENABLED",
             "sentido": "apagar"
         },
         {
             "file": "lib/__tests__/reconciler-admission-sweep.test.js",
-            "line": 284,
+            "line": 287,
             "variable": "ADMISSION_SWEEP_ENABLED",
             "sentido": "apagar"
         },
         {
             "file": "lib/__tests__/reconciler-admission-sweep.test.js",
-            "line": 301,
+            "line": 304,
             "variable": "ADMISSION_SWEEP_ENABLED",
             "sentido": "apagar"
         },
         {
             "file": "lib/__tests__/reconciler-admission-sweep.test.js",
-            "line": 310,
+            "line": 313,
             "variable": "ADMISSION_SWEEP_ENABLED",
             "sentido": "apagar"
         },
@@ -501,103 +501,97 @@
         },
         {
             "file": "lib/__tests__/vault-migration-wiring.test.js",
-            "line": 747,
+            "line": 750,
             "variable": "(clave no resoluble)",
             "sentido": "(n/a)"
         },
         {
             "file": "lib/__tests__/vault-migration-wiring.test.js",
-            "line": 751,
+            "line": 754,
             "variable": "(clave no resoluble)",
             "sentido": "(n/a)"
         },
         {
             "file": "lib/__tests__/vault-migration-wiring.test.js",
-            "line": 752,
+            "line": 755,
             "variable": "(clave no resoluble)",
             "sentido": "(n/a)"
         },
         {
             "file": "lib/__tests__/vault-private-notifications-5450.test.js",
-            "line": 16,
+            "line": 19,
             "variable": "(clave no resoluble)",
             "sentido": "(n/a)"
         },
         {
             "file": "lib/__tests__/vault-private-notifications-5450.test.js",
-            "line": 16,
+            "line": 19,
             "variable": "(clave no resoluble)",
             "sentido": "(n/a)"
         },
         {
             "file": "lib/__tests__/vault-private-notifications-5450.test.js",
-            "line": 18,
+            "line": 21,
             "variable": "(clave no resoluble)",
             "sentido": "(n/a)"
         },
         {
             "file": "lib/__tests__/vault-private-notifications-5450.test.js",
-            "line": 18,
+            "line": 21,
             "variable": "(clave no resoluble)",
             "sentido": "(n/a)"
         },
         {
             "file": "lib/agent-launcher/__tests__/dispatch-billing-flag.test.js",
-            "line": 75,
+            "line": 78,
             "variable": "QUOTA_RECONCILE_DISABLED",
             "sentido": "encender"
         },
         {
             "file": "lib/agent-launcher/__tests__/dispatch-billing-flag.test.js",
-            "line": 82,
+            "line": 85,
             "variable": "QUOTA_RECONCILE_DISABLED",
             "sentido": "encender"
         },
         {
             "file": "lib/agent-launcher/__tests__/provider-error-parser.test.js",
-            "line": 314,
+            "line": 317,
             "variable": "ANTHROPIC_1M_WORKAROUND_ENABLED",
             "sentido": "apagar"
         },
         {
             "file": "lib/agent-launcher/__tests__/provider-error-parser.test.js",
-            "line": 315,
+            "line": 318,
             "variable": "ANTHROPIC_1M_WORKAROUND_ENABLED",
             "sentido": "apagar"
         },
         {
             "file": "lib/commander/__tests__/anthropic-1m-workaround.test.js",
-            "line": 38,
+            "line": 41,
             "variable": "(clave no resoluble)",
             "sentido": "(n/a)"
         },
         {
             "file": "lib/commander/__tests__/anthropic-1m-workaround.test.js",
-            "line": 39,
+            "line": 42,
             "variable": "(clave no resoluble)",
             "sentido": "(n/a)"
         },
         {
             "file": "lib/commander/__tests__/anthropic-1m-workaround.test.js",
-            "line": 43,
+            "line": 46,
             "variable": "(clave no resoluble)",
             "sentido": "(n/a)"
         },
         {
             "file": "lib/commander/__tests__/anthropic-1m-workaround.test.js",
-            "line": 44,
+            "line": 47,
             "variable": "(clave no resoluble)",
             "sentido": "(n/a)"
         },
         {
             "file": "lib/commander/__tests__/anthropic-1m-workaround.test.js",
-            "line": 496,
-            "variable": "(clave no resoluble)",
-            "sentido": "(n/a)"
-        },
-        {
-            "file": "lib/commander/__tests__/anthropic-1m-workaround.test.js",
-            "line": 497,
+            "line": 499,
             "variable": "(clave no resoluble)",
             "sentido": "(n/a)"
         },
@@ -609,75 +603,69 @@
         },
         {
             "file": "lib/commander/__tests__/anthropic-1m-workaround.test.js",
-            "line": 501,
+            "line": 503,
+            "variable": "(clave no resoluble)",
+            "sentido": "(n/a)"
+        },
+        {
+            "file": "lib/commander/__tests__/anthropic-1m-workaround.test.js",
+            "line": 504,
             "variable": "(clave no resoluble)",
             "sentido": "(n/a)"
         },
         {
             "file": "lib/commander/__tests__/reduced-mode.test.js",
-            "line": 83,
+            "line": 86,
             "variable": "QUOTA_RECONCILE_DISABLED",
             "sentido": "encender"
         },
         {
             "file": "lib/commander/__tests__/reduced-mode.test.js",
-            "line": 90,
+            "line": 93,
             "variable": "QUOTA_RECONCILE_DISABLED",
             "sentido": "encender"
         },
         {
             "file": "lib/multi-provider/__tests__/validate-chains.test.js",
-            "line": 69,
+            "line": 72,
             "variable": "(clave no resoluble)",
             "sentido": "(n/a)"
         },
         {
             "file": "lib/multi-provider/__tests__/validate-chains.test.js",
-            "line": 95,
+            "line": 98,
             "variable": "(clave no resoluble)",
             "sentido": "(n/a)"
         },
         {
             "file": "test-dev-routing-regression.js",
-            "line": 34,
+            "line": 37,
             "variable": "PULPO_SKIP_AGENT_MODELS_VALIDATE",
             "sentido": "encender"
         },
         {
             "file": "test-dev-routing-regression.js",
-            "line": 35,
+            "line": 38,
             "variable": "PULPO_SKIP_DATA_RESIDENCY_VALIDATE",
             "sentido": "encender"
         },
         {
             "file": "tests/circuit-breaker-escalante.test.js",
-            "line": 28,
+            "line": 31,
             "variable": "PULPO_SKIP_AGENT_MODELS_VALIDATE",
             "sentido": "encender"
         },
         {
             "file": "tests/commander-midturn-quota-5456.test.js",
-            "line": 480,
+            "line": 483,
             "variable": "QUOTA_RECONCILE_DISABLED",
             "sentido": "encender"
         },
         {
             "file": "tests/commander-midturn-quota-5456.test.js",
-            "line": 509,
+            "line": 512,
             "variable": "QUOTA_RECONCILE_DISABLED",
             "sentido": "encender"
-        },
-        {
-            "file": "tests/cua-operator-resolve.test.js",
-            "line": 39,
-            "variable": "(clave no resoluble)",
-            "sentido": "(n/a)"
-        },
-        {
-            "file": "tests/cua-operator-resolve.test.js",
-            "line": 40,
-            "variable": "(clave no resoluble)",
-            "sentido": "(n/a)"
         },
         {
             "file": "tests/cua-operator-resolve.test.js",
@@ -687,127 +675,139 @@
         },
         {
             "file": "tests/cua-operator-resolve.test.js",
-            "line": 48,
+            "line": 43,
             "variable": "(clave no resoluble)",
             "sentido": "(n/a)"
         },
         {
             "file": "tests/cua-operator-resolve.test.js",
-            "line": 49,
+            "line": 45,
+            "variable": "(clave no resoluble)",
+            "sentido": "(n/a)"
+        },
+        {
+            "file": "tests/cua-operator-resolve.test.js",
+            "line": 51,
+            "variable": "(clave no resoluble)",
+            "sentido": "(n/a)"
+        },
+        {
+            "file": "tests/cua-operator-resolve.test.js",
+            "line": 52,
             "variable": "(clave no resoluble)",
             "sentido": "(n/a)"
         },
         {
             "file": "tests/delivery-gate2.test.js",
-            "line": 94,
+            "line": 97,
             "variable": "(clave no resoluble)",
             "sentido": "(n/a)"
         },
         {
             "file": "tests/delivery-gate2.test.js",
-            "line": 95,
+            "line": 98,
             "variable": "(clave no resoluble)",
             "sentido": "(n/a)"
         },
         {
             "file": "tests/delivery-gate2.test.js",
-            "line": 101,
+            "line": 104,
             "variable": "(clave no resoluble)",
             "sentido": "(n/a)"
         },
         {
             "file": "tests/delivery-gate2.test.js",
-            "line": 102,
+            "line": 105,
             "variable": "(clave no resoluble)",
             "sentido": "(n/a)"
         },
         {
             "file": "tests/kernel-resolver.test.js",
-            "line": 20,
+            "line": 23,
             "variable": "(clave no resoluble)",
             "sentido": "(n/a)"
         },
         {
             "file": "tests/kernel-resolver.test.js",
-            "line": 21,
+            "line": 24,
             "variable": "(clave no resoluble)",
             "sentido": "(n/a)"
         },
         {
             "file": "tests/kernel-resolver.test.js",
-            "line": 25,
+            "line": 28,
             "variable": "(clave no resoluble)",
             "sentido": "(n/a)"
         },
         {
             "file": "tests/kernel-resolver.test.js",
-            "line": 26,
+            "line": 29,
             "variable": "(clave no resoluble)",
             "sentido": "(n/a)"
         },
         {
             "file": "tests/merge-race-precondicion-e2e-6432.test.js",
-            "line": 75,
+            "line": 78,
             "variable": "PULPO_SKIP_AGENT_MODELS_VALIDATE",
             "sentido": "encender"
         },
         {
             "file": "tests/pulpo-agent-spawn-env-containment.test.js",
-            "line": 800,
+            "line": 803,
             "variable": "(clave no resoluble)",
             "sentido": "(n/a)"
         },
         {
             "file": "tests/pulpo-agent-spawn-env-containment.test.js",
-            "line": 807,
+            "line": 810,
             "variable": "(clave no resoluble)",
             "sentido": "(n/a)"
         },
         {
             "file": "tests/rejection-report-visual-5708-rev2.test.js",
-            "line": 89,
+            "line": 92,
             "variable": "(clave no resoluble)",
             "sentido": "(n/a)"
         },
         {
             "file": "tests/rejection-report-visual-5708-rev2.test.js",
-            "line": 90,
+            "line": 93,
             "variable": "(clave no resoluble)",
             "sentido": "(n/a)"
         },
         {
             "file": "tests/rejection-report-visual-5708-rev2.test.js",
-            "line": 94,
+            "line": 97,
             "variable": "(clave no resoluble)",
             "sentido": "(n/a)"
         },
         {
             "file": "tests/rejection-report-visual-5708-rev2.test.js",
-            "line": 95,
+            "line": 98,
             "variable": "(clave no resoluble)",
             "sentido": "(n/a)"
         },
         {
             "file": "tests/rejection-report-visual-5708.test.js",
-            "line": 78,
+            "line": 81,
             "variable": "(clave no resoluble)",
             "sentido": "(n/a)"
         },
         {
             "file": "tests/rejection-report-visual-5708.test.js",
-            "line": 79,
+            "line": 82,
             "variable": "(clave no resoluble)",
             "sentido": "(n/a)"
         },
         {
             "file": "tests/rejection-report-visual-5708.test.js",
-            "line": 83,
+            "line": 86,
             "variable": "(clave no resoluble)",
             "sentido": "(n/a)"
         },
         {
             "file": "tests/rejection-report-visual-5708.test.js",
-            "line": 84,
+            "line": 87,
             "variable": "(clave no resoluble)",
             "sentido": "(n/a)"
         }

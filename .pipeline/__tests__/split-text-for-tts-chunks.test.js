@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Tests para splitTextForTTSChunks — issue #3485.
 //
 // Cubre los CAs del refinamiento PO:

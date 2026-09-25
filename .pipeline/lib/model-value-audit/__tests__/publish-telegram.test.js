@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 'use strict';
 
 // Tests del adaptador `telegram-plain` (#7520 CA-26 / CA-27 / CA-UX-3 / CA-UX-4 / SEC-12).

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // Tests http-client.js — CA-3 / CA-4 / CA-5 / CA-7 / CA-14 / CA-16 / CA-19 / CA-20
 // Usa servidores HTTP/HTTPS locales, con certs self-signed generados en runtime.

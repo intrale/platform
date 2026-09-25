@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // brazo-lanzamiento-core.js — Selección/orden puro de candidatos (EP5-H1, #3938)
 //

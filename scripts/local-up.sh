@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 Leonel Larreta
+# SPDX-License-Identifier: LicenseRef-Proprietary
+
 # Levanta Docker (DynamoDB + Moto), espera la inicialización,
 # extrae credenciales y arranca el backend Ktor.
 # Uso: ./scripts/local-up.sh

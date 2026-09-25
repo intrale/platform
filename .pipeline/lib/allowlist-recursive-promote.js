@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // allowlist-recursive-promote.js — Auto-promoción de hijos cuando el planner
 // hace split sobre un issue padre que está en la allowlist (#3625 CA-3).

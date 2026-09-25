@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Leonel Larreta
+# SPDX-License-Identifier: LicenseRef-Proprietary
+
 # Launch - Arranca el pipeline V2 y registra/endurece las tareas del watchdog
 # Uso: powershell -NonInteractive -File .pipeline/launch.ps1
 #

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // pr-info-fetcher.js — Helper para consultar el estado del PR vinculado a un
 // issue invocando `gh pr list`. Extraído de pulpo.js (#3030) para tener

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // provider-contribution.js — Aporte real por proveedor + criterio de
 // permanencia de la cadena multi-provider (#6145)

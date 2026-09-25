@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // agent-launcher/__tests__/onSpawnExit.test.js — Tests del hook centralizado
 // (#3576 CA-2 + CA-8 + refinación R1 PO: test adversarial parser-que-tira).

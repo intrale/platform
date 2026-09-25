@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // Tests SSR del Historial timeline (#3963, rediseño sobre el split #3734/#3715).
 //

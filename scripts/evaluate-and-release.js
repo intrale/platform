@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // evaluate-and-release.js — Evalúa autónomamente si corresponde crear una release
 // El agente decide y ejecuta sin pedir aprobación.
 // Uso: node scripts/evaluate-and-release.js [path-to-sprint-plan.json]

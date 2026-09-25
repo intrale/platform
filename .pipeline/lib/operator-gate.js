@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // operator-gate.js — Canal de firma del operador para gates `waiting-operator`
 // (issue #4579, épico #4570 · diseño docs/pipeline/gates-firma-operador.md).

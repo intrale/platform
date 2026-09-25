@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // infra-noprogress.js — Breaker de NO-PROGRESO para rebotes de infra (#6746).
 //

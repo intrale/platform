@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // pre-launch-validation.js — Validación pre-lanzamiento de agentes (#SPR-044-fix)
 // Ejecutado por Start-Agente.ps1 antes de lanzar. Detecta:
 // - Agentes zombie (status=active pero PID muerto)

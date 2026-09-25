@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // wave-roadmap-4534.test.js — Rediseño de la ventana Roadmap como gestión de
 // olas (4 vistas). Verifica la estructura SSR nueva (tira en curso, filas

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // config-partition-rollback.test.js — #5174 · CA-12 (Entrega C de #5111)
 // =============================================================================

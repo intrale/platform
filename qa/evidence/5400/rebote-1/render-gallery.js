@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 const fs = require('fs');
 const path = require('path');
 const puppeteer = require('C:/Workspaces/Intrale/platform/.pipeline/node_modules/puppeteer');

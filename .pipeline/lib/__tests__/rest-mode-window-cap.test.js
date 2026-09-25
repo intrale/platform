@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // rest-mode-window-cap.test.js — Tests del cap CA-D2 (24h continuas/día) y de
 // los helpers nuevos `totalContinuousMinutesPerDay` y `nextWindowTransition`

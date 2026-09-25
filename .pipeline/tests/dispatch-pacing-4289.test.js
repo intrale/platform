@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // dispatch-pacing-4289.test.js — enganche del pacing budget en el dispatcher.
 //

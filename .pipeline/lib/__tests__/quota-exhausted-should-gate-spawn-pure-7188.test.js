@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // quota-exhausted-should-gate-spawn-pure-7188.test.js — `shouldGateSpawn` es un
 // PREDICADO: decide, no escribe.

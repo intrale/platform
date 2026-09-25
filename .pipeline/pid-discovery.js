@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // pid-discovery.js — Descubre PIDs de componentes del pipeline al vuelo.
 //
 // Fuente de verdad: el sistema operativo (wmic/ps + netstat/lsof), no el

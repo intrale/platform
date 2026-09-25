@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // product-audit.test.js — Recorder product-aware tamper-evident (#4780 SR-7).
 // Verifica que createProductAudit encadena y redacta, reusando lib/audit-log.js.

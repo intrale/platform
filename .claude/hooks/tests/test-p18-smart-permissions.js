@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // test-p18-smart-permissions.js — Tests para sistema de permisos inteligente (#1223)
 // Cubre: splitCompoundCommand, isSafeDirectory, isReversibleAction, classifySeverity
 

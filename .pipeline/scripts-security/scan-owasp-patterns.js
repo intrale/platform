@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // scan-owasp-patterns.js [<path>]
 // Escanea el codigo en busca de patrones asociados a OWASP Top 10 (A01-A09)
 // que el agente /security verificaba con grep ad-hoc en el paso S3.

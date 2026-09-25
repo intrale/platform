@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // proxy-validator.js — Match exacto contra whitelist de proxies
 // Issue #2307 · CA-8 / CA-15

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Test P-19: Hook post-merge-qa — deteccion de merges sin QA E2E (#1259)
 const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");

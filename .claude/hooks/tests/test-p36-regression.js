@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // test-p36-regression.js
 // Tests para scripts/run-regression.js (#1806)
 var test = require("node:test");

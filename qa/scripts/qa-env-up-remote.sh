@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 Leonel Larreta
+# SPDX-License-Identifier: LicenseRef-Proprietary
+
 # Levanta el entorno QA en modo remoto: sin Docker, sin backend local.
 # El emulador apunta al API Gateway de AWS (Lambda + DynamoDB + Cognito reales).
 #

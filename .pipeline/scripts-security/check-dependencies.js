@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // check-dependencies.js
 // Lista las dependencias declaradas en el monorepo Gradle (build.gradle.kts +
 // libs.versions.toml) en formato JSON para que el agente /security pueda

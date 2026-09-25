@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // dispatch-stamp-wiring.test.js — DÓNDE se estampa el despacho efectivo (#5400
 // rev-5, B1).

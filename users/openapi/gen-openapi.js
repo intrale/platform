@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 /**
  * Generador de la spec OpenAPI SERVIDA en runtime (users/src/main/resources/openapi.yaml).
  * Issue #4300 (CA-2). Fuente de verdad de la enumeración: users/.../Modules.kt (bind<Function>(tag=...)).

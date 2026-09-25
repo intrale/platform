@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 'use strict';
 
 // #3934 (EP4-H1) — Conversación estructurada user/assistant persistida POR CHAT.

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // Tests worktree-audit.js — append-only JSONL del audit trail (#2591 CA-8).
 // =============================================================================

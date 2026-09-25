@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // log-rotation.js — Rotación de logs de hooks para prevenir crecimiento indefinido
 //
 // Política de retención:

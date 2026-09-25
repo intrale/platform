@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // security-gate.js [base-ref]
 // Wrapper smart-skip para el modo `gate` de /security.
 //

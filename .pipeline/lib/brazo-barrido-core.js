@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // brazo-barrido-core.js — Lógica pura de decisión de cierre de fase (EP5-H1, #3938)
 //

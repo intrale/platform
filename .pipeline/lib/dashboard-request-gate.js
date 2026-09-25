@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // dashboard-request-gate.js — Gate de request para mutaciones locales del
 // dashboard (issue #5923).

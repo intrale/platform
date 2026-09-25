@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // Tests workfile-name.js — frontera FS segura (EP5-H1, #3938, CA-7/CA-8)
 //

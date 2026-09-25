@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // wave-roadmap.js — Vista SSR del panel de gestión del roadmap de olas del
 // dashboard V3 (`/dashboard?view=roadmap`).

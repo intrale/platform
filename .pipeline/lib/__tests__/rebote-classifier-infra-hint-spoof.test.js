@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 'use strict';
 // =============================================================================
 // #6745 rev-2 — CA-7 / CA-6: el hint de infra ya no es un bypass del piso ni

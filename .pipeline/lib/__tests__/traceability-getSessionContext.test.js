@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Tests de getSessionContext (issue #3088 / CA-6)
 // Valida lookup determinístico del audit trail multi-provider sin inferencia.
 'use strict';

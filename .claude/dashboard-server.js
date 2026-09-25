@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Dashboard Monitor Web v3 — Servidor HTTP + SSE + Screenshot + API
 // Rediseño #1225: Ejecución unificada, grafo de flujo, feed chat, métricas Claude
 // Uso: node .claude/dashboard-server.js [--port 3100]

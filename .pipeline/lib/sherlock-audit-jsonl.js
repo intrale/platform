@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // sherlock-audit-jsonl.js — Writer del audit log JSONL de Sherlock.
 //

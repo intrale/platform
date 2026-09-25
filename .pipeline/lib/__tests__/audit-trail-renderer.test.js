@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Tests del renderer del widget de Audit trail · Allowlist mutations (#3625 CA-5).
 // Cubre los 4 estados visuales (A/B/C/D) + empty state + XSS escape +
 // truncamiento + marker [REDACTED].

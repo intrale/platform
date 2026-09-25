@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // security-blocking-checks.js — Allowlist de checks que el pipeline NO mergea
 // en rojo, aunque la protección de rama no los exija (#6612, SEC-A).

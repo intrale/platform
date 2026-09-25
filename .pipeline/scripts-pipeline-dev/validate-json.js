@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // validate-json.js <archivo.json> [<archivo2.json> ...]
 // Parsea archivos JSON del pipeline y reporta sintaxis valida o invalida.
 // Reemplaza el patron LLM-parsea-y-razona por una invocacion determinista.

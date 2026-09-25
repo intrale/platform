@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 'use strict';
 
 // #7112 · CA-6 / CA-7.2 — la declaración de ambiente la cablean los lanzadores.

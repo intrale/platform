@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // gate-signature-drain.test.js — Drenador de `gate-signature/pendiente` (#6208).
 //

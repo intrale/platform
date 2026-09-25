@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // quota-balance.test.js — Saldo, ritmo y proyección de agotamiento (#6560).
 // Runner:

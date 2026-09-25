@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // #6612 SEC-A — Allowlist de checks de seguridad bloqueantes.
 //

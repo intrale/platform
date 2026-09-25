@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 Leonel Larreta
+# SPDX-License-Identifier: LicenseRef-Proprietary
+
 # smoke-test.sh — Ciclo completo de validación QA
 # Ejecuta: prerequisitos → backend up → healthcheck → emulador → APK → Maestro → evidencia
 #

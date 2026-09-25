@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // agent-launcher/provider-spawn-health.js — Health/backoff por PROVIDER ante
 // muertes al spawn. Issue #4648 (Capa 3).

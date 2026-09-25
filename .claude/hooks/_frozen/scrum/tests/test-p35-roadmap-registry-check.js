@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // test-p35-roadmap-registry-check.js
 // Tests para roadmap-registry-check.js (#1660)
 var test=require("node:test");

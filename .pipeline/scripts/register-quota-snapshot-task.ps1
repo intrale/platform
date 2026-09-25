@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Leonel Larreta
+# SPDX-License-Identifier: LicenseRef-Proprietary
+
 # =============================================================================
 # register-quota-snapshot-task.ps1 — Supervisión del capturador de cuota (CA-2)
 # Issue #4326 (split de #4324).

@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // rollback.js — Rollback del pipeline V2 (Node puro, detached-safe)
 //
 // Reemplazo de rollback.sh. Los problemas del script bash anterior:

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // multi-provider-health-badge-4364.test.js — #4364
 // Valida la lógica PURA del badge de salud/cuota por provider de la vista

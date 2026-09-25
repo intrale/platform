@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // sanitize-log-stream.test.js — Tests del writer de logs sanitizado (#2334)
 // =============================================================================

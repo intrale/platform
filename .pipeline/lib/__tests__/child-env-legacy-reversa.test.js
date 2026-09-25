@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 'use strict';
 
 // #7634 · E1/E3/E4 — producción intacta con el flag OFF: el camino legacy sólo

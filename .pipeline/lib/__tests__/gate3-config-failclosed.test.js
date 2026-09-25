@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // gate3-config-failclosed.test.js — GATE 3 no se bypassea con config ilegible.
 //                                   (#5172, rechazo de `review`)

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // audio-policy.js — Política de audio TTS por tipo de evento (issue #4586)
 //

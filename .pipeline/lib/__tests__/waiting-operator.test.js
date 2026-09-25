@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // Tests de lib/waiting-operator.js — lector unificado de pendientes de firma
 // (#4580, épico #4570).

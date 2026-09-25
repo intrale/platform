@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 'use strict';
 // =============================================================================
 // #7631 — Punto de entrada del gate `authorship`. Es lo ÚNICO que importa

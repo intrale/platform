@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 'use strict';
 
 // #6259 (P1) — Hermeticidad: estas tres variables son de CONTROL DE SEGURIDAD y

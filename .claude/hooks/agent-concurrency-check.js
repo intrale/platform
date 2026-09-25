@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // agent-concurrency-check.js — Hook Stop: emite evento agent-stopped para el coordinator
 // Versión simplificada: ya NO promueve ni lanza agentes. Solo emite eventos.
 // El agent-coordinator.js es el único que decide y actúa.

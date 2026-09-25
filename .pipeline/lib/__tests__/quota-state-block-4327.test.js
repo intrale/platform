@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // Tests #4327 (CA-4) — bloque de cuota servido por `/api/state`
 // (`lib/quota-state-block.buildQuotaStateBlock`).

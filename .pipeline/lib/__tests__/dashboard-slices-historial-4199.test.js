@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // Tests de las extensiones del Historial timeline (#4199).
 //   - _eventType: clasificación derivada del tipo de evento (merge/rebote/

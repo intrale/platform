@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // vault-provisioner.js — port de PROVISIÓN del vault (#5465, 2/3 de #5425)
 // =============================================================================

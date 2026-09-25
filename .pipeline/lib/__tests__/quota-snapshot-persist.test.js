@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // quota-snapshot-persist.test.js — Tests de persistencia + rotación + retención.
 // Issue #3012 (split de #3008, hija 1).

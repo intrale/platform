@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // operator-absence-audit.js — Registro tamper-evident de las decisiones de la
 // política de operador ausente (issue #4632 · split de #4581 · GATE 3 extendido).

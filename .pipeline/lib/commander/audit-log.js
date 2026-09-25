@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // audit-log.js — Log append-only del Commander determinístico
 // Issue #3257 · CA-10

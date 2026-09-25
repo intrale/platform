@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Tests de .pipeline/lib/operator-allowlist.js (issue #4630).
 // Cubren: roles primary/backup, operador desconocido, allowlist cerrada/vacía,
 // rechazo de re-delegación por `backup`, normalización fail-closed y el

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // config-resolver-root.test.js — #5172 · CA-10 / CA-11 / CA-12 / CA-13
 // =============================================================================

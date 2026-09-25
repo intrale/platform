@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // wave-auto-transition.test.js — Tests de la transición automática de ola
 // (#4368, Ola 8.3). Cubre CA-1..CA-9 del issue.

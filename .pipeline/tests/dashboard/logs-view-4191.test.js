@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // logs-view-4191.test.js — Pantalla LOGS + interacción con el agente (Ola 7.1,
 // issue #4191). Verificación estática sobre el HTML renderizado server-side.

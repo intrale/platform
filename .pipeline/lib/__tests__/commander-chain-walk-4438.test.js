@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // commander-chain-walk-4438.test.js — #4438 CA-1 / CA-2 / CA-3 / CA-4
 //

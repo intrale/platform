@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // alert-tray-audit.js — Audit trail append-only para las acciones del operador
 // sobre la bandeja de alertas del Home mission-control (issue #3954, EP8-H1).

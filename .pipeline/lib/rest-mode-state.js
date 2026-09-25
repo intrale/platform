@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // rest-mode-state.js — Estado del banner de alerta de consumo + snooze
 // (#2892 PR-C, parte del épico #2882).

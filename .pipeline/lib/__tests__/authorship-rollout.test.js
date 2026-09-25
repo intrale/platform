@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 'use strict';
 // #7631 — Rollout fail-closed del gate `authorship` (CA-6 / S8) + evaluador
 // completo (`evaluateAuthorship`) + copy de UX.

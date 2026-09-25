@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // dispatch-window-label.js — Rótulo canónico de la ventana de dispatch (#5176,
 // CA-UX-3).

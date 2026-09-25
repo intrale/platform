@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // V3 TTS Logger — wrapper alrededor de invocaciones TTS que emite tts:generated
 // Contrato definido en issue #2477. No duplica la lógica de multimedia.js — solo instrumenta.
 //

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Tests de .pipeline/lib/partial-pause-deps.js (issue #2893)
 //
 // Cubre CA-10 (unit): detección de deps, auto-inclusión, persistencia con accepted_dep_risk.

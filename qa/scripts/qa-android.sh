@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 Leonel Larreta
+# SPDX-License-Identifier: LicenseRef-Proprietary
+
 # qa-android.sh — Build APK + emuladores configurables + Maestro Shards + video recording
 # Uso: bash qa/scripts/qa-android.sh
 # 100% autonomo: arranca N emuladores (default 1 para performance) en paralelo, compila, instala, corre tests Maestro con shards.

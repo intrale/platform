@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // commander-closed-set.test.js — Suite del `closedSet` del cuadro `wave` (#4099).
 //

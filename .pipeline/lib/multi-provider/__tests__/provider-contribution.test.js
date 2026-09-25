@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // provider-contribution.test.js — invariantes del criterio de permanencia (#6145)
 // =============================================================================

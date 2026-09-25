@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // orphan-notify.js — Aviso al operador de que un pedido suyo se ejecutó y su
 // respuesta se perdió (#6460, Bloque B / mitad de aviso del split de #6440).

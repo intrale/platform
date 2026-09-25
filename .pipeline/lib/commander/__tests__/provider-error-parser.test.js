@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // provider-error-parser.test.js — Cobertura del parser de errores in-flight
 // del Commander (#3434).

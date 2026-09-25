@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Tests de .pipeline/lib/operator-wait.js (issue #4588).
 // Herméticos: se construye un pipelineDir temporal con los dos audit logs
 // append-only (gate-verdicts.jsonl + operator-gate-signatures.jsonl) en el mismo

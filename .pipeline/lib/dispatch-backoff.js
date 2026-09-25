@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // dispatch-backoff — espera entre reintentos cuando la cadena de providers
 // quedó agotada.

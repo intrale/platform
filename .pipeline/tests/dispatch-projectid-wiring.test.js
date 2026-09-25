@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // dispatch-projectid-wiring.test.js — Issue #5901 · CA-3 (GURU-1)
 //

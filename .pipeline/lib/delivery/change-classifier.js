@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // change-classifier.js — Clasifica un cambio en su tipo Conventional Commit.
 //
 // Reemplaza el Paso 3 del SKILL.md ("Basándote en el diff, clasificá:")

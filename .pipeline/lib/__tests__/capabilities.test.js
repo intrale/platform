@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // capabilities.test.js — Tests para el catálogo canónico (#3082 CA-5).
 // =============================================================================

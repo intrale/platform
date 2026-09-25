@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // operator-signoff-gate.js — GATE 1 · Firma de Definición del operador (#4574)
 // =============================================================================

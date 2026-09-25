@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // audit-log.js — Append-only JSONL con hash chain SHA-256 (tamper-evident).
 //

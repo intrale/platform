@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // Tests brazo-barrido-core.js — decisión pura de cierre de fase (EP5-H1, #3938)
 //

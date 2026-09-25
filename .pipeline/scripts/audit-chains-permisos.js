@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Harness determinístico: cruza cada enlace (skill, provider) de cada cadena
 // de fallback contra la matriz de permisos usando el CÓDIGO REAL del pipeline.
 // Uso: node .pipeline/scripts/audit-chains-permisos.js

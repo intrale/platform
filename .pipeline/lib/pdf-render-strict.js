@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 'use strict';
 // =============================================================================
 // pdf-render-strict.js — Render HTML→PDF endurecido, reutilizable (#7633 · A1 · SE4).

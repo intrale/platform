@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // orphan-notify.test.js — Cobertura de la capa de AVISO al operador (#6460).
 //

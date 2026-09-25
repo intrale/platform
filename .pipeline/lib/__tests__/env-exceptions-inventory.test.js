@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 'use strict';
 
 // #7635 · CA-7 / CA-8 — el `.pipeline/env-exceptions.yaml` REAL del repo declara

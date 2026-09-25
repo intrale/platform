@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // cost-anomaly-alert.js — Formateador + sender Telegram para alertas de
 // consumo anómalo (#2892 PR-C, parte del épico #2882).

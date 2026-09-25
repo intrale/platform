@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // cli-ops.js — Health check y diagnóstico operativo sin necesidad de Claude
 // Uso: node scripts/cli-ops.js [--fix] [--verbose]
 // Reemplaza /ops para operaciones deterministas (#1661)

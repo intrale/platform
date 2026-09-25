@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // multimedia-attachment.js — Helpers para validar adjuntos multimedia
 // Issue #3540

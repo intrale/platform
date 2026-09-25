@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Script unificado: HTML -> PDF -> Telegram
 // Uso: node scripts/report-to-pdf-telegram.js <html-content-or-file> [caption]
 //

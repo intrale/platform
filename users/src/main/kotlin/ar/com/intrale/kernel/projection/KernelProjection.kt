@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 package ar.com.intrale.kernel.projection
 
 import ar.com.intrale.kernel.OperatorIdentity

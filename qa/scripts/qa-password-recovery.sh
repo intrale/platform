@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 Leonel Larreta
+# SPDX-License-Identifier: LicenseRef-Proprietary
+
 # qa-password-recovery.sh — Graba evidencia en video de flujos de recuperación y cambio de contraseña
 # Uso: bash qa/scripts/qa-password-recovery.sh
 # Genera videos + screenshots en qa/evidence/1091/

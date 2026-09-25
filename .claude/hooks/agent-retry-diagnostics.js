@@ -1,4 +1,7 @@
-﻿// agent-retry-diagnostics.js (#1749)
+﻿// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
+// agent-retry-diagnostics.js (#1749)
 // Diagnostico automatico de causa de muerte de agentes.
 //
 // Causas detectadas:

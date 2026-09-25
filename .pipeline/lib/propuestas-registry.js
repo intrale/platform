@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // propuestas-registry.js — Registro único de propuestas al operador.
 // Parte 2/3 del split de #6807 (#7515): contrato + publicación.

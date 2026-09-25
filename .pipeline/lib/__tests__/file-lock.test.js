@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // file-lock.test.js — Tests de lib/file-lock.js (issue #3518 CA-3).
 // =============================================================================

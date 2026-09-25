@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // render.js — Renderer de REFERENCIA del aviso de vencimiento de sesión
 //             (#6239, UX)

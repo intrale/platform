@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 /**
  * extract.js — Extrae un icono individual desde el sprite.svg como SVG standalone.
  *

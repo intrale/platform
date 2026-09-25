@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // .pipeline/tests/pause-contract-docs.test.js
 // =============================================================================
 // Tests de contrato del documento `docs/pipeline-v3-pause-rebote.md`

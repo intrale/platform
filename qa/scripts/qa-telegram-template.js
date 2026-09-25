@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // qa-telegram-template.js — Template del mensaje Telegram que anuncia cierre QA
 //

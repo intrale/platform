@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // kpis-mizpa-4198.test.js — #4198 (Ola 7.1). Rediseño integral MIZPÁ de la
 // pantalla KPIs: shell heredado + banner de misión que diagnostica + alertas

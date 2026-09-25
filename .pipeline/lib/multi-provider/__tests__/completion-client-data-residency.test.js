@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // completion-client-data-residency.test.js — Gate data-residency (D6 / RS-1)
 // del issue #4404.

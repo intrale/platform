@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // sherlock-regression-3729.test.js — Tests E2E de regresión (#3897 CA-7,
 // split 3/3 del épico #3894).

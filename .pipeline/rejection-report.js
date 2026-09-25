@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Genera un reporte PDF detallado cuando un agente finaliza rechazado/cancelado.
 //
 // Fase 1 (collect — default):

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // #2894 — Tests del pipelineSlice: agentes por fase activa,
 // stale detection, fase dev con un solo skill, override por bloqueado-humano,
 // resolución de skill desde labels.

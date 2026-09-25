@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Tests unitarios de lib/static-checks.js (issue #2491)
 // Cada check es una función pura: probamos los casos conocidos que debe
 // detectar (positivos) y los que NO debe disparar (negativos).

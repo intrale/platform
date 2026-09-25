@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // orphan-guard — decide si una corrida en `trabajando/` es realmente huérfana.
 //

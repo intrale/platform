@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // #5179 CA-6b — Lectura FAIL-CLOSED del halt total (`mode === 'paused'`).
 //

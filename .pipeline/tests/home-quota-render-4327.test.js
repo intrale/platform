@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // Tests #4327 (CA-5 / UX-G4) + #4533 — render de cuota en la HOME: un estado
 // sin dato NUNCA se renderiza como número fresco ni como `0%`; el % disponible

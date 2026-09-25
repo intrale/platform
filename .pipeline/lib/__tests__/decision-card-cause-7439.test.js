@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // #7439 CA-7 / CA-8 — Ficha de Telegram enrutada por la CAUSA estructurada.
 //

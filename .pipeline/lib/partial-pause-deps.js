@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Detección de dependencias para pausa parcial (issue #2893).
 //
 // Resuelve el incidente del 2026-04-30: cuando el operador activa una pausa

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // voice-delivery-audit.js — Traza append-only de entrega de partes de voz (#5573)
 // =============================================================================

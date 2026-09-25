@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // wizard-descanso.test.js — Tests del flow `descanso` (#3739) y de su vista SSR.
 //

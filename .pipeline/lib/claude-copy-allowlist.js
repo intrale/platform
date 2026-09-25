@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // claude-copy-allowlist.js — Allowlist deny-by-default para copiar `.claude/`
 // hacia un worktree nuevo (issue #5220, CA-2.c).

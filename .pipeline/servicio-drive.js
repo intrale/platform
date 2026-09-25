@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // #6812 — Windows: suprimir la ventana de consola de cada hijo (gh, git,
 // tasklist, powershell). Debe ir ANTES de cualquier require que spawnee.
 require('./lib/force-windows-hide').apply();

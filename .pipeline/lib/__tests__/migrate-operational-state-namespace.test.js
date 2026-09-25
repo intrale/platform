@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // migrate-operational-state-namespace.test.js — #5110 (Ola 9.4 · E2).
 //

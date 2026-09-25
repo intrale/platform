@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // quota-snapshot-integration.js — Wire entre snapshot real (#3012) e infra
 // existente (detector binario #2974, calibrador EMA, banner #2992) — #3013.

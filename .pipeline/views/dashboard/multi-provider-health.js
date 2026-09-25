@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // multi-provider-health.js — Vista HTML/JS de la pantalla EP8-H12
 // "Salud Multi-Provider" del Dashboard V3 (#3965).

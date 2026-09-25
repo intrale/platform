@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // parallel-lane-classifier.js — Carril paralelo a nivel dispatch (#4767 ·
 // parte (c) del split de #4759).

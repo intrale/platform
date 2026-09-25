@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Leonel Larreta
+# SPDX-License-Identifier: LicenseRef-Proprietary
+
 # git-filter-repo --filename-callback body — Ola 9.1 (#4663)
 # Selecciona el subconjunto MOTOR (frontera kernel-migration-plan.md §2.1/§2.3)
 # y lo re-ubica en el layout del repo del kernel (kernel-repo-design.md §1):

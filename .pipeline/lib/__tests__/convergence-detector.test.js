@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // .pipeline/lib/__tests__/convergence-detector.test.js
 // =============================================================================
 // Tests de lib/convergence-detector.js — issue #4160.

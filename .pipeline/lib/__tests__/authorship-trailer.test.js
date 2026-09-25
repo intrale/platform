@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 'use strict';
 // #7631 — Bloque de trailers de autoría: strip, saneo, build y parser puro.
 

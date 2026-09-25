@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // visual-gate.js — Gate de validación visual pre-promoción build→verificacion
 //                  (Issue #3383)

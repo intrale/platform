@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // wave-coherence-transition.test.js — Integración del gate de coherencia (#4578)
 // con el paso `wave-close` de la transición automática de ola.

@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Smoke test: verify all #1765 features are present in the patched files
 const fs = require('fs');
 const path = require('path');

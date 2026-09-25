@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 'use strict';
 
 // #6809 CA-6 / SEC-6809-1 / SEC-6809-2 — el auditor es de sólo lectura y

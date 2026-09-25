@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // .pipeline/lib/autonomy-ladder.test.js
 // Tests node --test de la escalera de autonomía (#4576, CA-4/6/7/8/9).
 'use strict';

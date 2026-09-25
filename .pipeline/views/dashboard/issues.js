@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // issues.js — Vista SSR de la ventana Issues del dashboard V3 (ruta `/issues`
 // y `?view=issues`).

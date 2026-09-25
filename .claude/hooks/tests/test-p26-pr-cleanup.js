@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Test P-26: Auto-merge de PRs pendientes con CI verde (#1351)
 // Verifica que pr-cleanup.js:
 //   - Filtra PRs por rama agent/*, antigüedad y labels bloqueantes

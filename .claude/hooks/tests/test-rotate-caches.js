@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Tests de rotate-caches.js — rotacion de caches de maquina.
 //
 // El foco esta en las dos decisiones que, si se equivocan, borran trabajo:
