@@ -34,6 +34,14 @@
 #   /.pipeline/lib/__tests__/operational-state-lint.test.js responsable: @leitolarreta
 #   /.github/CODEOWNERS                                     responsable: @leitolarreta
 #
+# Guardrail license-header-lint (#7591, SEC-5 declarativo segun #5986):
+#   /.pipeline/lib/license-header-lint.js                   responsable: @leitolarreta
+#   /.pipeline/lib/license-header-lint.config.json          responsable: @leitolarreta
+#   /.pipeline/lib/license-header-lint.allowlist.json       responsable: @leitolarreta
+#   /.pipeline/lib/__tests__/license-header-lint.test.js    responsable: @leitolarreta
+#   /.github/workflows/license-header-lint.yml              responsable: @leitolarreta
+#   /LICENSE                                                responsable: @leitolarreta
+#
 # La clasificacion semantica de #5986 distingue sin-mencion,
 # solo-comentarios y regla-activa. La politica vigente espera el modo
 # declarativo solo-comentarios (GATE_CODEOWNERS_ESPERADO=false).
