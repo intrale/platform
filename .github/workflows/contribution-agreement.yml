@@ -1,0 +1,121 @@
+# =============================================================================
+# Contribution Agreement — Gate del CLA para aportes externos · #7599
+#
+# Emite el commit status `contribution-agreement` sobre el head del PR:
+#   - miembros (OWNER/MEMBER) y cuentas de la allowlist por ID ⇒ success
+#   - autores externos (del PR o de cualquier commit) ⇒ success sólo si
+#     firmaron el CLA vigente comentando la frase exacta en el PR
+#
+# Ese status es un required check del ruleset `main-required-checks` (paso
+# del operador, ver el body del PR de #7599). Sin él en verde no se mergea.
+#
+# Diseño seguro (CA-S1..S9):
+#   - `pull_request_target` / `issue_comment`: la definición del workflow se
+#     toma de `main`, nunca del PR (CA-S1). Un PR que edite este archivo no
+#     cambia lo que corre.
+#   - `actions/checkout` SIN `ref:` — trae `main` y sólo los archivos del
+#     sparse-checkout. Jamás se ejecuta código del PR (CA-S2).
+#   - Sin bloques `run:`. Título, body, comentarios y commits se leen sólo por
+#     API dentro de github-script, nunca interpolados con `${{ }}` (CA-S5).
+#   - `permissions: {}` a nivel workflow y mínimos por job. El token es el
+#     GITHUB_TOKEN por defecto de github-script (sin PAT). El único job con
+#     `contents: write` es `record-signature` (CA-S6/CA-S8).
+#   - Actions fijadas por SHA (CA-S8).
+#   - Fail-closed: cualquier error deja el status en `failure` (CA-S7).
+#
+# La lógica vive en `.pipeline/lib/contribution-agreement.js` (testeada con
+# `node --test`). #5680: la lista `sparse-checkout` ES el contrato de
+# empaquetado del módulo — el test T13 la parsea y carga el módulo con
+# exactamente esos archivos. Si agregás un `require` local al módulo, sumalo
+# acá en el MISMO commit (en los dos jobs).
+# =============================================================================
+
+name: Contribution Agreement
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+  issue_comment:
+    types: [created]
+
+permissions: {}
+
+concurrency:
+  group: cla-${{ github.event.pull_request.number || github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  evaluate:
+    # En issue_comment sólo interesan los PRs; el script además ignora todo
+    # comentario que no sea la frase exacta.
+    if: github.event_name == 'pull_request_target' || github.event.issue.pull_request
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: write
+      statuses: write
+    outputs:
+      record: ${{ steps.gate.outputs.record }}
+    steps:
+      - name: Checkout de main (sólo el módulo y el CLA — NO código del PR)
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            .pipeline/lib/contribution-agreement.js
+            docs/legal/CLA.md
+          sparse-checkout-cone-mode: false
+
+      - name: Evaluar el acuerdo de contribución
+        id: gate
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7.0.1
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+            const ws = process.env.GITHUB_WORKSPACE;
+            const cla = require(path.join(ws, '.pipeline', 'lib', 'contribution-agreement.js'));
+            const claText = fs.readFileSync(path.join(ws, 'docs', 'legal', 'CLA.md'), 'utf8');
+            const out = await cla.run({ github, context, core, claText, mode: 'evaluate' });
+            core.setOutput('record', out && out.record ? 'true' : 'false');
+            if (out && out.state === 'failure' && out.kind === 'error') {
+              core.setFailed('No se pudo verificar el CLA (status en failure)');
+            }
+
+  record-signature:
+    # Sólo corre si `evaluate` detectó firmas nuevas válidas. Recalcula todo
+    # desde la API: no confía en datos del job anterior, sólo en el disparo.
+    needs: evaluate
+    if: needs.evaluate.outputs.record == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      pull-requests: read
+      issues: write
+      statuses: write
+    steps:
+      - name: Checkout de main (sólo el módulo y el CLA — NO código del PR)
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            .pipeline/lib/contribution-agreement.js
+            docs/legal/CLA.md
+          sparse-checkout-cone-mode: false
+
+      - name: Registrar la firma y actualizar el status
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7.0.1
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+            const ws = process.env.GITHUB_WORKSPACE;
+            const cla = require(path.join(ws, '.pipeline', 'lib', 'contribution-agreement.js'));
+            const claText = fs.readFileSync(path.join(ws, 'docs', 'legal', 'CLA.md'), 'utf8');
+            const out = await cla.run({ github, context, core, claText, mode: 'record' });
+            if (out && out.state === 'failure' && out.kind === 'error') {
+              core.setFailed('No se pudo registrar la firma del CLA (status en failure)');
+            }
