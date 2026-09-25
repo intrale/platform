@@ -107,6 +107,8 @@ const MOTIVOS = Object.freeze({
     MEZCLA_EN_LA_MISMA_ORDEN: 'mezcla-needs-human-y-recomendacion-en-la-misma-orden',
     APPROVED_SIN_ORIGEN_HUMANO: 'approved-sin-origen-autorizado',
     REMOVE_NEEDS_HUMAN_SIN_ORIGEN_HUMANO: 'remove-needs-human-sin-origen-autorizado',
+    // #7673 — corte transitorio de recomendaciones hasta la Ola Propuestas (#7361).
+    RECOMENDACIONES_CORTE_TRANSITORIO: 'recomendaciones-corte-transitorio',
     INDETERMINADO: 'guardrail-indeterminado',
 });
 
@@ -409,11 +411,15 @@ function evaluateLabelOrder({ action, label, order = {}, getCurrentLabels } = {}
  * @param {object} params
  * @param {string} params.labels  - CSV de labels del `create-issue`.
  * @param {object} [params.order] - la orden completa (procedencia declarada).
+ * @param {boolean} [params.recommendationsEnabled=false] - #7673: valor de
+ *        `recomendaciones.crear_issues`. Sólo el booleano `true` habilita crear
+ *        issues de recomendación; ausente o cualquier otro valor ⇒ corte activo.
  * @returns {{allowed:boolean, motivo:string, consulted:boolean, currentLabels:null, authorizedBy?:string}}
  */
-function evaluateCreateIssueLabels({ labels, order = {} } = {}) {
+function evaluateCreateIssueLabels({ labels, order = {}, recommendationsEnabled = false } = {}) {
     // SEC-F + SEC-G — mismas dos normalizaciones que el resto del módulo.
-    const componentes = normalizedLabelList(labels);
+    // #7673 — `labels` también puede llegar como array: se aplana a CSV.
+    const componentes = normalizedLabelList(Array.isArray(labels) ? labels.join(',') : labels);
 
     // SEC-D — sin sensibles no hay nada que evaluar y no se gasta nada.
     if (!componentes.some((c) => SENSITIVE_LABELS.includes(c))) {
@@ -425,6 +431,15 @@ function evaluateCreateIssueLabels({ labels, order = {} } = {}) {
     // que `MEZCLA_EN_LA_MISMA_ORDEN` en `evaluateLabelOrder`.
     if (componentes.includes(NEEDS_HUMAN) && componentes.includes(TIPO_RECOMENDACION)) {
         return { allowed: false, motivo: MOTIVOS.MEZCLA_EN_LA_MISMA_ORDEN, consulted: false, currentLabels: null };
+    }
+
+    // #7673 SEC-2 — corte transitorio de recomendaciones. Va ANTES de
+    // `declaredAuthorization`: la procedencia la escribe el propio emisor de la
+    // orden, así que NO habilita crear una recomendación con el corte activo.
+    // Fail-closed: sólo el booleano `true` literal levanta el corte (SEC-1).
+    if (recommendationsEnabled !== true
+        && (componentes.includes(TIPO_RECOMENDACION) || componentes.includes(SOURCE_RECOMMENDATION))) {
+        return { allowed: false, motivo: MOTIVOS.RECOMENDACIONES_CORTE_TRANSITORIO, consulted: false, currentLabels: null };
     }
 
     const authorizedBy = declaredAuthorization(order);
@@ -514,6 +529,8 @@ function auditConflict({
     motivo,
     event = 'label_guardrail_conflict',
     authorized_by,
+    titulo,
+    skill,
     ts,
     dir,
     maxBytes,
@@ -521,6 +538,12 @@ function auditConflict({
 } = {}) {
     const cuando = ts || new Date().toISOString();
     const key = [event, accion, issue, label_solicitado, motivo].join('|');
+    // #7673 SEC-4 — `titulo`/`skill` son opcionales y sólo se escriben si vienen
+    // (el formato de las líneas previas no cambia). El título se recorta a 120
+    // caracteres; el `body` NUNCA entra al registro.
+    const extra = {};
+    if (titulo != null && titulo !== '') extra.titulo = String(titulo).slice(0, 120);
+    if (skill != null && skill !== '') extra.skill = String(skill);
     if (key === _lastConflictKey) {
         return { written: false, deduped: true };
     }
@@ -545,6 +568,7 @@ function auditConflict({
                 origen: origen || null,
                 motivo: motivo || null,
                 authorized_by: authorized_by || null,
+                ...extra,
             },
             fsImpl,
         });
@@ -583,6 +607,8 @@ function describeRejection({ issue, label_solicitado, labels_actuales, motivo, a
             'aprobar una recomendación es una acción humana: va por el panel del dashboard, no por la cola',
         [MOTIVOS.REMOVE_NEEDS_HUMAN_SIN_ORIGEN_HUMANO]:
             'destrabar un bloqueo humano es una acción humana: va por el panel o la alerta de Telegram, no por la cola',
+        [MOTIVOS.RECOMENDACIONES_CORTE_TRANSITORIO]:
+            'la creación de recomendaciones está pausada (#7673, `recomendaciones.crear_issues: false`): la oportunidad va como una línea en "Otras oportunidades observadas" del comentario del issue origen',
         [MOTIVOS.INDETERMINADO]:
             'no se pudieron determinar los labels actuales del issue y el guardrail falla cerrado',
     };

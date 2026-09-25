@@ -184,6 +184,9 @@ const AUTHORITY_PREFIXES = Object.freeze([
     'deliverable_gate',
     'gates',
     'wave_auto_transition',
+    // #7673 — prender `recomendaciones.crear_issues` reabre un canal de escritura
+    // en GitHub (issues de recomendación): es control, no calibración.
+    'recomendaciones',
     'brazo',
     'commander_products',
     'cross_repo_delivery',
@@ -205,6 +208,9 @@ const AUTHORITY_PREFIXES = Object.freeze([
     // `propuestas` entera es kernel (cuota/tope = mecanismo); la allowlist es
     // autoridad y no puede venir por entorno ni por el manifiesto de producto.
     'propuestas.autores_permitidos',
+    // #7631 — gate de autoría del squash: modo, go-live e identity_map deciden
+    // si un merge sin firma humana se bloquea y quién cuenta como aprobador.
+    'authorship',
 ]);
 
 // Clasificación completa de las secciones top-level de `config.yaml`
@@ -324,9 +330,11 @@ const SIDE_MAP = Object.freeze({
     firma_operador: 'autoridad',
     operator_signoff: 'autoridad',
     operator_signature: 'autoridad',
+    authorship: 'autoridad',                     // #7631 — trailer de autoría + gate pre-merge
     deliverable_gate: 'autoridad',
     gates: 'autoridad',
     wave_auto_transition: 'autoridad',
+    recomendaciones: 'autoridad',                // #7673 — corte transitorio de recomendaciones
     brazo: 'autoridad',
     commander_products: 'autoridad',
     'commander_products.products.*.operators': 'autoridad',
@@ -1154,6 +1162,21 @@ const SCHEMA = {
             },
         },
 
+        // --- authorship: trailer de autoría del squash + gate pre-merge (#7631)
+        // Calcado de operator_signature. `identity_map` mapea el sha256 del
+        // `signed_by` a un login público: el id crudo nunca entra al repo.
+        authorship: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['enabled', 'gate_mode'],
+            properties: {
+                enabled: { type: 'boolean' },
+                gate_mode: { type: 'string' },
+                go_live_date: { type: ['string', 'null'] },
+                identity_map: { type: 'object', additionalProperties: { type: 'string' } },
+            },
+        },
+
         // --- deliverable_gate: gate de entregables ---------------------------
         deliverable_gate: {
             type: 'object',
@@ -1214,6 +1237,18 @@ const SCHEMA = {
                 kill_switch: { type: 'boolean' },
                 mode: { type: 'string' },
                 gh_timeout_ms: { type: 'number', minimum: 0 },
+            },
+        },
+
+        // --- recomendaciones: corte transitorio hasta la Ola Propuestas (#7673) --
+        //     Sólo el booleano `true` reactiva la creación de issues de
+        //     recomendación; el lector (`lib/recommendations-cut.js`) falla cerrado.
+        recomendaciones: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['crear_issues'],
+            properties: {
+                crear_issues: { type: 'boolean' },
             },
         },
 

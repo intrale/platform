@@ -69,6 +69,57 @@ const { isSafeProjectId, KERNEL_PROJECT_ID } = require('./safe-project-id');
 // #7112 · CA-7 — la declaración de ambiente del hijo la fija el LANZADOR con el
 // modo que el propio Pulpo resolvió; nunca se hereda por el loop `PIPELINE_*`.
 const pipelineEnv = require('./pipeline-env');
+// #7634 — módulos HOJA (sin dependencias del pipeline): sentinel de credenciales
+// en disco + formas de secreto, y el error tipado del entorno del hijo.
+const credentialSentinel = require('./credential-sentinel');
+const { ChildEnvViolation } = require('./child-env-error');
+// #7635 — loader de excepciones declaradas (módulo HOJA: no importa este archivo).
+const childEnvExceptions = require('./child-env-exceptions');
+
+// -----------------------------------------------------------------------------
+// #7635 — los DATOS de permisos (allowlists, scopes, techos por fase y defaults
+// por skill) viven en `child-env-scopes.json`, no en este archivo. Así el gate de
+// permisos de delivery (`lib/permission-change-guard.js`) los protege POR PATH,
+// sin tener que hacer `require()` del código del PR para saber si cambiaron.
+//
+// Se resuelve desde `__dirname` (nunca desde cwd ni env) y se congela en
+// profundidad: los exports mantienen nombre, forma y `Object.isFrozen`.
+// Un JSON ilegible TIRA al cargar el módulo (fail-closed y ruidoso): sin la
+// tabla de permisos no hay forma segura de armar el env de un hijo.
+// -----------------------------------------------------------------------------
+function deepFreeze(obj) {
+    if (obj && typeof obj === 'object' && !Object.isFrozen(obj)) {
+        for (const v of Object.values(obj)) deepFreeze(v);
+        Object.freeze(obj);
+    }
+    return obj;
+}
+const CHILD_ENV_SCOPES_PATH = path.join(__dirname, 'child-env-scopes.json');
+const SCOPES_DATA = deepFreeze(JSON.parse(fs.readFileSync(CHILD_ENV_SCOPES_PATH, 'utf8')));
+
+// -----------------------------------------------------------------------------
+// #7634 · B1 — lookupEnvCI: búsqueda de una variable SIN distinguir mayúsculas.
+//
+// En Windows `process.env` no distingue mayúsculas, pero `{ ...process.env }`
+// (y cualquier objeto plano) sí: un objeto con `Path`/`windir` no matchea
+// `PATH`/`WINDIR` por `hasOwnProperty`. No depende de `process.platform`, así
+// los tests dan lo mismo en Linux y en Windows.
+//
+// Devuelve `{ key, value, ambiguous }` con la clave REAL encontrada, o `null`.
+// Si hay varias grafías, gana la exacta (si existe) y `ambiguous` lista las
+// claves ordenadas. Al LEER desde `processEnv` un duplicado se tolera (el
+// `Path`/`PATH` de Git Bash no puede tumbar los lanzamientos); el error
+// `case-duplicate` se evalúa sólo sobre el env FINAL en `assertChildEnvMinimal`.
+// -----------------------------------------------------------------------------
+function lookupEnvCI(src, name) {
+    if (!src || typeof src !== 'object' || name === undefined || name === null) return null;
+    const want = String(name).toUpperCase();
+    const hits = Object.keys(src).filter((k) => k.toUpperCase() === want && src[k] !== undefined);
+    if (hits.length === 0) return null;
+    const exact = hits.find((k) => k === name);
+    const key = exact || hits.slice().sort()[0];
+    return { key, value: src[key], ambiguous: hits.length > 1 ? hits.slice().sort() : null };
+}
 
 // -----------------------------------------------------------------------------
 // SYSTEM_ALLOWLIST — variables del sistema permitidas en TODOS los childs.
@@ -95,28 +146,7 @@ const pipelineEnv = require('./pipeline-env');
 //   NODE_PATH    — resolución de módulos Node globales
 //   NODE_OPTIONS — flags de Node (--max-old-space-size, etc.)
 // -----------------------------------------------------------------------------
-const SYSTEM_ALLOWLIST = Object.freeze([
-    'PATH',
-    'PATHEXT',
-    'HOME',
-    'USERPROFILE',
-    'USERNAME',
-    'APPDATA',
-    'LOCALAPPDATA',
-    'PROGRAMFILES',
-    'PROGRAMFILES(X86)',
-    'PROGRAMDATA',
-    'SystemRoot',
-    'ComSpec',
-    'WINDIR',
-    'TEMP',
-    'TMP',
-    'LANG',
-    'LC_ALL',
-    'TZ',
-    'NODE_PATH',
-    'NODE_OPTIONS',
-]);
+const SYSTEM_ALLOWLIST = SCOPES_DATA.SYSTEM_ALLOWLIST; // #7635 — child-env-scopes.json
 
 // -----------------------------------------------------------------------------
 // PROVIDER_DEFAULT_CREDENTIAL_ENV — fallback si `agent-models.json` no declara
@@ -139,29 +169,12 @@ const PROVIDER_DEFAULT_CREDENTIAL_ENV = Object.freeze({
 // **NO agregar scopes sin justificación** — cada scope es un permiso adicional
 // que se le da al child.
 // -----------------------------------------------------------------------------
-const CREDENTIAL_SCOPES = Object.freeze({
-    github: Object.freeze(['GH_TOKEN', 'GITHUB_TOKEN']),
-    aws: Object.freeze([
-        'AWS_ACCESS_KEY_ID',
-        'AWS_SECRET_ACCESS_KEY',
-        'AWS_SESSION_TOKEN',
-        'AWS_REGION',
-        'AWS_PROFILE',
-    ]),
-    'gradle-android': Object.freeze([
-        'JAVA_HOME',
-        'GRADLE_USER_HOME',
-        'ANDROID_HOME',
-        'ANDROID_SDK_ROOT',
-        'ANDROID_AVD_HOME',
-    ]),
-    // Los hooks pueden conservar contexto de destino, pero nunca reciben el
-    // token: notifican mediante la cola/frontera local privilegiada.
-    'telegram-hooks': Object.freeze(['TELEGRAM_CHAT_ID']),
-});
+const CREDENTIAL_SCOPES = SCOPES_DATA.CREDENTIAL_SCOPES; // #7635 — child-env-scopes.json
+// Los hooks pueden conservar contexto de destino (`telegram-hooks`), pero nunca
+// reciben el token: notifican mediante la cola/frontera local privilegiada.
 
 // Scope always-on sin secretos, conservado por compatibilidad de hooks.
-const SCOPES_ALWAYS_ON = Object.freeze(['telegram-hooks']);
+const SCOPES_ALWAYS_ON = SCOPES_DATA.SCOPES_ALWAYS_ON; // #7635 — child-env-scopes.json
 
 // -----------------------------------------------------------------------------
 // SCOPES_BY_FASE — TECHO de scopes por fase del pipeline (#5901 · REQ-SEC-4).
@@ -197,34 +210,18 @@ const SCOPES_ALWAYS_ON = Object.freeze(['telegram-hooks']);
 // fail-closed y perdería scopes el día que #5040 active el aislamiento.
 const KERNEL_FASE = 'kernel';
 
-const SCOPES_BY_FASE = Object.freeze({
-    // --- pipeline `definicion` (config.yaml:6) --------------------------------
-    // guru, security · po, ux, architect · planner — todos sólo leen/comentan
-    // issues por `gh`. Ninguno compila ni toca AWS.
-    analisis:     Object.freeze(['github']),
-    criterios:    Object.freeze(['github']),
-    sizing:       Object.freeze(['github']),
-
-    // --- pipeline `desarrollo` (config.yaml:11) -------------------------------
-    // po, ux, guru — igual que en definición.
-    validacion:   Object.freeze(['github']),
-    // backend-dev pide aws + gradle-android; android-dev/web-dev gradle-android;
-    // pipeline-dev sólo github. El techo es la unión de los cuatro.
-    dev:          Object.freeze(['github', 'gradle-android', 'aws']),
-    // skill determinístico `build`: compila, no habla con GitHub.
-    build:        Object.freeze(['gradle-android']),
-    // tester (gradle) · security (github) · qa (gradle + aws + github).
-    verificacion: Object.freeze(['github', 'gradle-android', 'aws']),
-    // `linter` es Node puro sobre el worktree: no necesita ninguna credencial.
-    linteo:       Object.freeze([]),
-    // review, po, ux, architect — comentan el PR.
-    aprobacion:   Object.freeze(['github']),
-    // `delivery` mergea a main.
-    entrega:      Object.freeze(['github']),
-
-    // --- kernel (commander) ---------------------------------------------------
-    [KERNEL_FASE]: Object.freeze(['github']),
-});
+// Techos vigentes (child-env-scopes.json):
+//   definicion: analisis/criterios/sizing → github (guru, security, po, ux,
+//     architect, planner sólo leen/comentan issues por gh).
+//   desarrollo: validacion → github · dev → github + gradle-android + aws
+//     (unión de backend-dev, android-dev, web-dev, pipeline-dev) · build →
+//     gradle-android · verificacion → github + gradle-android + aws (tester,
+//     security, qa) · linteo → [] (Node puro) · aprobacion/entrega → github.
+//   kernel (KERNEL_FASE) → github.
+const SCOPES_BY_FASE = SCOPES_DATA.SCOPES_BY_FASE; // #7635 — child-env-scopes.json
+if (!Object.prototype.hasOwnProperty.call(SCOPES_BY_FASE, KERNEL_FASE)) {
+    throw new Error(`[build-child-env] child-env-scopes.json sin techo para la fase '${KERNEL_FASE}'.`);
+}
 
 // Material reservado que jamás puede cruzar al child, ni con aislamiento
 // desactivado ni reintroducido desde pipelineExtras bajo otro nombre.
@@ -259,10 +256,17 @@ function conDeclaracionExplicita(envHijo = {}, processEnv = process.env) {
     return out;
 }
 
+// #7634 · S3/E1 — la comparación de nombres NO distingue mayúsculas: en
+// Windows `telegram_bot_token` ES `TELEGRAM_BOT_TOKEN` para el hijo. La lista
+// sigue siendo SÓLO Telegram (camino legacy en producción): GH_TOKEN y AWS_*
+// siguen pasando por acá con el flag OFF.
+const RESERVED_CHILD_SECRET_NAMES_UPPER = new Set(RESERVED_CHILD_SECRET_NAMES.map((n) => n.toUpperCase()));
+
 function stripReservedChildSecrets(candidateEnv = {}, operatorEnv = process.env) {
     const reservedValues = new Set();
     for (const name of RESERVED_CHILD_SECRET_NAMES) {
-        const value = operatorEnv && operatorEnv[name];
+        const hit = lookupEnvCI(operatorEnv, name);
+        const value = hit ? hit.value : undefined;
         if (value !== undefined && value !== null && String(value) !== '') {
             reservedValues.add(String(value));
         }
@@ -270,7 +274,7 @@ function stripReservedChildSecrets(candidateEnv = {}, operatorEnv = process.env)
 
     const safe = {};
     for (const [name, value] of Object.entries(candidateEnv || {})) {
-        if (RESERVED_CHILD_SECRET_NAMES.includes(name)) continue;
+        if (RESERVED_CHILD_SECRET_NAMES_UPPER.has(String(name).toUpperCase())) continue;
         if (value !== undefined && reservedValues.has(String(value))) continue;
         safe[name] = value;
     }
@@ -304,18 +308,17 @@ function stripReservedChildSecrets(candidateEnv = {}, operatorEnv = process.env)
 // fuera del env. Si algún día un provider HTTP-only necesitara una key acá, la
 // decisión pasa por `buildChildEnv` (scopes por skill), no por este helper.
 // -----------------------------------------------------------------------------
-const CLI_OAUTH_ALLOWLIST = Object.freeze([
-    'CODEX_HOME',        // codex: directorio de auth.json/config.toml (default ~/.codex)
-    'CLAUDE_CONFIG_DIR', // claude: directorio de config/credenciales (default ~/.claude)
-]);
+// CODEX_HOME: directorio de auth.json/config.toml de codex (default ~/.codex).
+// CLAUDE_CONFIG_DIR: directorio de config/credenciales de claude (default ~/.claude).
+const CLI_OAUTH_ALLOWLIST = SCOPES_DATA.CLI_OAUTH_ALLOWLIST; // #7635 — child-env-scopes.json
 
 function buildMinimalCliEnv({ processEnv = process.env, extras = {} } = {}) {
     const src = (processEnv && typeof processEnv === 'object') ? processEnv : {};
     const out = {};
     for (const k of [...SYSTEM_ALLOWLIST, ...CLI_OAUTH_ALLOWLIST]) {
-        if (Object.prototype.hasOwnProperty.call(src, k) && src[k] !== undefined) {
-            out[k] = src[k];
-        }
+        // #7634 · B1 — sin distinguir mayúsculas; salida con el nombre canónico.
+        const hit = lookupEnvCI(src, k);
+        if (hit) out[k] = hit.value;
     }
     for (const [k, v] of Object.entries(extras || {})) {
         if (v === undefined || v === null) continue;
@@ -365,36 +368,179 @@ const PROVIDER_MODEL_ENV = Object.freeze({
 // #3085 (comments del issue). Skills que no aparecen acá obtienen `[]`
 // (solo SYSTEM_ALLOWLIST + PIPELINE_* + SCOPES_ALWAYS_ON + provider key).
 // -----------------------------------------------------------------------------
-const DEFAULT_REQUIRES_BY_SKILL = Object.freeze({
-    // Skills LLM que postean comentarios / leen issues vía gh CLI.
-    security: ['github'],
-    guru: ['github'],
-    po: ['github'],
-    ux: ['github'],
-    planner: ['github'],
-    review: ['github'],
-    refinar: ['github'],
-    priorizar: ['github'],
-    historia: ['github'],
-    doc: ['github'],
-    handoff: ['github'],
+// Grupos (child-env-scopes.json): skills LLM que comentan/leen issues → github;
+// los que tocan código → github (+ gradle-android, + aws en backend-dev);
+// determinísticos (builder, tester, build → gradle-android; delivery → github;
+// linter → []); qa → gradle-android + aws + github; kernel (#7634:
+// telegram-commander, telegram-sherlock → [] para que el assert los reconozca
+// como roles declarados aunque agent-models.json no se pueda leer).
+const DEFAULT_REQUIRES_BY_SKILL = SCOPES_DATA.DEFAULT_REQUIRES_BY_SKILL; // #7635 — child-env-scopes.json
 
-    // Skills LLM que tocan código → necesitan github (comentarios + branches).
-    'pipeline-dev': ['github'],
-    'android-dev': ['github', 'gradle-android'],
-    'backend-dev': ['github', 'aws', 'gradle-android'],
-    'web-dev': ['github', 'gradle-android'],
+// -----------------------------------------------------------------------------
+// #7634 · E1 — ISOLATION_RESERVED_NAMES: credenciales que NUNCA pueden llegar a
+// un hijo fuera de su scope efectivo (AWS, GitHub, keys de providers, Telegram).
+//
+// Es una constante NUEVA a propósito (R1 del Guru): la usan SÓLO
+// `assertChildEnvMinimal` y el camino ON (`buildChildEnv`). NO reemplaza a
+// `RESERVED_CHILD_SECRET_NAMES`, que sigue siendo sólo Telegram porque la usa el
+// camino legacy en producción — ampliarla le quitaría GH_TOKEN/AWS_* a todos los
+// agentes con el flag OFF.
+// -----------------------------------------------------------------------------
+const ISOLATION_RESERVED_NAMES = Object.freeze(Array.from(new Set([
+    ...CREDENTIAL_SCOPES.aws,
+    ...CREDENTIAL_SCOPES.github,
+    'GH_ENTERPRISE_TOKEN',
+    'GITHUB_ENTERPRISE_TOKEN',
+    'AWS_WEB_IDENTITY_TOKEN_FILE',
+    'AWS_ROLE_ARN',
+    ...Object.values(PROVIDER_DEFAULT_CREDENTIAL_ENV).filter(Boolean),
+    ...RESERVED_CHILD_SECRET_NAMES,
+].map((n) => n.toUpperCase()))));
 
-    // Skills determinísticos (bypass LLM).
-    builder: ['gradle-android'],
-    tester: ['gradle-android'],
-    delivery: ['github'],
-    linter: [],
+// -----------------------------------------------------------------------------
+// #7634 — CHILD_TRANSPORT_ALLOWLIST: claves de TRANSPORTE (no credenciales) que
+// el lanzador inyecta a propósito por `pipelineExtras` y que no empiezan con
+// `PIPELINE_`. Sin esta lista el assert marcaría como "no declaradas" las extras
+// que hoy pasa `pulpo.js` (lanzarAgenteClaude, QA y Commander).
+//
+// **NO agregar entradas que transporten material secreto.** Su valor igual pasa
+// por el chequeo de forma de secreto del assert.
+// -----------------------------------------------------------------------------
+const CHILD_TRANSPORT_ALLOWLIST = Object.freeze([
+    'PROVIDER_RESOLUTION_LOG', // pulpo.js · lanzarAgenteClaude (#3823): texto legible
+    'CLAUDE_PROJECT_DIR',      // pulpo.js · Commander: raíz del repo
+    'QA_MODE',                 // pulpo.js · QA (extraEnv)
+    'QA_ISSUE',
+    'QA_BASE_URL',
+    'QA_FLAVOR',
+    'QA_EMULATOR_SERIAL',
+    ...CLI_OAUTH_ALLOWLIST,    // paths de sesión OAuth (sesiones de pruebas, #7113)
+    ...Object.values(PROVIDER_MODEL_ENV), // modelo del provider activo (#6272)
+]);
 
-    // Verificación.
-    qa: ['gradle-android', 'aws', 'github'],
-    build: ['gradle-android'],
-});
+// -----------------------------------------------------------------------------
+// #7634 · D1…D4 — assertChildEnvMinimal: verificación PURA del env FINAL de un
+// hijo del camino ON. Acumula todas las causas y tira UNA sola vez
+// `ChildEnvViolation` (code `CHILD_ENV_VIOLATION`) cuyo mensaje sólo lleva
+// nombres (nunca valores).
+//
+// Tira si:
+//   - la fase no está en SCOPES_BY_FASE                         → unknown-phase
+//   - el skill no está declarado (config resuelta ni defaults)  → unknown-skill
+//   - una clave no está permitida (allowlist, PIPELINE_*, key del provider del
+//     intento, scope efectivo, neutralizador, transporte, excepción) → undeclared
+//   - una clave de ISOLATION_RESERVED_NAMES fuera de su scope   → reserved-alias
+//   - un valor con forma de secreto bajo un nombre que no es de
+//     su scope ni la key del provider → aws-access-key | github-token | …
+//   - dos claves que sólo difieren en mayúsculas                → case-duplicate
+//   - una excepción con comodín o que nombra una reservada      → invalid-exception
+//     (las reservadas GANAN sobre las excepciones)
+//
+// Todas las comparaciones de nombre son SIN distinguir mayúsculas (S3).
+// `exceptions` se copia y congela al recibirla. #7635: el loader
+// (`lib/child-env-exceptions.js`) la alimenta desde `buildChildEnv`, junto con
+// `expiredExceptions` ([{ nombre, revisar_el, aprobador }]): una variable que
+// sólo está cubierta por una excepción VENCIDA da `expired-exception`, no
+// `undeclared`.
+// -----------------------------------------------------------------------------
+function assertChildEnvMinimal(env, opts = {}) {
+    const {
+        skill,
+        fase,
+        intento,
+        providerKeyVar = null,
+        effectiveScopes = [],
+        exceptions = [],
+        expiredExceptions = [],
+        skillDeclared,
+        ancla,
+    } = opts;
+    const excepciones = Object.freeze([...(Array.isArray(exceptions) ? exceptions : [])].map(String));
+    const causas = [];
+    const push = (kind, nombre) => causas.push({ kind, nombres: nombre === undefined ? [] : [nombre] });
+    // #7635 — vencidas por nombre (mayúsculas indistintas).
+    const vencidasPorNombre = new Map();
+    for (const v of Array.isArray(expiredExceptions) ? expiredExceptions : []) {
+        if (!v || typeof v.nombre !== 'string' || v.nombre === '') continue;
+        const u = v.nombre.toUpperCase();
+        if (!vencidasPorNombre.has(u)) vencidasPorNombre.set(u, []);
+        vencidasPorNombre.get(u).push({ nombre: v.nombre, revisar_el: v.revisar_el, aprobador: v.aprobador });
+    }
+
+    if (typeof fase !== 'string' || !Object.prototype.hasOwnProperty.call(SCOPES_BY_FASE, fase)) {
+        push('unknown-phase');
+    }
+    const skillOk = (typeof skill === 'string' && skill !== '')
+        && (skillDeclared === true || Object.prototype.hasOwnProperty.call(DEFAULT_REQUIRES_BY_SKILL, skill));
+    if (!skillOk) push('unknown-skill');
+
+    const reservadas = new Set(ISOLATION_RESERVED_NAMES);
+    // Nombres cuyo VALOR es legítimamente una credencial (scope efectivo + key del intento).
+    const credencialesPermitidas = new Set();
+    for (const sc of effectiveScopes || []) {
+        for (const v of (CREDENTIAL_SCOPES[sc] || [])) credencialesPermitidas.add(v.toUpperCase());
+    }
+    if (providerKeyVar) credencialesPermitidas.add(String(providerKeyVar).toUpperCase());
+
+    const excepcionesValidas = new Set();
+    for (const ex of excepciones) {
+        const u = ex.toUpperCase();
+        if (ex.includes('*') || reservadas.has(u) || ex.trim() === '') {
+            push('invalid-exception', ex);
+            continue;
+        }
+        excepcionesValidas.add(u);
+    }
+
+    const permitidas = new Set([
+        ...SYSTEM_ALLOWLIST.map((n) => n.toUpperCase()),
+        ...CHILD_TRANSPORT_ALLOWLIST.map((n) => n.toUpperCase()),
+        ...credentialSentinel.NEUTRALIZER_VARS.aws,
+        ...credentialSentinel.NEUTRALIZER_VARS.github,
+        ...credencialesPermitidas,
+        ...excepcionesValidas,
+    ]);
+
+    const src = (env && typeof env === 'object') ? env : {};
+    const vistos = new Map();
+    for (const name of Object.keys(src)) {
+        const u = name.toUpperCase();
+        if (!vistos.has(u)) vistos.set(u, []);
+        vistos.get(u).push(name);
+
+        if (reservadas.has(u) && !credencialesPermitidas.has(u)) {
+            push('reserved-alias', name);
+        } else if (!name.startsWith('PIPELINE_') && !permitidas.has(u)) {
+            if (vencidasPorNombre.has(u)) {
+                causas.push({
+                    kind: 'expired-exception',
+                    nombres: [name],
+                    vencimientos: vencidasPorNombre.get(u).map((v) => ({ ...v, nombre: name })),
+                });
+            } else {
+                push('undeclared', name);
+            }
+        }
+        if (!credencialesPermitidas.has(u)) {
+            const kind = credentialSentinel.looksLikeSecret(src[name]);
+            if (kind) push(kind, name);
+        }
+    }
+    for (const nombres of vistos.values()) {
+        if (nombres.length > 1) for (const n of nombres) push('case-duplicate', n);
+    }
+
+    if (causas.length > 0) {
+        throw new ChildEnvViolation({
+            rol: skill,
+            fase,
+            intento,
+            ancla,
+            causas,
+        });
+    }
+    return true;
+}
 
 // -----------------------------------------------------------------------------
 // readAgentModelsDefensive — lee agent-models.json o devuelve null sin tirar.
@@ -429,6 +575,7 @@ function resolveSkillConfig(skill, opts = {}) {
         return {
             skillCfg: skillConfigOverride.skill || {},
             providersCfg: skillConfigOverride.providers || {},
+            skillKnown: !!skillConfigOverride.skill,
         };
     }
 
@@ -452,16 +599,17 @@ function resolveSkillConfig(skill, opts = {}) {
         return {
             skillCfg: { ...diskSkillCfg, provider: skillConfigOverride.provider },
             providersCfg,
+            skillKnown: !!(models && models.skills && models.skills[skill]),
         };
     }
 
     const models = readAgentModelsDefensive(pipelineDir, fsImpl);
     if (!models || typeof models !== 'object') {
-        return { skillCfg: {}, providersCfg: {} };
+        return { skillCfg: {}, providersCfg: {}, skillKnown: false };
     }
     const skillCfg = (models.skills && models.skills[skill]) || {};
     const providersCfg = models.providers || {};
-    return { skillCfg, providersCfg };
+    return { skillCfg, providersCfg, skillKnown: !!(models.skills && models.skills[skill]) };
 }
 
 // -----------------------------------------------------------------------------
@@ -496,6 +644,16 @@ function buildChildEnv(opts = {}) {
         // fail-closed NUNCA sea mudo: un techo faltante que no se ve es un
         // agente sin credenciales que nadie sabe por qué falla.
         warn = (m) => console.warn(m),
+        // #7634 · C4 — fuente inyectable del token de GitHub para roles con
+        // scope `github` (default: ninguna; sólo el env del intento).
+        githubTokenSource,
+        // #7634 · E2 — `assertChildEnvMinimal` sobre el env final. Default
+        // `true`; en producción nadie pasa `false` (existe para el test que
+        // separa el warn de fase ausente del throw del assert).
+        assertMinimal = true,
+        // #7635 — fuente de excepciones del rol. Inyectable SÓLO por código (tests);
+        // el default lee el YAML junto a esta `lib/`, nunca de cwd ni del env (SEC-1).
+        exceptionsForAgent = childEnvExceptions.forAgent,
     } = opts;
 
     if (!skill || typeof skill !== 'string') {
@@ -542,7 +700,7 @@ function buildChildEnv(opts = {}) {
         );
     }
 
-    const { skillCfg, providersCfg } = resolveSkillConfig(skill, {
+    const { skillCfg, providersCfg, skillKnown } = resolveSkillConfig(skill, {
         pipelineDir, fsImpl, skillConfigOverride,
     });
 
@@ -562,11 +720,12 @@ function buildChildEnv(opts = {}) {
             : PROVIDER_DEFAULT_CREDENTIAL_ENV[providerName]);
 
     // 1. SYSTEM_ALLOWLIST.
+    //    #7634 · B2 — lectura sin distinguir mayúsculas; la salida usa SIEMPRE el
+    //    nombre canónico de la constante (`Path` → `PATH`, `windir` → `WINDIR`).
     const out = Object.create(null);
     for (const k of SYSTEM_ALLOWLIST) {
-        if (Object.prototype.hasOwnProperty.call(processEnv, k) && processEnv[k] !== undefined) {
-            out[k] = processEnv[k];
-        }
+        const hit = lookupEnvCI(processEnv, k);
+        if (hit) out[k] = hit.value;
     }
 
     // 2. PIPELINE_* — siempre se propagan (contexto del child).
@@ -605,7 +764,8 @@ function buildChildEnv(opts = {}) {
 
     // 3. API key del provider (fail-fast si declara una y no existe).
     if (providerKeyVar) {
-        if (processEnv[providerKeyVar] === undefined) {
+        const providerHit = lookupEnvCI(processEnv, providerKeyVar);
+        if (!providerHit) {
             throw new Error(
                 `[build-child-env] Skill '${skill}' configurado para provider '${providerName}', ` +
                 `pero ${providerKeyVar} no está en el env del pulpo. ` +
@@ -613,7 +773,7 @@ function buildChildEnv(opts = {}) {
                 `Ver docs/pipeline-multi-provider.md §5.2.`
             );
         }
-        out[providerKeyVar] = processEnv[providerKeyVar];
+        out[providerKeyVar] = providerHit.value;
     }
 
     // 4. Scopes declarados por el skill (`requires_credentials`) o defaults
@@ -657,7 +817,7 @@ function buildChildEnv(opts = {}) {
             `[build-child-env] fase '${fase === undefined ? '(ausente)' : fase}' sin techo declarado `
             + `— skill='${skill}' projectId='${effectiveProjectId}' `
             + `scopes omitidos=[${omitidos.join(', ')}]. `
-            + 'Acción: agregar la fase a SCOPES_BY_FASE en lib/build-child-env.js '
+            + 'Acción: agregar la fase a SCOPES_BY_FASE en lib/child-env-scopes.json '
             + `(fases con techo: ${Object.keys(SCOPES_BY_FASE).join(', ')}).`
         );
     }
@@ -682,10 +842,19 @@ function buildChildEnv(opts = {}) {
             );
         }
         for (const v of vars) {
-            if (Object.prototype.hasOwnProperty.call(processEnv, v) && processEnv[v] !== undefined) {
-                out[v] = processEnv[v];
-            }
+            const hit = lookupEnvCI(processEnv, v);
+            if (hit) out[v] = hit.value;
         }
+    }
+
+    // #7634 · C4 — un rol CON scope `github` recibe `GH_TOKEN` ANTES de que se
+    // neutralice el disco. Fuente: el env del intento (ya copiado arriba) o la
+    // opción inyectable `githubTokenSource` (el cableado real con el store va
+    // con el encendido, #7636). El token nunca se loguea ni viaja por argv.
+    if (effectiveScopes.includes('github') && !lookupEnvCI(out, 'GH_TOKEN')
+        && typeof githubTokenSource === 'function') {
+        const token = githubTokenSource();
+        if (typeof token === 'string' && token !== '') out.GH_TOKEN = token;
     }
 
     // 5. pipelineExtras al final (PIPELINE_ISSUE, PIPELINE_SKILL, etc.). El
@@ -700,11 +869,47 @@ function buildChildEnv(opts = {}) {
     //    aunque un scope (`github`, `telegram-hooks`) o una extra la hubiera
     //    copiado. El env del Pulpo ya viene purgado por `credenciales-ambiente`;
     //    esto cubre un `processEnv` entregado por el caller (snapshot #5799).
-    const final = stripReservedChildSecrets(
-        conDeclaracionExplicita({ ...out, ...pipelineExtras }, processEnv),
-        processEnv,
-    );
+    //
+    // #7634 · C5 — orden fijo del camino ON (`buildChildEnv` sólo se invoca con
+    // `env_isolation_enabled: true`): scopes → GH_TOKEN → merge de extras →
+    // declaración explícita → neutralización de disco (DESPUÉS del merge: una
+    // extra no puede pisar el sentinel) → strip de reservadas → purga de
+    // pruebas → assert sobre el env final.
+    const merged = conDeclaracionExplicita({ ...out, ...pipelineExtras }, processEnv);
+    credentialSentinel.neutralizarDisco(merged, {
+        aws: !effectiveScopes.includes('aws'),
+        github: !effectiveScopes.includes('github'),
+    });
+    const final = stripReservedChildSecrets(merged, processEnv);
     if (hijoEnPruebas) require('./credenciales-ambiente').purgarClavesProductivas(final);
+    if (assertMinimal) {
+        // #7635 — excepciones declaradas del rol (`tipo: agente`), leídas SIEMPRE
+        // del YAML junto a esta `lib/` (SEC-1). `forAgent` nunca tira: un YAML
+        // roto da cero excepciones (fail-closed). Sólo en el camino ON.
+        let ex;
+        try {
+            ex = exceptionsForAgent(skill, {
+                reservedNames: [...ISOLATION_RESERVED_NAMES, ...RESERVED_CHILD_SECRET_NAMES],
+            });
+        } catch {
+            ex = null;
+        }
+        if (!ex || !Array.isArray(ex.nombres) || !Array.isArray(ex.vencidas)) {
+            ex = { nombres: [], vencidas: [], error: 'respuesta inválida del loader' };
+        }
+        if (ex.error) warn(`[build-child-env] excepciones de entorno no cargadas: ${ex.error} (se aplican cero excepciones).`);
+        assertChildEnvMinimal(final, {
+            exceptions: ex.nombres,
+            expiredExceptions: ex.vencidas,
+            skill,
+            fase,
+            intento: providerName,
+            providerKeyVar,
+            effectiveScopes,
+            skillDeclared: skillKnown,
+            ancla: fase === KERNEL_FASE ? 'commander' : 'lanzaragenteclaude',
+        });
+    }
     return final;
 }
 
@@ -790,6 +995,11 @@ module.exports = {
     // #6563 — env por allowlist para childs de clase "juez sin agencia".
     CLI_OAUTH_ALLOWLIST,
     buildMinimalCliEnv,
+    // #7634 — mayúsculas, reservadas del camino ON y assert del env final.
+    lookupEnvCI,
+    assertChildEnvMinimal,
+    ISOLATION_RESERVED_NAMES,
+    CHILD_TRANSPORT_ALLOWLIST,
     // Internos exportados para tests.
     _resolveSkillConfig: resolveSkillConfig,
     _readAgentModelsDefensive: readAgentModelsDefensive,

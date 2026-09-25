@@ -5425,13 +5425,13 @@
         },
         {
             "file": "tests/servicio-github-label-guardrail.test.js",
-            "line": 46,
+            "line": 49,
             "kind": "deuda",
             "reason": "escritura de PIPELINE_STATE_DIR fuera del helper"
         },
         {
             "file": "tests/servicio-github-label-guardrail.test.js",
-            "line": 50,
+            "line": 53,
             "kind": "deuda",
             "reason": "escritura de PIPELINE_DIR_OVERRIDE fuera del helper"
         },

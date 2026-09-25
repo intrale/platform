@@ -22,7 +22,11 @@ const pipelineEnv = require('../pipeline-env');
 const credentials = require('../credentials');
 const telegramSecrets = require('../telegram-secrets');
 const { hydrateProviderEnv } = require('../hydrate-provider-env');
-const { buildChildEnv } = require('../build-child-env');
+const { buildChildEnv: buildChildEnvConAssert } = require('../build-child-env');
+// #7634 — estos casos miden los invariantes previos (allowlist, scopes, techo por
+// fase, strip). El assert del env final (`assertChildEnvMinimal`) tiene sus tests
+// propios en lib/__tests__/ (child-env-*.test.js); acá se apaga explícitamente.
+const buildChildEnv = (opts) => buildChildEnvConAssert({ assertMinimal: false, ...opts });
 const agentModelsValidate = require('../agent-models-validate');
 const sv = require('../secret-vault');
 

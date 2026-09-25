@@ -1224,3 +1224,58 @@ test('#7520 SEC-14 · enabled/registrar/publish/protected_skills son autoridad; 
     assert.deepStrictEqual(SCHEMA.properties.model_value_audit.required, ['enabled']);
     assert.deepStrictEqual(SCHEMA.properties.model_value_audit.properties.publish.enum, ['telegram-plain', 'registry', 'none']);
 });
+
+// --- #7631 · authorship: sección de autoridad con schema cerrado ------------
+
+test('#7631 authorship está en AUTHORITY_PREFIXES y su lado es autoridad', () => {
+    assert.ok(AUTHORITY_PREFIXES.includes('authorship'));
+    assert.strictEqual(resolveSide('authorship'), 'autoridad');
+    assert.strictEqual(resolveSide('authorship.identity_map'), 'autoridad');
+    assert.strictEqual(resolveSide('authorship.gate_mode'), 'autoridad');
+});
+
+test('#7631 el schema de authorship rechaza claves extra y tipos inválidos', () => {
+    const ok = validateConfig({ authorship: { enabled: true, gate_mode: 'dry-run', go_live_date: null, identity_map: { 'sha256:ab': 'leitolarreta' } } });
+    assert.ok(!ok.errors.some((e) => String(e.path).startsWith('/authorship')), JSON.stringify(ok.errors));
+    const extra = validateConfig({ authorship: { enabled: true, gate_mode: 'dry-run', bypass: true } });
+    assert.ok(extra.errors.some((e) => String(e.path).startsWith('/authorship')));
+    const sinModo = validateConfig({ authorship: { enabled: true } });
+    assert.ok(sinModo.errors.some((e) => String(e.path).startsWith('/authorship')));
+    const mapa = validateConfig({ authorship: { enabled: true, gate_mode: 'dry-run', identity_map: { k: 5 } } });
+    assert.ok(mapa.errors.some((e) => String(e.path).startsWith('/authorship')));
+    // La config real del repo trae la sección, en dry-run y sin ids crudos.
+    const real = realConfig().authorship;
+    assert.strictEqual(real.gate_mode, 'dry-run');
+    for (const k of Object.keys(real.identity_map || {})) assert.match(k, /^sha256:[0-9a-f]{64}$/);
+});
+
+// --- #7673 · corte transitorio de recomendaciones ---------------------------
+
+test('#7673 recomendaciones.crear_issues es válida en el schema y el config.yaml real la trae en false', () => {
+    const cfg = configReal();
+    assert.deepStrictEqual(cfg.recomendaciones, { crear_issues: false });
+    const { valid, errors } = validateConfig(cfg);
+    assert.strictEqual(valid, true, JSON.stringify(errors));
+    const conTrue = { ...validConfig(), recomendaciones: { crear_issues: true } };
+    assert.strictEqual(validateConfig(conTrue).valid, true);
+});
+
+test('#7673 recomendaciones.crear_issues no booleano o ausente se rechaza', () => {
+    for (const valor of ['true', 1, null, 'false']) {
+        const cfg = { ...validConfig(), recomendaciones: { crear_issues: valor } };
+        assert.strictEqual(validateConfig(cfg).valid, false, `crear_issues=${JSON.stringify(valor)} debe rechazarse`);
+    }
+    assert.strictEqual(validateConfig({ ...validConfig(), recomendaciones: {} }).valid, false, 'crear_issues es requerida');
+    assert.strictEqual(
+        validateConfig({ ...validConfig(), recomendaciones: { crear_issues: false, extra: 1 } }).valid,
+        false,
+        'la sección está cerrada',
+    );
+});
+
+test('#7673 recomendaciones.crear_issues resuelve como autoridad', () => {
+    assert.ok(AUTHORITY_PREFIXES.includes('recomendaciones'));
+    assert.strictEqual(SIDE_MAP.recomendaciones, 'autoridad');
+    assert.strictEqual(resolveSide('recomendaciones'), 'autoridad');
+    assert.strictEqual(resolveSide('recomendaciones.crear_issues'), 'autoridad');
+});

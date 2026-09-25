@@ -559,3 +559,7 @@ security-report-*.md
 # commit de forma correcta. El repo es PUBLICO, asi que estas copias son
 # ademas una via de fuga de valores de config.
 /.scratch/
+
+# Worktrees efimeros de codex: nunca versionarlos (un gitlink sin .gitmodules
+# rompe el cleanup de actions/checkout con persist-credentials: false, #7592)
+/.codex-*/

@@ -39,6 +39,8 @@ const { supersededGateOrder } = require('./lib/gate-order-precedence');
 // #5690 — guardrail fail-closed contra la mezcla `needs-human`/`tipo:recomendacion`
 // y contra la auto-aprobación de recomendaciones desde la cola anónima.
 const labelGuardrail = require('./lib/label-guardrail');
+// #7673 — corte transitorio de recomendaciones: bandera leída en caliente (TTL ≤60 s).
+const recommendationsCut = require('./lib/recommendations-cut');
 // #4693 CA-0 — fuente de verdad única del repo destino. Reemplaza el literal
 // DEFAULT_REPO por el `primary` del bloque `repos` de pipeline.config.json.
 const repoTarget = require('./lib/repo-target');
@@ -589,9 +591,17 @@ function applyLabelGuardrail(data, ghClient, origen) {
 //
 // Devuelve `true` si la creación fue RECHAZADA (el caller corta sin crear).
 // SEC-4/R4 intacto: sólo marca `discarded`, nunca remueve nada.
-function applyCreateIssueGuardrail(data, origen) {
+//
+// #7673 — `recomendaciones.crear_issues` se lee en cada orden (caché ≤60 s, sin
+// reinicio) y falla cerrado: sin el booleano `true`, una orden con
+// `tipo:recomendacion`/`source:recommendation` se descarta aunque declare
+// procedencia. `opts.recommendationsEnabled` sólo existe para tests.
+function applyCreateIssueGuardrail(data, origen, opts = {}) {
   if (!data) return false;
-  const verdict = labelGuardrail.evaluateCreateIssueLabels({ labels: data.labels, order: data });
+  const recommendationsEnabled = typeof opts.recommendationsEnabled === 'boolean'
+    ? opts.recommendationsEnabled
+    : recommendationsCut.isCreationEnabled();
+  const verdict = labelGuardrail.evaluateCreateIssueLabels({ labels: data.labels, order: data, recommendationsEnabled });
   if (verdict.allowed) {
     if (verdict.authorizedBy) {
       labelGuardrail.auditAuthorizedBypass({
@@ -620,7 +630,12 @@ function applyCreateIssueGuardrail(data, origen) {
     accion: 'create-issue',
     motivo: verdict.motivo,
   };
-  const audit = labelGuardrail.auditConflict(contexto);
+  // #7673 SEC-4 — título recortado (≤120) y skill emisor, sin `body`.
+  const audit = labelGuardrail.auditConflict({
+    ...contexto,
+    titulo: typeof data.title === 'string' ? data.title : null,
+    skill: typeof data.skill === 'string' ? data.skill : null,
+  });
   if (!audit.written && !audit.deduped) {
     log(`Guardrail de labels: no se pudo escribir la auditoría (${audit.error}). El rechazo se aplica igual.`);
   }
