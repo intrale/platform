@@ -228,6 +228,11 @@ test('#4329 no-regresión — dur corta con budget 600s NO dispara timeout', () 
                 pipelineDir: dir,
                 chatId: 'chat-fast',
                 requestId: 'req-fast',
+                // #7595 — hermético: sin esto el resolver usa `quota-exhausted`
+                // real, que lee (y al vencer un flag intenta limpiar) el estado
+                // de cuota del host; el guard de pipeline-env bloquea esa
+                // escritura y el decisor cae a `internal_error`.
+                quotaModule: { shouldGateSpawn: () => false },
             });
             assert.notEqual(d.reason, 'global_budget_exceeded');
             assert.equal(d.shouldRetry, true, 'un pedido rápido con error debe intentar fallback, no cortar por tiempo');
