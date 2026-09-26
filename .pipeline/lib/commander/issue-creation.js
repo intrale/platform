@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // commander/issue-creation.js — Delegación a /doc y /planner cuando el
 // Telegram Commander recibe un pedido de creación de issue (#3250).

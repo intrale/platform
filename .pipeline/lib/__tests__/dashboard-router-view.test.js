@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // Tests del router cliente `?view=<slug>` + endpoint `/dashboard/partial`
 // introducidos por #3723 (split de #3715).

@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // test-ux-metrics.js — Tests de `.pipeline/ux-metrics.js` (#2337 CA10)
 //

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // #3418 — Smoke contract test que valida que `pulpo.js` mantiene las
 // regresiones críticas detectadas por [review] y [po] en el rebote del
 // 2026-05-20. La PO pidió explícitamente este test (acción 5 del

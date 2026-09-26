@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // wave-annex-5835.test.js — Anexo de estado de ola en el camino LLM (#5835).
 //

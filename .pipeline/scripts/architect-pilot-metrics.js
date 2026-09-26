@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // architect-pilot-metrics.js — Métricas del piloto del rol `architect` (#3644)
 // (Historia madre #3615, paraguas #3559, foundation #3613, gate #3614)

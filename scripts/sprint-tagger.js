@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // sprint-tagger.js — Crea tag Git anotado al cerrar un sprint
 // Uso: node scripts/sprint-tagger.js [path-to-sprint-plan.json]
 // Comportamiento: SIEMPRE crea el tag sprint/YYYY-MM-DD — sin condiciones.

@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // cost-report.js — Genera HTML+PDF de costos estimados y lo envía a Telegram
 // Uso: node cost-report.js [--telegram] [--sprint <ID>]
 // Fail-open: cualquier error queda en scripts/logs/cost-report.log sin interrumpir el flujo

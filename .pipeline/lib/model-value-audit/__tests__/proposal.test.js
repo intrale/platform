@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 'use strict';
 
 // Tests de la propuesta pura (#7520 CA-26 / CA-UX-5 / SEC-16 / P9).

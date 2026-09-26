@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // pr-provenance.js — #5864 · SEC-2. Procedencia del PR sobre el que se escribe
 // un label de gate.

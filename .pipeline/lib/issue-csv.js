@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // issue-csv.js — Generación de CSV del listado de issues (#3958, EP8-H5, CA-6).
 //

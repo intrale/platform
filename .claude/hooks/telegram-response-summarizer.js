@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // telegram-response-summarizer.js — Resumidor inteligente de respuestas para Telegram
 // Preserva: números de issue, estados, emojis, acciones clave
 // Elimina: URLs, paths de archivos, nombres de tools, tablas detalladas

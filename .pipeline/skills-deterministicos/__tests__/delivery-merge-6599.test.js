@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // #6599 — El delivery deja de esperar por checks que la protección de rama no exige.
 //
 // Efecto lateral del PR #6503 (#6431): al dejar de escalar a `needs-human` ante

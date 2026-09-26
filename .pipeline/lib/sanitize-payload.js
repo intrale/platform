@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // sanitize-payload.js — Sanitización write-time de payloads a servicios externos
 // Issue #2334 (split de #2324). Depende de `.pipeline/sanitizer.js` (#2333).

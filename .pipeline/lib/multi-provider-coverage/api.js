@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // multi-provider-coverage/api.js — Handler HTTP del botón "Ejecutar harness"
 // del widget Multi-Provider Coverage (#3681, hijo B del épico #3669).

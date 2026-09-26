@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // inflight-executor.test.js — Tests del ejecutor del fallback in-flight (#4309).
 //

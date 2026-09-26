@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // commander-history-echo.test.js — Persistencia del eco en commander-history (#3918, CA-3 / RS-3)
 //

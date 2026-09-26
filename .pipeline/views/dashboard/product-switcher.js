@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // product-switcher.js — Selector de producto del dashboard product-aware
 // (Ola Puente P6 · #4778 · split A de #4691).

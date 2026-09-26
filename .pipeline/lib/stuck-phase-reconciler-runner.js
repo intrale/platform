@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // stuck-phase-reconciler-runner.js — Integración FS del reconciler de fases
 // varadas (#4614). Arma el CONTEXTO real (deliverables + liveness + cross-phase

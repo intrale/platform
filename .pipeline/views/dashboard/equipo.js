@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // .pipeline/views/dashboard/equipo.js — V3, extracción de la ventana "Equipo" (#3727, padre #3715).
 //
 // Render SSR puro de la ventana Equipo del dashboard del operador. Espejo

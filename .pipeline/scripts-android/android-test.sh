@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 Leonel Larreta
+# SPDX-License-Identifier: LicenseRef-Proprietary
+
 # Uso: android-test.sh
 # Corre los tests unitarios de :app:composeApp:testDebugUnitTest y resume.
 # Reemplaza la invocacion repetitiva en SKILL.md (Pasos 4.2 y 6).

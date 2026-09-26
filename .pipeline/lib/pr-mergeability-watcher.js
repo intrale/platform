@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // pr-mergeability-watcher.js — Observación segura de mergeabilidad de PRs (#4966)
 // =============================================================================

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Render del mockup HTML → PNG (flujo UX documentado en docs/pipeline/ux-visual-flow.md:
 // HTML/CSS + Puppeteer). Uso: NODE_PATH=$(npm root -g) node render-mockup.js
 'use strict';

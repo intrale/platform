@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 'use strict';
 // #7632 — CLI `verify` del check de autoría (CA-9, casos 1-12) + gh-client.
 

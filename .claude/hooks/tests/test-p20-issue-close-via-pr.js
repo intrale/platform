@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Test P-20: Hook post-issue-close — deteccion de cierre via PR merge (#1266)
 const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");

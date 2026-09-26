@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Tests de .pipeline/lib/rest-mode-window.js (#2890 PR-A + #3241 schedule semanal)
 // Cubre:
 //   - CA-5.1 (isSkillAllowedNow dentro/fuera de ventana, bypass label,

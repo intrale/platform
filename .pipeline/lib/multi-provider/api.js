@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // api.js — Handlers HTTP del panel Multi-Provider del dashboard (#3177).
 //

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // provider-quota.js — Agregador de cuota DISPONIBLE por proveedor × ventana
 // (#4533).

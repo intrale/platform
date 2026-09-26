@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // agent-launcher/provider-error-parser.js — Parser robusto de errores
 // in-flight de spawns LLM para fallback multi-provider (issue #3434).

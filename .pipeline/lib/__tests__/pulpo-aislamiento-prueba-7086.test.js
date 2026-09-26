@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // pulpo-aislamiento-prueba-7086.test.js — El pipeline PRODUCTIVO no recibe
 // efectos de una corrida de prueba (#7086).

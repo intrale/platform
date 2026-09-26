@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // #7439 CA-5 — Campo `cause` (causa estructurada) del marker de bloqueo humano.
 //

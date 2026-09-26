@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // Tests de `code-scanning-alerts.js` + su integración con el detector de
 // bloqueo por hallazgos de seguridad (#5337, CA-3 caso 1).

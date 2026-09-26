@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Tests de las acciones rápidas de needs-human en commander-deterministic (#4068)
 // Cubren CA-Q2: cada acción nueva (mas-contexto, devolver-definicion, priorizar)
 // registra authorized (operador en allowlist) y unauthorized (fuera de allowlist).

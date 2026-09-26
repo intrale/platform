@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // quota-ledger.js — Serie temporal de cuota por proveedor (#6560): el DEBE
 // observado del libro contable, más los lectores de las fuentes externas que

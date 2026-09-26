@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // quota-balance.js — Saldo, ritmo y proyección de agotamiento de cuota por
 // proveedor y período (#6560).

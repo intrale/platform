@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // validate-chains.test.js — Tests del validador de cadenas multi-provider
 // (#4407 D1). Runner: node --test .pipeline/lib/multi-provider/__tests__/validate-chains.test.js

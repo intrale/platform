@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // issue-title-cache.js — Enriquecimiento del título (y labels) de un issue
 // desde el cache local que el pipeline ya mantiene.

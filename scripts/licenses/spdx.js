@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // spdx.js — Parser chico de expresiones SPDX + normalización por alias (#7592)
 //

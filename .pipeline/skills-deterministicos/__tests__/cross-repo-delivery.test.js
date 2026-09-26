@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Tests de la entrega cross-repo (issue #5067) — el entregable de un issue
 // puede aterrizar en un repo HERMANO declarado (`intrale/kernel`, Ola 9.x) en
 // vez de en este repo. La rama del ciclo queda legítimamente sin commits y

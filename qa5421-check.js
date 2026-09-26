@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // QA #5421 — verificacion empirica de CA (script temporal, no versionado)
 const P = require('./.pipeline/lib/worktree-guard-policy');
 const BS = String.fromCharCode(92); // backslash sin pasar por el heredoc

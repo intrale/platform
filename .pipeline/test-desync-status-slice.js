@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // #4375 — Tests del slice `desyncStatusSlice` (indicador de estado de sync
 // allowlist↔ola). Cubre el mapeo estado→color (CA-10), la garantía read-only
 // (CA-5), el fail-safe sin llamadas a GitHub (CA-7) y la validación de enteros

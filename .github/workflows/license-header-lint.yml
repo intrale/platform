@@ -1,0 +1,60 @@
+name: License Header Lint
+
+# Issue #7591 (épico #7589) — encabezado de copyright en los fuentes de
+# `platform`. La licencia sale de la decisión firmada de #7590
+# (`docs/legal/licenciamiento.md`). El hook pre-commit local es bypassable con
+# `--no-verify`; este job duplica el chequeo en CI.
+#
+# ADVISORY — hoy el UNICO required check de `main` es `pr-status`, y los otros
+# lints del repo tampoco estan en su `needs:` (pr-checks.yml). Hasta que se
+# cablee como required check del merge (#6265 / #5183) este job puede quedar
+# rojo sin frenar el merge. Cablearlo esta fuera del alcance de #7591 a
+# proposito (mismo precedente que write-target-lint / #7114).
+#
+# Sin filtro de `paths:` a proposito: un fuente nuevo puede entrar por
+# cualquier directorio (app/, users/, backend/, .pipeline/, scripts/...).
+
+on:
+  pull_request:
+    branches: [ main, develop ]
+  push:
+    branches: [ main ]
+
+# SEC-1 — el job solo lee el checkout. Sin escritura, sin secretos.
+permissions:
+  contents: read
+
+jobs:
+  license-header-lint:
+    runs-on: ubuntu-latest
+    name: License header lint (encabezado de copyright en los fuentes)
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # Necesario para calcular `base...HEAD` en el modo diff.
+          fetch-depth: 0
+
+      - name: Setup Node 20
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '20'
+
+      # Sin `npm ci`: el lint depende solo de modulos core de Node.
+
+      # SEC-3 — la base llega por `env:` y el lint la valida como SHA de 40 hex.
+      # Ningun `github.event.*` ni nombre de archivo se interpola en `run:`; la
+      # lista de archivos cambiados la calcula el lint con `git diff -z`
+      # (execFile, sin shell).
+      - name: Lint (PR, solo archivos cambiados)
+        if: github.event_name == 'pull_request'
+        env:
+          LICENSE_LINT_BASE: ${{ github.event.pull_request.base.sha }}
+        run: node .pipeline/lib/license-header-lint.js --check --diff-env LICENSE_LINT_BASE
+
+      - name: Lint (push a main, repo completo)
+        if: github.event_name == 'push'
+        run: node .pipeline/lib/license-header-lint.js --check
+
+      - name: Tests del verificador
+        run: node --test .pipeline/lib/__tests__/license-header-lint.test.js

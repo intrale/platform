@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // commander/inflight-shadow-detectors.js — Detectores in-stream del Commander
 // en modo SHADOW (#3577, parte 1/2 del split de #3472).

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // smoke-test.test.js — tests del módulo lib/multi-provider/smoke-test.js (#3680)
 //

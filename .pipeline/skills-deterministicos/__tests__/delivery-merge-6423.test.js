@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // #6431 (split de #6423) — El 405 por un check requerido que TODAVÍA NO REPORTÓ
 // dejó de ser un bloqueo humano.
 //

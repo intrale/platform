@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // delivery-report.js — Genera imagen PNG con resumen de delivery y la envía a Telegram
 // Uso: node .claude/hooks/delivery-report.js --branch <branch> --pr <url> --pr-number <N>
 //        --state <MERGED|ERROR> --commits "<lista>" --files "<lista con stats>"

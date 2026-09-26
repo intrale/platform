@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // pipeline-phase-mapping.js — Mapping canónico de aliases del operador a fases
 // =============================================================================

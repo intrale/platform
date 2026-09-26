@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 'use strict';
 /**
  * Regresión de CRITICAL-1 (#4695 · auditoría 2026-07-26): la transformación del

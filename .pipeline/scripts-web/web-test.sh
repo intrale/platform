@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 Leonel Larreta
+# SPDX-License-Identifier: LicenseRef-Proprietary
+
 # Uso: web-test.sh
 # Corre los tests del :app:composeApp (commonTest aplica tambien a Wasm).
 # Reemplaza la invocacion repetitiva del Paso 5 del SKILL del agente /web-dev.

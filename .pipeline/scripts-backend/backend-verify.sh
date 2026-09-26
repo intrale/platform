@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 Leonel Larreta
+# SPDX-License-Identifier: LicenseRef-Proprietary
+
 # Uso: backend-verify.sh
 # Ejecuta el ciclo de verificacion del Paso 7 del agente /backend-dev:
 # tests de :backend, tests de :users (si existen tests cambiados o el issue

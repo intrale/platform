@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Tests de .pipeline/lib/phase-completion.js (issue #3481)
 //
 // Cubre los criterios de aceptación CA-1..CA-9 del fix del brazo de promoción:

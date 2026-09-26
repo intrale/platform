@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // commander-canonical-citation.test.js — Suite de `/verificar` y la cita del
 // comando canónico en el Commander (#3897 CA-5, split 3/3 del épico #3894).

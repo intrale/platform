@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // .pipeline/lib/repo-target-intake.test.js
 // Test de intake multi-repo (#4693 · CA-A1/CA-A3 / REQ-SEC-1).
 //

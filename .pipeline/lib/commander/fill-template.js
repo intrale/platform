@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // fill-template.js — Helper para rellenar plantillas Markdown del Commander
 // determinístico (issue #3257, CA-3 / CA-12).

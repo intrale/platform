@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // health-gate-3809.test.js — blindajes #3809 (cascada de providers de Sherlock).
 //

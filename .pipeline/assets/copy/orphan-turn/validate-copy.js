@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // validate-copy.js — Validador del copy del aviso de respuesta perdida
 //                    (#6440, UX)

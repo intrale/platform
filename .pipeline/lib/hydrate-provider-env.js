@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // hydrate-provider-env.js — Hidrata `process.env` con las API keys de proveedores
 // LLM/TTS guardadas en `~/.claude/secrets/telegram-config.json`.

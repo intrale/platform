@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // dispatch-build-env-integration.test.js — Test de integración pulpo.js
 // (entre `resolveSpawnWithFallback` y `buildChildEnv`).

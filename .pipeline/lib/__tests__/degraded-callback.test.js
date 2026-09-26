@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // degraded-callback.test.js — Ruteo de los botones degradados (issue #5923)
 //

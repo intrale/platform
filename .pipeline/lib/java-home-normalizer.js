@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // java-home-normalizer.js — Saneado global de JAVA_HOME para el pipeline
 //

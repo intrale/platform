@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // V3 Routes — registra los endpoints del nuevo dashboard kiosk vertical.
 //
 // CONVENCIÓN ANTI-FLICKER (#2801): toda nueva sección/área/tab DEBE usar el

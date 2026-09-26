@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // create-planned-wave.test.js — Tests de `waves.createPlannedWave` (#3738).
 //

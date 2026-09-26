@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // pipeline-rewind.test.js — Tests del núcleo del rewind (#3416 CA-10).
 // =============================================================================

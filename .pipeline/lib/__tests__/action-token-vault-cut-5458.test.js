@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // action-token-vault-cut-5458.test.js — Capability criptográfica de
 // `vault-cut-fallback` (issue #5458, split de #5452).

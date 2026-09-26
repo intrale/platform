@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // eta-wave.js — Calculadora ETA probabilística por ola e issue (#3492 / Spike #3378 H4).
 //

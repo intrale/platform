@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 'use strict';
 
 // CA-7 (#3929) — prueba que el PATH EJECUTADO del render HTML→PDF tiene el

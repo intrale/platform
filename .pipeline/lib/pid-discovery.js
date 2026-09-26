@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // pid-discovery.js — Helper centralizado de detección de PIDs vivos
 // (issue #3605 — toma deuda técnica #3609 dentro del scope; el patrón

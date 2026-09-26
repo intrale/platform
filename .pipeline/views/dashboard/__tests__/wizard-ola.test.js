@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // wizard-ola.test.js — Tests de la vista SSR del wizard "Crear nueva ola" (#3738).
 //

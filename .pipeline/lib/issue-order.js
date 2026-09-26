@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Orden manual de issues en el Issue Tracker del dashboard.
 //
 // Sustituye al sistema de labels priority:critical/high/medium/low + feature_priority

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // auto-repair-sprint.js — Auto-reparación de inconsistencias del sprint
 // Dado un diagnóstico de health-check-sprint.js, ejecuta reparaciones automáticas:
 //   - PR mergeado + issue abierto → cerrar issue + mover a Done

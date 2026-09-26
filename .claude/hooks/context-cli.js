@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // context-cli.js — CLI entry point para el skill /context
 // Parsea argumentos, ejecuta operaciones via context-manager, imprime JSON a stdout
 //

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // agent-launcher/credential-death-detector.js — Detección ESTRUCTURAL de
 // "muerte por credencial vencida" en la cola del log stream-json de un agente.

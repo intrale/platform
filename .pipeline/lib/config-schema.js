@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // config-schema.js — JSON Schema + validador de config.yaml (#3941, #5173)
 // =============================================================================

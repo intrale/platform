@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // priority-change-audit.test.js — Mutar el label priority:* vía el punto único
 // `setPriorityLabel` (y a través de human-block `priorizar`) emite el evento

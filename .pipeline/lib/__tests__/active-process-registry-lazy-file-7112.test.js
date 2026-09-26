@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // #7112 rebote rev-3 (leve, SEC-13) — `ActiveProcessRegistry` acepta `file`
 // como FUNCIÓN resuelta por llamada.
 //

@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // cli-scrum.js — Validación de salud del sprint sin necesidad de Claude
 // Uso: node scripts/cli-scrum.js [--fix] [--json]
 // Reemplaza /scrum para validación determinista (#1661)

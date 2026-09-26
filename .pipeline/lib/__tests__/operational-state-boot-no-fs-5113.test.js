@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // operational-state-boot-no-fs-5113.test.js — CA-C1 (#5113, rebote rev-1)
 //

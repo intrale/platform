@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 Leonel Larreta
+# SPDX-License-Identifier: LicenseRef-Proprietary
+
 # Uso: openapi-show-endpoint.sh <path-or-substring>
 # Extrae solo el fragmento del endpoint relevante de docs/api/openapi.yaml en
 # vez de imprimir el archivo completo. Util cuando el issue afecta a un

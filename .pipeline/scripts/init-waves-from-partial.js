@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // init-waves-from-partial.js — Seed inicial de waves.json desde .partial-pause.json
 // Issue #3616.

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // vault-respawn-readiness.js — ¿los consumidores de larga vida ya volvieron?
 // (#5453 · CA-26 · soporte del coordinador `vault-migration.js`)

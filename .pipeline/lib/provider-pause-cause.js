@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // provider-pause-cause.js — Clasificación de la causa de una pausa por falta de
 // proveedor disponible (#5467).

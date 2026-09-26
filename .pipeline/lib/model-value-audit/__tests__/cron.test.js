@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 'use strict';
 
 // Tests del tick del auditor (#7520 CA-24 / CA-25 / CA-27 / SEC-11 / SEC-14).

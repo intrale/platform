@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Tests de saneamiento de strings de terceros (#7592 · SR-5 · SR-7 · CA-7 caso 7).
 'use strict';
 

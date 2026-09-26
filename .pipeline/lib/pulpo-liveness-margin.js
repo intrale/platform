@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // pulpo-liveness-margin.js — Dimensionamiento del umbral de liveness del Pulpo
 // contra la duración real de ciclo, alerta de margen y freno anti-bucle (#5821)

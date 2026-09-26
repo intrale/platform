@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // #7635 · CA-9…CA-14 — Gate de permisos del entorno de agentes, paso (4b) de
 // `attemptMergeWithGates`. Sin red ni gh real: todo inyectado.
 'use strict';

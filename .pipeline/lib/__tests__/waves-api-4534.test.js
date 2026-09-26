@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // waves-api-4534.test.js — Tests del rediseño de la ventana Roadmap (#4534):
 //   - DELETE /api/waves/{n}  → baja de ola planificada (libera issues).

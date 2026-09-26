@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // credential-auth-retry.js — Coordinador de retry ÚNICO de credencial (#5794,
 // hija de #5792).

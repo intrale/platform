@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // quota-reset-reconcile-7181.test.js — El flag de cuota vuelve a ser
 // verificable: se acorta solo contra el reset REAL y deja de mentirle al panel.

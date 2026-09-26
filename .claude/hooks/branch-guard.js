@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Hook PreToolUse[Bash]: bloquea git push cuando estamos en main
 // Previene pushes directos a main — toda modificación debe ir por rama
 // IMPORTANTE: Solo intercepta comandos "git push" reales, NO "gh" o pipes

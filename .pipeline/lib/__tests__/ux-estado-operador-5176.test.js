@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // #5176 · CA-UX-1..5 — cómo se le comunica el estado operativo al operador.
 //

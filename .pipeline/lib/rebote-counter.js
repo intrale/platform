@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // .pipeline/lib/rebote-counter.js
 // =============================================================================
 // Contador de rebotes por issue (#6296, SEC-E — extraído de `pulpo.js`).

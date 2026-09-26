@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // partial-pause-audit.js — Audit trail append-only para mutaciones de
 // `.partial-pause.json` (issue #3625, derivado del incidente Ola N+11 del

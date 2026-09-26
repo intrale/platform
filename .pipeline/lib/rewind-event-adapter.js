@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // rewind-event-adapter.js — Adapter entre el producer del Commander (#3441) y
 // el consumer del rewind del Pulpo (#3416).

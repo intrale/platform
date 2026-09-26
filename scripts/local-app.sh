@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 Leonel Larreta
+# SPDX-License-Identifier: LicenseRef-Proprietary
+
 # Lanza la app apuntando al backend local.
 # Uso:
 #   ./scripts/local-app.sh              → Desktop (JVM)

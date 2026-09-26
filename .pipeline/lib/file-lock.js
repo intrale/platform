@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // file-lock.js — Lock cooperativo basado en filesystem para writes destructivos
 // del control plane (waves.json, .partial-pause.json) — issue #3518.

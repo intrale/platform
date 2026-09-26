@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // extract-fallback-reply.test.js — Cobertura del normalizador de salida de los
 // providers de respaldo del Commander.

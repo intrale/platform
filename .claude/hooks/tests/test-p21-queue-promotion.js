@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Test P-21: Agent monitor — promocion automatica de _queue (#1266)
 const { describe, it, after } = require("node:test");
 const assert = require("node:assert/strict");

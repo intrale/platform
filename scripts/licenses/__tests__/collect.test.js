@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Tests de los colectores Gradle y npm (#7592 · CA-1 · SR-7).
 'use strict';
 

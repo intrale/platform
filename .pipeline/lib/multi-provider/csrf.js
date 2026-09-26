@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // csrf.js — Token CSRF para los endpoints mutating del panel multi-provider
 // (#3177 + recomendación de #3191).

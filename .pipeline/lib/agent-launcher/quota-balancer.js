@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // quota-balancer.js — Balanceo de carga entre proveedores por saldo de cuota y
 // ritmo de consumo (#6561).

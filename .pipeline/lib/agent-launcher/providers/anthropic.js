@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // providers/anthropic.js — Handler del provider Anthropic (Claude Code CLI)
 //

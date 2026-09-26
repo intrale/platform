@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // dashboard-logs-history-4444.test.js — Test de integración del endpoint
 // GET /logs/history/<issue>/<agente> (#4444).

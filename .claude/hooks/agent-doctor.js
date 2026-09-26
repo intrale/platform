@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // agent-doctor.js — Recovery inteligente para agentes muertos
 // Diagnostica causa de muerte leyendo logs + estado git + pipeline results.
 // Intenta acciones correctivas ANTES de relanzar.

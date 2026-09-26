@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 Leonel Larreta
+# SPDX-License-Identifier: LicenseRef-Proprietary
+
 # Uso: users-shadow-jar.sh
 # Genera el JAR para AWS Lambda del modulo :users.
 # El artefacto sale en users/build/libs/users-all.jar y CI lo deploya a la Lambda kotlinTest.

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // kernel-demo-cycle.test.js — E2E de la demo del ciclo del kernel (#4700 · CA-D2)
 // Cubre: avance por fase dev->build->QA->delivery, target verificado en cada

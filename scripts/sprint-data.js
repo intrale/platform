@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // sprint-data.js - Fuente de verdad unica: roadmap.json (#1660)
 // Pure Node.js - sin dependencias externas
 "use strict";

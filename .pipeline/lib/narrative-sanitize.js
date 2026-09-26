@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // narrative-sanitize.js — Sanitización narrativa para TTS
 // Issue #3539 · CA-UX-2

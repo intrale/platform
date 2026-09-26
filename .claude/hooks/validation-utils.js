@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // validation-utils.js — Validación centralizada de completación de agentes (#1458, #1779)
 // Módulo compartido que centraliza buildCompletedEntry y la lógica de validación
 // antes de marcar un agente como completado (evita falsos positivos en cascada).

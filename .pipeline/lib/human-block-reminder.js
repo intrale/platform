@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // human-block-reminder.js — Recordatorio escalado de bloqueos humanos sin
 // responder (#5337, CA-5). FAIL-CLOSED: el silencio NUNCA aprueba.

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // agy-catalog.js — Cruce de los ids de modelo de Antigravity contra el catálogo
 // REAL del CLI (`agy models`).

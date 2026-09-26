@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // qa-telegram-template.test.js — Unit tests del template Telegram del QA (#2519)
 //

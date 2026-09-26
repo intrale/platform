@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // whisper-local.js — Fallback STT con whisper local (faster-whisper / CTranslate2)
 // Cuando la API de OpenAI falla por cuota/auth/network, transcribimos offline con
 // faster-whisper `large-v3-turbo` int8 (script `whisper_fw.py` spawneado con python).

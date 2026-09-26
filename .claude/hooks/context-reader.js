@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // context-reader.js — Módulo compartido para leer contexto de sesión
 // Exporta: readSessionContext(sessionId, repoRoot)
 // Pure Node.js — sin dependencia de bash

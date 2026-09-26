@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // #5708 — CA-8..CA-17: el bloque visual no puede secuestrar la narración de un
 // rechazo ajeno, y ninguna supresión puede leerse como "no hubo desvíos".
 //

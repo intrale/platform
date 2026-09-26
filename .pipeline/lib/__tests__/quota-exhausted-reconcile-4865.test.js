@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // quota-exhausted-reconcile-4865.test.js — Subordinación del gate a la fuente
 // única de verdad (#4865).

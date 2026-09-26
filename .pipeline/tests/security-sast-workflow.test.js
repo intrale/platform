@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');

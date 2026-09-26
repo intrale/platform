@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // skill-deliverable-attachments.js — Helper compartido para recolectar
 // adjuntos por skill al cierre de una fase (issue #3647).

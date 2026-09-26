@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Utilidades compartidas para operaciones de Project V2
 // Reutilizable desde: /historia, /refinar, post-issue-close.js, scripts futuros
 

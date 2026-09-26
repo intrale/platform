@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // model-value-report.js — Auditoría de calidad-precio del modelo por agente
 // (#7519, parte 3 de #6793)

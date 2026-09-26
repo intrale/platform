@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // singleton.js — Garantiza una sola instancia por componente del pipeline
 //
 // Fuente de verdad: el SO (wmic/ps via pid-discovery), no el filesystem.

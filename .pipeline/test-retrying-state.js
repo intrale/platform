@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // test-retrying-state.js — Tests de `.pipeline/retrying-state.js` (#2337 CA7/CA8)
 //

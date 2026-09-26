@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // redact.js — Helper único del pipeline para enmascarar datos sensibles
 // Issue #2307 · CA-6 / CA-17 / CA-18

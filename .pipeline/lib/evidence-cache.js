@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // evidence-cache.js — Memoizador TTL en memoria para shell-outs de git/gh
 // del verificador adversarial Sherlock (#3924, EP2-H4).

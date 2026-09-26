@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Tests de .pipeline/servicio-reconciler.js (issue #2880)
 // Valida las 3 reglas de reconciliación + heurística de fase para placeholders.
 'use strict';

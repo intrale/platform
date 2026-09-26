@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // health-check.js — Verificación periódica de infraestructura operativa
 // Hook PostToolUse: se ejecuta en cada tool use pero con cooldown adaptativo (2-10 min)
 // Verifica: telegram-commander, approvers huérfanos, bot Telegram, settings, worktrees

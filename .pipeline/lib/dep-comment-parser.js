@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // dep-comment-parser.js — Parser del marker "Dependencias detectadas por
 // el pipeline" usado por el brazo de desbloqueo del Pulpo (issue #3002).

@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 Leonel Larreta
+# SPDX-License-Identifier: LicenseRef-Proprietary
+
 # Uso: web-verify.sh
 # Ejecuta el ciclo de verificacion del Paso 6 del agente /web-dev:
 # build Wasm, verifyNoLegacyStrings, validateComposeResources y

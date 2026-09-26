@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Hook PreToolUse[Bash]: corte transitorio de recomendaciones (#7673)
 //
 // Mientras `recomendaciones.crear_issues` no sea el booleano `true` en

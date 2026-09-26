@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // post-tool-orchestrator.js — Orquestador PostToolUse (#1506)
 // Fusiona: ensure-permissions + permission-tracker + agent-progress + session-gc
 // Reduce 7 hooks PostToolUse[*] a 4 (-40% latencia de hooks).

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // data-residency-filter.js — Filtro de paths para providers no-Anthropic
 // (issue #3084 / S6 multi-provider).

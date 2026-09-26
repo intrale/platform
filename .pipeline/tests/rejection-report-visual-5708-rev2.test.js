@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // #5708 — CA-18..CA-24: la revisión 2 del contrato visual.
 //
 // Los CA-8..CA-17 (cubiertos en `rejection-report-visual-5708.test.js`) dejaron

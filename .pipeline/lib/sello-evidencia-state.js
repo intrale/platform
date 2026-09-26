@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // #6498 — Resolver puro del estado del sello de evidencia de QA para el badge
 // del dashboard V3 y para la ficha de decision.
 //

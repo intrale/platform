@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // #3642 — Helpers puros para formatear el badge architect.
 //
 // Estos helpers viven separados de dashboard-slices.js para test unitario

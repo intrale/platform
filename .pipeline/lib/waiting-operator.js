@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // waiting-operator.js — Lector unificado de los pendientes de firma del operador
 // para la bandeja "Esperando tu firma" del dashboard V3.

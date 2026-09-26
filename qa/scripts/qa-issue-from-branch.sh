@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 Leonel Larreta
+# SPDX-License-Identifier: LicenseRef-Proprietary
+
 # qa-issue-from-branch.sh — Extrae el número de issue del branch actual.
 #
 # Soporta: agent/<N>-* | feature/<N>-* | bugfix/<N>-*

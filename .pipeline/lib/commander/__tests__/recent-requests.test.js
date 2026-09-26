@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // #6459 — `recent-requests.js`: fuente ÚNICA del listado de peticiones del
 // Commander, compartida por el dashboard legacy y por el panel del home V3.

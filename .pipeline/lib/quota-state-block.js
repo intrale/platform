@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // quota-state-block.js — Compositor del bloque de cuota servido por `/api/state`
 // (#4327, CA-4). Empaqueta DOS fuentes YA sanitizadas, con un timestamp reciente,

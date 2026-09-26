@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // smoke-health-retry-4131.test.js — gate de rollback resiliente al pico de
 // arranque (#4131).

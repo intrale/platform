@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // health-screen.js — Agregadores server-side para la pantalla EP8-H12
 // "Salud Multi-Provider" del dashboard (#3965).

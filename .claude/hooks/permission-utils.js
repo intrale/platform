@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // permission-utils.js — Utilidades compartidas para hooks de permisos
 // Usado por: permission-gate.js, permission-tracker.js
 // Issue #891: unificar generación de patrones y resolución de paths

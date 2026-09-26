@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // infra-noise.js — Clasificador de "ruido de infra" en el árbol sucio de un
 // worktree (#6708).

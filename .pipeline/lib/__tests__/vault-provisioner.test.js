@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // Tests de lib/vault-provisioner.js (#5465 — split 2/3 de #5425)
 // node --test  (entra por el glob existente de `npm run test:pipeline`)

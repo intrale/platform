@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // opstate-fail-open-rev8-5113.test.js — Los fail-open que sobrevivieron a rev-7
 //

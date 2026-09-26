@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // validate-java-home.test.js — Tests para el fail-fast de JAVA_HOME (#2405 CA-1)
 // =============================================================================

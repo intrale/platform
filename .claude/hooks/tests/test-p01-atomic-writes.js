@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Test P-01: Escritura atómica en pending-questions.js
 const { describe, it, before, after } = require("node:test");
 const assert = require("node:assert/strict");

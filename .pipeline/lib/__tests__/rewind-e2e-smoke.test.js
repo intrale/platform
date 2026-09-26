@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // rewind-e2e-smoke.test.js — Smoke test E2E del rewind (#3416).
 // =============================================================================

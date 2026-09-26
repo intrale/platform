@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 Leonel Larreta
+# SPDX-License-Identifier: LicenseRef-Proprietary
+
 # Levanta el entorno QA: Docker (DynamoDB + Moto + seed) + backend Ktor.
 # Uso: ./qa/scripts/qa-env-up.sh
 # El backend queda corriendo en background — usar qa-env-down.sh para tirar todo.

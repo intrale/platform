@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // skills-metadata.test.js — Parser de frontmatter y validación de capabilities.
 // Issue #3082 — CA-6, CA-7.

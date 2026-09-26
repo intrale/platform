@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // commander/lock-manager.js — Gestión de lockfile, offset persistente y procesos
 // Responsabilidad: singleton del commander, offset de Telegram, kill de zombies
 "use strict";

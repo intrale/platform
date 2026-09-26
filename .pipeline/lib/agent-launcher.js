@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // agent-launcher.js — Entry point unificado del lanzamiento de agentes
 // (issue #3074 / H2 multi-provider).

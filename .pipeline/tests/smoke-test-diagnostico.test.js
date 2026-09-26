@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Tests del diagnóstico del smoke test (#5725) — CA-2 y CA-4.
 //
 // El "usuario" de estas funciones es el operador que abre smoke-test.log a las

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // sanitize-console.js — Patch de console.{log,error,warn,info} para servicios
 // Issue #2334 / CA6.

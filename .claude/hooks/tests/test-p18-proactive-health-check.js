@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Test P-18: Health check proactivo — auto-reparación de worktrees y deduplicación de alertas (#1224)
 const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");

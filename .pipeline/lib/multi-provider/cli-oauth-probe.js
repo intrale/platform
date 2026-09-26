@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // cli-oauth-probe.js — Probe compartido de providers CLI-OAuth (#3802 / #4402).
 //

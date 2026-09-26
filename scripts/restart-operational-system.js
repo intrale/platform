@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // restart-operational-system.js — Reinicio operativo centralizado
 // Resetea state files, verifica conectividad y limpia procesos stale
 // Pure Node.js — sin dependencias externas

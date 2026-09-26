@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // wave-promote-atomic.test.js — Tests de la transacción multi-archivo de
 // /wave promote (#3520). Cubre CA-F1..F8 del issue.

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // Tests lib/anthropic-usage.js — lectura del uso real de `claude -p /usage` (#4597)
 //

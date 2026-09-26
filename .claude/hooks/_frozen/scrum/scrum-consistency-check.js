@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // scrum-consistency-check.js — Auditoría de consistencia del backlog Intrale
 // Detecta duplicaciones parciales, historias contenidas en otras, y
 // genera reporte con recomendaciones de consolidación.

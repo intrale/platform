@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // #6498 — Chip visual del estado del sello de evidencia de QA.
 //
 // POR QUE ESTE MODULO EXISTE

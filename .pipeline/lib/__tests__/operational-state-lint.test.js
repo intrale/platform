@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 'use strict';
 
 // Tests: `lib/operational-state-lint` (#5175 — parte 1 de 3 del split de #5109).

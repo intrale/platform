@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 Leonel Larreta
+# SPDX-License-Identifier: LicenseRef-Proprietary
+
 # =============================================================================
 # diff-parser-codepaths.sh — Comparador de paridad entre legacy y generalized
 # parser de errores in-flight (#3576 CA-9, refinación R3 guru ratificada por PO).

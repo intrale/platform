@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 import ar.com.intrale.Business
 import ar.com.intrale.BusinessState
 import software.amazon.awssdk.enhanced.dynamodb.mapper.annotations.DynamoDbBean

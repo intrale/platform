@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 /**
  * tester.js — Skill determinístico /tester (issue #2482)
  *
@@ -488,18 +491,31 @@ function isBuildScript(file) {
  * @param {string[]|null} buildScriptLines  lineas `+`/`-` de los build scripts
  *        del diff (ver getBuildScriptChangedLines). Solo se consulta si hay
  *        build scripts en `files`.
+ * @param {string[]|null|undefined} sourceChangedLines  lineas `+`/`-` de las
+ *        fuentes `.kt`/`.java` del diff (ver getSourceChangedLines). Si TODAS
+ *        son comentario de linea o blancas (p.ej. el encabezado de licencia de
+ *        #7591), la fuente no puede mover la cobertura. `null`/`undefined` ->
+ *        no se pudo/no se quiso leer -> fail-closed (gate clasico).
  * @returns {boolean} `true` -> aplicar el umbral (comportamiento clasico).
  *          `false` -> el diff no puede mover la cobertura; reportar sin gatear.
  */
-function coverageGateApplies(files, buildScriptLines) {
+function coverageGateApplies(files, buildScriptLines, sourceChangedLines) {
     // Diff desconocido (git fallo / sin base) -> fail-closed.
     if (!Array.isArray(files)) return true;
     // Sin cambios: no hay nada que gatear, pero conservamos el gate por si
     // alguna ruta llega aca con reporte Kover valido.
     if (files.length === 0) return true;
 
-    // Cualquier fuente o recurso medido por Kover -> gate clasico.
-    if (files.some(isCoverageSource)) return true;
+    // Cualquier fuente o recurso medido por Kover -> gate clasico, salvo que
+    // el cambio en las fuentes sea SOLO comentarios de linea / lineas blancas
+    // (rebote #7591: encabezado de licencia en 832 .kt gateaba la cobertura
+    // historica del repo, 36.05% < 80%, sin tocar una sola linea ejecutable).
+    const coverageSources = files.filter(isCoverageSource);
+    if (coverageSources.length > 0) {
+        // Recursos (res/, resources/) siempre gatean: no hay "comentario inocuo".
+        if (coverageSources.some((f) => !isCodeSource(f))) return true;
+        if (!isCommentOnlyChange(sourceChangedLines)) return true;
+    }
 
     const buildScripts = files.filter(isBuildScript);
     if (buildScripts.length > 0) {
@@ -509,6 +525,77 @@ function coverageGateApplies(files, buildScriptLines) {
     }
 
     return false;
+}
+
+// Fuentes de codigo (no recursos) dentro de COVERAGE_SOURCE_PATTERNS.
+const CODE_SOURCE_PATTERN = /(^|\/)src\/.*\.(kt|java)$/i;
+
+function isCodeSource(file) {
+    return CODE_SOURCE_PATTERN.test(file);
+}
+
+/**
+ * `true` sii `lines` es un array NO vacio en el que cada linea es blanca o un
+ * comentario de linea (`//`). Los comentarios de bloque (barra-asterisco, KDoc) NO
+ * cuentan a proposito: un hunk puede empezar o terminar a mitad de un bloque y
+ * una linea que arranca con `*` no es decidible sin contexto -> fail-closed.
+ * Array vacio o no-array -> `false` (no hay evidencia de que sea inocuo).
+ */
+function isCommentOnlyChange(lines) {
+    if (!Array.isArray(lines) || lines.length === 0) return false;
+    return lines.every((line) => {
+        const t = String(line).trim();
+        return t === '' || t.startsWith('//');
+    });
+}
+
+/**
+ * Lineas agregadas/borradas (`+`/`-`) de TODAS las fuentes `.kt`/`.java` bajo
+ * `src/` del diff vs `origin/main`, o `null` si git falla. Usa pathspecs
+ * glob en vez de listar archivos: un diff masivo (832 fuentes en #7591)
+ * revienta el limite de argumentos del SO ("Argument list too long").
+ */
+function getSourceChangedLines(repoRoot, files) {
+    const sources = Array.isArray(files) ? files.filter(isCodeSource) : [];
+    if (sources.length === 0) return Promise.resolve([]);
+
+    return new Promise((resolve) => {
+        const bases = ['origin/main', 'main', 'origin/HEAD'];
+        const pathspecs = [':(glob,icase)**/src/**/*.kt', ':(glob,icase)**/src/**/*.java'];
+        const tryNext = (idx) => {
+            if (idx >= bases.length) return resolve(null);
+            execFile('git', ['diff', '-U0', '--no-color', '--no-ext-diff', '--no-renames',
+                `${bases[idx]}...HEAD`, '--', ...pathspecs], {
+                cwd: repoRoot, windowsHide: true, maxBuffer: 32 * 1024 * 1024,
+            }, (err, stdout) => {
+                if (err) return tryNext(idx + 1);
+                // Fail-closed: si alguna fuente del diff no aparece en la salida
+                // (pathspec que no la matchea, etc.) no hay evidencia completa
+                // -> null -> gate clasico.
+                if (!diffCoversFiles(stdout, sources)) return resolve(null);
+                resolve(extractChangedLines(stdout));
+            });
+        };
+        tryNext(0);
+    });
+}
+
+// `true` sii cada path de `files` aparece como `diff --git a/<p> b/<p>` en el diff.
+function diffCoversFiles(diffText, files) {
+    const seen = new Set();
+    for (const l of String(diffText).split(/\r?\n/)) {
+        const m = /^diff --git a\/(.+) b\/(.+)$/.exec(l);
+        if (m) { seen.add(m[1]); seen.add(m[2]); }
+    }
+    return files.every((f) => seen.has(f));
+}
+
+// Extrae las lineas `+`/`-` de un diff unificado, sin los headers `+++`/`---`.
+function extractChangedLines(diffText) {
+    return String(diffText).split(/\r?\n/).filter((l) => (
+        (l.startsWith('+') || l.startsWith('-'))
+        && !l.startsWith('+++') && !l.startsWith('---')
+    )).map((l) => l.slice(1));
 }
 
 /**
@@ -1710,10 +1797,16 @@ async function main() {
     let coverageGate = true;
     if (!pipelineOnly && args.coverage) {
         const buildScriptLines = await getBuildScriptChangedLines(diffCwd, changedFiles);
-        coverageGate = coverageGateApplies(changedFiles, buildScriptLines);
+        // Rebote #7591: solo se leen las lineas de fuentes si hay fuentes de
+        // codigo en el diff; sin fuentes el parametro no se consulta.
+        const sourceChangedLines = (changedFiles || []).some(isCodeSource)
+            ? await getSourceChangedLines(diffCwd, changedFiles)
+            : [];
+        coverageGate = coverageGateApplies(changedFiles, buildScriptLines, sourceChangedLines);
         if (!coverageGate) {
-            logAppend('[tester] gate de cobertura NO aplica: el diff no toca fuentes '
-                + 'Kotlin/Java ni recursos medidos, y los build scripts no alteran '
+            logAppend('[tester] gate de cobertura NO aplica: el diff no toca lineas '
+                + 'ejecutables de fuentes Kotlin/Java (a lo sumo comentarios de linea), '
+                + 'ni recursos medidos, y los build scripts no alteran '
                 + 'compilacion/instrumentacion. La cobertura se reporta sin gatear.');
         }
     }
@@ -2145,6 +2238,12 @@ module.exports = {
     // Relevancia del gate de cobertura (rebote #6362)
     coverageGateApplies,
     getBuildScriptChangedLines,
+    getSourceChangedLines,
+    extractChangedLines,
+    diffCoversFiles,
+    diffCoversFiles,
+    isCommentOnlyChange,
+    isCodeSource,
     isCoverageSource,
     isBuildScript,
     COVERAGE_SOURCE_PATTERNS,

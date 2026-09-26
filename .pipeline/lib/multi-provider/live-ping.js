@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // live-ping.js — Valida una API key contra el provider en vivo (#3177 CA-1).
 //

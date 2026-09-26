@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // desync-pill-5724.test.js — Issue #5724 CA-4 (+ guidelines UX-1..UX-4, UX-7)
 //

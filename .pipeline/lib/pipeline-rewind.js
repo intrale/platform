@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // pipeline-rewind.js — Rebobinado del pipeline tras rechazo del operador
 // =============================================================================

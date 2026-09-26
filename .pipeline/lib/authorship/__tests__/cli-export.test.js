@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 'use strict';
 // #7633 — CLI `export` y fuente git/gh (CA-5 · CA-6 · SE1 · SE5 · SE6).
 

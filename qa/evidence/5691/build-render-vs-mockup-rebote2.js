@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Side-by-side render real vs mockup 48 (superficie A) — rebote 2 de #5691 (E6-a / UX-2).
 'use strict';
 const fs = require('fs');

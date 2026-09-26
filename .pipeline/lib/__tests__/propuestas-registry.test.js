@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // propuestas-registry.test.js — #7515 (parte 2/3 de #6807): contrato de
 // propuesta y publicación en el registro. Las secciones 15 y 16 son de #7516

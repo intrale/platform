@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // brazo-desbloqueo-core.js — Decisión pura de liberación de bloqueos (EP5-H1, #3938)
 //

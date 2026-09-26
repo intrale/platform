@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // pulpo-config-recovery.test.js — Test de INTEGRACIÓN del ciclo loadConfig ↔
 // haltOnConfigCorruption ↔ auto-recovery (#4832).

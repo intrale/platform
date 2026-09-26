@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 const VARS=['PULPO_NO_AUTOSTART','PULPO_SKIP_AGENT_MODELS_VALIDATE','PULPO_SKIP_DATA_RESIDENCY_VALIDATE','PIPELINE_STALENESS_HOURS','PIPELINE_ROOT_OVERRIDE','PIPELINE_DIR_OVERRIDE'];
 const before={}; VARS.forEach(v=>before[v]= (v in process.env)? process.env[v] : '<ausente>');
 const real=process.reallyExit.bind(process); let done=false;

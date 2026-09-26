@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // commander/callback-handler.js — Procesamiento de callbacks inline de Telegram
 // Responsabilidad: manejar botones inline (propuestas, permisos, retry, sprint, etc.)
 "use strict";

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Tests para .pipeline/lib/issue-order.js — orden manual del Issue Tracker
 'use strict';
 

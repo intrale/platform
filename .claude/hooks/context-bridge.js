@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // context-bridge.js — Puente entre Context Channels, Pending Questions y Telegram
 // Sincroniza preguntas pendientes de agentes con sus canales de contexto,
 // retransmite respuestas, y envía mensajes nuevos a Telegram

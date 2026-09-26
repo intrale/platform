@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // Guarda de coherencia: la suite NO puede escribir en la cola real de Telegram
 // Issue #5924 — CA-7

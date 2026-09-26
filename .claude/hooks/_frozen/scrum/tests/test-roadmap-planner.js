@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // test-roadmap-planner.js — Tests unitarios de roadmap-planner.js
 // Issue #1435: verifica exportación de módulo, retorno esperado y propiedades del resultado
 "use strict";

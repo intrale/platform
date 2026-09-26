@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Tests de .pipeline/lib/delegation-grant.js (issue #4630).
 // Cubren: emisión (solo primary), delegate desconocido, gate no delegable
 // (incl. GATE1/GATE2), grant válido, manipulado (tampered), expirado, replay,

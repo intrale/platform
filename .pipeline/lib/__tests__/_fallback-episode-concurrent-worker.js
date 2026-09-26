@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // _fallback-episode-concurrent-worker.js — Worker forkeado para el test de
 // concurrencia REAL de `recordDispatch` (#6179, CA-14 / SEC-6).

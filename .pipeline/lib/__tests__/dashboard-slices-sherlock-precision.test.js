@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // dashboard-slices-sherlock-precision.test.js — Suite del slice de precisión
 // de Sherlock (#3897 CA-4, split 3/3 del épico #3894).

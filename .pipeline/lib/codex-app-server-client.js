@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // codex-app-server-client.js — Cliente JSON-RPC mínimo para `codex app-server`
 // Issue #7185 — canje automático del reset de límite de uso de codex.

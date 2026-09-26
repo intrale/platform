@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // human-block-action-handler.js — Endpoint POST /api/human-block/action (#4068)
 //

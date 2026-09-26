@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // #6012 — El HTTP 405 transitorio de GitHub dejó de leerse como conflicto real.
 //
 // Qué defecto fija esta suite: GitHub responde 405 mientras TODAVÍA ESTÁ

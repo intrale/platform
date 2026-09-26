@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // doc-create.test.js — Cobertura del camino determinístico de creación de
 // issues desde el Telegram Commander (#3819).

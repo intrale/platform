@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 'use strict';
 
 // #7635 · CA-1…CA-6 — loader de excepciones declaradas al entorno mínimo.

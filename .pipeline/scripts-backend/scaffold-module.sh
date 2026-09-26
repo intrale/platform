@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 Leonel Larreta
+# SPDX-License-Identifier: LicenseRef-Proprietary
+
 # Uso: scaffold-module.sh <module-name>
 # Crea la estructura minima de un nuevo modulo backend Kotlin/Ktor:
 # build.gradle.kts (clonado de users), carpetas src/main + src/test,

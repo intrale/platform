@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // wave-audit-renderer.test.js — Render server-side XSS-safe del widget de audit
 // trail de olas/issues (#4371 CA-8). No repetir el patrón de XSS de #2893/#3960.

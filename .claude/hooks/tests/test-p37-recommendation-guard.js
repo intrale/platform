@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // P-37: recommendation-guard.js — corte transitorio de recomendaciones (#7673)
 //
 // El hook PreToolUse[Bash] bloquea (exit 2) los `gh` que crean o etiquetan

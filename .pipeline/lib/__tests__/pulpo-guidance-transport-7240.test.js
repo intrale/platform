@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // pulpo-guidance-transport-7240.test.js — cableado REAL del transporte de la
 // orientación de destrabe en `pulpo.moveFile` (#7240, CA-9).

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // commander-persona.test.js - Regression del contrato conversacional del
 // Telegram Commander en providers de fallback.

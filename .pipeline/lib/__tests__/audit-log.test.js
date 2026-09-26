@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // audit-log.test.js — Tests para el hash chain SHA-256 (#3082 CA-13).
 // =============================================================================

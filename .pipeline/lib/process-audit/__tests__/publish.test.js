@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 'use strict';
 
 // #6809 CA-1 / CA-4 / CA-5 — publicación en el registro único: sin métrica no

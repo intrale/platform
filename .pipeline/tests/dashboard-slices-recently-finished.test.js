@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // #3035 — Tests del slice recentlyFinished + flag onlyRejected.
 // El filtro server-side asegura que el cliente NO recibe la lista completa
 // para filtrar localmente (defense-in-depth, ver security review del issue).

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // qa-priority-window.test.js — Unit tests de la QA Priority Window (#2651).
 //

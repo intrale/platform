@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // telegram-outbox.js — Message broker centralizado para Telegram (P-02)
 // Los procesos satelite escriben a telegram-outbox.jsonl via enqueue()
 // El Commander drena la cola cada 500ms con rate limiting

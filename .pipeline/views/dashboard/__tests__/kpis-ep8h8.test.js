@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // kpis-ep8h8.test.js — #3961 EP8-H8. Render de KPIs operativos con sparkline,
 // banda, tooltip, pintado por umbral y bandeja de alertas.

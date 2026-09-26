@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Test P-24: Auditoría de coherencia estado-columna en Project V2 (#1301)
 // Verifica que scrum-auto-corrections.js:
 //   - Detecta issues cerrados fuera de Done

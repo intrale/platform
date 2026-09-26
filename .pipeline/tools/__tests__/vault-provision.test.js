@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // vault-provision.test.js — contrato de la CLI de provisión (#5466, 3/3 de #5425)
 // =============================================================================

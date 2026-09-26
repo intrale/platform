@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // Tests worktree-notif-dedup.js — dedup persistente de notificaciones Telegram
 // (#2591 CA-4 / security CA-4).

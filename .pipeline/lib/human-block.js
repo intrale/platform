@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // V3 Human-block helpers — estado transversal "bloqueado-humano" (issue #2478, #2549).
 //
 // Cualquier skill puede invocar reportHumanBlock() cuando detecte ambigüedad real

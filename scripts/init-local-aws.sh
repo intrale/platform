@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 Leonel Larreta
+# SPDX-License-Identifier: LicenseRef-Proprietary
+
 # Script idempotente: crea tablas DynamoDB, Cognito User Pool y datos seed.
 # Corre dentro del container amazon/aws-cli vía docker-compose.
 set -euo pipefail

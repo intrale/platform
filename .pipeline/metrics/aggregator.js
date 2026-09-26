@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // V3 Metrics Aggregator — lee activity-log.jsonl, indexa eventos V3 y persiste snapshots
 // Contrato definido en issue #2477.
 //

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // dashboard-boot-helper.test.js — Contrato del helper de arranque (#5796)
 // =============================================================================

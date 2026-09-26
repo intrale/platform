@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Test P-24: Auditoría y auto-reparación de salud del sprint (#1297)
 // Verifica que:
 //   - health-check-sprint.js existe, carga sin errores y detecta inconsistencias

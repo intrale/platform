@@ -1,0 +1,25 @@
+{
+  "_doc": "Excepciones del license-header-lint (#7591, CA-9). Cada entrada exige glob y motivo no vacíos. El lint rechaza globs demasiado amplios (*, **, **/*, <dir-fuente>/**, o globs sin ningún directorio literal): una excepción así apagaría el gate. Las exclusiones fijas (*.conf, .env*, *credentials*, *secret*, binarios y .ps1 firmados) viven en el código y NO se declaran acá. Agregar una entrada es una decisión que se revisa a mano en el PR: el job de CI lista las entradas nuevas.",
+  "exceptions": [
+    {
+      "glob": ".pipeline/lib/__tests__/fixtures/*.js",
+      "motivo": "Fixtures de tests (workers y datos de concurrencia, TLS, snapshots): son datos de prueba, no código propio distribuido (CA-8)."
+    },
+    {
+      "glob": ".pipeline/lib/agent-launcher/__tests__/fixtures/**",
+      "motivo": "Fixtures de tests del agent-launcher (frames de stream y su generador): son datos de prueba (CA-8)."
+    },
+    {
+      "glob": "fixtures/demo/*",
+      "motivo": "Fixture de la demo del ciclo del pipeline: datos de prueba, no código propio (CA-8)."
+    },
+    {
+      "glob": ".scratch/**",
+      "motivo": "Espacio de trabajo descartable: /.scratch/ está en .gitignore; los archivos trackeados son restos históricos de sesiones de QA."
+    },
+    {
+      "glob": ".claude/tmp/**",
+      "motivo": "Temporales de sesiones de Claude Code (pids y scripts de diagnóstico sueltos), no código mantenido."
+    }
+  ]
+}

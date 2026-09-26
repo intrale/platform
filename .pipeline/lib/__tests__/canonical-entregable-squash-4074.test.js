@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // canonical-entregable-squash-4074.test.js — Regresión del falso negativo
 // `⚠️ s/main` por squash-merge + rama borrada (#4074).

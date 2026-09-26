@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // worktree-resolver.js — Resolución del worktree existente del issue para fases
 // que NO crean código nuevo pero sí leen/escriben sobre el worktree ya creado

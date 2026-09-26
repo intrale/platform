@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // sherlock-verifier.js — Verificador adversarial del Commander de Telegram
 // (#3343, split de #3331). Hija hermana: #3342 (HTTP completion-client).

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // Worker de concurrencia para vault-shadow-metrics.test.js (#5448)
 // =============================================================================

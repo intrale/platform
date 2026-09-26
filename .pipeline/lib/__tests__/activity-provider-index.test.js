@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // Tests de activity-provider-index (#4199).
 //   - Construye el índice (issue, skill, fase) → provider desde el activity-log.

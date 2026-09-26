@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // providers/antigravity.js — Handler del provider `antigravity` (Antigravity CLI)
 //

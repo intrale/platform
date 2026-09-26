@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // update-project-board.js — Sincronizar Project V2 con sprint-plan.json
 //
 // Uso: node update-project-board.js [--dry-run]

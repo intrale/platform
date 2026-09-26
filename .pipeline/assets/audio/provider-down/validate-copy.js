@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 /**
  * UX #6144 — valida el copy canónico contra los CA de forma (CA-3, CA-4, CA-5,
  * CA-6, CA-7, CA-11, CA-21). Es el chequeo que UX corre sobre `copy.json`;

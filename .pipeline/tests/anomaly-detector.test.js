@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Tests del detector de anomalías de consumo (#2891 PR-B).
 // Cubre los criterios CA-2.2 (warmup), CA-2.3 (intervalo configurable),
 // CA-2.4 (threshold relativo + mínimo absoluto) y CA-2.5 (persistencia).

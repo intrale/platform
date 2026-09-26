@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // operator-allowlist.js — Allowlist cerrada de operadores del pipeline con
 // roles `primary` / `backup` (issue #4630, split de #4581 — delegación de firma).

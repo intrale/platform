@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // backup-agent-branch.js — Helper para crear tags de backup antes de operaciones
 // destructivas (reset/merge) sobre ramas `agent/*`.

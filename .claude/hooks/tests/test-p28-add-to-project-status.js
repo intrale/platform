@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Test P-28: add-to-project-status.js — asignación de Status en Project V2 (#1333)
 // Verifica que getBacklogOptionId asigna el backlog correcto según labels del issue
 const { describe, it } = require("node:test");

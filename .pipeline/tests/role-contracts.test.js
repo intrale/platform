@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Tests de contrato de los roles del pipeline.
 // Asegura que PO y UX (y otros roles que valen como gates de aprobacion)
 // se mantengan simetricos en su clasificacion de scope (PASO 0.A) — sino

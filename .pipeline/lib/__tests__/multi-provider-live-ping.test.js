@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // multi-provider-live-ping.test.js — Tests del módulo live-ping (#3177 SSRF).
 // No hacemos requests reales: stubeamos httpImpl para verificar comportamiento.

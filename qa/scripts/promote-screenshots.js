@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // promote-screenshots.js — Hook QA post-ejecución exitosa que promueve PNGs
 // de `qa/evidence/<issue>/` a la librería curada

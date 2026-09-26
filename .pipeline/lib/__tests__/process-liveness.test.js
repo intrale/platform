@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // process-liveness.test.js — Tests del helper de liveness + identidad (#4622).
 // Reproduce los escenarios de seguridad: pid vivo/muerto, identidad por marca de

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // ux-mockup-dataset.test.js — Tests unitarios (#3408 · CA-UX-3 + CA-S2)
 //

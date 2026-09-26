@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // multi-provider-csrf.test.js — Tests del módulo CSRF (#3177 + #3191).
 // =============================================================================

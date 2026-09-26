@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // project-context-traversal.test.js — SEC-2 / SEC-3 (#5110 · E2).
 //

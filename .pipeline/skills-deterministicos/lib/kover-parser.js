@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 /**
  * kover-parser.js — parser determinístico de reportes Kover (XML JaCoCo)
  * y de resultados JUnit (surefire) para el skill /tester determinístico.

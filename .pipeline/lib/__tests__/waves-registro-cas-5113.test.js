@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // waves-registro-cas-5113.test.js — CA-A4 sobre el CAMINO REAL de mutación del
 // REGISTRO DE OLAS.

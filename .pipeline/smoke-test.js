@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // smoke-test.js — Verificación post-restart del pipeline V2 (Node puro)
 //
 // Reemplazo de smoke-test.sh. Eliminamos la cadena bash + wmic + node

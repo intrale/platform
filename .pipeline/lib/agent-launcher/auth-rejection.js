@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // agent-launcher/auth-rejection.js — Contrato compartido de la clasificación
 // cerrada `authentication_rejected` (issue #5795, hija de #5792).

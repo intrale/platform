@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // #6191 / SEC-F — Regresión de DoS por consumo cuadrático en el saneador de la
 // ficha de decisión (CWE-1333 / CWE-400, OWASP A05:2021).

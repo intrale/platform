@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // wave-audit.js — Audit trail append-only para cambios sobre olas e issues
 // asociados (issue #4371, Ola 8.3).

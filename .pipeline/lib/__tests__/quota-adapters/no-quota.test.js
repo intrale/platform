@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // Tests quota-adapters/{deterministic,antigravity}.js
 // — stubs (#3092 + #3220 + #3353 + #6563)

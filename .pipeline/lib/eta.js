@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // ETA helpers para el dashboard del pipeline (issue #2895).
 //
 // Estas funciones puras computan los tiempos que se muestran en cada card

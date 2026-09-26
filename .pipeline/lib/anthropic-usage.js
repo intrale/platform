@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // anthropic-usage.js — Lectura del uso REAL del Plan Max de Anthropic (#4597).
 //

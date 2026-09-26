@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // waves-audit-emit.test.js — Verifica que las mutaciones de waves.js emitan el
 // evento de audit correcto (#4371 CA-1/2/4) y que un fallo del audit NO rompa la

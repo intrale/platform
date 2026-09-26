@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // #7112 rebote rev-3 (G2) — el lanzador fija `GRADLE_LOCK_PATH` para los skills
 // determinísticos.
 //

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // V3 Descanso — calendario semanal de gating de skills LLM.
 // Extraído de satellites.js (#3736, padre #3715). Toda la hidratación es
 // client-side vía fetch('/api/rest-mode') cada 8s — el SSR sólo emite la

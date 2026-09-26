@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Tests de hasVisualReference (issue #3383, CA-16).
 //
 // Cubre los 7 casos del CA-16 + bordes de seguridad:

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // bloqueados.js — Vista SSR de la ventana "Bloqueados / Necesitan intervención
 // humana" del dashboard V3 (`/bloqueados` legacy + `/dashboard?view=bloqueados`).

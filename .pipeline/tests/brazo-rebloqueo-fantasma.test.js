@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // brazo-rebloqueo-fantasma.test.js — Tests del "re-bloqueo fantasma" (#4023).
 //

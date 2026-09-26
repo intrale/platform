@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Tests de .pipeline/metrics/aggregator.js (#2488)
 // Verifica agregación extendida: execution_mode, TTS por issue, LLM vs det, daily series.
 'use strict';

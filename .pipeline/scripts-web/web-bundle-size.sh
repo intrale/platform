@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 Leonel Larreta
+# SPDX-License-Identifier: LicenseRef-Proprietary
+
 # Uso: web-bundle-size.sh
 # Reporta el tamanio del bundle Wasm generado (composeApp.js + .wasm).
 # Util para validar performance budgets (Addy Osmani / Alex Russell).

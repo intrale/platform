@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // #6812 — Suprimir las ventanas de consola de los hijos en Windows.
 // Cubre el parche de child_process, su idempotencia, la propagación por
 // NODE_OPTIONS y el guardrail de regresión sobre launch.ps1 / entrypoints.

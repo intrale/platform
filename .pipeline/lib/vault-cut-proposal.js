@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // vault-cut-proposal.js — PRODUCTOR de la propuesta de corte del fallback del
 // vault (#5460, split de #5452 · conserva D1..D6 de #5339 y REQ-SEC-1..15).

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // dispatch-watchdog-emisores.test.js — Una sola cadena de avisos (#5400 rev-1).
 //

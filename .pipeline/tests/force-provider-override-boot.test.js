@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // force-provider-override-boot.test.js — boot validators del flag
 // FORCE_PROVIDER_OVERRIDE (#3680 CA-A9).

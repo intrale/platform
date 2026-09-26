@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // http-client.js — Cliente HTTP(S) seguro del pipeline Intrale
 // Issue #2307 · cubre CA-3 / CA-4 / CA-5 / CA-6 / CA-7 / CA-14 / CA-16 /

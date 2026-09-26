@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // ensure-git-on-path.js — helper de tests del pipeline (rebote #2892 rev-8)
 //

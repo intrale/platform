@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // Tests de lib/bloqueados-stats.js — agregados del header de Bloqueados (#3957,
 // EP8-H4 / CA-4).

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // Smoke E2E del router cliente `?view=<slug>` (#3723, CA-G2 del épico #3715).
 //

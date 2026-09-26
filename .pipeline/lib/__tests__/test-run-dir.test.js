@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 'use strict';
 
 // #7112 · CA-4 — tests del helper del dir efímero de pruebas (`lib/test-run-dir.js`).

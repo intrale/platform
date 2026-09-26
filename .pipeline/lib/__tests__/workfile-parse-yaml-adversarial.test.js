@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // Tests parseo YAML adversarial — fallo controlado, sin ejecución (EP5-H1, #3938)
 //

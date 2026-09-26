@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // reset-operations.js — Hard reset completo de operaciones
 // Mata TODOS los procesos, limpia TODO el estado, pull de main, reinicia infraestructura
 // Pure Node.js — sin dependencias externas

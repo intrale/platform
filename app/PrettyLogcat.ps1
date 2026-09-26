@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Leonel Larreta
+# SPDX-License-Identifier: LicenseRef-Proprietary
+
 <#---------------------------------------------------------------------------
  PrettyLogcat.ps1 — Logcat lindo en Windows/PowerShell (con colores)
 

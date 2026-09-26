@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // CA-5' de #7438 — baseline CONGELADA de invocaciones de `gh` por literal pelado.
 //

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // kernel-scheduler.js — Scheduler global de dos niveles del kernel multi-producto
 // (Ola Puente P5a · #4775, split de #4690). Diseño:

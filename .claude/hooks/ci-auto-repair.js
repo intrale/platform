@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // ci-auto-repair.js -- Auto-reparacion de CI failures en PRs de agentes
 // Lanzado por ci-monitor-bg.js cuando un PR de rama agent/* falla en CI.
 // - Rastrear intentos de reparacion por rama (max 2)

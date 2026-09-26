@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // product-registry-loader.js — Construye el product-registry desde config.yaml
 // + el operador único histórico (retro-compat). Issue #4780.

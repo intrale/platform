@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // telegram-client.js — Módulo compartido para comunicación con Telegram API (P-09)
 // Centraliza telegramPost, sendMessage, editMessage, sendPhoto
 // Con retry automático, rate limiting y logging unificado

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // vault-migration.js — coordinador determinístico de la migración al vault
 // (#5453 · entrega 3/3 del split de #5428)

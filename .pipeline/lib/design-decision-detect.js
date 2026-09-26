@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // design-decision-detect.js — "esto es una decisión de arquitectura, no una
 // tarea de implementación" (#5337, CA-4a / CA-4b / CA-4c).

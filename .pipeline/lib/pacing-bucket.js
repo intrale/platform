@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // pacing-bucket.js — Presupuesto de ritmo (pacing budget) por proveedor.
 // Issue #4289.

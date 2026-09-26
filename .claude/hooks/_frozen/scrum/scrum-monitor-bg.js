@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // scrum-monitor-bg.js — Monitor periódico de salud del sprint (background)
 // Ejecuta health-check-sprint.js cada 30 minutos
 // Auto-repara inconsistencias menores automáticamente

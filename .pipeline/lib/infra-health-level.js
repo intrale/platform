@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // infra-health-level.js — Semáforo global explicable del dashboard (#3954,
 // EP8-H1 CA-2/CA-3).

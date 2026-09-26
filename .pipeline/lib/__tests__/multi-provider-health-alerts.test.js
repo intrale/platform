@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // multi-provider-health-alerts.test.js — Tests del dedupe + back-off + redact
 // del módulo health-alerts (#3260 CA-4).

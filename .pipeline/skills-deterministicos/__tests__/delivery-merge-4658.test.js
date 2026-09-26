@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // #4658 — Delivery: mergear (no rebasar) contra main y escalar al operador ante
 // conflicto de merge REAL. Reproducción del caso #4632 y gates de seguridad
 // R1–R7. Sin invocar gh/git: validamos las decisiones puras y el escalado

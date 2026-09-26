@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // esperando-firma.js — Vista SSR de la bandeja "Esperando tu firma" del
 // dashboard V3. Un solo lugar donde el operador ve TODOS los issues que esperan

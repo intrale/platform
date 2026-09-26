@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // worktree-notif-dedup.js — Dedup persistente de notificaciones Telegram para
 // abortos por worktree faltante (issue #2591 CA-4 / security CA-4).

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // resolve-provider — flag interactive_supported (#3605).
 'use strict';
 

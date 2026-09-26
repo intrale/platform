@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // canonical-facts.js — Diccionario determinístico claim → fuente canónica
 // (#3895, split 1/3 del épico #3894).

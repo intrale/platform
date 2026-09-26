@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // dispatch-facts.test.js — BRAZO DE RECOLECCIÓN del watchdog de despacho (#5400)
 //

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Tests del gate de relevancia de cobertura del tester determinístico (#6362).
 //
 // Contexto del rebote que originó el fix: el tester rechazó #6362 con

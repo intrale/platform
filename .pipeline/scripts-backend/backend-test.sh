@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 Leonel Larreta
+# SPDX-License-Identifier: LicenseRef-Proprietary
+
 # Uso: backend-test.sh
 # Corre :backend:test con setup de JAVA_HOME y resume el resultado.
 # Reemplaza la invocacion repetitiva del SKILL del agente /backend-dev (Pasos 4.2 y 6).

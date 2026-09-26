@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // gh-circuit-breaker.js — Circuit-breaker de conectividad para llamadas a `gh`
 // (GitHub CLI). Incidente #4612: un outage de red a GitHub

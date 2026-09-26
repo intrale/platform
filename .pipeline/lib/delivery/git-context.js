@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // git-context.js — Lectura pura del estado git para el delivery
 //
 // Reemplaza el Paso 2 del SKILL.md (que pedía al LLM correr 4 comandos y

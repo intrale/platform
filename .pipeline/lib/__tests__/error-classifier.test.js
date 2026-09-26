@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Tests de lib/error-classifier.js (#3941, EP5-H4)
 // node --test
 'use strict';

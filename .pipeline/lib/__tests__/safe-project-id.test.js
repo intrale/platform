@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // safe-project-id.test.js — Issue #5901 · CA-1 (GURU-4 + REQ-SEC-2)
 //

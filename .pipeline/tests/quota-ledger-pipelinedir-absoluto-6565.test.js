@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // #6565 — el estado runtime del pipeline nunca debe aterrizar dentro del repo.
 // Regresión del hallazgo de seguridad [OWASP A05 / CWE-538]: un `pipelineDir`
 // relativo se resolvía contra el CWD (working tree del repo) y versionaba el

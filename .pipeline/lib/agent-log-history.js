@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // agent-log-history.js — Persistencia y consulta de logs de agentes por intento
 // Issue #4444.
