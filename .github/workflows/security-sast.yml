@@ -1,27 +1,109 @@
 name: Security SAST
 
-# Análisis de seguridad estático — modo warning (no bloquea PRs en primera iteración)
-# Ejecuta: OWASP Dependency Check, Semgrep, detect-secrets
-# Publica reporte como PR comment con el resumen de hallazgos
+# Análisis de seguridad estático (#7659, decisión de #7658 filas 1, 3, 4 y 7).
+#
+# Qué corre cuándo:
+#   PR a main/develop      → Secret scan (blocking) siempre.
+#                            OWASP Dependency Check SÓLO si el PR toca dependencias
+#                            (gradle/libs.versions.toml, **/*.gradle.kts, buildSrc/**).
+#   push a main            → Secret scan (blocking).
+#   schedule diario        → OWASP + Semgrep + detect-secrets sobre main, resumen en
+#                            el step summary y aviso privado al operador.
+#   workflow_dispatch      → lo mismo que el schedule, a demanda (correrlo antes de
+#                            cada release / deploy a Lambda).
+#
+# OWASP, Semgrep y detect-secrets siguen en modo warning (continue-on-error): no
+# bloquean nada. El único control bloqueante es "Secret scan (blocking)".
+#
+# NO usar `paths:` en on.pull_request: dejaría sin Secret scan a los PR que no
+# tocan dependencias. El filtro de dependencias va a nivel job (detect-deps).
+# NO poner `concurrency` a nivel workflow: cancelaría el Secret scan de pushes
+# seguidos a main. La cancelación va sólo en los jobs pesados, grupo por job.
 
 on:
   pull_request:
     branches: [ main, develop ]
   push:
     branches: [ main ]
+  schedule:
+    - cron: '0 6 * * *'   # diario, 06:00 UTC / 03:00 ART (fila 1, 3 y 4 de #7658)
+  # Sin inputs a propósito: no hay nada del usuario que termine interpolado en un run.
+  workflow_dispatch: {}
 
+# Privilegio mínimo global. Cada job que necesita más lo declara a nivel job
+# (semgrep: security-events: write para subir el SARIF).
 permissions:
   contents: read
-  pull-requests: write
-  security-events: write
 
 jobs:
-  # ── OWASP Dependency Check (vulnerabilidades en dependencias) ─────
-  dependency-check:
+  # ── ¿El PR toca dependencias? (sólo pull_request) ───────────────
+  # Se resuelve con git, sin API ni actions de terceros: no pide permisos extra.
+  # Ante cualquier duda (no se puede calcular el diff) responde deps=true: correr
+  # OWASP de más es preferible a saltearlo en un PR que sí cambió dependencias.
+  detect-deps:
     if: github.event_name == 'pull_request'
+    name: Detectar cambios de dependencias
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      deps: ${{ steps.filter.outputs.deps }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+
+      - name: Clasificar archivos del PR
+        id: filter
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          # Archivos de dependencias (fila 1 de #7658). ERE, lo valida
+          # .pipeline/tests/security-sast-workflow.test.js.
+          DEPS_PATTERN: '^gradle/libs\.versions\.toml$|(^|/)[^/]+\.gradle\.kts$|^buildSrc/'
+        run: |
+          CHANGED=""
+          OK=0
+          # En pull_request GITHUB_SHA es el merge commit efímero: parent1 es el
+          # tip de la base, así que ^1..merge es exactamente lo que agrega el PR.
+          if [ -n "$PR_HEAD_SHA" ] && [ "$GITHUB_SHA" != "$PR_HEAD_SHA" ] \
+             && git rev-parse -q --verify "$GITHUB_SHA^2" >/dev/null 2>&1; then
+            if CHANGED="$(git diff --name-only "$GITHUB_SHA^1" "$GITHUB_SHA" 2>/dev/null)"; then OK=1; fi
+          elif [ -n "$PR_BASE_SHA" ] && [ -n "$PR_HEAD_SHA" ]; then
+            if CHANGED="$(git diff --name-only "$PR_BASE_SHA...$PR_HEAD_SHA" 2>/dev/null)"; then OK=1; fi
+          fi
+
+          if [ "$OK" != "1" ]; then
+            echo "::warning::detect-deps: no se pudo calcular el diff del PR; se corre OWASP igual"
+            echo "deps=true" >> "$GITHUB_OUTPUT"
+          elif printf '%s\n' "$CHANGED" | grep -qE "$DEPS_PATTERN"; then
+            echo "El PR toca dependencias: corre OWASP Dependency Check."
+            echo "deps=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "El PR no toca dependencias: OWASP queda para la corrida diaria."
+            echo "deps=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  # ── OWASP Dependency Check (vulnerabilidades en dependencias) ─────
+  # Corre en schedule, workflow_dispatch y en los PR que tocan dependencias.
+  # `!cancelled()` es obligatorio: en schedule/dispatch detect-deps queda skipped
+  # y, sin función de estado, GitHub saltearía también este job (la corrida
+  # diaria no correría nunca y el workflow igual se vería verde).
+  dependency-check:
+    needs: detect-deps
+    if: >-
+      !cancelled() && (
+        github.event_name == 'schedule' ||
+        github.event_name == 'workflow_dispatch' ||
+        (github.event_name == 'pull_request' && needs.detect-deps.outputs.deps == 'true')
+      )
     name: OWASP Dependency Check
     runs-on: ubuntu-latest
-    continue-on-error: true  # Modo warning — no bloquea el PR
+    continue-on-error: true  # Modo warning — no bloquea nada
+    concurrency:
+      group: security-sast-dependency-check-${{ github.event_name }}-${{ github.ref }}
+      cancel-in-progress: true
     # La credencial se declara a nivel job: el bloque `env:` de un step NO está en
     # scope para el `if:` de ese mismo step, así que sin esto la condición de
     # presencia leería un contexto indefinido y sería siempre verdadera.
@@ -103,21 +185,46 @@ jobs:
             echo "Estado del scan: scan fallido (modo warning; no bloquea el merge)." >> "$GITHUB_STEP_SUMMARY"
           fi
 
+      # Conteos agregados (sin CVE, paquete ni versión: el repo es público).
+      # En un PR de dependencias éste es el único rastro visible, porque ya no
+      # se comenta en el PR (fila 7 de #7658).
+      - name: Conteos del reporte OWASP
+        if: always()
+        shell: bash
+        run: |
+          HTML="$(find build/reports -type f -name 'dependency-check-report.html' -size +0c -print -quit 2>/dev/null || true)"
+          if [ -z "$HTML" ]; then
+            echo "Conteos: OWASP no terminó; no hay reporte para contar (ver log)." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          DEPS="$(grep -oE 'id="vulnerableCount">[0-9]+' "$HTML" | grep -oE '[0-9]+$' | head -1 || true)"
+          VULNS="$(grep -oE 'id="vulnerabilityCount">[0-9]+' "$HTML" | grep -oE '[0-9]+$' | head -1 || true)"
+          echo "Conteos: dependencias vulnerables ${DEPS:-sin dato}; vulnerabilidades ${VULNS:-sin dato}. Detalle en el artefacto del run (retención 7 días)." >> "$GITHUB_STEP_SUMMARY"
+
+      # El repo es público: el artefacto lo puede bajar cualquier usuario
+      # autenticado. Retención corta (RS-5 / CA-8).
       - name: Upload OWASP report
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: owasp-dependency-check-report
           path: build/reports/
-          retention-days: 14
+          retention-days: 7
           if-no-files-found: ignore
 
   # ── Semgrep — análisis estático de código Kotlin ─────────────────
+  # Sólo schedule / workflow_dispatch (fila 3 de #7658).
   semgrep:
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     name: Semgrep Static Analysis
     runs-on: ubuntu-latest
-    continue-on-error: true  # Modo warning — no bloquea el PR
+    continue-on-error: true  # Modo warning — no bloquea nada
+    permissions:
+      contents: read
+      security-events: write  # upload-sarif a la pestaña Security
+    concurrency:
+      group: security-sast-semgrep-${{ github.ref }}
+      cancel-in-progress: true
     container:
       image: semgrep/semgrep
     steps:
@@ -168,15 +275,22 @@ jobs:
         with:
           name: semgrep-sarif
           path: semgrep.sarif
-          retention-days: 14
+          retention-days: 7
           if-no-files-found: ignore
 
   # ── detect-secrets — secretos hardcodeados ───────────────────────
+  # Sólo schedule / workflow_dispatch (fila 4 de #7658). Frenar un secreto en el
+  # PR sigue a cargo de "Secret scan (blocking)".
   detect-secrets:
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     name: detect-secrets Scan
     runs-on: ubuntu-latest
-    continue-on-error: true  # Modo warning — no bloquea el PR
+    continue-on-error: true  # Modo warning — no bloquea nada
+    permissions:
+      contents: read
+    concurrency:
+      group: security-sast-detect-secrets-${{ github.ref }}
+      cancel-in-progress: true
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -226,11 +340,15 @@ jobs:
         with:
           name: secrets-baseline
           path: secrets-baseline.json
-          retention-days: 14
+          retention-days: 7
           if-no-files-found: ignore
 
-  # ── Reporte consolidado como PR comment ──────────────────────────
+  # ── Secret scan (blocking) — único control bloqueante ────────────
+  # Condición explícita pull_request || push: no corre atado al schedule (su
+  # lógica de rango no contempla esos eventos). SIN concurrency a propósito:
+  # dos pushes seguidos a main tienen que escanearse ambos hasta el final.
   secret-scan:
+    if: github.event_name == 'pull_request' || github.event_name == 'push'
     name: Secret scan (blocking)
     runs-on: ubuntu-latest
     continue-on-error: false
@@ -492,13 +610,18 @@ jobs:
             --allowlist="$BASE_ALLOWLIST" \
             --format=github
 
-  sast-report:
-    name: Publicar reporte SAST en PR
+  # ── Resumen de la corrida diaria / a demanda + aviso al operador ──
+  # Reemplaza a "Publicar reporte SAST en PR" (fila 7 de #7658): ya no se comenta
+  # en el PR. El resumen va al step summary del run y, si hay hallazgos o alguna
+  # herramienta no terminó, se avisa al operador por Telegram (canal privado).
+  # Sólo conteos + links: nunca CVE, paquete, versión ni archivo:línea (RS-5).
+  sast-summary:
+    name: Resumen SAST (corrida diaria / a demanda)
     runs-on: ubuntu-latest
     needs: [dependency-check, semgrep, detect-secrets]
-    if: always() && github.event_name == 'pull_request'
+    if: always() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
     permissions:
-      pull-requests: write
+      contents: read
     steps:
       - name: Download OWASP report
         uses: actions/download-artifact@v4
@@ -521,100 +644,180 @@ jobs:
           path: reports/secrets/
         continue-on-error: true
 
-      - name: Generar y publicar reporte en PR
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const fs = require('fs');
+      # Todas las expresiones entran por env: el script no interpola nada.
+      - name: Generar resumen
+        id: summary
+        env:
+          DEP_OUTCOME: ${{ needs.dependency-check.outputs.scan_outcome }}
+          DEP_REPORT: ${{ needs.dependency-check.outputs.report_status }}
+        run: |
+          node <<'NODE'
+          const fs = require('fs');
+          const path = require('path');
 
-            const depCheckOutcome = '${{ needs.dependency-check.outputs.scan_outcome }}';
-            const depCheckReportStatus = '${{ needs.dependency-check.outputs.report_status }}';
-            const semgrepResult = '${{ needs.semgrep.result }}';
-            const detectSecretsResult = '${{ needs.detect-secrets.result }}';
-
-            // Contar secretos si el baseline está disponible
-            let secretsCount = 0;
+          const findFile = (dir, name) => {
             try {
-              const baseline = JSON.parse(fs.readFileSync('reports/secrets/secrets-baseline.json', 'utf8'));
-              secretsCount = Object.values(baseline.results || {}).reduce((acc, v) => acc + v.length, 0);
+              for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+                const full = path.join(dir, entry.name);
+                if (entry.isDirectory()) {
+                  const hit = findFile(full, name);
+                  if (hit) return hit;
+                } else if (entry.name === name && fs.statSync(full).size > 0) {
+                  return full;
+                }
+              }
             } catch {}
+            return null;
+          };
 
-            // Contar findings de Semgrep si el SARIF está disponible
-            let semgrepFindings = 0;
-            try {
-              const sarif = JSON.parse(fs.readFileSync('reports/semgrep/semgrep.sarif', 'utf8'));
-              semgrepFindings = (sarif.runs || []).reduce((acc, r) => acc + (r.results || []).length, 0);
-            } catch {}
-
-            const icon = (result) => {
-              if (result === 'success') return '✅';
-              if (result === 'failure') return '⚠️';
-              if (result === 'skipped') return '⏭️';
-              return '❓';
+          // OWASP: mismo vocabulario de estado que el summary del job.
+          const depCheckOutcome = process.env.DEP_OUTCOME || '';
+          const depCheckReportStatus = process.env.DEP_REPORT || '';
+          const depCheckState = depCheckOutcome !== 'success'
+            ? 'scan fallido'
+            : depCheckReportStatus !== 'present'
+              ? 'reporte ausente'
+              : 'scan válido';
+          let owasp = { done: false, deps: null, vulns: null };
+          const owaspHtml = findFile('reports/owasp', 'dependency-check-report.html');
+          if (depCheckState === 'scan válido' && owaspHtml) {
+            const html = fs.readFileSync(owaspHtml, 'utf8');
+            const num = (id) => {
+              const m = html.match(new RegExp('id="' + id + '">\\s*(\\d+)'));
+              return m ? Number(m[1]) : null;
             };
+            owasp = { done: true, deps: num('vulnerableCount'), vulns: num('vulnerabilityCount') };
+          }
 
-            const depCheckState = depCheckOutcome !== 'success'
-              ? 'scan fallido'
-              : depCheckReportStatus !== 'present'
-                ? 'reporte ausente'
-                : 'scan válido';
-
-            const depCheckIcon = depCheckState === 'scan válido' ? '✅' : '⚠️';
-
-            const runUrl = `${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}`;
-            const securityTabUrl = `${{ github.server_url }}/${{ github.repository }}/security/code-scanning`;
-
-            const body = [
-              `## 🔒 Security SAST — Reporte de análisis`,
-              ``,
-              `> ⚠️ **Modo warning** — este scan es informativo y **no bloquea el merge** en esta primera iteración.`,
-              ``,
-              `| Herramienta | Estado | Hallazgos | Detalles |`,
-              `|-------------|--------|-----------|----------|`,
-              `| 🔍 OWASP Dependency Check | ${depCheckIcon} \`${depCheckState}\` | Vulnerabilidades en dependencias | [Ver reporte](${runUrl}) |`,
-              `| 🛡️ Semgrep (análisis estático) | ${icon(semgrepResult)} \`${semgrepResult}\` | ${semgrepFindings} hallazgo(s) | [Ver en Security tab](${securityTabUrl}) |`,
-              `| 🔑 detect-secrets (secretos) | ${icon(detectSecretsResult)} \`${detectSecretsResult}\` | ${secretsCount} posible(s) secreto(s) | [Ver reporte](${runUrl}) |`,
-              ``,
-              `📄 Reportes completos disponibles en los [artifacts del workflow](${runUrl}).`,
-              ``,
-              `<details>`,
-              `<summary>ℹ️ ¿Qué hace cada herramienta?</summary>`,
-              ``,
-              `- **OWASP Dependency Check**: Escanea las dependencias del proyecto contra la base de datos NVD en busca de CVEs conocidos.`,
-              `- **Semgrep**: Análisis estático de código Kotlin/Java con reglas OWASP Top 10 y detección de patrones inseguros.`,
-              `- **detect-secrets**: Detecta posibles secretos hardcodeados (API keys, tokens, contraseñas) en el código fuente.`,
-              ``,
-              `</details>`,
-              ``,
-              `<sub>Generado automáticamente por el pipeline SAST · [Documentación](docs/security-sast.md)</sub>`,
-            ].join('\n');
-
-            // Buscar comentario existente para actualizar (sticky comment)
-            const { data: comments } = await github.rest.issues.listComments({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-            });
-
-            const existingComment = comments.find(c =>
-              c.user.login === 'github-actions[bot]' &&
-              c.body.includes('Security SAST — Reporte de análisis')
-            );
-
-            if (existingComment) {
-              await github.rest.issues.updateComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                comment_id: existingComment.id,
-                body,
-              });
-              console.log('Comentario de seguridad actualizado.');
-            } else {
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: context.issue.number,
-                body,
-              });
-              console.log('Comentario de seguridad creado.');
+          // Semgrep: conteo por nivel del SARIF.
+          let semgrep = { done: false, total: 0, levels: {} };
+          try {
+            const sarif = JSON.parse(fs.readFileSync('reports/semgrep/semgrep.sarif', 'utf8'));
+            const levels = {};
+            let total = 0;
+            for (const run of sarif.runs || []) {
+              for (const r of run.results || []) {
+                const level = r.level || 'warning';
+                levels[level] = (levels[level] || 0) + 1;
+                total += 1;
+              }
             }
+            semgrep = { done: true, total, levels };
+          } catch {}
+
+          // detect-secrets: candidatos del inventario.
+          let secrets = { done: false, total: 0 };
+          try {
+            const baseline = JSON.parse(fs.readFileSync('reports/secrets/secrets-baseline.json', 'utf8'));
+            const total = Object.values(baseline.results || {}).reduce((acc, v) => acc + v.length, 0);
+            secrets = { done: true, total };
+          } catch {}
+
+          const fmt = (n) => Number(n).toLocaleString('es-AR');
+          const incompletas = [];
+          if (!owasp.done) incompletas.push('OWASP Dependency Check (' + depCheckState + ')');
+          if (!semgrep.done) incompletas.push('Semgrep');
+          if (!secrets.done) incompletas.push('detect-secrets');
+
+          const owaspHallazgos = owasp.done ? (owasp.vulns ?? owasp.deps ?? 0) : 0;
+          const total = owaspHallazgos + semgrep.total + secrets.total;
+
+          const base = process.env.GITHUB_SERVER_URL + '/' + process.env.GITHUB_REPOSITORY;
+          const runUrl = base + '/actions/runs/' + process.env.GITHUB_RUN_ID;
+          const securityUrl = base + '/security/code-scanning';
+
+          const veredicto = incompletas.length > 0
+            ? '⚠️ Corrida incompleta: no terminó ' + incompletas.join(', ') + ' (ver log). Un cero de esa herramienta no significa "sin hallazgos".'
+            : total > 0
+              ? '⚠️ ' + fmt(total) + ' hallazgos'
+              : '✅ Sin hallazgos';
+
+          const sinDato = (n) => (n == null ? 'sin dato' : fmt(n));
+          const celdaOwasp = owasp.done
+            ? sinDato(owasp.vulns) + ' vulnerabilidades en ' + sinDato(owasp.deps) + ' dependencias'
+            : 'no terminó (' + depCheckState + ')';
+          const niveles = Object.entries(semgrep.levels).map(([k, v]) => k + ': ' + fmt(v)).join(', ');
+          const celdaSemgrep = semgrep.done
+            ? fmt(semgrep.total) + (niveles ? ' (' + niveles + ')' : '')
+            : 'no terminó';
+          const celdaSecrets = secrets.done ? fmt(secrets.total) + ' candidatos' : 'no terminó';
+
+          const md = [
+            '## Security SAST — resumen de la corrida',
+            '',
+            '**' + veredicto + '**',
+            '',
+            '| Herramienta | Resultado |',
+            '|---|---|',
+            '| OWASP Dependency Check | ' + celdaOwasp + ' |',
+            '| Semgrep | ' + celdaSemgrep + ' |',
+            '| detect-secrets | ' + celdaSecrets + ' |',
+            '',
+            'Detalle: [pestaña Security](' + securityUrl + ') · [artefactos del run](' + runUrl + ') (retención 7 días).',
+            '',
+            'Modo warning: estos escaneos no bloquean. El único control bloqueante es "Secret scan (blocking)", en cada PR y en cada push a main.',
+            '',
+          ].join('\n');
+          fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, md);
+
+          // Aviso al operador: sólo si hay hallazgos o si algo no terminó.
+          const avisar = incompletas.length > 0 || total > 0;
+          const partes = [];
+          if (owaspHallazgos > 0) partes.push(fmt(owaspHallazgos) + ' vulnerabilidades en dependencias');
+          if (semgrep.total > 0) partes.push(fmt(semgrep.total) + ' avisos de código de Semgrep');
+          if (secrets.total > 0) partes.push(fmt(secrets.total) + ' posibles secretos para revisar');
+          const encontrados = partes.length > 0 ? 'encontró ' + partes.join(', ') : 'no encontró hallazgos';
+          const incompleto = incompletas.length > 0
+            ? ' Ojo: ' + (incompletas.length === 1 ? 'una herramienta no terminó' : 'algunas herramientas no terminaron')
+              + ' (' + incompletas.join(', ') + '), así que el resultado está incompleto.'
+            : '';
+          const cuerpo = 'El análisis de seguridad de main ' + encontrados + '.' + incompleto
+            + ' Conviene revisarlo antes del próximo release.';
+          const texto = cuerpo + '\n\nDónde mirar: pestaña Security ' + securityUrl + '\nCorrida: ' + runUrl;
+          const audio = cuerpo + ' El detalle está en la pestaña Security del repositorio.';
+
+          const tmp = process.env.RUNNER_TEMP;
+          fs.writeFileSync(path.join(tmp, 'sast-aviso.txt'), texto);
+          fs.writeFileSync(path.join(tmp, 'sast-aviso-audio.txt'), audio);
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, 'notify=' + (avisar ? 'true' : 'false') + '\n');
+          NODE
+
+      # Canal privado del operador (RS-5). Mensaje + audio (convención del canal).
+      # Si los secrets no están cargados, lo declara en el summary y no falla.
+      - name: Avisar al operador por Telegram
+        if: steps.summary.outputs.notify == 'true'
+        continue-on-error: true
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          if [ -z "$TELEGRAM_BOT_TOKEN" ] || [ -z "$TELEGRAM_CHAT_ID" ]; then
+            echo "::warning::Aviso al operador no enviado: faltan los secrets TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID"
+            echo "Aviso al operador: no enviado, el canal privado no está configurado (faltan los secrets de Telegram)." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          if curl -sS --fail -o /dev/null -X POST \
+               "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+               --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
+               --data-urlencode "text@${RUNNER_TEMP}/sast-aviso.txt"; then
+            echo "Aviso al operador: enviado por Telegram." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::warning::No se pudo enviar el aviso por Telegram"
+            echo "Aviso al operador: falló el envío por Telegram." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          if pip install --quiet edge-tts \
+             && edge-tts --voice es-AR-TomasNeural --pitch=-2Hz \
+                  --file "${RUNNER_TEMP}/sast-aviso-audio.txt" \
+                  --write-media "${RUNNER_TEMP}/sast-aviso.mp3" \
+             && curl -sS --fail -o /dev/null -X POST \
+                  "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendAudio" \
+                  -F "chat_id=${TELEGRAM_CHAT_ID}" \
+                  -F "title=Análisis de seguridad" \
+                  -F "audio=@${RUNNER_TEMP}/sast-aviso.mp3"; then
+            echo "Aviso al operador: audio enviado." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::warning::El aviso de texto salió, pero no se pudo generar o enviar el audio"
+          fi

@@ -2,9 +2,29 @@
 
 ## Descripción
 
-El pipeline de seguridad estático (SAST) analiza el código fuente y sus dependencias en búsqueda de vulnerabilidades. Se ejecuta automáticamente en cada Pull Request.
+El pipeline de seguridad estático (SAST) analiza el código fuente y sus dependencias en búsqueda de vulnerabilidades. Desde #7659 (decisión de #7658, filas 1, 3, 4 y 7) el análisis pesado **no corre en cada PR**: corre una vez por día sobre `main` y a demanda, y OWASP además corre en los PR que tocan dependencias.
 
-> **Primera iteración: modo warning.** Los hallazgos de seguridad NO bloquean el merge. El objetivo es generar visibilidad sobre el estado de seguridad del proyecto.
+### Qué corre cuándo
+
+| Evento | Secret scan (blocking) | OWASP Dependency Check | Semgrep | detect-secrets | Resumen + aviso al operador |
+|---|---|---|---|---|---|
+| PR que **no** toca dependencias | ✅ bloquea | — | — | — | — |
+| PR que toca dependencias (`gradle/libs.versions.toml`, `**/*.gradle.kts`, `buildSrc/**`) | ✅ bloquea | ✅ no bloquea (resultado en el summary del job) | — | — | — |
+| Push a `main` | ✅ bloquea | — | — | — | — |
+| Schedule diario (06:00 UTC / 03:00 ART) sobre `main` | — | ✅ | ✅ (SARIF a Security) | ✅ | ✅ |
+| A demanda (`workflow_dispatch`, pestaña Actions → *Security SAST* → *Run workflow*) | — | ✅ | ✅ (SARIF a Security) | ✅ | ✅ |
+
+> **Regla:** correr el workflow a demanda (`gh workflow run security-sast.yml --ref main`) **antes de cada release o deploy a Lambda**, y revisar el resumen antes de seguir.
+
+> **Modo warning.** OWASP, Semgrep y detect-secrets NO bloquean el merge. El único control bloqueante del workflow es *Secret scan (blocking)*, que sigue corriendo en cada PR y en cada push a `main`.
+
+### Riesgo aceptado: detección tardía
+
+Aceptado por el operador en #7658 (fila 1, opción **b**):
+
+- Una vulnerabilidad **nueva** publicada contra una dependencia que ya está en `main` se ve en la corrida diaria siguiente (hasta 1 día), no en un PR.
+- Un hallazgo nuevo de Semgrep o detect-secrets introducido por un PR se ve en la corrida diaria siguiente, no en el PR.
+- En un PR de dependencias con hallazgos de OWASP, el PR queda en verde (modo warning) y **no** se comenta: el rastro queda en el summary del job y en la corrida diaria. Darle veto sigue siendo alcance de #6610 / #5253.
 
 ## Herramientas integradas
 
@@ -55,34 +75,60 @@ El pipeline de seguridad estático (SAST) analiza el código fuente y sus depend
 ```
 PR abierto/actualizado
         │
-        ├── OWASP Dependency Check ──→ Reporte HTML/JSON (artifact)
-        │   (continue-on-error: true)
+        ├── secret-scan ─────────────→ Secret scan (blocking) — frena el PR
         │
-        ├── Semgrep ─────────────────→ SARIF (Security tab) + artifact
-        │   (continue-on-error: true)
+        └── detect-deps ──¿toca dependencias?──sí──→ OWASP Dependency Check
+                                               │     (continue-on-error: true,
+                                               │      conteos en el step summary)
+                                               └─no─→ (nada más)
+
+Push a main ─────────────────────────→ secret-scan (blocking)
+
+Schedule diario / workflow_dispatch (sobre main)
         │
-        ├── detect-secrets ──────────→ secrets-baseline.json (artifact)
-        │   (continue-on-error: true)
+        ├── OWASP Dependency Check ──→ Reporte HTML (artifact, 7 días)
+        ├── Semgrep ─────────────────→ SARIF (Security tab) + artifact (7 días)
+        ├── detect-secrets ──────────→ secrets-baseline.json (artifact, 7 días)
         │
-        └── sast-report ─────────────→ PR Comment con resumen consolidado
+        └── sast-summary ────────────→ Resumen en el step summary
+                                       + aviso al operador por Telegram
+                                         (sólo si hay hallazgos o algo no terminó)
 ```
+
+`concurrency` con `cancel-in-progress` va **a nivel job** y sólo en los tres escaneos pesados, cada uno con su grupo (el de OWASP incluye el evento, para que la corrida de un PR no cancele la diaria). Nunca a nivel workflow: cancelaría el *Secret scan* de dos pushes seguidos a `main`. Tampoco se usa `paths:` en `on.pull_request`: dejaría sin *Secret scan* a los PR que no tocan dependencias; el filtro lo hace el job `detect-deps` con `git diff` (sin API ni actions de terceros, y ante la duda corre OWASP).
 
 ## Cómo ver los resultados
 
-### En el PR
+> Ya **no** se publica un comentario en el PR (fila 7 de #7658): el repo es público y el comentario exponía el resumen a cualquiera.
 
-El job `sast-report` publica automáticamente un comentario sticky en el PR con:
-- Estado de cada herramienta (✅ ok / ⚠️ hallazgos)
-- Conteo de hallazgos de Semgrep y detect-secrets
-- Links a los reportes completos
+### Resumen de la corrida (step summary)
+
+El job `sast-summary` (*Resumen SAST*) escribe en la página del run:
+
+- Un veredicto de una línea: `✅ Sin hallazgos`, `⚠️ N hallazgos` o `⚠️ Corrida incompleta: no terminó <herramienta>`. Si una herramienta falló, lo dice: nunca muestra un cero que no midió.
+- Una tabla con conteos por herramienta (OWASP: vulnerabilidades y dependencias vulnerables; Semgrep: por nivel; detect-secrets: candidatos).
+- Links a la pestaña Security y a los artefactos del run.
+
+Nunca incluye CVE, paquete, versión ni `archivo:línea`.
+
+### Aviso al operador (Telegram)
+
+Si la corrida diaria o a demanda encuentra hallazgos o alguna herramienta no terminó, `sast-summary` manda un mensaje en español al Telegram del operador, con audio (voz `es-AR-TomasNeural`), sólo con conteos y el link a la pestaña Security. Si el audio falla, el texto sale igual y el run deja un `::warning`.
+
+Requiere los secrets `TELEGRAM_BOT_TOKEN` y `TELEGRAM_CHAT_ID` en el repo. **Hoy no están cargados** (`gh secret list` sólo lista los de Firebase y, cuando exista, `NVD_API_KEY`): mientras falten, el step no falla y el resumen dice `Aviso al operador: no enviado, el canal privado no está configurado`. Para darlos de alta sin imprimirlos:
+
+```bash
+gh secret set TELEGRAM_BOT_TOKEN --repo intrale/platform   # pegar el valor cuando lo pida
+gh secret set TELEGRAM_CHAT_ID --repo intrale/platform
+```
 
 ### Pestaña Security
 
-Los hallazgos de Semgrep aparecen en: **Repositorio > Security > Code scanning alerts**
+Los hallazgos de Semgrep aparecen en: **Repositorio > Security > Code scanning alerts** (visible sólo con permisos del repo). Se actualiza con la corrida diaria.
 
 ### Artifacts del workflow
 
-Cada run del workflow guarda los reportes completos como artifacts (14 días de retención):
+Cada corrida guarda los reportes completos como artifacts con **7 días de retención**. El repo es público: cualquier usuario autenticado de GitHub puede bajarlos, así que se asumen públicos durante esa semana.
 - `owasp-dependency-check-report/` — Reporte HTML navegable
 - `semgrep-sarif/` — Archivo SARIF de Semgrep
 - `secrets-baseline/` — Baseline de detect-secrets

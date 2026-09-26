@@ -80,9 +80,13 @@ const SECURITY_BLOCKING_CONTEXTS = Object.freeze([
 // LOS ESCÁNERES EN MODO WARNING. No están en la allowlist a propósito, y esto
 // NO es un olvido: es el estado declarado del repo.
 //
-//   OWASP Dependency Check   → security-sast.yml:21  `continue-on-error: true`
-//   Semgrep Static Analysis  → security-sast.yml:77  `continue-on-error: true`
-//   detect-secrets Scan      → security-sast.yml:135 `continue-on-error: true`
+//   OWASP Dependency Check   → security-sast.yml, job `dependency-check`  `continue-on-error: true`
+//   Semgrep Static Analysis  → security-sast.yml, job `semgrep`           `continue-on-error: true`
+//   detect-secrets Scan      → security-sast.yml, job `detect-secrets`    `continue-on-error: true`
+//
+// Desde #7659 Semgrep y detect-secrets corren sólo por schedule/dispatch y OWASP
+// sólo en los PR que tocan dependencias: en el resto de los PR el check no
+// aparece, y "ausente" ya se trata como no-rojo.
 //
 // Meterlos en la allowlist sería un gate que no puede dispararse (reportan
 // SUCCESS aunque fallen) y además contradiría un criterio YA MERGEADO: #6599
