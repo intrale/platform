@@ -23,8 +23,8 @@ Los 14 repos legacy con workflows registrados quedaron archivados con ese
 retiro aceptado por el owner: un repo archivado es de sólo lectura y no dispara
 Actions. Ninguno tenía runs ni releases (baseline y post-archivado), por lo que
 no se cortó ninguna publicación. Los hallazgos del escáner siguen su triage
-aparte (§7): la revocación de la credencial Firebase de `intrale-notifications`
-es una tarea de seguridad independiente y no bloquea esta historia.
+aparte (§7): la revocación/rotación de las credenciales expuestas (Firebase y API keys de GCP)
+se sigue en #7683 y no bloquea esta historia.
 
 ## 1. Evidencia y herramientas
 
@@ -80,7 +80,9 @@ plataforma, identidad de pruebas, agentes y bot llevan su propia evidencia.
 Se descargó Gitleaks **8.30.1** del release oficial y se verificó el SHA256 del
 ZIP contra `gitleaks_8.30.1_checksums.txt`. Los mirrors y reportes redactados
 quedan fuera del repo, en el directorio temporal `intrale-7595-scan` del operador.
-No se versionan secretos, matches, mensajes de commits ni reportes crudos.
+No se versionan secretos, matches, ubicaciones (archivo, línea o commit) de
+hallazgos, mensajes de commits ni reportes crudos: la evidencia sólo lleva
+conteos por regla. La rotación de lo encontrado se sigue en #7683.
 
 Por cada repo se ejecutó un clone `--mirror` sin profundidad y un escaneo
 `git --log-opts=--all`: todas las referencias descargadas, sin limitar la ventana
@@ -257,5 +259,5 @@ el verificador por repo ([`post-archive-verifier.txt`](../pipeline/evidence/7595
 - **Verificador:** 7 repos con código 0 (`codex`, `app`, `back-core`, `kotlin-multiplatform-example`, `intrale-mobile-mercadopago`, `intrale-web`, `intrale-mobile`). Los otros 14 devuelven código 1 **únicamente** por el control «sin workflows»: conservan registrado el workflow que ya figuraba en el baseline (`main.yml`, o `publish-ktor-artifacts.yml` en `repo`). En todos ellos pasan los controles de visibilidad, archivado, runs (0) y releases (0). El código 1 queda registrado tal cual: el owner aceptó el retiro de esos workflows al archivar, y un repo archivado no dispara Actions. No se borraron workflows para fabricar un «sin workflows».
 - **CA-1:** cumplido según el alcance ajustado del 23/09. Los 21 legacy quedaron archivados y públicos, y `platform` sigue público con su fundamento en el plan de transición por etapas (§4, #7658-#7662). `kernel` sigue privado.
 - **CA-4:** cumplido para los 21 legacy (visibilidad, archivado, runs y releases verificados uno por uno arriba). Los controles ligados a `platform` (CI propio, distribución Desktop, SAST, mockups, identidades) **no aplican en esta historia**: `platform` no cambió y quedan como precondiciones de #7662.
-- **Escaneo previo:** Gitleaks 8.30.1 (SHA256 del ZIP `d29144deff3a68aa93ced33dddf84b7fdc26070add4aa0f4513094c8332afc4e`) sobre los 21 mirrors: 18 sin hallazgos (incluido `back-core`, vacío) y 11 hallazgos en `users` (2), `intrale-mobile` (8) e `intrale-notifications` (1, regla `private-key` en `services/src/main/resources/firebase-credentials.json`, commit `386d33a8a38d6d1eb94f311a1835623ce7fa8bc6`). Archivar no cambia su exposición: el código ya era público. La revocación de la credencial Firebase es una tarea de seguridad aparte y no bloquea esta historia; el triage del resto sigue ese mismo carril.
+- **Escaneo previo:** Gitleaks 8.30.1 (SHA256 del ZIP `d29144deff3a68aa93ced33dddf84b7fdc26070add4aa0f4513094c8332afc4e`) sobre los 21 mirrors: 18 sin hallazgos (incluido `back-core`, vacío) y 11 hallazgos en `users` (2), `intrale-mobile` (8) e `intrale-notifications` (1, regla `private-key`). Se versionan sólo conteos por regla, sin archivo, línea ni commit. Archivar no cambia su exposición: el código ya era público. La revocación/rotación de la cuenta de servicio Firebase, de las API keys de GCP y el triage del resto se siguen en #7683, que no bloquea esta historia.
 - **Costo:** USD 0 proyectado frente a USD 0 observado (0 runs antes y después). Un repo archivado no genera consumo de Actions.
