@@ -25,12 +25,14 @@
 //   - Las respuestas crudas se cachean en `--raw` (por default en el tmp del
 //     sistema); el script se niega a escribirlas dentro del repo.
 //   - El resumen (`--out`) contiene sólo agregados: repo/workflow/minutos/p50/p95.
+//     Con `--by-job` (#7658) suma el desglose por job (JOB_DETAIL_KEYS) y el conteo
+//     de runs por evento; sigue sin logs, steps ni mensajes.
 //   - Los precios NO están en el código: se leen de `--pricing <json>`.
 //
 // Uso:
 //   node scripts/measure-actions-billing.js --repos platform,kernel --days 30 \
 //        --pricing docs/pipeline/evidence/7594/pricing.json \
-//        --out docs/pipeline/evidence/7594 [--raw <dir-fuera-del-repo>] [--owner intrale]
+//        --out docs/pipeline/evidence/7594 [--raw <dir-fuera-del-repo>] [--owner intrale] [--by-job]
 //
 // Modo estricto (#7687, base de la medición automática de #7661):
 //   --strict         reintentos ante 5xx / timeout / rate limit secundario; los
@@ -109,11 +111,47 @@ function percentile(values, p) {
 function round2(n) { return Math.round(n * 100) / 100; }
 
 /**
- * Agrega runs normalizados: `[{ repo, workflow, run_attempt, jobs: [...] }]`.
+ * Claves permitidas en el desglose por job (`--by-job`, #7658). RS-5: sólo
+ * agregados numéricos; el nombre del job va como clave del mapa `jobs_detail`.
+ * Nada de logs, steps, mensajes ni ids: un test falla si aparece otra clave.
+ */
+const JOB_DETAIL_KEYS = Object.freeze([
+    'runs', 'failures', 'skipped', 'raw_min', 'billable_min',
+    'billable_by_os', 'raw_by_os', 'p50_min', 'p95_min',
+]);
+
+function emptyJobStats() {
+    return { runs: 0, failures: 0, skipped: 0, raw_min: 0, billable_min: 0,
+        billable_by_os: { linux: 0, windows: 0, macos: 0 },
+        raw_by_os: { linux: 0, windows: 0, macos: 0 }, _perRun: [] };
+}
+
+/** Cierra las stats de un job: p50/p95 por ejecución, redondeos y sólo claves de la allowlist. */
+function finalizeJobStats(js) {
+    const out = {
+        runs: js.runs, failures: js.failures, skipped: js.skipped,
+        raw_min: round2(js.raw_min), billable_min: js.billable_min,
+        billable_by_os: Object.assign({}, js.billable_by_os),
+        raw_by_os: {},
+        p50_min: percentile(js._perRun, 50), p95_min: percentile(js._perRun, 95),
+    };
+    for (const k of Object.keys(js.raw_by_os)) out.raw_by_os[k] = round2(js.raw_by_os[k]);
+    return out;
+}
+
+/**
+ * Agrega runs normalizados: `[{ repo, workflow, run_attempt, event, jobs: [...] }]`.
  * Devuelve `{ repos: { repo: { workflows: { wf: {...} }, totals } }, totals, unknown_runner }`.
  * p50/p95 son de minutos facturables POR RUN (suma de sus jobs, todos los attempts).
+ *
+ * Con `{ byJob: true }` (#7658) cada workflow suma además:
+ *   - `events`:      `{ pull_request: n, push: n, ... }` — runs por evento disparador.
+ *   - `jobs_detail`: `{ <job.name>: { runs, failures, skipped, raw_min, billable_min,
+ *                    billable_by_os, raw_by_os, p50_min, p95_min } }` — p50/p95 por
+ *                    ejecución del job. Sólo claves de `JOB_DETAIL_KEYS` (RS-5).
+ * Sin `byJob` el shape es exactamente el de #7594.
  */
-function aggregate(runs) {
+function aggregate(runs, { byJob = false } = {}) {
     const repos = {};
     let unknownRunner = 0;
     const emptyStats = () => ({
@@ -129,11 +167,26 @@ function aggregate(runs) {
         const st = repos[repo].workflows[wf] = repos[repo].workflows[wf] || emptyStats();
         st.runs += 1;
         if ((run.run_attempt || 1) > 1) st.retried_runs += 1;
+        if (byJob) {
+            st.events = st.events || {};
+            st.jobs_detail = st.jobs_detail || {};
+            const ev = run.event || 'unknown';
+            st.events[ev] = (st.events[ev] || 0) + 1;
+        }
         let runBillable = 0;
         for (const job of run.jobs || []) {
             const b = billableMinutes(job);
             const secs = jobRawSeconds(job);
-            if (b === 0 && secs === 0) continue; // skipped / nunca corrió
+            let js = null;
+            if (byJob) {
+                const name = String((job && job.name) || 'unknown');
+                js = st.jobs_detail[name] = st.jobs_detail[name] || emptyJobStats();
+                if (job && job.conclusion === 'failure') js.failures += 1;
+            }
+            if (b === 0 && secs === 0) { // skipped / nunca corrió
+                if (js) js.skipped += 1;
+                continue;
+            }
             let osName = runnerOs(job.labels);
             if (osName === 'unknown') { st.unknown_runner += 1; unknownRunner += 1; osName = 'linux'; }
             st.jobs += 1;
@@ -142,6 +195,14 @@ function aggregate(runs) {
             st.billable_by_os[osName] += b;
             st.raw_by_os[osName] += secs / 60;
             runBillable += b;
+            if (js) {
+                js.runs += 1;
+                js.raw_min += secs / 60;
+                js.billable_min += b;
+                js.billable_by_os[osName] += b;
+                js.raw_by_os[osName] += secs / 60;
+                js._perRun.push(b);
+            }
         }
         st._perRun.push(runBillable);
     }
@@ -155,6 +216,9 @@ function aggregate(runs) {
             st.p50_min = percentile(st._perRun, 50);
             st.p95_min = percentile(st._perRun, 95);
             delete st._perRun;
+            if (st.jobs_detail) {
+                for (const name of Object.keys(st.jobs_detail)) st.jobs_detail[name] = finalizeJobStats(st.jobs_detail[name]);
+            }
             st.raw_min = round2(st.raw_min);
             for (const k of Object.keys(st.raw_by_os)) st.raw_by_os[k] = round2(st.raw_by_os[k]);
             for (const t of [rt, totals]) {
@@ -379,10 +443,15 @@ function releaseRunCost(jobs, pricing) {
 // I/O (no se ejecuta al hacer require desde los tests)
 // -----------------------------------------------------------------------------
 
+// Flags booleanos: nunca consumen el argumento siguiente como valor.
+const BOOLEAN_FLAGS = new Set(['--by-job']);
+
 function parseArgs(argv) {
     const opts = {};
     for (let i = 0; i < argv.length; i++) {
-        if (argv[i].startsWith('--') && i + 1 < argv.length && !argv[i + 1].startsWith('--')) {
+        if (BOOLEAN_FLAGS.has(argv[i])) {
+            opts[argv[i].substring(2)] = true;
+        } else if (argv[i].startsWith('--') && i + 1 < argv.length && !argv[i + 1].startsWith('--')) {
             opts[argv[i].substring(2)] = argv[++i];
         } else if (argv[i].startsWith('--')) {
             opts[argv[i].substring(2)] = true;
@@ -405,6 +474,7 @@ function parseArgs(argv) {
         summaryOnly: opts['summary-only'] === true,
         skipStorage: opts['skip-storage'] === true,
         skipReleases: opts['skip-releases'] === true,
+        byJob: opts['by-job'] === true,
     };
 }
 
@@ -704,7 +774,7 @@ function measure(opts, deps = {}) {
                 write(`[${repo}] ${day}: ${dayRuns.length} runs (llamadas API: ${gh.calls})\n`);
             }
         }
-        const agg = aggregate(runs);
+        const agg = aggregate(runs, { byJob: opts.byJob });
         const storage = { by_repo: {}, artifacts_gb: 0, cache_gb_by_repo: {} };
         let committers = 0;
         if (!opts.skipStorage) {
@@ -750,6 +820,7 @@ function measure(opts, deps = {}) {
         return {
             generated_at: today.toISOString(), owner: opts.owner, repos: opts.repos,
             window: { days: opts.days, from: days[0] ?? null, to: days[days.length - 1] ?? null },
+            ...(opts.byJob ? { by_job: true } : {}),
             method: 'ceil((completed_at - started_at)/60s) por job x multiplicador (linux 1, windows 2, macos 10); filter=all; una consulta por dia',
             api_calls: gh.calls, active_committers_90d: committers,
             totals: agg.totals, unknown_runner: agg.unknown_runner, repos: agg.repos,
@@ -822,7 +893,7 @@ function runCli(argv, deps = {}) {
 
 module.exports = {
     RUNNER_MULTIPLIERS, runnerOs, runnerMultiplier, jobRawSeconds, billableMinutes, percentile,
-    aggregate, rankWorkflows, estimateOptimizations, projectScenarios, releaseRunCost, monthly,
+    JOB_DETAIL_KEYS, aggregate, rankWorkflows, estimateOptimizations, projectScenarios, releaseRunCost, monthly,
     parseArgs, isInside, windowDays, countCommitters,
     // #7687 — modo estricto
     measure, runCli, windowDaysSince, withRetry, classifyGhError, writeSummaryAtomic, validateOpts,

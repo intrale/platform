@@ -2,6 +2,8 @@
 
 > Spike de medición. Ventana medida: **2026-08-24 → 2026-09-22 (30 días)**. Tarifas tomadas el 2026-09-23.
 > Datos agregados: [`evidence/7594/actions-usage-summary.json`](evidence/7594/actions-usage-summary.json) · tarifas: [`evidence/7594/pricing.json`](evidence/7594/pricing.json).
+>
+> Desglose por job y decisión de poda del CI: [`evaluacion-ci-platform.md`](evaluacion-ci-platform.md) (#7658).
 
 ## Decisión
 

@@ -14,6 +14,8 @@ const m = require('./measure-actions-billing.js');
 const PRICING = JSON.parse(fs.readFileSync(
     path.join(__dirname, '..', 'docs', 'pipeline', 'evidence', '7594', 'pricing.json'), 'utf8'));
 
+function round2(n) { return Math.round(n * 100) / 100; }
+
 const T0 = Date.parse('2026-09-01T10:00:00Z');
 function job(secs, opts = {}) {
     return {
@@ -118,6 +120,142 @@ test('rankWorkflows ordena por costo y calcula el porcentaje', () => {
     const top = m.rankWorkflows(agg, 5);
     assert.deepEqual(top.map(r => r.workflow), ['B', 'A']);
     assert.equal(top[0].pct, 75);
+});
+
+// --- aggregate con byJob (#7658) ---------------------------------------------
+
+function byJobRuns() {
+    return [
+        { repo: 'platform', workflow: 'Security SAST', event: 'pull_request', run_attempt: 1, jobs: [
+            job(61, { name: 'OWASP Dependency Check' }),                                   // 2
+            job(5, { name: 'Secret scan (blocking)' }),                                    // 1
+        ] },
+        { repo: 'platform', workflow: 'Security SAST', event: 'pull_request', run_attempt: 1, jobs: [
+            job(300, { name: 'OWASP Dependency Check', conclusion: 'failure' }),           // 5
+            job(10, { name: 'Secret scan (blocking)' }),                                   // 1
+        ] },
+        { repo: 'platform', workflow: 'Security SAST', event: 'push', run_attempt: 1, jobs: [
+            job(600, { name: 'OWASP Dependency Check' }),                                  // 10
+            job(0, { name: 'Secret scan (blocking)', conclusion: 'skipped' }),
+        ] },
+        { repo: 'platform', workflow: 'Distribute Desktop', event: 'push', run_attempt: 1, jobs: [
+            job(61, { name: 'build-msi', labels: ['windows-latest'] }),                    // 4
+            job(30, { name: 'build-deb' }),                                                // 1
+        ] },
+    ];
+}
+
+test('aggregate con byJob desglosa minutos crudos/facturables/p50/p95 por job y por OS', () => {
+    const agg = m.aggregate(byJobRuns(), { byJob: true });
+    const owasp = agg.repos.platform.workflows['Security SAST'].jobs_detail['OWASP Dependency Check'];
+    assert.equal(owasp.runs, 3);
+    assert.equal(owasp.billable_min, 17);
+    assert.equal(owasp.billable_by_os.linux, 17);
+    assert.equal(owasp.raw_min, round2((61 + 300 + 600) / 60));
+    assert.equal(owasp.p50_min, 5);
+    assert.equal(owasp.p95_min, 10);
+    const desk = agg.repos.platform.workflows['Distribute Desktop'].jobs_detail;
+    assert.equal(desk['build-msi'].billable_min, 4, 'Windows ×2 sobre 2 min redondeados');
+    assert.equal(desk['build-msi'].billable_by_os.windows, 4);
+    assert.equal(desk['build-msi'].raw_by_os.windows, round2(61 / 60), 'crudos sin multiplicador');
+    assert.equal(desk['build-deb'].billable_by_os.linux, 1);
+    // La suma por job cuadra con el total del workflow.
+    for (const wf of Object.values(agg.repos.platform.workflows)) {
+        const sum = Object.values(wf.jobs_detail).reduce((a, j) => a + j.billable_min, 0);
+        assert.equal(sum, wf.billable_min);
+    }
+});
+
+test('aggregate con byJob cuenta failures por job', () => {
+    const agg = m.aggregate(byJobRuns(), { byJob: true });
+    const d = agg.repos.platform.workflows['Security SAST'].jobs_detail;
+    assert.equal(d['OWASP Dependency Check'].failures, 1);
+    assert.equal(d['Secret scan (blocking)'].failures, 0);
+    assert.equal(d['Secret scan (blocking)'].skipped, 1, 'el job skipped se cuenta aparte y no suma minutos');
+    assert.equal(d['Secret scan (blocking)'].runs, 2);
+});
+
+test('aggregate sin byJob mantiene exactamente el shape anterior', () => {
+    const plain = m.aggregate(byJobRuns());
+    const explicitFalse = m.aggregate(byJobRuns(), { byJob: false });
+    assert.deepEqual(plain, explicitFalse);
+    const wf = plain.repos.platform.workflows['Security SAST'];
+    assert.deepEqual(Object.keys(wf).sort(), [
+        'billable_by_os', 'billable_min', 'jobs', 'p50_min', 'p95_min', 'raw_by_os', 'raw_min',
+        'retried_runs', 'runs', 'unknown_runner',
+    ]);
+    assert.deepEqual(Object.keys(plain).sort(), ['repos', 'totals', 'unknown_runner']);
+    // Los totales no cambian por activar el desglose.
+    const withJobs = m.aggregate(byJobRuns(), { byJob: true });
+    assert.deepEqual(withJobs.totals, plain.totals);
+    assert.equal(withJobs.repos.platform.workflows['Security SAST'].billable_min, wf.billable_min);
+});
+
+test('el desglose por job sólo expone claves de la allowlist de agregados', () => {
+    const runs = byJobRuns();
+    // Un job con campos sensibles no tiene que filtrar nada al resumen.
+    Object.assign(runs[0].jobs[0], { steps: [{ name: 'echo $TOKEN' }], log: 'secreto', html_url: 'https://x', runner_name: 'r1' });
+    const agg = m.aggregate(runs, { byJob: true });
+    const allowed = new Set(m.JOB_DETAIL_KEYS);
+    for (const wf of Object.values(agg.repos.platform.workflows)) {
+        for (const [name, js] of Object.entries(wf.jobs_detail)) {
+            assert.equal(typeof name, 'string');
+            for (const k of Object.keys(js)) assert.ok(allowed.has(k), `clave fuera de la allowlist: ${k}`);
+            for (const k of ['billable_by_os', 'raw_by_os']) {
+                assert.deepEqual(Object.keys(js[k]).sort(), ['linux', 'macos', 'windows']);
+            }
+            for (const [k, v] of Object.entries(js)) {
+                if (typeof v === 'object') continue;
+                assert.equal(typeof v, 'number', `${k} tiene que ser numérico`);
+            }
+        }
+        for (const v of Object.values(wf.events)) assert.equal(typeof v, 'number');
+    }
+    const json = JSON.stringify(agg);
+    for (const bad of ['steps', 'secreto', 'html_url', 'runner_name', '_perRun']) assert.ok(!json.includes(bad), bad);
+});
+
+test('aggregate con byJob registra el conteo de runs por evento', () => {
+    const agg = m.aggregate(byJobRuns(), { byJob: true });
+    assert.deepEqual(agg.repos.platform.workflows['Security SAST'].events, { pull_request: 2, push: 1 });
+    assert.deepEqual(agg.repos.platform.workflows['Distribute Desktop'].events, { push: 1 });
+    const noEvent = m.aggregate([{ repo: 'p', workflow: 'w', jobs: [job(5)] }], { byJob: true });
+    assert.deepEqual(noEvent.repos.p.workflows.w.events, { unknown: 1 });
+});
+
+test('parseArgs acepta --by-job', () => {
+    assert.equal(m.parseArgs([]).byJob, false);
+    assert.equal(m.parseArgs(['--by-job']).byJob, true);
+    const o = m.parseArgs(['--by-job', 'platform', '--days', '7']);
+    assert.equal(o.byJob, true, '--by-job es booleano y no consume el argumento siguiente');
+    assert.equal(o.days, 7);
+    assert.equal(m.parseArgs(['--days', '7', '--by-job']).byJob, true);
+});
+
+test('--raw dentro del repo se sigue negando con --by-job (RS-5)', () => {
+    const { spawnSync } = require('child_process');
+    const inside = path.join(__dirname, '..', 'tmp-raw-7658');
+    const r = spawnSync(process.execPath, [path.join(__dirname, 'measure-actions-billing.js'),
+        '--by-job', '--raw', inside, '--pricing', 'no-existe.json'], { encoding: 'utf8' });
+    assert.equal(r.status, 2);
+    assert.match(r.stderr, /RS-5/);
+    assert.equal(fs.existsSync(inside), false, 'no crea el directorio crudo dentro del repo');
+});
+
+test('la evidencia de #7658 sólo contiene el resumen y las tarifas (sin logs, SARIF ni crudos)', () => {
+    const dir = path.join(__dirname, '..', 'docs', 'pipeline', 'evidence', '7658');
+    assert.deepEqual(fs.readdirSync(dir).sort(), ['actions-usage-summary.json', 'pricing.json']);
+    const summary = JSON.parse(fs.readFileSync(path.join(dir, 'actions-usage-summary.json'), 'utf8'));
+    assert.equal(summary.by_job, true);
+    const allowed = new Set(m.JOB_DETAIL_KEYS);
+    for (const repo of Object.values(summary.repos)) {
+        for (const wf of Object.values(repo.workflows)) {
+            assert.ok(wf.jobs_detail && wf.events, 'cada workflow trae desglose por job y por evento');
+            for (const js of Object.values(wf.jobs_detail)) {
+                for (const k of Object.keys(js)) assert.ok(allowed.has(k), `clave fuera de la allowlist: ${k}`);
+            }
+        }
+    }
 });
 
 // --- estimateOptimizations --------------------------------------------------
@@ -618,6 +756,17 @@ test('el summary no contiene head_branch, head_sha, logins ni emails', (t) => {
     const s = m.measure(opts(t, ['--strict', '--release-workflows', 'platform:release.yml']), { ...quiet, gh: fakeGh(okRoutes()), now: NOW });
     const json = JSON.stringify(s);
     assert.ok(!/head_branch|head_sha|@|"login"|leitolarreta|agent\/1-secreto|deadbeef/.test(json), json);
+});
+
+// --- convivencia strict (#7687) + --by-job (#7658) ------------------------------
+
+test('measure en strict con --by-job suma by_job y el desglose; sin --by-job el shape no cambia', (t) => {
+    const withJobs = m.measure(opts(t, ['--strict', '--by-job']), { ...quiet, gh: fakeGh(okRoutes()), now: NOW });
+    assert.equal(withJobs.by_job, true);
+    const plain = m.measure(opts(t, ['--strict']), { ...quiet, gh: fakeGh(okRoutes()), now: NOW });
+    assert.ok(!('by_job' in plain), 'sin --by-job no aparece la marca');
+    assert.ok(JSON.stringify(withJobs.repos).length > JSON.stringify(plain.repos).length, 'con --by-job hay desglose por job');
+    assert.equal(withJobs.totals.billable_min, plain.totals.billable_min, 'los totales no dependen de --by-job');
 });
 
 // --- compatibilidad del modo legado (CA-20) y texto prohibido (CA-21) ------------
