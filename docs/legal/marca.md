@@ -103,7 +103,7 @@ La mayoría de las menciones son el paquete `ar.com.intrale` y documentación, q
 - Decisión: **esperar** (opción 2) — no registrar ni renombrar por ahora; se revisa cuando el operador lo indique (o ante alguno de los disparadores de abajo). No bloquea ninguna otra tarea.
 - Fecha: 2026-09-26
 - Firmó: `leitolarreta` (decisión comunicada por Telegram al Commander, audit_ref `commander-2026-09-26-marca-7600`)
-- Fuente: pedido de decisión en el issue #7600
+- Fuente: comentario "Decisión del operador sobre la marca" del 2026-09-26 (01:37 UTC) en el [issue #7600](https://github.com/intrale/platform/issues/7600), en respuesta al pedido de decisión del mismo issue
 
 Antecedente (no es decisión): el 2026-09-22 el operador dijo que la marca no le preocupa mucho y que, llegado el caso, se podría renombrar.
 
