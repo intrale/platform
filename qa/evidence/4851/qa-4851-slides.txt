@@ -1,7 +1,0 @@
-file 'screenshot-paso-1-repos.png'
-duration 7
-file 'screenshot-paso-2-capabilities-keyboard.png'
-duration 7
-file 'screenshot-paso-3-authority.png'
-duration 7
-file 'screenshot-paso-3-authority.png'
