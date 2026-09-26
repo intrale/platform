@@ -58,7 +58,8 @@ test('matriz real: las únicas diferencias toleradas son las pendientes de firma
     const declared = [...new Set(pol.open_differences.map((d) => `${d.provider}|${d.role}`))].sort();
     assert.deepEqual(pendingPairs, declared);
     // Casos mínimos del CA-2: po/ux→antigravity con scope github pendientes.
-    assert.deepEqual(declared, ['antigravity|po', 'antigravity|ux']);
+    // #7636 · CA-4 — architect declara `github` y suma el mismo pendiente.
+    assert.deepEqual(declared, ['antigravity|architect', 'antigravity|po', 'antigravity|ux']);
     for (const d of pol.open_differences) {
         assert.equal(d.kind, 'scope_exceeded');
         assert.equal(d.scope, 'github');
@@ -79,10 +80,17 @@ test('matriz real: android-dev, web-dev y qa no rutean por antigravity y la pol�
 
 test('matriz real: architect, perf y telegram-* habilitados en antigravity con sign-off', () => {
     const pol = realPolicy();
-    for (const role of ['architect', 'perf', 'telegram-commander', 'telegram-sherlock']) {
+    for (const role of ['perf', 'telegram-commander', 'telegram-sherlock']) {
         const r = pp.canEnable('antigravity', role, { now: NOW, policy: pol, pipelineDir: PIPELINE_DIR });
         assert.deepEqual(r, { ok: true, reasons: [] }, role);
     }
+    // #7636 · CA-4 — architect conserva su habilitación con sign-off, pero su
+    // scope `github` (nuevo) queda pendiente de firma: la ÚNICA razón es ésa y
+    // está declarada en open_differences.
+    const arch = pp.canEnable('antigravity', 'architect', { now: NOW, policy: pol, pipelineDir: PIPELINE_DIR });
+    assert.deepEqual(arch.reasons, ['El rol architect recibe el scope github, que antigravity no tiene permitido.']);
+    assert.ok(pol.open_differences.some((d) => d.provider === 'antigravity' && d.role === 'architect'
+        && d.kind === 'scope_exceeded' && d.scope === 'github'));
     const tg = pol.providers.antigravity.data.telegram;
     assert.equal(tg.allowed, true);
     assert.deepEqual([...tg.roles].sort(), ['telegram-commander', 'telegram-sherlock']);

@@ -83,6 +83,8 @@ function readerFake(v = {}) {
 
 function baseDeps(over = {}) {
     return {
+        // #7635 — fake del gate de permisos: "sin motivos".
+        checkPermissions: () => ({ motivos: [] }),
         prNumber: 6599,
         getSnapshot: () => snapshotOk(),
         loadOwners: () => ({ ok: true, rules: [] }),

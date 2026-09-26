@@ -1,0 +1,171 @@
+{
+  "_comentario": "#7635 — datos puros de permisos del entorno de hijos. Cualquier cambio a este archivo lo frena el gate de permisos de delivery (needs-human). Ver docs/pipeline/entorno-agentes-hijos.md y los comentarios en lib/build-child-env.js.",
+  "SYSTEM_ALLOWLIST": [
+    "PATH",
+    "PATHEXT",
+    "HOME",
+    "USERPROFILE",
+    "USERNAME",
+    "APPDATA",
+    "LOCALAPPDATA",
+    "PROGRAMFILES",
+    "PROGRAMFILES(X86)",
+    "PROGRAMDATA",
+    "SystemRoot",
+    "ComSpec",
+    "WINDIR",
+    "TEMP",
+    "TMP",
+    "LANG",
+    "LC_ALL",
+    "TZ",
+    "NODE_PATH",
+    "NODE_OPTIONS"
+  ],
+  "CREDENTIAL_SCOPES": {
+    "github": [
+      "GH_TOKEN",
+      "GITHUB_TOKEN"
+    ],
+    "aws": [
+      "AWS_ACCESS_KEY_ID",
+      "AWS_SECRET_ACCESS_KEY",
+      "AWS_SESSION_TOKEN",
+      "AWS_REGION",
+      "AWS_PROFILE"
+    ],
+    "gradle-android": [
+      "JAVA_HOME",
+      "GRADLE_USER_HOME",
+      "ANDROID_HOME",
+      "ANDROID_SDK_ROOT",
+      "ANDROID_AVD_HOME"
+    ],
+    "telegram-hooks": [
+      "TELEGRAM_CHAT_ID"
+    ]
+  },
+  "SCOPES_ALWAYS_ON": [
+    "telegram-hooks"
+  ],
+  "SCOPES_BY_FASE": {
+    "analisis": [
+      "github"
+    ],
+    "criterios": [
+      "github"
+    ],
+    "sizing": [
+      "github"
+    ],
+    "validacion": [
+      "github"
+    ],
+    "dev": [
+      "github",
+      "gradle-android",
+      "aws"
+    ],
+    "build": [
+      "gradle-android"
+    ],
+    "verificacion": [
+      "github",
+      "gradle-android",
+      "aws"
+    ],
+    "linteo": [],
+    "aprobacion": [
+      "github"
+    ],
+    "entrega": [
+      "github"
+    ],
+    "kernel": [
+      "github"
+    ]
+  },
+  "CLI_OAUTH_ALLOWLIST": [
+    "CODEX_HOME",
+    "CLAUDE_CONFIG_DIR"
+  ],
+  "DEFAULT_REQUIRES_BY_SKILL": {
+    "security": [
+      "github"
+    ],
+    "guru": [
+      "github"
+    ],
+    "po": [
+      "github"
+    ],
+    "ux": [
+      "github"
+    ],
+    "planner": [
+      "github"
+    ],
+    "review": [
+      "github"
+    ],
+    "refinar": [
+      "github"
+    ],
+    "priorizar": [
+      "github"
+    ],
+    "historia": [
+      "github"
+    ],
+    "doc": [
+      "github"
+    ],
+    "handoff": [
+      "github"
+    ],
+    "pipeline-dev": [
+      "github"
+    ],
+    "android-dev": [
+      "github",
+      "gradle-android"
+    ],
+    "backend-dev": [
+      "github",
+      "aws",
+      "gradle-android"
+    ],
+    "web-dev": [
+      "github",
+      "gradle-android"
+    ],
+    "builder": [
+      "gradle-android"
+    ],
+    "tester": [
+      "gradle-android"
+    ],
+    "delivery": [
+      "github"
+    ],
+    "linter": [],
+    "qa": [
+      "gradle-android",
+      "aws",
+      "github"
+    ],
+    "build": [
+      "gradle-android"
+    ],
+    "telegram-commander": [],
+    "telegram-sherlock": [],
+    "architect": [
+      "github"
+    ],
+    "dev": [
+      "github",
+      "gradle-android",
+      "aws"
+    ]
+  }
+}

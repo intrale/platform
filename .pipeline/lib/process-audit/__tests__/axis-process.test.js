@@ -38,6 +38,9 @@ test('readProcesadoVerdicts: sólo `resultado` por whitelist, ventana por mtime,
     fs.writeFileSync(path.join(proc, '102.ux'), 'issue: 102\nresultado: talvez\n');
     fs.writeFileSync(path.join(proc, 'basura.txt'), 'resultado: aprobado\n');
     fs.writeFileSync(path.join(proc, '103.ux'), 'resultado: aprobado\n');
+    // mtime explícito dentro de la ventana: NOW es fijo y el reloj real avanza (#7631).
+    const enVentana = NOW / 1000;
+    for (const f of ['100.ux', '101.ux', '102.ux', 'basura.txt']) fs.utimesSync(path.join(proc, f), enVentana, enVentana);
     const viejo = (NOW - 40 * DAY) / 1000;
     fs.utimesSync(path.join(proc, '103.ux'), viejo, viejo);
     fs.mkdirSync(path.join(dir, 'servicios', 'x', 'procesado'), { recursive: true });

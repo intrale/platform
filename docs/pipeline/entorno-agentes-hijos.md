@@ -2,7 +2,7 @@
 
 > Parte 1 de #7598 (#7634), épico #7589. Inventario de qué recibe hoy cada proceso hijo que lanza el pipeline. Este doc es el destino del `Ver:` del error `CHILD_ENV_VIOLATION`.
 >
-> **Estado:** `env_isolation_enabled: false` (`.pipeline/config.yaml`). Producción sigue en el camino **legacy**. Las defensas nuevas de esta parte (sentinels de disco, `assertChildEnvMinimal`) sólo se ejecutan en el camino **ON** (`buildChildEnv`). Se encienden en la parte 3 (#7636).
+> **Estado:** `env_isolation_enabled: true` (`.pipeline/config.yaml`, encendido en #7636). Producción corre en el camino **ON** (`buildChildEnv` + `assertChildEnvMinimal`). Cómo reconocer un bloqueo y cómo volver atrás: [Encendido y reversa](#encendido-y-reversa).
 >
 > **Repo público:** este doc lleva sólo **nombres** de variables y **rutas genéricas**. No incluye valores, hashes (tampoco los de `logs/env-allowlist-audit.log`), account IDs, usuarios ni chat IDs.
 
@@ -12,15 +12,15 @@ Las referencias `archivo:línea` corresponden a `main` en la fecha de este doc. 
 
 | Sitio | Tipo | Variables hoy | Archivos legibles | Necesita |
 |---|---|---|---|---|
-| [`lanzarAgenteClaude`](#lanzaragenteclaude) (camino ON) | Agente LLM | `SYSTEM_ALLOWLIST` + `PIPELINE_*` + key del provider del intento + vars de los scopes efectivos (skill ∩ techo de la fase) + `TELEGRAM_CHAT_ID` + extras de transporte | Neutralizados si el rol no tiene el scope: `~/.aws/*` y la config de `gh`. El resto del home queda legible | Lo que declara `requires_credentials` del skill |
-| [`lanzarAgenteClaude`](#lanzaragenteclaude) (legacy, **vigente**) | Agente LLM | `process.env` completo del intento, menos `TELEGRAM_BOT_TOKEN`, + extras | Todo el home del operador | Ídem |
+| [`lanzarAgenteClaude`](#lanzaragenteclaude) (camino ON, **vigente**) | Agente LLM | `SYSTEM_ALLOWLIST` + `PIPELINE_*` + key del provider del intento + vars de los scopes efectivos (skill ∩ techo de la fase) + `TELEGRAM_CHAT_ID` + extras de transporte | Neutralizados si el rol no tiene el scope: `~/.aws/*` y la config de `gh`. El resto del home queda legible | Lo que declara `requires_credentials` del skill |
+| [`lanzarAgenteClaude`](#lanzaragenteclaude) (legacy, sólo con la reversa) | Agente LLM | `process.env` completo del intento, menos `TELEGRAM_BOT_TOKEN`, + extras | Todo el home del operador | Ídem |
 | [Commander](#commander) (ON / legacy **vigente**) | Agente LLM | ON: igual que arriba, con fase sintética `kernel`. Legacy: `process.env` completo menos Telegram, + `CLAUDE_PROJECT_DIR` | Legacy: todo el home | Scope `github` |
-| [`summaryBaseEnv`](#summarybaseenv) | Agente LLM (**Sí**) | `process.env` completo menos Telegram, + `CLAUDE_PROJECT_DIR` (sin rama ON) | Todo el home | Sólo la sesión OAuth del CLI; ninguna credencial de AWS ni de GitHub |
+| [`summaryBaseEnv`](#summarybaseenv) | Agente LLM (**Sí**) | `buildMinimalCliEnv`: `SYSTEM_ALLOWLIST` + `CODEX_HOME` + `CLAUDE_CONFIG_DIR` + `CLAUDE_PROJECT_DIR` (#7636) | El home queda legible | Sólo la sesión OAuth del CLI; ninguna credencial de AWS ni de GitHub |
 | [QA: generación de casos](#qa) | Servicio de confianza (**No** invoca LLM) | `envDeHijo`: `process.env` completo + `QA_ISSUE`, `GH_PATH` | Todo el home | GitHub (lee el issue con `gh`) |
 | [`envDeHijo` / `envDeLanzador` / `envDeServicio`](#envdehijo) | Servicio de confianza | `process.env` completo + `PIPELINE_REPO_ROOT` + extras. **No quita nada**, ni Telegram | Todo el home | Depende del script (ver sección) |
 | [builder (`build`)](#builder) | Servicio de confianza (no LLM) | El env del hijo determinístico (camino de `lanzarAgenteClaude`) + `JAVA_HOME`, `PATH`, `GRADLE_LOCK_PATH` | Todo el home en legacy | Scope `gradle-android` |
 | [`adbEnv`](#adbenv) | Servicio de confianza (no LLM) | `{ ...process.env }` completo, **sin strip**, + `MSYS_NO_PATHCONV`, `MSYS2_ARG_CONV_EXCL` | Todo el home | Sólo `PATH` para encontrar `adb` |
-| [`sherlock-verifier.js`](#sherlock-verifier) (×3 spawns) | Agente LLM | En producción `inherit`: `process.env` completo menos Telegram, + `CLAUDE_PROJECT_DIR` / `CODEX_MODEL` / `ANTIGRAVITY_MODEL` | Todo el home | Sólo la sesión OAuth del CLI |
+| [`sherlock-verifier.js`](#sherlock-verifier) (×3 spawns) | Agente LLM | En producción `envPolicy: 'minimal'` (#7636): `buildMinimalCliEnv` + `CLAUDE_PROJECT_DIR` / `CODEX_MODEL` / `ANTIGRAVITY_MODEL` | El home queda legible | Sólo la sesión OAuth del CLI |
 | [`semantic-dedup.js`](#semantic-dedup) | Agente LLM (juez) | `buildMinimalCliEnv`: `SYSTEM_ALLOWLIST` + `CODEX_HOME` + `CLAUDE_CONFIG_DIR` + extras | El home queda legible (no hay sentinels en este camino) | Sólo la sesión OAuth del CLI |
 | [Otros spawns sin env explícito](#otros) | Servicio de confianza | Heredan `process.env` completo | Todo el home | — |
 
@@ -66,7 +66,7 @@ Ver también `docs/pipeline/inventario-credenciales.md`.
 
 - **Tipo:** Agente LLM. **¿Invoca un LLM? Sí.**
 - **Evidencia:** `summarizeCommanderOlderTurns` en `.pipeline/pulpo.js:15371`. El spawn de `:15394` lanza `CLAUDE_LAUNCHER` (resuelto por `detectClaudeLauncher()`, `pulpo.js:1049-1075`: `@anthropic-ai/claude-code` o `claude.exe`) con `-p --output-format stream-json --model COMMANDER_SUMMARY_MODEL` (`pulpo.js:15347`).
-- **Env hoy:** `.pipeline/pulpo.js:15389-15410`, `{ ...process.env }` completo + `CLAUDE_PROJECT_DIR` + `stripReservedChildSecrets`. No tiene rama con aislamiento.
+- **Env hoy (#7636):** `buildMinimalCliEnv({ processEnv: process.env, extras: { CLAUDE_PROJECT_DIR: ROOT } })`, envuelto en `stripReservedChildSecrets`. Sin `GH_TOKEN`, sin `AWS_*`, sin keys de provider. No depende del flag. Si al CLI le faltara algo de la sesión OAuth, se amplía `CLI_OAUTH_ALLOWLIST`, nunca un scope.
 - **Necesita:** sólo la sesión OAuth del CLI. Ninguna credencial de AWS ni de GitHub.
 
 <a id="qa"></a>
@@ -121,7 +121,7 @@ Ver también `docs/pipeline/inventario-credenciales.md`.
   - `spawnAnthropicComplete`: spawn en `:906`, env en `:873-880` (+ `CLAUDE_PROJECT_DIR`).
   - `spawnCodexComplete`: spawn en `:1091`, env en `:1061-1071` (+ `CODEX_MODEL`, `CLAUDE_PROJECT_DIR`).
   - `spawnAntigravityComplete`: spawn en `:1272`, env en `:1243-1253` (+ `ANTIGRAVITY_MODEL`, `CLAUDE_PROJECT_DIR`).
-- **Env hoy:** los tres pasan por `resolveSpawnBaseEnv` (`:836-841`). Con `envPolicy: 'minimal'` usan `buildMinimalCliEnv` (`:838`); si no, heredan `env || process.env` (`inherit`, el default de `:821`). Los dos caminos terminan en `stripReservedChildSecrets`. **En producción** el Pulpo llama a `sherlockVerifier.verify` (`pulpo.js:20234`, `:20278`) sin `envPolicy`, así que Sherlock corre con `process.env` completo menos Telegram.
+- **Env hoy:** los tres pasan por `resolveSpawnBaseEnv` (`:836-841`). Con `envPolicy: 'minimal'` usan `buildMinimalCliEnv` (`:838`); si no, heredan `env || process.env` (`inherit`, el default de `:821`). Los dos caminos terminan en `stripReservedChildSecrets`. **En producción** el Pulpo llama a `sherlockVerifier.verify` en sus dos pasadas con `envPolicy: 'minimal'` (#7636), y `verify` lo propaga a los tres `spawn*Complete`.
 - **Necesita:** sólo la sesión OAuth del CLI.
 
 <a id="semantic-dedup"></a>
@@ -168,8 +168,99 @@ Ver: docs/pipeline/entorno-agentes-hijos.md#<sitio>
 | `unknown-phase` | fase desconocida | La fase no está en `SCOPES_BY_FASE` |
 | `unknown-skill` | rol sin declaración de entorno | El skill no está en `agent-models.json` ni en `DEFAULT_REQUIRES_BY_SKILL` |
 | `invalid-exception` | excepción inválida (comodín o credencial reservada) | Las reservadas ganan sobre las excepciones y no se aceptan comodines |
+| `expired-exception` | excepción vencida (requiere revisión humana) | La variable sólo estaba cubierta por una excepción de `env-exceptions.yaml` cuya `revisar_el` ya pasó. El mensaje muestra la fecha y el aprobador |
 | `aws-access-key`, `github-token`, `provider-key`, `telegram-token`, `jwt` | valor con forma de secreto (…) en | Un valor con forma de credencial bajo un nombre que no es de su scope |
 
 El mensaje sólo lleva nombres (ordenados alfabéticamente). Nunca incluye valores, prefijos, largos, hashes ni máscaras. `JSON.stringify(err)` serializa sólo `{ name, code, message, details }`.
 
-El loader de excepciones (`env-exceptions.yaml`) llega en #7635. El encendido y la telemetría, en #7636.
+El encendido y la telemetría llegaron en #7636: ver [Encendido y reversa](#encendido-y-reversa).
+
+<a id="excepciones-declaradas-y-gate-de-permisos"></a>
+## Excepciones declaradas y gate de permisos
+
+Agregado en #7635. Cada excepción al entorno mínimo queda escrita con su motivo, un responsable y una fecha de revisión. Ningún cambio de permisos entra a `main` sin que el operador lo mire.
+
+### Formato de `.pipeline/env-exceptions.yaml`
+
+Es una lista YAML. Cada entrada lleva estos campos, todos obligatorios:
+
+| Campo | Valor |
+|---|---|
+| `tipo` | `agente` (un skill del pipeline) o `servicio` (un servicio de confianza del inventario de arriba) |
+| `rol` | nombre del skill o del servicio |
+| `scope` **o** `variable` | exactamente uno de los dos: un scope de `CREDENTIAL_SCOPES` o el nombre de una variable |
+| `fundamento` | por qué el rol la necesita (texto libre, no vacío) |
+| `aprobador` | usuario de GitHub, `^@?[A-Za-z0-9-]{1,39}$` |
+| `revisar_el` | fecha ISO `AAAA-MM-DD`, entre comillas |
+
+Lo lee `lib/child-env-exceptions.js` (`loadExceptions`, `forAgent`, `forService`) con estas reglas:
+
+- **La ruta sale de `__dirname`**, es decir, del repo principal que ejecuta el Pulpo. Nunca sale de `process.cwd()` ni de una variable de entorno. Así, un agente que edita el YAML en su worktree no consigue nada hasta que el cambio se mergea.
+- **Vencimiento:** con `revisar_el` igual a hoy o posterior, la entrada está vigente. Si es anterior, está vencida. "Hoy" se calcula en `America/Argentina/Buenos_Aires`. Una variable cubierta sólo por una excepción vencida frena el lanzamiento con `expired-exception`, y el mensaje muestra la fecha y el aprobador. El `fundamento` no se muestra nunca.
+- **Tope de 180 días:** una `revisar_el` que pasa de hoy + 180 días hace que la entrada se descarte.
+- **Reservadas:** una entrada que da AWS, GitHub, keys de providers o Telegram (`ISOLATION_RESERVED_NAMES` ∪ `RESERVED_CHILD_SECRET_NAMES`, más un piso propio del loader) se descarta al cargar. Esos permisos sólo los da `SCOPES_BY_FASE`.
+- **Fail-closed:** una entrada con un campo faltante, una clave desconocida, `scope` y `variable` a la vez, o una fecha inválida (incluido `2026-02-30` o un `Date`) se descarta. Si el archivo está roto, se descartan todas: pasa con un YAML ilegible, con claves duplicadas, con una raíz que no es lista o con más de 64 KB. En ese caso se aplican cero excepciones y `buildChildEnv` avisa con un warn.
+- **Servicio ≠ agente:** `forAgent` sólo mira `tipo: agente`. Un skill que se llame igual que un servicio no hereda su excepción. Las entradas `tipo: servicio` son **declarativas** hasta #7636, porque esos servicios no pasan por `assertChildEnvMinimal`.
+
+El archivo real declara el inventario de servicios de confianza: `envDeHijo`, `envDeServicio`, `adbEnv`, `builder`, `vault` y `notificadores`. `lib/__tests__/env-exceptions-inventory.test.js` verifica que estén todas vigentes y con fundamento. Si ese test se pone en rojo porque venció una fecha, la excepción hay que revisarla y renovarla con un PR. La fecha del test no se toca.
+
+Las excepciones se aplican sólo en el camino ON (`env_isolation_enabled: true`). Con el flag apagado, nada cambia en producción.
+
+### Datos de permisos fuera del código
+
+`SYSTEM_ALLOWLIST`, `CREDENTIAL_SCOPES`, `SCOPES_ALWAYS_ON`, `SCOPES_BY_FASE`, `CLI_OAUTH_ALLOWLIST` y `DEFAULT_REQUIRES_BY_SKILL` viven en `.pipeline/lib/child-env-scopes.json`. `build-child-env.js` los carga y los congela en profundidad, y conserva los mismos nombres de export. Así el gate los protege por path, sin hacer `require()` del código del PR.
+
+### Gate de permisos en delivery (paso 4b)
+
+`lib/permission-change-guard.js` (`detectPermissionChanges`) corre en `attemptMergeWithGates` justo después del paso de CODEOWNERS, dentro del mismo intento. Ante un `head-changed` se vuelve a evaluar. Un PR queda frenado con `needs-human` y gate `permisos` cuando:
+
+- toca **por path** (alta, baja, cambio o renombre, incluido `previous_filename`) `env-exceptions.yaml`, `lib/child-env-scopes.json`, `lib/child-env-exceptions.js`, `lib/permission-change-guard.js` o `lib/build-child-env.js`. Este último es el motor que arma el env del hijo: transporte, reservadas y assert;
+- cambia **por contenido** `requires_credentials` de algún skill, o `credentials_env`/`auth_mode` de algún provider, en `agent-models.json`. Cambiar sólo el provider o el modelo de un skill **no** frena. Crear o borrar el archivo también frena;
+- cambia `pipeline.env_isolation_enabled` en `config.yaml`;
+- quita la invocación del guard en `skills-deterministicos/delivery.js` (autoprotección).
+
+El contenido se lee con `git show origin/main:<path>` y `git show <headRefOid>:<path>`, con `spawnSync` y sin shell. La lista de archivos sale de `gh api --paginate .../pulls/N/files`, que trae los renombres. Si la API falla, se usa la del snapshot, que se marca incompleta a partir de 100 archivos.
+
+**Fail-closed:** una lista incompleta, un `git show` que falla, un JSON o YAML que no parsea, un `checkPermissions` que tira o que no está inyectado dan `needs-human` o `blocked`. Nunca se leen como "sin cambios".
+
+**Cómo se destraba:** delivery aplica el label `needs-human`, comenta el PR con los motivos y escala como bloqueo humano, sin rebote a dev y sin `rev++`. El operador revisa el diff y **mergea a mano**. No existe un label que lo apruebe: el pipeline opera con la misma cuenta que el operador (#5986), así que un agente podría ponérselo solo. El campo `aprobador` del YAML es declarativo y no es una firma. Cuando GATE 2 (firma humana) esté enforzado, este gate lo va a usar.
+
+**Límite conocido:** el gate protege el camino de `delivery`. Un agente con token de GitHub que ejecute `gh pr merge` a mano lo saltea. El respaldo es la protección de rama de `main`, que queda fuera de este alcance.
+
+<a id="encendido-y-reversa"></a>
+## Encendido y reversa
+
+> #7636 (parte 3 de #7598). Flag `pipeline.env_isolation_enabled: true` en `.pipeline/config.yaml`.
+
+### Un agente quedó frenado por entorno
+
+**Cómo lo reconozco.** El log del Pulpo tiene una línea así, una por lanzamiento bloqueado:
+
+```
+[entorno-hijo] bloqueado rol=<skill> fase=<fase> intento=<primary|fallback>:<provider> causa=<kind1+kind2> nombres=<NOMBRE_A,NOMBRE_B,…,(+N)>
+```
+
+- `causa` son los `kind` de la violación (ver la tabla de arriba), ordenados y unidos con `+`.
+- `nombres` lleva hasta 8 nombres de variables; el resto se resume como `(+N)`. Cada nombre se filtra con `^[A-Za-z0-9_()]{1,64}$` y el que no pasa se descarta. **Nunca** aparece un valor.
+- Para buscarlas: `grep "\[entorno-hijo\] bloqueado" .pipeline/logs/pulpo.log`.
+
+**Qué hace el pipeline.** Una violación es un fallo de **configuración**, no se reintenta:
+
+- El workfile pasa a `bloqueado-humano/` de su fase con `motivo_tipo: child-env-violation` y un `.reason.json` al lado. **No** hace `rev++`, no cuenta para el circuit breaker y `brazoHuerfanos` no lo toca (ya no está en `trabajando/`).
+- Se encola el label `needs-human` en el issue.
+- Al operador le llega **un solo aviso por `(rol, causa)`**, con hasta 3 nombres. Si otros issues del mismo rol chocan con lo mismo, se estacionan sin volver a avisar. El episodio se cierra solo cuando ese rol vuelve a lanzar con el entorno OK (se borra el marker de `.pipeline/state/child-env-violations/`).
+- Cualquier otro error de la construcción del env (por ejemplo, falta la API key del provider) sigue el camino de siempre: log `❌ env-isolation rechazó spawn…` y el error sube.
+
+**Cómo lo destrabo.**
+
+1. Corregí la declaración de entorno del rol: `requires_credentials` en `agent-models.json` o `DEFAULT_REQUIRES_BY_SKILL` en `.pipeline/lib/child-env-scopes.json` (sin ampliar el techo de la fase). Si es una variable puntual, una excepción en `.pipeline/env-exceptions.yaml`. Los tres archivos están bajo el gate de permisos: el PR lo mergea el operador.
+2. Sacá el marker de `bloqueado-humano/`: quitá `needs-human` del issue o usá `/unblock`. El marker vuelve a `pendiente/` y se relanza.
+
+### Necesito apagar el aislamiento
+
+1. Poné `env_isolation_enabled: false` en `.pipeline/config.yaml`. Se relee en caliente: aplica desde el próximo lanzamiento, sin reiniciar.
+2. Con `false`, `stripReservedChildSecrets` sigue activo: `TELEGRAM_BOT_TOKEN` no se hereda, ni siquiera como alias con el mismo valor. El resumen de turnos y Sherlock siguen con el env mínimo (no dependen del flag).
+3. El cambio de este flag está bajo el gate de permisos de delivery (#7635): el PR queda en `needs-human` y lo mergea el operador.
+4. El Pulpo deja **una** línea `[entorno-hijo] aislamiento APAGADO (reversa)` y avisa al operador en la transición `true → false`. El arranque y `false → false` no emiten nada. Una reversa silenciosa no se distinguiría de una manipulación.
+
+No se tocan `credential_snapshot_enabled` ni `vault.enabled`: el aislamiento no depende de ninguno de los dos.

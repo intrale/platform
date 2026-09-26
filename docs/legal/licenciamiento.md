@@ -203,20 +203,20 @@ Notas:
 
 ## Decisión del operador
 
-**PENDIENTE — sin firma**
-
-Esta sección la completa **sólo el operador**. Ningún agente puede llenarla ni marcarla como aprobada.
+**DECIDIDO — firmado por el operador** (la firma es la del commit que introduce este texto; ver "Commit firmado").
 
 | Repo | Licencia decidida |
 |---|---|
-| `kernel` | PENDIENTE — sin firma |
-| `platform` | PENDIENTE — sin firma |
-| Legado (categoría b, 19 repos) | PENDIENTE — sin firma |
-| `intrale-mobile-mercadopago` | PENDIENTE — sin firma |
-| `kotlin-multiplatform-example` | PENDIENTE — sin firma |
-| Condiciones de titularidad (`leitocodexbot`, `codex`) | PENDIENTE — sin confirmar |
+| `kernel` | Propietaria (todos los derechos reservados) |
+| `platform` | Propietaria (todos los derechos reservados) |
+| Legado (categoría b, 19 repos) | Propietaria (todos los derechos reservados) + archivar |
+| `intrale-mobile-mercadopago` | Mantener BSD-3-Clause (ya otorgada, no se revoca) + archivar |
+| `kotlin-multiplatform-example` | Mantener Apache-2.0 (ya otorgada, no se revoca) + archivar |
+| Condiciones de titularidad (`leitocodexbot`, `codex`) | Confirmadas: `leitocodexbot` es una cuenta del operador. Los commits de `codex` los hizo el agente Codex de OpenAI por encargo y con autorización del operador. |
 
-Commit firmado: _(sin SHA)_ · Fecha: _(sin fecha)_
+Operador: Leonel Larreta (`leitolarreta`).
+
+Commit firmado: _(se completa después del merge con el SHA de este commit)_ · Fecha: _(ídem)_
 
 ### Protocolo de firma
 

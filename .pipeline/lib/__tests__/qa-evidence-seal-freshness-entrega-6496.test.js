@@ -480,6 +480,7 @@ test('el merge se bloquea si el head del PR no es el sha verificado', () => {
     let mergeLlamado = false;
 
     const out = delivery.attemptMergeWithGates({
+        checkPermissions: () => ({ motivos: [] }), // #7635 — fake "sin motivos"
         prNumber: 42,
         expectedHeadSha: verificado,
         getSnapshot: () => ({
@@ -506,6 +507,7 @@ test('el merge procede cuando el head del PR ES el sha verificado', () => {
     let mergeLlamado = false;
 
     const out = delivery.attemptMergeWithGates({
+        checkPermissions: () => ({ motivos: [] }), // #7635 — fake "sin motivos"
         prNumber: 42,
         expectedHeadSha: verificado,
         getSnapshot: () => ({
@@ -532,6 +534,7 @@ test('sin expectedHeadSha el guard no aplica (compat con las suites de gates)', 
     const delivery = require('../../skills-deterministicos/delivery.js');
     let mergeLlamado = false;
     const out = delivery.attemptMergeWithGates({
+        checkPermissions: () => ({ motivos: [] }), // #7635 — fake "sin motivos"
         prNumber: 42,
         getSnapshot: () => ({
             ok: true, labels: ['qa:passed'], files: ['docs/x.md'],

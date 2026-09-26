@@ -66,6 +66,7 @@ test('usa presupuesto propio para checks y escala con motivo de timeout de CI', 
     let reads = 0;
     const sleeps = [];
     const result = attemptMergeWithGates({
+        checkPermissions: () => ({ motivos: [] }), // #7635 — fake "sin motivos"
         prNumber: 10,
         getSnapshot() {
             reads++;

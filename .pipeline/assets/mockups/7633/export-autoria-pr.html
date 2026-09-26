@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<!--
+  Mockup de referencia UX: export de la cadena de autoría, variante PR ÚNICO (#7633).
+  Reemplaza en COPY (no en estructura ni en CSS) a
+  .pipeline/assets/mockups/7593/export-autoria-referencia.html, alineándolo con D-A2:
+  el export se arma SÓLO con el trailer del commit en main + títulos de GitHub.
+  Cambios de copy respecto de #7593:
+    - La cadena tiene 4 eslabones derivables del trailer: tarea → IA → firma → sellado.
+      (El de #7593 mostraba gate1 Y gate2 a la vez; el trailer lleva UNA sola decisión.)
+    - "Cómo se registró" dice "anclada en el registro del código", no "libro de aprobaciones".
+    - La leyenda de CA-5/SE es literal y va primera en "Qué prueba y qué no".
+    - El footer no trae número de página fijo (lo pone el footerTemplate del PDF).
+  Datos FICTICIOS. Sin scripts.
+-->
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:">
+<title>Constancia de dirección humana — PR #7650</title>
+<style>
+  @page { size: A4; margin: 18mm 16mm 20mm 16mm; }
+  :root {
+    /* Derivados de design-tokens.css (marca Intrale) para fondo claro */
+    --ink:        #1F2328;  /* texto principal — 15.8:1 sobre blanco */
+    --ink-2:      #424A53;  /* texto secundario — 9.1:1 */
+    --ink-3:      #59636E;  /* notas, timestamps — 6.3:1 */
+    --line:       #D0D7DE;
+    --paper:      #FFFFFF;
+    --paper-2:    #F6F8FA;
+    --brand-navy: #0D274D;  /* = --brand-navy */
+    --brand-blue: #0F6CD6;  /* = --brand-blue-dim, 4.9:1 sobre blanco */
+    --ok:         #1A7F37;  /* 5.1:1 */
+    --ok-bg:      #DAFBE1;
+    --warn:       #9A6700;  /* 4.9:1 */
+    --warn-bg:    #FFF8C5;
+    --bad:        #CF222E;  /* 5.4:1 */
+    --bad-bg:     #FFEBE9;
+    --sans: "Segoe UI", -apple-system, "Helvetica Neue", Arial, sans-serif;
+    --mono: "Consolas", "Liberation Mono", Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--paper); color: var(--ink); }
+  body { font: 10.5pt/1.5 var(--sans); max-width: 178mm; margin: 0 auto; padding: 8mm 0; }
+  h1, h2, h3 { color: var(--brand-navy); line-height: 1.25; margin: 0; }
+  h1 { font-size: 18pt; }
+  h2 { font-size: 13pt; margin: 18pt 0 6pt; padding-bottom: 3pt; border-bottom: 1.5pt solid var(--brand-navy); }
+  h3 { font-size: 11pt; }
+  p { margin: 0 0 6pt; }
+  a { color: var(--brand-blue); text-decoration: underline; }
+  code, .mono { font-family: var(--mono); font-size: 9pt; overflow-wrap: anywhere; }
+
+  /* ---- Encabezado ---- */
+  .doc-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12pt;
+              border-bottom: 3pt solid var(--brand-navy); padding-bottom: 8pt; }
+  .brand { font-weight: 700; letter-spacing: .04em; color: var(--brand-navy); font-size: 9pt; text-transform: uppercase; }
+  .brand .dot { display: inline-block; width: 8pt; height: 8pt; border-radius: 2pt; margin-right: 4pt; vertical-align: -1pt;
+                background: linear-gradient(135deg, #00D6FF, #1890FF); }
+  .doc-meta { text-align: right; font-size: 9pt; color: var(--ink-3); }
+  .subtitle { color: var(--ink-2); margin-top: 4pt; }
+
+  /* ---- Resumen para no técnicos ---- */
+  .summary { background: var(--paper-2); border: 1pt solid var(--line); border-left: 4pt solid var(--brand-blue);
+             padding: 10pt 12pt; margin-top: 12pt; border-radius: 3pt; }
+  .summary strong { color: var(--brand-navy); }
+  .kpis { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8pt; margin-top: 8pt; }
+  .kpi { background: var(--paper); border: 1pt solid var(--line); border-radius: 3pt; padding: 6pt 8pt; }
+  .kpi .n { font-size: 16pt; font-weight: 700; color: var(--brand-navy); }
+  .kpi .l { font-size: 8.5pt; color: var(--ink-2); }
+
+  /* ---- Estado (siempre ícono-texto + color, nunca sólo color) ---- */
+  .badge { display: inline-block; font-size: 8.5pt; font-weight: 700; padding: 1pt 6pt; border-radius: 10pt; border: 1pt solid; white-space: nowrap; }
+  .badge.ok   { color: var(--ok);   background: var(--ok-bg);   border-color: var(--ok); }
+  .badge.warn { color: var(--warn); background: var(--warn-bg); border-color: var(--warn); }
+  .badge.bad  { color: var(--bad);  background: var(--bad-bg);  border-color: var(--bad); }
+
+  /* ---- Cadena: 4 eslabones ---- */
+  .chain { list-style: none; margin: 0; padding: 0; counter-reset: step; }
+  .chain > li { position: relative; padding: 0 0 10pt 28pt; break-inside: avoid; }
+  .chain > li::before { counter-increment: step; content: counter(step);
+    position: absolute; left: 0; top: 0; width: 18pt; height: 18pt; border-radius: 50%;
+    background: var(--brand-navy); color: #fff; font-weight: 700; font-size: 9pt; text-align: center; line-height: 18pt; }
+  .chain > li:not(:last-child)::after { content: ""; position: absolute; left: 8.5pt; top: 20pt; bottom: 2pt; width: 1pt; background: var(--line); }
+  .step-title { font-weight: 700; color: var(--brand-navy); }
+  .step-body { color: var(--ink); }
+  .step-note { color: var(--ink-3); font-size: 9pt; }
+
+  /* ---- Tabla de detalle ---- */
+  table { width: 100%; border-collapse: collapse; margin: 4pt 0 8pt; font-size: 9.5pt; }
+  th, td { text-align: left; vertical-align: top; padding: 4pt 6pt; border-bottom: .75pt solid var(--line); }
+  th { width: 34%; color: var(--ink-2); font-weight: 600; background: var(--paper-2); }
+
+  .card { border: 1pt solid var(--line); border-radius: 3pt; padding: 8pt 10pt; margin: 8pt 0; break-inside: avoid; }
+  .card-head { display: flex; justify-content: space-between; gap: 8pt; align-items: baseline; margin-bottom: 4pt; }
+
+  .callout { border: 1pt solid var(--line); border-left: 4pt solid var(--warn); background: var(--warn-bg);
+             padding: 8pt 10pt; border-radius: 3pt; margin: 8pt 0; break-inside: avoid; }
+  .callout.info { border-left-color: var(--brand-blue); background: var(--paper-2); }
+
+  .annex { font-size: 9pt; color: var(--ink-2); }
+  .annex pre { font-family: var(--mono); font-size: 8.5pt; background: var(--paper-2); border: 1pt solid var(--line);
+               padding: 6pt 8pt; white-space: pre-wrap; overflow-wrap: anywhere; border-radius: 3pt; }
+
+  footer { margin-top: 16pt; padding-top: 6pt; border-top: 1pt solid var(--line); font-size: 8.5pt; color: var(--ink-3); }
+  @media print { a { color: var(--ink); } .no-print { display: none; } }
+</style>
+</head>
+<body>
+
+<!-- 1. ENCABEZADO -->
+<header class="doc-head">
+  <div>
+    <div class="brand"><span class="dot"></span>Intrale · Constancia de autoría</div>
+    <h1>Constancia de dirección humana</h1>
+    <p class="subtitle">Cambio integrado a la rama principal mediante el Pull Request <strong>#7650</strong></p>
+  </div>
+  <div class="doc-meta">
+    Generado el <strong>23/09/2026, 16:40</strong> (hora de Argentina)<br>
+    Alcance: 1 cambio<br>
+    Versión del formato: 1
+  </div>
+</header>
+
+<!-- 2. EN RESUMEN -->
+<section class="summary" aria-label="Resumen">
+  <p><strong>En resumen:</strong> <strong>1 de 1 cambios con firma.</strong> Este cambio lo escribieron herramientas de
+  inteligencia artificial <strong>por encargo y bajo la dirección de una persona</strong>, que aceptó el resultado antes
+  de que se integrara. El documento muestra de dónde salió el pedido, qué herramientas asistieron, quién firmó y
+  dónde quedó registrado de forma permanente.</p>
+  <div class="kpis">
+    <div class="kpi"><div class="n">1 de 1</div><div class="l">Cambios con firma</div></div>
+    <div class="kpi"><div class="n">leitolarreta</div><div class="l">Persona que dirigió el trabajo (operador)</div></div>
+    <div class="kpi"><div class="n">3</div><div class="l">Herramientas de IA que asistieron</div></div>
+  </div>
+</section>
+
+<!-- 3. LA CADENA: 4 eslabones, todos derivables del trailer + GitHub -->
+<h2>La cadena de autoría, paso a paso</h2>
+<ol class="chain">
+  <li>
+    <div class="step-title">Se definió qué había que hacer</div>
+    <div class="step-body">Pedido registrado como tarea <a href="https://github.com/intrale/platform/issues/7593">#7593 — Trazabilidad de autoría humana en commits de agentes</a>.</div>
+    <div class="step-note">La tarea describe el objetivo, los cambios y los criterios de aceptación.</div>
+  </li>
+  <li>
+    <div class="step-title">Herramientas de IA escribieron y revisaron el código</div>
+    <div class="step-body">Anthropic Claude Opus 5.5 escribió el código; OpenAI GPT-5 Codex revisó el código; Anthropic Claude Sonnet ejecutó las pruebas.</div>
+    <div class="step-note">Dato tomado del registro del propio cambio en la rama principal.</div>
+  </li>
+  <li>
+    <div class="step-title">Una persona aceptó el resultado</div>
+    <div class="step-body"><strong>leitolarreta</strong> (operador) firmó la aceptación del código el <strong>23/09/2026 a las 16:12</strong> (hora de Argentina).</div>
+    <div class="step-note">Canal: firma del operador. La huella de esa firma viaja dentro del registro del cambio.</div>
+  </li>
+  <li>
+    <div class="step-title">Quedó sellado en la rama principal</div>
+    <div class="step-body">El cambio entró a la rama principal el 23/09/2026 en el registro <span class="mono">9f3c2a1</span>, a través del Pull Request <a href="https://github.com/intrale/platform/pull/7650">#7650</a>.</div>
+    <div class="step-note">Desde ese momento, el registro y la huella de la firma no pueden modificarse sin que se note.</div>
+  </li>
+</ol>
+
+<!-- 4. DETALLE POR CAMBIO -->
+<h2>Detalle del cambio</h2>
+<div class="card">
+  <div class="card-head">
+    <h3>Registro <span class="mono">9f3c2a1</span> · PR #7650</h3>
+    <span class="badge ok">✔ Dirección humana firmada</span>
+  </div>
+  <table>
+    <tr><th>Tarea de origen</th><td><a href="https://github.com/intrale/platform/issues/7593">#7593 — Trazabilidad de autoría humana en commits de agentes</a></td></tr>
+    <tr><th>Quién dirigió</th><td><span class="mono">leitolarreta</span> (operador)</td></tr>
+    <tr><th>Qué decidió y cuándo</th><td>Firmó la aceptación del código · 23/09/2026 16:12 (hora de Argentina)</td></tr>
+    <tr><th>Cómo se registró la decisión</th><td>Firma del operador, anclada en el registro del cambio en la rama principal</td></tr>
+    <tr><th>Herramientas de IA que asistieron</th><td>
+      Anthropic Claude Opus 5.5 — escribió el código<br>
+      OpenAI GPT-5 Codex — revisó el código<br>
+      Anthropic Claude Sonnet — ejecutó las pruebas
+    </td></tr>
+    <tr><th>Pull Request</th><td><a href="https://github.com/intrale/platform/pull/7650">#7650</a></td></tr>
+    <tr><th>Registro en la rama principal</th><td><a href="https://github.com/intrale/platform/commit/9f3c2a1e7b4d5c6a8b9f0e1d2c3b4a5968778695"><span class="mono">9f3c2a1e7b4d…</span></a> (23/09/2026)</td></tr>
+    <tr><th>Huella de la firma</th><td><span class="mono">sha256:ab12cd34ef56…</span></td></tr>
+  </table>
+</div>
+
+<!-- 5. QUÉ PRUEBA Y QUÉ NO — siempre presente, aunque haya 0 firmados -->
+<h2>Qué prueba este documento y qué no</h2>
+<div class="callout">
+  <p><strong>Esta constancia verifica la consistencia de los registros en <span class="mono">main</span>; no prueba por sí sola la autenticidad de la firma.</strong></p>
+</div>
+<div class="callout info">
+  <p><strong>Prueba con solidez:</strong> que, una vez integrado el cambio, la huella de la firma quedó escrita en el
+  registro público del código (GitHub) con su fecha. Desde ese momento no se puede alterar sin dejar rastro.</p>
+</div>
+<div class="callout info">
+  <p><strong>Depende de otros elementos:</strong> que la firma la haya dado efectivamente la persona indicada.
+  Eso se apoya en el canal de firma del operador y en el servidor del proyecto. Hoy todas las acciones en GitHub
+  se hacen con la misma cuenta, por lo que GitHub por sí solo no distingue a la persona de la herramienta automática.</p>
+</div>
+<p class="step-note">Criterio completo, fuentes legales y conservación: <span class="mono">docs/legal/autoria.md</span>.</p>
+
+<!-- 6. ANEXO TÉCNICO: claves técnicas y horas UTC SÓLO acá -->
+<h2>Anexo técnico</h2>
+<div class="annex">
+  <p>Bloque de datos tal como figura en el registro <span class="mono">9f3c2a1e7b4d5c6a8b9f0e1d2c3b4a5968778695</span> de la rama principal.</p>
+<pre>Intrale-Issue: #7593
+Intrale-Human-Direction: leitolarreta; 2026-09-23T19:12:00Z; gate2:sha256:ab12cd34ef56…(completo)
+Intrale-AI-Assisted: anthropic/claude-opus-5-5 (backend-dev), openai/gpt-5-codex (review), anthropic/claude-sonnet (tester)</pre>
+  <table>
+    <tr><th>Clave técnica</th><td><strong>Significa</strong></td></tr>
+    <tr><th class="mono">Intrale-Issue</th><td>Tarea de origen</td></tr>
+    <tr><th class="mono">Intrale-Human-Direction</th><td>Quién dirigió; cuándo (hora universal, UTC); tipo de decisión y huella</td></tr>
+    <tr><th class="mono">gate2 / gate1 / approval</th><td>Firmó la aceptación del código / Firmó la definición de la tarea / Aprobó por el canal de firma</td></tr>
+    <tr><th class="mono">none</th><td>Sin firma registrada</td></tr>
+    <tr><th class="mono">Intrale-AI-Assisted</th><td>Herramientas de IA que asistieron y en qué rol</td></tr>
+  </table>
+</div>
+
+<footer>
+  Constancia generada automáticamente a partir de los registros de la rama principal y de GitHub; no agrega
+  información nueva y se puede regenerar en cualquier momento. No contiene identificadores de mensajería,
+  credenciales ni rutas internas del servidor.
+</footer>
+
+</body>
+</html>
