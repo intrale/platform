@@ -9,17 +9,22 @@ el código ni borra forks, clones o cachés. Privatizarlos además requeriría u
 decisión explícita por repo y repetir las precondiciones de este runbook.
 `platform` permanece público; `kernel` ya es privado y no cambia.
 
-**No se ejecutó ningún archivado ni cambio de visibilidad.** El issue reserva
-esa operación a un owner humano. La evidencia adjunta es previa al cambio,
-no una acreditación de CA-1/CA-4. La fecha de consulta está en UTC en cada JSON.
+**Estado: ejecutado.** El owner `leitolarreta` archivó los 21 repos legacy el
+**26/09/2026 a las 07:27 (hora local del operador)**, de a uno, con su script
+de operador (log `operador/archivar-repos-legacy-20260926-072717.log`, fuera del
+repo): 21 archivados, 0 ya archivados, 0 salteados, cada uno verificado como
+`archived=true` y todavía `public`. El Commander lo cotejó con
+`gh repo list intrale`, y esta pasada lo re-verificó de forma read-only (§7).
+No se cambió la visibilidad de ningún repo. `platform` (público) y `kernel`
+(privado) quedaron intactos. Los repos de `unlam-tec-*` y los personales quedan
+fuera de alcance por decisión del operador del 25/09.
 
-El inventario real contradice la equivalencia «sin runs = sin workflows»:
-varios repos legacy tienen workflows activos aunque la API devuelva cero runs.
-Por eso no se les asigna automáticamente «CI no aplica». Antes de archivarlos,
-el owner debe aceptar explícitamente el cese de esos workflows y confirmar que
-ningún consumidor requiere futuras publicaciones. Además hay hallazgos del
-escáner pendientes de triage/rotación; no se presume que sean credenciales
-revocadas ni falsos positivos.
+Los 14 repos legacy con workflows registrados quedaron archivados con ese
+retiro aceptado por el owner: un repo archivado es de sólo lectura y no dispara
+Actions. Ninguno tenía runs ni releases (baseline y post-archivado), por lo que
+no se cortó ninguna publicación. Los hallazgos del escáner siguen su triage
+aparte (§7): la revocación de la credencial Firebase de `intrale-notifications`
+es una tarea de seguridad independiente y no bloquea esta historia.
 
 ## 1. Evidencia y herramientas
 
@@ -135,7 +140,7 @@ absoluta de secretos. Se repite el escaneo si cambian refs antes de ejecutar.
 Registro por operación: repo, decisión, refs escaneadas/fecha, fingerprint y
 resolución de hallazgos, aceptación del retiro de CI, consumidores migrados,
 owner, instante del PATCH, estado previo/final, resultado del verificador y smoke.
-Los campos owner/fecha final de la tabla quedan pendientes hasta esa operación.
+Para los 21 legacy, owner, fecha y estado final están registrados en §7.
 
 ## 4. Plan de transición de `platform` (CA-9)
 
@@ -180,8 +185,9 @@ No se da por resuelta una publicación Maven/artifact sin revisar su consumidor.
 Desktop y mockups de `platform` no aplican aquí porque sigue público.
 
 Legacy: **USD 0 proyectado contra USD 0 de consumo de Actions observado**
-(cero runs en las consultas adjuntas). No se lo presenta como una factura
-post-cambio: todavía no ocurrió el archivado. No se compran asientos ni se
+(cero runs antes y después del archivado del 26/09/2026, ver §7). Un repo
+archivado no ejecuta Actions, así que el consumo posterior es cero por
+construcción; la factura del ciclo queda como comprobación. No se compran asientos ni se
 cambia de plan en esta historia. El owner registra comprobación a los 30 días
 o al cerrar un ciclo después del último cambio; #7662 desglosa Actions por SO,
 storage, asientos y plan. Desvío mayor al 20% requiere notificación al operador
@@ -211,42 +217,45 @@ necesario aunque ya se haya cambiado la visibilidad.
 
 ## 7. Tabla de ejecución por repo
 
-La tabla y el resumen empírico siguientes se completan con la evidencia de esta
-pasada. «Pendiente» nunca significa ejecutado ni aprobado para mutar.
+Estado final: archivado ejecutado por el owner `leitolarreta` el 26/09/2026 07:27
+(log del operador `archivar-repos-legacy-20260926-072717.log`), en el orden de
+menor a mayor riesgo de la tabla. Estado final re-verificado read-only el
+2026-09-26 ~10:43 UTC con `gh repo list intrale`
+([`inventory-post-archive.json`](../pipeline/evidence/7595/inventory-post-archive.json):
+23 repos, 21 archivados, `platform` PUBLIC y `kernel` PRIVATE sin archivar) y con
+el verificador por repo ([`post-archive-verifier.txt`](../pipeline/evidence/7595/post-archive-verifier.txt)).
 
+| Orden | Repo | Estado previo | Estado final (26/09/2026) | Evidencia previa | Verificador post-archivado | Owner / fecha de ejecución |
+|---|---|---|---|---|---|---|
+| — | platform | PUBLIC; archived=false | PUBLIC; archived=false — sin cambio (etapa 3, #7662) | Fuera de mutación | Fuera de mutación | No aplica / no aplica |
+| — | kernel | PRIVATE; archived=false | PRIVATE; archived=false — sin cambio | Fuera de mutación | Fuera de mutación | No aplica / no aplica |
+| 1 | codex | PUBLIC; archived=false | PUBLIC; archived=true | 71 commits; 0 hallazgos; 0 workflows | exit 0: public, archivado, sin workflows/runs/releases | leitolarreta / 26/09/2026 07:27 |
+| 2 | app | PUBLIC; archived=false | PUBLIC; archived=true | 8 commits; 0 hallazgos; 0 workflows | exit 0: public, archivado, sin workflows/runs/releases | leitolarreta / 26/09/2026 07:27 |
+| 3 | back-core | PUBLIC; archived=false | PUBLIC; archived=true | 0 commits; 0 hallazgos; 0 workflows | exit 0: public, archivado, sin workflows/runs/releases | leitolarreta / 26/09/2026 07:27 |
+| 4 | kotlin-multiplatform-example | PUBLIC; archived=false | PUBLIC; archived=true | 1 commits; 0 hallazgos; 0 workflows | exit 0: public, archivado, sin workflows/runs/releases | leitolarreta / 26/09/2026 07:27 |
+| 5 | intrale-mobile-mercadopago | PUBLIC; archived=false | PUBLIC; archived=true | 6 commits; 0 hallazgos; 0 workflows | exit 0: public, archivado, sin workflows/runs/releases | leitolarreta / 26/09/2026 07:27 |
+| 6 | intrale-web | PUBLIC; archived=false | PUBLIC; archived=true | 11 commits; 0 hallazgos; 0 workflows | exit 0: public, archivado, sin workflows/runs/releases | leitolarreta / 26/09/2026 07:27 |
+| 7 | repo | PUBLIC; archived=false | PUBLIC; archived=true | 9 commits; 0 hallazgos; 1 workflows | exit 1 sólo por workflow registrado (`publish-ktor-artifacts.yml`); public, archivado, 0 runs, 0 releases | leitolarreta / 26/09/2026 07:27 |
+| 8 | backend | PUBLIC; archived=false | PUBLIC; archived=true | 99 commits; 0 hallazgos; 1 workflows | exit 1 sólo por workflow registrado (`main.yml`); public, archivado, 0 runs, 0 releases | leitolarreta / 26/09/2026 07:27 |
+| 9 | intrale-back-test | PUBLIC; archived=false | PUBLIC; archived=true | 41 commits; 0 hallazgos; 1 workflows | exit 1 sólo por workflow registrado (`main.yml`); public, archivado, 0 runs, 0 releases | leitolarreta / 26/09/2026 07:27 |
+| 10 | intrale-delivery | PUBLIC; archived=false | PUBLIC; archived=true | 72 commits; 0 hallazgos; 1 workflows | exit 1 sólo por workflow registrado (`main.yml`); public, archivado, 0 runs, 0 releases | leitolarreta / 26/09/2026 07:27 |
+| 11 | intrale-files | PUBLIC; archived=false | PUBLIC; archived=true | 88 commits; 0 hallazgos; 1 workflows | exit 1 sólo por workflow registrado (`main.yml`); public, archivado, 0 runs, 0 releases | leitolarreta / 26/09/2026 07:27 |
+| 12 | intrale-products | PUBLIC; archived=false | PUBLIC; archived=true | 64 commits; 0 hallazgos; 1 workflows | exit 1 sólo por workflow registrado (`main.yml`); public, archivado, 0 runs, 0 releases | leitolarreta / 26/09/2026 07:27 |
+| 13 | intrale-users | PUBLIC; archived=false | PUBLIC; archived=true | 99 commits; 0 hallazgos; 1 workflows | exit 1 sólo por workflow registrado (`main.yml`); public, archivado, 0 runs, 0 releases | leitolarreta / 26/09/2026 07:27 |
+| 14 | intrale-test | PUBLIC; archived=false | PUBLIC; archived=true | 90 commits; 0 hallazgos; 1 workflows | exit 1 sólo por workflow registrado (`main.yml`); public, archivado, 0 runs, 0 releases | leitolarreta / 26/09/2026 07:27 |
+| 15 | intrale-commons | PUBLIC; archived=false | PUBLIC; archived=true | 227 commits; 0 hallazgos; 1 workflows | exit 1 sólo por workflow registrado (`main.yml`); public, archivado, 0 runs, 0 releases | leitolarreta / 26/09/2026 07:27 |
+| 16 | intrale-core | PUBLIC; archived=false | PUBLIC; archived=true | 12 commits; 0 hallazgos; 1 workflows | exit 1 sólo por workflow registrado (`main.yml`); public, archivado, 0 runs, 0 releases | leitolarreta / 26/09/2026 07:27 |
+| 17 | intrale-arq-ms | PUBLIC; archived=false | PUBLIC; archived=true | 3 commits; 0 hallazgos; 1 workflows | exit 1 sólo por workflow registrado (`main.yml`); public, archivado, 0 runs, 0 releases | leitolarreta / 26/09/2026 07:27 |
+| 18 | intrale-parent | PUBLIC; archived=false | PUBLIC; archived=true | 199 commits; 0 hallazgos; 1 workflows | exit 1 sólo por workflow registrado (`main.yml`); public, archivado, 0 runs, 0 releases | leitolarreta / 26/09/2026 07:27 |
+| 19 | users | PUBLIC; archived=false | PUBLIC; archived=true | 161 commits; 2 hallazgos; 1 workflows | exit 1 sólo por workflow registrado (`main.yml`); public, archivado, 0 runs, 0 releases | leitolarreta / 26/09/2026 07:27 |
+| 20 | intrale-mobile | PUBLIC; archived=false | PUBLIC; archived=true | 34 commits; 8 hallazgos; 0 workflows | exit 0: public, archivado, sin workflows/runs/releases | leitolarreta / 26/09/2026 07:27 |
+| 21 | intrale-notifications | PUBLIC; archived=false | PUBLIC; archived=true | 24 commits; 1 hallazgos; 1 workflows | exit 1 sólo por workflow registrado (`main.yml`); public, archivado, 0 runs, 0 releases | leitolarreta / 26/09/2026 07:27 |
 
-Consulta: 2026-09-24T00:06:56.010Z. Orden propuesto de menor a mayor riesgo: sin workflows/hallazgos, luego con workflows, finalmente con hallazgos; cada paso queda sujeto a sus precondiciones.
+### Resultado empírico
 
-| Orden | Repo | Estado previo y último observado | Decisión / estado final objetivo | Evidencia previa | Owner / fecha de ejecución |
-|---|---|---|---|---|---|
-| — | platform | PUBLIC; archived=false | Sin cambio: público — etapa 3, #7662 | Fuera de mutación | No aplica / no aplica |
-| — | kernel | PRIVATE; archived=false | Sin cambio: privado | Fuera de mutación | No aplica / no aplica |
-| 1 | codex | PUBLIC; archived=false | Sólo archivar; continúa público | 71 commits; 0 hallazgos; 0 workflows | Pendiente / pendiente |
-| 2 | app | PUBLIC; archived=false | Sólo archivar; continúa público | 8 commits; 0 hallazgos; 0 workflows | Pendiente / pendiente |
-| 3 | back-core | PUBLIC; archived=false | Sólo archivar; continúa público | 0 commits; 0 hallazgos; 0 workflows | Pendiente / pendiente |
-| 4 | kotlin-multiplatform-example | PUBLIC; archived=false | Sólo archivar; continúa público | 1 commits; 0 hallazgos; 0 workflows | Pendiente / pendiente |
-| 5 | intrale-mobile-mercadopago | PUBLIC; archived=false | Sólo archivar; continúa público | 6 commits; 0 hallazgos; 0 workflows | Pendiente / pendiente |
-| 6 | intrale-web | PUBLIC; archived=false | Sólo archivar; continúa público | 11 commits; 0 hallazgos; 0 workflows | Pendiente / pendiente |
-| 7 | repo | PUBLIC; archived=false | Sólo archivar; continúa público | 9 commits; 0 hallazgos; 1 workflows | Pendiente / pendiente |
-| 8 | backend | PUBLIC; archived=false | Sólo archivar; continúa público | 99 commits; 0 hallazgos; 1 workflows | Pendiente / pendiente |
-| 9 | intrale-back-test | PUBLIC; archived=false | Sólo archivar; continúa público | 41 commits; 0 hallazgos; 1 workflows | Pendiente / pendiente |
-| 10 | intrale-delivery | PUBLIC; archived=false | Sólo archivar; continúa público | 72 commits; 0 hallazgos; 1 workflows | Pendiente / pendiente |
-| 11 | intrale-files | PUBLIC; archived=false | Sólo archivar; continúa público | 88 commits; 0 hallazgos; 1 workflows | Pendiente / pendiente |
-| 12 | intrale-products | PUBLIC; archived=false | Sólo archivar; continúa público | 64 commits; 0 hallazgos; 1 workflows | Pendiente / pendiente |
-| 13 | intrale-users | PUBLIC; archived=false | Sólo archivar; continúa público | 99 commits; 0 hallazgos; 1 workflows | Pendiente / pendiente |
-| 14 | intrale-test | PUBLIC; archived=false | Sólo archivar; continúa público | 90 commits; 0 hallazgos; 1 workflows | Pendiente / pendiente |
-| 15 | intrale-commons | PUBLIC; archived=false | Sólo archivar; continúa público | 227 commits; 0 hallazgos; 1 workflows | Pendiente / pendiente |
-| 16 | intrale-core | PUBLIC; archived=false | Sólo archivar; continúa público | 12 commits; 0 hallazgos; 1 workflows | Pendiente / pendiente |
-| 17 | intrale-arq-ms | PUBLIC; archived=false | Sólo archivar; continúa público | 3 commits; 0 hallazgos; 1 workflows | Pendiente / pendiente |
-| 18 | intrale-parent | PUBLIC; archived=false | Sólo archivar; continúa público | 199 commits; 0 hallazgos; 1 workflows | Pendiente / pendiente |
-| 19 | users | PUBLIC; archived=false | Sólo archivar; continúa público | 161 commits; 2 hallazgos; 1 workflows | Pendiente / pendiente |
-| 20 | intrale-mobile | PUBLIC; archived=false | Sólo archivar; continúa público | 34 commits; 8 hallazgos; 0 workflows | Pendiente / pendiente |
-| 21 | intrale-notifications | PUBLIC; archived=false | Sólo archivar; continúa público | 24 commits; 1 hallazgos; 1 workflows | Pendiente / pendiente |
-
-### Resultado empírico de esta pasada
-
-- 21 mirrors revisados: 20 con historial y `back-core` vacío. Gitleaks 8.30.1 completó el escaneo de todos; 18 sin hallazgos (incluido el vacío).
-- 11 hallazgos pendientes: `users` (2), `intrale-mobile` (8), `intrale-notifications` (1). El último corresponde a la regla `private-key` en `services/src/main/resources/firebase-credentials.json`, commit `386d33a8a38d6d1eb94f311a1835623ce7fa8bc6`. Las ubicaciones de todos están en el resumen, sin valores. No se probó uso de esas credenciales ni se las rotó.
-- 14 repos tienen workflows registrados activos. Los 21 devuelven cero runs y cero releases; esto no prueba que sea seguro retirar sus publicaciones.
-- SHA256 del ZIP verificado: `d29144deff3a68aa93ced33dddf84b7fdc26070add4aa0f4513094c8332afc4e`.
-- El owner todavía no ejecutó archivados en esta pasada. CA-1/CA-4 finales y cierre de CA-3 permanecen pendientes.
+- **Archivado (26/09/2026):** 21/21 repos legacy con `archived=true` y `visibility=public` en el verificador. Ninguno cambió de visibilidad.
+- **Verificador:** 7 repos con código 0 (`codex`, `app`, `back-core`, `kotlin-multiplatform-example`, `intrale-mobile-mercadopago`, `intrale-web`, `intrale-mobile`). Los otros 14 devuelven código 1 **únicamente** por el control «sin workflows»: conservan registrado el workflow que ya figuraba en el baseline (`main.yml`, o `publish-ktor-artifacts.yml` en `repo`). En todos ellos pasan los controles de visibilidad, archivado, runs (0) y releases (0). El código 1 queda registrado tal cual: el owner aceptó el retiro de esos workflows al archivar, y un repo archivado no dispara Actions. No se borraron workflows para fabricar un «sin workflows».
+- **CA-1:** cumplido según el alcance ajustado del 23/09. Los 21 legacy quedaron archivados y públicos, y `platform` sigue público con su fundamento en el plan de transición por etapas (§4, #7658-#7662). `kernel` sigue privado.
+- **CA-4:** cumplido para los 21 legacy (visibilidad, archivado, runs y releases verificados uno por uno arriba). Los controles ligados a `platform` (CI propio, distribución Desktop, SAST, mockups, identidades) **no aplican en esta historia**: `platform` no cambió y quedan como precondiciones de #7662.
+- **Escaneo previo:** Gitleaks 8.30.1 (SHA256 del ZIP `d29144deff3a68aa93ced33dddf84b7fdc26070add4aa0f4513094c8332afc4e`) sobre los 21 mirrors: 18 sin hallazgos (incluido `back-core`, vacío) y 11 hallazgos en `users` (2), `intrale-mobile` (8) e `intrale-notifications` (1, regla `private-key` en `services/src/main/resources/firebase-credentials.json`, commit `386d33a8a38d6d1eb94f311a1835623ce7fa8bc6`). Archivar no cambia su exposición: el código ya era público. La revocación de la credencial Firebase es una tarea de seguridad aparte y no bloquea esta historia; el triage del resto sigue ese mismo carril.
+- **Costo:** USD 0 proyectado frente a USD 0 observado (0 runs antes y después). Un repo archivado no genera consumo de Actions.
