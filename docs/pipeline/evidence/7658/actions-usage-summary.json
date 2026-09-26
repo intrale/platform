@@ -1,0 +1,1297 @@
+{
+  "generated_at": "2026-09-26T16:29:21.704Z",
+  "owner": "intrale",
+  "repos": {
+    "platform": {
+      "workflows": {
+        "Security SAST": {
+          "runs": 329,
+          "jobs": 1103,
+          "raw_min": 11520.12,
+          "billable_min": 12154,
+          "billable_by_os": {
+            "linux": 12154,
+            "windows": 0,
+            "macos": 0
+          },
+          "raw_by_os": {
+            "linux": 11520.12,
+            "windows": 0,
+            "macos": 0
+          },
+          "retried_runs": 0,
+          "unknown_runner": 0,
+          "events": {
+            "pull_request": 205,
+            "push": 124
+          },
+          "jobs_detail": {
+            "detect-secrets Scan": {
+              "runs": 205,
+              "failures": 0,
+              "skipped": 124,
+              "raw_min": 459.72,
+              "billable_min": 566,
+              "billable_by_os": {
+                "linux": 566,
+                "windows": 0,
+                "macos": 0
+              },
+              "raw_by_os": {
+                "linux": 459.72,
+                "windows": 0,
+                "macos": 0
+              },
+              "p50_min": 3,
+              "p95_min": 3
+            },
+            "OWASP Dependency Check": {
+              "runs": 205,
+              "failures": 0,
+              "skipped": 124,
+              "raw_min": 10231.43,
+              "billable_min": 10334,
+              "billable_by_os": {
+                "linux": 10334,
+                "windows": 0,
+                "macos": 0
+              },
+              "raw_by_os": {
+                "linux": 10231.43,
+                "windows": 0,
+                "macos": 0
+              },
+              "p50_min": 24,
+              "p95_min": 247
+            },
+            "Semgrep Static Analysis": {
+              "runs": 205,
+              "failures": 0,
+              "skipped": 124,
+              "raw_min": 639.37,
+              "billable_min": 765,
+              "billable_by_os": {
+                "linux": 765,
+                "windows": 0,
+                "macos": 0
+              },
+              "raw_by_os": {
+                "linux": 639.37,
+                "windows": 0,
+                "macos": 0
+              },
+              "p50_min": 4,
+              "p95_min": 4
+            },
+            "Publicar reporte SAST en PR": {
+              "runs": 205,
+              "failures": 0,
+              "skipped": 124,
+              "raw_min": 25.25,
+              "billable_min": 205,
+              "billable_by_os": {
+                "linux": 205,
+                "windows": 0,
+                "macos": 0
+              },
+              "raw_by_os": {
+                "linux": 25.25,
+                "windows": 0,
+                "macos": 0
+              },
+              "p50_min": 1,
+              "p95_min": 1
+            },
+            "Secret scan (blocking)": {
+              "runs": 283,
+              "failures": 3,
+              "skipped": 0,
+              "raw_min": 164.35,
+              "billable_min": 284,
+              "billable_by_os": {
+                "linux": 284,
+                "windows": 0,
+                "macos": 0
+              },
+              "raw_by_os": {
+                "linux": 164.35,
+                "windows": 0,
+                "macos": 0
+              },
+              "p50_min": 1,
+              "p95_min": 1
+            }
+          },
+          "p50_min": 13,
+          "p95_min": 169
+        },
+        "Runtime state guard": {
+          "runs": 205,
+          "jobs": 205,
+          "raw_min": 60.27,
+          "billable_min": 205,
+          "billable_by_os": {
+            "linux": 205,
+            "windows": 0,
+            "macos": 0
+          },
+          "raw_by_os": {
+            "linux": 60.27,
+            "windows": 0,
+            "macos": 0
+          },
+          "retried_runs": 0,
+          "unknown_runner": 0,
+          "events": {
+            "pull_request": 205
+          },
+          "jobs_detail": {
+            "runtime-state-guard": {
+              "runs": 205,
+              "failures": 3,
+              "skipped": 0,
+              "raw_min": 60.27,
+              "billable_min": 205,
+              "billable_by_os": {
+                "linux": 205,
+                "windows": 0,
+                "macos": 0
+              },
+              "raw_by_os": {
+                "linux": 60.27,
+                "windows": 0,
+                "macos": 0
+              },
+              "p50_min": 1,
+              "p95_min": 1
+            }
+          },
+          "p50_min": 1,
+          "p95_min": 1
+        },
+        "Operational State Lint": {
+          "runs": 291,
+          "jobs": 291,
+          "raw_min": 106.35,
+          "billable_min": 292,
+          "billable_by_os": {
+            "linux": 292,
+            "windows": 0,
+            "macos": 0
+          },
+          "raw_by_os": {
+            "linux": 106.35,
+            "windows": 0,
+            "macos": 0
+          },
+          "retried_runs": 0,
+          "unknown_runner": 0,
+          "events": {
+            "pull_request": 169,
+            "push": 122
+          },
+          "jobs_detail": {
+            "Operational state lint (envoltorio requerido, enforce)": {
+              "runs": 291,
+              "failures": 5,
+              "skipped": 0,
+              "raw_min": 106.35,
+              "billable_min": 292,
+              "billable_by_os": {
+                "linux": 292,
+                "windows": 0,
+                "macos": 0
+              },
+              "raw_by_os": {
+                "linux": 106.35,
+                "windows": 0,
+                "macos": 0
+              },
+              "p50_min": 1,
+              "p95_min": 1
+            }
+          },
+          "p50_min": 1,
+          "p95_min": 1
+        },
+        "PR Checks": {
+          "runs": 236,
+          "jobs": 519,
+          "raw_min": 347.13,
+          "billable_min": 769,
+          "billable_by_os": {
+            "linux": 769,
+            "windows": 0,
+            "macos": 0
+          },
+          "raw_by_os": {
+            "linux": 347.13,
+            "windows": 0,
+            "macos": 0
+          },
+          "retried_runs": 0,
+          "unknown_runner": 0,
+          "events": {
+            "pull_request": 205,
+            "schedule": 30,
+            "workflow_dispatch": 1
+          },
+          "jobs_detail": {
+            "detect-changes": {
+              "runs": 205,
+              "failures": 0,
+              "skipped": 31,
+              "raw_min": 47.53,
+              "billable_min": 205,
+              "billable_by_os": {
+                "linux": 205,
+                "windows": 0,
+                "macos": 0
+              },
+              "raw_by_os": {
+                "linux": 47.53,
+                "windows": 0,
+                "macos": 0
+              },
+              "p50_min": 1,
+              "p95_min": 1
+            },
+            "pr-status": {
+              "runs": 236,
+              "failures": 6,
+              "skipped": 0,
+              "raw_min": 12.18,
+              "billable_min": 236,
+              "billable_by_os": {
+                "linux": 236,
+                "windows": 0,
+                "macos": 0
+              },
+              "raw_by_os": {
+                "linux": 12.18,
+                "windows": 0,
+                "macos": 0
+              },
+              "p50_min": 1,
+              "p95_min": 1
+            },
+            "e2e-qa": {
+              "runs": 36,
+              "failures": 2,
+              "skipped": 200,
+              "raw_min": 154.03,
+              "billable_min": 172,
+              "billable_by_os": {
+                "linux": 172,
+                "windows": 0,
+                "macos": 0
+              },
+              "raw_by_os": {
+                "linux": 154.03,
+                "windows": 0,
+                "macos": 0
+              },
+              "p50_min": 5,
+              "p95_min": 5
+            },
+            "check-users": {
+              "runs": 5,
+              "failures": 0,
+              "skipped": 231,
+              "raw_min": 13.87,
+              "billable_min": 17,
+              "billable_by_os": {
+                "linux": 17,
+                "windows": 0,
+                "macos": 0
+              },
+              "raw_by_os": {
+                "linux": 13.87,
+                "windows": 0,
+                "macos": 0
+              },
+              "p50_min": 3,
+              "p95_min": 4
+            },
+            "verify-strings": {
+              "runs": 5,
+              "failures": 0,
+              "skipped": 231,
+              "raw_min": 4.42,
+              "billable_min": 6,
+              "billable_by_os": {
+                "linux": 6,
+                "windows": 0,
+                "macos": 0
+              },
+              "raw_by_os": {
+                "linux": 4.42,
+                "windows": 0,
+                "macos": 0
+              },
+              "p50_min": 1,
+              "p95_min": 2
+            },
+            "check-backend": {
+              "runs": 5,
+              "failures": 0,
+              "skipped": 231,
+              "raw_min": 8.4,
+              "billable_min": 11,
+              "billable_by_os": {
+                "linux": 11,
+                "windows": 0,
+                "macos": 0
+              },
+              "raw_by_os": {
+                "linux": 8.4,
+                "windows": 0,
+                "macos": 0
+              },
+              "p50_min": 2,
+              "p95_min": 3
+            },
+            "check-app": {
+              "runs": 5,
+              "failures": 0,
+              "skipped": 231,
+              "raw_min": 74.65,
+              "billable_min": 77,
+              "billable_by_os": {
+                "linux": 77,
+                "windows": 0,
+                "macos": 0
+              },
+              "raw_by_os": {
+                "linux": 74.65,
+                "windows": 0,
+                "macos": 0
+              },
+              "p50_min": 15,
+              "p95_min": 17
+            },
+            "check-tools": {
+              "runs": 5,
+              "failures": 0,
+              "skipped": 231,
+              "raw_min": 6,
+              "billable_min": 8,
+              "billable_by_os": {
+                "linux": 8,
+                "windows": 0,
+                "macos": 0
+              },
+              "raw_by_os": {
+                "linux": 6,
+                "windows": 0,
+                "macos": 0
+              },
+              "p50_min": 2,
+              "p95_min": 2
+            },
+            "check-licenses": {
+              "runs": 11,
+              "failures": 4,
+              "skipped": 7,
+              "raw_min": 25.33,
+              "billable_min": 31,
+              "billable_by_os": {
+                "linux": 31,
+                "windows": 0,
+                "macos": 0
+              },
+              "raw_by_os": {
+                "linux": 25.33,
+                "windows": 0,
+                "macos": 0
+              },
+              "p50_min": 2,
+              "p95_min": 6
+            },
+            "Autoría del PR (trailer)": {
+              "runs": 6,
+              "failures": 0,
+              "skipped": 2,
+              "raw_min": 0.72,
+              "billable_min": 6,
+              "billable_by_os": {
+                "linux": 6,
+                "windows": 0,
+                "macos": 0
+              },
+              "raw_by_os": {
+                "linux": 0.72,
+                "windows": 0,
+                "macos": 0
+              },
+              "p50_min": 1,
+              "p95_min": 1
+            }
+          },
+          "p50_min": 2,
+          "p95_min": 6
+        },
+        "Ghost Artifact Lint": {
+          "runs": 291,
+          "jobs": 291,
+          "raw_min": 94.52,
+          "billable_min": 292,
+          "billable_by_os": {
+            "linux": 292,
+            "windows": 0,
+            "macos": 0
+          },
+          "raw_by_os": {
+            "linux": 94.52,
+            "windows": 0,
+            "macos": 0
+          },
+          "retried_runs": 0,
+          "unknown_runner": 0,
+          "events": {
+            "pull_request": 169,
+            "push": 122
+          },
+          "jobs_detail": {
+            "Ghost artifact lint (isMarkerArtifact required)": {
+              "runs": 291,
+              "failures": 65,
+              "skipped": 0,
+              "raw_min": 94.52,
+              "billable_min": 292,
+              "billable_by_os": {
+                "linux": 292,
+                "windows": 0,
+                "macos": 0
+              },
+              "raw_by_os": {
+                "linux": 94.52,
+                "windows": 0,
+                "macos": 0
+              },
+              "p50_min": 1,
+              "p95_min": 1
+            }
+          },
+          "p50_min": 1,
+          "p95_min": 1
+        },
+        "Admission Gate": {
+          "runs": 1012,
+          "jobs": 1012,
+          "raw_min": 108.35,
+          "billable_min": 1014,
+          "billable_by_os": {
+            "linux": 1014,
+            "windows": 0,
+            "macos": 0
+          },
+          "raw_by_os": {
+            "linux": 108.35,
+            "windows": 0,
+            "macos": 0
+          },
+          "retried_runs": 0,
+          "unknown_runner": 0,
+          "events": {
+            "pull_request_target": 145,
+            "issues": 867
+          },
+          "jobs_detail": {
+            "apply-admission-label": {
+              "runs": 1012,
+              "failures": 0,
+              "skipped": 0,
+              "raw_min": 108.35,
+              "billable_min": 1014,
+              "billable_by_os": {
+                "linux": 1014,
+                "windows": 0,
+                "macos": 0
+              },
+              "raw_by_os": {
+                "linux": 108.35,
+                "windows": 0,
+                "macos": 0
+              },
+              "p50_min": 1,
+              "p95_min": 1
+            }
+          },
+          "p50_min": 1,
+          "p95_min": 1
+        },
+        "Distribución Web — AWS S3 + CloudFront (Wasm)": {
+          "runs": 2,
+          "jobs": 4,
+          "raw_min": 20.35,
+          "billable_min": 24,
+          "billable_by_os": {
+            "linux": 24,
+            "windows": 0,
+            "macos": 0
+          },
+          "raw_by_os": {
+            "linux": 20.35,
+            "windows": 0,
+            "macos": 0
+          },
+          "retried_runs": 0,
+          "unknown_runner": 0,
+          "events": {
+            "push": 2
+          },
+          "jobs_detail": {
+            "Build & Deploy — Web/Wasm → S3 + CloudFront": {
+              "runs": 2,
+              "failures": 2,
+              "skipped": 0,
+              "raw_min": 20.25,
+              "billable_min": 22,
+              "billable_by_os": {
+                "linux": 22,
+                "windows": 0,
+                "macos": 0
+              },
+              "raw_by_os": {
+                "linux": 20.25,
+                "windows": 0,
+                "macos": 0
+              },
+              "p50_min": 10,
+              "p95_min": 12
+            },
+            "Notificar resultado": {
+              "runs": 2,
+              "failures": 0,
+              "skipped": 0,
+              "raw_min": 0.1,
+              "billable_min": 2,
+              "billable_by_os": {
+                "linux": 2,
+                "windows": 0,
+                "macos": 0
+              },
+              "raw_by_os": {
+                "linux": 0.1,
+                "windows": 0,
+                "macos": 0
+              },
+              "p50_min": 1,
+              "p95_min": 1
+            }
+          },
+          "p50_min": 11,
+          "p95_min": 13
+        },
+        "Distribución Desktop — GitHub Releases (MSI + Deb)": {
+          "runs": 2,
+          "jobs": 8,
+          "raw_min": 32.38,
+          "billable_min": 64,
+          "billable_by_os": {
+            "linux": 12,
+            "windows": 52,
+            "macos": 0
+          },
+          "raw_by_os": {
+            "linux": 7.45,
+            "windows": 24.93,
+            "macos": 0
+          },
+          "retried_runs": 0,
+          "unknown_runner": 0,
+          "events": {
+            "push": 2
+          },
+          "jobs_detail": {
+            "Build Deb (Linux)": {
+              "runs": 2,
+              "failures": 0,
+              "skipped": 0,
+              "raw_min": 6.77,
+              "billable_min": 8,
+              "billable_by_os": {
+                "linux": 8,
+                "windows": 0,
+                "macos": 0
+              },
+              "raw_by_os": {
+                "linux": 6.77,
+                "windows": 0,
+                "macos": 0
+              },
+              "p50_min": 3,
+              "p95_min": 5
+            },
+            "Build MSI (Windows)": {
+              "runs": 2,
+              "failures": 0,
+              "skipped": 0,
+              "raw_min": 24.93,
+              "billable_min": 52,
+              "billable_by_os": {
+                "linux": 0,
+                "windows": 52,
+                "macos": 0
+              },
+              "raw_by_os": {
+                "linux": 0,
+                "windows": 24.93,
+                "macos": 0
+              },
+              "p50_min": 24,
+              "p95_min": 28
+            },
+            "Crear GitHub Release": {
+              "runs": 2,
+              "failures": 0,
+              "skipped": 0,
+              "raw_min": 0.6,
+              "billable_min": 2,
+              "billable_by_os": {
+                "linux": 2,
+                "windows": 0,
+                "macos": 0
+              },
+              "raw_by_os": {
+                "linux": 0.6,
+                "windows": 0,
+                "macos": 0
+              },
+              "p50_min": 1,
+              "p95_min": 1
+            },
+            "Notificar resultado": {
+              "runs": 2,
+              "failures": 0,
+              "skipped": 0,
+              "raw_min": 0.08,
+              "billable_min": 2,
+              "billable_by_os": {
+                "linux": 2,
+                "windows": 0,
+                "macos": 0
+              },
+              "raw_by_os": {
+                "linux": 0.08,
+                "windows": 0,
+                "macos": 0
+              },
+              "p50_min": 1,
+              "p95_min": 1
+            }
+          },
+          "p50_min": 29,
+          "p95_min": 35
+        },
+        "CI-CD Plataforma": {
+          "runs": 2,
+          "jobs": 2,
+          "raw_min": 55.62,
+          "billable_min": 56,
+          "billable_by_os": {
+            "linux": 56,
+            "windows": 0,
+            "macos": 0
+          },
+          "raw_by_os": {
+            "linux": 55.62,
+            "windows": 0,
+            "macos": 0
+          },
+          "retried_runs": 0,
+          "unknown_runner": 0,
+          "events": {
+            "push": 2
+          },
+          "jobs_detail": {
+            "deploy-lambda": {
+              "runs": 2,
+              "failures": 0,
+              "skipped": 0,
+              "raw_min": 55.62,
+              "billable_min": 56,
+              "billable_by_os": {
+                "linux": 56,
+                "windows": 0,
+                "macos": 0
+              },
+              "raw_by_os": {
+                "linux": 55.62,
+                "windows": 0,
+                "macos": 0
+              },
+              "p50_min": 28,
+              "p95_min": 28
+            }
+          },
+          "p50_min": 28,
+          "p95_min": 28
+        },
+        "Distribución Android — Firebase App Distribution (3 Flavors)": {
+          "runs": 2,
+          "jobs": 8,
+          "raw_min": 28.33,
+          "billable_min": 33,
+          "billable_by_os": {
+            "linux": 33,
+            "windows": 0,
+            "macos": 0
+          },
+          "raw_by_os": {
+            "linux": 28.33,
+            "windows": 0,
+            "macos": 0
+          },
+          "retried_runs": 0,
+          "unknown_runner": 0,
+          "events": {
+            "push": 2
+          },
+          "jobs_detail": {
+            "Build & Distribute — business": {
+              "runs": 2,
+              "failures": 1,
+              "skipped": 0,
+              "raw_min": 8.9,
+              "billable_min": 10,
+              "billable_by_os": {
+                "linux": 10,
+                "windows": 0,
+                "macos": 0
+              },
+              "raw_by_os": {
+                "linux": 8.9,
+                "windows": 0,
+                "macos": 0
+              },
+              "p50_min": 5,
+              "p95_min": 5
+            },
+            "Build & Distribute — delivery": {
+              "runs": 2,
+              "failures": 0,
+              "skipped": 0,
+              "raw_min": 10.02,
+              "billable_min": 11,
+              "billable_by_os": {
+                "linux": 11,
+                "windows": 0,
+                "macos": 0
+              },
+              "raw_by_os": {
+                "linux": 10.02,
+                "windows": 0,
+                "macos": 0
+              },
+              "p50_min": 5,
+              "p95_min": 6
+            },
+            "Build & Distribute — client": {
+              "runs": 2,
+              "failures": 1,
+              "skipped": 0,
+              "raw_min": 9.33,
+              "billable_min": 10,
+              "billable_by_os": {
+                "linux": 10,
+                "windows": 0,
+                "macos": 0
+              },
+              "raw_by_os": {
+                "linux": 9.33,
+                "windows": 0,
+                "macos": 0
+              },
+              "p50_min": 5,
+              "p95_min": 5
+            },
+            "Notificar resultado": {
+              "runs": 2,
+              "failures": 0,
+              "skipped": 0,
+              "raw_min": 0.08,
+              "billable_min": 2,
+              "billable_by_os": {
+                "linux": 2,
+                "windows": 0,
+                "macos": 0
+              },
+              "raw_by_os": {
+                "linux": 0.08,
+                "windows": 0,
+                "macos": 0
+              },
+              "p50_min": 1,
+              "p95_min": 1
+            }
+          },
+          "p50_min": 16,
+          "p95_min": 17
+        },
+        "Test Env Lint": {
+          "runs": 191,
+          "jobs": 191,
+          "raw_min": 61.62,
+          "billable_min": 191,
+          "billable_by_os": {
+            "linux": 191,
+            "windows": 0,
+            "macos": 0
+          },
+          "raw_by_os": {
+            "linux": 61.62,
+            "windows": 0,
+            "macos": 0
+          },
+          "retried_runs": 0,
+          "unknown_runner": 0,
+          "events": {
+            "push": 85,
+            "pull_request": 106
+          },
+          "jobs_detail": {
+            "Test env lint (process.env fuera del helper)": {
+              "runs": 191,
+              "failures": 12,
+              "skipped": 0,
+              "raw_min": 61.62,
+              "billable_min": 191,
+              "billable_by_os": {
+                "linux": 191,
+                "windows": 0,
+                "macos": 0
+              },
+              "raw_by_os": {
+                "linux": 61.62,
+                "windows": 0,
+                "macos": 0
+              },
+              "p50_min": 1,
+              "p95_min": 1
+            }
+          },
+          "p50_min": 1,
+          "p95_min": 1
+        },
+        "Write Target Lint": {
+          "runs": 66,
+          "jobs": 66,
+          "raw_min": 30.63,
+          "billable_min": 66,
+          "billable_by_os": {
+            "linux": 66,
+            "windows": 0,
+            "macos": 0
+          },
+          "raw_by_os": {
+            "linux": 30.63,
+            "windows": 0,
+            "macos": 0
+          },
+          "retried_runs": 0,
+          "unknown_runner": 0,
+          "events": {
+            "push": 26,
+            "pull_request": 40
+          },
+          "jobs_detail": {
+            "Write target lint (destinos de escritura vs .pipeline productivo)": {
+              "runs": 66,
+              "failures": 1,
+              "skipped": 0,
+              "raw_min": 30.63,
+              "billable_min": 66,
+              "billable_by_os": {
+                "linux": 66,
+                "windows": 0,
+                "macos": 0
+              },
+              "raw_by_os": {
+                "linux": 30.63,
+                "windows": 0,
+                "macos": 0
+              },
+              "p50_min": 1,
+              "p95_min": 1
+            }
+          },
+          "p50_min": 1,
+          "p95_min": 1
+        },
+        "Auditoría de autoría en main": {
+          "runs": 7,
+          "jobs": 7,
+          "raw_min": 0.62,
+          "billable_min": 7,
+          "billable_by_os": {
+            "linux": 7,
+            "windows": 0,
+            "macos": 0
+          },
+          "raw_by_os": {
+            "linux": 0.62,
+            "windows": 0,
+            "macos": 0
+          },
+          "retried_runs": 0,
+          "unknown_runner": 0,
+          "events": {
+            "push": 7
+          },
+          "jobs_detail": {
+            "Auditoría de autoría (main)": {
+              "runs": 7,
+              "failures": 0,
+              "skipped": 0,
+              "raw_min": 0.62,
+              "billable_min": 7,
+              "billable_by_os": {
+                "linux": 7,
+                "windows": 0,
+                "macos": 0
+              },
+              "raw_by_os": {
+                "linux": 0.62,
+                "windows": 0,
+                "macos": 0
+              },
+              "p50_min": 1,
+              "p95_min": 1
+            }
+          },
+          "p50_min": 1,
+          "p95_min": 1
+        },
+        "Contribution Agreement": {
+          "runs": 6,
+          "jobs": 0,
+          "raw_min": 0,
+          "billable_min": 0,
+          "billable_by_os": {
+            "linux": 0,
+            "windows": 0,
+            "macos": 0
+          },
+          "raw_by_os": {
+            "linux": 0,
+            "windows": 0,
+            "macos": 0
+          },
+          "retried_runs": 0,
+          "unknown_runner": 0,
+          "events": {
+            "issue_comment": 6
+          },
+          "jobs_detail": {
+            "evaluate": {
+              "runs": 0,
+              "failures": 0,
+              "skipped": 6,
+              "raw_min": 0,
+              "billable_min": 0,
+              "billable_by_os": {
+                "linux": 0,
+                "windows": 0,
+                "macos": 0
+              },
+              "raw_by_os": {
+                "linux": 0,
+                "windows": 0,
+                "macos": 0
+              },
+              "p50_min": 0,
+              "p95_min": 0
+            },
+            "record-signature": {
+              "runs": 0,
+              "failures": 0,
+              "skipped": 6,
+              "raw_min": 0,
+              "billable_min": 0,
+              "billable_by_os": {
+                "linux": 0,
+                "windows": 0,
+                "macos": 0
+              },
+              "raw_by_os": {
+                "linux": 0,
+                "windows": 0,
+                "macos": 0
+              },
+              "p50_min": 0,
+              "p95_min": 0
+            }
+          },
+          "p50_min": 0,
+          "p95_min": 0
+        }
+      },
+      "totals": {
+        "runs": 2642,
+        "jobs": 3707,
+        "raw_min": 12466.29,
+        "billable_min": 15167,
+        "billable_by_os": {
+          "linux": 15115,
+          "windows": 52,
+          "macos": 0
+        },
+        "raw_by_os": {
+          "linux": 12441.360000000004,
+          "windows": 24.93,
+          "macos": 0
+        }
+      }
+    }
+  },
+  "window": {
+    "days": 30,
+    "from": "2026-08-27",
+    "to": "2026-09-25"
+  },
+  "by_job": true,
+  "method": "ceil((completed_at - started_at)/60s) por job x multiplicador (linux 1, windows 2, macos 10); filter=all; una consulta por dia",
+  "api_calls": 12,
+  "active_committers_90d": 1,
+  "totals": {
+    "runs": 2642,
+    "jobs": 3707,
+    "raw_min": 12466.29,
+    "billable_min": 15167,
+    "billable_by_os": {
+      "linux": 15115,
+      "windows": 52,
+      "macos": 0
+    },
+    "raw_by_os": {
+      "linux": 12441.36,
+      "windows": 24.93,
+      "macos": 0
+    }
+  },
+  "unknown_runner": 0,
+  "top_workflows": [
+    {
+      "repo": "platform",
+      "workflow": "Security SAST",
+      "runs": 329,
+      "jobs": 1103,
+      "billable_min": 12154,
+      "raw_min": 11520.12,
+      "pct": 80.13,
+      "p50_min": 13,
+      "p95_min": 169
+    },
+    {
+      "repo": "platform",
+      "workflow": "Admission Gate",
+      "runs": 1012,
+      "jobs": 1012,
+      "billable_min": 1014,
+      "raw_min": 108.35,
+      "pct": 6.69,
+      "p50_min": 1,
+      "p95_min": 1
+    },
+    {
+      "repo": "platform",
+      "workflow": "PR Checks",
+      "runs": 236,
+      "jobs": 519,
+      "billable_min": 769,
+      "raw_min": 347.13,
+      "pct": 5.07,
+      "p50_min": 2,
+      "p95_min": 6
+    },
+    {
+      "repo": "platform",
+      "workflow": "Operational State Lint",
+      "runs": 291,
+      "jobs": 291,
+      "billable_min": 292,
+      "raw_min": 106.35,
+      "pct": 1.93,
+      "p50_min": 1,
+      "p95_min": 1
+    },
+    {
+      "repo": "platform",
+      "workflow": "Ghost Artifact Lint",
+      "runs": 291,
+      "jobs": 291,
+      "billable_min": 292,
+      "raw_min": 94.52,
+      "pct": 1.93,
+      "p50_min": 1,
+      "p95_min": 1
+    }
+  ],
+  "storage": {
+    "by_repo": {
+      "platform": {
+        "cache_gb": 9.98,
+        "artifacts_gb": 3.78,
+        "artifacts_vigentes": 455
+      }
+    },
+    "artifacts_gb": 3.78,
+    "cache_gb_by_repo": {
+      "platform": 9.98
+    }
+  },
+  "optimizations": [
+    {
+      "id": "owasp-schedule",
+      "type": "schedule",
+      "label": "OWASP Dependency Check: de cada PR a un schedule diario (opción c; base de la opción b)",
+      "measured_min": 10334,
+      "after_min": 720,
+      "saving_min": 9614
+    },
+    {
+      "id": "semgrep-schedule",
+      "type": "schedule",
+      "label": "Semgrep: de cada PR a un schedule diario",
+      "measured_min": 765,
+      "after_min": 120,
+      "saving_min": 645
+    },
+    {
+      "id": "detect-secrets-schedule",
+      "type": "schedule",
+      "label": "detect-secrets: de cada PR a un schedule diario",
+      "measured_min": 566,
+      "after_min": 90,
+      "saving_min": 476
+    },
+    {
+      "id": "pipeline-lints-consolidate",
+      "type": "consolidate",
+      "label": "Consolidar los 4 lints de .pipeline en un workflow/job (un redondeo por commit en vez de cuatro)",
+      "measured_min": 841,
+      "after_min": 401,
+      "saving_min": 440
+    }
+  ],
+  "scenarios": [
+    {
+      "id": "public",
+      "label": "Seguir público",
+      "billable_min": 0,
+      "included_min": 0,
+      "excess_min": 0,
+      "minutes_usd": 0,
+      "storage_usd": 0,
+      "seats_usd": 0,
+      "ghas_usd": 0,
+      "control_perdido": "",
+      "ghas_note": "Code scanning y secret scanning gratis en públicos",
+      "total_usd": 0
+    },
+    {
+      "id": "private_free",
+      "label": "Privado · Free",
+      "billable_min": 15167,
+      "included_min": 2000,
+      "excess_min": 13167,
+      "minutes_usd": 78.96,
+      "storage_usd": 0.82,
+      "seats_usd": 0,
+      "ghas_usd": 0,
+      "control_perdido": "Se pierde: code scanning (upload-sarif de Semgrep) / secret scanning + push protection del servidor. Reemplazo parcial: Semgrep + detect-secrets + Secret scan (blocking) en CI, sin push protection.",
+      "total_usd": 79.78
+    },
+    {
+      "id": "private_team",
+      "label": "Privado · Team (+ GHAS)",
+      "billable_min": 15167,
+      "included_min": 3000,
+      "excess_min": 12167,
+      "minutes_usd": 72.96,
+      "storage_usd": 0.44,
+      "seats_usd": 8,
+      "ghas_usd": 49,
+      "control_perdido": "",
+      "total_usd": 130.41
+    },
+    {
+      "id": "private_team_optimized",
+      "label": "Privado · Team optimizado (+ GHAS)",
+      "billable_min": 3992,
+      "included_min": 3000,
+      "excess_min": 992,
+      "minutes_usd": 5.95,
+      "storage_usd": 0.44,
+      "seats_usd": 8,
+      "ghas_usd": 49,
+      "control_perdido": "",
+      "total_usd": 63.39
+    }
+  ],
+  "releases": [
+    {
+      "repo": "platform",
+      "workflow_file": "distribute-ios.yml",
+      "note": "sin runs completados"
+    },
+    {
+      "repo": "platform",
+      "workflow_file": "distribute-desktop.yml",
+      "last_run_at": "2026-09-26T11:15:22Z",
+      "jobs": 4,
+      "runner_os": [
+        "linux",
+        "windows"
+      ],
+      "billable_min": 21,
+      "usd_por_release": 0.11
+    },
+    {
+      "repo": "platform",
+      "workflow_file": "distribute-android.yml",
+      "last_run_at": "2026-04-09T12:07:48Z",
+      "jobs": 4,
+      "runner_os": [
+        "linux"
+      ],
+      "billable_min": 10,
+      "usd_por_release": 0.06
+    },
+    {
+      "repo": "platform",
+      "workflow_file": "distribute-web.yml",
+      "last_run_at": "2026-09-26T11:15:22Z",
+      "jobs": 2,
+      "runner_os": [
+        "linux"
+      ],
+      "billable_min": 11,
+      "usd_por_release": 0.07
+    },
+    {
+      "repo": "platform",
+      "workflow_file": "main.yml",
+      "last_run_at": "2026-09-26T11:15:22Z",
+      "jobs": 1,
+      "runner_os": [
+        "linux"
+      ],
+      "billable_min": 28,
+      "usd_por_release": 0.17
+    }
+  ],
+  "calibration": null,
+  "pricing_source": {
+    "fetched_at": "2026-09-23",
+    "source_url": {
+      "runner_per_minute": "https://docs.github.com/en/billing/reference/actions-runner-pricing",
+      "included_quota_and_storage": "https://docs.github.com/en/billing/concepts/product-billing/github-actions",
+      "plans": "https://github.com/pricing",
+      "ghas": "https://github.blog/changelog/2025-03-04-introducing-github-secret-protection-and-github-code-security/",
+      "ghas_active_committer": "https://docs.github.com/en/billing/concepts/product-billing/github-advanced-security"
+    }
+  }
+}
