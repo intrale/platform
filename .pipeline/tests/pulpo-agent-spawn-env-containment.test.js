@@ -554,10 +554,9 @@ function evaluarCleanEnv({ aislamiento, provider, snapshotEnabled, snapshotEnv }
 
 /** Evalúa el fuente real del env del child de resumen del commander (H-3). */
 function evaluarSummarizeEnv() {
-    const base = bloqueFuente(
-        'const summaryBaseEnv = { ...process.env };',
-        'summaryBaseEnv.CLAUDE_PROJECT_DIR = ROOT;',
-    );
+    // #7636 · CA-6 — la base sale de `buildMinimalCliEnv` (una sola línea).
+    const ancla = 'const summaryBaseEnv = buildChildEnvLib.buildMinimalCliEnv(';
+    const base = bloqueFuente(ancla, ancla);
     const expr = expresionEnv(
         LINEAS[lineaUnica('stripReservedChildSecrets(summaryBaseEnv, process.env)')],
     );
@@ -581,7 +580,11 @@ for (const aislamiento of [false, true]) {
             `El child de resumen del commander recibe material reservado (aislamiento=${aislamiento}).`,
         );
         assert.strictEqual(env.CLAUDE_PROJECT_DIR, ROOT_FAKE, 'CLAUDE_PROJECT_DIR debe preservarse.');
-        assert.strictEqual(env.TELEGRAM_CHAT_ID, '-1009999999', 'TELEGRAM_CHAT_ID debe preservarse.');
+        // #7636 · CA-6 — env mínimo de CLI: sin keys de provider ni observabilidad
+        // de Telegram (el resumen no es un agente del pipeline ni corre hooks).
+        assert.strictEqual(env.ANTHROPIC_API_KEY, undefined, 'el resumen no recibe keys de provider.');
+        assert.strictEqual(env.PIPELINE_ISSUE, undefined, 'el resumen no es un agente del pipeline.');
+        assert.strictEqual(env.PATH, 'C:\\fake\\bin');
     });
 }
 
@@ -665,9 +668,11 @@ test('#5799 el env del intento se marca con su provider y la marca NO viaja al h
 
 // --- Anti-regresión de observabilidad -------------------------------------------
 
-test('el filtro preserva CHAT_ID, PIPELINE_ISSUE y CLAUDE_PROJECT_DIR en los 3 sitios', async () => {
+// #7636 · CA-6 — H-3 (resumen de turnos) salió de esta lista: ahora usa el env
+// mínimo de CLI (`buildMinimalCliEnv`), que por diseño no lleva TELEGRAM_CHAT_ID
+// ni PIPELINE_*. Su CLAUDE_PROJECT_DIR se verifica en el test H-3 de arriba.
+test('el filtro preserva CHAT_ID, PIPELINE_ISSUE y CLAUDE_PROJECT_DIR en los sitios de agente', async () => {
     const envs = {
-        'H-3 summarize': evaluarSummarizeEnv(),
         'H-2 commander legacy': await evaluarCleanEnv({ aislamiento: false, provider: 'anthropic' }),
         'H-2 commander aislado': await evaluarCleanEnv({ aislamiento: true, provider: 'anthropic' }),
         'H-1 fallback legacy': await evaluarBuildEnvFor({ aislamiento: false, provider: 'antigravity' }),

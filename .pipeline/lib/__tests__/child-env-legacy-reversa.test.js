@@ -61,11 +61,13 @@ test('E3 · el camino legacy no invoca assertChildEnvMinimal: un env con credenc
     assert.doesNotMatch(pulpo, /assertChildEnvMinimal/);
 });
 
-test('E4 · env_isolation_enabled sigue en false en .pipeline/config.yaml', () => {
+// #7636 · CA-7 — el encendido es deliberado: el flag pasa a `true`. El camino
+// legacy de arriba sigue siendo el de la REVERSA (flag en `false`).
+test('E4 · env_isolation_enabled está encendido (true) en .pipeline/config.yaml (#7636)', () => {
     const cfg = fs.readFileSync(path.join(__dirname, '..', '..', 'config.yaml'), 'utf8');
     const m = cfg.match(/^\s*env_isolation_enabled:\s*(\S+)/m);
     assert.ok(m, 'la clave env_isolation_enabled existe');
-    assert.equal(m[1], 'false');
+    assert.equal(m[1], 'true');
     const todas = [...cfg.matchAll(/^\s*env_isolation_enabled:\s*(\S+)/gm)].map((x) => x[1]);
-    assert.deepEqual([...new Set(todas)], ['false']);
+    assert.deepEqual([...new Set(todas)], ['true']);
 });

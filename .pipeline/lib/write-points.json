@@ -1474,7 +1474,7 @@
     {
       "modulo": "pulpo.js",
       "funcion": "log",
-      "linea": 684,
+      "linea": 688,
       "canal": "logs",
       "destino": "__dirname",
       "tier": 1,
@@ -1486,7 +1486,7 @@
     {
       "modulo": "pulpo.js",
       "funcion": "crashLogDir",
-      "linea": 713,
+      "linea": 717,
       "canal": "logs",
       "destino": "writeTarget.safeWriteDir",
       "tier": 1,
@@ -1496,7 +1496,7 @@
     {
       "modulo": "pulpo.js",
       "funcion": "ROOT",
-      "linea": 727,
+      "linea": 731,
       "canal": "estado",
       "destino": "__dirname",
       "tier": 1,
@@ -1508,7 +1508,7 @@
     {
       "modulo": "pulpo.js",
       "funcion": "PIPELINE",
-      "linea": 748,
+      "linea": 752,
       "canal": "estado",
       "destino": "writeTarget.writeDir",
       "tier": 1,
@@ -1518,7 +1518,7 @@
     {
       "modulo": "pulpo.js",
       "funcion": "LOG_DIR",
-      "linea": 752,
+      "linea": 756,
       "canal": "logs",
       "destino": "writeTarget.writeDir",
       "tier": 1,
@@ -1528,7 +1528,7 @@
     {
       "modulo": "pulpo.js",
       "funcion": "telegramPendienteDir",
-      "linea": 922,
+      "linea": 926,
       "canal": "colas",
       "destino": "writeTarget.writeDir",
       "tier": 1,
@@ -1538,7 +1538,7 @@
     {
       "modulo": "pulpo.js",
       "funcion": "prod",
-      "linea": 1313,
+      "linea": 1317,
       "canal": "estado",
       "destino": "__dirname",
       "tier": 1,
@@ -1550,7 +1550,7 @@
     {
       "modulo": "pulpo.js",
       "funcion": "ghWritesBloqueadas",
-      "linea": 1346,
+      "linea": 1350,
       "canal": "estado",
       "destino": "process.env.PIPELINE_*",
       "tier": 1,
@@ -1561,7 +1561,7 @@
     {
       "modulo": "pulpo.js",
       "funcion": "ghCommentOnIssue",
-      "linea": 1375,
+      "linea": 1379,
       "canal": "estado",
       "destino": "__dirname",
       "tier": 1,
@@ -1573,7 +1573,7 @@
     {
       "modulo": "pulpo.js",
       "funcion": "PAUSE_FILE",
-      "linea": 22179,
+      "linea": 22232,
       "canal": "pausa",
       "destino": "writeTarget.writeDir",
       "tier": 1,

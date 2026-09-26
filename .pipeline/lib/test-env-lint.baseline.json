@@ -753,13 +753,13 @@
         },
         {
             "file": "tests/pulpo-agent-spawn-env-containment.test.js",
-            "line": 803,
+            "line": 808,
             "variable": "(clave no resoluble)",
             "sentido": "(n/a)"
         },
         {
             "file": "tests/pulpo-agent-spawn-env-containment.test.js",
-            "line": 810,
+            "line": 815,
             "variable": "(clave no resoluble)",
             "sentido": "(n/a)"
         },

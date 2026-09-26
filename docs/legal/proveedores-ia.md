@@ -131,14 +131,17 @@ Diferencias entre la matriz vigente (`agent-models.json`) y esta política que *
 
 | Proveedor | Rol | Scope | Pedido de firma |
 |---|---|---|---|
+| `antigravity` | architect | github | [pedido](https://github.com/intrale/platform/issues/7636#issuecomment-5839678078) |
 | `antigravity` | po | github | [pedido](https://github.com/intrale/platform/issues/7597#issuecomment-5798076359) |
 | `antigravity` | ux | github | [pedido](https://github.com/intrale/platform/issues/7597#issuecomment-5798076359) |
 
 `po` y `ux` tienen a Antigravity como primer respaldo (Decisión 2 de #6860). En ese eslabón el proceso recibe la credencial de GitHub, que tiene escritura sobre el repo, y la política no le permite esa credencial a Antigravity. Opciones en el pedido: aceptarla con firma, sacar el eslabón o esperar a que #7598 la baje a sólo lectura.
 
+`architect` tiene a Antigravity como segundo respaldo. Con el aislamiento encendido (#7636) el rol declara el scope `github` para poder comentar el issue, y en ese eslabón recibiría la credencial de GitHub. Mismas opciones que para `po` y `ux`; se agrega a la de esperar #7627 (token acotado).
+
 Diferencias ya resueltas en esta versión:
 
-- `architect` y `perf` en Antigravity: aceptadas. Sólo reciben el destino de Telegram; el alcance de disco y el modo de permisos quedan declarados arriba.
+- `architect` y `perf` en Antigravity: aceptadas. Sólo reciben el destino de Telegram; el alcance de disco y el modo de permisos quedan declarados arriba. Desde #7636, el scope `github` de `architect` en Antigravity queda como diferencia abierta (arriba).
 - `telegram-commander` y `telegram-sherlock` en Antigravity: aceptadas por la Decisión 1 de #6860.
 - `android-dev`, `web-dev` y `qa` **sin** Antigravity: la política no los habilita y el test verifica que la matriz tampoco los rutee ahí.
 

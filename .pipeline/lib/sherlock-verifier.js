@@ -1629,6 +1629,10 @@ async function _verifyImpl(opts = {}) {
         spawnImpl,
         cwd,
         env,
+        // #7636 · CA-6 (RS-5) — política de env del spawn del juez. Pass-through
+        // puro hacia los tres `spawn*Complete` (que ya la validan, #6563):
+        // `undefined` conserva el comportamiento previo (`inherit`).
+        envPolicy,
         configLoader,
         log,
         fsImpl,
@@ -1994,6 +1998,7 @@ async function _verifyImpl(opts = {}) {
                 anthropicHandler,
                 cwd,
                 env,
+                envPolicy,
             });
             if (r && typeof r === 'object') r.model = resolved.model;
             return r;
@@ -2007,6 +2012,7 @@ async function _verifyImpl(opts = {}) {
                 codexHandler,
                 cwd,
                 env,
+                envPolicy,
             });
             if (r && typeof r === 'object') r.model = resolved.model;
             return r;
@@ -2020,6 +2026,7 @@ async function _verifyImpl(opts = {}) {
                 antigravityHandler,
                 cwd,
                 env,
+                envPolicy,
             });
             if (r && typeof r === 'object') r.model = resolved.model;
             return r;

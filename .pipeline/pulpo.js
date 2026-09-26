@@ -627,6 +627,10 @@ const { phaseNeedsWorktree, phaseUsesExistingWorktree } = require('./lib/phase-w
 // Activación por flag `pipeline.env_isolation_enabled` en config.yaml (default
 // false durante el rollout — ver CA-11 del issue #3085).
 const buildChildEnvLib = require('./lib/build-child-env');
+// #7636 · CA-5 / CA-7 — estacionamiento de CHILD_ENV_VIOLATION (sin quemar
+// reintentos) y detección de la reversa `true→false` del aislamiento.
+const childEnvParking = require('./lib/child-env-parking');
+const _envIsolationTransition = childEnvParking.createIsolationTransitionTracker();
 // #5799 — frontera de credenciales POR INTENTO. Hidrata el snapshot aislado de
 // #5798 para el provider EFECTIVO de cada lanzamiento (Pulpo, Commander,
 // reintentos y cada eslabón de fallback) y compone el `processEnv` que entra a
@@ -12741,6 +12745,17 @@ async function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, 
     envIsolationEnabled = !!(cfgRootParaEnv.pipeline && cfgRootParaEnv.pipeline.env_isolation_enabled);
   } catch { /* sin config legible: default false (preserva legacy) */ }
 
+  // #7636 · CA-7 / RS-6 — la reversa es un cambio de seguridad y deja rastro:
+  // en la transición true→false (respecto del lanzamiento anterior de este
+  // proceso) se emite UNA línea grepeable y se avisa al operador. El arranque
+  // (`null→*`) y `false→false` no emiten nada.
+  try {
+    if (_envIsolationTransition.observe(envIsolationEnabled)) {
+      log('lanzamiento', childEnvParking.REVERSA_LOG_LINE);
+      try { sendTelegramPlain(`🔓 ${childEnvParking.REVERSA_OPERADOR_TXT}`); } catch { /* best-effort */ }
+    }
+  } catch { /* best-effort: nunca frena un lanzamiento */ }
+
   // #5799 — SNAPSHOT DE CREDENCIALES POR INTENTO.
   //
   // El provider EFECTIVO de este intento ya está resuelto (`dispatchResolution`,
@@ -12852,7 +12867,39 @@ async function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, 
         pipelineExtras,
         skillConfigOverride,
       });
+      // #7636 — el rol lanzó con el entorno OK: cierra el episodio de aviso
+      // de violaciones de ESTE rol (la próxima vuelve a notificar).
+      childEnvParking.clearViolationNotices({ pipelineDir: PIPELINE(), skill });
     } catch (e) {
+      // #7636 · CA-5 — una violación del entorno mínimo es un fallo de
+      // CONFIGURACIÓN, no reintentable: se ESTACIONA el workfile en
+      // `bloqueado-humano/` (sin rev++, sin circuit breaker, un solo aviso por
+      // (rol, causa)) y se RETORNA sin throw. Si subiera, el `.catch` de los
+      // call-sites lo dejaría huérfano en `trabajando/` y `brazoHuerfanos` lo
+      // contaría como muerte prematura (se gastaban los 3 reintentos).
+      if (e && e.code === 'CHILD_ENV_VIOLATION') {
+        const intentoProvider = (dispatchResolution && dispatchResolution.provider) || 'desconocido';
+        const intentoLabel = `${(dispatchResolution && dispatchResolution.source === 'fallback') ? 'fallback' : 'primary'}:${intentoProvider}`;
+        try { if (qaRecordingProc) qaRecordingProc.kill(); } catch { /* best-effort */ }
+        olvidarOperacionDeCredencial();
+        childEnvParking.parkChildEnvViolation({
+          violation: e,
+          trabajandoPath,
+          faseDir: fasePath(pipeline, fase),
+          pipelineDir: PIPELINE(),
+          issue, skill, fase, pipeline,
+          intento: intentoLabel,
+          deps: {
+            readYaml: (p) => readYamlSafe(p),
+            writeYaml,
+            moveFile,
+            log: (m) => log('lanzamiento', m),
+            notify: (txt) => sendTelegramPlain(txt),
+            enqueueNeedsHuman: (n) => humanBlock.enqueueNeedsHumanLabel(n),
+          },
+        });
+        return;
+      }
       // Fail-fast: si la API key del provider falta, NO arrancar el child.
       // Loguear con mensaje accionable y propagar el error para que el caller
       // (lanzarAgenteClaude) marque el archivo como fallo de infra.
@@ -15386,11 +15433,13 @@ function summarizeCommanderOlderTurns({ input } = {}) {
     ].join(' ');
     const prompt = `${systemInstr}\n\n<material>\n${input}\n</material>`;
 
-    // #5462 H-3 — base del env del child de resumen. Se arma en dos pasos (sin
-    // spread inline) para que el ÚNICO consumidor posible sea el filtro de abajo:
-    // ningún objeto crudo derivado de process.env llega a `spawn` por este sitio.
-    const summaryBaseEnv = { ...process.env };
-    summaryBaseEnv.CLAUDE_PROJECT_DIR = ROOT;
+    // #5462 H-3 / #7636 CA-6 (RS-4) — env del child de resumen. Es un LLM que
+    // sólo necesita la sesión OAuth del CLI: sale por `buildMinimalCliEnv`
+    // (SYSTEM_ALLOWLIST + CLI_OAUTH_ALLOWLIST + extras), sin GH_TOKEN, sin AWS_*
+    // y sin keys de provider. NO pasa por `buildChildEnv` con scopes: si al CLI
+    // le faltara algo de la sesión OAuth, se amplía CLI_OAUTH_ALLOWLIST, nunca
+    // un scope. El filtro de reservados del `spawn` de abajo queda como segunda red.
+    const summaryBaseEnv = buildChildEnvLib.buildMinimalCliEnv({ processEnv: process.env, extras: { CLAUDE_PROJECT_DIR: ROOT } });
 
     let proc;
     try {
@@ -20246,6 +20295,8 @@ INSTRUCCIÓN: Integrá los complementos del usuario en tu respuesta. Generá UNA
           configLoader: loadConfig,
           log,
           cwd: ROOT,
+          // #7636 · CA-6 (RS-5) — el juez es un LLM: env mínimo de CLI (sin GH_TOKEN/AWS_*).
+          envPolicy: 'minimal',
           requestLog: sherlockReqLog, // #4335 — sink de log por corrida (opcional)
         });
         sherlockInvoked = verdict.verdict !== 'skipped';
@@ -20290,6 +20341,8 @@ INSTRUCCIÓN: Reelaborá tu respuesta tomando en cuenta las contradicciones dete
                 configLoader: loadConfig,
                 log,
                 cwd: ROOT,
+                // #7636 · CA-6 (RS-5) — el juez es un LLM: env mínimo de CLI (sin GH_TOKEN/AWS_*).
+                envPolicy: 'minimal',
                 requestLog: sherlockReqLog, // #4335 — misma corrida, 2da pasada
               });
               if (verdict2.verdict === 'rechazado' && verdict2.inconsistencies.length >= 1) {
