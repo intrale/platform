@@ -24,6 +24,7 @@ const os = require('node:os');
 // esto, un provider drenado en runtime por el pulpo volvía flaky la chain
 // (#4801 rebote). Ver isolate-provider-disabled.helper.js.
 require('./isolate-provider-disabled.helper');
+const { withEnv } = require('../test-helpers/with-env');
 const cmp = require('../commander/multi-provider');
 // #6179 — la política de emisión ya no vive en este módulo: la decide
 // `fallback-episode-state`. Los tests del aviso proactivo apuntan ahí.
@@ -172,17 +173,22 @@ test('SR-4 — sanitizeUserPrompt detecta tag-injection <system-reminder>', () =
 test('CA-7 — Claude gated por cuota → resuelve a openai-codex (próximo en chain)', () => {
     const dir = mkTmpPipelineDir();
     try {
-        const fakeQuota = makeFakeQuotaModule(['anthropic']);
-        const r = cmp.resolveCommanderProvider({
-            pipelineDir: dir,
-            log: () => {},
-            quotaModule: fakeQuota,
+        // #7595 — hermético: el fixture declara codex con `credentials_env` y el
+        // precheck lee `process.env`. Sin esto el resultado dependía de que el
+        // host tuviera OPENAI_API_KEY cargada (codex saltaba a antigravity).
+        withEnv({ OPENAI_API_KEY: 'fake-oai-key-hermetico' }, () => {
+            const fakeQuota = makeFakeQuotaModule(['anthropic']);
+            const r = cmp.resolveCommanderProvider({
+                pipelineDir: dir,
+                log: () => {},
+                quotaModule: fakeQuota,
+            });
+            assert.equal(r.gated, false);
+            assert.equal(r.provider, 'openai-codex');
+            assert.equal(r.primaryProvider, 'anthropic');
+            assert.equal(r.crossProvider, true);
+            assert.deepEqual(r.chainTried, ['anthropic', 'openai-codex']);
         });
-        assert.equal(r.gated, false);
-        assert.equal(r.provider, 'openai-codex');
-        assert.equal(r.primaryProvider, 'anthropic');
-        assert.equal(r.crossProvider, true);
-        assert.deepEqual(r.chainTried, ['anthropic', 'openai-codex']);
     } finally {
         cleanup(dir);
     }

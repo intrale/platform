@@ -25,6 +25,7 @@ const os = require('node:os');
 // esto, un provider drenado en runtime por el pulpo volvía flaky la chain
 // (#4801 rebote). Ver isolate-provider-disabled.helper.js.
 require('./isolate-provider-disabled.helper');
+const { withEnv } = require('../test-helpers/with-env');
 const inflight = require('../commander/inflight-fallback');
 // #6179 CA-8 — lista única de jerga/secretos compartida por los tests anti-jerga.
 const { assertCopyLimpio } = require('./helpers/forbidden-copy-patterns');
@@ -210,19 +211,23 @@ test('CA-7 — primaryDurationMs >= budget dispara global_budget_exceeded', () =
 test('#4329 no-regresión — dur corta con budget 600s NO dispara timeout', () => {
     const dir = mkTmpPipelineDir();
     try {
-        const d = inflight.decideInflightFallback({
-            primaryProvider: 'anthropic',
-            primaryErrorClass: 'http_5xx',
-            primaryDurationMs: 3_000, // pocos segundos — muy por debajo del budget
-            primaryPartialOutput: '',
-            attemptIndex: 0,
-            budgetMs: inflight.TURN_BUDGET_MS,
-            pipelineDir: dir,
-            chatId: 'chat-fast',
-            requestId: 'req-fast',
+        // #7595 — hermético: sin credencial en `process.env` el secundario
+        // quedaba descartado por el precheck y el test dependía del host.
+        withEnv({ OPENAI_API_KEY: 'fake-oai-key-hermetico' }, () => {
+            const d = inflight.decideInflightFallback({
+                primaryProvider: 'anthropic',
+                primaryErrorClass: 'http_5xx',
+                primaryDurationMs: 3_000, // pocos segundos — muy por debajo del budget
+                primaryPartialOutput: '',
+                attemptIndex: 0,
+                budgetMs: inflight.TURN_BUDGET_MS,
+                pipelineDir: dir,
+                chatId: 'chat-fast',
+                requestId: 'req-fast',
+            });
+            assert.notEqual(d.reason, 'global_budget_exceeded');
+            assert.equal(d.shouldRetry, true, 'un pedido rápido con error debe intentar fallback, no cortar por tiempo');
         });
-        assert.notEqual(d.reason, 'global_budget_exceeded');
-        assert.equal(d.shouldRetry, true, 'un pedido rápido con error debe intentar fallback, no cortar por tiempo');
     } finally { cleanup(dir); }
 });
 
