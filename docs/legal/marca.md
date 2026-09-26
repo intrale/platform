@@ -11,7 +11,7 @@ Historia: #7600 · Épico: #7589 · Fecha del relevamiento: 2026-09-23
 - **Riesgo de conflicto: medio.** En las tiendas no aparece ninguna app llamada "Intrale", pero **el dominio `intrale.com` está registrado por un tercero desde 2003** (no hay evidencia en el repo de que sea nuestro) y los registros de marcas (INPI, WIPO) no se pudieron consultar de forma automática.
 - **Registrar en Argentina cuesta poco:** unos $40.000 por clase en tasas del INPI (septiembre 2026), o sea ~$80.000 para las 2 clases base, más los honorarios de un agente de marcas si se usa uno. Tarda de 12 a 24 meses. ⚖️ (requiere abogado)
 - **Renombrar hoy es barato; en un año puede ser caro.** Hoy ninguna app está publicada en Google Play ni en App Store, así que el nombre visible se cambia con un puñado de archivos. Una vez publicadas, el identificador de cada app en la tienda queda congelado y los clientes ya conocen el nombre.
-- **Opciones:** 1 registrar · 2 esperar · 3 renombrar. La decisión es del operador (ver §4).
+- **Opciones:** 1 registrar · 2 esperar · 3 renombrar. Decisión del operador (2026-09-26): **esperar** (ver §4).
 
 ## 1. Disponibilidad y riesgo de conflicto
 
@@ -100,9 +100,9 @@ La mayoría de las menciones son el paquete `ar.com.intrale` y documentación, q
 
 ## 4. Decisión del operador
 
-- Decisión: **pendiente**
-- Fecha: pendiente del operador (AAAA-MM-DD)
-- Firmó: pendiente (`leitolarreta`)
+- Decisión: **esperar** (opción 2) — no registrar ni renombrar por ahora; se revisa cuando el operador lo indique (o ante alguno de los disparadores de abajo). No bloquea ninguna otra tarea.
+- Fecha: 2026-09-26
+- Firmó: `leitolarreta` (decisión comunicada por Telegram al Commander, audit_ref `commander-2026-09-26-marca-7600`)
 - Fuente: pedido de decisión en el issue #7600
 
 Antecedente (no es decisión): el 2026-09-22 el operador dijo que la marca no le preocupa mucho y que, llegado el caso, se podría renombrar.
