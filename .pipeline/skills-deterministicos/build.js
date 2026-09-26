@@ -141,31 +141,7 @@ function buildGradleCommand(scope, mod) {
 // rompa el path con espacios de "Program Files").
 //
 // Devuelve { cmd, useShell } — el caller debe usar ambos al spawn.
-function resolveBashCommand(cmd) {
-    if (process.platform !== 'win32') {
-        return { cmd, useShell: false };
-    }
-    if (cmd !== 'bash') {
-        // ./gradlew y otros: usar shell para que cmd.exe encuentre .bat
-        return { cmd, useShell: true };
-    }
-    const candidates = [
-        process.env.GIT_BASH_PATH,
-        'C:\\Program Files\\Git\\bin\\bash.exe',
-        'C:\\Program Files\\Git\\usr\\bin\\bash.exe',
-        'C:\\Program Files (x86)\\Git\\bin\\bash.exe',
-    ].filter(Boolean);
-    for (const candidate of candidates) {
-        try {
-            if (fs.existsSync(candidate)) {
-                return { cmd: candidate, useShell: false };
-            }
-        } catch {}
-    }
-    // No se encontró Git Bash — fallback a 'bash' por PATH (puede caer
-    // en WSL bash). Mejor fallar con stack trace claro que silenciosamente.
-    return { cmd, useShell: true };
-}
+const { resolveBashCommand } = require('../lib/bash-command');
 
 // ── Spawn con captura completa ───────────────────────────────────────
 // #4155 — `runGradle` envuelve el spawn con el lock global de Gradle para que

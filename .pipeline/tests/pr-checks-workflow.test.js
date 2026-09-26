@@ -16,6 +16,7 @@
  * no se vuelva a perder en silencio ante un refactor del workflow.
  */
 
+const { resolveUsableBash, BASH_SKIP_REASON } = require('../lib/bash-command');
 const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
@@ -343,14 +344,16 @@ test('authorship-trailer: checkout de base_ref sin credenciales, sin head del PR
   assert.match(runs, /test -f|\[ ! -f \.pipeline\/lib\/authorship\/cli\.js \]/, 'falta el guard de bootstrap (base sin verificador)');
 });
 
-test('authorship-trailer: base sin cli.js → notice y exit 0 (script de bootstrap real)', { skip: process.platform === 'win32' && !process.env.SHELL }, () => {
+test('authorship-trailer: base sin cli.js → notice y exit 0 (script de bootstrap real)', (t) => {
+  const bash = resolveUsableBash();
+  if (!bash) return t.skip(BASH_SKIP_REASON);
   const { execFileSync } = require('node:child_process');
   const os = require('node:os');
   const job = cargarWorkflow().jobs['authorship-trailer'];
   const step = job.steps.find((s) => s.run);
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'authorship-boot-'));
   try {
-    const out = execFileSync('bash', ['-c', step.run], { cwd: tmp, encoding: 'utf8', env: { ...process.env, PR_NUMBER: '1' } });
+    const out = execFileSync(bash, ['-c', step.run], { shell: false, timeout: 15000, cwd: tmp, encoding: 'utf8', env: { ...process.env, PR_NUMBER: '1' } });
     assert.match(out, /::notice title=Autoría del PR::El verificador no está disponible en la rama base; se omite\./);
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
