@@ -33,6 +33,7 @@ const inflight = require('../commander/inflight-fallback');
 const { assertCopyLimpio } = require('./helpers/forbidden-copy-patterns');
 const credPrecheck = require('../commander/credentials-precheck');
 const auditLog = require('../audit-log');
+const { withEnv } = require('../test-helpers/with-env');
 
 // -----------------------------------------------------------------------------
 // Helpers
@@ -213,19 +214,24 @@ test('CA-7 — primaryDurationMs >= budget dispara global_budget_exceeded', () =
 test('#4329 no-regresión — dur corta con budget 600s NO dispara timeout', () => {
     const dir = mkTmpPipelineDir();
     try {
-        const d = inflight.decideInflightFallback({
-            primaryProvider: 'anthropic',
-            primaryErrorClass: 'http_5xx',
-            primaryDurationMs: 3_000, // pocos segundos — muy por debajo del budget
-            primaryPartialOutput: '',
-            attemptIndex: 0,
-            budgetMs: inflight.TURN_BUDGET_MS,
-            pipelineDir: dir,
-            chatId: 'chat-fast',
-            requestId: 'req-fast',
+        // #7684 — el fixture declara openai-codex con credencial por env (la usa el
+        // test CA-9 de placeholder). El escenario exige un fallback sano, así que
+        // la credencial se fija acá en vez de depender del ambiente del runner.
+        withEnv({ OPENAI_API_KEY: 'test-oai-key-7684' }, () => { // secret-scan:ignore — valor fake de fixture
+            const d = inflight.decideInflightFallback({
+                primaryProvider: 'anthropic',
+                primaryErrorClass: 'http_5xx',
+                primaryDurationMs: 3_000, // pocos segundos — muy por debajo del budget
+                primaryPartialOutput: '',
+                attemptIndex: 0,
+                budgetMs: inflight.TURN_BUDGET_MS,
+                pipelineDir: dir,
+                chatId: 'chat-fast',
+                requestId: 'req-fast',
+            });
+            assert.notEqual(d.reason, 'global_budget_exceeded');
+            assert.equal(d.shouldRetry, true, 'un pedido rápido con error debe intentar fallback, no cortar por tiempo');
         });
-        assert.notEqual(d.reason, 'global_budget_exceeded');
-        assert.equal(d.shouldRetry, true, 'un pedido rápido con error debe intentar fallback, no cortar por tiempo');
     } finally { cleanup(dir); }
 });
 
