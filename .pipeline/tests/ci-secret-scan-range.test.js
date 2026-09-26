@@ -41,19 +41,9 @@ const fixture = (valor) => `${JSON.stringify({ [SECRET_FIELD]: valor })}\n`;
 
 const toPosix = (value) => value.replace(/\\/g, '/');
 
-function resolveShell() {
-  const candidates = [
-    'sh', 'bash',
-    'C:/Program Files/Git/bin/bash.exe',
-    'C:/Program Files/Git/usr/bin/sh.exe',
-    'C:/Program Files (x86)/Git/bin/bash.exe',
-  ];
-  for (const shell of candidates) {
-    const probe = spawnSync(shell, ['-c', 'exit 0'], { encoding: 'utf8' });
-    if (!probe.error && probe.status === 0) return shell;
-  }
-  throw new Error('no se encontró un shell POSIX para ejecutar el step del workflow');
-}
+const { resolveUsableBash, BASH_SKIP_REASON } = require('../lib/bash-command');
+const bash = resolveUsableBash();
+
 
 // Extrae el escalar de bloque `run: |` del step pedido, ya des-indentado.
 function extractRunBlock(stepName) {
@@ -91,7 +81,8 @@ function runStep(stepName, { workspace, env }) {
   const script = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ci-step-')), 'step.sh');
   fs.writeFileSync(script, `${extractRunBlock(stepName)}\n`);
   const runnerTemp = fs.mkdtempSync(path.join(os.tmpdir(), 'runner-temp-'));
-  const result = spawnSync(resolveShell(), ['-e', toPosix(script)], {
+  const result = spawnSync(bash, ['-e', toPosix(script)], {
+    shell: false, timeout: 30000,
     cwd: workspace,
     encoding: 'utf8',
     env: {
@@ -199,7 +190,8 @@ test('el step de rango es shell puro: las expresiones de Actions van en env:', (
   );
 });
 
-test('el rango se acota al tip real de la base, no a la base declarada del PR', () => {
+test('el rango se acota al tip real de la base, no a la base declarada del PR', (t) => {
+  if (!bash) return t.skip(BASH_SKIP_REASON);
   const { workspace, A, B, C, M } = repoConMainAdelantado();
   const paso = resolverRango({ workspace, ...envPr({ A, B, M }) });
   assert.equal(paso.status, 0, paso.salida);
@@ -214,7 +206,8 @@ test('el rango se acota al tip real de la base, no a la base declarada del PR', 
 // que no mergea main deja el árbol que decide en una época anterior al control y
 // cae en bootstrap. Verificado contra la API: PR 5278 base.sha=ecb552459fb8 ≠
 // tip de main c0200429504b.
-test('el árbol que decide es el tip de main aunque el PR no haya mergeado main', () => {
+test('el árbol que decide es el tip de main aunque el PR no haya mergeado main', (t) => {
+  if (!bash) return t.skip(BASH_SKIP_REASON);
   const { workspace, A, B, C, M } = repoConMainAdelantado();
   const paso = resolverRango({ workspace, ...envPr({ A, B, M }) });
   assert.equal(paso.status, 0, paso.salida);
@@ -230,7 +223,8 @@ test('el árbol que decide es el tip de main aunque el PR no haya mergeado main'
 // La vía de fallback (sin merge commit efímero) es donde `diff_base` degrada al
 // punto de fork. `decider` NO degrada: sigue siendo el tip de la rama base, así
 // que la rama de bootstrap tampoco se puede reabrir por acá.
-test('sin merge commit efímero el rango degrada al fork pero el árbol que decide no', () => {
+test('sin merge commit efímero el rango degrada al fork pero el árbol que decide no', (t) => {
+  if (!bash) return t.skip(BASH_SKIP_REASON);
   const { workspace, A, B, C } = repoConMainAdelantado();
   const paso = resolverRango({ workspace, ...envPr({ A, B, M: B }) });
   assert.equal(paso.status, 0, paso.salida);
@@ -239,7 +233,8 @@ test('sin merge commit efímero el rango degrada al fork pero el árbol que deci
   assert.notEqual(paso.outputs.decider, paso.outputs.diff_base);
 });
 
-test('regresión #5280: el PR benigno NO hereda los hallazgos del commit ajeno', () => {
+test('regresión #5280: el PR benigno NO hereda los hallazgos del commit ajeno', (t) => {
+  if (!bash) return t.skip(BASH_SKIP_REASON);
   const { workspace, A, B, C, M } = repoConMainAdelantado();
 
   // Control: el escenario es real. Con el rango viejo (base declarada) el gate
@@ -257,7 +252,8 @@ test('regresión #5280: el PR benigno NO hereda los hallazgos del commit ajeno',
   assert.doesNotMatch(conRangoNuevo.salida, new RegExp(TOKEN_AJENO));
 });
 
-test('acotar el rango no afloja el gate: el secreto propio del PR sigue bloqueando', () => {
+test('acotar el rango no afloja el gate: el secreto propio del PR sigue bloqueando', (t) => {
+  if (!bash) return t.skip(BASH_SKIP_REASON);
   const { workspace, A, B, M } = repoConMainAdelantado({ secretoEnElPr: true });
   const { outputs } = resolverRango({ workspace, ...envPr({ A, B, M }) });
   const scan = escanear({ workspace, baseSha: outputs.diff_base, headSha: M });
@@ -267,7 +263,8 @@ test('acotar el rango no afloja el gate: el secreto propio del PR sigue bloquean
   assert.doesNotMatch(scan.salida, new RegExp(TOKEN_PROPIO), 'el valor crudo no puede filtrarse al log');
 });
 
-test('sin merge commit efímero cae a origin/<base ref>, nunca al padre del head', () => {
+test('sin merge commit efímero cae a origin/<base ref>, nunca al padre del head', (t) => {
+  if (!bash) return t.skip(BASH_SKIP_REASON);
   const { workspace, A, B, C } = repoConMainAdelantado();
   // GITHUB_SHA == head del PR: `^1` sería A y el rango se achicaría al commit
   // anterior de la propia rama. El step tiene que ignorar esa vía.
@@ -277,7 +274,8 @@ test('sin merge commit efímero cae a origin/<base ref>, nunca al padre del head
   assert.equal(paso.outputs.diff_base, A, 'merge-base(main, head) es el punto de fork');
 });
 
-test('sin ancestro común el rango degrada a la base declarada y lo declara', () => {
+test('sin ancestro común el rango degrada a la base declarada y lo declara', (t) => {
+  if (!bash) return t.skip(BASH_SKIP_REASON);
   const { workspace, A, B, M } = repoConMainAdelantado();
   // Historia huérfana: no comparte ancestro con el merge commit.
   git(workspace, ['checkout', '-q', '--orphan', 'huerfana']);
@@ -298,7 +296,8 @@ test('sin ancestro común el rango degrada a la base declarada y lo declara', ()
   assert.match(paso.salida, /::warning::secret-scan: sin merge-base/, 'no puede degradar en silencio');
 });
 
-test('en push el rango sigue siendo before..sha', () => {
+test('en push el rango sigue siendo before..sha', (t) => {
+  if (!bash) return t.skip(BASH_SKIP_REASON);
   const { workspace, C, M } = repoConMainAdelantado();
   const paso = resolverRango({
     workspace,
@@ -330,14 +329,16 @@ test('en push el rango sigue siendo before..sha', () => {
 // #5244 rev-9 — `decider_trusted` es lo que habilita (o no) el alta del control
 // en el step de scan. Tiene que valer 1 sólo cuando BASE_TIP salió de una fuente
 // que el autor del PR no controla, y 0 cuando degradó a la merge-base declarada.
-test('decider_trusted=1 por la vía del merge commit efímero', () => {
+test('decider_trusted=1 por la vía del merge commit efímero', (t) => {
+  if (!bash) return t.skip(BASH_SKIP_REASON);
   const { workspace, A, B, M } = repoConMainAdelantado();
   const paso = resolverRango({ workspace, ...envPr({ A, B, M }) });
   assert.equal(paso.status, 0, paso.salida);
   assert.equal(paso.outputs.decider_trusted, '1', 'parent1 del merge efímero es el tip real de la base');
 });
 
-test('decider_trusted=1 por la vía de origin/<base ref>', () => {
+test('decider_trusted=1 por la vía de origin/<base ref>', (t) => {
+  if (!bash) return t.skip(BASH_SKIP_REASON);
   const { workspace, A, B, C } = repoConMainAdelantado();
   // Sin merge efímero: BASE_TIP sale del ref remoto, que tampoco mueve el autor.
   const paso = resolverRango({ workspace, ...envPr({ A, B, M: B }) });
@@ -346,7 +347,8 @@ test('decider_trusted=1 por la vía de origin/<base ref>', () => {
   assert.equal(paso.outputs.decider_trusted, '1');
 });
 
-test('decider_trusted=0 cuando BASE_TIP degrada a la merge-base declarada del PR', () => {
+test('decider_trusted=0 cuando BASE_TIP degrada a la merge-base declarada del PR', (t) => {
+  if (!bash) return t.skip(BASH_SKIP_REASON);
   const { workspace, A, B } = repoConMainAdelantado();
   // Sin merge efímero y sin ref remoto resoluble: única vía que queda es
   // PR_BASE_SHA, que el autor elige al ramificar. No es una base confiable.
@@ -361,7 +363,8 @@ test('decider_trusted=0 cuando BASE_TIP degrada a la merge-base declarada del PR
   );
 });
 
-test('decider_trusted=1 en push: `before` sale del historial de la rama protegida', () => {
+test('decider_trusted=1 en push: `before` sale del historial de la rama protegida', (t) => {
+  if (!bash) return t.skip(BASH_SKIP_REASON);
   const { workspace, C, M } = repoConMainAdelantado();
   const paso = resolverRango({
     workspace,

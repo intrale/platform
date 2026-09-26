@@ -28,12 +28,12 @@ const os = require('node:os');
 // esto, un provider drenado en runtime por el pulpo volvía flaky la chain
 // (#4801 rebote). Ver isolate-provider-disabled.helper.js.
 require('./isolate-provider-disabled.helper');
-const { withEnv } = require('../test-helpers/with-env');
 const inflight = require('../commander/inflight-fallback');
 // #6179 CA-8 — lista única de jerga/secretos compartida por los tests anti-jerga.
 const { assertCopyLimpio } = require('./helpers/forbidden-copy-patterns');
 const credPrecheck = require('../commander/credentials-precheck');
 const auditLog = require('../audit-log');
+const { withEnv } = require('../test-helpers/with-env');
 
 // -----------------------------------------------------------------------------
 // Helpers
@@ -214,9 +214,10 @@ test('CA-7 — primaryDurationMs >= budget dispara global_budget_exceeded', () =
 test('#4329 no-regresión — dur corta con budget 600s NO dispara timeout', () => {
     const dir = mkTmpPipelineDir();
     try {
-        // #7595 — hermético: sin credencial en `process.env` el secundario
-        // quedaba descartado por el precheck y el test dependía del host.
-        withEnv({ OPENAI_API_KEY: 'fake-oai-key-hermetico' }, () => {
+        // #7684 — el fixture declara openai-codex con credencial por env (la usa el
+        // test CA-9 de placeholder). El escenario exige un fallback sano, así que
+        // la credencial se fija acá en vez de depender del ambiente del runner.
+        withEnv({ OPENAI_API_KEY: 'test-oai-key-7684' }, () => { // secret-scan:ignore — valor fake de fixture
             const d = inflight.decideInflightFallback({
                 primaryProvider: 'anthropic',
                 primaryErrorClass: 'http_5xx',

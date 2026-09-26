@@ -5,6 +5,8 @@
 // main superaba el buffer del pipe: `set -o pipefail` + `echo "$changed" | head`.
 'use strict';
 
+const { resolveUsableBash, BASH_SKIP_REASON } = require('../lib/bash-command');
+
 const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('fs');
@@ -19,7 +21,9 @@ test('smart-build.sh no pipea $changed a head/wc (evita SIGPIPE con pipefail)', 
   assert.ok(!/echo\s+"\$changed"\s*\|/.test(src), 'no debe existir `echo "$changed" | ...`');
 });
 
-test('el patrón herestring lista un diff enorme sin morir por SIGPIPE', () => {
+test('el patrón herestring lista un diff enorme sin morir por SIGPIPE', (t) => {
+  const bash = resolveUsableBash();
+  if (!bash) return t.skip(BASH_SKIP_REASON);
   const probe = [
     'set -euo pipefail',
     'changed=$(seq 1 50000 | sed "s|^|some/long/path/file-|")',
@@ -27,8 +31,7 @@ test('el patrón herestring lista un diff enorme sin morir por SIGPIPE', () => {
     'total=$(wc -l <<< "$changed")',
     'echo "$total"',
   ].join('\n');
-  const r = spawnSync('bash', ['-c', probe], { encoding: 'utf8' });
-  if (r.error) return; // sin bash disponible: no aplica
+  const r = spawnSync(bash, ['-c', probe], { encoding: 'utf8', shell: false, timeout: 15000 });
   assert.strictEqual(r.status, 0, r.stderr);
   assert.strictEqual(r.stdout.trim(), '50000');
 });

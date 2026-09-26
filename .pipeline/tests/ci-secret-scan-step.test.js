@@ -39,19 +39,9 @@ const LEGACY_SCANNER = '#!/usr/bin/env node\n// Scanner previo a #5244: ignora l
 
 const toPosix = (value) => value.replace(/\\/g, '/');
 
-function resolveShell() {
-  const candidates = [
-    'sh', 'bash',
-    'C:/Program Files/Git/bin/bash.exe',
-    'C:/Program Files/Git/usr/bin/sh.exe',
-    'C:/Program Files (x86)/Git/bin/bash.exe',
-  ];
-  for (const shell of candidates) {
-    const probe = spawnSync(shell, ['-c', 'exit 0'], { encoding: 'utf8' });
-    if (!probe.error && probe.status === 0) return shell;
-  }
-  throw new Error('no se encontró un shell POSIX para ejecutar el step del workflow');
-}
+const { resolveUsableBash, BASH_SKIP_REASON } = require('../lib/bash-command');
+const bash = resolveUsableBash();
+
 
 // Extrae el escalar de bloque `run: |` del step pedido, ya des-indentado.
 function extractRunBlock(stepName) {
@@ -107,7 +97,8 @@ function runWorkflowStep({ workspace, baseSha, headSha, deciderTrusted = '1' }) 
   const script = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ci-step-')), 'step.sh');
   fs.writeFileSync(script, `${extractRunBlock('Secret scan del diff')}\n`);
   const runnerTemp = fs.mkdtempSync(path.join(os.tmpdir(), 'runner-temp-'));
-  const result = spawnSync(resolveShell(), ['-e', toPosix(script)], {
+  const result = spawnSync(bash, ['-e', toPosix(script)], {
+    shell: false, timeout: 30000,
     cwd: workspace,
     encoding: 'utf8',
     env: {
@@ -202,7 +193,8 @@ test('CA-9: el scanner por defecto sale del árbol base y el head es sólo boots
   assert.match(WORKFLOW_TEXT, /secret-scan:\n(?:.*\n)*?\s+continue-on-error: false/);
 });
 
-test('CA-9: un PR que neutraliza el scanner en su propio diff queda BLOQUEADO', () => {
+test('CA-9: un PR que neutraliza el scanner en su propio diff queda BLOQUEADO', (t) => {
+  if (!bash) return t.skip(BASH_SKIP_REASON);
   const workspace = initRepo();
   for (const relative of BASE_TREE_FILES) copyFromRepo(workspace, relative);
   copyFromRepo(workspace, '.pipeline/secret-scan-allowlist.json');
@@ -274,7 +266,8 @@ function commitDeAlta(workspace, extras = {}) {
 // nunca a la base. La suite quedaba verde porque codificaba ese bloqueo como
 // invariante y ningún caso cubría el alta. Estos tests cubren el alta.
 
-test('ALTA: base sin el job secret-scan y diff limpio ⇒ VERDE, declarado en el log', () => {
+test('ALTA: base sin el job secret-scan y diff limpio ⇒ VERDE, declarado en el log', (t) => {
+  if (!bash) return t.skip(BASH_SKIP_REASON);
   const workspace = initRepo();
   writeFile(workspace, 'README.md', 'base\n');
   git(workspace, ['add', '.']);
@@ -291,7 +284,8 @@ test('ALTA: base sin el job secret-scan y diff limpio ⇒ VERDE, declarado en el
   assert.doesNotMatch(step.salida, /BLOQUEADO/);
 });
 
-test('ALTA: la ventana no afloja el gate — el secreto del propio diff sigue bloqueando', () => {
+test('ALTA: la ventana no afloja el gate — el secreto del propio diff sigue bloqueando', (t) => {
+  if (!bash) return t.skip(BASH_SKIP_REASON);
   const workspace = initRepo();
   writeFile(workspace, 'README.md', 'base\n');
   git(workspace, ['add', '.']);
@@ -308,7 +302,8 @@ test('ALTA: la ventana no afloja el gate — el secreto del propio diff sigue bl
   assert.doesNotMatch(step.salida, new RegExp(SYNTHETIC_TOKEN));
 });
 
-test('DEGRADACIÓN: la base YA declara el job ⇒ FAIL-CLOSED, sin alta', () => {
+test('DEGRADACIÓN: la base YA declara el job ⇒ FAIL-CLOSED, sin alta', (t) => {
+  if (!bash) return t.skip(BASH_SKIP_REASON);
   const workspace = initRepo();
   writeFile(workspace, '.github/workflows/security-sast.yml', WORKFLOW_CON_GATE);
   git(workspace, ['add', '.']);
@@ -329,7 +324,8 @@ test('DEGRADACIÓN: la base YA declara el job ⇒ FAIL-CLOSED, sin alta', () => 
   assert.doesNotMatch(step.salida, new RegExp(SYNTHETIC_TOKEN));
 });
 
-test('DEGRADACIÓN: decider_trusted=0 ⇒ FAIL-CLOSED aunque la base no tenga el job', () => {
+test('DEGRADACIÓN: decider_trusted=0 ⇒ FAIL-CLOSED aunque la base no tenga el job', (t) => {
+  if (!bash) return t.skip(BASH_SKIP_REASON);
   const workspace = initRepo();
   writeFile(workspace, 'README.md', 'base\n');
   git(workspace, ['add', '.']);
@@ -348,7 +344,8 @@ test('DEGRADACIÓN: decider_trusted=0 ⇒ FAIL-CLOSED aunque la base no tenga el
   assert.doesNotMatch(step.salida, new RegExp(SYNTHETIC_TOKEN));
 });
 
-test('DEGRADACIÓN: DECIDER_TRUSTED ausente ⇒ FAIL-CLOSED (nunca fail-open por env vacía)', () => {
+test('DEGRADACIÓN: DECIDER_TRUSTED ausente ⇒ FAIL-CLOSED (nunca fail-open por env vacía)', (t) => {
+  if (!bash) return t.skip(BASH_SKIP_REASON);
   const workspace = initRepo();
   writeFile(workspace, 'README.md', 'base\n');
   git(workspace, ['add', '.']);
@@ -362,7 +359,8 @@ test('DEGRADACIÓN: DECIDER_TRUSTED ausente ⇒ FAIL-CLOSED (nunca fail-open por
   assert.match(step.salida, /decider_trusted= /, 'el diagnóstico muestra la señal vacía');
 });
 
-test('bootstrap + diff que toca el control SIN declarar el job en el head: FAIL-CLOSED', () => {
+test('bootstrap + diff que toca el control SIN declarar el job en el head: FAIL-CLOSED', (t) => {
+  if (!bash) return t.skip(BASH_SKIP_REASON);
   const workspace = initRepo();
   writeFile(workspace, 'README.md', 'base\n');
   git(workspace, ['add', '.']);
@@ -395,7 +393,8 @@ test('bootstrap + diff que toca el control SIN declarar el job en el head: FAIL-
 // #5244 rev-8 — el cruce que faltaba y por el que pasó el bypass: la rama de
 // bootstrap (base sin protocolo) alcanzada CON el scanner del head neutralizado.
 // Antes cada mitad estaba cubierta por separado y la combinación salía en verde.
-test('CA-9: bootstrap alcanzable + scanner del head HOSTIL queda BLOQUEADO', () => {
+test('CA-9: bootstrap alcanzable + scanner del head HOSTIL queda BLOQUEADO', (t) => {
+  if (!bash) return t.skip(BASH_SKIP_REASON);
   const workspace = initRepo();
   for (const relative of BASE_TREE_FILES) copyFromRepo(workspace, relative);
   copyFromRepo(workspace, '.pipeline/secret-scan-allowlist.json');
@@ -439,7 +438,8 @@ test('CA-9: bootstrap alcanzable + scanner del head HOSTIL queda BLOQUEADO', () 
   assert.doesNotMatch(step.salida, new RegExp(SYNTHETIC_TOKEN));
 });
 
-test('bootstrap benigno: sin paths de control corre el head, lo declara y bloquea el secreto', () => {
+test('bootstrap benigno: sin paths de control corre el head, lo declara y bloquea el secreto', (t) => {
+  if (!bash) return t.skip(BASH_SKIP_REASON);
   const workspace = initRepo();
   for (const relative of BASE_TREE_FILES) copyFromRepo(workspace, relative);
   copyFromRepo(workspace, '.pipeline/secret-scan-allowlist.json');
