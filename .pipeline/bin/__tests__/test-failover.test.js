@@ -26,22 +26,16 @@ const os = require('node:os');
 const SCRIPT = path.resolve(__dirname, '..', 'test-failover.sh');
 const SKILLS = ['backend-dev', 'pipeline-dev', 'android-dev'];
 
-function bashAvailable() {
-    try {
-        const r = spawnSync('bash', ['--version'], { encoding: 'utf8' });
-        return r.status === 0;
-    } catch { return false; }
-}
+const { resolveUsableBash, BASH_SKIP_REASON } = require('../../lib/bash-command');
+const bash = resolveUsableBash();
+const skipOpts = bash ? {} : { skip: BASH_SKIP_REASON };
 
 function runScript(extraEnv = {}) {
-    return spawnSync('bash', [SCRIPT], {
-        encoding: 'utf8',
+    return spawnSync(bash, [SCRIPT], {
+        encoding: 'utf8', shell: false, timeout: 30000,
         env: { ...process.env, ...extraEnv },
     });
 }
-
-const HAS_BASH = bashAvailable();
-const skipOpts = HAS_BASH ? {} : { skip: 'bash no disponible en este entorno' };
 
 // Línea canónica: `[<skill>] Failover <primario> → <fallback>  <ISO-8601>`
 const FAILOVER_RE = /^\[([a-z0-9-]+)\] Failover (\S+) → (\S+)\s+(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})$/;

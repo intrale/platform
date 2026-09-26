@@ -766,7 +766,11 @@ test('cliente · handshake, descarta notificaciones sin id, empareja por id y ci
         const snap = await appServer.readRateLimits(session);
         const c = await appServer.consumeResetCredit(session, { idempotencyKey: 'k', creditId: 'crd_abc' });
         return { snap, c };
-    }, { spawnImpl, launcher: { cmd: 'codex-fake', prefixArgs: [], shell: false }, exitGraceMs: 200 });
+    // #7684 — gracia amplia: el hijo fake sale por setImmediate al cerrar stdin, así
+    // que la carrera se resuelve igual de rápido; con 200ms, un event loop bloqueado
+    // por la suite completa dejaba ganar al timer (fase timers antes que check) y el
+    // cliente mataba al hijo → falso rojo en `killed`.
+    }, { spawnImpl, launcher: { cmd: 'codex-fake', prefixArgs: [], shell: false }, exitGraceMs: 5000 });
     assert.equal(r.snap.rateLimits.secondary.usedPercent, 94);
     assert.deepEqual(r.c, { outcome: 'reset' });
     assert.deepEqual(spawned.args, ['app-server']);

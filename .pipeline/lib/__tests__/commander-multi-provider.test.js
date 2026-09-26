@@ -91,6 +91,10 @@ function mkTmpPipelineDir() {
                 supports_tool_use: true,
                 prompt_caching: { supported: true, auto: true },
                 credentials_env: ['OPENAI_API_KEY'],
+                // #7684 — igual que la config real (#6612): codex autentica por login
+                // OAuth del CLI; sin esto el resultado dependía de que OPENAI_API_KEY
+                // existiera en el ambiente del runner (falso rojo fuera de CI).
+                auth_mode: 'oauth',
                 permissions_mode: 'bypassPermissions',
             },
             // #6563 — tercer eslabón del plantel vigente (free hasta #6564).
