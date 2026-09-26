@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // telegram-notifier.js — Handler proactivo de notificaciones al operador (Leo)
 // Issue #3384

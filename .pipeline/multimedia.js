@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // multimedia.js — Preprocesamiento de multimedia para el Commander V2
 // Transcribe audio (whisper local, motor gratuito) y describe imágenes (Anthropic Vision)
 // Se ejecuta ANTES de pasar el mensaje a Claude

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // V3 Metrics — Proyecciones de consumo (tokens + TTS) (#2488)
 // Calcula promedios diarios, proyecciones semanales/mensuales y detección de desvío vs cuota.
 //

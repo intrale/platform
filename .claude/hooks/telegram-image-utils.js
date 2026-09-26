@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // telegram-image-utils.js — Utilidades compartidas para imágenes PNG en Telegram
 // Pure Node.js. canvas es una dependencia opcional (try/catch en require).
 // Exporta: { renderTextAsPng, sendTelegramPhoto }

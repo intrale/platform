@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Guardia estática (#7592 · D1): el label `licencias:excepcion-aprobada` lo
 // aplica SÓLO un humano. Ningún código ejecutable del pipeline, de los hooks ni
 // de los skills puede aplicarlo. La mera mención (docs, handoffs, este gate) no

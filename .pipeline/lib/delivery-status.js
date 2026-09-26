@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // delivery-status.js — Fuente ÚNICA del estado "Entregado" (#5629).
 //

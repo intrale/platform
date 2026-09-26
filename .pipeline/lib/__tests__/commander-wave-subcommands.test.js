@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // commander-wave-subcommands.test.js — Tests del handler `/wave` con
 // subcomandos status/next/add/promote (issue #3493 / Spike #3378 H5).

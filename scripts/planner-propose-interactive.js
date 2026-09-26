@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // planner-propose-interactive.js — Propone nuevas historias al cierre del sprint
 // Se ejecuta automáticamente desde Watch-Agentes.ps1 tras el cierre del sprint.
 //

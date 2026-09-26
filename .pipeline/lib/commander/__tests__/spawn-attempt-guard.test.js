@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // spawn-attempt-guard.test.js — Tests del guard síncrono del intento de spawn
 // no-Anthropic del Commander (#4318).

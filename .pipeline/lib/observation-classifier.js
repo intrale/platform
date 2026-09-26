@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // .pipeline/lib/observation-classifier.js
 // =============================================================================
 // Clasificador de observaciones de `verificacion`: accionable vs ruido (#4160).

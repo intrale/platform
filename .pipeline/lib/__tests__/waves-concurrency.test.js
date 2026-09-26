@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // waves-concurrency.test.js — Tests de concurrencia con N workers paralelos.
 // Issue #3518 CA-8.

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // operational-state-concurrency.test.js — Dos (y N) escritores concurrentes en
 // PROCESOS REALES sobre la fachada de estado operativo (#5108).

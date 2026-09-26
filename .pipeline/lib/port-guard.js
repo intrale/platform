@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // port-guard.js — Decisión de ownership y terminación de procesos del pipeline (#5722)
 //
 // POR QUÉ EXISTE ESTE MÓDULO

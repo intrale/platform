@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 'use strict';
 
 // Test estático (#7517 CA-4 / CA-20 / SEC-10 — extendido por #7519 CA-20a /

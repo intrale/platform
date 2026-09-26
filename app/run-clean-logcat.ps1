@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Leonel Larreta
+# SPDX-License-Identifier: LicenseRef-Proprietary
+
 # Ruta del archivo de exclusión
 $excludeFile = ".\logcat-exclude.txt"
 $logDir = ".\logs"

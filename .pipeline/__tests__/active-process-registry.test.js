@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Tests del registro de corridas en vuelo (incidente 2026-09-08).
 'use strict';
 

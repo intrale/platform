@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // rewind-merge-dedupe.js — Barrera dura de idempotencia del rewind por
 // conflicto de merge (#4967 · CA-9 · H-A6).

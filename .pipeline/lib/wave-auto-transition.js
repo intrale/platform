@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // wave-auto-transition.js — Transición automática de ola al terminar la activa
 // (#4368, Ola 8.3).

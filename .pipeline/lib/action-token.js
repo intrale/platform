@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // action-token.js — Tokens firmados HMAC para acciones rápidas de needs-human
 // (issue #4068, split de #4050).

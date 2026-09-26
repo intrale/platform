@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // transcript-echo.test.js — Tests del helper de eco de transcripción (#3918 / EP1-H3)
 //

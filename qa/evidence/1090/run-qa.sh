@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 Leonel Larreta
+# SPDX-License-Identifier: LicenseRef-Proprietary
+
 # QA #1090 — Grabar evidencia de login y registro con adb screenrecord
 # Ejecuta 5 escenarios del issue y captura video + screenshots
 set -uo pipefail

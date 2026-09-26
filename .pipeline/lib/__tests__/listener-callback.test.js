@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // listener-callback.test.js — Dispatch de `update.callback_query` en el listener
 // (issue #4579).

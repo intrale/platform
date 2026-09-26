@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // execution-capabilities.js — Catálogo de CAPACIDAD TÉCNICA DEL MOTOR (#4839)
 //

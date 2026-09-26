@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // conversation-summary.test.js — Cobertura del resumen incremental de la
 // conversación del Commander (#3935 / EP4-H2).

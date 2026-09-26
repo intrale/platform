@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // vault-shadow-status.js — estado de la ventana sombra del vault, para operar
 // (#5449 · entrega 2/3 del split de #5427)

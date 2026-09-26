@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // Test del ETA por velocidad media de la ola (#4039).
 // Ejecutar: node .pipeline/test-wave-velocity-eta.js

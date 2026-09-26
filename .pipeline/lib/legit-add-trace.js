@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // legit-add-trace.js — Predicado de "origen legítimo y reciente" de una suma a
 // la allowlist (issue #4439, CA-3 / SEC-4439-1..4).

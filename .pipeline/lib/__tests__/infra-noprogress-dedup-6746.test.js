@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // infra-noprogress-dedup-6746.test.js — REGRESIÓN del rebote de `review`.
 //

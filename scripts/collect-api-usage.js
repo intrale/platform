@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // collect-api-usage.js — Extrae métricas reales de consumo de API Anthropic desde logs de agentes
 // Uso: node scripts/collect-api-usage.js --log <logFile> --agent <N> --issue <N> --slug <slug> [--sprint <SPR-NNN>]
 // Appendea una línea JSON a scripts/logs/api-usage-history.jsonl por cada sesión de agente.

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // verifiable-predicate-store.js — Canal SEPARADO para el predicado verificable
 // del freeze de `delivery` (#6611).

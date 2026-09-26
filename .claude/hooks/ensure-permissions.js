@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // ensure-permissions.js — Auto-healing de permisos
 // PostToolUse hook: verifica que settings.local.json tenga las reglas baseline.
 // Fast path: stat() de un flag file — si es reciente (<1h), exit inmediato sin leer stdin.

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // operator-gate-vault-cut-5458.test.js — Despacho operacional AISLADO del
 // lifecycle (issue #5458, split de #5452).

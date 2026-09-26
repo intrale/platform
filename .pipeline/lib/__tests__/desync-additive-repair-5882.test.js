@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // desync-additive-repair-5882.test.js — Predicado de traza legítima de
 // `/wave add` y su batería negativa (#5882 CA-3, CA-4, CA-5).

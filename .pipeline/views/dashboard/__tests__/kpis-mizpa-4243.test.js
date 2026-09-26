@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // kpis-mizpa-4243.test.js — #4243. Estructura común de ventanas MIZPÁ en KPIs.
 // Traslada a la pantalla KPIs el marco común que entregó #4234 (PR #4254),

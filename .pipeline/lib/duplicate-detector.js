@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // duplicate-detector.js — Detector de issues duplicados via Jaccard sobre
 // tokens normalizados (#3625 CA-4).

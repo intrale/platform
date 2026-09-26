@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // codex-try-again-grace-7183.test.js — Un "try again at" que cayó en el mismo
 // minuto del spawn no manda a codex a mañana (#7183).

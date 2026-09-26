@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // quota-exhausted-state.js — Lectura defensiva del flag de cuota Anthropic
 // agotada para el dashboard del pipeline V3 (#2976, hija de #2955).

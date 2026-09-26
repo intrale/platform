@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // Tests #4202 — normalización por proveedor del desglose de cuotas en
 // `dashboard-slices.quotaSlice` / `normalizeProviderQuota`.

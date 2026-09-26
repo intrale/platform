@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Test P-11: Backoff progresivo en ci-monitor-bg.js
 const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");

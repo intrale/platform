@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // fallback-spawn-enametoolong-4529.test.js — Regresión del incidente #4529
 //

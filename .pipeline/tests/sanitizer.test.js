@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // sanitizer.test.js — Tests unitarios del módulo core (issue #2333 / #2324)
 //

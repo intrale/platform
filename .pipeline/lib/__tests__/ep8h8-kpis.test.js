@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // ep8h8-kpis.test.js — #3961 EP8-H8 (KPIs → sparklines, umbrales y métricas de
 // voz/entregables). Cubre la capa de datos:

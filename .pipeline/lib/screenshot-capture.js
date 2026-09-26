@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // screenshot-capture.js — Captura headless del dashboard del Pulpo (Caso A)
 // Issue #3381 · CA-15 / CA-16 / CA-22

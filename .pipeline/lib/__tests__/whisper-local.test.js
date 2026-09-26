@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // whisper-local.test.js — tests de contrato del fallback STT local (#3916).
 // Mockean el spawn de Python: NO corren el modelo real. Verifican la forma del
 // resultado { ok, text, errorKind, raw }, los errorKinds, el single-flight (R6),

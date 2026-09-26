@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // pulpo-liveness-copy-6146.test.js — #6146
 //
@@ -547,9 +550,9 @@ test('CA-9 / D-4: bajar la jerga no bajo la severidad', () => {
 // =============================================================================
 
 test('CA-10: el modulo de calculo del margen queda fuera del diff', () => {
-  let cambiados;
+  let diff;
   try {
-    cambiados = execFileSync('git', ['diff', '--name-only', 'origin/main'], {
+    diff = execFileSync('git', ['diff', '-U0', 'origin/main', '--', '.pipeline/lib/pulpo-liveness-margin.js'], {
       cwd: path.join(__dirname, '..', '..', '..'),
       encoding: 'utf8',
     });
@@ -559,8 +562,11 @@ test('CA-10: el modulo de calculo del margen queda fuera del diff', () => {
     console.log('CA-10: guardia de diff omitida (git no disponible o sin origin/main)');
     return;
   }
-  assert.ok(
-    !cambiados.split('\n').some((f) => f.trim() === '.pipeline/lib/pulpo-liveness-margin.js'),
-    'el cálculo del margen entró al diff: este issue es sólo copy'
-  );
+  // #7591: el encabezado de copyright (Copyright / SPDX + línea en blanco) no
+  // toca el cálculo. Cualquier otra línea agregada o quitada sí cuenta.
+  const cambiosDeCodigo = diff.split(/\r?\n/)
+    .filter((l) => /^[+-]/.test(l) && !/^(\+\+\+|---) /.test(l))
+    .map((l) => l.slice(1).replace(/^﻿/, '').trim())
+    .filter((l) => l !== '' && !/^\/\/ (Copyright \(c\) |SPDX-License-Identifier: )/.test(l));
+  assert.deepEqual(cambiosDeCodigo, [], 'el cálculo del margen entró al diff: este issue es sólo copy');
 });

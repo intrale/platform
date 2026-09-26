@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // delivery-gate2.test.js — GATE 2 defense-in-depth en delivery.js (#4575, CA-3)
 //

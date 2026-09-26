@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // multi-provider-coverage.js — lectura y sanitización del JSON persistido del
 // harness multi-provider smoke-test (#3680) para servirlo al widget del

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // roadmap-planner.js — Distribuir issues del backlog en sprints futuros vacíos
 // Sub-tarea de #1420. Llena automáticamente sprints vacíos con issues del backlog.
 //

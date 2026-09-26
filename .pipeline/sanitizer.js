@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // sanitizer.js — Sanitizador del pipeline (issue #2333 / #2324 / #2318)
 //

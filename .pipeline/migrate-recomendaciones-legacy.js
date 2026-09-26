@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // migrate-recomendaciones-legacy.js — Migración del backlog legacy de #5678
 // (parte 3 de 3, issue #5691). REESCRITO EN BLOQUE: la versión previa (#2653,

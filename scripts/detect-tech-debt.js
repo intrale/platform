@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // detect-tech-debt.js — Detecta deuda técnica en el codebase
 // Analiza: TODOs/FIXMEs, tests faltantes, strings legacy, imports innecesarios, QA logs
 // Uso: node detect-tech-debt.js [--json] [--limit N]

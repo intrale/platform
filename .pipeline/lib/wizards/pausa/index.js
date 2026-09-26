@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // wizards/pausa/index.js — Flow "Pausar / despausar issues parciales" del
 // Dashboard V3.

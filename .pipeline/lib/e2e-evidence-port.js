@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // e2e-evidence-port.js — Puerto `e2e` del contrato kernel↔adaptador (#4573)
 //

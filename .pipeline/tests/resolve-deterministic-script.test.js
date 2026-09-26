@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // #2893 / #5066 — Tests para resolveDeterministicScript.
 //
 // #2893 estableció el override: la verificacion corre desde ROOT (main) y usa la

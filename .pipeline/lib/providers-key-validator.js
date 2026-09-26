@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // providers-key-validator.js — Validación de formato de API keys por provider
 // (#3740, split de #3715 / paraguas #3669).

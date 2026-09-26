@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Captura de la fila de KPI con las dos tarjetas (E6-a / UX-2) — rebote 2 de #5691.
 'use strict';
 const puppeteer = require('puppeteer');

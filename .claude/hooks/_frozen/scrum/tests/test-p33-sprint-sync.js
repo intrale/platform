@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Test P-33: sprint-sync.js — Reconciliación sprint-plan.json ↔ GitHub (#1432)
 // Verifica que sprint-sync.js:
 // - Exporta runSync() y syncRoadmapOnly() como módulo

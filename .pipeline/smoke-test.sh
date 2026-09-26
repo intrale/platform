@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 Leonel Larreta
+# SPDX-License-Identifier: LicenseRef-Proprietary
+
 # smoke-test.sh — Verificación post-restart del pipeline V2
 #
 # Diseñado para correr SIN depender del pipeline vivo. Solo requiere:

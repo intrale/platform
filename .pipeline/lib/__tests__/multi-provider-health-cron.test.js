@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // multi-provider-health-cron.test.js — Tests del cron de healthchecks (#3260
 // CA-1 / CA-6 — simulación con 2+ providers dropeados).

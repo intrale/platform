@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Test P-34: Auto-review de PRs abiertos >24h sin review (#1516)
 // Verifica que auto-review-bg.js:
 //   - Detecta PRs abiertos >24h sin review comments

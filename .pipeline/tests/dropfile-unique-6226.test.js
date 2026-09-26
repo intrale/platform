@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Test de regresión #6226 — los mensajes del paginado se pisaban en la cola de
 // Telegram. Dos dropfiles emitidos en el mismo milisegundo resolvían al mismo
 // `${Date.now()}-cmd.json` y el segundo sobreescribía al primero: el operador

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // human-block-triggers.js — Detectores de bloqueo humano por ESTADO OBJETIVO
 // (#5337, CA-3). Complementa la heurística textual de `isHumanBlockReason()`.

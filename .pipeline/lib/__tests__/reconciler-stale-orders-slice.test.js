@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // CA5 (#2994) — Slice del dashboard que cuenta órdenes stale en últimas 24h.
 //

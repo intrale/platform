@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // validate-free-exclusions.test.js — tests del candado free-only fail-closed
 // para skills sensibles (#4408 / RS-2 / OWASP A05).

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 'use strict';
 
 // #7634 · D1/D2/D5/D6 — `assertChildEnvMinimal` + `ChildEnvViolation`: fallo

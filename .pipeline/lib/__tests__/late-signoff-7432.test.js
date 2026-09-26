@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // #7440 (split de #7432) — AUTO-LEVANTAMIENTO DEL BLOQUEO DE DECISIÓN CUANDO LA
 // FIRMA DEL ARQUITECTO LLEGA DESPUÉS DE LA ESCALADA

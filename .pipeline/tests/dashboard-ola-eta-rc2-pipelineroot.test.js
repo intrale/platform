@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // dashboard-ola-eta-rc2-pipelineroot.test.js — #4320 (RC2)
 //

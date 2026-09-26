@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // dashboard-routes-wave-promote.test.js — #4435 CA-1..CA-9.
 //

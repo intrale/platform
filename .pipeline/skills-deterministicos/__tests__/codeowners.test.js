@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Tests unitarios de .pipeline/skills-deterministicos/lib/codeowners.js (issue #2652)
 // Cubre el parser de CODEOWNERS y la detección de owners humanos sobre paths
 // modificados — núcleo del bloqueo de auto-merge para paths protegidos.

@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // cli-cleanup.js — Limpieza de workspace sin necesidad de Claude
 // Uso: node scripts/cli-cleanup.js [--all] [--worktrees] [--logs] [--sessions] [--branches] [--dry-run]
 // Reemplaza /cleanup para operaciones deterministas (#1661)

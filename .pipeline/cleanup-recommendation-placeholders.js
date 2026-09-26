@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Cleanup retroactivo de placeholders fantasma creados por svc-reconciler para
 // issues con labels `source:recommendation` o `tipo:recomendacion`.
 //

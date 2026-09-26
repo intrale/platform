@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Test de regresión XSS en showPartialPauseDepsModal (#2893 rebote security).
 //
 // El modal recibe títulos de issues que llegan desde gh issue view; cualquier

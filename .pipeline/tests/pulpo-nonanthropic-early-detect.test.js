@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // pulpo-nonanthropic-early-detect.test.js — Detección in-stream temprana de la
 // rama non-Anthropic de runNonAnthropic (#3571).

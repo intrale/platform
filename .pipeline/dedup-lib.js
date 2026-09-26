@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // dedup-lib.js — Heurística de deduplicación de issues por título.
 //
 // Fuente única de verdad para matching de títulos similares de issues

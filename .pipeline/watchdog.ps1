@@ -1,4 +1,7 @@
-﻿# Watchdog V2 — Vigila servicios del pipeline
+﻿# Copyright (c) 2026 Leonel Larreta
+# SPDX-License-Identifier: LicenseRef-Proprietary
+
+# Watchdog V2 — Vigila servicios del pipeline
 # Se ejecuta cada 2 minutos via Windows Task Scheduler
 # Todo corre desde platform/ (repo principal, siempre en main)
 #

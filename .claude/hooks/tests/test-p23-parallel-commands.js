@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Test P-23: Paralelismo de comandos Telegram Commander (#1279)
 // Verifica que telegram-commander.js:
 //   - Usa activeCommands (Map) en lugar de commandBusy (booleano)

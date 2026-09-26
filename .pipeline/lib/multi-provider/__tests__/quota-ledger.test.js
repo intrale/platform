@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // quota-ledger.test.js — Serie temporal de cuota persistida (#6560). Runner:
 //   node --test .pipeline/lib/multi-provider/__tests__/quota-ledger.test.js

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Tests de .pipeline/lib/partial-pause-deps.js (issue #3142 — maxDepth override).
 // Solo cubrimos lo que agregamos en #3142 (maxDepth parametrizable) — no
 // re-testeamos parseDepsFromText / cache / findMissingDeps que ya están

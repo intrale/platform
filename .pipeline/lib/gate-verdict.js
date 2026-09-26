@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // .pipeline/lib/gate-verdict.js
 // =============================================================================
 // GATE 0 — Veredicto honesto de gates automáticos (#4572, épico #4570).

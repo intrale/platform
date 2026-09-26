@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // canonical-facts-liveness-4622.test.js — Cross-check de identidad en el fact
 // `agentes_activos` (#4622, CA-1 / SEC-1). Reproduce el escenario Gherkin A

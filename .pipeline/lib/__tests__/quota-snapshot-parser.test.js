@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // quota-snapshot-parser.test.js — Tests del parser OCR de snapshots cuota.
 // Issue #3012 (split de #3008, hija 1).

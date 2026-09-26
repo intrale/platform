@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // constants.js — Constantes auto-descriptivas para el cliente HTTP seguro
 // Issue #2307 (CA-UX-5): nombres con unidades visibles para evitar ambigüedad

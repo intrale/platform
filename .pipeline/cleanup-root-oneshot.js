@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // cleanup-root-oneshot.js — Limpieza one-shot de basura de la raíz (#3943, CA-4)
 //

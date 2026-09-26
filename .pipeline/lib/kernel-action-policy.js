@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // kernel-action-policy.js — Resolución de política por-acción para GATE 3
 // (issue #4577 · épico #4570). Decide, por acción autónoma del kernel, si el

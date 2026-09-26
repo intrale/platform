@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 Leonel Larreta
+# SPDX-License-Identifier: LicenseRef-Proprietary
+
 # Uso: backend-build.sh
 # Corre :backend:build con setup de JAVA_HOME y resume el resultado.
 # Reemplaza la invocacion repetitiva del SKILL del agente /backend-dev (Paso 7).

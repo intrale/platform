@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // ops-check.js — Módulo de verificación de entorno operativo
 // Exporta: checkEnvironment(), checkHooks(), checkResources(), runAll()
 // Retorna objetos { ok: boolean, warnings: [], errors: [], items: [] }

@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // run-regression.js — Gate de regresión QA E2E para cierre de sprint (#1806)
 // Ejecuta la suite qa/regression-suite.json contra el emulador y genera reporte.
 //

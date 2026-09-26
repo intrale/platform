@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 'use strict';
 /**
  * kernel-release-gate.js — Transformación y verificación fail-closed del gate

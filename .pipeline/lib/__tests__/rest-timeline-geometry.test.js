@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Tests del módulo PURO de geometría del timeline de modo descanso (#3964,
 // EP8-H11). Cubre la matemática min↔px, snap, blockRect (incluido cruce de
 // medianoche) y wouldOverlap (colisión en el mismo día). Sin DOM — todo es

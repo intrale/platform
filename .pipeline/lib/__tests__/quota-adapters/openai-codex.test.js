@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // Tests quota-adapters/openai-codex.js — adapter real desde los rollouts JSONL
 // de Codex >= v0.145.0 (#4885, evolución de #4868/#4865).

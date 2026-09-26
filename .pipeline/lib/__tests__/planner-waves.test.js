@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // planner-waves.test.js — Tests de la lógica de composición multi-ola del
 // skill `/planner` (#3488 H2 Spike #3378).

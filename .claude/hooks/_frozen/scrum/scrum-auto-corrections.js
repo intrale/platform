@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // scrum-auto-corrections.js — Auditoría de coherencia estado-columna en Project V2
 // Detecta y corrige automáticamente inconsistencias entre el estado real de un issue
 // (open/closed, labels) y su columna en el Project V2.

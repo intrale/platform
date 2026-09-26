@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Tests del presupuesto de wall-clock de `node --test` y del motivo de rebote
 // que emite el tester determinístico cuando la batería no termina.
 //

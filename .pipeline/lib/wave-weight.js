@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // wave-weight.js — Ponderación del avance de ola por tamaño, con conservación
 // de peso ante splits (#5836).

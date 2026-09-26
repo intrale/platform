@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // roadmap-registry-check.js
 // Validacion cruzada roadmap.json vs agent-registry.json (#1660)
 // ZOMBIE: story in_progress sin agente active en registry

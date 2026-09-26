@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // provider-health.js — Slice + cache para el endpoint GET /api/pulpo/provider-health
 // (#3259 CA-5 + CA-6).

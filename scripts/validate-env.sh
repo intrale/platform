@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 Leonel Larreta
+# SPDX-License-Identifier: LicenseRef-Proprietary
+
 # Verifica que el entorno local tenga todos los prerequisitos para levantar el ambiente.
 # Uso: ./scripts/validate-env.sh
 # Salida: 0 si todo está OK, 1 si hay algún prerequisito faltante o inválido.

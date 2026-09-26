@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // stt-confidence.js — Evaluación de confianza STT y gate de confirmación (#3918 / EP1-H3, CA-2)
 //
 // Cuando la transcripción local (whisper) viene con baja confianza, el Commander

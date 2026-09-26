@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Recomendaciones generadas por agentes (issue #2653).
 //
 // Modelo: cuando un agente (guru, security, po, ux, review) detecta una

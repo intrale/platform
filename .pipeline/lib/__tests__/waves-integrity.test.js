@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // waves-integrity.test.js — #4370 · Persistencia robusta del roadmap de olas.
 //

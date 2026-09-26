@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // eta-markers.test.js — Tests para `.pipeline/lib/eta-markers.js` (#3517).
 //

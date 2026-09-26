@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // telegram-button-url.js — Punto ÚNICO de decisión sobre si un botón inline de
 // Telegram puede emitirse como `url` (issue #5923).

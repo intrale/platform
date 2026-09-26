@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // wave-router.test.js — Tests del routing de `/wave` y NLP "cómo va la ola" (#3262).
 //

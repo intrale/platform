@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // V3 Metrics — Presupuesto mensual configurable (#3962 EP8-H9, CA-4)
 //
 // Persiste el presupuesto mensual (USD) que el operador edita desde la pantalla

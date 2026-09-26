@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Tests de .pipeline/lib/human-block-action-handler.js (issue #4068)
 // Cubren el gate CA-Sec del endpoint POST /api/human-block/action:
 // 403 no-loopback / 403 cross-origin / 415 Content-Type / 400 issue inválido /

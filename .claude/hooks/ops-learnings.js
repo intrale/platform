@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // ops-learnings.js — Bitácora operativa auto-actualizable (P-15 + P-16)
 // Captura automática de errores, clasificación, escalamiento de severidad
 // Auto-mitigation, auto-resolution, digest semanal, promoción a MEMORY.md

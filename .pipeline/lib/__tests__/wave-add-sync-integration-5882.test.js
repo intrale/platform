@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // wave-add-sync-integration-5882.test.js — Escritura conjunta end-to-end y
 // reparación aditiva de la allowlist (#5882).

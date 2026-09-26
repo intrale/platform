@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // #6448 grupo E — SIN DOBLE CANDADO NI MARKERS HUÉRFANOS (punto 4 del issue)
 //

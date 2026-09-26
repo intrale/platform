@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // Test de concurrencia, deduplicación y circuit breaker del Pulpo
 // Simula el filesystem del pipeline y verifica las reglas del modelo operativo.

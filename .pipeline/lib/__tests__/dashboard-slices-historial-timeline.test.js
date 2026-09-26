@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // Tests del núcleo lógico del Historial timeline (#3963).
 //   - buildAgentHistory: deriva agentHistory[] desde issueMatrix + prInfo.

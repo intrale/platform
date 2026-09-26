@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // transcript-echo.js — Eco de transcripción STT para el Commander (#3918 / EP1-H3)
 //
 // El eco "🎤 Entendí: «…»" es la única defensa real contra errores de STT:

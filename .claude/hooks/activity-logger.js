@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Monitor v3 -- Activity Logger Hook
 // PostToolUse hook: registra actividad en activity-log.jsonl y actualiza sesion en sessions/
 // Pure Node.js — sin dependencia de bash

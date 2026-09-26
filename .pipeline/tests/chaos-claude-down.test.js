@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // chaos-claude-down.test.js — Chaos test del Pulpo cuando Anthropic está caído
 // (#3259 / CA-7).

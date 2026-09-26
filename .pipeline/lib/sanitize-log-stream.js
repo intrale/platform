@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // sanitize-log-stream.js — WriteStream sanitizador para `.pipeline/logs/*`
 // Issue #2334 (CA6). Depende de `.pipeline/sanitizer.js` (#2333).

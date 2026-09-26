@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // commander-inflight-fallback.test.js — Tests del fallback in-flight del
 // Commander de Telegram (#3275).

@@ -133,6 +133,30 @@ if [ "$RUN_WRITE_TARGET_LINT" = "1" ] && [ -f ".pipeline/lib/write-target-lint.j
   fi
 fi
 
+# =============================================================================
+# Issue #7591 — Encabezado de copyright en los fuentes (épico #7589).
+#
+# Revisa SOLO los archivos staged con extensión en scope (.kt .kts .js .mjs
+# .cjs .sh .ps1 .py), leyendo los primeros 2 KB de cada uno: no hace más lento
+# el commit. Si falta el encabezado, el `--check` nombra el archivo y da el
+# comando exacto (`node .pipeline/lib/license-header-lint.js --fix <archivo>`).
+# La salida nunca es `--no-verify`.
+#
+# Gate por PRESENCIA de archivos staged (cualquier directorio: un fuente puede
+# entrar por app/, users/, .pipeline/...), sin `exit 0` propio (#5244) y con el
+# exit code propagado. En CI: `.github/workflows/license-header-lint.yml`
+# (advisory hasta #6265 / #5183).
+# =============================================================================
+RUN_LICENSE_LINT=0
+if [ -n "$TOUCHED_FILES" ]; then RUN_LICENSE_LINT=1; fi
+if [ "$RUN_LICENSE_LINT" = "1" ] && [ -f ".pipeline/lib/license-header-lint.js" ]; then
+  node .pipeline/lib/license-header-lint.js --check --staged
+  LICENSE_LINT_EXIT=$?
+  if [ "$LICENSE_LINT_EXIT" != "0" ]; then
+    exit "$LICENSE_LINT_EXIT"
+  fi
+fi
+
 # Validación de agent-models (#3081): gate propio.
 RUN_VALIDATE=0
 case "$TOUCHED_FILES" in

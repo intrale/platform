@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // system-health.js — Soluciones S5, S6 y S7 del reporte operativo 2026-03-24
 // S5: Validacion de recursos del sistema (canLaunchAgent)
 // S6: Verificacion de git repo valido (isValidGitRepo)

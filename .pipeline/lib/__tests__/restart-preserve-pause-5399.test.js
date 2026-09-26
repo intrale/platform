@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // #5399 — restart.js reescribía `.paused` con un ISO pelado y borraba la
 // autoría de la pausa: el pipeline quedaba pausado para siempre.

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // .pipeline/lib/__tests__/restart-orphan-annotator.test.js
 // =============================================================================
 // Tests del helper `restart-orphan-annotator.js` — issue #2374 Parte 1.

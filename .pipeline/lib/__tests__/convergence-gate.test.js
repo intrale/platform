@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // .pipeline/lib/__tests__/convergence-gate.test.js
 // =============================================================================
 // Test funcional del gate de auto-promoción por convergencia (#4160, CA-4).

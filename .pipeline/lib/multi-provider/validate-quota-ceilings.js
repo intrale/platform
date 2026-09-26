@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // validate-quota-ceilings.js — Techo de cuota contratada por proveedor (#6559).
 //

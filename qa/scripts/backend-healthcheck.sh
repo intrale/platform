@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 Leonel Larreta
+# SPDX-License-Identifier: LicenseRef-Proprietary
+
 # backend-healthcheck.sh — Verifica que el backend remoto (Lambda AWS) responde correctamente
 # Uso: bash qa/scripts/backend-healthcheck.sh [BASE_URL]
 # Salida: 0 si todos los endpoints responden, 1 si alguno falla

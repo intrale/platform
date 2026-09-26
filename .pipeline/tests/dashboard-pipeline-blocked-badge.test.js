@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // #4640 — Tests del badge 🛑 "bloqueado por dependencias" en la vista de
 // pipeline (board MIZPÁ, pipeline-redesign.js).
 //

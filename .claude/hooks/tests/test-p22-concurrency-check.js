@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Test P-22: Hook de validación de concurrencia de agentes (#1277)
 // Verifica que agent-concurrency-check.js:
 //   - Detecta correctamente el agente que finaliza

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 'use strict';
 
 // #6809 H2 — eje proceso: lectores (whitelist, ventana, git sin shell) y los

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
 
 import androidx.navigation.NavHostController
 import asdo.auth.DoChangePassword

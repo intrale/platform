@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 'use strict';
 // #7631 — Dirección humana desde approval-channel.jsonl (CA-4).
 // Fixtures escritos con el writer REAL (`appendChained`) y el mismo shape que

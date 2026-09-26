@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // agent-launcher/spawn-failure-classifier.js — Clasificador puro de
 // "muerte al spawnear del provider" (issue #4052, CA-1 / CA-3 / SEC-3).

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Tests unitarios de .pipeline/skills-deterministicos/lib/pid-discovery.js (issue #2486)
 // Reemplaza el uso de agent-registry.json por descubrimiento dinámico.
 'use strict';

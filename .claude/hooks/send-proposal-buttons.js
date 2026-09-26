@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // send-proposal-buttons.js — Envía botones inline de Telegram para propuestas del Planner
 // Lee planner-proposals.json y envía un mensaje con botones ✅ Crear / ❌ Descartar por propuesta
 // + botón "✅ Crear todas" al final.

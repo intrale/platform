@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // apk-freshness.js — Validar existencia + frescura de APKs debug y saneo de
 // matches del rejection-report que disparan "APK no se pudo generar".

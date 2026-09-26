@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // execution-report.js — Módulo reutilizable para resúmenes de sesión
 // Exporta buildExecutionSummary(sessionId, repoRoot) → objeto con datos del mini-reporte
 // Usado desde stop-notify.js (individual) y sprint-report.js (por agente)

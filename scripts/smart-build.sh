@@ -1,4 +1,7 @@
 #!/bin/bash
+# Copyright (c) 2026 Leonel Larreta
+# SPDX-License-Identifier: LicenseRef-Proprietary
+
 # smart-build.sh — Build inteligente: compila solo módulos afectados
 #
 # Uso:
@@ -92,8 +95,12 @@ if [[ -z "$changed" ]]; then
 fi
 
 echo -e "${CYAN}>> Archivos cambiados:${NC}"
-echo "$changed" | head -20
-total=$(echo "$changed" | wc -l)
+# Herestring en vez de pipe: con `set -o pipefail`, pipear $changed a head
+# muere con SIGPIPE (exit 141) cuando el diff supera el buffer del pipe
+# (~64 KB, p.ej. el encabezado de licencia de #7591 toca ~2900 archivos) y
+# `set -e` aborta el build sin error clasificado.
+head -n 20 <<< "$changed"
+total=$(wc -l <<< "$changed")
 if [[ $total -gt 20 ]]; then
   echo "   ... y $((total - 20)) archivos más"
 fi

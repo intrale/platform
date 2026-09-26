@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 Leonel Larreta
+# SPDX-License-Identifier: LicenseRef-Proprietary
+
 # =============================================================================
 # test-failover.sh — Failover multi-provider reproducible (#4404 D5 · CA-E · RS-4)
 #

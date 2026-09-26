@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Test: telegram-sanitizer.js — Sanitización UTF-8 para Telegram (#1637)
 const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");

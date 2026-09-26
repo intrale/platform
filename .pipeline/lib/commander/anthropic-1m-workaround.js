@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // anthropic-1m-workaround.js — Feature flag + ciclo de vida operativo del
 // workaround del bug Anthropic CLI Opus 4.7 1M (#3506 / #3508).

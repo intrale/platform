@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // sherlock-independent-verifier.js — Recolección de evidencia INDEPENDIENTE
 // para el verificador adversarial Sherlock (#3846).

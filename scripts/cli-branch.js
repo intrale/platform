@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // cli-branch.js — Gestión de ramas sin necesidad de Claude
 // Uso: node scripts/cli-branch.js <issue-number> [slug]
 // Reemplaza /branch para operaciones deterministas (#1661)

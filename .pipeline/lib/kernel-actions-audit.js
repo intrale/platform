@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // kernel-actions-audit.js — Audit trail append-only para las **acciones
 // autónomas del kernel** (issue #4577 · épico #4570 · GATE 3).

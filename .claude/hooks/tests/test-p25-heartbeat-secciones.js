@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Test P-25: Heartbeat Telegram - screenshots por seccion semantica (#1263)
 // Verifica la LOGICA REAL y las MEJORAS DE ROBUSTEZ en takeScreenshotSections:
 // - Coordenadas redondeadas a enteros (requisito de Puppeteer)

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Tests del presupuesto de tiempo del smoke test (#5725).
 //
 // Lo que se protege acá es la invariante que causó el incidente del 2026-08-09:

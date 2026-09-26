@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Tests del bloque side-by-side mockup vs entrega en rejection-report.js
 // (Issue #3383, CA-12 / CA-13 / CA-14 / CA-UX-1..6).
 

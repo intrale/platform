@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // credential-rotation-cron.js — Recordatorio de rotación de credenciales
 // (#3080 / S1 multi-provider, CA-4 + CA-5).

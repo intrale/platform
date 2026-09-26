@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // contribution-agreement.js — Gate del Acuerdo de Contribución (CLA) · #7599
 //

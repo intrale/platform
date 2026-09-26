@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // multimedia-degradation.test.js — EP1-H4 (#3919)
 // Aviso de degradación multimedia al usuario (STT/TTS caído).

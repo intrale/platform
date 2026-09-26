@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Leonel Larreta
+# SPDX-License-Identifier: LicenseRef-Proprietary
+
 $os = Get-CimInstance Win32_OperatingSystem
 $totalGB = [math]::Round($os.TotalVisibleMemorySize/1MB,2)
 $freeGB  = [math]::Round($os.FreePhysicalMemory/1MB,2)

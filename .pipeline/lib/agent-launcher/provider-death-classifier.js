@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // agent-launcher/provider-death-classifier.js — Clasificación de muerte prematura
 // de agente: causa PROVIDER (infra) vs causa AGENTE (crash del código). Issue #4648.

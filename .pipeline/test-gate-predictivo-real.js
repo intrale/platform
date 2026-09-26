@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 /**
  * test-gate-predictivo-real.js — ejercita las funciones REALES de pulpo.js
  * con PULPO_NO_AUTOSTART=1. Complementa test-gate-predictivo.js (que replica

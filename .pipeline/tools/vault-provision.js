@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // vault-provision.js — interfaz de OPERADOR de la provisión del vault
 // (#5466, 3/3 de #5425). Runbook: docs/pipeline/vault-provisioning.md

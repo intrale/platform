@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // multi-provider-agent-models-rw.test.js — Tests del módulo agent-models-rw (#3177).
 // =============================================================================

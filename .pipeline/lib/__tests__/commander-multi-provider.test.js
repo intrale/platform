@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // commander-multi-provider.test.js — Tests del módulo de fallback chain del
 // Commander de Telegram (#3258).

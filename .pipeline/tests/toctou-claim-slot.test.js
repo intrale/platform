@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // toctou-claim-slot.test.js — Tests de concurrencia para el fix #3939
 // (épica EP-5 #3937): claim-by-rename + reserva atómica de slot + sweep de

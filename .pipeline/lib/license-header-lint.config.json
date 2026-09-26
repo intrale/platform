@@ -1,0 +1,5 @@
+{
+  "_doc": "Contenido del encabezado de copyright de los fuentes (#7591). Única fuente de holder y spdx: el lint no hardcodea ninguno de los dos. Salen de la decisión firmada de #7590 (docs/legal/licenciamiento.md, commit firmado 8c5473bb3; en main quedó por squash como 3e846b926, con contenido idéntico): platform es propietaria, todos los derechos reservados, operador Leonel Larreta. El spdx usa la convención LicenseRef- de SPDX para licencias fuera de la lista oficial. Si cambia la titularidad, se cambia este JSON y se corre `node .pipeline/lib/license-header-lint.js --fix`.",
+  "holder": "Leonel Larreta",
+  "spdx": "LicenseRef-Proprietary"
+}

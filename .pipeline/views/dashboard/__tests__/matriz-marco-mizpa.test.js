@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // Tests del marco común MIZPÁ en la pantalla MATRIZ (#4241, marco de #4234).
 //

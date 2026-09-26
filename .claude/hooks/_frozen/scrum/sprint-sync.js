@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // sprint-sync.js v2 — Reconciliación: roadmap.json (fuente unica) vs GitHub
 // Issue #1417, #1660: roadmap.json es la UNICA fuente de verdad.
 // sprint-plan.json se genera como cache backward-compat.

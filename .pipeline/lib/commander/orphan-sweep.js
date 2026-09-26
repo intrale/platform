@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // orphan-sweep.js — Barrido de rescate de turnos HUÉRFANOS del Commander
 // (#6459, Bloque B / mitad de detección del split de #6440).

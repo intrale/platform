@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // waves-archive.test.js — Tests del archivado explícito de olas (#4378, CA-5/CA-9).
 //

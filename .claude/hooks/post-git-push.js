@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Hook PostToolUse[Bash]: detecta git push y lanza monitoreo CI en background
 // Pure Node.js — sin dependencia de bash ni ci-monitor.sh
 // Polling: consulta GitHub Actions cada 30s hasta que el workflow concluya, luego notifica via Telegram

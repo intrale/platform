@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 Leonel Larreta
+# SPDX-License-Identifier: LicenseRef-Proprietary
+
 # qa-1093-registros.sh — Graba video de los formularios de registro especializados
 # Usa adb shell screenrecord + uiautomator para navegación
 set -uo pipefail

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // commander-activity.js — Panel «ACTIVIDAD DEL COMMANDER» del home V3 (#6459).
 //

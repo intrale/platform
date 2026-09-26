@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // provider-health-4283.test.js — Salud de proveedor basada en cuota REAL
 // disponible, no solo login válido (#4283).

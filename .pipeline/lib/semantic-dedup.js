@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // semantic-dedup.js — Dedup service semántico (LLM-judge) para la fase de
 // definición (#4109, split de #4101 — "el cerebro").

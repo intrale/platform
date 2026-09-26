@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 'use strict';
 
 // #6809 H4 — eje proveedores: los tres Gherkin de cuota, el orden de descarte

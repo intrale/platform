@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // dispatch-quota-real-gate.test.js — Router descarta candidatos de fallback
 // sin cuota real usable (#4283, CA-3 / CA-4).

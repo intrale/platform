@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // operational-state-fail-closed-5113.test.js — CA-A7 / SEC-6 (#5113)
 //

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // canonical-delivery-state.test.js — Suite del compositor `resolveDeliveryState`
 // (#4090). Da al Commander la fuente ÚNICA determinística de "¿entregado =

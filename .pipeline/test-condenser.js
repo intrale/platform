@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // Test del condensador + create-issue + retry en servicio-github.js
 // Ejecutar: node .pipeline/test-condenser.js

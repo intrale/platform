@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // cli-cost.js — Reporte de costo de tokens con datos reales + estimados
 // Uso: node scripts/cli-cost.js [--sprint SPR-NNN] [--json]
 //      node scripts/cli-cost.js trends [--last N] [--json]   → tendencias cross-sprint (#1807)

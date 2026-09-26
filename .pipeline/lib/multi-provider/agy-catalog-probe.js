@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // agy-catalog-probe.js — Health con round-trip REAL al proveedor Google
 // (Antigravity CLI, `agy`) — #6857 (split de #6856), cierra #6225.

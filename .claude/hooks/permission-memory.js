@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // permission-memory.js — Análisis de frecuencia del log de permisos (#1159)
 // Detecta patrones aprobados con alta frecuencia para proponer como defaults
 // Pure Node.js — sin dependencias npm adicionales

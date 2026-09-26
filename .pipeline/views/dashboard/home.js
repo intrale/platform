@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // V3 Home — render del HTML inicial del dashboard kiosk vertical 1080×1920.
 // El layout y los textos se imprimen una sola vez. El refresh es client-side
 // vía fetch JSON + DOM morphing manual (sin reemplazar containers, evita flicker).

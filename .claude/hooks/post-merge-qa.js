@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Hook PostToolUse[Bash]: detecta merge exitoso de PR a main y verifica cobertura QA E2E
 // Si el issue asociado no tiene labels qa:passed ni qa:skipped → agrega qa:pending y notifica por Telegram
 // Tolerante a fallos — nunca bloquea el merge ni el cierre del issue

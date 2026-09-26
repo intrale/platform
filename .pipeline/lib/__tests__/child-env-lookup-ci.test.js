@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 'use strict';
 
 // #7634 · B1…B4 — nombres de variables sin distinguir mayúsculas, tanto del lado

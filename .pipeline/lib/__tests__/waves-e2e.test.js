@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // waves-e2e.test.js — Test E2E del flujo completo de olas (#3616 CA-7).
 //

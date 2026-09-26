@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // codex-reset-credit-7185.test.js — Canje automático del reset de límite de uso
 // de codex + reconciliación EN VIVO del flag de cuota (#7185).

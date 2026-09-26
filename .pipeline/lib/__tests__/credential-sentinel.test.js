@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 'use strict';
 
 // #7634 · C1/C2/C3/D3/D4 — módulo hoja del sentinel, neutralización de disco

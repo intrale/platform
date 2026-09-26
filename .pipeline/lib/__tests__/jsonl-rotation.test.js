@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // jsonl-rotation.test.js — Tests del helper genérico de rotación de JSONL.
 // Issue #4174 (split de #3946, EP6-H4, parte 2).

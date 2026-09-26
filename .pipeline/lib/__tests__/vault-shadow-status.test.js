@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // Tests del comando de estado de la ventana sombra (#5449 — split 2/3 de #5427)
 // node --test  (entra por el glob existente de `npm run test:pipeline`)

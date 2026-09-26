@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Hook Notification: reenvia notificaciones de Claude Code a Telegram
 // 4 tipos de notificación con urgencia diferenciada:
 //   - critical: CI rojo, tarea bloqueada → vibra (disable_notification: false)

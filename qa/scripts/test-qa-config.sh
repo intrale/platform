@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 Leonel Larreta
+# SPDX-License-Identifier: LicenseRef-Proprietary
+
 # test-qa-config.sh — Validar configuración de variables sin lanzar emuladores
 # Uso: bash qa/scripts/test-qa-config.sh [QA_SHARDS] [QA_AVD_CORES] [QA_AVD_MEMORY] [QA_NO_AFFINITY]
 

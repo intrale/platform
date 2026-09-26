@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Tests del regex SAFE_IGNORE de skills-deterministicos/delivery.js
 // (#2519 rev-1) — verifica que filtra archivos auto-generados del pipeline
 // para que no se commiteen accidentalmente, sin afectar archivos del issue.

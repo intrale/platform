@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 'use strict';
 // =============================================================================
 // #6745 rev-2 — ANTI-SPOOF DE PROCEDENCIA: el agente no puede auto-eximirse del

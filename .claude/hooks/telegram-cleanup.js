@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // telegram-cleanup.js — Lógica de borrado de mensajes antiguos de Telegram
 // Usa deleteMessage de la API para limpiar mensajes expirados.
 // Rate limit: 100ms entre cada delete (respeta límite de 30 ops/seg de Telegram).

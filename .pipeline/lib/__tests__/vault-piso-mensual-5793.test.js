@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Piso mensual de lecturas físicas del vault (#5793).
 // node --test
 //

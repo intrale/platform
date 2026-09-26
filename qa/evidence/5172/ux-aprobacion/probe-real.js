@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Sonda UX #5172 · fase aprobacion · verificacion empirica de CA-UX-1..7
 // Usa errores REALES emitidos por el resolver (no fixtures a mano) y el mismo
 // wiring de contexto que pulpo.js:1294.

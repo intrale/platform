@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Test P-06: Cooldown 60s en commander-launcher.js
 const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");

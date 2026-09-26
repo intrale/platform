@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Tests estructurales del endpoint POST/GET /api/rest-mode.
 //
 // El endpoint vive en `.pipeline/dashboard.js` (líneas ~8943–9026). Estos

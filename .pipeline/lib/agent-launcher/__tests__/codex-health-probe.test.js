@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // __tests__/codex-health-probe.test.js — #4052 CA-2 / SEC-2.
 //

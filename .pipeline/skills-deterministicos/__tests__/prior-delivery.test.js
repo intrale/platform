@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Tests de getPriorDeliveryRefs (issue #3819) — detección de "entrega previa":
 // commits ya mergeados en la base que referencian al issue, para que el linter
 // emita pr:already-delivered (warn) en vez de pr:no-commits (error) cuando la

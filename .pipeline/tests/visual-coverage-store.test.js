@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // #5708 / CA-11 — `regression` es DERIVADO por código, nunca declarativo.
 // El campo venía escrito por el agente de QA (texto de un LLM) y mentía por
 // construcción: nadie escribía ni leía el artefacto que lo sostiene.

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Weekly Quota — estimación del consumo del Plan Max de Anthropic.
 //
 // ⚠️ DEPRECADO como FUENTE de la cuota Anthropic (#4597) — y RETIRADO en #4861.

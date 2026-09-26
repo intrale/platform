@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Tests del criterio de reclamacion de worktrees (cleanup-worktrees.js).
 //
 // El criterio viejo era `contents.length <= 1`: un worktree con codigo NUNCA

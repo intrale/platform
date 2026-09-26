@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // agent-progress.js — PostToolUse hook: progreso visual en terminal de agente (#1206)
 // Imprime un bloque compacto de estado a stderr despues de hitos significativos.
 // Throttle: maximo 1 impresion cada 30s para no spamear.

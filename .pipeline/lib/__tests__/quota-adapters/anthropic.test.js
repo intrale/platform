@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // Tests quota-adapters/anthropic.js — adapter Anthropic Plan Max (reescrito #4597)
 //

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Test P-29: Auditoría de consistencia del backlog (#1373)
 // Verifica que scrum-consistency-check.js:
 //   - Detecta duplicaciones por fuzzy matching de títulos y objetivos

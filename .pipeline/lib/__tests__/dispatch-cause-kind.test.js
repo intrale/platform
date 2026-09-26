@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // dispatch-cause-kind.test.js — Brazo de RECOLECCIÓN del watchdog (#5400 rev-1).
 //

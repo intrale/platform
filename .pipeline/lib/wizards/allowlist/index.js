@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // wizards/allowlist/index.js — Flow "Triaje de allowlist" del Dashboard V3.
 //

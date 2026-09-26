@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // smart-build-heap.test.js — Guarda de regresión para el override de heap (#4155).
 //
 // Contexto: el gradle.properties GLOBAL (~/.gradle) puede fijar un org.gradle.jvmargs

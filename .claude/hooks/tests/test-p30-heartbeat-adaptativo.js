@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Test P-30: Heartbeat Telegram - frecuencia adaptativa (#1396)
 // Verifica la lógica de intervalo adaptativo en heartbeat-manager.js (migrado desde reporter-bg.js — #1431):
 // - Detección de actividad por sesiones (.claude/sessions/*.json) con threshold 15 min

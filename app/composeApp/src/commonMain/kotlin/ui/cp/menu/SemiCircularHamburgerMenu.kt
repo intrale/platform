@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 @file:OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 
 package ui.cp.menu

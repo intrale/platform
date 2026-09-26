@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // quota-series.test.js — Series derivadas del libro contable de cuota (#6560,
 // CA-6). Runner:

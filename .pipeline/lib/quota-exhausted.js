@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // quota-exhausted.js — Detector de cuota agotada multi-proveedor (#2974, #3077)
 //

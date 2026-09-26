@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // pr-cleanup.js — Auto-merge de PRs pendientes con CI verde (#1351)
 // Trigger: hook Stop de Claude o ejecución directa (node pr-cleanup.js)
 // Detecta PRs agent/* con más de N horas, verifica CI, conflictos y labels.

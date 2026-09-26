@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 Leonel Larreta
+# SPDX-License-Identifier: LicenseRef-Proprietary
+
 # Uso: android-install-apk.sh <flavor>   # flavor: client | business | delivery
 # Construye e instala el APK debug del flavor en el emulador/device conectado.
 

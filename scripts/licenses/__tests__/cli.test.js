@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Tests del CLI generate/check (#7592 · CA-1 · CA-2 · CA-3 · CA-7 casos 9 y 10).
 'use strict';
 

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // sherlock-verifier.test.js — Suite Node para el verificador adversarial
 // (#3343, split de #3331). Cubre CA-T-1..7 + asociaciones por CA-SEC-1..9.

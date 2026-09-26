@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // atomic-write.js — Solucion S1 del reporte operativo 2026-03-24
 // Escritura atomica de archivos JSON/JSONL para prevenir corrupcion por hooks concurrentes
 // Mecanismo: Serializa → Valida JSON parseable → Escribe a .tmp-[random] → Rename atomico

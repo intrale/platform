@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // V3 Metrics Daily Report — genera PDF con top consumos del día y lo envía por Telegram.
 // Contrato definido en issue #2477.
 //

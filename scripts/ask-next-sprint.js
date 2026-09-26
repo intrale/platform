@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // ask-next-sprint.js — Confirmacion via Telegram para siguiente sprint
 // P-03: Usa pending-questions.json + fs.watch (NO getUpdates directo)
 // El Commander procesa callbacks de Telegram y escribe en PQ — este script solo observa PQ.

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // completion-client.test.js — Tests del cliente HTTP completion-aware (#3342).
 //

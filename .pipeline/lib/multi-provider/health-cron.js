@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // health-cron.js — Cron de healthchecks por provider (#3260 CA-1 / CA-2).
 //

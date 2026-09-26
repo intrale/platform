@@ -1,4 +1,7 @@
 #!/bin/bash
+# Copyright (c) 2026 Leonel Larreta
+# SPDX-License-Identifier: LicenseRef-Proprietary
+
 # Smoke test: verifica que redactUrlLike NO filtra el BOT_TOKEN de Telegram
 # (fix del rebote de security del 2026-04-20 — CA-11.1 / #2332)
 

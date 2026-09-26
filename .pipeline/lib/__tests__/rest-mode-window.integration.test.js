@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Tests de integración del gate de modo descanso.
 // Cubre:
 //   - CA-5.3 (issue con skill po queda en pendiente dentro de la ventana,

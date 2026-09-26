@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // vault-migration-integration.test.js — #5453 · migración multi-host end-to-end
 // =============================================================================

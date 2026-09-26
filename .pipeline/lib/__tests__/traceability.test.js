@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Tests de .pipeline/lib/traceability.js (issue #2477)
 // Valida schema de eventos session:start/end y pricing por modelo.
 'use strict';

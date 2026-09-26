@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Test P-31: dashboard-server.js — frecuencia adaptativa del heartbeat (#1414)
 // Verifica que dashboard-server.js integra la lógica adaptativa:
 // - Constantes de configuración (HEARTBEAT_STATE_FILE, INTERVAL_STEP_MIN, MAX_INTERVAL_MIN, ACTIVITY_THRESHOLD_MIN)

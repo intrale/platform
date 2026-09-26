@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Tests unitarios de .pipeline/skills-deterministicos/build.js (issue #2476, rename #3157)
 // No lanzamos gradle real: validamos parseArgs, buildGradleCommand, heartbeat,
 // updateMarker y copyArtifacts con filesystem aislado.

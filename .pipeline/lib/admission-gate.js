@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // admission-gate.js — Gate de admisión para issues/PRs sin label de pipeline
 // Issue #3175

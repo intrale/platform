@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // #6432 A-6 — T-A6 y T-A6b: quién limpia la degradación pegajosa del ledger.
 //

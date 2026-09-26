@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // attempt-credential-snapshot.js — Frontera de credenciales POR INTENTO (#5799)
 //

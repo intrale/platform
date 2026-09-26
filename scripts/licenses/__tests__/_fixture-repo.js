@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Helper de tests (#7592): arma un "repo" mínimo en un dir temporal con la
 // política, los artifacts.json de licensee y los lockfiles npm. Cada dir se
 // borra con cleanupAll() (registrado en `after` por cada suite) para no repetir

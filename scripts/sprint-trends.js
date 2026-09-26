@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // sprint-trends.js — Dashboard de tendencias cross-sprint para métricas de agentes
 // Uso: node scripts/sprint-trends.js [--last N] [--json] [--check-alerts]
 // Exporta: persistSprintRecord(), buildTrendsText(), buildTrendsHtmlSection(), checkAndSendAlerts()

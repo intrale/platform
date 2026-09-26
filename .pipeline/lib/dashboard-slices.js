@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // V3 Slices — funciones puras que extraen rebanadas específicas del pipeline state.
 // Cada slice retorna SOLO la información que su endpoint necesita, para minimizar
 // payload en el polling independiente del dashboard kiosk.

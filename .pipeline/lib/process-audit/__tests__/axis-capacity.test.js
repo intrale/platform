@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 'use strict';
 
 // #6809 H3 — eje capacidad: los tres Gherkin de capacidad + bajar + sin evidencia.

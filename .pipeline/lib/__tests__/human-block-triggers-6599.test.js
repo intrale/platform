@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // #6599 — El pipeline sólo espera por los checks que la protección de rama EXIGE.
 //
 // Qué defecto fija esta suite. `classifyChecks` recorría el rollup COMPLETO del

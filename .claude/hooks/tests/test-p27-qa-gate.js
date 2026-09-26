@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Test P-27: Hook post-issue-close — gate de calidad QA (#1260)
 // Verifica que el hook distingue entre issues con/sin labels de QA
 // y los mueve a la columna correcta en Project V2

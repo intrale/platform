@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // .pipeline/lib/gate-label-reconciler.test.js
 // Tests node --test del dueño único de labels de gate (#4572, SEC-R4 / CA-3).
 // Cobertura objetivo: 100% de ramas.

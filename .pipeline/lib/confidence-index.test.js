@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // .pipeline/lib/confidence-index.test.js
 // Tests node --test de la descomposición de confianza (#4576, CA-1/CA-2).
 'use strict';

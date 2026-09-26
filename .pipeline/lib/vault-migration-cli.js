@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // vault-migration-cli.js — la lógica del punto de entrada del operador para la
 // migración del vault (#5453 · rev-1).

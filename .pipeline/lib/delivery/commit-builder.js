@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // commit-builder.js — Construye el mensaje de commit desde el payload del issue.
 //
 // Lee el comentario marcado en el issue (delivery-payload) y extrae la sección

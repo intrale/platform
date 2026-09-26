@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // V3 Satellites — render de las 9 tabs satélite. Cada satélite hereda header
 // + paleta del theme.css compartido pero define su propio layout interno.
 //

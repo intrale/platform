@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // build-child-env.test.js — Tests del helper de aislamiento de credenciales
 // (#3085 / S7 multi-provider).

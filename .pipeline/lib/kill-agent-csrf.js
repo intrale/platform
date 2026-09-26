@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // kill-agent-csrf.js — Token CSRF para el endpoint destructivo /api/kill-agent
 // (EP8-H2 · #3955, requisito SEC-2 del análisis de `security`).

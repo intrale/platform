@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // #7456 — Test de aislamiento de `lib/human-block.js` (T-1, SEC-HB-6).
 //
 // Reproduce el harness que el PO de #7439 corrió el 20/09/2026 a la 01:05 ART

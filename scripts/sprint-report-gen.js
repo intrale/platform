@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // sprint-report-gen.js — Genera reporte HTML del sprint activo y lo envía a Telegram
 const fs = require('fs');
 const path = require('path');

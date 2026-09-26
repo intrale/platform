@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Script de reparación masiva: asignar status a items sin estado en Project V2
 // Uso: node fix-project-status.js [--dry-run] [--max-items N]
 // Requiere token gh con scope 'project'

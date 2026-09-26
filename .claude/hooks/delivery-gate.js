@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Hook PreToolUse[Bash]: gate pre-delivery — bloquea gh pr create si los gates de Fase 3 no pasaron
 // Pipeline de Agentes — Issue #1237
 // Verifica evidencia de invocación de /tester, /po y /security antes de permitir crear el PR.

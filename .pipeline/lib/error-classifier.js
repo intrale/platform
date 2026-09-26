@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // error-classifier.js — Clasificación pura de excepciones del pipeline (#3941)
 // =============================================================================

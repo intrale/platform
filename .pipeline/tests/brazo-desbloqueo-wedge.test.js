@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // brazo-desbloqueo-wedge.test.js — Tests de regresión del wedge silencioso
 // del brazo de desbloqueo del pulpo (issue #3059).

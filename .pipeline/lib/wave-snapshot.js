@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // wave-snapshot.js — Cálculo del snapshot ejecutivo de la ola (#3262).
 //

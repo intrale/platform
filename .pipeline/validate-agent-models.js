@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // validate-agent-models.js — CLI humanizado para validar agent-models.json
 // Issue #3089 (U4 multi-provider) · épico #3065

@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 Leonel Larreta
+# SPDX-License-Identifier: LicenseRef-Proprietary
+
 # Recolecta evidencias QA E2E y las persiste en qa/evidence/{timestamp}/.
 # Uso: bash qa/scripts/collect-evidence.sh [--dry-run]
 set -uo pipefail

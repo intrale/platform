@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // reco-banners.js — Banners de la vista de recomendaciones del dashboard V3.
 // Issue #5691 (parte 3 de 3 de #5678) · CA E2 y E3.

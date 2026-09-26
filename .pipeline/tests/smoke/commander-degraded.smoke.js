@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // commander-degraded.smoke.js — Smoke E2E del modo degradado del Commander
 // Issue #3253 · CA-8

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 'use strict';
 
 // Reproducción del episodio del 2026-08-18 (#6441, CA-7) contra el runner REAL.

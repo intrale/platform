@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // architect-audit.js — Writers append-only de auditoría del rol `architect`
 // (#3613, paraguas #3559, spike #3507)

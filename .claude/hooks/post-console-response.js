@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // post-console-response.js — Hook PostToolUse (Stop)
 // Detecta preguntas Telegram pendientes que fueron respondidas localmente en consola
 // y actualiza el mensaje de Telegram para reflejar el estado.

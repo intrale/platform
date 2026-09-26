@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Tests del módulo visual-gate (issue #3383):
 //   - Feature flag PIPELINE_VISUAL_GATE_ENABLED (CA-4)
 //   - shouldEvaluateVisualGate aplica sólo en desarrollo/build→verificacion con app:*

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Resumen funcional + actividad reciente de issues bloqueados (#2862-followup).
 //
 // Pensado para alimentar las cards del panel "Necesitan intervención humana"

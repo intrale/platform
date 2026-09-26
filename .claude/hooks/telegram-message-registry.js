@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // telegram-message-registry.js — Registro centralizado de message_ids enviados a Telegram
 // Mantiene telegram-messages.json con todos los mensajes enviados por hooks.
 // Auto-rotación: cap de 500 entries, recorta a 400 al superar.

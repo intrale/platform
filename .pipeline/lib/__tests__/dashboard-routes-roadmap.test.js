@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // Tests del slice + endpoint del Roadmap operativo consolidado (#4373, Ola 8.3).
 //

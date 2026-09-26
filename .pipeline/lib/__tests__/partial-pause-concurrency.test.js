@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // partial-pause-concurrency.test.js — Tests de concurrencia con N workers
 // sobre .partial-pause.json. Issue #3518 CA-8.

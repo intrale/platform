@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // Tests `activeAgents` — enganche del log del Commander y del Sherlock a la card
 // observacional (#4335).

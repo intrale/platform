@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // bloqueados-stats.js — Agregados del header de la ventana Bloqueados (#3957,
 // EP8-H4 / CA-4). Computa dos métricas a partir del trace `activity-log.jsonl`:

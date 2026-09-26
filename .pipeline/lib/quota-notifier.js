@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // quota-notifier.js — Telegram lifecycle para modo cuota Anthropic agotada
 // Issue #2975 (split de #2955) — depende del flag de #2974

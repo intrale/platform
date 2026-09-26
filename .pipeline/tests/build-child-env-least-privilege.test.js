@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // build-child-env-least-privilege.test.js — Issue #5901 · CA-2 / CA-4 / CA-11
 //

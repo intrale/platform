@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // skills-metadata.js — Loader y validador del frontmatter de SKILL.md files.
 //

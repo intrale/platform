@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // operator-absence-policy.js — Política de operador ausente sobre la máquina
 // `waiting-operator` / puerto `gates` (issue #4632 · split de #4581).

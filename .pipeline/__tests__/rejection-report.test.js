@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Tests del rejection report — issue #3088 (multi-provider en PDF + audio).
 //
 // Cubre:

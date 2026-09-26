@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // quota-thresholds.js — Umbrales semánticos por bucket de cuota (#3013, CA-UX-4)
 //

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // ensure-npm-in-path.test.js — cobertura del helper npm-en-PATH (rebote #4732)
 // =============================================================================

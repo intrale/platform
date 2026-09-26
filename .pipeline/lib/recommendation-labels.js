@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // recommendation-labels.js — Fuente ÚNICA del discriminador
 // "issue de recomendación" vs "bloqueo real" (#5337, CA-6).

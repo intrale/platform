@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // Tests approval-channel.js — AUTORIDAD DE FIRMA (#6206, rebote rev-1)
 // =============================================================================

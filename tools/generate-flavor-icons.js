@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Generador de iconos de launcher por flavor (issue #2505).
 // Produce:
 //   - drawables vectoriales (foreground / background / monochrome)

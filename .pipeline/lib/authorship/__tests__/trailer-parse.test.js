@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 'use strict';
 // #7633 (P2) — Lectores exportados de trailer.js, sobre las mismas regex de build/verify.
 

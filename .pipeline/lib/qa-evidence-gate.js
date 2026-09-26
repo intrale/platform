@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // qa-evidence-gate.js — Resolución de qaMode y bypass de evidencia audiovisual
 //

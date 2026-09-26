@@ -28,6 +28,15 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '20'
+          cache: npm
+
+      # Los tests cargan `human-block` -> `write-target` -> `pipeline-env` ->
+      # `config-resolver` -> `js-yaml`, que vive en el `package.json` de la RAIZ
+      # (no de `.pipeline`). Sin este paso el caso 45 de marker-artifact.test.js
+      # muere con "Cannot find module 'js-yaml'" (rebote de #7591). Mismo patron
+      # que write-target-lint.yml. `--ignore-scripts`: sin nativos ni husky.
+      - name: Install root dependencies
+        run: npm ci --ignore-scripts
 
       - name: Run ghost-artifact lint
         working-directory: .pipeline

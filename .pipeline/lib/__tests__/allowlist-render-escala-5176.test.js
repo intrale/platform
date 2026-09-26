@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // #5176 (rebote rev-3) — El render de `/allowlist` a ESCALA DE PRODUCCIÓN.
 //

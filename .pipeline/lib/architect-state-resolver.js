@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // #3642 — Resolver puro del estado del rol architect para el widget del dashboard V3.
 //
 // El rol architect corre en dos fases distintas del pipeline:

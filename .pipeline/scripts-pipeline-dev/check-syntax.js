@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // check-syntax.js <archivo.js> [<archivo2.js> ...]
 // Wrapper sobre `node --check` que valida sintaxis de uno o varios archivos JS
 // y devuelve un reporte JSON consolidado. Reemplaza la lectura LLM + razonamiento.

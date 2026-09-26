@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // wave-snapshot.test.js — Tests del cálculo del snapshot ejecutivo (#3262).
 //

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // title-cache-freshness.js — Predicado de frescura del issue-title-cache (#4099).
 //

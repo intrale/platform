@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // backup-agent-branch.test.js — Tests para el helper de backup (#2405 CA-2)
 // =============================================================================

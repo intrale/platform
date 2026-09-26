@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Tests del flow "allowlist" del wizard del Dashboard V3 (#3742).
 //
 // El contrato real de #3724 es {maxStep, validateStep, executeStep}; la base

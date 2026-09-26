@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // __tests__/spawn-failure-state.test.js — #4052 puente CA-1 → CA-3.
 //

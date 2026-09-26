@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // permission-suggester.js — Sugerencias proactivas de auto-aprobación de permisos
 // Issue #1280: analiza approval-history.json e identifica patrones repetidos para
 // sugerir su conversión a auto-aprobación permanente via Telegram con botones inline.

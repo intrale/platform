@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // .pipeline/lib/repo-target.test.js
 // Tests node --test de la fuente de verdad única del repo destino (#4693 · CA-0,
 // CA-A1, CA-A3). Cobertura 100% de ramas de isRepoAllowed() (frontera de

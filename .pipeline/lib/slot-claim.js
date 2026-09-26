@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // slot-claim.js — Primitivas atómicas para cerrar dos TOCTOU del orquestador
 // (issue #3939, épica EP-5 #3937):

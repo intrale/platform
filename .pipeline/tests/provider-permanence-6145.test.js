@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // provider-permanence-6145.test.js — integración end-to-end del reporte de
 // aporte por proveedor y del criterio de permanencia (#6145)

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // health-check-sprint.js — Auditoría de salud del sprint actual
 // Lee sprint-plan.json, verifica estado de issues en GitHub y detecta inconsistencias:
 //   - PR mergeado pero issue abierto

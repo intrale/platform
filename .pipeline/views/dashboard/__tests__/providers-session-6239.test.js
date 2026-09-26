@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // #6239 — Línea de vigencia de la sesión de Claude Code en la pantalla
 // Providers (CA-12) y su degradación (CA-A3 / patrón #3177).

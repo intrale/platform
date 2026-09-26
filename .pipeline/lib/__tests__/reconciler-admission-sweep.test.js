@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // reconciler-admission-sweep.test.js — Integración del sweep de admision gate
 // dentro de servicio-reconciler.js. Issue #3175.

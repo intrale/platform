@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Tests del cómputo read-only `wouldPauseSkills` + `nowLocal` que el GET
 // /api/rest-mode expone para el preview del timeline (#3964, EP8-H11, CA-6/CA-4).
 //

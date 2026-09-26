@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // rebloqueo-fantasma-needs-human.test.js — Re-bloqueo fantasma de `needs-human`
 // (#5856).

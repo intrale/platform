@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // health-report.js — Reporte HTML/PDF de salud del sprint
 // Genera un reporte completo con métricas, inconsistencias y acciones ejecutadas
 // Envía a Telegram via el script unificado report-to-pdf-telegram.js

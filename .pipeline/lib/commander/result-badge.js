@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // result-badge.js — Render PURO de los badges de resultado de una petición del
 // Commander (#3951 / EP7-H4).

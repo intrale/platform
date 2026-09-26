@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Uso: node generate-pdf.js <nombre-reporte>
 // Ejemplo: node generate-pdf.js reporte-login-flujos-y-casos
 // Genera el PDF a partir del HTML con el mismo nombre base.

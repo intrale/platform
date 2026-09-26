@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // drain-telegram-fallido.js — Drenaje one-shot de la cola de salientes fallidos
 // Issue #5924 (split de #5915, parte 2)

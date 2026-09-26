@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // product-registry-loader.test.js — Loader config→registry (#4780).
 // =============================================================================

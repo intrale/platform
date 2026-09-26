@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // pulpo-liveness-copy.js — Copy al operador de la alerta de margen del
 // vigilante del Pulpo (#6146)

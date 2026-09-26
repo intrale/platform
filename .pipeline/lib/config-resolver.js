@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // config-resolver.js — Punto ÚNICO de lectura, validación y resolución de
 //                      `config.yaml` (#5172 · Entrega A de #5111)

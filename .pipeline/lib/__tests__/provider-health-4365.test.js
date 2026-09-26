@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // provider-health-4365.test.js — Re-probe activo + desambiguación del enum
 // para des-atascar el estado de salud de providers (#4365).

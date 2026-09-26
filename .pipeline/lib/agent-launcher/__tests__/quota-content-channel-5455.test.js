@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // quota-content-channel-5455.test.js — Propagación end-to-end del canal de
 // CONTENIDO de Anthropic (#5455) por adapter y dispatcher.

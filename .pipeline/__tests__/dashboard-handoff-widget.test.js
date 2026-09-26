@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // Tests del widget de Handoff cross-agente en el dashboard (#2993 rev-2 / CA-C2).
 //

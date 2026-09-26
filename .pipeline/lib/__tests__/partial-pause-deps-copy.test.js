@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // partial-pause-deps-copy.test.js — Copy de la alerta de dependencias
 // faltantes (issue #6118).

@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // restart-component.js <nombre>
 // Reinicia un componente residente del pipeline (pulpo, dashboard, listener, watchdog, multimedia)
 // matando el PID actual (si existe) y dejando que restart.js lo levante en el proximo ciclo.

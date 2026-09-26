@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // health-screen.test.js — Tests de los agregadores de la pantalla EP8-H12
 // (#3965). Cubre: percentiles, % same-provider de Sherlock (alerta), conteo de

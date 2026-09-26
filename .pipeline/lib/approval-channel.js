@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // approval-channel.js — Kernel del canal único de aprobación/firma humana
 // (issue #6206, parte 1 de 4 del split de #6199).

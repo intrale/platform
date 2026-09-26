@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Tests de rebaseOnto en skills-deterministicos/lib/git-ops.js
 // (#2519 rev-2) — verifica que el rebase invoque --autostash, defensa
 // imprescindible para que delivery no muera con "unstaged changes" cuando

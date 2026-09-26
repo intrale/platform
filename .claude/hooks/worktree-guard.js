@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Hook PreToolUse[Edit|Write|Bash]: bloquea ediciones de código fuera de un worktree dedicado
 // Complemento:
 //   - Edit/Write: BLOQUEA ediciones de código (.kt, .gradle, etc) fuera del worktree

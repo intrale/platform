@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // agent-chat-handler.js — Handler de los endpoints /api/agent-chat (issue #3605)
 //

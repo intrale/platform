@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // dispatch-quota-balance-6561.test.js — balanceo de carga entre proveedores por
 // saldo de cuota y ritmo de consumo (#6561).

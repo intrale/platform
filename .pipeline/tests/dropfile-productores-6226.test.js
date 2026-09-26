@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // Tests #6226 (rebote rev-1) — MIGRACIÓN DE LOS PRODUCTORES DE DROPFILES
 //

@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // Helper script para agregar un issue al Project V2 con status
 // Uso: node add-to-project-status.js <ISSUE_NUMBER> "<STATUS_NAME>"
 // Ejemplo: node add-to-project-status.js 1282 "Backlog Tecnico"

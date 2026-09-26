@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // screenshots-mockup-gate.js — Hook pre-Ready: exige sección Screenshots & Mockups
 // Issue #3381 · CA-9 / CA-10 / CA-11 / CA-12 / CA-17 / CA-25

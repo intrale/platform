@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // night-window.test.js — Tests del helper de ventana nocturna (#4051).
 // node --test

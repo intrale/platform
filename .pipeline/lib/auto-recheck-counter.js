@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // auto-recheck-counter.js — Techo de auto-destrabes por causa (#6611, CA-8).
 //

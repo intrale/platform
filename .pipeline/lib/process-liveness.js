@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // process-liveness.js — Fuente única de verdad de "¿el pid sigue vivo y es
 // quien dice ser?" (#4622).

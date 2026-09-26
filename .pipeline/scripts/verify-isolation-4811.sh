@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 Leonel Larreta
+# SPDX-License-Identifier: LicenseRef-Proprietary
+
 # =============================================================================
 # verify-isolation-4811.sh — Evidencia reproducible de aislamiento de estado por
 # producto (issue #4811). Genera un snapshot tamper-evident del árbol de estado

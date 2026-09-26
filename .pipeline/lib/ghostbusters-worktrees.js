@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Leonel Larreta
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
 // =============================================================================
 // ghostbusters-worktrees.js — Lógica de borrado seguro de worktrees (#3943)
 //
