@@ -1098,6 +1098,37 @@ process_audit:
   window_days: 14
   min_samples_hora: 60
 
+# #7689 — Medición semanal de GitHub Actions (parte 3/4 de #7661). El brazo del
+# Pulpo corre `lib/actions-usage-cron/cron.js` cada hora; la medición real
+# ocurre cada `cadence_days` en un proceso hijo
+# (`scripts/measure-actions-billing.js --strict`, sólo lectura contra la API) y
+# acumula una entrada de agregados por semana en `state/actions-usage-series.json`.
+#
+# AUTORIDAD (sólo en este archivo, sin override por entorno): `enabled`.
+# CALIBRACIÓN (validada; un valor inválido deja el brazo APAGADO, sin escrituras):
+#   cadence_days    1..30  — cada cuántos días mide (y ventana en días).
+#   since           AAAA-MM-DD obligatorio para habilitar (inicio de la medición).
+#   tracking_issue  issue de seguimiento de la publicación (parte 4, #7690).
+#   repos           nombres cortos del owner `intrale` (sin `owner/`, sin `-` inicial).
+#   baseline/pricing  rutas dentro de `docs/pipeline/evidence/<n>/`; el padre las
+#                   lee y re-serializa: el hijo nunca recibe una ruta de acá.
+#   target_plan     free | team — plan contra el que se proyecta el costo.
+#   workflow_map    renombres de workflows {viejo: nuevo} para comparar con la baseline.
+#   ola_cerrada     true ⇒ la medición se da por suficiente.
+#   timeout_min     10..240 — timeout duro del proceso hijo (mata el árbol).
+actions_usage_measure:
+  enabled: false            # fail-closed; sólo `true` exacto enciende el brazo
+  cadence_days: 7
+  since: null               # AAAA-MM-DD obligatorio para habilitar
+  tracking_issue: null
+  repos: [platform]
+  baseline: docs/pipeline/evidence/7594/actions-usage-summary.json
+  pricing: docs/pipeline/evidence/7594/pricing.json
+  target_plan: free
+  workflow_map: {}
+  ola_cerrada: false
+  timeout_min: 90
+
 # #4870 — Modo reducido: aviso advisory cuando no hay proveedor PAGO disponible.
 #
 # Diseño: receta del Arquitecto en el body del issue #4870. Cuando TODOS los

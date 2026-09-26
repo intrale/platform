@@ -184,6 +184,16 @@
       "via": "writeTarget.safeWriteDir"
     },
     {
+      "modulo": "lib/actions-usage-cron/cron.js",
+      "funcion": "defaultStateFile",
+      "linea": 193,
+      "canal": "estado",
+      "destino": "state/actions-usage-cron.json",
+      "tier": 3,
+      "estado": "migrado",
+      "via": "writeTarget.writeDir"
+    },
+    {
       "modulo": "lib/agent-models-change-alert.js",
       "funcion": "logFile",
       "linea": 390,

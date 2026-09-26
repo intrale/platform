@@ -206,6 +206,9 @@ const AUTHORITY_PREFIXES = Object.freeze([
     // #6809 (SEC-6809-7) — encender el auditor del modelo operativo es
     // autoridad; cadencia, ventana y muestras mínimas son calibración.
     'process_audit.enabled',
+    // #7689 (RS-7689-7) — encender la medición semanal de Actions es autoridad;
+    // cadencia, ventana, repos y rutas de evidencia son calibración.
+    'actions_usage_measure.enabled',
     // #7515 (SEC-7515-6) — allowlist de cuentas que pueden meter texto en el
     // registro de propuestas desde un repo público (`recomendacion-agente`).
     // `propuestas` entera es kernel (cuota/tope = mecanismo); la allowlist es
@@ -259,6 +262,10 @@ const SIDE_MAP = Object.freeze({
     // ventana, muestras mínimas). Encenderlo es autoridad.
     process_audit: 'kernel',
     'process_audit.enabled': 'autoridad',
+    // #7689 — brazo de medición semanal de GitHub Actions: mecanismo del
+    // pipeline. Encenderlo es autoridad.
+    actions_usage_measure: 'kernel',
+    'actions_usage_measure.enabled': 'autoridad',
     // #6708 — presupuesto de disco del guardián. Es mecanismo del pipeline
     // (cuánto margen necesita la máquina para operar), no política de producto.
     disk_budget: 'kernel',
@@ -1114,6 +1121,35 @@ const SCHEMA = {
                 cadence_days: { type: 'integer', minimum: 1, maximum: 30 },
                 window_days: { type: 'integer', minimum: 7, maximum: 30 },
                 min_samples_hora: { type: 'integer', minimum: 1, maximum: 120 },
+            },
+        },
+
+        // --- actions_usage_measure: medición semanal de GitHub Actions (#7689).
+        //     Estricto (RS-7689-7): los valores que viajan como args al proceso
+        //     hijo (`since`, `repos`) no pueden empezar con `-`, y las rutas de
+        //     evidencia quedan en la allowlist `docs/pipeline/evidence/<n>/`.
+        //     Mismos criterios que `lib/actions-usage-cron/cron.js#resolveSection`.
+        //     Sección opcional.
+        actions_usage_measure: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['enabled'],
+            properties: {
+                enabled: { type: 'boolean' },
+                cadence_days: { type: 'integer', minimum: 1, maximum: 30 },
+                since: { anyOf: [{ type: 'null' }, { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$' }] },
+                tracking_issue: { anyOf: [{ type: 'null' }, { type: 'integer', minimum: 1 }] },
+                repos: {
+                    type: 'array',
+                    minItems: 1,
+                    items: { type: 'string', pattern: '^[A-Za-z0-9._][A-Za-z0-9._-]{0,99}$' },
+                },
+                baseline: { type: 'string', pattern: '^docs/pipeline/evidence/[0-9]+/[A-Za-z0-9._-]+\\.json$' },
+                pricing: { type: 'string', pattern: '^docs/pipeline/evidence/[0-9]+/[A-Za-z0-9._-]+\\.json$' },
+                target_plan: { type: 'string', enum: ['free', 'team'] },
+                workflow_map: { type: 'object', additionalProperties: { type: 'string' } },
+                ola_cerrada: { type: 'boolean' },
+                timeout_min: { type: 'integer', minimum: 10, maximum: 240 },
             },
         },
 

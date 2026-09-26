@@ -27361,6 +27361,66 @@ async function mainLoop() {
     log('process-audit', `No se pudo montar el auditor del modelo operativo: ${e.message}`);
   }
 
+  // #7689 — MEDICIÓN semanal de GitHub Actions (parte 3/4 de #7661). Misma forma
+  // que los brazos #7520/#6809: lógica en `lib/actions-usage-cron/` (tests
+  // propios), timer SIEMPRE montado y gate (`actions_usage_measure.enabled ===
+  // true`) releído en cada tick vía loadConfig(). La medición corre en un
+  // proceso hijo; el tick NO lo espera (`lanzado`) y el resultado llega por
+  // `onResult`. Con el default de fábrica (`enabled: false`) cuesta un
+  // loadConfig() por hora y cero escrituras. El `require` de `index.js` va
+  // dentro de la lambda: un error de carga no tumba al Pulpo.
+  try {
+    const auCron = require('./lib/actions-usage-cron/cron');
+    let auLastReason = null;
+    const AU_DESHABILITADO = {
+      enabled_off: 'deshabilitado: enabled apagado en config',
+      since_invalido: 'deshabilitado: falta "since" válido (AAAA-MM-DD) en config',
+      sin_repos: 'deshabilitado: no hay repos válidos en config',
+      rango_invalido: 'deshabilitado: cadence_days, timeout_min o target_plan fuera de rango',
+      evidencia_invalida: 'deshabilitado: baseline/pricing fuera de docs/pipeline/evidence o inexistentes',
+    };
+    const runAuTick = () => {
+      try {
+        const res = auCron.tickIfDue({
+          pipelineDir: PIPELINE(),
+          pipelineRoot: ROOT,
+          cfgRoot: loadConfig() || {},
+          runWeek: (s, h) => require('./lib/actions-usage-cron/index').runWeek(s, h, {
+            logger: (msg) => log('actions-usage', msg),
+          }),
+          logger: (msg) => log('actions-usage', msg),
+          onResult: (r) => {
+            try {
+              log('actions-usage', require('./lib/actions-usage-cron/index').describeResult(r));
+            } catch (err) {
+              log('actions-usage', `resultado sin describir: ${err.message}`);
+            }
+          },
+        });
+        // Sólo se loguean transiciones (deshabilitado/no_due son el estado normal).
+        const key = res.detalle ? `${res.reason}:${res.detalle}` : res.reason;
+        if (key !== auLastReason) {
+          if (res.reason === 'deshabilitado') {
+            log('actions-usage', AU_DESHABILITADO[res.detalle] || 'deshabilitado');
+          } else if (res.reason === 'lanzado') {
+            log('actions-usage', `medición semanal lanzada (desde ${res.since}, ${res.repos} repo${res.repos === 1 ? '' : 's'})`);
+          } else {
+            log('actions-usage', res.reason);
+          }
+          auLastReason = key;
+        }
+      } catch (err) {
+        log('actions-usage', `Tick excepción no capturada: ${err.message}`);
+      }
+    };
+    runAuTick();
+    const auTimer = setInterval(runAuTick, 60 * 60 * 1000);
+    if (typeof auTimer.unref === 'function') auTimer.unref();
+    log('actions-usage', 'Medición semanal de Actions montada: tick cada 60min');
+  } catch (e) {
+    log('actions-usage', `No se pudo montar la medición semanal de Actions: ${e.message}`);
+  }
+
   // #5453 — COORDINADOR de la migración por host (rotación → convivencia →
   // corte). La máquina de estados vive en `lib/vault-migration.js` y su cableado
   // productivo en `lib/vault-migration-wiring.js` (ambos con tests propios); acá

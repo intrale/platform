@@ -1282,3 +1282,89 @@ test('#7673 recomendaciones.crear_issues resuelve como autoridad', () => {
     assert.strictEqual(resolveSide('recomendaciones'), 'autoridad');
     assert.strictEqual(resolveSide('recomendaciones.crear_issues'), 'autoridad');
 });
+
+// --- #7689 · actions_usage_measure: sección estricta y opcional (CA-4 / CA-5) ---
+
+function actionsUsageValida() {
+    return {
+        enabled: false,
+        cadence_days: 7,
+        since: null,
+        tracking_issue: null,
+        repos: ['platform'],
+        baseline: 'docs/pipeline/evidence/7594/actions-usage-summary.json',
+        pricing: 'docs/pipeline/evidence/7594/pricing.json',
+        target_plan: 'free',
+        workflow_map: {},
+        ola_cerrada: false,
+        timeout_min: 90,
+    };
+}
+
+test('#7689 CA-4 · config.yaml REAL trae actions_usage_measure con los defaults y valida verde', () => {
+    const real = configReal();
+    const s = real.actions_usage_measure;
+    assert.ok(s, 'config.yaml trae la sección');
+    assert.strictEqual(s.enabled, false, 'default de fábrica apagado');
+    assert.strictEqual(s.cadence_days, 7);
+    assert.strictEqual(s.timeout_min, 90);
+    assert.strictEqual(s.target_plan, 'free');
+    assert.strictEqual(s.since, null);
+    assert.strictEqual(s.tracking_issue, null);
+    assert.deepStrictEqual(s.workflow_map, {});
+    assert.strictEqual(s.ola_cerrada, false);
+    const r = validateConfig(real);
+    assert.strictEqual(r.valid, true, formatErrors(r.errors));
+});
+
+test('#7689 CA-5 · la sección válida pasa, es opcional y sólo exige enabled', () => {
+    const cfg = validConfig();
+    cfg.actions_usage_measure = actionsUsageValida();
+    let r = validateConfig(cfg);
+    assert.strictEqual(r.valid, true, formatErrors(r.errors));
+    const conDatos = validConfig();
+    conDatos.actions_usage_measure = { ...actionsUsageValida(), enabled: true, since: '2026-09-01', tracking_issue: 7690, workflow_map: { 'Lint A': 'Lints' } };
+    r = validateConfig(conDatos);
+    assert.strictEqual(r.valid, true, formatErrors(r.errors));
+    assert.strictEqual(validateConfig(validConfig()).valid, true, 'sin la sección valida');
+    const min = validConfig();
+    min.actions_usage_measure = { enabled: false };
+    assert.strictEqual(validateConfig(min).valid, true);
+    const sinEnabled = validConfig();
+    sinEnabled.actions_usage_measure = { cadence_days: 7 };
+    assert.strictEqual(validateConfig(sinEnabled).valid, false, 'enabled es obligatoria');
+});
+
+test('#7689 CA-5 · cada valor inválido de actions_usage_measure es rechazado', () => {
+    const casos = {
+        "enabled: 'true'": { enabled: 'true' },
+        'enabled: 1': { enabled: 1 },
+        'clave extra': { enabeld: true },
+        "since: '2026/01/01'": { since: '2026/01/01' },
+        "since: '--x'": { since: '--x' },
+        'timeout_min: 5': { timeout_min: 5 },
+        'timeout_min: 241': { timeout_min: 241 },
+        'cadence_days: 0': { cadence_days: 0 },
+        'cadence_days: 31': { cadence_days: 31 },
+        "target_plan: 'pro'": { target_plan: 'pro' },
+        'tracking_issue: 0': { tracking_issue: 0 },
+        "repos: ['-x']": { repos: ['-x'] },
+        "repos: ['intrale/platform']": { repos: ['intrale/platform'] },
+        'repos: []': { repos: [] },
+        "pricing: '/etc/x.json'": { pricing: '/etc/x.json' },
+        "baseline: '../../etc/x.json'": { baseline: 'docs/pipeline/evidence/7594/../../x.json' },
+        'workflow_map con valor no string': { workflow_map: { a: 1 } },
+        "ola_cerrada: 'no'": { ola_cerrada: 'no' },
+    };
+    for (const [nombre, over] of Object.entries(casos)) {
+        const cfg = validConfig();
+        cfg.actions_usage_measure = { ...actionsUsageValida(), ...over };
+        assert.strictEqual(validateConfig(cfg).valid, false, `debería rechazar ${nombre}`);
+    }
+});
+
+test('#7689 RS-7689-7 · actions_usage_measure.enabled es autoridad y la sección es kernel', () => {
+    assert.strictEqual(SIDE_MAP.actions_usage_measure, 'kernel');
+    assert.strictEqual(SIDE_MAP['actions_usage_measure.enabled'], 'autoridad');
+    assert.ok(AUTHORITY_PREFIXES.includes('actions_usage_measure.enabled'));
+});
