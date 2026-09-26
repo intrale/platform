@@ -935,7 +935,7 @@ test('CA-5 fail-closed: el pulpo NO destraba por vencimiento de plazo', () => {
 // el único requerido en verde y el secret scan del diff en rojo.
 const ROLLUP_6602 = Object.freeze([
     { name: 'pr-status', status: 'COMPLETED', conclusion: 'SUCCESS' },
-    { name: 'runtime-state-guard', status: 'COMPLETED', conclusion: 'FAILURE' },
+    { name: 'Secret scan (blocking)', status: 'COMPLETED', conclusion: 'FAILURE' },
     { name: 'OWASP Dependency Check', status: 'COMPLETED', conclusion: 'SUCCESS' },
 ]);
 
@@ -956,7 +956,7 @@ test('#6612 UX-1 — un check de la allowlist en rojo NO se rotula informativo',
         'antes caía en codeowners-review y le pedía la firma al operador'
     );
     assert.match(v.reason, /bloqueante/i, 'usa el rótulo propio de UX-1');
-    assert.match(v.reason, /runtime-state-guard/, 'nombra el check');
+    assert.match(v.reason, /Secret scan \(blocking\)/, 'nombra el check');
 
     // El corazón del rebote: el texto NO puede decir lo contrario de lo que
     // hace el gate (5c) de delivery.js sobre este mismo check.
@@ -972,7 +972,7 @@ test('#6612 UX-1 — un check de la allowlist en rojo NO se rotula informativo',
     assert.match(v.recommendation, /no lo destraba/i, 'y lo dice explícitamente');
 
     // Segregado, nunca en la bolsa de los informativos (UX-4).
-    assert.deepEqual(v.securityBlocking.failing, ['runtime-state-guard']);
+    assert.deepEqual(v.securityBlocking.failing, ['Secret scan (blocking)']);
     assert.deepEqual(v.informational.failing, [], 'no se cuela entre los decorativos');
 });
 
@@ -1061,7 +1061,7 @@ test('#6612 UX-4 — caso mixto: los tres grupos se listan POR GRUPO, no en bols
         mergeStateStatus: 'BLOCKED',
         statusCheckRollup: [
             { name: 'pr-status', status: 'COMPLETED', conclusion: 'FAILURE' },
-            { name: 'runtime-state-guard', status: 'COMPLETED', conclusion: 'FAILURE' },
+            { name: 'Secret scan (blocking)', status: 'COMPLETED', conclusion: 'FAILURE' },
             { name: 'OWASP Dependency Check', status: 'IN_PROGRESS', conclusion: '' },
         ],
         ...REQ_LEIDOS,
@@ -1069,7 +1069,7 @@ test('#6612 UX-4 — caso mixto: los tres grupos se listan POR GRUPO, no en bols
 
     assert.equal(v.trigger, triggers.TRIGGERS.CHECKS_FAILING, 'el requerido en rojo manda');
     assert.deepEqual(v.checks.failing, ['pr-status']);
-    assert.deepEqual(v.securityBlocking.failing, ['runtime-state-guard']);
+    assert.deepEqual(v.securityBlocking.failing, ['Secret scan (blocking)']);
     assert.deepEqual(v.informational.pending, ['OWASP Dependency Check']);
 
     // Cada grupo en su propia línea, con su propio encuadre.
@@ -1079,10 +1079,10 @@ test('#6612 UX-4 — caso mixto: los tres grupos se listan POR GRUPO, no en bols
     assert.ok(lSec, 'la allowlist tiene línea propia');
     assert.ok(lInfo, 'los informativos tienen línea propia');
     assert.notEqual(lSec, lInfo, 'nunca fusionados en la misma oración');
-    assert.match(lSec, /runtime-state-guard/);
+    assert.match(lSec, /Secret scan \(blocking\)/);
     assert.doesNotMatch(lSec, /OWASP/, 'un decorativo no se disfraza de bloqueante');
     assert.match(lInfo, /OWASP Dependency Check/);
-    assert.doesNotMatch(lInfo, /runtime-state-guard/, 'y un bloqueante no se disfraza de decorativo');
+    assert.doesNotMatch(lInfo, /Secret scan \(blocking\)/, 'y un bloqueante no se disfraza de decorativo');
 });
 
 test('#6612 UX-1 — un check de la allowlist EN CURSO no bloquea, pero se dice que puede', () => {
@@ -1096,12 +1096,12 @@ test('#6612 UX-1 — un check de la allowlist EN CURSO no bloquea, pero se dice 
         reviewDecision: 'REVIEW_REQUIRED',
         statusCheckRollup: [
             { name: 'pr-status', status: 'COMPLETED', conclusion: 'SUCCESS' },
-            { name: 'runtime-state-guard', status: 'IN_PROGRESS', conclusion: '' },
+            { name: 'Secret scan (blocking)', status: 'IN_PROGRESS', conclusion: '' },
         ],
         ...REQ_LEIDOS,
     });
     assert.equal(v.trigger, triggers.TRIGGERS.CODEOWNERS_REVIEW, 'en curso no es rojo');
-    assert.deepEqual(v.securityBlocking.pending, ['runtime-state-guard']);
+    assert.deepEqual(v.securityBlocking.pending, ['Secret scan (blocking)']);
     assert.match(v.reason, /bloqueantes por seguridad/i);
     assert.deepEqual(v.informational.pending, [], 'no cae en la bolsa de los decorativos');
 });
@@ -1159,15 +1159,15 @@ test('#6612 — groupChecksByLabel reparte en tres y no pierde ni duplica nombre
     const checks = {
         failing: ['pr-status'],
         pending: ['build'],
-        informational: { failing: ['OWASP Dependency Check', 'runtime-state-guard'], pending: ['docs'] },
+        informational: { failing: ['OWASP Dependency Check', 'Secret scan (blocking)'], pending: ['docs'] },
     };
-    const g = triggers.groupChecksByLabel(checks, (n) => n === 'runtime-state-guard');
+    const g = triggers.groupChecksByLabel(checks, (n) => n === 'Secret scan (blocking)');
     assert.deepEqual(g.required, { failing: ['pr-status'], pending: ['build'] });
-    assert.deepEqual(g.securityBlocking, { failing: ['runtime-state-guard'], pending: [] });
+    assert.deepEqual(g.securityBlocking, { failing: ['Secret scan (blocking)'], pending: [] });
     assert.deepEqual(g.informational, { failing: ['OWASP Dependency Check'], pending: ['docs'] });
 
     // Conservación: nada se pierde ni se duplica en el reparto.
-    const entra = ['pr-status', 'build', 'OWASP Dependency Check', 'runtime-state-guard', 'docs'].sort();
+    const entra = ['pr-status', 'build', 'OWASP Dependency Check', 'Secret scan (blocking)', 'docs'].sort();
     const sale = [g.required, g.securityBlocking, g.informational]
         .flatMap((x) => [...x.failing, ...x.pending]).sort();
     assert.deepEqual(sale, entra);

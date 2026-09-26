@@ -8,7 +8,7 @@ name: Distribución Desktop — GitHub Releases (MSI + Deb)
 #   - No requiere setup adicional — usa el GITHUB_TOKEN nativo
 #
 # FLUJO:
-#   - push a main O workflow_dispatch manual → builds paralelos MSI (Windows) + Deb (Linux)
+#   - workflow_dispatch manual (a demanda desde #7660) → builds paralelos MSI (Windows) + Deb (Linux)
 #   - se crea/actualiza un GitHub Release con los instaladores como assets
 #   - release marcado como prerelease: true (F&F, no producción)
 #   - notificación Telegram con link directo al release
@@ -20,16 +20,12 @@ name: Distribución Desktop — GitHub Releases (MSI + Deb)
 #
 # REFERENCIA: docs/distribution-strategy.md secciones 2.3, 6 (checklist Desktop)
 
+# #7660 — fila 8 de la tabla de decisión de #7658 (aprobada 26/09): la
+# distribución Desktop pasa a DEMANDA. Se quitó el disparador `push` a `main`
+# (era el único uso de runners Windows, facturados ×2: ~64 min/mes). El
+# instalador ya no se publica solo en cada merge que toca `app/`: dispararlo a
+# mano (Actions → "Distribución Desktop" → Run workflow) antes de un release.
 on:
-  push:
-    branches: [ main ]
-    paths:
-      - 'app/**'
-      - 'buildSrc/**'
-      - 'gradle/**'
-      - '*.gradle.kts'
-      - 'gradle.properties'
-      - 'settings.gradle.kts'
   workflow_dispatch:
     inputs:
       release_notes:

@@ -48,7 +48,21 @@ jobs:
     runs-on: ubuntu-latest
     # Solo correr para issues NO creados por el propio bot del gate (defensa
     # de UX edge case #1: bot comentando su propio bot-comment).
-    if: github.event.sender.type != 'Bot' || github.actor != 'github-actions[bot]'
+    #
+    # #7660 — fila 2 de la tabla de decisión de #7658 (aprobada 26/09): un
+    # ISSUE que ya nace con `needs-definition` o `Ready` no necesita el gate, y
+    # el job se saltea (un job salteado no consume minutos: ~867 min/mes). En
+    # 30 días el gate etiquetó 0 de 867 issues porque todos nacieron con label.
+    # Los issues sin label se siguen etiquetando igual, y los PRs no cambian
+    # (pull_request_target sigue evaluándose siempre).
+    # `contains()` de Actions compara sin distinguir mayúsculas; GitHub no
+    # admite dos labels que difieran sólo en eso, así que `Ready` es el único
+    # que puede matchear (mismos nombres que ADMISSION_LABELS del módulo).
+    if: >-
+      (github.event.sender.type != 'Bot' || github.actor != 'github-actions[bot]')
+      && !(github.event_name == 'issues'
+           && (contains(github.event.issue.labels.*.name, 'needs-definition')
+               || contains(github.event.issue.labels.*.name, 'Ready')))
     steps:
       - name: Checkout (solo `.pipeline/lib/` — NO código del PR)
         # IMPORTANTE: `actions/checkout` SIN `ref: head.sha` (CA-S2). Trae el
