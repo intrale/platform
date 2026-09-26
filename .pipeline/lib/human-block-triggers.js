@@ -296,8 +296,9 @@ function describeInformationalChecks(checks) {
 // Esa particion es correcta PARA DECIDIR, pero es mentira PARA ROTULAR: hay una
 // tercera clase de check que el ruleset de `main` no exige y que el pipeline
 // igual NO deja mergear — la allowlist de `security-blocking-checks.js`. Hoy
-// `runtime-state-guard` (el secret scan del diff del PR, unico contexto de esa
-// allowlist) cae en `informational`, y el mensaje al operador le dice que "no
+// `Secret scan (blocking)` (el secret scan del diff del PR, unico contexto de
+// esa allowlist desde #7660; antes era `runtime-state-guard`) cae en
+// `informational`, y el mensaje al operador le dice que "no
 // frena el merge" y que "aprobarlo destraba el issue", mientras el gate (5c) de
 // `delivery.js` lo bloquea sin reintento. Es el fail-open de #6602 corrido de
 // la maquina al humano: el operador aprueba, el merge no avanza, y nada en el

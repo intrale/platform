@@ -230,7 +230,7 @@ audit registra **sólo el path**: nunca el contenido de la orientación.
 | Transporte e inyección de guidance | `.pipeline/lib/guidance-injection.js` (cableado en `pulpo.moveFile` / `lanzarAgenteClaude`) | #7240 CA-1..4, CA-8..11 |
 | Linter | `.pipeline/lib/ghost-artifact-lint.js` | F-9..F-11 |
 | Hook pre-commit | `.husky/pre-commit` (suffix new) | F-11 |
-| CI job | `.github/workflows/ghost-artifact-lint.yml` | SEC-8 |
+| CI job | step `ghost-artifact-lint` de `.github/workflows/pipeline-lints.yml` (consolidado en #7660) | SEC-8 |
 | Widget dashboard | `dashboard.js` `renderGhostArtifactsWidget` | F-12, SEC-9 |
 | Gitignore | `.gitignore` (`.pipeline/archivado/`, `.pipeline/audit/`) | SEC-6 |
 | Tests | `.pipeline/lib/__tests__/marker-artifact.test.js`, `ghost-artifact-cleaner.test.js`, `ghost-artifact-lint.test.js`, `guidance-injection.test.js`, `pulpo-guidance-transport-7240.test.js` | F-10, #7240 |

@@ -494,8 +494,10 @@ function formatSkippedBinaries(skipped, format) {
 
 // Dos formas de invocación conviven a propósito, porque las escribieron dos
 // controles distintos y las dos siguen cableadas en producción:
-//   · posicional  `--staged` | `--range BASE HEAD`   → `.husky/pre-commit` y
-//     `.github/workflows/runtime-state-guard.yml` (#6111).
+//   · posicional  `--staged` | `--range BASE HEAD`   → `.husky/pre-commit`
+//     (#6111). `--range` posicional lo usaba `runtime-state-guard.yml`, que se
+//     eliminó en #7660 (fila 6 de #7658) por duplicar al job bloqueante; la
+//     forma se conserva por compatibilidad de invocación manual.
 //   · con flags   `--mode=range --base=… --head=…`   → el job bloqueante de
 //     `security-sast.yml` (#5244), que además pasa `--cwd/--allowlist/
 //     --sanitizer/--format`.
