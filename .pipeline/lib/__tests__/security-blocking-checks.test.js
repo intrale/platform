@@ -40,12 +40,15 @@ const corriendo = (name) => ({ name, status: 'IN_PROGRESS', conclusion: null });
 
 // ── SEC-A / SEC-G: el caso del episodio #6602 ────────────────────────────────
 
-test('#6612 SEC-A — runtime-state-guard en FAILURE bloquea aunque el ruleset no lo exija', () => {
+test('#6612 SEC-A — el secret scan bloqueante en FAILURE bloquea aunque el ruleset no lo exija', () => {
     // Rollup REAL del PR #6602 (verificado en el análisis del issue): el único
     // check requerido está en verde y el secret scan del diff está en rojo.
+    // En #6602 el contexto rojo se llamaba `runtime-state-guard`; desde #7660
+    // (fila 6 de #7658) ese workflow no existe y el secret scan bloqueante es
+    // `Secret scan (blocking)` de `security-sast.yml`: mismo escáner, mismo diff.
     const v = classifySecurityBlockingChecks({
         rollup: [
-            rojo('runtime-state-guard'),
+            rojo('Secret scan (blocking)'),
             verde('pr-status'),
             verde('OWASP Dependency Check'),
             verde('Semgrep Static Analysis'),
@@ -53,7 +56,7 @@ test('#6612 SEC-A — runtime-state-guard en FAILURE bloquea aunque el ruleset n
         ],
     });
     assert.equal(v.verdict, 'block', 'el merge de #6602 no debería haber salido');
-    assert.deepEqual(v.failing, ['runtime-state-guard']);
+    assert.deepEqual(v.failing, ['Secret scan (blocking)']);
 });
 
 test('#6612 SEC-A — los 3 jobs de security-sast.yml NO bloquean: corren en modo warning', () => {
@@ -99,14 +102,14 @@ test('#6612 SEC-A — todos los estados de fallo del enum cuentan, no sólo FAIL
     // como no-bloqueante. Por eso el enum se importa entero.
     for (const c of triggers.CHECK_FAIL_CONCLUSIONS) {
         const v = classifySecurityBlockingChecks({
-            rollup: [{ name: 'runtime-state-guard', status: 'COMPLETED', conclusion: c }],
+            rollup: [{ name: 'Secret scan (blocking)', status: 'COMPLETED', conclusion: c }],
         });
         assert.equal(v.verdict, 'block', `conclusion=${c} tiene que bloquear`);
     }
     // Forma StatusContext (el otro shape que devuelve GitHub).
     for (const s of triggers.CHECK_FAIL_STATES) {
         const v = classifySecurityBlockingChecks({
-            rollup: [{ context: 'runtime-state-guard', state: s }],
+            rollup: [{ context: 'Secret scan (blocking)', state: s }],
         });
         assert.equal(v.verdict, 'block', `state=${s} tiene que bloquear`);
     }
@@ -150,7 +153,7 @@ test('#6612 — una entrada ilegible del rollup no se descarta: `unusable`, no `
     assert.equal(classifySecurityBlockingChecks({ rollup: [verde('pr-status'), null] }).verdict, 'unusable');
     // Pero un rojo CONFIRMADO gana sobre la duda: `block` es más fuerte.
     assert.equal(
-        classifySecurityBlockingChecks({ rollup: [rojo('runtime-state-guard'), null] }).verdict,
+        classifySecurityBlockingChecks({ rollup: [rojo('Secret scan (blocking)'), null] }).verdict,
         'block'
     );
 });
@@ -194,35 +197,93 @@ test('#6612 SEC-A — la allowlist es inmutable y no se lee de config ni del ent
 test('#6612 — la allowlist cubre el piso mínimo: los escáneres con poder de veto', () => {
     // Piso mínimo = los que pueden vetar. Hoy es uno solo, y es exactamente el
     // que se escapó en #6602.
-    assert.ok(SECURITY_BLOCKING_CONTEXTS.includes('runtime-state-guard'));
-    assert.equal(isSecurityBlockingContext('runtime-state-guard'), true);
+    assert.ok(SECURITY_BLOCKING_CONTEXTS.includes('Secret scan (blocking)'));
+    assert.equal(isSecurityBlockingContext('Secret scan (blocking)'), true);
     assert.equal(isSecurityBlockingContext('pr-status'), false);
     assert.equal(isSecurityBlockingContext(undefined), false);
 });
 
-test('#6612 — el piso mínimo se ancla al YAML: si el guard toma modo warning, esto avisa', () => {
-    // Anti-erosión: la única razón por la que `runtime-state-guard` puede vetar
-    // es que su job NO declara `continue-on-error`. Si alguien se lo agrega, la
-    // allowlist queda decorativa igual que los SAST — y este test lo grita en
-    // vez de dejar que el gate muera en silencio.
-    const wf = path.join(__dirname, '..', '..', '..', '.github', 'workflows');
-    const guard = fs.readFileSync(path.join(wf, 'runtime-state-guard.yml'), 'utf8');
-    assert.equal(
-        /continue-on-error/.test(guard), false,
-        'runtime-state-guard dejó de poder vetar: moverlo a WARNING_MODE_SECURITY_CONTEXTS'
-    );
-    const sast = fs.readFileSync(path.join(wf, 'security-sast.yml'), 'utf8');
+// ── Ancla YAML (#7660): el gate no puede quedar apuntando a un job que no existe ──
+//
+// Borrar o renombrar el job de un contexto de la allowlist NO rompe ningún
+// test de lógica: el contexto simplemente deja de aparecer en el rollup, el
+// veredicto sale `clear` y un secreto vuelve a mergear (el fail-open de
+// #6602/#6612). Es exactamente el riesgo de la fila 6 de #7658, que eliminó
+// `runtime-state-guard.yml`. Estos tests leen los workflows REALES del repo y
+// exigen que cada contexto (a) exista como job, (b) pueda vetar y (c) corra en
+// los PR.
+
+const WORKFLOWS_DIR = path.join(__dirname, '..', '..', '..', '.github', 'workflows');
+
+/** Todos los jobs de `.github/workflows/*.yml` con el contexto que publican. */
+function jobsDeLosWorkflows() {
+    const yaml = require('js-yaml');
+    const out = [];
+    for (const archivo of fs.readdirSync(WORKFLOWS_DIR)) {
+        if (!/\.ya?ml$/.test(archivo)) continue;
+        const doc = yaml.load(fs.readFileSync(path.join(WORKFLOWS_DIR, archivo), 'utf8'));
+        const jobs = (doc && doc.jobs) || {};
+        for (const [key, job] of Object.entries(jobs)) {
+            // El contexto del rollup es el `name:` del job; sin `name:`, la key.
+            const contexto = job && typeof job.name === 'string' ? job.name : key;
+            out.push({ archivo, key, contexto, job: job || {}, on: doc.on });
+        }
+    }
+    return out;
+}
+
+test('#7660 — cada contexto de la allowlist es un job existente de .github/workflows', () => {
+    const jobs = jobsDeLosWorkflows();
+    for (const ctx of SECURITY_BLOCKING_CONTEXTS) {
+        const hits = jobs.filter(j => j.contexto === ctx);
+        assert.equal(
+            hits.length, 1,
+            `el contexto "${ctx}" tiene que salir de exactamente un job (hay ${hits.length}): ` +
+            'si se borró o renombró, el gate de delivery quedó abierto — reapuntar la allowlist en el mismo cambio'
+        );
+    }
+});
+
+test('#7660 — los contextos de la allowlist pueden vetar: sin continue-on-error y en pull_request', () => {
+    const jobs = jobsDeLosWorkflows();
+    for (const ctx of SECURITY_BLOCKING_CONTEXTS) {
+        const { archivo, job, on } = jobs.find(j => j.contexto === ctx);
+        assert.notEqual(
+            job['continue-on-error'], true,
+            `${archivo}: "${ctx}" en modo warning reporta SUCCESS aunque falle — moverlo a WARNING_MODE_SECURITY_CONTEXTS`
+        );
+        for (const step of job.steps || []) {
+            assert.notEqual(step['continue-on-error'], true, `${archivo}: un step de "${ctx}" no puede anular el rojo`);
+        }
+        // Tiene que aparecer en el rollup del PR: si no corre en pull_request,
+        // nunca llega a vetar un merge.
+        const triggers = typeof on === 'string' ? [on] : Array.isArray(on) ? on : Object.keys(on || {});
+        assert.ok(triggers.includes('pull_request'), `${archivo}: "${ctx}" tiene que correr en pull_request`);
+        assert.ok(!triggers.includes('pull_request_target'), `${archivo}: nunca pull_request_target`);
+    }
+});
+
+test('#7660 — el gate apunta al secret scan bloqueante de security-sast.yml (fila 6 de #7658)', () => {
+    const jobs = jobsDeLosWorkflows();
+    const scan = jobs.find(j => j.archivo === 'security-sast.yml' && j.key === 'secret-scan');
+    assert.ok(scan, 'security-sast.yml declara el job secret-scan');
+    assert.ok(SECURITY_BLOCKING_CONTEXTS.includes(scan.contexto), 'el contexto publicado por secret-scan está en la allowlist');
+    assert.equal(scan.job['continue-on-error'], false, 'secret-scan declara continue-on-error: false explícito');
+    // `runtime-state-guard.yml` se eliminó en #7660: su nombre ya no es un
+    // contexto del repo y dejarlo en la allowlist sería un gate fantasma.
+    assert.equal(fs.existsSync(path.join(WORKFLOWS_DIR, 'runtime-state-guard.yml')), false);
+    assert.ok(!SECURITY_BLOCKING_CONTEXTS.includes('runtime-state-guard'));
+});
+
+test('#6612 — el piso mínimo se ancla al YAML: los SAST siguen en modo warning', () => {
+    const sast = fs.readFileSync(path.join(WORKFLOWS_DIR, 'security-sast.yml'), 'utf8');
     assert.match(sast, /continue-on-error: true/, 'los SAST siguen en modo warning (#6615)');
 });
 
-test('#6612 — los contextos de la allowlist existen tal cual en los workflows del repo', () => {
-    // Anti-typo: un nombre mal escrito hace que el gate NUNCA matchee y el
-    // fail-open vuelve con los tests en verde.
-    const wf = path.join(__dirname, '..', '..', '..', '.github', 'workflows');
-    const sast = fs.readFileSync(path.join(wf, 'security-sast.yml'), 'utf8');
-    const guard = fs.readFileSync(path.join(wf, 'runtime-state-guard.yml'), 'utf8');
+test('#6612 — los contextos en modo warning existen tal cual en los workflows del repo', () => {
+    // Anti-typo: un nombre mal escrito hace que la lista NUNCA matchee.
+    const sast = fs.readFileSync(path.join(WORKFLOWS_DIR, 'security-sast.yml'), 'utf8');
     assert.match(sast, /name:\s*OWASP Dependency Check/);
     assert.match(sast, /name:\s*Semgrep Static Analysis/);
     assert.match(sast, /name:\s*detect-secrets Scan/);
-    assert.match(guard, /^ {2}runtime-state-guard:/m, 'el contexto es la job key (el job no declara `name:`)');
 });

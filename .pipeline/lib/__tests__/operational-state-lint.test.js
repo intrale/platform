@@ -1067,7 +1067,7 @@ test('SEC-2 · el anclaje no filtra codigo por los caminos que corren en CI ni e
         const r = runCli(root, [mode]);
         assert.ok(!r.all.includes('MARCA_UNICA_DEL_FIXTURE'), `${mode} no puede volcar codigo del repo`);
     }
-    const wf = fs.readFileSync(path.join(__dirname, '..', '..', '..', '.github', 'workflows', 'operational-state-lint.yml'), 'utf8');
+    const wf = fs.readFileSync(path.join(__dirname, '..', '..', '..', '.github', 'workflows', 'pipeline-lints.yml'), 'utf8');
     const hook = fs.readFileSync(path.join(__dirname, '..', '..', '..', '.husky', 'pre-commit'), 'utf8');
     assert.ok(!/--anchor/.test(wf), 'el workflow no invoca --anchor');
     assert.ok(!/--anchor/.test(hook), 'el hook no invoca --anchor');
@@ -1622,7 +1622,7 @@ test('CA-4a · el bloque del hook esta ANTES del primer `exit 0` (si no, es codi
 });
 
 test('CA-4a/CA-4c/CA-9b · el workflow corre en enforce, con permissions read y trigger pull_request', () => {
-    const wf = fs.readFileSync(path.join(__dirname, '..', '..', '..', '.github', 'workflows', 'operational-state-lint.yml'), 'utf8');
+    const wf = fs.readFileSync(path.join(__dirname, '..', '..', '..', '.github', 'workflows', 'pipeline-lints.yml'), 'utf8');
     assert.match(wf, /operational-state-lint\.js --check/);
     assert.ok(
         !/run:\s*node lib\/operational-state-lint\.js --report-only/.test(wf),

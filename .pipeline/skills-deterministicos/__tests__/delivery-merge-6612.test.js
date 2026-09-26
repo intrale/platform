@@ -102,7 +102,7 @@ function baseDeps(over = {}) {
 // CA-4a — EL TEST QUE REPRODUCE #6602. Es el que debe fallar contra `main`.
 // =============================================================================
 
-test('#6612 CA-4a — runtime-state-guard en FAILURE con pr-status verde y UNSTABLE: NO mergea', () => {
+test('#6612 CA-4a — el secret scan bloqueante en FAILURE con pr-status verde y UNSTABLE: NO mergea', () => {
     const merges = [];
     const logs = [];
     const out = delivery.attemptMergeWithGates(baseDeps({
@@ -110,7 +110,7 @@ test('#6612 CA-4a — runtime-state-guard en FAILURE con pr-status verde y UNSTA
         getSnapshot: () => snapshotOk({
             mergeStateStatus: 'UNSTABLE',
             statusCheckRollup: [
-                rojo('runtime-state-guard'),
+                rojo('Secret scan (blocking)'),
                 verde('pr-status'),
                 verde('OWASP Dependency Check'),
                 verde('Semgrep Static Analysis'),
@@ -122,7 +122,7 @@ test('#6612 CA-4a — runtime-state-guard en FAILURE con pr-status verde y UNSTA
     }));
     assert.equal(out.status, 'blocked');
     assert.equal(out.gate, 'security-checks-red');
-    assert.match(out.reason, /runtime-state-guard/);
+    assert.match(out.reason, /Secret scan \(blocking\)/);
     // Lo esencial: el PUT NUNCA se dispara. Con el gate corriendo después del
     // merge, `main` ya tendría el commit y el gate sería decorativo.
     assert.equal(merges.length, 0, 'el PUT no puede ejecutarse: así se mergeó #6602');
@@ -136,7 +136,7 @@ test('#6612 CA-4a — el gate es un control ACTIVO: no reintenta ni espera', () 
     const sleeps = [];
     let snapshots = 0;
     const out = delivery.attemptMergeWithGates(baseDeps({
-        getSnapshot: () => { snapshots++; return snapshotOk({ statusCheckRollup: [rojo('runtime-state-guard')] }); },
+        getSnapshot: () => { snapshots++; return snapshotOk({ statusCheckRollup: [rojo('Secret scan (blocking)')] }); },
         sleepImpl: (ms) => sleeps.push(ms),
     }));
     assert.equal(out.status, 'blocked');
@@ -147,15 +147,15 @@ test('#6612 CA-4a — el gate es un control ACTIVO: no reintenta ni espera', () 
 test('#6612 CA-4a — el gate escala con rótulo propio, sin tocar la estructura de gate-block', () => {
     const motivo = delivery.buildGateBlockMotivo({
         prNumber: 6602, branch: 'agent/6602-x', gate: 'security-checks-red',
-        reason: 'checks de seguridad en rojo: runtime-state-guard',
+        reason: 'checks de seguridad en rojo: Secret scan (blocking)',
     });
     assert.match(motivo, /Merge bloqueado/, 'el pulpo lo clasifica como bloqueo humano');
     assert.match(motivo, /requiere intervención humana/);
     assert.match(motivo, /escáner en rojo/);
-    assert.match(motivo, /runtime-state-guard/);
+    assert.match(motivo, /Secret scan \(blocking\)/);
     const esc = delivery.buildGateBlockEscalation({
         issue: 6612, prNumber: 6602, branch: 'agent/6602-x', gate: 'security-checks-red',
-        reason: 'checks de seguridad en rojo: runtime-state-guard',
+        reason: 'checks de seguridad en rojo: Secret scan (blocking)',
     });
     assert.match(esc, /escáner en rojo/);
     assert.match(esc, /main` quedó INTACTO/);
@@ -264,7 +264,7 @@ test('#6612 CA-4b — check no requerido fuera de la allowlist en rojo: mergea y
 test('#6612 CA-4b — el check de la allowlist NO genera constancia: genera bloqueo', () => {
     const constancias = [];
     const out = delivery.attemptMergeWithGates(baseDeps({
-        getSnapshot: () => snapshotOk({ statusCheckRollup: [verde('pr-status'), rojo('runtime-state-guard')] }),
+        getSnapshot: () => snapshotOk({ statusCheckRollup: [verde('pr-status'), rojo('Secret scan (blocking)')] }),
         requiredChecksReader: readerFake({ verdict: 'green', green: ['pr-status'] }),
         postNonRequiredRed: (args) => { constancias.push(args); },
     }));

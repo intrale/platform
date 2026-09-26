@@ -63,17 +63,28 @@ const { CHECK_FAIL_CONCLUSIONS, CHECK_FAIL_STATES } = require('./human-block-tri
 // Ese es exactamente el merge que #6612 viene a impedir: el secret scan del
 // diff en FAILURE, el único requerido en verde, y el PR mergeado igual.
 //
-//   runtime-state-guard → .github/workflows/runtime-state-guard.yml:10 (job key;
-//                         el job no declara `name:`, así que el contexto
-//                         publicado es la key). Corre `precommit-secret-scan.js`
-//                         sobre el diff del PR y NO declara `continue-on-error`:
-//                         es el único escáner con poder de veto hoy.
+//   Secret scan (blocking) → .github/workflows/security-sast.yml, job key
+//                         `secret-scan` con `name: Secret scan (blocking)` (el
+//                         contexto publicado en el rollup es el `name:`). Corre
+//                         `precommit-secret-scan.js --mode=range` sobre el diff
+//                         del PR con el escáner DEL ÁRBOL BASE (confiable, no la
+//                         copia del PR) y declara `continue-on-error: false`: es
+//                         el único escáner con poder de veto hoy.
+//
+// #7660 (fila 6 de #7658): hasta ese issue la entrada era `runtime-state-guard`
+// (`runtime-state-guard.yml`, que corría el MISMO escáner sobre el mismo diff
+// pero desde la copia del PR). El operador aprobó eliminar ese workflow por
+// duplicado; el contexto se reapuntó EN EL MISMO CAMBIO, porque borrar el
+// workflow sin tocar esta lista deja el gate vacío: el contexto desaparece del
+// rollup, el veredicto sale `clear` y un secreto en el diff vuelve a mergear
+// (el fail-open de #6602/#6612). Un test ancla que cada entrada de esta lista
+// exista como job de `.github/workflows/*.yml` sin `continue-on-error: true`.
 //
 // `Object.freeze` no es decorativo: sin él, un `push()` desde cualquier módulo
 // del proceso agranda el gate en caliente, y un `splice()` lo vacía.
 // -----------------------------------------------------------------------------
 const SECURITY_BLOCKING_CONTEXTS = Object.freeze([
-    'runtime-state-guard',
+    'Secret scan (blocking)',
 ]);
 
 // -----------------------------------------------------------------------------

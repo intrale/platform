@@ -1,0 +1,150 @@
+name: Pipeline Lints
+
+# Issue #7660 — fila 5 de la tabla de decisión de #7658
+# (`docs/pipeline/evaluacion-ci-platform.md` §2, aprobada por el operador el
+# 26/09): los 4 lints de `.pipeline/**` se CONSOLIDAN en un solo workflow con
+# un solo job. Antes eran cuatro workflows (`ghost-artifact-lint.yml`,
+# `operational-state-lint.yml`, `test-env-lint.yml`, `write-target-lint.yml`)
+# y cada job se facturaba redondeado a 1 minuto: ~440 min/mes de ahorro.
+#
+# QUÉ NO CAMBIA
+#   - Los comandos: cada lint corre EXACTAMENTE el mismo `node lib/<lint>.js`
+#     y los mismos unit tests que corría en su workflow propio.
+#   - El alcance: `pull_request` a main/develop y `push` a main, sólo cuando
+#     cambian `.pipeline/**` o `.github/CODEOWNERS`.
+#   - Un step por lint, con su nombre: si el job da rojo, el step que falló
+#     dice cuál de los lints detectó el problema (UX-1 de #7660).
+#   - `if: always()` en todo step posterior al setup: un rojo NO oculta a los
+#     demás; en una sola corrida se ven todas las violaciones. El job termina
+#     en `failure` si falla cualquiera. PROHIBIDO `continue-on-error`: anula el
+#     rojo sin avisar.
+#
+# QUÉ SUBE (req. 1-2 de security de #7660, #5192)
+#   - `permissions: contents: read` a nivel workflow. `ghost-artifact-lint` y
+#     `test-env-lint` no declaraban bloque y heredaban el default del repo.
+#   - Todas las actions pineadas por SHA de 40 hex (antes dos iban por tag).
+#
+# Historia de cada guardrail (se conserva al consolidar):
+#   - ghost-artifact-lint — #3638 CA-SEC-8: defensa en profundidad del hook
+#     pre-commit local (bypassable con `--no-verify`).
+#   - operational-state-lint — #5175/#5176/#5179: corre en `--check` (ENFORCE)
+#     desde el flip de #5179; el inventario de accesos directos en producción
+#     está en cero, así que un acceso directo NUEVO rompe el job.
+#   - test-env-lint — #6260; write-target-lint — #7114. Ambos ADVISORY en CI
+#     (el único required check de `main` es `pr-status` y este job no está en
+#     su `needs:`); bloqueantes sólo en el hook local hasta que cierre #6265.
+#
+# `.github/CODEOWNERS` está en los `paths:` por #5986 (CA-5): la suite de
+# operational-state-lint asegura que el archivo siga en modo
+# `solo-comentarios`; sin este path, un PR que toca ÚNICAMENTE CODEOWNERS no
+# dispara el job — justo el único PR donde importa (precedente: #5975).
+#
+# `pull_request` y NUNCA `pull_request_target`: el segundo corre con el token
+# del repo BASE y acceso a secrets sobre código de un fork. Este workflow
+# ejecuta código del PR, así que no se mezcla con `admission-gate.yml` ni con
+# `contribution-agreement.yml`.
+
+on:
+  pull_request:
+    branches: [ main, develop ]
+    paths:
+      - '.pipeline/**'
+      - '.github/CODEOWNERS'
+      - '.github/workflows/pipeline-lints.yml'
+  push:
+    branches: [ main ]
+    paths:
+      - '.pipeline/**'
+      - '.github/CODEOWNERS'
+
+# El job sólo lee el checkout. Sin escritura sobre el repo.
+permissions:
+  contents: read
+
+# Un push nuevo al mismo PR cancela la corrida anterior de ESTE workflow. El
+# `group` incluye `github.event_name` para que un push a `main` nunca comparta
+# grupo con un PR, y la cancelación es sólo para `pull_request`: las corridas
+# de `main` no se cortan entre sí.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ github.event_name }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  pipeline-lints:
+    runs-on: ubuntu-latest
+    name: Pipeline lints (.pipeline/**)
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Setup Node 20
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      # Los lints y sus tests cargan `pipeline-env` -> `config-resolver` ->
+      # `js-yaml`, que vive en el `package.json` de la RAIZ (no de `.pipeline`).
+      # Sin este paso mueren con "Cannot find module 'js-yaml'" (rebotes de
+      # #7114 y #7591). Corre desde la raíz, sin `working-directory`.
+      # `--ignore-scripts`: sin compilar nativos (canvas/tesseract) ni correr
+      # `prepare` (husky); sin side effects.
+      - name: Install root dependencies
+        run: npm ci --ignore-scripts
+
+      # ── operational-state-lint (#5175, enforce desde #5179) ─────────────
+      - name: operational-state-lint (enforce)
+        if: always()
+        working-directory: .pipeline
+        run: node lib/operational-state-lint.js --check
+
+      # El inventario se publica aunque el check falle: es justo el run donde
+      # hace falta para diagnosticar. Es la única salida legible del guardrail
+      # para quien no lee el log crudo.
+      - name: operational-state-lint · inventario en el resumen
+        if: always()
+        working-directory: .pipeline
+        run: node lib/operational-state-lint.js --report >> "$GITHUB_STEP_SUMMARY"
+
+      - name: operational-state-lint · unit tests
+        if: always()
+        working-directory: .pipeline
+        run: node --test lib/__tests__/operational-state-lint.test.js
+
+      # ── ghost-artifact-lint (#3638 CA-SEC-8) ────────────────────────────
+      - name: ghost-artifact-lint
+        if: always()
+        working-directory: .pipeline
+        run: node lib/ghost-artifact-lint.js --check
+
+      - name: ghost-artifact-lint · unit tests
+        if: always()
+        working-directory: .pipeline
+        run: node --test lib/__tests__/ghost-artifact-cleaner.test.js lib/__tests__/ghost-artifact-lint.test.js lib/__tests__/marker-artifact.test.js
+
+      # ── test-env-lint (#6260, ADVISORY hasta #6265) ─────────────────────
+      # `DEFAULT_PIPELINE_ROOT` se resuelve contra `__dirname`, nunca contra
+      # `process.cwd()`: el hook lo invoca desde la raíz del repo y este job
+      # desde `.pipeline`, y el resultado tiene que ser el mismo.
+      - name: test-env-lint
+        if: always()
+        working-directory: .pipeline
+        run: node lib/test-env-lint.js --check
+
+      - name: test-env-lint · unit tests
+        if: always()
+        working-directory: .pipeline
+        run: node --test lib/__tests__/test-env-lint.test.js lib/__tests__/with-env.test.js
+
+      # ── write-target-lint (#7114, ADVISORY hasta #6265) ─────────────────
+      # El lint no usa el glob nativo de `fs` (Node >= 22.17): walk propio,
+      # corre en Node 20.
+      - name: write-target-lint
+        if: always()
+        working-directory: .pipeline
+        run: node lib/write-target-lint.js --check
+
+      - name: write-target-lint · unit tests
+        if: always()
+        working-directory: .pipeline
+        run: node --test lib/__tests__/write-target-lint.test.js lib/__tests__/write-points.test.js

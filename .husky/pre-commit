@@ -118,8 +118,8 @@ fi
 # completo; un scan filtrado deja pasar un escritor en un archivo no staged. En
 # un repo con baseline al dia el verde es UNA linea: el ratchet absorbe lo que el
 # commit no toco. Gate por PRESENCIA de `.pipeline/` staged, exit code propagado
-# sin `|| true`. En CI: `.github/workflows/write-target-lint.yml` (advisory
-# hasta #6265).
+# sin `|| true`. En CI: step `write-target-lint` de
+# `.github/workflows/pipeline-lints.yml` (#7660; advisory hasta #6265).
 # =============================================================================
 RUN_WRITE_TARGET_LINT=0
 case "$TOUCHED_FILES" in

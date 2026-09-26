@@ -104,7 +104,7 @@ Incluir:
 
 Archivo: `.github/workflows/distribute-desktop.yml`
 
-**Trigger:** Push a `main` o ejecución manual (`workflow_dispatch`)
+**Trigger:** sólo ejecución manual (`workflow_dispatch`). Desde #7660 (fila 8 de la tabla de decisión de #7658) ya no se dispara con cada push a `main`: hay que correrlo a mano antes de un release (Actions → *Distribución Desktop* → *Run workflow*).
 
 **Jobs:**
 1. `build-msi` — Windows runner → genera MSI → sube como artifact
