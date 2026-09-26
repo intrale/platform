@@ -117,7 +117,8 @@ node .pipeline/lib/write-target-lint.js --write-baseline   # sólo cuando el bas
 
 Corre en `.husky/pre-commit` cuando hay archivos `.pipeline/` staged (universo
 completo, sin `--only`: R1 y R2 son propiedades del inventario entero) y en CI
-por `.github/workflows/write-target-lint.yml` (advisory hasta #6265). El job
+por el step `write-target-lint` de `.github/workflows/pipeline-lints.yml`
+(consolidado en #7660; advisory hasta #6265). El job
 instala las dependencias de la **raíz** con `npm ci --ignore-scripts` antes de
 correr: el lint carga `pipeline-env` → `config-resolver` → `js-yaml`, que vive
 en el `package.json` raíz, y sin ese paso muere con exit 2. Fail-closed:

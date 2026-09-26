@@ -776,7 +776,7 @@ test('CA-6 · el hook pre-commit y el workflow de CI corren el guardrail (sin --
     assert.doesNotMatch(bloque, /\|\| true/);
     assert.match(bloque, /exit "\$WRITE_TARGET_LINT_EXIT"/);
     assert.ok(hook.indexOf('RUN_TEST_ENV_LINT=0') < hook.indexOf('RUN_WRITE_TARGET_LINT=0'), 'despues del bloque de test-env-lint');
-    const yml = fs.readFileSync(path.join(REPO_REAL, '.github', 'workflows', 'write-target-lint.yml'), 'utf8');
+    const yml = fs.readFileSync(path.join(REPO_REAL, '.github', 'workflows', 'pipeline-lints.yml'), 'utf8');
     assert.match(yml, /permissions:\s*\n\s*contents: read/);
     assert.match(yml, /node-version: '20'/);
     assert.match(yml, /actions\/checkout@[0-9a-f]{40}/, 'checkout pineado por SHA');

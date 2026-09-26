@@ -485,14 +485,34 @@ test('un fallo de Git bloquea y se distingue de una infracción', () => {
 });
 
 test('workflow de PR nace enforce, con permisos mínimos y sin bypass', () => {
-    const workflow = fs.readFileSync(path.join(REPO_ROOT, '.github', 'workflows', 'runtime-state-guard.yml'), 'utf8');
-    assert.match(workflow, /^\s*pull_request:\s*$/m);
-    assert.match(workflow, /^\s*contents:\s*read\s*$/m);
-    assert.match(workflow, /fetch-depth:\s*0/);
-    assert.match(workflow, /--range/);
-    for (const forbidden of ['pull_request_target', 'continue-on-error', '|| true', 'report-only', 'secrets.']) {
-        assert.ok(!workflow.includes(forbidden), `workflow contiene bypass/provisión prohibida: ${forbidden}`);
+    // #7660 (fila 6 de #7658): `runtime-state-guard.yml` se eliminó por duplicar
+    // al job bloqueante `secret-scan` de `security-sast.yml`, que corre el MISMO
+    // escáner sobre el mismo diff del PR pero desde el árbol BASE. Las garantías
+    // que este test fijaba sobre el guard se trasladan a ese job.
+    // `|| true` ya no se prohíbe a nivel texto: el job lo usa en lecturas
+    // auxiliares (capabilities, merge-base) cuyo fallo cae en fail-closed; lo
+    // que no puede aparecer es `continue-on-error` en el job ni en sus steps.
+    const yaml = require('js-yaml');
+    const wfPath = path.join(REPO_ROOT, '.github', 'workflows', 'security-sast.yml');
+    const doc = yaml.load(fs.readFileSync(wfPath, 'utf8'));
+    assert.ok(doc.on && Object.prototype.hasOwnProperty.call(doc.on, 'pull_request'), 'corre en pull_request');
+    assert.ok(!Object.prototype.hasOwnProperty.call(doc.on, 'pull_request_target'), 'nunca pull_request_target');
+    const job = doc.jobs['secret-scan'];
+    assert.ok(job, 'security-sast.yml declara el job secret-scan');
+    assert.strictEqual(job['continue-on-error'], false);
+    assert.deepStrictEqual(job.permissions, { contents: 'read' });
+    const checkout = job.steps.find((st) => typeof st.uses === 'string' && st.uses.startsWith('actions/checkout@'));
+    assert.ok(checkout && checkout.with && checkout.with['fetch-depth'] === 0, 'checkout con fetch-depth: 0');
+    const texto = JSON.stringify(job);
+    assert.match(texto, /precommit-secret-scan\.js/);
+    assert.match(texto, /--mode=range/);
+    for (const step of job.steps) {
+        assert.notStrictEqual(step['continue-on-error'], true, `step "${step.name}" no puede anular el rojo`);
     }
+    for (const forbidden of ['report-only', 'secrets.']) {
+        assert.ok(!texto.includes(forbidden), `job secret-scan contiene bypass/provisión prohibida: ${forbidden}`);
+    }
+    assert.ok(!fs.existsSync(path.join(REPO_ROOT, '.github', 'workflows', 'runtime-state-guard.yml')));
 });
 
 test('commit real con path runtime forzado falla mediante hook y el caso limpio pasa', () => {
