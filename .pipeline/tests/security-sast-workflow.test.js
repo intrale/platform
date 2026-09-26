@@ -167,6 +167,10 @@ test('cada rama declara su estado con el prefijo "Estado de…" y sin íconos', 
 // dependencias (opción b); Semgrep y detect-secrets diarios; sin comentario en PR.
 const { execFileSync } = require('node:child_process');
 const os = require('node:os');
+const { resolveUsableBash, BASH_SKIP_REASON } = require('../lib/bash-command');
+// En Windows `bash` a pelo puede resolver a WSL (System32ash.exe), que no ve
+// el cwd ni el GITHUB_OUTPUT con paths Windows: se resuelve Git Bash explícito.
+const usableBash = resolveUsableBash();
 
 const jobs = parsedWorkflow.jobs;
 const triggers = parsedWorkflow.on;
@@ -231,6 +235,7 @@ test('#7659 el patrón de dependencias distingue un PR de dependencias de uno qu
 });
 
 test('#7659 detect-deps clasifica un PR real con git (merge efímero y fallback)', (t) => {
+  if (!usableBash) return t.skip(BASH_SKIP_REASON);
   const step = jobs['detect-deps'].steps.find((s) => s.id === 'filter');
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'detect-deps-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
@@ -259,7 +264,7 @@ test('#7659 detect-deps clasifica un PR real con git (merge efímero y fallback)
   const classify = ({ githubSha, head }) => {
     const out = path.join(dir, '.out-' + Math.random().toString(36).slice(2));
     fs.writeFileSync(out, '');
-    execFileSync('bash', ['-c', step.run], {
+    execFileSync(usableBash, ['-c', step.run], {
       cwd: dir,
       env: { ...process.env, ...step.env, PR_BASE_SHA: base, PR_HEAD_SHA: head, GITHUB_SHA: githubSha, GITHUB_OUTPUT: out },
     });
