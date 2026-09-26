@@ -425,3 +425,391 @@ test('activeCommitters pide los ids como JSON (tojson) para que lines() pueda pa
     const src = fs.readFileSync(path.join(__dirname, 'measure-actions-billing.js'), 'utf8');
     assert.match(src, /\.commit\.author\.email\) \| tojson/);
 });
+
+// =============================================================================
+// #7687 — Modo estricto: measure(), runCli(), reintentos y ventana since.
+// Sin red: `gh` fake, `sleep` fake y `now` fijo. Directorios en os.tmpdir().
+// =============================================================================
+
+const os = require('os');
+
+const PRICING_PATH = path.join(__dirname, '..', 'docs', 'pipeline', 'evidence', '7594', 'pricing.json');
+const REPO = path.resolve(__dirname, '..');
+const NOW = () => new Date('2026-09-20T12:00:00Z');
+const quiet = { log: () => {}, error: () => {}, stderr: () => {}, sleep: () => {} };
+
+function tmpDir(t) {
+    const d = fs.mkdtempSync(path.join(os.tmpdir(), 'mab-test-'));
+    t.after(() => fs.rmSync(d, { recursive: true, force: true }));
+    return d;
+}
+
+// Fake de gh: responde por endpoint (primer match por substring), cuenta llamadas y
+// puede fallar a demanda.
+function fakeGh(routes) {
+    const log = [];
+    const hit = (ep) => {
+        log.push(ep);
+        const r = Object.entries(routes).find(([k]) => ep.includes(k));
+        if (!r) return [];
+        if (r[1] instanceof Error) throw r[1];
+        return typeof r[1] === 'function' ? r[1](ep) : r[1];
+    };
+    return { json: hit, lines: hit, get calls() { return log.length; }, log };
+}
+const ghErr = (stderr, extra = {}) => Object.assign(new Error(stderr), { stderr }, extra);
+
+const RUN = { id: 11, name: 'CI', event: 'push', status: 'completed', conclusion: 'success',
+    head_branch: 'agent/1-secreto', head_sha: 'deadbeefcafe', run_attempt: 1, created_at: '2026-09-19T10:00:00Z' };
+
+// Rutas de una corrida sana; `over` pisa/agrega rutas (van primero en el match).
+function okRoutes(over = {}) {
+    return Object.assign({}, over, {
+        'actions/runs?created=': (ep) => (ep.endsWith('per_page=1') ? { total_count: 1 } : [RUN]),
+        '/jobs?': [job(61, { id: 1 })],
+        'actions/cache/usage': { active_caches_size_in_bytes: 1024 },
+        'actions/artifacts': [2048],
+        '/commits': ['leitolarreta', 'alguien@intrale.com'],
+        'actions/workflows/': { workflow_runs: [{ id: 99, conclusion: 'success', created_at: '2026-09-18T00:00:00Z' }] },
+    }, over);
+}
+
+function opts(t, extra = []) {
+    const raw = tmpDir(t);
+    return m.parseArgs(['--pricing', PRICING_PATH, '--raw', raw, '--out', path.join(raw, 'out'), '--days', '2', ...extra]);
+}
+
+// --- windowDaysSince (CA-1) --------------------------------------------------
+
+test('windowDaysSince recorta los días previos a since y devuelve [] si since es futuro', () => {
+    const today = NOW();
+    assert.deepEqual(m.windowDays(3, today), ['2026-09-17', '2026-09-18', '2026-09-19']);
+    assert.deepEqual(m.windowDaysSince(3, '2026-09-18', today), ['2026-09-18', '2026-09-19']);
+    assert.deepEqual(m.windowDaysSince(3, '2026-09-20', today), [], 'hoy todavía no es un día completo');
+    assert.deepEqual(m.windowDaysSince(3, '2027-01-01', today), []);
+    assert.deepEqual(m.windowDaysSince(3, '', today), m.windowDays(3, today), 'sin since equivale a windowDays');
+});
+
+test('windowDays no muta el Date recibido', () => {
+    const today = NOW();
+    m.windowDays(2, today);
+    assert.equal(today.toISOString(), '2026-09-20T12:00:00.000Z');
+});
+
+// --- measure con ventana vacía (CA-2) ----------------------------------------
+
+test('measure con since futuro deja window.from/to en null y totales en 0', (t) => {
+    const gh = fakeGh(okRoutes());
+    const s = m.measure(opts(t, ['--strict', '--since', '2026-12-01']), { ...quiet, gh, now: NOW });
+    assert.ok('from' in s.window && 'to' in s.window);
+    assert.equal(s.window.from, null);
+    assert.equal(s.window.to, null);
+    assert.equal(s.totals.billable_min, 0);
+    assert.equal(s.generated_at, '2026-09-20T12:00:00.000Z');
+});
+
+// --- validación de argumentos (CA-3, CA-13, CA-19) ----------------------------
+
+test('runCli sale con 2 ante --since inválido o sin valor', (t) => {
+    for (const since of ['2026-02-30', '2026-13-45', 'abc']) {
+        assert.equal(m.runCli(['--strict', '--pricing', PRICING_PATH, '--raw', tmpDir(t), '--since', since], quiet), 2, since);
+    }
+    assert.equal(m.runCli(['--pricing', PRICING_PATH, '--raw', tmpDir(t), '--since'], quiet), 2, 'flag sin valor');
+    assert.equal(m.isValidIsoDate('2024-02-29'), true);
+    assert.equal(m.isValidIsoDate('2026-02-29'), false);
+});
+
+test('runCli en strict con --raw dentro del repo sale con 2 sin crear nada', () => {
+    const inside = path.join(REPO, `tmp-x-7687-${process.pid}`);
+    const gh = fakeGh(okRoutes());
+    assert.equal(m.runCli(['--strict', '--pricing', PRICING_PATH, '--raw', inside], { ...quiet, gh }), 2);
+    assert.equal(fs.existsSync(inside), false);
+    assert.equal(gh.calls, 0, 'no se llama a gh');
+});
+
+test('runCli en strict rechaza --owner y --repos con caracteres peligrosos', (t) => {
+    const base = ['--strict', '--pricing', PRICING_PATH, '--raw', tmpDir(t)];
+    assert.equal(m.runCli([...base, '--owner', 'a/b'], quiet), 2);
+    assert.equal(m.runCli([...base, '--repos', 'x?y'], quiet), 2);
+    assert.equal(m.runCli([...base, '--calibrate', 'a&b'], quiet), 2);
+    assert.equal(m.runCli([...base, '--release-workflows', 'platform:../x.yml'], quiet), 2);
+});
+
+test('validateOpts lanza MeasureError args si falta --pricing', (t) => {
+    const o = m.parseArgs(['--raw', tmpDir(t)]);
+    assert.throws(() => m.validateOpts(o), (e) => e instanceof m.MeasureError && e.kind === 'args' && /--pricing/.test(e.message));
+    assert.doesNotThrow(() => m.validateOpts(m.parseArgs(['--raw', tmpDir(t), '--pricing', PRICING_PATH, '--owner', 'a/b'])),
+        'sin strict el owner no se valida (CA-20)');
+});
+
+// --- withRetry y classifyGhError (CA-5 a CA-9) --------------------------------
+
+function counting(fn) { const f = () => { f.calls += 1; return fn(f.calls); }; f.calls = 0; return f; }
+
+test('withRetry: 5xx persistente hace 4 llamadas con esperas 2/8/30 s y lanza kind api', () => {
+    const slept = [];
+    const fn = counting(() => { throw ghErr('HTTP 502: Bad Gateway'); });
+    assert.throws(() => m.withRetry(fn, { sleep: (ms) => slept.push(ms), endpoint: 'repos/o/r/actions/runs' }),
+        (e) => e instanceof m.MeasureError && e.kind === 'api' && e.status === 502);
+    assert.equal(fn.calls, 4);
+    assert.deepEqual(slept, [2000, 8000, 30000]);
+});
+
+test('withRetry reintenta un timeout y devuelve el valor cuando se recupera', () => {
+    const slept = [];
+    const fn = counting((n) => { if (n === 1) throw Object.assign(new Error('spawnSync gh ETIMEDOUT'), { code: 'ETIMEDOUT' }); return 'ok'; });
+    assert.equal(m.withRetry(fn, { sleep: (ms) => slept.push(ms) }), 'ok');
+    assert.equal(fn.calls, 2);
+    assert.deepEqual(slept, [2000]);
+});
+
+test('withRetry: 429 o 403 de rate limit secundario persistente lanza kind rate_limit', () => {
+    for (const stderr of ['HTTP 429: Too Many Requests', 'gh: You have exceeded a secondary rate limit (HTTP 403)']) {
+        const fn = counting(() => { throw ghErr(stderr); });
+        assert.throws(() => m.withRetry(fn, { sleep: () => {} }), (e) => e.kind === 'rate_limit', stderr);
+        assert.equal(fn.calls, 4, stderr);
+    }
+});
+
+test('withRetry no reintenta 404, 401 ni 403 común', () => {
+    for (const stderr of ['gh: Not Found (HTTP 404)', 'HTTP 401: Bad credentials', 'HTTP 403: Resource not accessible by integration']) {
+        const slept = [];
+        const fn = counting(() => { throw ghErr(stderr); });
+        assert.throws(() => m.withRetry(fn, { sleep: (ms) => slept.push(ms) }), (e) => e.kind === 'api', stderr);
+        assert.equal(fn.calls, 1, stderr);
+        assert.deepEqual(slept, []);
+    }
+});
+
+test('withRetry avisa cada reintento por onRetry y respeta un MeasureError ya tipado', () => {
+    const seen = [];
+    const fn = counting(() => { throw ghErr('HTTP 503'); });
+    assert.throws(() => m.withRetry(fn, { sleep: () => {}, onRetry: (r) => seen.push(`${r.attempt}/${r.of}:${r.delayMs}`) }));
+    assert.deepEqual(seen, ['1/3:2000', '2/3:8000', '3/3:30000']);
+    const typed = new m.MeasureError('rate_limit', 'x');
+    const fn2 = counting(() => { throw typed; });
+    assert.throws(() => m.withRetry(fn2, { sleep: () => {} }), (e) => e === typed);
+    assert.equal(fn2.calls, 1);
+});
+
+test('el mensaje de error es de una línea, trae status y endpoint y no el resto del stderr', () => {
+    const stderr = 'gh: Server Error (HTTP 500)\n{"author":{"email":"secreto@intrale.com","login":"leito"}}';
+    const fn = () => { throw ghErr(stderr); };
+    try {
+        m.withRetry(fn, { attempts: 0, endpoint: 'repos/intrale/platform/commits' });
+        assert.fail('debía lanzar');
+    } catch (e) {
+        assert.ok(!e.message.includes('\n'));
+        assert.match(e.message, /HTTP 500/);
+        assert.match(e.message, /repos\/intrale\/platform\/commits/);
+        assert.ok(!/secreto|@|leito/.test(e.message));
+    }
+});
+
+test('classifyGhError cubre timeout, SIGTERM, 5xx, 429, 403 con y sin rate limit y errores sin status', () => {
+    assert.deepEqual(m.classifyGhError({ code: 'ETIMEDOUT' }), { retryable: true, kind: 'api', status: 'timeout' });
+    assert.deepEqual(m.classifyGhError({ signal: 'SIGTERM' }), { retryable: true, kind: 'api', status: 'timeout' });
+    assert.deepEqual(m.classifyGhError(ghErr('HTTP 504')), { retryable: true, kind: 'api', status: 504 });
+    assert.deepEqual(m.classifyGhError(ghErr('HTTP 429')), { retryable: true, kind: 'rate_limit', status: 429 });
+    assert.deepEqual(m.classifyGhError(ghErr('API rate limit exceeded (HTTP 403)')), { retryable: true, kind: 'rate_limit', status: 403 });
+    assert.deepEqual(m.classifyGhError(ghErr('HTTP 403: Forbidden')), { retryable: false, kind: 'api', status: 403 });
+    assert.deepEqual(m.classifyGhError(new SyntaxError('Unexpected token')), { retryable: false, kind: 'api', status: null });
+    assert.deepEqual(m.classifyGhError(undefined), { retryable: false, kind: 'api', status: null });
+});
+
+// --- runCli: exit codes 3 y 4 en strict (CA-8) --------------------------------
+
+test('runCli en strict sale con 3 si se agota el rate limit y con 4 ante un 500 persistente', (t) => {
+    const argv = () => ['--strict', '--pricing', PRICING_PATH, '--raw', tmpDir(t), '--out', path.join(tmpDir(t), 'out'), '--days', '1'];
+    const errors = [];
+    const deps = (stderr) => ({ ...quiet, now: NOW, error: (s) => errors.push(s),
+        exec: () => { throw ghErr(stderr); } });
+    assert.equal(m.runCli(argv(), deps('HTTP 429: Too Many Requests')), 3);
+    assert.equal(m.runCli(argv(), deps('HTTP 500: Internal Server Error')), 4);
+    assert.equal(errors.length, 2);
+    assert.match(errors[0], /Límite de uso de la API de GitHub agotado/);
+    assert.match(errors[1], /Error de la API de GitHub \(HTTP 500/);
+});
+
+test('runCli en strict mapea un error crudo del gh inyectado a exit 4', (t) => {
+    const gh = fakeGh(okRoutes({ 'actions/runs?created=': ghErr('HTTP 502: Bad Gateway') }));
+    assert.equal(m.runCli(['--strict', '--pricing', PRICING_PATH, '--raw', tmpDir(t), '--out', path.join(tmpDir(t), 'o')],
+        { ...quiet, gh, now: NOW }), 4);
+});
+
+test('runCli sin strict propaga un error de API igual que antes (sin mapeo nuevo)', (t) => {
+    const gh = fakeGh(okRoutes({ 'actions/runs?created=': ghErr('HTTP 502: Bad Gateway') }));
+    assert.throws(() => m.runCli(['--pricing', PRICING_PATH, '--raw', tmpDir(t), '--out', path.join(tmpDir(t), 'o'), '--days', '1'],
+        { ...quiet, gh, now: NOW }), /HTTP 502/);
+});
+
+// --- measure en strict relanza en vez de devolver 0 (CA-11) --------------------
+
+for (const [label, route] of [['storage', 'actions/cache/usage'], ['commits', '/commits'], ['releases', 'actions/workflows/']]) {
+    test(`measure en strict lanza si falla ${label}; sin strict devuelve 0 o note`, (t) => {
+        const extra = ['--release-workflows', 'platform:release.yml'];
+        const failing = () => fakeGh(okRoutes({ [route]: ghErr('HTTP 502: Bad Gateway') }));
+        assert.throws(() => m.measure(opts(t, ['--strict', ...extra]), { ...quiet, gh: failing(), now: NOW }), /HTTP 502/);
+        const s = m.measure(opts(t, extra), { ...quiet, gh: failing(), now: NOW });
+        if (label === 'storage') assert.equal(s.storage.cache_gb_by_repo.platform, 0);
+        if (label === 'commits') assert.equal(s.active_committers_90d, 0);
+        if (label === 'releases') assert.match(s.releases[0].note, /^error: /);
+    });
+}
+
+test('measure en strict falla también si falla la consulta de artifacts', (t) => {
+    const gh = fakeGh(okRoutes({ 'actions/artifacts': ghErr('HTTP 500') }));
+    assert.throws(() => m.measure(opts(t, ['--strict']), { ...quiet, gh, now: NOW }), /HTTP 500/);
+});
+
+test('measure en strict con todo sano mide runs, storage, committers y releases', (t) => {
+    const gh = fakeGh(okRoutes());
+    const s = m.measure(opts(t, ['--strict', '--release-workflows', 'platform:release.yml']), { ...quiet, gh, now: NOW });
+    assert.equal(s.totals.runs, 2, 'un run por cada uno de los 2 días');
+    assert.equal(s.active_committers_90d, 2);
+    assert.equal(s.releases[0].billable_min, 2);
+    assert.ok(gh.log.some(ep => ep.includes('/commits?since=2026-06-22')), 'since de commits sale del now inyectado');
+});
+
+// --- --skip-storage / --skip-releases (CA-12) ----------------------------------
+
+test('--skip-storage y --skip-releases no llaman a esas consultas y conservan la forma', (t) => {
+    const gh = fakeGh(okRoutes());
+    const s = m.measure(opts(t, ['--strict', '--skip-storage', '--skip-releases', '--release-workflows', 'platform:release.yml']),
+        { ...quiet, gh, now: NOW });
+    assert.ok(!gh.log.some(ep => /cache\/usage|artifacts|workflows\/|\/commits/.test(ep)), gh.log.join('\n'));
+    assert.deepEqual(s.storage, { by_repo: {}, artifacts_gb: 0, cache_gb_by_repo: {} });
+    assert.equal(s.active_committers_90d, 0);
+    assert.deepEqual(s.releases, []);
+});
+
+// --- directorio temporal y caché (CA-14, CA-15, SEC-1, SEC-2) -------------------
+
+test('en strict se borra sólo el subdirectorio propio y no se lee la caché legada', (t) => {
+    const parent = tmpDir(t);
+    const sentinel = path.join(parent, 'centinela.txt');
+    fs.writeFileSync(sentinel, 'no borrar');
+    // JSON "envenenado" justo donde el modo legado buscaría la caché del día.
+    const poisoned = path.join(parent, 'intrale', 'platform', 'runs', '2026-09-19.json');
+    fs.mkdirSync(path.dirname(poisoned), { recursive: true });
+    fs.writeFileSync(poisoned, JSON.stringify([Object.assign({}, RUN, { id: 666 })]));
+    const noRuns = { 'actions/runs?created=': (ep) => (ep.endsWith('per_page=1') ? { total_count: 0 } : []) };
+    const o = m.parseArgs(['--strict', '--pricing', PRICING_PATH, '--raw', parent, '--days', '1']);
+
+    const ok = m.measure(o, { ...quiet, gh: fakeGh(okRoutes(noRuns)), now: NOW });
+    assert.equal(ok.totals.runs, 0, 'no refleja el JSON envenenado');
+    const failing = fakeGh(okRoutes(Object.assign({}, noRuns, { 'actions/cache/usage': ghErr('HTTP 500') })));
+    assert.throws(() => m.measure(o, { ...quiet, gh: failing, now: NOW }));
+
+    assert.equal(fs.readFileSync(sentinel, 'utf8'), 'no borrar');
+    assert.ok(fs.existsSync(poisoned));
+    assert.deepEqual(fs.readdirSync(parent).filter(n => n.startsWith('measure-actions-')), []);
+});
+
+// --- escritura atómica (CA-16, CA-17) ---------------------------------------------
+
+test('runCli en strict con --summary-only no deja nada en --out si measure falla', (t) => {
+    const out = path.join(tmpDir(t), 'out');
+    const gh = fakeGh(okRoutes({ '/commits': ghErr('HTTP 500') }));
+    assert.equal(m.runCli(['--strict', '--summary-only', '--pricing', PRICING_PATH, '--raw', tmpDir(t), '--out', out, '--days', '1'],
+        { ...quiet, gh, now: NOW }), 4);
+    assert.ok(!fs.existsSync(out) || fs.readdirSync(out).length === 0);
+});
+
+test('una corrida OK con --summary-only deja sólo actions-usage-summary.json', (t) => {
+    const out = path.join(tmpDir(t), 'out');
+    const lines = [];
+    assert.equal(m.runCli(['--strict', '--summary-only', '--pricing', PRICING_PATH, '--raw', tmpDir(t), '--out', out, '--days', '1'],
+        { ...quiet, log: (s) => lines.push(s), gh: fakeGh(okRoutes()), now: NOW }), 0);
+    assert.deepEqual(fs.readdirSync(out), ['actions-usage-summary.json']);
+    assert.equal(lines[0], `Resumen: ${path.join(out, 'actions-usage-summary.json')}`);
+    assert.equal(JSON.parse(fs.readFileSync(path.join(out, 'actions-usage-summary.json'), 'utf8')).totals.runs, 1);
+});
+
+test('runCli avisa la ventana vacía', (t) => {
+    const lines = [];
+    assert.equal(m.runCli(['--strict', '--summary-only', '--since', '2026-12-01', '--pricing', PRICING_PATH, '--raw', tmpDir(t),
+        '--out', path.join(tmpDir(t), 'o')], { ...quiet, log: (s) => lines.push(s), gh: fakeGh(okRoutes()), now: NOW }), 0);
+    assert.ok(lines.includes('Ventana vacía: no hay días desde 2026-12-01; totales en 0.'));
+});
+
+test('writeSummaryAtomic borra el .tmp si el rename falla y runCli en strict sale con 4', (t) => {
+    const out = path.join(tmpDir(t), 'out');
+    const original = fs.renameSync;
+    fs.renameSync = () => { throw Object.assign(new Error('EPERM: operation not permitted'), { code: 'EPERM' }); };
+    try {
+        assert.throws(() => m.writeSummaryAtomic(out, { a: 1 }), /EPERM/);
+        assert.deepEqual(fs.readdirSync(out), []);
+        assert.equal(m.runCli(['--strict', '--summary-only', '--pricing', PRICING_PATH, '--raw', tmpDir(t), '--out', out, '--days', '1'],
+            { ...quiet, gh: fakeGh(okRoutes()), now: NOW }), 4);
+        assert.deepEqual(fs.readdirSync(out), []);
+    } finally {
+        fs.renameSync = original;
+    }
+    assert.equal(m.writeSummaryAtomic(out, { a: 1 }), path.join(out, 'actions-usage-summary.json'));
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(out, 'actions-usage-summary.json'), 'utf8')), { a: 1 });
+});
+
+// --- privacidad del summary (CA-18) ---------------------------------------------
+
+test('el summary no contiene head_branch, head_sha, logins ni emails', (t) => {
+    const s = m.measure(opts(t, ['--strict', '--release-workflows', 'platform:release.yml']), { ...quiet, gh: fakeGh(okRoutes()), now: NOW });
+    const json = JSON.stringify(s);
+    assert.ok(!/head_branch|head_sha|@|"login"|leitolarreta|agent\/1-secreto|deadbeef/.test(json), json);
+});
+
+// --- convivencia strict (#7687) + --by-job (#7658) ------------------------------
+
+test('measure en strict con --by-job suma by_job y el desglose; sin --by-job el shape no cambia', (t) => {
+    const withJobs = m.measure(opts(t, ['--strict', '--by-job']), { ...quiet, gh: fakeGh(okRoutes()), now: NOW });
+    assert.equal(withJobs.by_job, true);
+    const plain = m.measure(opts(t, ['--strict']), { ...quiet, gh: fakeGh(okRoutes()), now: NOW });
+    assert.ok(!('by_job' in plain), 'sin --by-job no aparece la marca');
+    assert.ok(JSON.stringify(withJobs.repos).length > JSON.stringify(plain.repos).length, 'con --by-job hay desglose por job');
+    assert.equal(withJobs.totals.billable_min, plain.totals.billable_min, 'los totales no dependen de --by-job');
+});
+
+// --- compatibilidad del modo legado (CA-20) y texto prohibido (CA-21) ------------
+
+test('parseArgs([]) conserva los defaults del modo legado', () => {
+    const o = m.parseArgs([]);
+    assert.equal(o.owner, 'intrale');
+    assert.deepEqual(o.repos, ['platform']);
+    assert.equal(o.days, 30);
+    assert.equal(o.out, path.join(os.tmpdir(), 'measure-actions-billing'));
+    assert.equal(o.raw, path.join(os.tmpdir(), 'measure-actions-billing', 'raw'));
+    assert.equal(o.pricing, '');
+    assert.equal(o.rules, '');
+    assert.deepEqual(o.releaseWorkflows, []);
+    assert.equal(o.minRemaining, 1000);
+    assert.equal(o.calibrate, '');
+    assert.equal(o.strict, false);
+    assert.equal(o.since, '');
+    assert.equal(o.summaryOnly, false);
+    assert.equal(o.skipStorage, false);
+    assert.equal(o.skipReleases, false);
+});
+
+test('en modo legado las claves del summary son las de siempre y runCli escribe como antes', (t) => {
+    const raw = tmpDir(t);
+    const out = path.join(tmpDir(t), 'out');
+    const s = m.measure(m.parseArgs(['--pricing', PRICING_PATH, '--raw', raw, '--days', '1']), { ...quiet, gh: fakeGh(okRoutes()), now: NOW });
+    assert.deepEqual(Object.keys(s).sort(), ['active_committers_90d', 'api_calls', 'calibration', 'generated_at', 'method', 'optimizations',
+        'owner', 'pricing_source', 'releases', 'repos', 'scenarios', 'storage', 'top_workflows', 'totals', 'unknown_runner', 'window'].sort());
+    assert.ok(fs.existsSync(path.join(raw, 'intrale', 'platform', 'runs', '2026-09-19.json')), 'el legado sigue cacheando en --raw');
+    assert.equal(m.runCli(['--pricing', PRICING_PATH, '--raw', raw, '--out', out, '--days', '1'], { ...quiet, gh: fakeGh(okRoutes()), now: NOW }), 0);
+    assert.deepEqual(fs.readdirSync(out), ['actions-usage-summary.json']);
+});
+
+test('la calibración compara contra la doc de medición, no contra settings de billing', (t) => {
+    const gh = fakeGh(okRoutes({ 'repos/intrale/kernel/actions/runs?per_page=100': [RUN] }));
+    const s = m.measure(opts(t, ['--strict', '--calibrate', 'kernel']), { ...quiet, gh, now: NOW });
+    assert.equal(s.calibration.repo, 'kernel');
+    assert.equal(s.calibration.runs, 1);
+    assert.equal(s.calibration.comparar_con, 'billing real de la org, ver docs/pipeline/actions-usage-measure.md');
+});
+
+test('el script no referencia settings/billing ni gh auth refresh', () => {
+    const src = fs.readFileSync(path.join(__dirname, 'measure-actions-billing.js'), 'utf8');
+    assert.ok(!/settings\/billing|gh auth refresh/.test(src));
+});

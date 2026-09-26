@@ -33,9 +33,20 @@
 //   node scripts/measure-actions-billing.js --repos platform,kernel --days 30 \
 //        --pricing docs/pipeline/evidence/7594/pricing.json \
 //        --out docs/pipeline/evidence/7594 [--raw <dir-fuera-del-repo>] [--owner intrale] [--by-job]
+//
+// Modo estricto (#7687, base de la medición automática de #7661):
+//   --strict         reintentos ante 5xx / timeout / rate limit secundario; los
+//                    errores de storage, commits y releases hacen fallar la
+//                    corrida en vez de publicar un 0; caché en un subdirectorio
+//                    temporal propio dentro de --raw que se borra al terminar.
+//   --since AAAA-MM-DD   recorta la ventana a los días >= since.
+//   --summary-only   escritura atómica del resumen (.tmp + rename).
+//   --skip-storage / --skip-releases   omiten esas consultas.
+//   Exit codes: 0 OK · 2 argumentos · 3 rate limit agotado · 4 error de API.
 // =============================================================================
 'use strict';
 
+const crypto = require('crypto');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -457,6 +468,12 @@ function parseArgs(argv) {
         releaseWorkflows: String(opts['release-workflows'] || '').split(',').map(s => s.trim()).filter(Boolean),
         minRemaining: parseInt(opts['min-remaining'], 10) || 1000,
         calibrate: opts.calibrate || '',
+        // Flags del modo estricto (#7687). Los defaults de arriba no cambian (CA-20).
+        strict: opts.strict === true,
+        since: typeof opts.since === 'string' ? opts.since : (opts.since ? true : ''),
+        summaryOnly: opts['summary-only'] === true,
+        skipStorage: opts['skip-storage'] === true,
+        skipReleases: opts['skip-releases'] === true,
         byJob: opts['by-job'] === true,
     };
 }
@@ -466,13 +483,137 @@ function isInside(child, parent) {
     return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
 }
 
+const SAFE_NAME = /^[A-Za-z0-9._-]+$/;
+
+/** `AAAA-MM-DD` que además existe en el calendario (rechaza 2026-02-30). */
+function isValidIsoDate(s) {
+    if (typeof s !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(s)) return false;
+    const d = new Date(s + 'T00:00:00Z');
+    if (Number.isNaN(d.getTime())) return false;
+    return d.toISOString().slice(0, 10) === s;
+}
+
+/**
+ * Valida los argumentos antes de crear directorios, leer pricing o llamar a `gh`.
+ * Lanza `MeasureError('args')` (exit 2).
+ */
+function validateOpts(opts, repoRoot = REPO_ROOT) {
+    if (isInside(opts.raw, repoRoot)) {
+        throw new MeasureError('args', `--raw (${opts.raw}) está dentro del repo: las respuestas crudas no se versionan (RS-5).`);
+    }
+    if (opts.since === true) {
+        throw new MeasureError('args', '--since necesita una fecha (formato AAAA-MM-DD).');
+    }
+    if (opts.since && !isValidIsoDate(opts.since)) {
+        throw new MeasureError('args', `--since "${opts.since}" no es una fecha válida (formato AAAA-MM-DD).`);
+    }
+    if (opts.strict) {
+        const names = [['--owner', opts.owner], ...(opts.repos || []).map(r => ['--repos', r])];
+        if (opts.calibrate) names.push(['--calibrate', opts.calibrate]);
+        for (const spec of opts.releaseWorkflows || []) {
+            for (const part of String(spec).split(':')) names.push(['--release-workflows', part]);
+        }
+        for (const [flag, value] of names) {
+            if (!SAFE_NAME.test(String(value || ''))) {
+                throw new MeasureError('args', `${flag} "${value}" tiene caracteres no permitidos (sólo letras, números, punto, guion y guion bajo).`);
+            }
+        }
+    }
+    if (!opts.pricing || !fs.existsSync(opts.pricing)) {
+        throw new MeasureError('args', 'Falta --pricing <json> con las tarifas vigentes (no hay precios hardcodeados).');
+    }
+}
+
 function sleepMs(ms) { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); }
 
-function makeGh({ minRemaining }) {
-    const ghBin = require(path.join(REPO_ROOT, '.pipeline', 'lib', 'gh-bin.js')).resolveGhBin();
+/** Error tipado del modo estricto. `kind`: 'args' (exit 2) | 'rate_limit' (exit 3) | 'api' (exit 4). */
+class MeasureError extends Error {
+    constructor(kind, msg, { status = null, endpoint = '' } = {}) {
+        super(msg);
+        this.name = 'MeasureError';
+        this.kind = kind;
+        this.status = status;
+        this.endpoint = endpoint;
+    }
+}
+
+const EXIT_CODES = Object.freeze({ args: 2, rate_limit: 3, api: 4 });
+const DEFAULT_RETRY_DELAYS = Object.freeze([2000, 8000, 30000]);
+
+/** Primera línea no vacía, truncada: nunca el body completo de `gh` (CA-9). */
+function firstLine(s, max = 200) {
+    const line = String(s || '').split(/\r?\n/).map(l => l.trim()).find(Boolean) || '';
+    return line.length > max ? line.slice(0, max) + '…' : line;
+}
+
+/**
+ * Clasifica un error de `execFileSync(gh …)`. Pura.
+ * @returns {{ retryable: boolean, kind: 'api'|'rate_limit', status: number|'timeout'|null }}
+ */
+function classifyGhError(e) {
+    if (e && (e.code === 'ETIMEDOUT' || e.signal === 'SIGTERM')) {
+        return { retryable: true, kind: 'api', status: 'timeout' };
+    }
+    const text = String((e && (e.stderr || e.message)) || '');
+    const m = /HTTP (\d{3})/.exec(text);
+    const status = m ? Number(m[1]) : null;
+    if (status !== null && status >= 500 && status <= 599) return { retryable: true, kind: 'api', status };
+    if (status === 429 || (status === 403 && /rate limit/i.test(text))) {
+        return { retryable: true, kind: 'rate_limit', status };
+    }
+    return { retryable: false, kind: 'api', status };
+}
+
+function statusLabel(status) {
+    if (status === 'timeout') return 'timeout';
+    return status ? `HTTP ${status}` : 'sin status HTTP';
+}
+
+/**
+ * Reintento SINCRÓNICO: 1 llamada original + hasta `attempts` reintentos, esperando
+ * `delays[i]` antes de cada uno. Al agotarse (o ante un error no reintentable) lanza
+ * `MeasureError` con mensaje de una línea: status, endpoint y primera línea del stderr.
+ */
+function withRetry(fn, {
+    attempts = 3, delays = DEFAULT_RETRY_DELAYS,
+    isRetryable = (e) => classifyGhError(e).retryable,
+    sleep = sleepMs, onRetry = null, endpoint = '',
+} = {}) {
+    const maxRetries = Math.max(0, attempts | 0);
+    for (let i = 0; ; i++) {
+        try {
+            return fn();
+        } catch (e) {
+            if (e instanceof MeasureError) throw e;
+            const info = classifyGhError(e);
+            const detail = firstLine(e && (e.stderr || e.message));
+            if (!isRetryable(e) || i >= maxRetries) {
+                const where = `${statusLabel(info.status)}, endpoint ${endpoint || '?'}`;
+                const msg = info.kind === 'rate_limit'
+                    ? `Límite de uso de la API de GitHub agotado tras ${i} reintentos (${where}): ${detail}`
+                    : `Error de la API de GitHub (${where}): ${detail}`;
+                throw new MeasureError(info.kind, msg, { status: info.status, endpoint });
+            }
+            const ms = delays.length ? delays[Math.min(i, delays.length - 1)] : 0;
+            if (onRetry) onRetry({ attempt: i + 1, of: maxRetries, delayMs: ms, status: info.status, endpoint });
+            sleep(ms);
+        }
+    }
+}
+
+function makeGh({ minRemaining, strict = false, sleep = sleepMs, exec = null, stderr = null }) {
+    const run = exec || execFileSync;
+    const ghBin = exec ? 'gh' : require(path.join(REPO_ROOT, '.pipeline', 'lib', 'gh-bin.js')).resolveGhBin();
+    const write = stderr || ((s) => process.stderr.write(s));
     let calls = 0;
     function raw(args) {
-        return execFileSync(ghBin, ['api', ...args], { encoding: 'utf8', maxBuffer: 256 * 1024 * 1024, timeout: 120000 });
+        const call = () => run(ghBin, ['api', ...args], { encoding: 'utf8', maxBuffer: 256 * 1024 * 1024, timeout: 120000 });
+        if (!strict) return call();
+        const endpoint = args.find(a => !a.startsWith('-')) || '';
+        return withRetry(call, {
+            isRetryable: (e) => classifyGhError(e).retryable, sleep, endpoint,
+            onRetry: (r) => write(`Reintento ${r.attempt}/${r.of} en ${Math.round(r.delayMs / 1000)} s (${statusLabel(r.status)}, endpoint ${r.endpoint})\n`),
+        });
     }
     function throttle() {
         calls += 1;
@@ -481,11 +622,11 @@ function makeGh({ minRemaining }) {
             const core = JSON.parse(raw(['rate_limit'])).resources.core;
             if (core.remaining < minRemaining) {
                 const waitMs = Math.max(0, core.reset * 1000 - Date.now()) + 5000;
-                process.stderr.write(`[rate-limit] remaining=${core.remaining} < ${minRemaining}: durmiendo ${Math.round(waitMs / 1000)} s\n`);
-                sleepMs(waitMs);
+                write(`[rate-limit] remaining=${core.remaining} < ${minRemaining}: durmiendo ${Math.round(waitMs / 1000)} s\n`);
+                sleep(waitMs);
             }
         } catch (e) {
-            process.stderr.write(`[rate-limit] no se pudo consultar: ${e.message}\n`);
+            write(`[rate-limit] no se pudo consultar: ${e.message}\n`);
         }
     }
     return {
@@ -534,9 +675,12 @@ function listJobs(gh, owner, repo, runId, rawDir) {
         () => gh.lines(`repos/${owner}/${repo}/actions/runs/${runId}/jobs?filter=all&per_page=100`, JOB_JQ));
 }
 
-function measureStorage(gh, owner, repo) {
+function measureStorage(gh, owner, repo, { strict = false } = {}) {
     let cacheBytes = 0;
-    try { cacheBytes = gh.json(`repos/${owner}/${repo}/actions/cache/usage`).active_caches_size_in_bytes || 0; } catch (_) { /* repo sin Actions */ }
+    try { cacheBytes = gh.json(`repos/${owner}/${repo}/actions/cache/usage`).active_caches_size_in_bytes || 0; } catch (e) {
+        if (strict) throw e; // en strict un 0 sería engañoso (CA-11)
+        /* repo sin Actions */
+    }
     let artifactBytes = 0;
     let artifacts = 0;
     try {
@@ -544,7 +688,10 @@ function measureStorage(gh, owner, repo) {
             '.artifacts[] | select(.expired == false) | .size_in_bytes');
         artifacts = sizes.length;
         artifactBytes = sizes.reduce((a, b) => a + b, 0);
-    } catch (_) { /* repo sin Actions */ }
+    } catch (e) {
+        if (strict) throw e;
+        /* repo sin Actions */
+    }
     const GB = 1024 ** 3;
     return { cache_gb: round2(cacheBytes / GB), artifacts_gb: round2(artifactBytes / GB), artifacts_vigentes: artifacts };
 }
@@ -554,15 +701,18 @@ function countCommitters(ids) {
     return new Set((ids || []).filter(Boolean)).size;
 }
 
-function activeCommitters(gh, owner, repo) {
-    const since = new Date(Date.now() - 90 * 86400000).toISOString();
+function activeCommitters(gh, owner, repo, { strict = false, now = new Date() } = {}) {
+    const since = new Date(now.getTime() - 90 * 86400000).toISOString();
     try {
         const ids = gh.lines(`repos/${owner}/${repo}/commits?since=${since}&per_page=100`,
             // `gh --jq` imprime los strings sin comillas y `lines()` parsea JSON por
             // línea: se envuelve en `tojson` para que cada id llegue como JSON válido.
             '.[] | (.author.login // .commit.author.email) | tojson');
         return countCommitters(ids);
-    } catch (_) { return 0; }
+    } catch (e) {
+        if (strict) throw e;
+        return 0;
+    }
 }
 
 function lastCompletedRunJobs(gh, owner, repo, workflowFile, rawDir) {
@@ -572,101 +722,182 @@ function lastCompletedRunJobs(gh, owner, repo, workflowFile, rawDir) {
     return { run_id: run.id, created_at: run.created_at, jobs: listJobs(gh, owner, repo, run.id, rawDir) };
 }
 
-function windowDays(days) {
+/** Los `days` días completos que terminan ayer (UTC) respecto de `today`. No muta `today`. */
+function windowDays(days, today = new Date()) {
     const out = [];
-    const today = new Date(); today.setUTCHours(0, 0, 0, 0);
-    for (let i = days; i >= 1; i--) out.push(new Date(today.getTime() - i * 86400000).toISOString().slice(0, 10));
+    const base = new Date(today.getTime()); base.setUTCHours(0, 0, 0, 0);
+    for (let i = days; i >= 1; i--) out.push(new Date(base.getTime() - i * 86400000).toISOString().slice(0, 10));
     return out;
 }
 
-function main() {
-    const opts = parseArgs(process.argv.slice(2));
-    if (isInside(opts.raw, REPO_ROOT)) {
-        console.error(`--raw (${opts.raw}) está dentro del repo: las respuestas crudas no se versionan (RS-5).`);
-        process.exit(2);
-    }
-    if (!opts.pricing || !fs.existsSync(opts.pricing)) {
-        console.error('Falta --pricing <json> con las tarifas vigentes (no hay precios hardcodeados).');
-        process.exit(2);
-    }
+/**
+ * Como `windowDays`, pero descarta los días anteriores a `since` (AAAA-MM-DD; la
+ * comparación lexicográfica es válida). `since` posterior a ayer → `[]` (CA-1).
+ */
+function windowDaysSince(days, since, today = new Date()) {
+    return windowDays(days, today).filter(d => !since || d >= since);
+}
+
+/**
+ * Corre la medición y devuelve el summary. Lanza ante error; no escribe el resumen
+ * ni imprime en stdout (sólo progreso por stderr).
+ * @param {object} opts  salida de `parseArgs` (ya validada con `validateOpts`)
+ * @param {object} deps  { gh, exec, now, sleep, stderr } — todos opcionales / inyectables
+ */
+function measure(opts, deps = {}) {
+    const strict = opts.strict === true;
+    const now = deps.now || (() => new Date());
+    const sleep = deps.sleep || sleepMs;
+    const write = deps.stderr || ((s) => process.stderr.write(s));
     const pricing = JSON.parse(fs.readFileSync(opts.pricing, 'utf8'));
     const rules = opts.rules && fs.existsSync(opts.rules) ? JSON.parse(fs.readFileSync(opts.rules, 'utf8')) : (pricing.optimization_rules || []);
-    const gh = makeGh(opts);
-    const days = windowDays(opts.days);
-    const runs = [];
-    for (const repo of opts.repos) {
-        for (const day of days) {
-            const dayRuns = listRunsForDay(gh, opts.owner, repo, day, opts.raw).filter(r => r.status === 'completed');
-            for (const r of dayRuns) {
-                const jobs = listJobs(gh, opts.owner, repo, r.id, opts.raw);
-                runs.push({ repo, id: r.id, workflow: r.name, event: r.event, head_branch: r.head_branch,
-                    head_sha: r.head_sha, run_attempt: r.run_attempt, created_at: r.created_at, jobs });
+    // En strict la caché vive sólo en un subdirectorio propio de esta corrida (SEC-1/SEC-2):
+    // no se leen respuestas de corridas anteriores y se borra SÓLO lo que se creó acá.
+    let runDir = opts.raw;
+    if (strict) {
+        fs.mkdirSync(opts.raw, { recursive: true });
+        runDir = fs.mkdtempSync(path.join(opts.raw, 'measure-actions-'));
+    }
+    try {
+        const gh = deps.gh || makeGh({ minRemaining: opts.minRemaining, strict, sleep, exec: deps.exec, stderr: write });
+        const today = now();
+        const days = opts.since ? windowDaysSince(opts.days, opts.since, today) : windowDays(opts.days, today);
+        const runs = [];
+        for (const repo of opts.repos) {
+            for (const day of days) {
+                const dayRuns = listRunsForDay(gh, opts.owner, repo, day, runDir).filter(r => r.status === 'completed');
+                for (const r of dayRuns) {
+                    const jobs = listJobs(gh, opts.owner, repo, r.id, runDir);
+                    runs.push({ repo, id: r.id, workflow: r.name, event: r.event, head_branch: r.head_branch,
+                        head_sha: r.head_sha, run_attempt: r.run_attempt, created_at: r.created_at, jobs });
+                }
+                write(`[${repo}] ${day}: ${dayRuns.length} runs (llamadas API: ${gh.calls})\n`);
             }
-            process.stderr.write(`[${repo}] ${day}: ${dayRuns.length} runs (llamadas API: ${gh.calls})\n`);
         }
-    }
-    const agg = aggregate(runs, { byJob: opts.byJob });
-    const storage = { by_repo: {}, artifacts_gb: 0, cache_gb_by_repo: {} };
-    let committers = 0;
-    for (const repo of opts.repos) {
-        const s = measureStorage(gh, opts.owner, repo);
-        storage.by_repo[repo] = s;
-        storage.artifacts_gb = round2(storage.artifacts_gb + s.artifacts_gb);
-        storage.cache_gb_by_repo[repo] = s.cache_gb;
-        committers = Math.max(committers, activeCommitters(gh, opts.owner, repo));
-    }
-    const optimizations = estimateOptimizations(runs, rules, { days: opts.days });
-    const savingMin = optimizations.reduce((a, o) => a + o.saving_min, 0);
-    const scenarios = projectScenarios(agg, pricing, { days: opts.days, storage, active_committers: committers, saving_min: savingMin });
-    const releases = [];
-    for (const spec of opts.releaseWorkflows) {
-        const [repo, file] = spec.includes(':') ? spec.split(':') : [opts.repos[0], spec];
-        try {
-            const last = lastCompletedRunJobs(gh, opts.owner, repo, file, opts.raw);
-            if (!last) { releases.push({ repo, workflow_file: file, note: 'sin runs completados' }); continue; }
-            const cost = releaseRunCost(last.jobs, pricing);
-            releases.push({ repo, workflow_file: file, last_run_at: last.created_at,
-                jobs: last.jobs.filter(j => billableMinutes(j) > 0).length, runner_os: [...new Set(last.jobs.map(j => runnerOs(j.labels)))],
-                billable_min: cost.billable_min, usd_por_release: cost.usd });
-        } catch (e) {
-            releases.push({ repo, workflow_file: file, note: `error: ${e.message.split('\n')[0]}` });
+        const agg = aggregate(runs, { byJob: opts.byJob });
+        const storage = { by_repo: {}, artifacts_gb: 0, cache_gb_by_repo: {} };
+        let committers = 0;
+        if (!opts.skipStorage) {
+            for (const repo of opts.repos) {
+                const s = measureStorage(gh, opts.owner, repo, { strict });
+                storage.by_repo[repo] = s;
+                storage.artifacts_gb = round2(storage.artifacts_gb + s.artifacts_gb);
+                storage.cache_gb_by_repo[repo] = s.cache_gb;
+                committers = Math.max(committers, activeCommitters(gh, opts.owner, repo, { strict, now: today }));
+            }
         }
+        const optimizations = estimateOptimizations(runs, rules, { days: opts.days });
+        const savingMin = optimizations.reduce((a, o) => a + o.saving_min, 0);
+        const scenarios = projectScenarios(agg, pricing, { days: opts.days, storage, active_committers: committers, saving_min: savingMin });
+        const releases = [];
+        for (const spec of (opts.skipReleases ? [] : (opts.releaseWorkflows || []))) {
+            const [repo, file] = spec.includes(':') ? spec.split(':') : [opts.repos[0], spec];
+            try {
+                const last = lastCompletedRunJobs(gh, opts.owner, repo, file, runDir);
+                if (!last) { releases.push({ repo, workflow_file: file, note: 'sin runs completados' }); continue; }
+                const cost = releaseRunCost(last.jobs, pricing);
+                releases.push({ repo, workflow_file: file, last_run_at: last.created_at,
+                    jobs: last.jobs.filter(j => billableMinutes(j) > 0).length, runner_os: [...new Set(last.jobs.map(j => runnerOs(j.labels)))],
+                    billable_min: cost.billable_min, usd_por_release: cost.usd });
+            } catch (e) {
+                if (strict) throw e; // CA-11: en strict no se publica un release con "error"
+                releases.push({ repo, workflow_file: file, note: `error: ${e.message.split('\n')[0]}` });
+            }
+        }
+        let calibration = null;
+        if (opts.calibrate) {
+            // Todo el histórico del repo privado: el número a comparar con el billing real.
+            const all = gh.lines(`repos/${opts.owner}/${opts.calibrate}/actions/runs?per_page=100`, RUN_JQ)
+                .filter(r => r.status === 'completed');
+            const calRuns = all.map(r => ({ repo: opts.calibrate, id: r.id, workflow: r.name, run_attempt: r.run_attempt,
+                jobs: listJobs(gh, opts.owner, opts.calibrate, r.id, runDir) }));
+            const cagg = aggregate(calRuns);
+            calibration = { repo: opts.calibrate, runs: cagg.totals.runs, jobs: cagg.totals.jobs,
+                raw_min: cagg.totals.raw_min, billable_min: cagg.totals.billable_min,
+                desde: all.length ? all[all.length - 1].created_at : null, hasta: all.length ? all[0].created_at : null,
+                comparar_con: 'billing real de la org, ver docs/pipeline/actions-usage-measure.md' };
+        }
+        return {
+            generated_at: today.toISOString(), owner: opts.owner, repos: opts.repos,
+            window: { days: opts.days, from: days[0] ?? null, to: days[days.length - 1] ?? null },
+            ...(opts.byJob ? { by_job: true } : {}),
+            method: 'ceil((completed_at - started_at)/60s) por job x multiplicador (linux 1, windows 2, macos 10); filter=all; una consulta por dia',
+            api_calls: gh.calls, active_committers_90d: committers,
+            totals: agg.totals, unknown_runner: agg.unknown_runner, repos: agg.repos,
+            top_workflows: rankWorkflows(agg, 5), storage, optimizations, scenarios, releases, calibration,
+            pricing_source: { fetched_at: pricing.fetched_at, source_url: pricing.source_url },
+        };
+    } finally {
+        if (strict) fs.rmSync(runDir, { recursive: true, force: true });
     }
-    let calibration = null;
-    if (opts.calibrate) {
-        // Todo el histórico del repo privado: el número a comparar con el billing real.
-        const all = gh.lines(`repos/${opts.owner}/${opts.calibrate}/actions/runs?per_page=100`, RUN_JQ)
-            .filter(r => r.status === 'completed');
-        const calRuns = all.map(r => ({ repo: opts.calibrate, id: r.id, workflow: r.name, run_attempt: r.run_attempt,
-            jobs: listJobs(gh, opts.owner, opts.calibrate, r.id, opts.raw) }));
-        const cagg = aggregate(calRuns);
-        calibration = { repo: opts.calibrate, runs: cagg.totals.runs, jobs: cagg.totals.jobs,
-            raw_min: cagg.totals.raw_min, billable_min: cagg.totals.billable_min,
-            desde: all.length ? all[all.length - 1].created_at : null, hasta: all.length ? all[0].created_at : null,
-            comparar_con: `/organizations/${opts.owner}/settings/billing/usage (requiere admin:org)` };
+}
+
+const SUMMARY_FILE = 'actions-usage-summary.json';
+
+/**
+ * Escritura atómica del resumen: `.tmp` único en el MISMO directorio (flag `wx`) +
+ * `rename`. Si el rename falla, borra el `.tmp` y relanza (SEC-5, CA-17).
+ */
+function writeSummaryAtomic(outDir, summary) {
+    fs.mkdirSync(outDir, { recursive: true });
+    const final = path.join(outDir, SUMMARY_FILE);
+    const tmp = path.join(outDir, `.actions-usage-summary.${process.pid}.${crypto.randomBytes(6).toString('hex')}.tmp`);
+    fs.writeFileSync(tmp, JSON.stringify(summary, null, 2) + '\n', { flag: 'wx' });
+    try {
+        fs.renameSync(tmp, final);
+    } catch (e) {
+        fs.rmSync(tmp, { force: true });
+        throw e;
     }
-    const summary = {
-        generated_at: new Date().toISOString(), owner: opts.owner, repos: opts.repos,
-        window: { days: opts.days, from: days[0], to: days[days.length - 1] },
-        ...(opts.byJob ? { by_job: true } : {}),
-        method: 'ceil((completed_at - started_at)/60s) por job x multiplicador (linux 1, windows 2, macos 10); filter=all; una consulta por dia',
-        api_calls: gh.calls, active_committers_90d: committers,
-        totals: agg.totals, unknown_runner: agg.unknown_runner, repos: agg.repos,
-        top_workflows: rankWorkflows(agg, 5), storage, optimizations, scenarios, releases, calibration,
-        pricing_source: { fetched_at: pricing.fetched_at, source_url: pricing.source_url },
-    };
-    fs.mkdirSync(opts.out, { recursive: true });
-    const outFile = path.join(opts.out, 'actions-usage-summary.json');
-    fs.writeFileSync(outFile, JSON.stringify(summary, null, 2) + '\n');
-    console.log(`Resumen: ${outFile}`);
-    console.log(`Minutos facturables (${opts.days} d): ${agg.totals.billable_min} · crudos: ${agg.totals.raw_min}`);
-    if (calibration) console.log(`Calibración ${calibration.repo}: ${calibration.billable_min} min facturables — comparar con ${calibration.comparar_con}`);
+    return final;
+}
+
+/**
+ * Entry point testeable del CLI: devuelve el exit code en vez de llamar a `process.exit`.
+ * En strict (o ante un error de argumentos) mapea el error a 2/3/4; en modo legado,
+ * cualquier otro error se propaga igual que antes.
+ */
+function runCli(argv, deps = {}) {
+    const log = deps.log || ((s) => console.log(s));
+    const error = deps.error || ((s) => console.error(s));
+    let opts = null;
+    try {
+        opts = parseArgs(argv);
+        validateOpts(opts, deps.repoRoot || REPO_ROOT);
+        const summary = measure(opts, deps);
+        let outFile;
+        if (opts.summaryOnly) {
+            outFile = writeSummaryAtomic(opts.out, summary);
+        } else {
+            fs.mkdirSync(opts.out, { recursive: true });
+            outFile = path.join(opts.out, SUMMARY_FILE);
+            fs.writeFileSync(outFile, JSON.stringify(summary, null, 2) + '\n');
+        }
+        log(`Resumen: ${outFile}`);
+        if (summary.window.from === null) {
+            log(`Ventana vacía: no hay días desde ${opts.since}; totales en 0.`);
+        }
+        log(`Minutos facturables (${opts.days} d): ${summary.totals.billable_min} · crudos: ${summary.totals.raw_min}`);
+        const calibration = summary.calibration;
+        if (calibration) log(`Calibración ${calibration.repo}: ${calibration.billable_min} min facturables — comparar con ${calibration.comparar_con}`);
+        return 0;
+    } catch (e) {
+        const isArgs = e instanceof MeasureError && e.kind === 'args';
+        if (!isArgs && !(opts && opts.strict)) throw e; // modo legado: sin mapeo nuevo (CA-20)
+        const kind = e instanceof MeasureError ? e.kind : classifyGhError(e).kind;
+        const msg = e instanceof MeasureError ? e.message : `Error en la medición: ${firstLine(e && e.message)}`;
+        error(msg);
+        return EXIT_CODES[kind] || EXIT_CODES.api;
+    }
 }
 
 module.exports = {
     RUNNER_MULTIPLIERS, runnerOs, runnerMultiplier, jobRawSeconds, billableMinutes, percentile,
     JOB_DETAIL_KEYS, aggregate, rankWorkflows, estimateOptimizations, projectScenarios, releaseRunCost, monthly,
     parseArgs, isInside, windowDays, countCommitters,
+    // #7687 — modo estricto
+    measure, runCli, windowDaysSince, withRetry, classifyGhError, writeSummaryAtomic, validateOpts,
+    MeasureError, isValidIsoDate,
 };
 
-if (require.main === module) main();
+if (require.main === module) process.exit(runCli(process.argv.slice(2)));
