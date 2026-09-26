@@ -169,6 +169,23 @@ Debe mostrar `modo=pruebas`, la lista de purgadas y los cuatro canales con su
 destino de pruebas. Si ves `telegram ENCENDIDO bot de pruebas`, confirmá que el
 `chat_id` del store de pruebas es el grupo de prueba antes de correr nada.
 
+## Acceso a repos privados (#7595)
+
+`platform` continúa público y `kernel` permanece privado. El archivado previsto
+para los legacy mantiene su lectura pública, pero impide push y comentarios:
+esas operaciones se migran a `platform` antes del archivado.
+
+Para clonar un repo privado, la identidad de pruebas necesita acceso explícito
+a **ese repo** mediante GitHub App o token fine-grained de mínimo privilegio.
+`GH_TOKEN` sigue siendo opcional; su presencia no acredita acceso. La provisión
+de credenciales acotadas corresponde a #7627 y la transición de `platform` a
+#7662. No se modifica `credenciales-ambiente.js` ni se amplía el token productivo.
+
+La evidencia de cada identidad registra repo, permisos, fecha y resultado de
+clone/push/comentario (cuando esas operaciones estén autorizadas). Si no tiene
+acceso, se registra explícitamente como restricción. Nunca se guarda el token
+en la URL ni en logs. Ver [visibilidad de repos](visibilidad-repos.md).
+
 ## Si algo sale mal
 
 | Síntoma | Causa | Qué hacer |
